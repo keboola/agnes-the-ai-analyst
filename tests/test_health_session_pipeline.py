@@ -89,10 +89,20 @@ class TestSessionPipelineHealthCheck:
         assert resp.status_code == 200
         body = resp.json()
         services = body["services"]
-        assert services["session_pipeline"]["status"] == "warning"
-        # Actionable detail must point at the verification-detector job.
-        detail = services["session_pipeline"].get("detail", "")
-        assert "verification-detector" in detail or "session" in detail.lower()
+        entry = services["session_pipeline"]
+        assert entry["status"] == "warning"
+        # Actionable detail must read as "verification-detector backlog" so
+        # operators don't misread it as an upload failure (the previous text
+        # "uploads are not being processed" misled users on fresh installs
+        # whose `agnes push` was actually working fine).
+        detail = entry.get("detail", "")
+        assert "verification-detector backlog" in detail, detail
+        assert "uploads are unaffected" in detail.lower(), detail
+        # `last_processed` ISO timestamp must surface so operators see at a
+        # glance when extraction last succeeded — no log-grep required.
+        assert "last_processed" in entry, entry
+        # Round-trip parse: fromisoformat tolerates both naive and tz-aware ISO.
+        datetime.fromisoformat(entry["last_processed"])
         # Warning bubbles up to overall status='degraded' (existing pattern).
         assert body["status"] == "degraded"
 
