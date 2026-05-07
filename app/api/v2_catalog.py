@@ -199,6 +199,58 @@ def _resolve_remote_metadata(row: dict) -> "TableMetadata | None":
         return None
 
 
+def invalidate_for_table(table_id: str) -> None:
+    """Drop every per-table cache so the next /api/v2/* request reflects
+    the just-registered / updated / unregistered row immediately. Owned
+    by the catalog module so admin.py doesn't need to know which caches
+    exist.
+
+    Imports v2_schema and v2_sample lazily — keeps catalog tests from
+    pulling in BQ-extension imports they don't need.
+    """
+    import asyncio
+    from app.api import v2_schema, v2_sample
+
+    _table_rows_cache.clear()
+    _metadata_cache.invalidate(table_id)
+    v2_schema._schema_cache.invalidate(table_id)
+    # Sample cache key is `f"{table_id}|{n}"`; clearing the whole sample
+    # cache is heavier than precise invalidation, but registry-change
+    # frequency (handful per day on a typical instance) doesn't justify
+    # adding a prefix-invalidation primitive to TTLCache.
+    v2_sample._sample_cache.clear()
+
+    # Schedule a single-row re-warm so admins editing a registry row
+    # see fresh data within a couple of seconds rather than waiting for
+    # the next analyst to trigger a miss. Fire-and-forget; failures
+    # log + skip inside the coroutine.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        # Running inside an async context (production FastAPI path).
+        asyncio.create_task(_rewarm_one_row(table_id))
+    # No running event loop (e.g. called from a sync test or a sync
+    # handler thread). Skip re-warm — the next live request will
+    # populate via miss.
+
+
+async def _rewarm_one_row(table_id: str) -> None:
+    """Background single-row re-warm. Imports cache_warmup lazily to
+    avoid a circular import at module load (cache_warmup.py is created
+    in Task 10; until then, this function logs a warning and returns)."""
+    try:
+        from app.api.cache_warmup import warm_one_table
+        await warm_one_table(table_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "single-row re-warm failed for %s — next live request will populate",
+            table_id,
+        )
+
+
 def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     rows = _table_rows_cache.get(_TABLE_ROWS_KEY)
     if rows is None:
