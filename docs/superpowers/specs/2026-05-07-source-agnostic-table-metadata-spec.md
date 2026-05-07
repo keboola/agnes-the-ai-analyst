@@ -189,30 +189,313 @@ The 15-minute TTL is a deliberate compromise:
 
 ### Unified cache invalidation
 
-The previous spec proposed `_invalidate_metadata_cache(table_id)` on register/update. **That alone is insufficient.** `app/api/v2_catalog.py:25` already runs a 5-minute `_table_rows_cache` over the registry rows themselves (the table list, before per-table metadata enrichment). On current main, that cache is **not** invalidated by `register_table` / `update_table` (verified: `admin.py:1037,1110,2771` only call `app.instance_config.reset_cache()`). An admin who registers a remote table immediately runs `agnes catalog` and sees no row at all for up to 5 minutes — not just missing size, missing the whole row. This is a pre-existing bug the new metadata cache would otherwise inherit.
+The previous spec proposed `_invalidate_metadata_cache(table_id)` on register/update. **That alone is insufficient.** Verified state on current main:
 
-Fix in this PR by introducing a single helper that owns both caches:
+| Cache | TTL | Cleared on registry change today? |
+|---|---|---|
+| `_table_rows_cache` (`v2_catalog.py:25`) | 300 s | ❌ no |
+| `_schema_cache` (`v2_schema.py:17`) | 3600 s (1 h) | ❌ no |
+| `_sample_cache` (`v2_sample.py:17`) | 3600 s (1 h) | ❌ no |
+
+`admin.py:1037,1110,2771` (the registry write paths) call only `app.instance_config.reset_cache()`. None of the four catalog/schema/sample/metadata caches are touched. The user-visible failures of this gap:
+
+- Admin registers a remote table → `agnes catalog` doesn't show the new row for up to 5 minutes.
+- Admin updates a row's `bucket` → `agnes schema <id>` returns the OLD column list for up to 1 hour.
+- Admin unregisters a table → `agnes describe <id>` keeps returning the OLD sample rows for up to 1 hour.
+
+Fix in this PR by introducing a single helper that owns all four caches:
 
 ```python
 # app/api/v2_catalog.py (addition)
 
 def invalidate_for_table(table_id: str) -> None:
-    """Drop both the registry-rows cache and the per-table metadata cache
-    so the next catalog request reflects the just-registered / updated /
-    unregistered row immediately. The catalog module owns this so admin.py
-    doesn't need to know which caches exist.
+    """Drop every per-table cache so the next /api/v2/* request reflects
+    the just-registered / updated / unregistered row immediately. Owned by
+    the catalog module so admin.py doesn't need to know which caches exist.
+
+    Imports v2_schema and v2_sample lazily — keeps catalog tests from
+    pulling in BQ-extension imports they don't need.
     """
-    _table_rows_cache.invalidate_all()  # whole-list cache; can't precisely invalidate one row
+    from app.api import v2_schema, v2_sample
+
+    _table_rows_cache.clear()  # whole-list cache; no per-row precision
     _metadata_cache.invalidate(table_id)
+    v2_schema._schema_cache.invalidate(table_id)
+    # Sample cache key is `f"{table_id}|{n}"`; clearing the whole sample
+    # cache is heavier than precise invalidation, but registry-change
+    # frequency (handful per day on a typical instance) doesn't justify
+    # adding a prefix-invalidation primitive to TTLCache. Acceptable.
+    v2_sample._sample_cache.clear()
 ```
 
 Wire it into `app/api/admin.py`:
 
 - `POST /api/admin/register-table` — call after the registry write succeeds, before returning.
 - `PUT /api/admin/registry/{id}` — call after the row update.
-- `DELETE /api/admin/registry/{id}` — call after unregister (otherwise an unregistered row keeps appearing in `agnes catalog` for up to 5 minutes; same UX bug, opposite direction).
+- `DELETE /api/admin/registry/{id}` — call after unregister (otherwise an unregistered row keeps appearing in `agnes catalog` and serving stale schema for up to 1 hour; same UX bug, opposite direction).
 
-Three call sites, one shared helper. Keeps cache knowledge in `v2_catalog.py` and out of `admin.py`.
+Three call sites, one shared helper. Keeps cache knowledge in `v2_catalog.py` and out of `admin.py`. The TTL values themselves are unchanged (1 h is fine when staleness is bounded by an explicit flush).
+
+### BQ COLUMNS query consolidation
+
+`v2_schema.py:_fetch_bq_schema` and `v2_schema.py:_fetch_bq_table_options` both query the same `INFORMATION_SCHEMA.COLUMNS` view with the same `WHERE table_name = ?` predicate; only the SELECT list differs. On a `_schema_cache` miss, that's **two BQ jobs back-to-back** for one logical request — wasteful on on-demand pricing where every job is billed.
+
+Consolidate into a single helper that returns one resultset; both consumers (the v2_schema endpoint AND the new BQ metadata provider's `_fetch_partition_cluster` path) call it:
+
+```python
+# connectors/bigquery/access.py (or a sibling module — see below)
+
+def fetch_bq_columns_full(
+    bq: BqAccess, dataset: str, table: str,
+) -> list[dict] | None:
+    """Single round-trip to INFORMATION_SCHEMA.COLUMNS pulling everything
+    both v2_schema and the metadata provider need. Returns one dict per
+    column; consumers project the fields they care about.
+
+    Best-effort: returns None on any failure. Sentinel-config early-return
+    on `not bq.projects.data`. Mirrors the validation discipline of the
+    individual functions it replaces.
+    """
+    if not bq.projects.data:
+        return None
+
+    if not (validate_quoted_identifier(bq.projects.data, "BQ project")
+            and validate_quoted_identifier(dataset, "BQ dataset")
+            and validate_quoted_identifier(table, "BQ source_table")):
+        return None
+
+    bq_sql = (
+        f"SELECT column_name, data_type, is_nullable, "
+        f"       is_partitioning_column, clustering_ordinal_position "
+        f"FROM `{bq.projects.data}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
+        f"WHERE table_name = ? ORDER BY ordinal_position"
+    )
+    try:
+        with bq.duckdb_session() as conn:
+            rows = conn.execute(
+                "SELECT * FROM bigquery_query(?, ?, ?)",
+                [bq.projects.billing, bq_sql, table],
+            ).fetchall()
+    except Exception as e:
+        logger.warning(
+            "BQ COLUMNS fetch failed for %s.%s.%s: %s",
+            bq.projects.data, dataset, table, e,
+        )
+        return None
+
+    return [
+        {
+            "name": r[0],
+            "type": r[1],
+            "nullable": (r[2] or "").upper() == "YES",
+            "is_partitioning_column": (r[3] or "").upper() == "YES",
+            "clustering_ordinal_position": r[4],
+        }
+        for r in rows
+    ]
+```
+
+Touchpoints on existing code:
+
+- **`v2_schema.py:_fetch_bq_schema`** — replaced by `[{"name", "type", "nullable", "description":""} for c in fetch_bq_columns_full(...)]`.
+- **`v2_schema.py:_fetch_bq_table_options`** — replaced by deriving `partition_by` (first row with `is_partitioning_column == True`) and `clustered_by` (rows with non-null `clustering_ordinal_position`, ordered by that position) from the same list.
+- **`connectors/bigquery/metadata.py:_fetch_partition_cluster`** (new) — same two derivations.
+- Net effect on `/api/v2/schema/{id}` cache miss: **2 BQ jobs → 1 BQ job**. ~50 % BQ-job reduction.
+
+Helper location: `connectors/bigquery/access.py` already exposes `BqAccess` to both consumers; appending the helper there avoids creating yet another module and keeps BQ specifics in the BQ connector. (Earlier draft proposed `app/api/_bq_helpers.py` but that's a worse fit — the function is connector-bound, not API-bound.)
+
+The consolidation is **independent of the metadata feature** in spirit but lands in the same PR because (a) the new metadata provider would otherwise add a third copy of the same SQL pattern, (b) the cache invalidation work touches the same `_schema_cache` the consolidation benefits from, and (c) splitting it would cost one extra round of CI + review.
+
+### Server-side automatic cache warmup
+
+In-process caches (the four flushed by `invalidate_for_table`) are empty after every container restart — a deploy, a rolling update, an OOM kill. The first analyst to call `agnes catalog` or `agnes schema <id>` after restart pays a cold-cache penalty: 1 BQ job per remote table for the catalog enrichment, plus 1 BQ job per `agnes schema` call. On a 30-table instance that's **30+ BQ jobs in the first analyst's first session, in burst**. Cost-wise it's negligible (INFORMATION_SCHEMA queries are <1 MB, $0.005/MB on-demand → $0.00015 for the whole burst). UX-wise it's a 2–6 second hiccup on the first catalog load. Operationally it's noise that confuses "is the new deploy slow?" with "is BQ slow?".
+
+The fix: warm the caches automatically at process startup, in the background, with bounded concurrency. The first analyst hits warm caches; the BQ burst is spread across the readiness-up-to-fully-warm window, not a single user's request.
+
+```python
+# app/main.py — addition to startup events
+
+@app.on_event("startup")
+async def warm_catalog_caches():
+    """Schedule a background warmup of the v2 catalog/schema/metadata caches.
+
+    Fire-and-forget — readiness is not blocked. Operators can disable via
+    `AGNES_SKIP_CACHE_WARMUP=1` in test/dev contexts. Failures inside the
+    background task are logged + swallowed; never escalate to startup
+    failure (a transient BQ outage at deploy time should not keep the
+    server from coming up at all).
+    """
+    if os.environ.get("AGNES_SKIP_CACHE_WARMUP") == "1":
+        return
+    asyncio.create_task(_warm_catalog_caches_bg())
+```
+
+```python
+# app/api/cache_warmup.py — new module
+
+@dataclass
+class WarmupRowState:
+    table_id: str
+    status: Literal["pending", "warming", "fresh", "error"]
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    error: str | None = None
+    last_warmed_at: datetime | None = None  # carries across runs
+
+
+@dataclass
+class WarmupRunState:
+    run_id: str
+    trigger: Literal["startup", "manual", "registry_change"]
+    started_at: datetime
+    completed_at: datetime | None = None
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    rows: dict[str, WarmupRowState] = field(default_factory=dict)
+    # SSE subscribers attach to this; appended events are broadcast.
+    _subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
+
+
+# Module-level singleton — survives across runs, holds the latest state.
+WARMUP_STATE: WarmupRunState | None = None
+
+
+async def _warm_catalog_caches_bg(trigger: str = "startup") -> None:
+    """Walk the registry, warm metadata + schema caches for every BQ remote
+    row with bounded concurrency. Errors are recorded per-row but never
+    propagate. Emits SSE events as rows complete.
+    """
+    global WARMUP_STATE
+    run_id = uuid4().hex[:8]
+    state = WarmupRunState(run_id=run_id, trigger=trigger, started_at=now())
+
+    # Snapshot registry — registry write during warmup is not coordinated;
+    # stale snapshot is fine because the cache-bust path will refresh
+    # whatever the warmup populated.
+    conn = get_system_db()
+    rows = TableRegistryRepository(conn).list_all()
+    remote = [
+        r for r in rows
+        if r.get("query_mode") == "remote" and r.get("source_type") == "bigquery"
+    ]
+    state.total = len(remote)
+    for r in remote:
+        state.rows[r["id"]] = WarmupRowState(table_id=r["id"], status="pending")
+    WARMUP_STATE = state
+    _broadcast(state, {"event": "start", "data": {
+        "run_id": run_id, "trigger": trigger, "total": state.total,
+    }})
+
+    sem = asyncio.Semaphore(int(os.environ.get("AGNES_WARMUP_CONCURRENCY", "4")))
+    await asyncio.gather(*(_warm_one(r, state, sem) for r in remote))
+
+    state.completed_at = now()
+    _broadcast(state, {"event": "complete", "data": {
+        "run_id": run_id, "total": state.total,
+        "completed": state.completed, "failed": state.failed,
+    }})
+    logger.info(
+        "cache warmup complete: run_id=%s total=%d ok=%d fail=%d",
+        run_id, state.total, state.completed, state.failed,
+    )
+
+
+async def _warm_one(row: dict, state: WarmupRunState, sem: asyncio.Semaphore) -> None:
+    async with sem:
+        rs = state.rows[row["id"]]
+        rs.status = "warming"
+        rs.started_at = now()
+        _broadcast(state, {"event": "row", "data": {**asdict(rs)}})
+        t0 = time.monotonic()
+        try:
+            # Warm metadata cache via the same path live requests use.
+            # _size_hint_for_row populates _metadata_cache as a side effect.
+            await asyncio.to_thread(_warm_metadata, row)
+            # Warm schema cache via the new RBAC-naive helper.
+            await asyncio.to_thread(_warm_schema, row)
+            rs.status = "fresh"
+            rs.last_warmed_at = now()
+            state.completed += 1
+        except Exception as e:
+            rs.status = "error"
+            rs.error = str(e)
+            state.failed += 1
+            logger.warning("cache warmup row=%s failed: %s", row["id"], e)
+        finally:
+            rs.completed_at = now()
+            rs.duration_ms = int((time.monotonic() - t0) * 1000)
+            _broadcast(state, {"event": "row", "data": {**asdict(rs)}})
+```
+
+The `build_schema` function in `v2_schema.py` currently mixes RBAC + cache + BQ work. Refactor splits it:
+
+- **`build_schema(conn, user, table_id, *, bq)`** — keeps RBAC + cache check at the top, then delegates to:
+- **`build_schema_uncached(conn, table_id, *, bq)`** — does the BQ work + cache write only. Warmup calls this directly with no user context. ~10-LOC extraction.
+
+### Status + control endpoints
+
+```python
+# app/api/cache_warmup.py — endpoints
+
+@router.get("/api/admin/cache-warmup/status")
+async def warmup_status(user: dict = Depends(require_admin)):
+    """Return the latest warmup state as JSON. For polling fallback when
+    SSE isn't available (e.g. behind a proxy that buffers)."""
+    if WARMUP_STATE is None:
+        return {"state": "never_run"}
+    return _serialize_state(WARMUP_STATE)
+
+
+@router.post("/api/admin/cache-warmup/run")
+async def warmup_run(user: dict = Depends(require_admin)):
+    """Manually trigger a warmup. Returns the new run_id immediately;
+    the run executes in the background. Idempotent: if a warmup is
+    already in progress, returns its run_id without starting another."""
+    if WARMUP_STATE and WARMUP_STATE.completed_at is None:
+        return {"run_id": WARMUP_STATE.run_id, "status": "already_running"}
+    asyncio.create_task(_warm_catalog_caches_bg(trigger="manual"))
+    return {"status": "started"}
+
+
+@router.get("/api/admin/cache-warmup/stream")
+async def warmup_stream(user: dict = Depends(require_admin)):
+    """Server-Sent Events stream of warmup events. UI consumes this for
+    realtime progress. Connection stays open for the lifetime of the
+    current run + 5 s grace, then closes; client reconnects on next run.
+
+    Event types: 'start', 'row', 'complete'. Each event is JSON.
+    """
+    return EventSourceResponse(_warmup_event_generator())
+```
+
+Three endpoints, all `require_admin`. `EventSourceResponse` is from `sse-starlette` (already a transitive dep; if not, ~3 KB additional install).
+
+### Cache-bust now also re-warms
+
+`invalidate_for_table` (defined above) flushes caches. After flushing, immediately enqueue a **single-row warmup** for the affected `table_id` so admins editing a registry row see fresh data within a couple of seconds rather than waiting for the next analyst to trigger a miss:
+
+```python
+def invalidate_for_table(table_id: str) -> None:
+    """... (existing flush logic) ..."""
+    # ... existing cache.clear() / .invalidate() calls ...
+
+    # Schedule a single-row re-warm in the background. Doesn't block the
+    # admin's HTTP response. Fire-and-forget; failures log + skip.
+    asyncio.create_task(_rewarm_one_row(table_id))
+```
+
+Effect: admin clicks "Save" in the edit modal → response returns in ~50 ms → 1-2 s later the warmup task has populated fresh metadata + schema caches → next `agnes catalog` request is warm. The admin doesn't see a "warming…" state because their edit doesn't call catalog/schema.
+
+### Operations env vars
+
+| Var | Default | Effect |
+|---|---|---|
+| `AGNES_SKIP_CACHE_WARMUP` | `0` | If `1`, the startup hook is a no-op. For dev / test instances. |
+| `AGNES_WARMUP_CONCURRENCY` | `4` | How many BQ INFORMATION_SCHEMA jobs to run in parallel. Bounded; raising this beyond 8 risks tripping BQ's 100-concurrent-job project quota on instances with 100+ tables. |
+
+No new instance.yaml knobs; warmup is unconditional in production, opt-out only.
 
 ### BQ provider implementation sketch
 
@@ -569,9 +852,68 @@ Outline:
 
 The doc is the single landing place for the question *"can / how do I register a $X table for $Y mode?"* — replaces the absent breadcrumb #156 calls out.
 
-### Admin UI — minimal change
+### Admin UI integration — `/admin/tables` only
 
-`app/web/templates/admin_tables.html` — add a `?` icon next to the `query_mode` selector linking to the new doc page. **No** redesign of the form, **no** inline guidance panel — adding a few hundred lines of UI copy here would bloat a 132-KB template that's already overdue for a structural pass. Tooltip + doc link is the right scope today. The form itself already has enough validation (#177's PUT/DELETE work, the materialised-mode source_query check, the BQ shape validator in `_validate_bigquery_register_payload`) that an admin who reads the doc can drive it.
+All visibility lives on the existing `/admin/tables` page. **No new admin pages.** The page already lists every registered table grouped by `source_type` (`bqTableListing` / `kbTableListing` / `jiraTableListing`) and renders rows via `renderRegistryListing(target, tables)`. The row markup already reserves an empty `<th class="col-status"></th>` column at the end — perfect slot for a cache-freshness badge with no schema-of-rendered-table change.
+
+Three additions to the page:
+
+**1. Cache toolbar** — a single card above the per-source-type listings, visible only when at least one BQ remote table is registered:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Cache freshness                            [Re-warm all]   │
+│                                                              │
+│  ●●●●●●●●●●○○○○○  21 / 30 fresh                              │
+│  Last completed run: 4 minutes ago (28 ok, 2 errors)         │
+│                                                              │
+│  [▾ Show log]                                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+When a run is in progress, the bar animates and `[Re-warm all]` is disabled. The "Show log" expand reveals a terminal-style scrolling area:
+
+```
+┌─ Warmup log — run f4d2bcae ───────────────────────────────┐
+│ 14:32:01  start   trigger=startup total=30                │
+│ 14:32:01  warming events_2024                             │
+│ 14:32:01  warming users_2024                              │
+│ 14:32:01  warming orders_2024                             │
+│ 14:32:01  warming sessions_2024                           │
+│ 14:32:02  fresh   events_2024  (1.2 s)                    │
+│ 14:32:02  warming products_2024                           │
+│ 14:32:02  fresh   users_2024   (1.4 s)                    │
+│ ...                                                       │
+│ 14:32:14  error   stale_table_v1  permission denied       │
+│ 14:32:18  complete  total=30 ok=28 fail=2                 │
+└───────────────────────────────────────────────────────────┘
+```
+
+The log is the SSE event stream rendered in chronological order. Auto-scrolls to bottom while a run is active; freezes when the run completes so the admin can scroll back.
+
+**2. Per-row cache badge in `col-status`** — populated from the WARMUP_STATE snapshot on page load and updated live from SSE:
+
+| Status | Badge |
+|---|---|
+| `fresh` (warmed within TTL) | ● green "fresh 4m" (with relative-time tooltip) |
+| `warming` (in current run) | ● blue spinner "warming…" |
+| `pending` (queued, not started) | ○ grey "queued" |
+| `error` (last run failed for this row) | ● red "error" (with tooltip showing `state.error`) |
+| not-warmed-yet OR cache TTL expired without re-warm | (empty cell) |
+
+For non-BQ-remote rows (Keboola local, Jira), the column stays empty — they don't go through the warmup path. This keeps the column visually quiet when there's nothing useful to say.
+
+**3. `?` icon next to the `query_mode` field** in the Add/Edit modal, linking to `docs/admin/query-modes.md`. The original "minimal admin UI" change. Survives unchanged.
+
+### Wiring details
+
+- **Initial state on page load:** call `GET /api/admin/cache-warmup/status` once, populate the toolbar + per-row badges from the response.
+- **Live updates:** open `EventSource("/api/admin/cache-warmup/stream")` after the initial render. Each event mutates the corresponding row badge + appends to the log. Reconnect logic is built into `EventSource` for free.
+- **SSE failure fallback:** if `EventSource.onerror` fires repeatedly (browser, proxy, content-security), fall back to polling `/status` every 3 s. Same code path, reads the same JSON shape.
+- **"Re-warm all" button:** `POST /api/admin/cache-warmup/run` — server schedules the run, response includes the new `run_id`. UI keeps watching the SSE stream; the new `start` event has the new `run_id` so the log section auto-clears the prior run's lines.
+- **Edit-modal cache flush hint:** when the admin saves an edit (existing `saveTableEdit` flow), the server's `invalidate_for_table` already triggers a single-row re-warm in the background. The UI doesn't need new copy here; the badge will update via SSE within 1-2 s.
+
+The toolbar + log fit in **one new `<section>` block** between the page header and the per-source-type table listings (`bqTableListing` etc.). Plus ~80 LOC of JS to render + bind. Plus the per-row badge addition in `renderRegistryListing` (~10 LOC).
 
 ### CLI hint at registration time
 
@@ -591,25 +933,39 @@ One conditional, mirrors the existing pattern. No new flag.
 
 ### New files
 
-- `connectors/bigquery/metadata.py` — `fetch(row)` returning `TableMetadata | None`.
+- `app/api/_metadata_models.py` — `MetadataRequest` + `TableMetadata` dataclasses. Lives under `app/api/` (not `connectors/`) — primary consumer is `app/api/v2_catalog.py`; providers in `connectors/` import upward into the API layer. Avoids layering inversion of `app/api/v2_catalog.py` importing from `connectors/__init__.py`.
+- `connectors/bigquery/metadata.py` — `fetch(req)` returning `TableMetadata | None`. Calls the new shared `fetch_bq_columns_full` helper for partition/cluster.
 - `connectors/keboola/metadata.py` — same shape, Storage API path.
-- `app/api/_metadata_models.py` — single shared module for `MetadataRequest` + `TableMetadata`. Lives under `app/api/` (not `connectors/`) because the primary consumer is `app/api/v2_catalog.py` and the providers (which sit one layer down in `connectors/`) import upward into the API layer rather than the reverse. This avoids the layering inversion of having `app/api/v2_catalog.py` import from `connectors/__init__.py`.
-- `tests/test_connectors_bigquery_metadata.py` — unit tests with mocked `bq.duckdb_session`.
-- `tests/test_connectors_keboola_metadata.py` — unit tests with mocked `KeboolaStorageClient`.
-- `tests/test_v2_catalog_remote_metadata.py` — integration test against the catalog endpoint with a registered remote row, mocked provider returning a `TableMetadata`. Verifies the response shape and the cache-bust path.
+- `app/api/cache_warmup.py` — `WarmupRunState` + `WarmupRowState` dataclasses, `_warm_catalog_caches_bg`, `_warm_one`, `_rewarm_one_row`, SSE generator, the three `/api/admin/cache-warmup/*` endpoints.
+- `tests/test_connectors_bigquery_metadata.py` — 5 unit cases (happy / sentinel / VIEW / region-typo / both-paths-fail).
+- `tests/test_connectors_keboola_metadata.py` — 3 unit cases (happy / unconfigured / api-error).
+- `tests/test_v2_catalog_remote_metadata.py` — integration test against the catalog endpoint; verifies response shape + cache hit/miss.
+- `tests/test_v2_catalog_invalidation.py` — verifies `invalidate_for_table` flushes all four caches and triggers single-row re-warm.
+- `tests/test_cache_warmup.py` — startup runs in background without blocking readiness; bounded concurrency; per-row failure isolated; SSE event stream shape; `/run` idempotency under concurrent invocation.
+- `tests/test_admin_tables_warmup_ui.py` — smoke test that `/admin/tables` HTML contains the cache toolbar markup, the per-row `col-status` slot, and the `EventSource` wiring.
 
 ### Edited files
 
-- `app/api/v2_catalog.py` — rename `_materialized_size_hint` → `_size_hint_for_row`, add provider dispatch, add `_metadata_cache` (TTLCache, 15 min), extend response shape with the new fields. ~50 LOC delta.
+- `app/api/v2_catalog.py` — rename `_materialized_size_hint` → `_size_hint_for_row`, add provider dispatch (`_metadata_provider_for`, `_build_metadata_request`), add `_metadata_cache` (TTLCache, 15 min), extend response shape with the new fields, add `invalidate_for_table` helper. ~80 LOC delta.
+- `app/api/v2_schema.py` — split `build_schema` into RBAC-checking outer + uncached inner (`build_schema_uncached`); replace `_fetch_bq_schema` + `_fetch_bq_table_options` with the shared `fetch_bq_columns_full` helper consumed by both schema response builder and the metadata provider's partition/cluster path. ~40 LOC delta (mostly refactor).
+- `connectors/bigquery/access.py` — append the `fetch_bq_columns_full(bq, dataset, table)` helper (single combined `INFORMATION_SCHEMA.COLUMNS` query). ~50 LOC.
+- `app/main.py` — register the `warm_catalog_caches` startup event hook. ~10 LOC.
 - `app/api/admin.py` — wire `v2_catalog.invalidate_for_table(table_id)` into the success path of `register_table`, `update_table`, and `unregister_table`. ~6 LOC.
-- `cli/commands/admin.py` — extend the post-register hint as above. ~5 LOC.
-- `app/web/templates/admin_tables.html` — `?` icon + doc link next to `query_mode`. ~10 LOC.
+- `cli/commands/admin.py` — extend the post-register hint with the BQ-remote IAM smoke-check pointer. ~5 LOC.
+- `app/web/templates/admin_tables.html` — new `<section id="cacheWarmupCard">` toolbar block, per-row badge in `renderRegistryListing`, `?` icon next to `query_mode` field in the edit modal, `EventSource` + polling-fallback JS. ~250 LOC delta in this template.
 
 ### Schema / DB / config
 
-**No schema migration.** All metadata is computed on demand from BigQuery / Keboola Storage API. We deliberately don't persist it (would add a bookkeeping problem — staleness, invalidation, schema bumps).
+**No schema migration.** All metadata is computed on demand from BigQuery / Keboola Storage API. Deliberately not persisted — adds a bookkeeping problem (staleness, invalidation, schema bumps) we don't need.
 
-**No new env vars.** All the required config (`data_source.bigquery.*`, `data_source.keboola.storage_*`) already exists for the connectors.
+**Two new env vars (both opt-out / tuning, no required setup change):**
+
+| Var | Default | Effect |
+|---|---|---|
+| `AGNES_SKIP_CACHE_WARMUP` | unset | If `1`, the FastAPI startup warmup hook is a no-op. For dev / test instances. |
+| `AGNES_WARMUP_CONCURRENCY` | `4` | How many BQ INFORMATION_SCHEMA jobs to run in parallel during a warmup run. Bounded; raising beyond 8 risks tripping BQ's 100-concurrent-job project quota on instances with 100+ tables. |
+
+The connector configs (`data_source.bigquery.*`, `data_source.keboola.storage_*`) already exist in `instance.yaml` and are not touched here.
 
 ---
 
@@ -624,9 +980,17 @@ One conditional, mirrors the existing pattern. No new flag.
 | Provider (BQ) — both paths fail | TABLE_STORAGE raises and `__TABLES__` raises → `_fetch_rows_and_size` returns `None`; `fetch()` still returns a `TableMetadata` with partition/cluster populated (only the size pieces are `None`) |
 | Provider (Keboola) | mocked `KeboolaStorageClient.get_table_info` returns `{rowsCount, dataSizeBytes}` → `fetch(req)` returns expected metadata; `KeboolaClient(token=None, url=None)` with empty env → `None`; `StorageApiError` → `None` |
 | Catalog endpoint | for a `query_mode='local'` row → existing parquet-stat path unchanged; for a `query_mode='remote'` BQ row → provider called, response has the new fields populated; cache hit returns cached metadata without re-calling provider |
-| Cache-bust | `register_table` flushes both `_table_rows_cache` and `_metadata_cache`; `update_table` same; `unregister_table` same. After bust, next catalog request reflects the new state immediately. |
-| `agnes catalog` CLI | smoke test that the new fields surface in `--json` output and don't break the text-mode renderer |
-| Sample endpoint | smoke test against a registered remote BQ row; verify it returns sample rows. If broken, separate fix path; not bundled in this PR's scope |
+| Cache-bust | `register_table` / `update_table` / `unregister_table` each flush all four caches (`_table_rows_cache`, `_metadata_cache`, `_schema_cache`, `_sample_cache`). After bust, next catalog/schema request reflects new state. Background re-warm task is scheduled for the affected `table_id` only. |
+| Cache warmup — startup | `warm_catalog_caches` startup hook runs in background without blocking `/api/health` readiness; warmup completes within `total × 200ms / concurrency` budget for synthetic 30-row registry. |
+| Cache warmup — failure isolation | one row's `_warm_one` raises; remaining rows still process; `WarmupRowState.error` is populated for the failed row only; final `state.failed == 1, state.completed == total - 1`. |
+| Cache warmup — bounded concurrency | with `AGNES_WARMUP_CONCURRENCY=2` and 30 rows, at most 2 `_warm_one` invocations run concurrently (assert via mock semaphore-tracked counter). |
+| Cache warmup — `/run` idempotency | calling `POST /api/admin/cache-warmup/run` twice in flight returns the same `run_id` on the second call without spawning a second background task. |
+| Cache warmup — registry-change rewarm | `invalidate_for_table(id)` schedules a single-row re-warm task; `WARMUP_STATE` is updated with that one row's progress. |
+| SSE stream | `GET /api/admin/cache-warmup/stream` yields `start` / `row` / `complete` events in JSON; events arrive within ~200 ms of state changes; client disconnect doesn't crash the producer. |
+| Status endpoint | `GET /api/admin/cache-warmup/status` returns the latest state (or `{"state": "never_run"}` before any run); reflects per-row state including `last_warmed_at` carried across runs. |
+| Admin UI smoke | `/admin/tables` HTML contains the cache toolbar `<section>`, the `EventSource` wiring, and the `col-status` per-row slot for BQ remote rows. (Doesn't run JS — just verifies the markup is present.) |
+| `agnes catalog` CLI | smoke test that the new fields surface in `--json` output and don't break the text-mode renderer. |
+| Sample endpoint | smoke test against a registered remote BQ row; verify it returns sample rows. If broken, separate fix path; not bundled in this PR's scope. |
 
 The new tests sit alongside `test_v2_catalog.py` (existing), `test_diagnose_billing.py` (existing — uses the same `seeded_app` BQ-mocking fixture).
 
@@ -723,17 +1087,21 @@ Reviewer flagged: when `bq_config` info-tier reports "BigQuery project not confi
 
 When this spec converts to a plan in `docs/superpowers/plans/`:
 
-0. ~~**Live BigQuery verification.**~~ ✅ Done 2026-05-07. Verified on `prj-grp-foundryai-dev-7c37` (us-central1) against `audrius_test.product_inventory`. Outcome locked in Open Question §1 + §1a + §1b. Chosen path: `<project>.region-<location>.INFORMATION_SCHEMA.TABLE_STORAGE`, region from `data_source.bigquery.location` with two fallback layers. Partition/cluster path inherits v2_schema's existing tested behavior (§2).
-1. **Shared models** — `app/api/_metadata_models.py` with `MetadataRequest` + `TableMetadata`. Pure dataclass module, no behavior. One commit, no tests beyond construction.
-2. **`KeboolaStorageClient.get_table_info` thin wrapper** — single function added to existing module + a unit test mocking the underlying `_get`. One commit.
-3. **Provider scaffold + dispatcher** — `app/api/v2_catalog.py:_metadata_provider_for` + `_build_metadata_request`. Stub providers in `connectors/<source>/metadata.py` returning `None`. Tests verify: dispatch returns the right callable per source_type; `_build_metadata_request` rejects bad identifiers; unknown source_type returns `None` callable.
-4. **Keboola provider** — real implementation backed by `KeboolaStorageClient.get_table_info`. Tests with mocked client returning canned `rowsCount`/`dataSizeBytes`; failure path returns `None`; unconfigured returns `None`.
-5. **BQ provider** — real implementation using the locked-in INFORMATION_SCHEMA view from step 0. Tests with mocked `bq.duckdb_session().execute().fetchall()`; partition + cluster path, rows + size path, sentinel early-return, error path, ingestion-time pseudo-column case (per step 0 verification).
-6. **v2_catalog wiring** — `_size_hint_for_row` rename, dispatch on `query_mode='remote'`, response shape extension (rows/size_bytes/partition_by/clustered_by fields), 15-min `_metadata_cache`. Tests verify the catalog response includes the new fields; cache hits don't re-call provider; cache miss after 15 min does.
-7. **Unified cache invalidation** — `v2_catalog.invalidate_for_table` helper + wiring into `admin.py:register_table` / `update_table` / `unregister_table`. Tests verify register/update/unregister all flush both caches; next catalog request shows the new state.
-8. **CLI post-register hint** — `cli/commands/admin.py:register_table` adds the third hint when `query_mode=remote`. CLI test asserts the line appears.
-9. **`docs/admin/query-modes.md`** — written end-to-end per the doc outline. Cross-references checked (RBAC.md, instance.yaml.example, BQ skill).
-10. **Admin UI tooltip** — `?` icon next to query_mode selector in `admin_tables.html`, links to the new doc page. ~10 LOC.
-11. **CHANGELOG + version bump** — `## [0.46.0] — YYYY-MM-DD`. Sections: Added (catalog response fields, query-modes doc), Changed (cache-invalidation behavior on register/update/unregister), Internal. Bump `pyproject.toml` to `0.46.0`. Minor (not patch) — new public catalog fields + new doc page.
+0. ~~**Live BigQuery verification.**~~ ✅ Done 2026-05-07. Outcome locked in Open Question §1 + §1a + §1b.
+1. **Shared models** — `app/api/_metadata_models.py` with `MetadataRequest` + `TableMetadata`. Pure dataclass module. One commit.
+2. **`KeboolaStorageClient.get_table_info` thin wrapper** — single function added + unit test mocking `_get`. One commit.
+3. **Combined COLUMNS helper** — `connectors/bigquery/access.py:fetch_bq_columns_full` (single query for column list + partition + cluster). Refactor `v2_schema._fetch_bq_schema` + `_fetch_bq_table_options` to call it; no behavior change for `/api/v2/schema/{id}` consumers. Existing schema-endpoint tests pass unchanged; new test asserts only one BQ job per cache miss (count `bigquery_query` invocations on the mocked session).
+4. **`build_schema` RBAC/cache split** — extract `build_schema_uncached(conn, table_id, *, bq)` containing the BQ work + cache write. `build_schema(...)` keeps the RBAC + cache-check at the top, then delegates. Existing endpoint behavior unchanged; new entry point is what warmup will call.
+5. **Provider scaffold + dispatcher** — `app/api/v2_catalog.py:_metadata_provider_for` + `_build_metadata_request`. Stub providers in `connectors/<source>/metadata.py` returning `None`. Tests verify dispatch + identifier rejection + unknown-source fall-through.
+6. **Keboola provider** — real `connectors/keboola/metadata.py:fetch` using `KeboolaStorageClient.get_table_info` + `KeboolaClient(token=None, url=None)` env-fallback. Tests cover happy / unconfigured / `StorageApiError`.
+7. **BQ provider** — real `connectors/bigquery/metadata.py:fetch` using `fetch_bq_columns_full` (step 3) for partition/cluster + `_fetch_via_table_storage` / `_fetch_via_legacy_tables` for rows+size + `_resolve_bq_location`. Tests cover the 5 cases from Test plan (happy / sentinel / VIEW / region-typo / both-paths-fail).
+8. **v2_catalog wiring** — `_size_hint_for_row` rename, dispatch on `query_mode='remote'`, response shape extension, 15-min `_metadata_cache`. Tests verify catalog response includes the new fields; cache hit/miss behavior; provider not dispatched for non-remote rows.
+9. **Unified cache invalidation** — `v2_catalog.invalidate_for_table` helper that flushes all four caches and schedules a single-row re-warm. Wired into `admin.py:register_table` / `update_table` / `unregister_table`. Tests verify all flushes + that the re-warm task is scheduled.
+10. **Cache warmup framework** — `app/api/cache_warmup.py` with `WarmupRunState` / `WarmupRowState` / `_warm_catalog_caches_bg` / `_warm_one`. The three `/api/admin/cache-warmup/{status,run,stream}` endpoints. SSE generator. Tests cover startup hook, bounded concurrency, failure isolation, idempotent `/run`, registry-change rewarm.
+11. **`app/main.py` startup hook** — register `warm_catalog_caches` event handler. Test verifies readiness is not blocked + warmup runs to completion in background. Honors `AGNES_SKIP_CACHE_WARMUP=1`.
+12. **CLI post-register hint** — `cli/commands/admin.py:register_table` adds the third hint when `query_mode=remote`. CLI test asserts the line appears.
+13. **`docs/admin/query-modes.md`** — written end-to-end per the doc outline. Cross-references checked (RBAC.md, instance.yaml.example, BQ skill).
+14. **Admin UI integration** — `admin_tables.html` cache toolbar `<section>`, per-row `col-status` badge, `EventSource` wiring + polling fallback, `?` icon on query_mode field. Smoke test asserts the markup is present.
+15. **CHANGELOG + version bump** — `## [0.46.0] — YYYY-MM-DD`. Sections: Added (catalog response fields, /api/admin/cache-warmup/*, automatic startup warmup, admin UI cache panel, query-modes doc), Changed (cache-invalidation on register/update/unregister; BQ schema endpoint now does 1 BQ job per cache miss instead of 2), Internal. Bump `pyproject.toml` to `0.46.0`. Minor — new public catalog fields, new admin endpoints, new doc page.
 
-Each step lands as one commit on the same branch. Reviewer can stop at any boundary if scope drifts.
+Each step lands as one commit on the same branch. Reviewer can stop at any boundary if scope drifts. Steps 1-2 are pure scaffolding; steps 3-4 are independent refactors that ship value on their own (50% BQ-job reduction); steps 5-9 are the metadata feature core; steps 10-11 are warmup infrastructure; step 14 is the operator-visible UI surface.
