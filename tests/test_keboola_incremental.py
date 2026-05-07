@@ -206,3 +206,74 @@ def test_merge_atomic_on_failure(tmp_path, monkeypatch):
         )
 
     assert pq_path.read_bytes() == original_bytes
+
+
+def test_merge_pk_dtype_conversion_failure_raises_hard(tmp_path, monkeypatch):
+    """Devin Review finding 0004 regression guard.
+
+    If `_convert_column` fails for a primary_key column, the merge must raise
+    rather than warn-and-continue. The pre-fix behavior left the PK column as
+    object/string in the delta while existing_df has it typed (e.g. int64),
+    producing a mixed-type column after concat that silently broke
+    `drop_duplicates` (int 1 != str '1' under Python equality)."""
+    from connectors.keboola import incremental as _incremental
+
+    schema = pa.schema([pa.field("id", pa.int64()), pa.field("v", pa.int64())])
+    pq_path = tmp_path / "t.parquet"
+    _seed_parquet(pq_path, [{"id": 1, "v": 10}], schema)
+
+    csv_path = tmp_path / "delta.csv"
+    _seed_csv(csv_path, [{"id": "2", "v": "20"}])
+
+    def boom(series, dtype, col_name=""):
+        raise ValueError(f"synthetic conversion failure on {col_name!r}")
+    monkeypatch.setattr(_incremental, "_convert_column", boom)
+
+    with pytest.raises(RuntimeError, match="PK column 'id' dtype conversion failed"):
+        _incremental.merge_parquet(
+            existing_parquet=pq_path,
+            new_csv=csv_path,
+            primary_key=["id"],
+            dtypes={"id": "Int64", "v": "Int64"},
+            date_columns=[],
+            pyarrow_schema=schema,
+        )
+
+
+def test_merge_non_pk_dtype_conversion_failure_warns_and_continues(tmp_path, monkeypatch, caplog):
+    """Inverse of the PK-fail guard: a non-PK dtype conversion failure is
+    soft-handled (logged warning, delta column stays as string). Locks the
+    asymmetric policy in `merge_parquet` — PK failures are load-bearing for
+    dedup correctness, non-PK failures degrade gracefully (pyarrow_schema=None
+    here mirrors the path used when Keboola Storage metadata is unavailable)."""
+    from connectors.keboola import incremental as _incremental
+
+    schema = pa.schema([pa.field("id", pa.int64()), pa.field("v", pa.string())])
+    pq_path = tmp_path / "t.parquet"
+    _seed_parquet(pq_path, [{"id": 1, "v": "10"}], schema)
+
+    csv_path = tmp_path / "delta.csv"
+    _seed_csv(csv_path, [{"id": "2", "v": "20"}])
+
+    real_convert = _incremental._convert_column
+
+    def selective_boom(series, dtype, col_name=""):
+        if col_name == "v":
+            raise ValueError("synthetic non-pk conversion failure")
+        return real_convert(series, dtype, col_name=col_name)
+    monkeypatch.setattr(_incremental, "_convert_column", selective_boom)
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        _incremental.merge_parquet(
+            existing_parquet=pq_path,
+            new_csv=csv_path,
+            primary_key=["id"],
+            dtypes={"id": "Int64", "v": "Int64"},
+            date_columns=[],
+            pyarrow_schema=None,
+        )
+
+    assert "failed to apply dtype" in caplog.text.lower()
+    out = sorted(pq.read_table(pq_path).to_pylist(), key=lambda r: r["id"])
+    assert [r["id"] for r in out] == [1, 2]
