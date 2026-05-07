@@ -114,6 +114,48 @@ def test_provider_failure_returns_null_metadata(seeded_app):
     assert broken["clustered_by"] is None
 
 
+def test_zero_size_bytes_reports_small_not_unknown(seeded_app):
+    """Devin Review #1 regression: `if cached.size_bytes:` is falsy when
+    `size_bytes == 0` (genuinely empty table) — that wrongly emitted
+    `rough_size_hint=None` ("unknown") instead of `"small"` (the bucket
+    `_bucket_size(0)` returns).
+
+    Fix in `_size_hint_for_row`: distinguish "size known to be zero" from
+    "size is unknown" with `is not None`."""
+    from app.api import v2_catalog
+    v2_catalog._table_rows_cache.clear()
+    v2_catalog._metadata_cache.clear()
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    fake_meta = TableMetadata(
+        rows=0, size_bytes=0, partition_by=None, clustered_by=[],
+    )
+
+    _register_table(
+        seeded_app,
+        id="empty_t", source_type="bigquery", bucket="dwh_base",
+        source_table="empty_t", query_mode="remote",
+    )
+
+    with patch(
+        "connectors.bigquery.metadata.fetch", return_value=fake_meta,
+    ):
+        r = c.get(
+            "/api/v2/catalog",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 200, r.text
+    tables = r.json()["tables"]
+    empty = next(t for t in tables if t["id"] == "empty_t")
+    # The whole point of this test: 0 bytes is NOT "unknown".
+    assert empty["size_bytes"] == 0
+    assert empty["rough_size_hint"] == "small", (
+        f"size_bytes=0 should bucket to 'small', got {empty['rough_size_hint']}"
+    )
+
+
 def test_cache_hit_does_not_call_provider_twice(seeded_app):
     """First call invokes provider; second within 15 min hits cache."""
     from app.api import v2_catalog

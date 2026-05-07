@@ -128,7 +128,7 @@ def _list_remote_rows() -> list[dict]:
     rows = TableRegistryRepository(conn).list_all()
     return [
         r for r in rows
-        if r.get("query_mode") == "remote"
+        if r.get("query_mode") == "remote" and r.get("source_type") == "bigquery"
     ]
 
 
