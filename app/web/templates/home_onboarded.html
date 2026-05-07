@@ -4,7 +4,10 @@
 
 {% block content %}
 <style>
-body:has(.home-mock) .container { max-width: 1200px; padding: 32px; }
+/* Match dashboard's outer chrome: 1280px wide, 28px / 32px / 48px padding.
+   Scoped via :has() so other pages keep their narrow defaults. */
+/* No container top-padding — the blue hero owns its own top spacing. */
+body:has(.home-mock) .container { max-width: 1280px; padding: 0 32px 48px; }
 body:has(.home-mock) { background: #F9FAFB; }
 .home-mock {
     --hp-primary: #0073D1;
@@ -14,7 +17,7 @@ body:has(.home-mock) { background: #F9FAFB; }
     --hp-border-light: #F3F4F6;
     --hp-text-primary: #111827;
     --hp-text-secondary: #6B7280;
-    max-width: 1200px;
+    max-width: 1280px;
     margin: 0 auto;
     color: var(--hp-text-primary);
     font-size: 14px;

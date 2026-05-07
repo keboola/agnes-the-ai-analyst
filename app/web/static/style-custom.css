@@ -2048,6 +2048,11 @@ a.slack-badge:hover {
     background: var(--surface, #fff);
     border-bottom: 1px solid var(--border, #e5e7eb);
     padding: 0 32px;
+    /* Cancel the generic `header { margin-bottom: 24px }` from style.css,
+       which would otherwise leave a 24px stripe of pale grey under the
+       app-header. Invisible on white-on-white pages (dashboard) but very
+       visible on /home where the blue install-hero sits directly below. */
+    margin-bottom: 0;
     height: 72px;
     display: flex;
     align-items: center;
