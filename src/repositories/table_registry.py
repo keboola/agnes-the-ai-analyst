@@ -24,6 +24,41 @@ def _encode_primary_key(pk: Union[None, str, List[str]]) -> Optional[str]:
     return json.dumps([str(pk)])
 
 
+def _encode_where_filters(filters: Union[None, str, List[Dict[str, Any]]]) -> Optional[str]:
+    """Serialize where_filters to canonical JSON for storage.
+
+    Accepts None / empty / list / pre-serialized JSON string. Stores as
+    canonical JSON so a round-trip is stable. Validation is the API
+    layer's job (`connectors.keboola.where_filters.parse_filters`); this
+    function only handles encoding.
+    """
+    if filters is None or filters == "" or filters == []:
+        return None
+    if isinstance(filters, str):
+        try:
+            parsed = json.loads(filters)
+        except json.JSONDecodeError:
+            # Surface malformed payload on subsequent reads rather than dropping;
+            # admin tooling validates separately before reaching the repo.
+            return filters
+        return json.dumps(parsed)
+    return json.dumps(filters)
+
+
+def _decode_where_filters(stored: Any) -> Optional[List[Dict[str, Any]]]:
+    if stored is None or stored == "":
+        return None
+    if isinstance(stored, list):
+        return stored
+    if isinstance(stored, str):
+        try:
+            parsed = json.loads(stored)
+            return parsed if isinstance(parsed, list) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 def _decode_primary_key(stored: Any) -> Optional[List[str]]:
     """Decode a registry-stored primary_key into the API-canonical list-of-str
     form. Tolerates four legacy representations:
@@ -77,6 +112,17 @@ class TableRegistryRepository:
         query_mode: str = "local",
         sync_schedule: Optional[str] = None, profile_after_sync: bool = True,
         registered_at: Optional[datetime] = None,
+        # v26 — Keboola sync-strategy support fields. All optional; meaningful
+        # only when paired with the matching sync_strategy. API-layer
+        # validators enforce per-strategy required-field rules and reject
+        # conflicting combinations (see app/api/admin.py).
+        incremental_window_days: Optional[int] = None,
+        max_history_days: Optional[int] = None,
+        incremental_column: Optional[str] = None,
+        where_filters: Union[None, str, List[Dict[str, Any]]] = None,
+        partition_by: Optional[str] = None,
+        partition_granularity: Optional[str] = None,
+        initial_load_chunk_days: Optional[int] = None,
     ) -> None:
         # `registered_at` defaults to "now" for fresh inserts. Updaters that
         # want to preserve the original registration time across edits pass
@@ -84,12 +130,20 @@ class TableRegistryRepository:
         # would silently reset the timestamp on every edit (issue #130).
         ts = registered_at or datetime.now(timezone.utc)
         encoded_pk = _encode_primary_key(primary_key)
+        encoded_filters = _encode_where_filters(where_filters)
+        # Mirror the column DEFAULT — explicit None in the INSERT would
+        # override the schema default, leaving NULL in the column. Callers
+        # that don't pass a strategy expect 'full_refresh' semantics.
+        effective_strategy = sync_strategy or "full_refresh"
         self.conn.execute(
             """INSERT INTO table_registry (id, name, folder, sync_strategy,
                 primary_key, description, registered_by, registered_at,
                 source_type, bucket, source_table, source_query, query_mode,
-                sync_schedule, profile_after_sync)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sync_schedule, profile_after_sync,
+                incremental_window_days, max_history_days, incremental_column,
+                where_filters, partition_by, partition_granularity,
+                initial_load_chunk_days)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name, folder = excluded.folder,
                 sync_strategy = excluded.sync_strategy, primary_key = excluded.primary_key,
@@ -98,10 +152,20 @@ class TableRegistryRepository:
                 source_table = excluded.source_table, source_query = excluded.source_query,
                 query_mode = excluded.query_mode,
                 sync_schedule = excluded.sync_schedule,
-                profile_after_sync = excluded.profile_after_sync""",
-            [id, name, folder, sync_strategy, encoded_pk, description, registered_by, ts,
+                profile_after_sync = excluded.profile_after_sync,
+                incremental_window_days = excluded.incremental_window_days,
+                max_history_days = excluded.max_history_days,
+                incremental_column = excluded.incremental_column,
+                where_filters = excluded.where_filters,
+                partition_by = excluded.partition_by,
+                partition_granularity = excluded.partition_granularity,
+                initial_load_chunk_days = excluded.initial_load_chunk_days""",
+            [id, name, folder, effective_strategy, encoded_pk, description, registered_by, ts,
              source_type, bucket, source_table, source_query, query_mode,
-             sync_schedule, profile_after_sync],
+             sync_schedule, profile_after_sync,
+             incremental_window_days, max_history_days, incremental_column,
+             encoded_filters, partition_by, partition_granularity,
+             initial_load_chunk_days],
         )
 
     @staticmethod
@@ -109,6 +173,8 @@ class TableRegistryRepository:
         """Apply JSON-decoding to fields stored as canonical VARCHAR."""
         if "primary_key" in row_dict:
             row_dict["primary_key"] = _decode_primary_key(row_dict["primary_key"])
+        if "where_filters" in row_dict:
+            row_dict["where_filters"] = _decode_where_filters(row_dict["where_filters"])
         return row_dict
 
     def unregister(self, table_id: str) -> None:
