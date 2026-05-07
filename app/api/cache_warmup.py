@@ -71,21 +71,29 @@ def maybe_schedule_startup_warmup() -> None:
         logger.warning("no running event loop — startup warmup skipped")
 
 
-async def _warm_catalog_caches_bg(trigger: str = "startup") -> None:
-    """Walk registry, warm metadata + schema caches for every remote row."""
+async def _warm_catalog_caches_bg(
+    trigger: str = "startup", state: WarmupRunState | None = None,
+) -> None:
+    """Walk registry, warm metadata + schema caches for every remote row.
+
+    If `state` is provided, use it (caller has already published it on
+    WARMUP_STATE). Otherwise build a fresh state and assign WARMUP_STATE.
+    """
     global WARMUP_STATE
-    async with _RUN_LOCK:
-        # Re-check inside the lock — another caller might have completed
-        # a run while we were waiting.
-        if WARMUP_STATE and WARMUP_STATE.completed_at is None:
-            return
+    if state is None:
+        async with _RUN_LOCK:
+            # Re-check inside the lock — another caller might have completed
+            # a run while we were waiting.
+            if WARMUP_STATE and WARMUP_STATE.completed_at is None:
+                return
+            state = WarmupRunState(
+                run_id=uuid4().hex[:8],
+                trigger=trigger,
+                started_at=_now_iso(),
+            )
+            WARMUP_STATE = state
 
-        run_id = uuid4().hex[:8]
-        state = WarmupRunState(
-            run_id=run_id, trigger=trigger, started_at=_now_iso(),
-        )
-        WARMUP_STATE = state
-
+    run_id = state.run_id
     rows = _list_remote_rows()
     state.total = len(rows)
     for r in rows:
@@ -121,7 +129,6 @@ def _list_remote_rows() -> list[dict]:
     return [
         r for r in rows
         if r.get("query_mode") == "remote"
-        and r.get("source_type") == "bigquery"
     ]
 
 
@@ -220,28 +227,28 @@ async def warmup_status(user: dict = Depends(require_admin)):
 
 @router.post("/api/admin/cache-warmup/run")
 async def warmup_run(user: dict = Depends(require_admin)):
+    global WARMUP_STATE
     if WARMUP_STATE and WARMUP_STATE.completed_at is None:
         return {"run_id": WARMUP_STATE.run_id, "status": "already_running"}
-    asyncio.create_task(_warm_catalog_caches_bg(trigger="manual"))
-    # Brief sleep so WARMUP_STATE is populated by the time we return.
-    await asyncio.sleep(0)
-    return {
-        "run_id": WARMUP_STATE.run_id if WARMUP_STATE else None,
-        "status": "started",
-    }
+    state = WarmupRunState(
+        run_id=uuid4().hex[:8],
+        trigger="manual",
+        started_at=_now_iso(),
+    )
+    WARMUP_STATE = state
+    asyncio.create_task(_warm_catalog_caches_bg(state=state))
+    return {"run_id": state.run_id, "status": "started"}
 
 
 @router.get("/api/admin/cache-warmup/stream")
 async def warmup_stream(user: dict = Depends(require_admin)):
     async def gen():
         q: asyncio.Queue = asyncio.Queue(maxsize=256)
-        if WARMUP_STATE:
-            WARMUP_STATE._subscribers.append(q)
-        # Replay current snapshot.
-        if WARMUP_STATE:
-            yield {"event": "snapshot", "data": json.dumps(
-                _serialize_state(WARMUP_STATE)
-            )}
+        if WARMUP_STATE is None:
+            yield {"event": "idle", "data": json.dumps({"state": "never_run"})}
+            return
+        WARMUP_STATE._subscribers.append(q)
+        yield {"event": "snapshot", "data": json.dumps(_serialize_state(WARMUP_STATE))}
         try:
             while True:
                 ev = await asyncio.wait_for(q.get(), timeout=30.0)
