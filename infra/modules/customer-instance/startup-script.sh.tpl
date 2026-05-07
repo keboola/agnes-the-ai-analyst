@@ -142,6 +142,32 @@ if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
     fi
 fi
 
+# Preserve operator overrides on AGNES_TAG. Rationale: this script
+# runs on every boot (and the `metadata_startup_script` is in
+# `lifecycle.ignore_changes` so a TF apply that changed the
+# `image_tag` variable does NOT propagate to a long-lived VM until
+# someone explicitly recreates it). Operators commonly hand-edit
+# `/opt/agnes/.env` to pin a custom image tag (e.g. for a dev branch
+# build, or a staged rollout) — overwriting that on every reboot
+# clobbers their decision. Read the existing AGNES_TAG and let it
+# win when it disagrees with $IMAGE_TAG; ditto for AGNES_TEMP_DIR
+# (a deployment-specific path tweak operators sometimes set to
+# steer tempdirs onto a larger volume).
+EXISTING_AGNES_TAG=""
+EXISTING_AGNES_TEMP_DIR=""
+if [ -f "$APP_DIR/.env" ]; then
+    EXISTING_AGNES_TAG=$(grep -E '^AGNES_TAG=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+    EXISTING_AGNES_TEMP_DIR=$(grep -E '^AGNES_TEMP_DIR=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+EFFECTIVE_AGNES_TAG="$${EXISTING_AGNES_TAG:-$IMAGE_TAG}"
+if [ -n "$EXISTING_AGNES_TAG" ] && [ "$EXISTING_AGNES_TAG" != "$IMAGE_TAG" ]; then
+    echo "INFO: preserving operator-edited AGNES_TAG=$EXISTING_AGNES_TAG (TF variable said $IMAGE_TAG; rm /opt/agnes/.env to reset)"
+fi
+AGNES_TEMP_DIR_LINE=""
+if [ -n "$EXISTING_AGNES_TEMP_DIR" ]; then
+    AGNES_TEMP_DIR_LINE="AGNES_TEMP_DIR=\"$EXISTING_AGNES_TEMP_DIR\""
+fi
+
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
 DATA_DIR=$DATA_MNT
@@ -153,11 +179,12 @@ SEED_ADMIN_PASSWORD=$SEED_ADMIN_PASSWORD
 SCHEDULER_API_TOKEN=$SCHEDULER_API_TOKEN
 LOG_LEVEL=info
 DOMAIN=$DOMAIN
-AGNES_TAG=$IMAGE_TAG
+AGNES_TAG=$EFFECTIVE_AGNES_TAG
 ACME_EMAIL=$ACME_EMAIL
 GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
 $CADDY_TLS_LINE
+$AGNES_TEMP_DIR_LINE
 ENVEOF
 chmod 600 "$APP_DIR/.env"
 
