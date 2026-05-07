@@ -2904,6 +2904,13 @@
     // ── Cache warmup toolbar (issue #155 / #156) ────────────────
     let cacheWarmupSource = null;
 
+    function _cacheWarmupClearPollFallback() {
+        if (window._cacheWarmupPollInterval) {
+            clearInterval(window._cacheWarmupPollInterval);
+            window._cacheWarmupPollInterval = null;
+        }
+    }
+
     function cacheWarmupInit() {
         cacheWarmupRefreshSnapshot();
         cacheWarmupOpenStream();
@@ -2923,6 +2930,7 @@
             cacheWarmupSource.addEventListener('row', cacheWarmupOnRow);
             cacheWarmupSource.addEventListener('complete', cacheWarmupOnComplete);
             cacheWarmupSource.addEventListener('snapshot', function(e) {
+                _cacheWarmupClearPollFallback();
                 cacheWarmupRender(JSON.parse(e.data));
             });
             cacheWarmupSource.onerror = function() {
@@ -2930,7 +2938,27 @@
                     cacheWarmupSource.close();
                     cacheWarmupSource = null;
                 }
-                setTimeout(cacheWarmupRefreshSnapshot, 3000);
+                // Continuous polling fallback. Try to re-open SSE every 30 s in
+                // case the proxy / network heals. Only one polling interval at a
+                // time (prevent stacking on repeated errors).
+                if (!window._cacheWarmupPollInterval) {
+                    window._cacheWarmupPollInterval = setInterval(
+                        cacheWarmupRefreshSnapshot, 3000
+                    );
+                    setTimeout(function tryReconnect() {
+                        if (cacheWarmupSource) return;  // already reconnected
+                        try {
+                            clearInterval(window._cacheWarmupPollInterval);
+                            window._cacheWarmupPollInterval = null;
+                            cacheWarmupOpenStream();  // recursive — onerror retries again
+                        } catch (e) {
+                            window._cacheWarmupPollInterval = setInterval(
+                                cacheWarmupRefreshSnapshot, 3000
+                            );
+                            setTimeout(tryReconnect, 30000);
+                        }
+                    }, 30000);
+                }
             };
         } catch (e) {
             setInterval(cacheWarmupRefreshSnapshot, 3000);
@@ -2966,6 +2994,7 @@
     }
 
     function cacheWarmupOnStart(e) {
+        _cacheWarmupClearPollFallback();
         var data = JSON.parse(e.data);
         var log = document.getElementById('cacheWarmupLog');
         log.textContent = '';
@@ -2976,6 +3005,7 @@
     }
 
     function cacheWarmupOnRow(e) {
+        _cacheWarmupClearPollFallback();
         var rs = JSON.parse(e.data);
         cacheWarmupAppendLog(
             '[' + nowHHMMSS() + '] ' + rs.status.padEnd(7) + ' ' + rs.table_id +
@@ -2987,6 +3017,7 @@
     }
 
     function cacheWarmupOnComplete(e) {
+        _cacheWarmupClearPollFallback();
         var data = JSON.parse(e.data);
         cacheWarmupAppendLog(
             '[' + nowHHMMSS() + '] complete total=' + data.total +
@@ -3010,7 +3041,16 @@
             if (!statusCell) return;
             var color = {fresh: '#10B77F', warming: '#0073D1', pending: '#9CA3AF', error: '#EA580C'}[rs.status] || '#9CA3AF';
             var label = rs.status === 'fresh' ? 'fresh' : rs.status;
-            statusCell.innerHTML = '<span style="display:inline-block;padding:2px 6px;border-radius:3px;font-size:11px;background:' + color + ';color:white;" title="' + (rs.error || '') + '">' + label + '</span>';
+            // Build via DOM API so rs.error escapes safely into the title
+            // attribute (XSS guard — rs.error is server-derived, may contain
+            // quotes / angle brackets).
+            var span = document.createElement('span');
+            span.style.cssText =
+                'display:inline-block;padding:2px 6px;border-radius:3px;' +
+                'font-size:11px;background:' + color + ';color:white;';
+            if (rs.error) span.setAttribute('title', rs.error);
+            span.textContent = label;
+            statusCell.replaceChildren(span);
         });
     }
 
