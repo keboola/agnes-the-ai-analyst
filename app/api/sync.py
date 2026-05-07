@@ -4,12 +4,13 @@ import hashlib
 import logging
 import os
 import subprocess
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List
+from typing import Any, Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import duckdb
 
@@ -24,6 +25,17 @@ from src.scheduler import filter_due_tables, is_table_due
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
+
+# Process-wide guard against overlapping `_run_sync` invocations. Two
+# concurrent extractor subprocesses both write `extract.duckdb` and fight
+# for its file lock — the first sync stalls, the second crashes, and the
+# `/api/health` check times out long enough that Docker flips the
+# container to `unhealthy`, which (behind a `reverse_proxy` upstream)
+# bricks external traffic until contention drains. The singleton-ness is
+# enforced both in the trigger handler (return 409 fast, before the work
+# is scheduled) and in `_run_sync` itself (defense in depth, in case
+# something bypasses the handler).
+_sync_lock = threading.Lock()
 
 
 def _file_hash(path: Path) -> str:
@@ -54,12 +66,22 @@ def _materialize_table(
     )
 
 
-def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
+def _run_materialized_pass(
+    conn: duckdb.DuckDBPyConnection,
+    bq,
+    tables: Optional[List[str]] = None,
+) -> dict:
     """Walk `table_registry` for `query_mode='materialized'` rows and run any
     that are due, dispatching by ``source_type`` to the correct connector's
     materialize_query. Honors per-table `sync_schedule` via `is_table_due()`,
     computes the file hash inline, and updates `sync_state` so the manifest
     can serve the row to `agnes pull` without re-hashing on every request.
+
+    ``tables`` (when not None) restricts the pass to a specific subset —
+    targeted re-syncs from the operator (POST /api/sync/trigger with a
+    body) need this, otherwise an admin asking to re-sync `kbc_job` would
+    re-process every other materialized row that's also due. Matched
+    against both the registry id and name (admins often pass either).
 
     BigQuery rows go through BqAccess + bigquery_query() (jobs API),
     optionally cost-guarded by ``max_bytes_per_materialize``.
@@ -107,6 +129,14 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
     summary = {"materialized": [], "skipped": [], "errors": []}
     keboola_access = None  # lazy-init on first Keboola row
 
+    # Targeted-trigger filter. Compare against both id and name so an admin
+    # who passes either form (the registry id slug, or the human-friendly
+    # name) gets the same result. `None` means "no filter — process all
+    # due materialized rows".
+    target_set: Optional[set] = (
+        set(tables) if tables is not None else None
+    )
+
     for row in registry.list_all():
         if row.get("query_mode") != "materialized":
             continue
@@ -119,6 +149,14 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
         # `orders_90d`) would see `query_mode` default to `"local"` in the
         # manifest because the lookup misses on `id`.
         ref_name = row["name"]
+
+        if target_set is not None and not (
+            ref_name in target_set or row.get("id") in target_set
+        ):
+            summary["skipped"].append(
+                {"table": ref_name, "reason": "not_in_target"}
+            )
+            continue
 
         last = state.get_last_sync(ref_name)
         last_iso = last.isoformat() if last else None
@@ -143,10 +181,18 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                 )
             elif source_type == "keboola":
                 if keboola_access is None:
-                    from connectors.keboola.access import KeboolaAccess
+                    # Lazy-init the Storage API client (replaces the old
+                    # DuckDB extension `KeboolaAccess`). One client is shared
+                    # across all keboola materialized rows in this pass —
+                    # `requests.Session` inside it is thread-safe and reuses
+                    # the connection pool for HTTP keep-alive across rows.
+                    # Variable name kept as `keboola_access` to minimise
+                    # diff churn against the surrounding error-handling
+                    # block; the type is now `KeboolaStorageClient`.
+                    from connectors.keboola.storage_api import KeboolaStorageClient
                     keboola_url = get_value(
                         "data_source", "keboola", "stack_url", default=""
-                    ) or ""
+                    ) or os.environ.get("KEBOOLA_STACK_URL", "")
                     token_env = get_value(
                         "data_source", "keboola", "token_env",
                         default="KEBOOLA_STORAGE_TOKEN",
@@ -162,17 +208,32 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                             ),
                         })
                         continue
-                    keboola_access = KeboolaAccess(
+                    keboola_access = KeboolaStorageClient(
                         url=keboola_url, token=keboola_token,
                     )
                 kb_output_dir.mkdir(parents=True, exist_ok=True)
                 from connectors.keboola.extractor import (
                     materialize_query as kb_materialize_query,
                 )
+                # Storage API needs the bucket+table split — registry rows
+                # carry both fields per the standard register-table schema.
+                bucket = row.get("bucket", "")
+                source_table = row.get("source_table") or ref_name
+                if not bucket:
+                    summary["errors"].append({
+                        "table": ref_name,
+                        "error": (
+                            "materialized keboola row is missing 'bucket'; "
+                            "re-register with --bucket <in.c-...>"
+                        ),
+                    })
+                    continue
                 kb_stats = kb_materialize_query(
                     table_id=ref_name,
-                    sql=row["source_query"],
-                    keboola_access=keboola_access,
+                    bucket=bucket,
+                    source_table=source_table,
+                    source_query=row.get("source_query"),
+                    storage_client=keboola_access,
                     output_dir=kb_output_dir,
                 )
                 # Normalize Keboola materialize_query output to the shape the
@@ -258,9 +319,20 @@ def _run_sync(tables: Optional[List[str]] = None):
     Reads table configs from DuckDB (in main process which has the shared
     connection), passes them as JSON via stdin to the extractor subprocess.
     This avoids DuckDB lock conflicts — subprocess never opens system.duckdb.
+
+    Singleton: only one invocation runs at a time per process (see
+    `_sync_lock` module-level). The trigger handler also fast-fails with
+    409 when the lock is held, so this branch is defense in depth.
     """
     import json as _json
-    import sys
+    import sys as _sys
+
+    if not _sync_lock.acquire(blocking=False):
+        print(
+            "[SYNC] another sync is already in flight — skipping",
+            file=_sys.stderr, flush=True,
+        )
+        return
 
     try:
         from app.instance_config import get_data_source_type, get_value
@@ -287,7 +359,17 @@ def _run_sync(tables: Optional[List[str]] = None):
                 registry_has_tables = bool(table_configs)
             else:
                 table_configs = repo.list_local(source_type) if source_type else repo.list_local()
-                registry_has_tables = bool(table_configs)
+                # Auto-discover gate must consider the WHOLE registry, not
+                # just `local` rows. After the Keboola migration to
+                # materialized (v25→v26), an instance can have 30
+                # materialized Keboola rows and zero local rows — but
+                # `bool(table_configs)` here would be False, and
+                # `not registry_has_tables` would re-trigger
+                # `_discover_and_register_tables` on every scheduler tick,
+                # creating duplicate "auto-discovered" rows with the wrong
+                # bucket prefix every time.
+                # Use list_all (any source, any mode) for the gate.
+                registry_has_tables = bool(repo.list_all())
                 # Without this filter, every scheduler tick would re-sync
                 # every table regardless of its sync_schedule cadence,
                 # making the field a no-op at trigger time. Tables with
@@ -342,7 +424,6 @@ def _run_sync(tables: Optional[List[str]] = None):
             )
 
         env = {**os.environ}
-        import sys as _sys
 
         if run_extractor_subprocess:
             # v26: incremental + partitioned strategies need last_sync from
@@ -373,8 +454,8 @@ def _run_sync(tables: Optional[List[str]] = None):
 
             # Run extractor subprocess with table configs via stdin
             # Subprocess does NOT open system.duckdb — no lock conflict
-            cmd = [sys.executable, "-c", """
-import json, sys, os, logging
+            cmd = [_sys.executable, "-c", """
+import json, sys, os, logging, signal
 from pathlib import Path
 
 # Subprocess inherits no logging config — without basicConfig, Python's
@@ -383,6 +464,19 @@ from pathlib import Path
 # dropped. capture_output=True in the parent then swallows the rest.
 # Devin BUG_0002 on PR #136 review.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+# Convert SIGTERM into a controlled SystemExit so the ProcessPoolExecutor
+# `with` block in connectors.keboola.extractor.run() runs its __exit__
+# (shutdown/wait_for_workers) before this process dies. Without this,
+# SIGTERM kills the parent abruptly, leaving the OS to clean up the pool
+# children — but each worker holds an open Keboola Storage export job
+# whose lifetime is tied to the HTTP poll loop, and those leak until the
+# Keboola side TTLs them out. The parent extractor calls this from
+# app.api.sync._run_sync after `subprocess.Popen(start_new_session=True)`
+# + `os.killpg(SIGTERM)` on timeout.
+def _exit_on_sigterm(signum, frame):
+    sys.exit(143)
+signal.signal(signal.SIGTERM, _exit_on_sigterm)
 
 configs = json.load(sys.stdin)
 url = os.environ.get("KEBOOLA_STACK_URL", "")
@@ -403,24 +497,53 @@ sys.exit(compute_exit_code(result, len(configs)))
 
             print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
 
+            # Run in a new process group (start_new_session=True) so a
+            # timeout can take down the whole tree — the extractor itself
+            # plus any ProcessPoolExecutor workers it spawned for parallel
+            # legacy-fallback. Without this, plain `subprocess.run` on
+            # timeout SIGKILLs only the immediate child; the pool workers
+            # are reparented to PID 1 and continue holding open Keboola
+            # Storage export jobs, blocking the next sync cycle's
+            # connectivity to those same job IDs.
+            extractor_timeout = int(os.environ.get("AGNES_EXTRACTOR_TIMEOUT_SEC", "3600"))
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env,
+                cwd=str(Path(__file__).parent.parent.parent),
+                start_new_session=True,
+            )
             try:
-                result = subprocess.run(
-                    cmd, input=_json.dumps(serializable), capture_output=True, text=True,
-                    timeout=1800, env=env,
-                    cwd=str(Path(__file__).parent.parent.parent),
-                )
+                stdout, stderr = proc.communicate(input=_json.dumps(serializable), timeout=extractor_timeout)
+                result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
             except subprocess.TimeoutExpired:
+                # SIGTERM the whole process group first to give workers a
+                # chance to shut down cleanly (release Keboola export jobs,
+                # close DuckDB conns), then SIGKILL the stragglers after a
+                # short grace window.
+                import signal
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        proc.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
                 # Catch the timeout LOCALLY so the materialized BQ pass and
-                # orchestrator rebuild below still fire. Pre-fix the timeout
+                # orchestrator rebuild below still fire — pre-fix the timeout
                 # propagated to the outer except handler and skipped the rest
-                # of `_run_sync` — on a dual-source deployment a slow Keboola
-                # extractor would silently block all materialized parquets +
-                # master-view rebuild until the next trigger. Devin BUG_0001
-                # on PR #148 commit 2219255. Mirrors the per-custom-connector
-                # timeout pattern below (line ~347).
+                # of `_run_sync` (Devin BUG_0001 on PR #148 commit 2219255).
                 print(
-                    "[SYNC] Extractor timed out after 1800s — continuing to "
-                    "materialized pass + orchestrator rebuild",
+                    f"[SYNC] Extractor timed out after {extractor_timeout}s — process "
+                    "group killed; continuing to materialized pass + orchestrator rebuild",
                     file=_sys.stderr, flush=True,
                 )
                 result = None
@@ -461,7 +584,7 @@ sys.exit(compute_exit_code(result, len(configs)))
                     logger.info("Running custom connector: %s", connector_dir.name)
                     try:
                         custom_result = subprocess.run(
-                            [sys.executable, str(extractor)],
+                            [_sys.executable, str(extractor)],
                             env=env, capture_output=True, text=True, timeout=600,
                             cwd=str(Path(__file__).parent.parent.parent),
                         )
@@ -489,7 +612,9 @@ sys.exit(compute_exit_code(result, len(configs)))
             bq_access = get_bq_access()  # sentinel if no BQ project; OK
             mat_conn = _get_system_db()
             try:
-                mat_summary = _run_materialized_pass(mat_conn, bq_access)
+                mat_summary = _run_materialized_pass(
+                    mat_conn, bq_access, tables=tables,
+                )
             finally:
                 mat_conn.close()
             skipped_count = len(mat_summary["skipped"])
@@ -551,10 +676,16 @@ sys.exit(compute_exit_code(result, len(configs)))
             print(f"[SYNC] Profiler skipped: {e}", file=_sys.stderr, flush=True)
 
     except subprocess.TimeoutExpired:
-        print("[SYNC] Extractor timed out after 1800s", file=_sys.stderr, flush=True)
+        # Outer-handler fallback for any subprocess.run call site (e.g.
+        # custom-connectors below) that didn't already catch its own
+        # TimeoutExpired. Concrete timeout value isn't available here —
+        # log generically.
+        print("[SYNC] Extractor subprocess timed out", file=_sys.stderr, flush=True)
     except Exception as e:
         print(f"[SYNC] FAILED: {e}", file=_sys.stderr, flush=True)
         traceback.print_exc()
+    finally:
+        _sync_lock.release()
 
 
 # ---- Manifest ----
@@ -637,15 +768,86 @@ async def sync_manifest(
     return _build_manifest_for_user(conn, user)
 
 
+# ---- Status ----
+
+@router.get("/status")
+async def sync_status():
+    """Whether a sync is currently in flight on this app process.
+
+    Public (no auth) — used by the host-side ``agnes-auto-upgrade.sh``
+    cron to decide whether to skip a `docker compose up -d` that would
+    kill a running extractor / materialized pass mid-flight. Cheap to
+    serve (single Lock.locked() check) and contains no sensitive data.
+
+    Returns:
+        ``{"locked": bool}`` — True if `_sync_lock` is currently held by
+        a `_run_sync` invocation. The host script defers the upgrade
+        when this is True and retries on the next 5-min cron tick.
+    """
+    return {"locked": _sync_lock.locked()}
+
+
 # ---- Trigger ----
 
 @router.post("/trigger")
 async def trigger_sync(
     background_tasks: BackgroundTasks,
-    tables: Optional[List[str]] = None,
+    body: Optional[Any] = Body(None),
     user: dict = Depends(require_admin),
 ):
-    """Trigger data sync from configured source. Admin only. Runs in background."""
+    """Trigger data sync from configured source. Admin only. Runs in background.
+
+    Body accepts three shapes (all optional — empty body / `null` syncs
+    every registered table):
+
+      - ``["kbc_job", "orders"]`` — bare JSON array of table ids
+      - ``{"tables": ["kbc_job", "orders"]}`` — object with a ``tables``
+        key (matches the wire shape of the response, more discoverable
+        for clients building requests by hand)
+      - ``null`` / no body — sync everything
+
+    Both array forms have shipped at different times; accepting both
+    keeps older clients (PR-build CLIs, helper scripts) working while
+    surfacing the shape that mirrors the response payload. Anything
+    else returns HTTP 422 with a structured detail.
+
+    Returns 409 if a previously-triggered sync is still running. Two
+    concurrent extractor subprocesses fight for the same `extract.duckdb`
+    file lock — that contention starves uvicorn, makes `/api/health` time
+    out, flips the container to `unhealthy`, and (behind a `reverse_proxy`
+    upstream like the bundled Caddy overlay) bricks external traffic
+    until contention drains. Fast-fail here keeps that from happening.
+    """
+    if body is None:
+        tables: Optional[List[str]] = None
+    elif isinstance(body, list):
+        tables = list(body)
+    elif isinstance(body, dict):
+        tables = body.get("tables")
+        if tables is not None and not isinstance(tables, list):
+            raise HTTPException(
+                status_code=422,
+                detail="`tables` must be a list of strings",
+            )
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "body must be a list of table ids, an object with a "
+                "`tables` list, or null"
+            ),
+        )
+    if tables is not None and not all(isinstance(t, str) for t in tables):
+        raise HTTPException(
+            status_code=422,
+            detail="all entries in `tables` must be strings",
+        )
+
+    if _sync_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="sync_already_in_progress",
+        )
     background_tasks.add_task(_run_sync, tables)
     return {
         "status": "triggered",

@@ -1,4 +1,4 @@
-"""TableRegistryRepository.register() persists v26 sync-strategy columns.
+"""TableRegistryRepository.register() persists v27 sync-strategy columns.
 
 where_filters is JSON-encoded on write, decoded on read (matching the
 pattern used for primary_key). Other fields are scalar pass-through.
@@ -6,14 +6,16 @@ pattern used for primary_key). Other fields are scalar pass-through.
 import duckdb
 import pytest
 
-from src.db import _V25_TO_V26_MIGRATIONS
+from src.db import _V26_TO_V27_MIGRATIONS
 from src.repositories.table_registry import TableRegistryRepository
 
 
 @pytest.fixture
 def repo(tmp_path):
     conn = duckdb.connect(str(tmp_path / "test.duckdb"))
-    # Match the post-v25 shape that v26 migrations alter
+    # Match the post-v26 shape that v27 migrations alter (main's v26 is a
+    # data migration with no schema change so the column shape is unchanged
+    # from v25; we only need to seed the canonical post-v25 column set).
     conn.execute(
         "CREATE TABLE table_registry ("
         "id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL, folder VARCHAR, "
@@ -24,7 +26,7 @@ def repo(tmp_path):
         "source_query TEXT, query_mode VARCHAR DEFAULT 'local', "
         "sync_schedule VARCHAR, profile_after_sync BOOLEAN DEFAULT true)"
     )
-    for sql in _V25_TO_V26_MIGRATIONS:
+    for sql in _V26_TO_V27_MIGRATIONS:
         conn.execute(sql)
     return TableRegistryRepository(conn)
 

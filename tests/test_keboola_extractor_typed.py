@@ -1,4 +1,15 @@
-"""Integration test: _extract_via_legacy produces typed parquet."""
+"""Integration test: _extract_via_legacy produces typed parquet.
+
+Post-v0.46.0 / v27: `_extract_via_legacy` uses two clients:
+  - KeboolaStorageClient (Storage API export-async) for the data export
+  - KeboolaClient (kbcstorage SDK) only for column-level metadata
+    (provider-cascade PyArrow schema)
+
+Tests stub both: the storage client writes a CSV at the requested path,
+the metadata client returns the schema/dtypes/date_columns. When metadata
+is unreachable, the parquet is written without a schema (string-typed)
+but the export still succeeds.
+"""
 from pathlib import Path
 
 import pyarrow as pa
@@ -6,16 +17,27 @@ import pyarrow.parquet as pq
 import pytest
 
 
+def _stub_storage_client(monkeypatch, csv_payload):
+    """Monkeypatch KeboolaStorageClient so export_table_to_csv writes a
+    fixed CSV body to the path the extractor passes in."""
+    from connectors.keboola.storage_api import KeboolaStorageClient
+
+    def fake_init(self, *, url, token, session=None):
+        pass
+
+    def fake_export(self, table_id, csv_path, export_filter=None):
+        Path(csv_path).write_text(csv_payload)
+
+    monkeypatch.setattr(KeboolaStorageClient, "__init__", fake_init)
+    monkeypatch.setattr(KeboolaStorageClient, "export_table_to_csv", fake_export)
+
+
 def test_legacy_path_writes_typed_parquet(tmp_path, monkeypatch):
     """When KeboolaClient.get_pyarrow_schema returns a schema, the parquet
     file must use those types — not VARCHAR."""
     from connectors.keboola.extractor import _extract_via_legacy
 
-    csv_payload = "id,amount,created_on\n1,100,2025-01-15\n2,200,0000-00-00\n"
-
-    def fake_export(self, table_id, output_path, **kwargs):
-        Path(output_path).write_text(csv_payload)
-        return {"exported_rows": 2}
+    _stub_storage_client(monkeypatch, "id,amount,created_on\n1,100,2025-01-15\n2,200,0000-00-00\n")
 
     fake_schema = pa.schema([
         pa.field("id", pa.int64()),
@@ -25,7 +47,6 @@ def test_legacy_path_writes_typed_parquet(tmp_path, monkeypatch):
 
     from connectors.keboola.client import KeboolaClient
     monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
-    monkeypatch.setattr(KeboolaClient, "export_table", fake_export)
     monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
     monkeypatch.setattr(KeboolaClient, "get_pandas_dtypes", lambda self, tid: {
         "id": "Int64", "amount": "Int64",
@@ -51,18 +72,13 @@ def test_legacy_path_falls_back_to_string_when_schema_unavailable(tmp_path, monk
     rather than crash. The warning is logged for visibility."""
     from connectors.keboola.extractor import _extract_via_legacy
 
-    csv_payload = "id,amount\n1,100\n2,200\n"
-
-    def fake_export(self, table_id, output_path, **kwargs):
-        Path(output_path).write_text(csv_payload)
-        return {"exported_rows": 2}
+    _stub_storage_client(monkeypatch, "id,amount\n1,100\n2,200\n")
 
     def boom_schema(self, table_id):
         raise RuntimeError("Storage API down")
 
     from connectors.keboola.client import KeboolaClient
     monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
-    monkeypatch.setattr(KeboolaClient, "export_table", fake_export)
     monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", boom_schema)
     monkeypatch.setattr(KeboolaClient, "get_pandas_dtypes", lambda self, tid: {})
     monkeypatch.setattr(KeboolaClient, "get_date_columns", lambda self, tid: [])
@@ -84,15 +100,10 @@ def test_legacy_path_with_no_metadata_returns_none_schema(tmp_path, monkeypatch)
     the legacy path skips schema enforcement and writes string-typed parquet."""
     from connectors.keboola.extractor import _extract_via_legacy
 
-    csv_payload = "id,name\n1,foo\n"
-
-    def fake_export(self, table_id, output_path, **kwargs):
-        Path(output_path).write_text(csv_payload)
-        return {"exported_rows": 1}
+    _stub_storage_client(monkeypatch, "id,name\n1,foo\n")
 
     from connectors.keboola.client import KeboolaClient
     monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
-    monkeypatch.setattr(KeboolaClient, "export_table", fake_export)
     monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: None)
     monkeypatch.setattr(KeboolaClient, "get_pandas_dtypes", lambda self, tid: {})
     monkeypatch.setattr(KeboolaClient, "get_date_columns", lambda self, tid: [])
@@ -103,3 +114,39 @@ def test_legacy_path_with_no_metadata_returns_none_schema(tmp_path, monkeypatch)
 
     table = pq.read_table(pq_path)
     assert table.num_rows == 1
+
+
+def test_legacy_path_passes_where_filters_to_storage_client(tmp_path, monkeypatch):
+    """v27: where_filters parameter is forwarded as ExportFilter to
+    KeboolaStorageClient.export_table_to_csv."""
+    from connectors.keboola.extractor import _extract_via_legacy
+    from connectors.keboola.storage_api import KeboolaStorageClient
+
+    captured = {}
+
+    def fake_init(self, *, url, token, session=None):
+        pass
+
+    def fake_export(self, table_id, csv_path, export_filter=None):
+        captured["table_id"] = table_id
+        captured["export_filter"] = export_filter
+        Path(csv_path).write_text("id\n1\n")
+
+    monkeypatch.setattr(KeboolaStorageClient, "__init__", fake_init)
+    monkeypatch.setattr(KeboolaStorageClient, "export_table_to_csv", fake_export)
+
+    from connectors.keboola.client import KeboolaClient
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: None)
+    monkeypatch.setattr(KeboolaClient, "get_pandas_dtypes", lambda self, tid: {})
+    monkeypatch.setattr(KeboolaClient, "get_date_columns", lambda self, tid: [])
+
+    pq_path = tmp_path / "out.parquet"
+    tc = {"name": "x", "bucket": "in.c-crm", "source_table": "x"}
+    filters = [{"column": "date", "operator": "ge", "values": ["2026-01-01"]}]
+    _extract_via_legacy(tc, str(pq_path), "https://kbc.example", "tok", where_filters=filters)
+
+    assert captured["table_id"] == "in.c-crm.x"
+    ef = captured["export_filter"]
+    assert ef is not None
+    assert ef.where_filters == filters

@@ -13,13 +13,19 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_26():
-    # v26 — Keboola sync-strategy support columns on table_registry
-    # (incremental_window_days, max_history_days, incremental_column,
-    # where_filters, partition_by, partition_granularity,
-    # initial_load_chunk_days). Existing sync_strategy column reused.
-    # See connectors/keboola/{incremental,partitioned,where_filters}.py.
-    assert SCHEMA_VERSION == 26
+def test_schema_version_is_27():
+    # v25 → v26 (main): migrate Keboola query_mode='local' rows to
+    # 'materialized' — local mode is gone for Keboola now that the
+    # extractor talks Storage API directly via signed URLs (NULL
+    # source_query = full-table export, same effective behavior).
+    # v26 → v27 (this PR): Keboola sync-strategy support columns on
+    # table_registry (incremental_window_days, max_history_days,
+    # incremental_column, where_filters, partition_by,
+    # partition_granularity, initial_load_chunk_days). Existing
+    # sync_strategy column reused; admins can opt specific tables back
+    # to query_mode='local' for the new dispatcher (incremental,
+    # partitioned, full_refresh + where_filters).
+    assert SCHEMA_VERSION == 27
 
 
 def test_v20_adds_source_query(tmp_path):

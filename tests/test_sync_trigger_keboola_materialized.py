@@ -52,7 +52,11 @@ def test_run_materialized_pass_dispatches_keboola_to_keboola_extractor(
     repo.register(
         id="orders_recent", name="orders_recent",
         source_type="keboola", query_mode="materialized",
-        source_query='SELECT * FROM kbc."in.c-sales"."orders" WHERE 1=1',
+        bucket="in.c-sales", source_table="orders",
+        # Storage API filter spec (replaces the old SQL string after the
+        # extension → Storage API rewrite). Empty filter = full table; a
+        # whereFilters array narrows down on the Keboola side.
+        source_query='{"where_filters": [{"column": "status", "operator": "eq", "values": ["open"]}]}',
         sync_schedule="every 1m",  # always due
     )
 
@@ -149,7 +153,9 @@ def test_run_sync_runs_materialized_pass_on_keboola_only_instance(
         name="kb_aggregated",
         source_type="keboola",
         query_mode="materialized",
-        source_query="SELECT 1 AS x",
+        bucket="in.c-test", source_table="kb_aggregated",
+        # Empty source_query = full-table export via Storage API.
+        source_query=None,
         registered_by="admin@test",
     )
 

@@ -17,6 +17,13 @@ services:
     env_file: .env
     environment:
       - DATA_DIR=/data
+      # Steer per-call tempdirs (Snowflake UNLOAD slice staging,
+      # CSV→parquet intermediates) onto the data volume. The container
+      # default ``/tmp`` lives on overlayfs (boot disk), which fills
+      # under multi-GiB sliced exports — see connectors/keboola/
+      # storage_api.py:get_temp_root. Operators can override per
+      # deployment via .env (or unset to fall back to system /tmp).
+      - AGNES_TEMP_DIR=${AGNES_TEMP_DIR:-/data/tmp}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
       interval: 30s
@@ -39,6 +46,7 @@ services:
     env_file: .env
     environment:
       - DATA_DIR=/data
+      - AGNES_TEMP_DIR=${AGNES_TEMP_DIR:-/data/tmp}
     profiles:
       - extract
 
@@ -51,6 +59,7 @@ services:
     env_file: .env
     environment:
       - DATA_DIR=/data
+      - AGNES_TEMP_DIR=${AGNES_TEMP_DIR:-/data/tmp}
       - API_URL=http://app:8000
       - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL:-}
     depends_on:

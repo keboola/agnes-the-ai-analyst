@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1814,12 +1814,41 @@ _V24_TO_V25_MIGRATIONS = [
 ]
 
 
-# v26: Keboola sync-strategy support columns on table_registry.
+# v26: unify Keboola query_mode='local' rows into 'materialized'.
 #
-# The existing `sync_strategy` column (added pre-v18, defaulting to
-# 'full_refresh') is reused to mean one of {'full_refresh', 'incremental',
-# 'partitioned'} from v26 onward. The seven columns added here are the
-# per-strategy knobs:
+# The old `local` flow ran the DuckDB Keboola extension's COPY through
+# QueryService — which is unreliable on linked-bucket projects (and was
+# wholly broken pre-v0.1.6 of the extension). The new `materialized`
+# flow uses the Storage API export-async path directly:
+#   POST /v2/storage/tables/<id>/export-async
+#   GET  /v2/storage/jobs/<id>  (poll)
+#   GET  /v2/storage/files/<id>?federationToken=1  (signed URL)
+#   download → CSV → parquet
+# That works regardless of project flags, and a NULL `source_query`
+# means "full table export" — same effective behavior the `local` mode
+# previously gave.
+#
+# Existing Keboola rows registered as `query_mode='local'` are flipped
+# to 'materialized'; their source_query stays NULL (full table). Jira
+# and BigQuery 'local' rows are untouched (this connector still uses
+# its own path).
+_V25_TO_V26_MIGRATIONS = [
+    """
+    UPDATE table_registry
+    SET query_mode = 'materialized'
+    WHERE source_type = 'keboola' AND query_mode = 'local'
+    """,
+]
+
+
+# v27: Keboola sync-strategy support columns on table_registry.
+#
+# Layered on top of v26's local→materialized unification. Admins can opt
+# specific Keboola tables back to `query_mode='local'` (via the Direct
+# extract Edit-modal radio) to enable the new sync_strategy dispatcher.
+# The existing `sync_strategy` column (default 'full_refresh') drives one
+# of {'full_refresh', 'incremental', 'partitioned'} from v27 onward. The
+# seven columns added here are the per-strategy knobs:
 #   - incremental_window_days: backtrack window applied to last_sync (default 7)
 #   - max_history_days: cap on first-sync history depth
 #   - incremental_column: reserved for future use when changedSince's
@@ -1830,11 +1859,14 @@ _V24_TO_V25_MIGRATIONS = [
 #   - partition_granularity: 'day' | 'month' | 'year'
 #   - initial_load_chunk_days: chunked initial-load step size (default 30)
 #
-# All NULL on existing rows → no behavior change for tables that don't opt in.
+# All NULL on existing rows → no behavior change for tables that don't
+# opt in. v26's local→materialized flip preserves the migration-correct
+# behavior for the default case; new-or-edited rows that pick Direct
+# extract land at `query_mode='local'` again with sync_strategy in play.
 # API-layer validators enforce per-strategy required-field combinations
 # (e.g. partitioned ⇒ partition_by required) and reject conflicting combos
-# (e.g. incremental + where_filters → 400).
-_V25_TO_V26_MIGRATIONS = [
+# (e.g. incremental + where_filters → 422).
+_V26_TO_V27_MIGRATIONS = [
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS incremental_window_days INTEGER",
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS max_history_days INTEGER",
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS incremental_column VARCHAR",
@@ -2100,6 +2132,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 26:
                 for sql in _V25_TO_V26_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 27:
+                for sql in _V26_TO_V27_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

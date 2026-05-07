@@ -1,16 +1,19 @@
-"""Schema v25 → v26 adds Keboola sync-strategy support columns to table_registry.
+"""Schema v26 → v27 adds Keboola sync-strategy support columns to table_registry.
 
-Existing column `sync_strategy` (already in v18+) is reused. v26 layers on the
-per-strategy knobs needed by the new incremental/partitioned/where_filters paths.
+v26 (on main since v0.46.0) flipped Keboola query_mode='local' rows to
+'materialized'. v27 (this file) layers per-strategy knobs on top so admins
+can opt specific tables back to local + a sync_strategy. Existing
+`sync_strategy` column (already in v18+) is reused as the dispatcher
+field; the seven new columns are the per-strategy parameters.
 """
 import duckdb
 import pytest
 
-from src.db import SCHEMA_VERSION, _V25_TO_V26_MIGRATIONS
+from src.db import SCHEMA_VERSION, _V26_TO_V27_MIGRATIONS
 
 
-def test_schema_version_constant_is_26():
-    assert SCHEMA_VERSION == 26
+def test_schema_version_constant_is_27():
+    assert SCHEMA_VERSION == 27
 
 
 def test_migrations_add_seven_columns(tmp_path):
@@ -20,7 +23,7 @@ def test_migrations_add_seven_columns(tmp_path):
         "CREATE TABLE schema_version (version INTEGER NOT NULL, "
         "applied_at TIMESTAMP DEFAULT current_timestamp)"
     )
-    conn.execute("INSERT INTO schema_version (version) VALUES (25)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (26)")
     conn.execute(
         "CREATE TABLE table_registry ("
         "id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL, "
@@ -32,7 +35,7 @@ def test_migrations_add_seven_columns(tmp_path):
         "VALUES ('in.c-crm.company', 'company', 'full_refresh')"
     )
 
-    for sql in _V25_TO_V26_MIGRATIONS:
+    for sql in _V26_TO_V27_MIGRATIONS:
         conn.execute(sql)
 
     cols = {r[0] for r in conn.execute("DESCRIBE table_registry").fetchall()}
@@ -64,17 +67,17 @@ def test_migrations_idempotent(tmp_path):
         "CREATE TABLE schema_version (version INTEGER NOT NULL, "
         "applied_at TIMESTAMP DEFAULT current_timestamp)"
     )
-    conn.execute("INSERT INTO schema_version (version) VALUES (25)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (26)")
     conn.execute(
         "CREATE TABLE table_registry ("
         "id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL, "
         "sync_strategy VARCHAR DEFAULT 'full_refresh')"
     )
 
-    for sql in _V25_TO_V26_MIGRATIONS:
+    for sql in _V26_TO_V27_MIGRATIONS:
         conn.execute(sql)
     # Second pass must not raise (each ALTER uses IF NOT EXISTS)
-    for sql in _V25_TO_V26_MIGRATIONS:
+    for sql in _V26_TO_V27_MIGRATIONS:
         conn.execute(sql)
 
     cols = {r[0] for r in conn.execute("DESCRIBE table_registry").fetchall()}

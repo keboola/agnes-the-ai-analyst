@@ -1292,11 +1292,22 @@ class RegisterTableRequest(BaseModel):
             raise ValueError(
                 "source_query is only valid when query_mode='materialized'"
             )
-        # Non-BQ materialized rows must supply source_query explicitly — there
-        # is no server-generate fallback for Keboola materialized.
-        if self.query_mode == "materialized" and not sq and self.source_type != "bigquery":
+        # BigQuery materialized auto-generates a full-table-dump SQL from
+        # `bucket`+`source_table` when source_query is omitted (see
+        # `register_table` BQ branch). Keboola materialized: a NULL
+        # source_query means "full-table export via Storage API
+        # export-async" — no SQL needed (the API takes a structured
+        # filter, see `connectors/keboola/storage_api.py:ExportFilter`).
+        # Other source_types (e.g. jira) don't support materialized mode
+        # and require an explicit source_query if the operator opts in.
+        if (
+            self.query_mode == "materialized"
+            and not sq
+            and self.source_type not in ("bigquery", "keboola")
+        ):
             raise ValueError(
-                "query_mode='materialized' requires a non-empty source_query"
+                f"query_mode='materialized' for source_type='{self.source_type}' "
+                "requires a non-empty source_query"
             )
         # Backtick guard stays for non-materialized rows (DuckDB-flavor SQL
         # contract); materialized SQL is BigQuery-native and MUST allow
@@ -2944,13 +2955,172 @@ async def configure_instance(
     }
 
 
-def _discover_and_register_tables(conn: duckdb.DuckDBPyConnection, user_email: str) -> dict:
-    """Discover tables from configured source and register them. Shared logic for API and sync."""
+def _split_keboola_table_id(full_id: str, fallback_name: str = "") -> tuple[str, str]:
+    """Split a Keboola table id into ``(bucket, source_table)``.
+
+    Keboola convention: ``<stage>.<bucket-id>.<table>`` where stage ∈
+    ``{in, out, sys}`` and bucket-id typically starts with ``c-``
+    (e.g. ``in.c-finance.orders``). Storage API export-async needs the
+    FULL ``<stage>.<bucket-id>`` as the bucket arg — a stripped
+    ``c-finance`` 404s. The 2-segment fallback covers id strings
+    without the stage prefix; the 0/1-segment path returns empty
+    bucket and uses ``fallback_name`` as the table name so the row
+    fails loud at sync time rather than silently registering with
+    no source coordinates.
+    """
+    parts = (full_id or "").strip().split(".")
+    if len(parts) >= 3:
+        return ".".join(parts[:-1]), parts[-1]
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return "", fallback_name or full_id
+
+
+def _build_keboola_discovery_plan(
+    conn: duckdb.DuckDBPyConnection, discovered: list[dict],
+) -> dict:
+    """Inspect ``discovered`` (output of ``KeboolaClient.discover_all_tables``)
+    against the live registry and bucket every entry into one of:
+
+      - ``new``: not in registry, will be inserted.
+      - ``existing_match``: row already in registry under the same id
+        AND its ``(bucket, source_table)`` matches what discovery would
+        write — no-op, nothing to do.
+      - ``existing_drift``: a row in the registry conflicts with what
+        discovery would write. Two flavours, both surfaced for operator
+        visibility but **never overwritten**:
+
+          1. Same registry id, different ``(bucket, source_table)`` —
+             admin corrected the coordinates inline (rarer).
+          2. Different registry id but the discovered ``name`` clashes
+             with an existing row's ``name`` (case-insensitive). Real
+             example: registry has ``id='kbc_job', name='kbc_job',
+             bucket='in.c-kbc_telemetry'``; Keboola exposes the same
+             logical table at id ``in.c-keboola-storage.job`` (which
+             slugs to a different ``table_id``). Without this
+             check, auto-discovery would insert a duplicate ``kbc_job``
+             whose Storage API export-async 404s.
+
+      - ``invalid``: id couldn't produce a usable ``table_id`` slug.
+
+    Each bucket carries the exact rows; the API endpoint composes a
+    summary + (optionally) executes. Pre-fix, this logic was inlined
+    in ``_discover_and_register_tables`` and there was no way to see
+    what would change without writing.
+    """
+    repo = TableRegistryRepository(conn)
+    # Pre-load all keboola rows once so the name-collision lookup
+    # below is O(1) per discovered entry. Falls back to per-id
+    # `repo.get(...)` calls when list_all isn't available — keeps
+    # the single-row test stubs working without forcing them to
+    # implement list_all.
+    try:
+        all_rows = [r for r in repo.list_all() if r.get("source_type") == "keboola"]
+    except AttributeError:
+        all_rows = []
+    by_name: dict[str, dict] = {
+        (r.get("name") or "").strip().lower(): r for r in all_rows
+    }
+
+    plan = {"new": [], "existing_match": [], "existing_drift": [], "invalid": []}
+    for table in discovered:
+        full_id = (table.get("id") or "").strip()
+        # Slug used as the registry primary key. Lowercase, dots/spaces
+        # → underscores. Stable across discovery runs.
+        table_id = full_id.lower().replace(".", "_").replace(" ", "_")
+        if not table_id:
+            plan["invalid"].append({
+                "table_id": "",
+                "full_id": full_id,
+                "reason": "empty id from discovery payload",
+            })
+            continue
+
+        # Prefer Keboola's authoritative `bucket_id` (separate field in
+        # the API response, normalised by `discover_all_tables`) over
+        # parsing the full id string. Fall back to the parser when
+        # the API didn't return bucket_id (older fallback path inside
+        # discover_all_tables).
+        bucket = (table.get("bucket_id") or "").strip()
+        name = (table.get("name") or "").strip()
+        source_table = name
+        if not bucket or not source_table:
+            bucket, source_table = _split_keboola_table_id(full_id, source_table)
+
+        entry = {
+            "table_id": table_id,
+            "name": table.get("name", table_id),
+            "full_id": full_id,
+            "bucket": bucket,
+            "source_table": source_table,
+        }
+
+        existing = repo.get(table_id)
+        if existing is not None:
+            ex_bucket = existing.get("bucket") or ""
+            ex_source_table = existing.get("source_table") or ""
+            if ex_bucket == bucket and ex_source_table == source_table:
+                plan["existing_match"].append(entry)
+            else:
+                plan["existing_drift"].append({
+                    **entry,
+                    "registry_bucket": ex_bucket,
+                    "registry_source_table": ex_source_table,
+                    "registry_id": existing.get("id"),
+                    "drift_kind": "same_id_diff_coords",
+                })
+            continue
+
+        # No row at this id. Look for a name collision (admin
+        # registered the same logical table under a different id).
+        name_match = by_name.get(name.lower()) if name else None
+        if name_match is not None:
+            plan["existing_drift"].append({
+                **entry,
+                "registry_bucket": name_match.get("bucket") or "",
+                "registry_source_table": name_match.get("source_table") or "",
+                "registry_id": name_match.get("id"),
+                "drift_kind": "name_collision",
+            })
+            continue
+
+        plan["new"].append(entry)
+    return plan
+
+
+def _discover_and_register_tables(
+    conn: duckdb.DuckDBPyConnection,
+    user_email: str,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Discover tables from configured source and register them.
+
+    Behavior:
+      - Only the configured source type ``keboola`` is supported here
+        (BigQuery uses a different discovery endpoint).
+      - Already-registered rows are NEVER overwritten. The plan
+        classifies them as ``existing_match`` (no-op, registry agrees
+        with discovery) or ``existing_drift`` (admin edited the
+        coordinates; left alone, surfaced in the response so the
+        operator sees the divergence).
+      - ``dry_run=True`` returns the plan without writing anything —
+        useful for auditing before a re-discovery on a registry that
+        already has admin overrides.
+    """
     from app.instance_config import get_data_source_type, get_value
 
     source_type = get_data_source_type()
     if source_type != "keboola":
-        return {"registered": 0, "skipped": 0, "errors": 0, "tables": [], "source": source_type}
+        return {
+            "registered": 0,
+            "skipped": 0,
+            "errors": 0,
+            "drifted": 0,
+            "tables": [],
+            "source": source_type,
+            "dry_run": dry_run,
+        }
 
     from connectors.keboola.client import KeboolaClient
     # Read from data_source.keboola (matches what /api/admin/configure writes)
@@ -2963,65 +3133,106 @@ def _discover_and_register_tables(conn: duckdb.DuckDBPyConnection, user_email: s
     client = KeboolaClient(token=token, url=url)
     discovered = client.discover_all_tables()
 
+    plan = _build_keboola_discovery_plan(conn, discovered)
+    drift_summary = [
+        {
+            "table_id": e["table_id"],
+            "discovery": {"bucket": e["bucket"], "source_table": e["source_table"]},
+            "registry":  {"bucket": e["registry_bucket"],
+                           "source_table": e["registry_source_table"]},
+        }
+        for e in plan["existing_drift"]
+    ]
+
+    if dry_run:
+        return {
+            "registered": 0,
+            "skipped": len(plan["existing_match"]),
+            "errors": len(plan["invalid"]),
+            "drifted": len(plan["existing_drift"]),
+            "tables": [e["table_id"] for e in plan["new"]],
+            "would_register": [e["table_id"] for e in plan["new"]],
+            "drift": drift_summary,
+            "invalid": plan["invalid"],
+            "source": "keboola",
+            "dry_run": True,
+        }
+
     repo = TableRegistryRepository(conn)
     registered = 0
-    skipped = 0
     errors = 0
     table_names = []
 
-    for table in discovered:
-        table_id = table.get("id", "").strip().lower().replace(".", "_").replace(" ", "_")
-        if not table_id:
-            errors += 1
-            continue
-
-        if repo.get(table_id):
-            skipped += 1
-            continue
-
+    for entry in plan["new"]:
         try:
-            # Parse bucket from table ID (format: in.c-bucket.table_name)
-            parts = table.get("id", "").split(".")
-            bucket = parts[1] if len(parts) > 1 else ""
-            source_table = parts[2] if len(parts) > 2 else table.get("name", "")
-
             repo.register(
-                id=table_id,
-                name=table.get("name", table_id),
+                id=entry["table_id"],
+                name=entry["name"],
                 source_type="keboola",
-                bucket=bucket,
-                source_table=source_table,
-                query_mode="local",
+                bucket=entry["bucket"],
+                source_table=entry["source_table"],
+                # Keboola goes through Storage API export-async via the
+                # materialized path (NULL source_query = full table). The
+                # legacy `local` mode for Keboola was retired in v26 and
+                # would no-op here anyway.
+                query_mode="materialized",
                 registered_by=user_email,
-                description=f"Auto-discovered from Keboola: {table.get('id', '')}",
+                description=f"Auto-discovered from Keboola: {entry['full_id']}",
             )
             registered += 1
-            table_names.append(table_id)
+            table_names.append(entry["table_id"])
         except Exception as e:
-            logger.warning("Failed to register %s: %s", table_id, e)
+            logger.warning("Failed to register %s: %s", entry["table_id"], e)
             errors += 1
+
+    if plan["existing_drift"]:
+        logger.warning(
+            "Auto-discover skipped %d row(s) where the admin-edited "
+            "bucket/source_table differs from discovery — preserving "
+            "the admin values. Run with dry_run=True to see the deltas.",
+            len(plan["existing_drift"]),
+        )
 
     return {
         "registered": registered,
-        "skipped": skipped,
-        "errors": errors,
+        "skipped": len(plan["existing_match"]),
+        "errors": errors + len(plan["invalid"]),
+        "drifted": len(plan["existing_drift"]),
         "tables": table_names,
+        "drift": drift_summary,
+        "invalid": plan["invalid"],
         "source": "keboola",
+        "dry_run": False,
     }
 
 
 @router.post("/discover-and-register")
 async def discover_and_register(
+    dry_run: bool = False,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Discover tables from configured source and auto-register them.
 
-    Combines discover-tables + register-table into one call.
-    Skips already-registered tables. Used by /setup wizard and AI agents.
+    Combines discover-tables + register-table into one call. Already-
+    registered rows are NEVER overwritten — admin edits to bucket /
+    source_table win. The response surfaces a ``drift`` array listing
+    any rows where discovery would have written different coordinates
+    than what's in the registry, so operators can audit divergence
+    after a Keboola-side bucket rename / table move.
+
+    Query params:
+      - ``dry_run=true`` returns the plan without writing anything.
+        Lists ``would_register``, ``drift``, and ``invalid`` so an
+        operator can decide whether to proceed (or, in the drift case,
+        which side they want to fix).
+
+    Used by /setup wizard and AI agents.
     """
     try:
-        result = _discover_and_register_tables(conn, user.get("email", "admin"))
+        result = _discover_and_register_tables(
+            conn, user.get("email", "admin"), dry_run=dry_run,
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Discovery and registration failed: {e}")
