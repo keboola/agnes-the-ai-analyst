@@ -7,11 +7,20 @@ without dragging in the deleted command module.
 Design notes:
 - Workspace-scoped (`<workspace>/.claude/settings.json`), NOT user-home.
   The hooks fire only when Claude Code opens this workspace.
-- Idempotent: second invocation drops a prior `agnes pull` / `da sync` /
-  `agnes push` entry (matched by command substring) and appends fresh entries.
+- Idempotent: second invocation drops prior `agnes self-upgrade` /
+  `agnes pull` / `agnes push` / `agnes refresh-marketplace` / `da sync`
+  entries (matched by command substring) and appends fresh entries.
   Third-party hooks (mixed entries, foreign commands) are left alone.
 - Uses `|| true` in the hook command so the hook never blocks a session on
   a transient sync error.
+- SessionStart gets two entries:
+    1. Chained `agnes self-upgrade; agnes pull` — self-upgrade runs first
+       so any wire-protocol bump lands before pull tries to use the new
+       CLI version. Both `|| true`-guarded so an upgrade failure doesn't
+       block the pull.
+    2. `agnes refresh-marketplace` — independent entry so a fresh
+       workspace (no marketplace cloned yet) failing this command doesn't
+       suppress the data pull above.
 """
 
 from __future__ import annotations
@@ -24,11 +33,19 @@ from pathlib import Path
 # Substrings that identify "our" hook commands. Includes legacy `da sync`
 # so a workspace bootstrapped by an older CLI gets cleanly upgraded on the
 # next `agnes init` run.
-_OUR_COMMAND_MARKERS = ("agnes pull", "agnes push", "da sync")
+_OUR_COMMAND_MARKERS = (
+    "agnes self-upgrade",
+    "agnes pull",
+    "agnes push",
+    "agnes refresh-marketplace",
+    "da sync",
+)
 
 
 def install_claude_hooks(workspace: Path) -> None:
-    """Install SessionStart->`agnes pull` and SessionEnd->`agnes push` hooks.
+    """Install SessionStart hooks (`agnes self-upgrade; agnes pull` chained
+    + `agnes refresh-marketplace` as a separate entry) and SessionEnd hook
+    (`agnes push`).
 
     Idempotent. Workspace-scoped (writes `<workspace>/.claude/settings.json`).
     Preserves third-party hooks and other event types.
@@ -50,17 +67,38 @@ def install_claude_hooks(workspace: Path) -> None:
 
     hooks = cfg.setdefault("hooks", {})
 
-    def _replace_or_add(event: str, command: str) -> None:
+    def _replace_or_add(event: str, commands: list[str]) -> None:
         existing = hooks.setdefault(event, [])
+        # Remove ALL prior entries that look like ours (every command in
+        # the entry matches one of our markers). Third-party entries
+        # — which have commands like `echo hi from another tool` — fall
+        # through unchanged.
         for entry in list(existing):
             entry_cmds = [h.get("command", "") for h in entry.get("hooks", [])]
             if entry_cmds and all(
                 any(marker in c for marker in _OUR_COMMAND_MARKERS) for c in entry_cmds
             ):
                 existing.remove(entry)
-        existing.append({"hooks": [{"type": "command", "command": command}]})
+        # Append fresh entries — one per command. Independent entries mean
+        # a failure in one (e.g. refresh-marketplace on a workspace that
+        # never cloned the marketplace) doesn't suppress the other.
+        for cmd in commands:
+            existing.append({"hooks": [{"type": "command", "command": cmd}]})
 
-    _replace_or_add("SessionStart", "agnes pull --quiet 2>/dev/null || true")
-    _replace_or_add("SessionEnd", "agnes push --quiet 2>/dev/null || true")
+    # `refresh-marketplace` is wrapped in `bash -c` because Claude Code on
+    # Windows runs hook commands directly (no shell), so the `2>/dev/null
+    # || true` redirection + short-circuit syntax never gets interpreted.
+    # The self-upgrade+pull chained entry pre-dates the Windows fix and
+    # isn't churned for parity (the same redirection fluff applies but
+    # changing the existing wire would force every workspace to re-write
+    # its settings.json on the next `agnes init` for no behaviour gain).
+    _replace_or_add("SessionStart", [
+        "agnes self-upgrade --quiet 2>/dev/null || true; "
+        "agnes pull --quiet 2>/dev/null || true",
+        'bash -c "agnes refresh-marketplace --quiet 2>/dev/null || true"',
+    ])
+    _replace_or_add("SessionEnd", [
+        "agnes push --quiet 2>/dev/null || true",
+    ])
 
     settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")

@@ -32,7 +32,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `connectors/keboola`: materialized sync now requests **parquet directly** from the Storage API (`POST /v2/storage/tables/{id}/export-async` with `fileType=parquet`) instead of CSV → DuckDB COPY → parquet. The extractor downloads the Snowflake-UNLOADed parquet, renames into place, and skips the DuckDB roundtrip entirely. Eliminates the OOM that hits multi-GB Keboola tables when `read_csv(..., all_varchar=true, max_line_size=64MB)` materializes the whole CSV in memory before COPY. Sliced exports (large tables that Snowflake UNLOAD writes as multiple files) are merged via `DuckDB COPY (SELECT * FROM read_parquet([...]))` — peak memory bounded to one parquet row group (~1 MiB) regardless of table size. Admin can pin the legacy CSV path with `source_query='{"file_type":"csv"}'`. Backward-compat alias `KeboolaStorageClient.export_table_to_csv` retained.
 - `connectors/keboola/storage_api.py`: `download_file` gzip detection no longer treats unencrypted files as gzipped (previous heuristic would have corrupted parquet downloads at gunzip time). Name-suffix-only.
-- `infra/modules/customer-instance` (tag `infra-v1.7.0`): `google_compute_instance.vm` now sets `allow_stopping_for_update = true`. Without it, changing `machine_type` (or any other field GCP will only mutate on a stopped VM) caused Terraform to fall back to a destroy + recreate, churning VM-local state for what should be an in-place resize. Consumers do not need to update — the field is provider-side only — but bumping the module ref to `infra-v1.7.0` enables in-place machine-type bumps.
 - **BREAKING for Keboola operators**: schema bump to **v26**. Existing `query_mode='local'` Keboola rows are migrated to `query_mode='materialized'` (NULL `source_query` = full-table export — same effective behavior as before). New `register-table --source-type keboola` and `discover-and-register --source-type keboola` default to `materialized`. The `local` mode for Keboola is gone — it ran the DuckDB extension's COPY through Keboola QueryService, which is unreliable on linked-bucket projects (extension v0.1.6 fixes the linked-bucket case but not yet in the community CDN; pre-fix, projects with the `block-shared-snowflake-access` flag couldn't see bucket schemas at all). BigQuery and Jira `local` rows are untouched. See `connectors/keboola/storage_api.py` + the v25→v26 migration in `src/db.py`.
 - **Keboola extract path is now Storage API direct**, not the DuckDB extension. New `connectors/keboola/storage_api.py` talks to Keboola Storage API straight via `requests`:
   - `POST /v2/storage/tables/{id}/export-async` to kick off the job (with optional `whereFilters` / `columns` / `changedSince` from the row's `source_query` JSON);
@@ -55,7 +54,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Extractor subprocess timeout bumped from 1800s to 3600s (configurable via `AGNES_EXTRACTOR_TIMEOUT_SEC`). On projects where the legacy Storage-API fallback is the only working path (extension blocked by `block-shared-snowflake-access`), 28+ tables × multi-minute Keboola export jobs routinely overran the 30-min cap before the parallel fallback even existed; with parallelization in place the run usually fits, but `kbc_telemetry`-class tables and large CRM snapshots can still push it over. The 1h ceiling matches the longest practically-reasonable Keboola export job before an operator should intervene.
 - Extractor subprocess is now launched in its own process group (`subprocess.Popen(..., start_new_session=True)`) so a timeout can take down the whole tree — the extractor parent plus the ProcessPoolExecutor workers it spawned for parallel legacy fallback. Without this, a `subprocess.run(timeout=...)` SIGKILLed only the immediate child; the pool workers were reparented to PID 1 and continued holding open Keboola Storage export jobs, blocking the next sync cycle. On timeout the parent now SIGTERMs the group (10s grace), then SIGKILLs stragglers. The extractor's inline Python script installs a SIGTERM → `sys.exit(143)` handler so the `with ProcessPoolExecutor(...)` block runs its `__exit__` (`shutdown(wait=True)`) cleanly before the process dies.
 
-### Fixed
+### Fixed (cutover regressions, surfaced 2026-05-06)
 
 - `agnes pull` no longer fails with `hash mismatch: expected … got …` for every Keboola local-mode table. `src/orchestrator.py:_update_sync_state` stored `md5(f"{mtime_ns}:{size}")[:12]` — a 12-char fingerprint of file metadata — while the CLI's post-download integrity check compares against the full 32-char content MD5 it computes via `cli/commands/sync.py:_md5_file`. Those could never match, so every `agnes pull` reported `Updated 0 tables` even when the server had data. Now the orchestrator stores the same content MD5 the materialized SQL path already used (`app/api/sync.py:_file_hash`).
 - Latent `NameError: name '_sys' is not defined` in `app/api/sync.py:_run_sync` when the function fell into its outer `except Exception` before reaching the inner `import sys as _sys`. Hoisted the import to the top of the body so the error path stays loggable instead of trading the original failure for a misleading stack trace.
@@ -66,6 +65,154 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `connectors/keboola/access.py:KeboolaAccess.__init__` and `connectors/keboola/extractor.py:_try_attach_extension` now strip a trailing slash from the Keboola stack URL before passing it to the DuckDB Keboola extension's `ATTACH`. The canonical Keboola URL form (`https://connection.<region>.keboola.com/`) failed there with a network error; bare-host form works. Operators no longer have to massage the value out of `KEBOOLA_STACK_URL` / `instance.yaml`.
 - `src/profiler.py:TableInfo.__init__` makes `description` optional (defaults to `""`). Two call sites in `app/api/catalog.py` and `app/api/sync.py` instantiate `TableInfo(name=..., table_id=...)` without it; the previous required-arg signature crashed sync's profiler pass with `TableInfo.__init__() missing 1 required positional argument: 'description'`, leaving `[SYNC] Profiled 0 tables` after every run.
 - `scripts/ops/agnes-auto-upgrade.sh` now `chown`s `${STATE_DIR}` (`/data/state` by default), `/data/extracts`, `/data/analytics` to the new image's runtime UID:GID before `docker compose up` when the image digest moves. Catches root → non-root UID transitions across upgrades — without it, the new image's first start `PermissionError`s on `.session_secret` / DuckDB. Reads the target uid:gid from `/etc/passwd` inside the image so the script stays honest if the runtime user ever moves off uid 999.
+
+## [0.44.1] — 2026-05-07
+
+### Fixed
+
+- `/admin/users/{id}` — "Add to group" dropdown explains itself when empty instead of leaving the admin staring at a silent `— Pick a group —` placeholder. Three cases now surface a hint below the picker: (a) user is already in every group, (b) every remaining group is Google-Workspace-managed and Agnes can't grant manually (POST would 409 — link to `/admin/groups` to create a custom group), (c) no groups exist at all. Pre-fix on deployments where `Admin` + `Everyone` are mapped via `AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL` and no custom groups exist, the picker was empty with zero indication that the operator needed to create a custom group first.
+- `/admin/users/{id}` — "Add to group" dropdown's `loadAll()` race fixed: pre-fix `loadGroups()` and `loadMemberships()` ran in parallel and `refreshGroupDropdown()` (called from `loadGroups`) read the `memberships` global, which could still be `[]` if memberships hadn't returned yet — letting the dropdown show groups the user was already in. `loadMemberships()` now re-runs the dropdown refresh once it has its data, so the final render reflects both data sets regardless of which fetch completes first.
+
+## [0.44.0] — 2026-05-07
+
+### Added
+- `agnes refresh-marketplace` — single CLI command that owns the per-user
+  filtered Claude Code marketplace lifecycle. `--bootstrap` does the
+  first-time setup: clones the per-user marketplace bare repo to
+  `~/.agnes/marketplace`, strips the PAT from the cloned origin URL so it
+  doesn't sit in plaintext at rest, registers the local path with Claude
+  Code, and installs every plugin in the served manifest at
+  `--scope project`. Without `--bootstrap` it does an incremental refresh:
+  fetch + reset to the remote, then version-aware reconcile (install missing
+  plugins, update on version diff, skip on match). Plugins removed from the
+  manifest are deliberately NOT auto-uninstalled — a transient empty manifest
+  from the server would otherwise wipe the user's stack.
+- `agnes init` now installs a SessionStart hook that runs
+  `agnes refresh-marketplace --quiet` on every Claude Code session,
+  alongside the existing chained `agnes self-upgrade; agnes pull` entry.
+  The marketplace refresh runs as a *separate* hook entry (not chained)
+  so a failure (e.g. fresh workspace with no clone yet) doesn't suppress
+  the data pull. The refresh command is wrapped in `bash -c "..."`
+  because Claude Code on Windows runs hook commands directly without a
+  shell, which would otherwise leave the `2>/dev/null || true` syntax
+  uninterpreted.
+- When `agnes refresh-marketplace` detects an actual change, it emits
+  Claude Code hook JSON on stdout — `systemMessage` (transient toast)
+  and `additionalContext` (model-side system reminder) — both pointing
+  at `/reload-plugins` so the running session loads new plugins without
+  a restart.
+
+### Changed
+- Install-prompt step 5 (in the dashboard-served setup payload) collapses
+  from a 15-line inline shell sequence — `rm -rf` + `git clone` + per-plugin
+  `claude plugin install` calls — to a single `agnes refresh-marketplace
+  --bootstrap` invocation. The old inline form tripped Claude Code's agent
+  `rm -rf` permission gate on first run.
+- `scripts/dev/agnes-client-reset.sh`: now cleans
+  `~/.claude/plugins/{marketplaces,cache}/agnes`, drops the uv build cache,
+  and documents workspace-scoped residue that can't be enumerated from a
+  user-level reset.
+
+### Internal
+
+- `infra/modules/customer-instance` (tag `infra-v1.7.0`): `google_compute_instance.vm` now sets `allow_stopping_for_update = true`. Without it, changing `machine_type` (or any other field GCP will only mutate on a stopped VM) caused Terraform to fall back to a destroy + recreate, churning VM-local state for what should be an in-place resize. Consumers do not need to update — the field is provider-side only — but bumping the module ref to `infra-v1.7.0` enables in-place machine-type bumps.
+
+## [0.43.0] — 2026-05-06
+
+### Added
+
+- CLI auto-upgrade: `agnes self-upgrade` reinstalls the CLI from the server's currently-shipped wheel via `uv tool install --force`, falling back to `pip install --force-reinstall --no-deps` via `sys.executable` when uv is not on PATH. After install, the new binary is smoke-tested at the install-resolved path (`uv tool dir --bin` for uv, `<sys.executable parent>/agnes` for pip) — never via PATH lookup, to avoid stale-shadow false positives. Smoke failure triggers automatic rollback to the previously verified-good wheel (recorded in `~/.config/agnes/last_known_good.json`); rollback's exit code is captured and surfaced on stderr if it also fails. First-ever upgrade or unrecoverable rollback prints the canonical bootstrap recovery: `curl -fsSL <your-agnes-server>/cli/install.sh | bash`. The new command is wired into the SessionStart hook installed by `agnes init` as a chained shell entry (`agnes self-upgrade … || true; agnes pull … || true`) so an upgrade failure does not block the pull.
+- Server: `/api/*` responses now carry `X-Agnes-Latest-Version` and `X-Agnes-Min-Version` headers. CLIs older than `X-Agnes-Min-Version` exit with **code 2** and a remediation message instead of failing on a wire-protocol mismatch. Day-one floor is `0.0.0` (no enforcement) — bump `MIN_COMPAT_CLI_VERSION` in `app/version.py` in the same PR that ships a deliberate wire break.
+- CLI: `cli/update_check.py:check()` accepts a keyword-only `bypass_disabled=True` so explicit `agnes self-upgrade` invocations probe `/cli/latest` even when `AGNES_NO_UPDATE_CHECK=1` is set (which silences the implicit warning loop only).
+
+## [0.42.0] — 2026-05-06
+
+### Fixed
+- `agnes query --remote`: full backtick BigQuery paths in user SQL are no
+  longer corrupted by the registered-name rewriter. Previously a query
+  like ``SELECT … FROM `<project>.<dataset>.<table>` WHERE …`` whose
+  table name happened to be registered as a bare-name alias would have
+  the alias re-substituted *inside* the backtick path, producing
+  malformed SQL that BigQuery rejected with a parse error. The cap-guard
+  then fell back to a filter-less `SELECT *` size estimate (often orders
+  of magnitude larger than the real scan), blocking the query as
+  `remote_scan_too_large`. Issue #201.
+
+### Changed
+- `agnes query --remote`: cap-guard fallback no longer estimates from
+  a synthetic `SELECT *` when the rewritten SQL fails dry-run. It first
+  retries the user's original SQL (handles BQ-native input cleanly), and
+  only when *that* also fails returns a structured `remote_estimate_failed`
+  HTTP 400 with a hint instead of silently over-estimating.
+- **BREAKING (clients matching error kinds)**: failure to estimate
+  remote-query scan size now returns `kind="remote_estimate_failed"`
+  instead of being masked as `remote_scan_too_large` caused by
+  over-estimation. Operators that grep for the old kind in dashboards
+  should update.
+
+### Security
+- `agnes query --remote`: full backtick BigQuery paths are now
+  registry-gated identically to `bq."<dataset>"."<table>"` syntax.
+  Previously, full backtick paths bypassed Agnes RBAC entirely — only
+  the configured service account scope limited what users could query.
+  New `bq_path_cross_project` (when the project ≠ configured data
+  project) and `bq_path_not_registered` (when path is unknown) error
+  kinds. Issue #201.
+
+## [0.41.0] — 2026-05-06
+
+### Fixed
+- **Orchestrator filesystem fallback for materialized parquets that
+  couldn't register in `extract.duckdb`'s `_meta`**
+  (`src/orchestrator.py:_attach_and_create_views`). The 0.40.0 fix in
+  `materialize_query` opens `extract.duckdb` from a fresh DuckDB handle
+  to write the `_meta` row + inner view; in production the same uvicorn
+  process already holds `extract.duckdb` ATTACHed read-only as the
+  source-name alias under the orchestrator's analytics connection, and
+  DuckDB's single-process file-handle uniqueness rejects the second
+  open with `Binder Error: Unique file handle conflict: Cannot attach
+  "extract" — already attached by database "<source>"`. The 0.40.0
+  helper logs WARNING and falls through; parquet stays canonical, but
+  the master view never appears via the meta path.
+
+  This release adds a second pass at the end of
+  `_attach_and_create_views`: scan `<extract_dir>/data/*.parquet` and
+  create a master view via `read_parquet('<path>')` for any parquet
+  whose `<id>` is not already in the per-source `tables` list (i.e. the
+  meta path didn't pick it up). Decoupled from `materialize_query`'s
+  open-handle race; robust against any registration drift between
+  materialize and rebuild. Honors the same `view_ownership` / cross-
+  connector collision rules as the meta path (first-come-first-served
+  via `view_repo.claim`). Tests cover: fallback fires when meta row is
+  missing; fallback skips when meta path already created the view (no
+  shadow); invalid identifier in parquet stem is skipped without crash;
+  source without `data/` subdir doesn't crash the scan.
+
+## [0.40.0] — 2026-05-06
+
+### Fixed
+- **Materialized BigQuery parquets now register themselves in
+  `extract.duckdb` so the master view actually appears**
+  (`connectors/bigquery/extractor.py:materialize_query`). Pre-fix the
+  function wrote the `<id>.parquet` to disk and returned the row count,
+  but **never** wrote a `_meta` row or an inner view in the connector's
+  `extract.duckdb`. The orchestrator's `rebuild()` scans `_meta` to
+  decide which master views to create, so materialized tables remained
+  invisible: `agnes query "SELECT … FROM <id>"` returned HTTP 400
+  *"registered as query_mode='materialized' but is not yet materialized
+  in this instance's analytics views"* even though the parquet was
+  sitting there. Symptom appeared after every container recreate (image
+  upgrade) and after every `_create_meta_table` cycle in the extractor
+  subprocess (which `DROP TABLE IF EXISTS _meta` + `CREATE TABLE`
+  cleanly each pass — wiping any prior materialized rows). Fix: after
+  the atomic `os.replace(tmp_path, parquet_path)`, open
+  `extract.duckdb` and `DELETE FROM _meta WHERE table_name = ? + INSERT
+  + CREATE OR REPLACE VIEW <id> AS SELECT * FROM read_parquet('<path>')`
+  inside a single transaction. Idempotent, fail-soft (parquet remains
+  canonical, the next sync pass recovers any registration drift).
+  When `extract.duckdb` doesn't exist yet (fresh BQ-only deployment),
+  the fix logs and continues — the next extractor pass creates the
+  file and the master view appears on the rebuild after that.
 
 ## [0.39.0] — 2026-05-06
 

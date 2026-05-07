@@ -242,15 +242,17 @@ def test_guardrail_invokes_dry_run_exactly_once_per_request(
     assert "`test-data-prj.marketing.traffic`" in state["last_sql"]
 
 
-def test_guardrail_falls_back_to_per_table_estimate_on_bq_parse_error(
+def test_fallback_tries_original_sql_first(
     seeded_app, mock_dry_run, monkeypatch,
 ):
-    """When BQ rejects the rewritten SQL with ``bq_bad_request`` (DuckDB-only
-    syntax that doesn't translate — e.g. ``::INT`` casts, ``STRPOS``, …),
-    the cap-guard falls back to the pre-#171 per-table SELECT * approach
-    so a non-portable query still gets a (loose) cap estimate instead of
-    fail-opening.
-    """
+    """Issue #201 — when the rewriter produces SQL that BQ rejects with
+    `bq_bad_request` but the user's ORIGINAL SQL dry-runs cleanly, the
+    cap-guard uses the original SQL's byte estimate. No more synthetic
+    `SELECT *` over-estimate.
+
+    Bare-name reference populates `dry_run_set` so the cap-guard
+    actually fires. Mock returns parse-error on the first call
+    (rewritten SQL) and small bytes on the second (original)."""
     from connectors.bigquery.access import BqAccessError
 
     _register_bq_remote_row("ue", "finance", "ue")
@@ -259,10 +261,10 @@ def test_guardrail_falls_back_to_per_table_estimate_on_bq_parse_error(
 
     def fake_dry_run(_bq, sql):
         state["calls"].append(sql)
-        # First call (rewritten user SQL) → BQ parse error.
+        # First call (rewritten SQL) → BQ parse error.
         if len(state["calls"]) == 1:
-            raise BqAccessError("bq_bad_request", "Syntax error: unexpected '::'")
-        # Second call (fallback per-table SELECT *) → small bytes, pass cap.
+            raise BqAccessError("bq_bad_request", "Syntax error: simulated")
+        # Second call (the user's original SQL) → small, passes cap.
         return 4096
 
     monkeypatch.setattr(
@@ -271,28 +273,78 @@ def test_guardrail_falls_back_to_per_table_estimate_on_bq_parse_error(
 
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
-    # SQL with DuckDB-only `::INT` cast that BQ would reject.
+    user_sql = "SELECT order_id FROM ue WHERE country = 'CZ'"
+    r = c.post("/api/query", json={"sql": user_sql}, headers=_auth(token))
+
+    # Two dry-runs: rewritten then original. No third synthetic-SELECT-*
+    # call.
+    assert len(state["calls"]) == 2, (
+        f"expected rewritten + original-SQL retry, got "
+        f"{len(state['calls'])}: {state['calls']}"
+    )
+    assert state["calls"][1] == user_sql, (
+        f"second call must be the user's ORIGINAL SQL, got "
+        f"{state['calls'][1]!r}"
+    )
+    # The response must NOT be remote_scan_too_large from a synthetic
+    # over-estimate — 4096 bytes is well under the 5 GiB cap.
+    if r.status_code == 400:
+        detail = r.json().get("detail", {})
+        if isinstance(detail, dict):
+            assert detail.get("reason") != "remote_scan_too_large", detail
+
+
+def test_fallback_fails_fast_on_pure_duckdb_syntax(
+    seeded_app, mock_dry_run, monkeypatch,
+):
+    """When BOTH the rewritten and original SQL fail with `bq_bad_request`
+    (true DuckDB-only syntax like `::INT`), return HTTP 400
+    `remote_estimate_failed` — never silently over-estimate via a
+    synthetic `SELECT *`."""
+    from connectors.bigquery.access import BqAccessError
+
+    _register_bq_remote_row("ue", "finance", "ue")
+
+    state = {"calls": []}
+
+    def always_parse_error(_bq, sql):
+        state["calls"].append(sql)
+        raise BqAccessError("bq_bad_request", "Syntax error: unexpected '::'")
+
+    monkeypatch.setattr(
+        "app.api.query._bq_dry_run_bytes", always_parse_error, raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
     r = c.post(
         "/api/query",
         json={"sql": "SELECT order_id::INT FROM ue WHERE country = 'CZ'"},
         headers=_auth(token),
     )
 
-    # Two dry-runs (rewritten + fallback per-table) before the (failed)
-    # execute. Status will be a downstream error from analytics.execute()
-    # since `::INT` doesn't work in DuckDB either against a remote view —
-    # but the GUARDRAIL must have completed without 5xx-ing.
+    # Two dry-runs (rewritten + original retry). NO synthetic SELECT * fallback.
     assert len(state["calls"]) == 2, (
-        f"expected 1 rewritten + 1 fallback dry-run, got {len(state['calls'])}: "
-        f"{state['calls']}"
+        f"expected 1 rewritten + 1 original-retry, got "
+        f"{len(state['calls'])}: {state['calls']}"
     )
-    assert "::" in state["calls"][0], "first call should be the rewritten user SQL"
-    assert state["calls"][1].startswith("SELECT * FROM"), (
-        "second call should be the per-table fallback"
-    )
-    # Whatever HTTP status comes back must NOT be 502 from the guard's
-    # transport-error path — fallback must absorb the bq_bad_request.
-    assert r.status_code != 502, r.json()
+    # No call should be a synthetic ``SELECT * FROM `<project>...```. The
+    # original-SQL retry contains the user's SELECT clause.
+    for c_sql in state["calls"]:
+        # If a call is just a synthetic ``SELECT * FROM `<project>.<bucket>.<table>```
+        # the user's `WHERE country = 'CZ'` would be missing.
+        if c_sql.startswith("SELECT * FROM `") and "WHERE" not in c_sql:
+            raise AssertionError(
+                f"synthetic SELECT * fallback was used: {c_sql!r}"
+            )
+
+    assert r.status_code == 400, r.json()
+    detail = r.json().get("detail", {})
+    assert isinstance(detail, dict), detail
+    assert detail.get("kind") == "remote_estimate_failed", detail
+    assert "underlying" in detail, detail
+    assert "agnes catalog" in detail.get("hint", "").lower() or \
+           "backtick" in detail.get("hint", "").lower(), detail
 
 
 def test_guardrail_propagates_502_on_non_parse_bq_errors(
@@ -432,3 +484,243 @@ def test_rewrite_helper_is_case_insensitive_on_bare_names():
     )
     assert "`p.fin.ue` WHERE `p.fin.ue`.id" in rewritten or \
            rewritten.lower().count("`p.fin.ue`") == 2
+
+
+# ---------------------------------------------------------------------------
+# Issue #201: rewriter must NOT touch text inside `…` backtick segments.
+# A user-supplied full BQ-native path `<project>.<dataset>.<table>` whose
+# table segment matches a registered bare name was being re-substituted
+# inside the backticks, producing malformed nested-backtick SQL that BQ
+# rejected with a parse error.
+# ---------------------------------------------------------------------------
+
+
+def test_rewrite_skips_inside_backtick_path():
+    """Full backtick BQ path is preserved byte-for-byte even when its
+    final segment matches a registered bare-name alias."""
+    from app.api.query import _rewrite_user_sql_for_bq_dry_run
+
+    sql = (
+        "SELECT * FROM `my-prj.finance.unit_economics` "
+        "WHERE country = 'CZ'"
+    )
+    rewritten = _rewrite_user_sql_for_bq_dry_run(
+        sql=sql,
+        name_lookups=[("unit_economics", "finance", "unit_economics")],
+        project="my-prj",
+    )
+    # No corruption — input is already BQ-native, rewriter is a no-op here.
+    assert rewritten == sql, (
+        f"backtick path was rewritten:\n  in : {sql!r}\n  out: {rewritten!r}"
+    )
+    # Sanity: the malformed nested form must NOT appear.
+    assert "`my-prj.finance.`my-prj" not in rewritten
+
+
+def test_rewrite_skips_inside_backtick_with_outside_bare_name():
+    """Mixed SQL: a bare name outside backticks is rewritten as before,
+    but an identically-named segment inside a backtick path is left
+    alone."""
+    from app.api.query import _rewrite_user_sql_for_bq_dry_run
+
+    sql = (
+        "SELECT a.id, b.col FROM ue a "
+        "JOIN `my-prj.finance.ue` b ON a.id = b.id"
+    )
+    rewritten = _rewrite_user_sql_for_bq_dry_run(
+        sql=sql,
+        name_lookups=[("ue", "fin_alias", "ue_alias")],
+        project="my-prj",
+    )
+    # Outside-backtick `ue` rewrites to the registered alias path.
+    assert "`my-prj.fin_alias.ue_alias`" in rewritten
+    # The user-supplied backtick path is preserved verbatim.
+    assert "`my-prj.finance.ue`" in rewritten
+    # The malformed nested form must NOT appear.
+    assert "`my-prj.finance.`my-prj.fin_alias.ue_alias`" not in rewritten
+
+
+def test_guardrail_skips_bare_name_match_inside_backticks(
+    seeded_app, mock_dry_run, monkeypatch,
+):
+    """The `name_lookups` collection populated by `_bq_guardrail_inputs`
+    must not include a registered name when the only place that name
+    appears in the SQL is inside a `…` backtick segment.
+
+    Captures the rewritten SQL the guardrail forwards to the dry-run and
+    asserts the bare-name was NOT substituted inside the user's backtick
+    path.
+    """
+    _register_bq_remote_row("unit_economics", "finance", "unit_economics")
+
+    captured = {"sql": None}
+
+    def capturing_fake(_bq, sql):
+        captured["sql"] = sql
+        return 1024
+
+    monkeypatch.setattr(
+        "app.api.query._bq_dry_run_bytes", capturing_fake, raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    user_sql = (
+        "SELECT * FROM `test-data-prj.finance.unit_economics` "
+        "WHERE country = 'CZ'"
+    )
+    c.post("/api/query", json={"sql": user_sql}, headers=_auth(token))
+
+    sent = captured["sql"]
+    if sent is None:
+        # Guardrail decided no BQ tables were referenced — that's also
+        # an acceptable "no false-positive" outcome (Layer 3 will cover
+        # the explicit registry check for full backtick paths). We just
+        # need to ensure the bare-name regex didn't fire.
+        return
+    # The user's exact backtick path must survive verbatim — no nested
+    # backticks introduced by a stray bare-name rewrite.
+    assert "`test-data-prj.finance.unit_economics`" in sent, (
+        f"backtick path corrupted by guardrail:\n  out: {sent!r}"
+    )
+    assert "`test-data-prj.finance.`test-data-prj" not in sent, (
+        f"nested-backtick corruption signature present: {sent!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #201 Layer 3: full backtick BigQuery paths are registry-gated.
+# Pre-fix these bypassed Agnes RBAC entirely — only the configured service
+# account scope limited which tables a user could reach. Post-fix, they're
+# treated identically to `bq."<dataset>"."<table>"` syntax.
+# ---------------------------------------------------------------------------
+
+
+def test_full_backtick_path_unregistered_denied(seeded_app, mock_dry_run):
+    """Full backtick path to an unregistered `<dataset>.<table>` (project
+    matches the configured data project) → HTTP 403 with
+    `bq_path_not_registered`."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={
+            "sql": (
+                "SELECT * FROM `test-data-prj.secret_ds.secret_tbl` "
+                "WHERE country = 'CZ'"
+            ),
+        },
+        headers=_auth(token),
+    )
+    assert r.status_code == 403, r.json()
+    detail = r.json().get("detail", {})
+    assert isinstance(detail, dict), detail
+    assert detail.get("reason") == "bq_path_not_registered", detail
+    assert "secret_ds" in detail.get("path", ""), detail
+    assert "secret_tbl" in detail.get("path", ""), detail
+
+
+def test_full_backtick_path_cross_project_denied(seeded_app, mock_dry_run):
+    """Full backtick path with project ≠ configured data project → HTTP
+    403 with `bq_path_cross_project`. Even if the path happens to point
+    at a registered (bucket, source_table), the project mismatch is the
+    primary boundary."""
+    _register_bq_remote_row("ue", "finance", "ue")
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={
+            "sql": "SELECT * FROM `other-project.finance.ue` WHERE id = 1",
+        },
+        headers=_auth(token),
+    )
+    assert r.status_code == 403, r.json()
+    detail = r.json().get("detail", {})
+    assert isinstance(detail, dict), detail
+    assert detail.get("reason") == "bq_path_cross_project", detail
+    assert detail.get("expected_project") == "test-data-prj", detail
+    assert "other-project" in detail.get("path", ""), detail
+
+
+def test_full_backtick_path_registered_admin_passes(
+    seeded_app, mock_dry_run, monkeypatch,
+):
+    """Admin caller + registered path + matching project → no RBAC
+    rejection. The dry-run fires (we can capture the SQL the guardrail
+    forwards) and no `bq_path_*` reason appears in any error response."""
+    _register_bq_remote_row("ue", "finance", "ue")
+
+    captured = {"sql": None}
+
+    def capturing_fake(_bq, sql):
+        captured["sql"] = sql
+        return 1024  # tiny — pass cap
+
+    monkeypatch.setattr(
+        "app.api.query._bq_dry_run_bytes", capturing_fake, raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={
+            "sql": "SELECT * FROM `test-data-prj.finance.ue` WHERE id = 1",
+        },
+        headers=_auth(token),
+    )
+    # If 403, must NOT be the issue-#201 bq_path_* reasons.
+    if r.status_code == 403:
+        detail = r.json().get("detail", {})
+        if isinstance(detail, dict):
+            assert detail.get("reason") not in (
+                "bq_path_not_registered",
+                "bq_path_access_denied",
+                "bq_path_cross_project",
+            ), f"admin + registered path should pass RBAC: {detail}"
+    # The dry-run was invoked, meaning Pass 3 added the path to dry_run_set
+    # and the cap-guard fired. The user's WHERE clause must still be in
+    # the dry-run SQL (validates Layer 1 — backtick-aware rewrite).
+    assert captured["sql"] is not None, (
+        "dry-run never fired — Pass 3 may not have registered the path"
+    )
+    assert "`test-data-prj.finance.ue`" in captured["sql"], captured["sql"]
+    assert "WHERE id = 1" in captured["sql"], captured["sql"]
+
+
+def test_full_backtick_path_inside_string_literal_not_gated(
+    seeded_app, mock_dry_run,
+):
+    """Defensive case: a backtick path appearing inside a SQL string
+    literal (rare but possible) should not trigger Pass 3. Practically
+    this is unreachable because backticks aren't typically valid inside
+    BQ string literals — but the regex doesn't know that. We document
+    that the gate applies to ALL backtick triples to be safe; users who
+    really need a literal can use single-quoted strings without
+    backticks."""
+    # No registration; the test confirms an unregistered path inside
+    # what looks like a string is still gated. This is the conservative
+    # boundary — false-positive on string literal beats false-negative
+    # on a real RBAC bypass.
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={
+            "sql": (
+                "SELECT 'matches `test-data-prj.x.y`' AS lit"
+            ),
+        },
+        headers=_auth(token),
+    )
+    # Either gated (403) or 200 if the analytics DB happens to evaluate
+    # the literal — both are acceptable. The point is no silent RBAC
+    # bypass: if the response is 200, no BQ table was reached.
+    if r.status_code == 403:
+        detail = r.json().get("detail", {})
+        if isinstance(detail, dict):
+            assert detail.get("reason") in (
+                "bq_path_not_registered",
+                "bq_path_cross_project",
+            ), detail

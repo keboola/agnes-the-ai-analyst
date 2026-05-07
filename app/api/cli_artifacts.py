@@ -43,7 +43,7 @@ def _find_wheel() -> Path | None:
 async def cli_latest():
     """Metadata for the currently-shipped CLI wheel.
 
-    Consumed by `da` CLI's auto-update check so it can warn when a newer
+    Consumed by `agnes` CLI's auto-update check so it can warn when a newer
     version is on the server. Public + cacheable — no secrets here.
     Returns `version=None` when the server has no wheel yet (dev image that
     didn't run `uv build`).

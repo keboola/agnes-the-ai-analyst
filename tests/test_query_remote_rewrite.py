@@ -232,6 +232,44 @@ def test_join_bq_to_local_skips_rewrite(seeded_registry, monkeypatch):
     assert rewritten == user_sql  # untouched
 
 
+def test_local_name_inside_backtick_path_does_not_trip_cross_source(
+    seeded_registry, monkeypatch,
+):
+    """Devin Review on PR #208 (issue #201 follow-up): a registered
+    LOCAL-mode table name appearing as a segment of a user-supplied full
+    backtick BQ path must NOT trip the cross-source guard. Pre-fix the
+    bare-name regex at the cross-source check ran against unmasked
+    sql_lower, so ``\\`test-prj.dataset.orders\\``` would match registered
+    local ``orders`` inside the backticks and force the wrapper to bail
+    to the ATTACH-catalog slow path (50-100× slower). Post-fix the
+    regex runs against the backtick-masked copy, the cross-source check
+    correctly sees only BQ refs, and the wrap proceeds.
+    """
+    from app.api.query import _rewrite_user_sql_for_bigquery_query
+    _register_bq_remote(seeded_registry, table_id="bq.fin.ue", name="ue",
+                        bucket="fin", source_table="ue")
+    _register_local(seeded_registry, table_id="kbc.in.orders", name="orders")
+    _set_bq_project(monkeypatch, "test-prj")
+
+    user_sql = (
+        "SELECT u.id "
+        "FROM ue u "
+        "JOIN `test-prj.dataset.orders` o ON u.x = o.x "
+        "WHERE o.value > 0"
+    )
+    rewritten, did_rewrite = _rewrite_user_sql_for_bigquery_query(
+        user_sql, seeded_registry,
+    )
+    # Must wrap — both refs are BQ; the local `orders` registration is
+    # irrelevant to a query that touches only BQ paths.
+    assert did_rewrite is True
+    assert "bigquery_query(" in rewritten
+    # The user's backtick path is preserved verbatim inside the wrapped
+    # inner SQL (Layer 1 split-on-backticks behaviour), so the original
+    # `test-prj.dataset.orders` reference survives.
+    assert "test-prj.dataset.orders" in rewritten
+
+
 def test_no_bq_tables_passes_through(seeded_registry, monkeypatch):
     """User SQL referencing only local-source tables → no rewrite,
     no log spam, original SQL returned."""

@@ -28,11 +28,13 @@ from cli.commands.auth import auth_app
 from cli.commands.init import init_app
 from cli.commands.pull import pull_app
 from cli.commands.push import push_app
+from cli.commands.refresh_marketplace import refresh_marketplace_app
 from cli.commands.query import query_command
 from cli.commands.status import status_app
 from cli.commands.admin import admin_app
 from cli.commands.diagnose import diagnose_app
 from cli.commands.skills import skills_app
+from cli.commands.self_upgrade import self_upgrade_app
 from cli.commands.setup import setup_app
 from cli.commands.server import server_app
 from cli.commands.explore import explore_app
@@ -110,11 +112,13 @@ app.add_typer(auth_app, name="auth")
 app.add_typer(init_app, name="init")
 app.add_typer(pull_app, name="pull")
 app.add_typer(push_app, name="push")
+app.add_typer(refresh_marketplace_app, name="refresh-marketplace")
 app.command("query")(query_command)
 app.add_typer(status_app, name="status")
 app.add_typer(admin_app, name="admin")
 app.add_typer(diagnose_app, name="diagnose")
 app.add_typer(skills_app, name="skills")
+app.add_typer(self_upgrade_app, name="self-upgrade")
 app.add_typer(setup_app, name="setup")
 app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")

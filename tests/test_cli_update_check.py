@@ -35,6 +35,27 @@ def test_check_returns_none_when_server_url_missing(tmp_config):
     assert update_check.check(None) is None  # type: ignore[arg-type]
 
 
+def test_check_bypass_disabled_overrides_env(monkeypatch, tmp_config):
+    """`AGNES_NO_UPDATE_CHECK=1` silences the implicit warning loop, but
+    explicit callers (e.g. `agnes self-upgrade`) pass `bypass_disabled=True`
+    and must NOT become a silent no-op."""
+    from cli import update_check
+
+    monkeypatch.setenv("AGNES_NO_UPDATE_CHECK", "1")
+    payload = {
+        "version": "9.9.9",
+        "wheel_filename": "x.whl",
+        "download_url_path": "/cli/wheel/x.whl",
+    }
+    with patch("cli.update_check._installed_version", return_value="2.0.0"):
+        with patch("cli.update_check._fetch_latest", return_value=payload):
+            # Default: env var wins, returns None.
+            assert update_check.check("http://server.test") is None
+            # Bypass: env var ignored.
+            info = update_check.check("http://server.test", bypass_disabled=True)
+            assert info is not None and info.latest == "9.9.9"
+
+
 def test_check_returns_none_when_installed_version_unknown(tmp_config):
     from cli import update_check
     with patch("cli.update_check._installed_version", return_value="unknown"):

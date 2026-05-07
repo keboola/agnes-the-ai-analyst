@@ -126,6 +126,17 @@
     border: 1px solid var(--primary, #6366f1); cursor: pointer;
   }
   .add-member-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .ud-hint {
+    margin: 8px 0 0; font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .ud-hint a { color: var(--accent, #2563eb); }
+  .ud-hint code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    background: var(--border-light, #f3f4f6);
+    padding: 1px 4px; border-radius: 3px;
+  }
 
   /* Effective access */
   .ea-empty, .ea-loading {
@@ -227,6 +238,7 @@
       </select>
       <button id="add-group-btn" disabled>Add to group</button>
     </div>
+    <p id="add-group-hint" class="ud-hint" style="display:none;"></p>
   </section>
 
   <!-- Effective access -->
@@ -340,6 +352,14 @@ async function loadMemberships() {
   }
   memberships = await r.json();
   renderMemberships();
+  // loadAll() fires loadGroups() and loadMemberships() in parallel; if
+  // groups resolved first, refreshGroupDropdown() saw the initial empty
+  // memberships array and listed groups the user is already in. Re-run
+  // here so the final dropdown reflects both data sets regardless of
+  // which fetch completes first. Cheap (in-memory only) and idempotent.
+  if (allGroups.length > 0) {
+    refreshGroupDropdown();
+  }
 }
 
 function renderMemberships() {
@@ -401,22 +421,54 @@ async function loadGroups() {
 
 function refreshGroupDropdown() {
   const sel = document.getElementById("add-group-select");
+  const hint = document.getElementById("add-group-hint");
   const memberOf = new Set(memberships.map(m => m.group_id));
   sel.innerHTML = '<option value="">— Pick a group —</option>';
+  let googleManagedSkipped = 0;
+  let assignableCount = 0;
   for (const g of allGroups) {
     if (memberOf.has(g.id)) continue;          // already a member, hide
-    if (g.is_google_managed) continue;         // membership owned by Workspace —
-                                               // includes mapped Admin / Everyone when
-                                               // AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL is
+    if (g.is_google_managed) {                 // membership owned by Workspace —
+      googleManagedSkipped++;                  // includes mapped Admin / Everyone when
+      continue;                                // AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL is
                                                // set. The API would 409 on POST
                                                // anyway; hiding the option keeps the
                                                // picker honest about what's grantable.
+    }
     const opt = document.createElement("option");
     opt.value = g.id;
     opt.textContent = g.name + (g.is_system ? " (system)" : "");
     sel.appendChild(opt);
+    assignableCount++;
   }
-  document.getElementById("add-group-btn").disabled = sel.options.length <= 1;
+  document.getElementById("add-group-btn").disabled = assignableCount === 0;
+
+  // When the dropdown ends up empty, explain why instead of leaving the
+  // admin staring at a silent "— Pick a group —" placeholder. Three cases:
+  //  (a) user is already in every existing group;
+  //  (b) every remaining group is Google-Workspace-managed (POST would 409);
+  //  (c) no groups exist at all (fresh deploy with the system seeds masked
+  //      via AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL). Cases (b)/(c) point the
+  //      admin at /admin/groups so they can create a custom group whose
+  //      membership flows through Agnes itself.
+  if (assignableCount === 0) {
+    if (allGroups.length === 0) {
+      hint.textContent = "No groups exist on this server.";
+      hint.style.display = "block";
+    } else if (googleManagedSkipped > 0) {
+      hint.innerHTML = (
+        "All assignable groups are managed by Google Workspace — membership flows from " +
+        "<code>admin.google.com</code>. To grant access manually, create a custom Agnes group at " +
+        "<a href=\"/admin/groups\">/admin/groups</a>."
+      );
+      hint.style.display = "block";
+    } else {
+      hint.textContent = "User is already a member of every group.";
+      hint.style.display = "block";
+    }
+  } else {
+    hint.style.display = "none";
+  }
 }
 
 document.getElementById("add-group-select").addEventListener("change", e => {
