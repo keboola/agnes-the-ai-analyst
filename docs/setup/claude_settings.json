@@ -5,7 +5,15 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "agnes pull --quiet 2>/dev/null || true"
+                        "command": "agnes self-upgrade --quiet 2>/dev/null || true; agnes pull --quiet 2>/dev/null || true"
+                    }
+                ]
+            },
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "bash -c \"agnes refresh-marketplace --quiet 2>/dev/null || true\""
                     }
                 ]
             },
@@ -23,7 +31,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "agnes push --quiet 2>/dev/null || true"
+                        "command": "bash -c \"( nohup agnes push --quiet </dev/null >/dev/null 2>&1 & ) ; true\""
                     }
                 ]
             }

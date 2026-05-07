@@ -227,3 +227,69 @@ def test_install_idempotent_chained_entry(tmp_path):
     # duplicate any of them.
     assert len(cfg["hooks"]["SessionStart"]) == 3
     assert len(cfg["hooks"]["SessionEnd"]) == 1
+
+
+def test_session_end_push_is_detached(tmp_path):
+    """Regression test for the headless-mode SIGTERM bug.
+
+    Claude Code in `-p` (headless) mode SIGTERMs SessionEnd hook
+    subprocesses ~1s after launch, regardless of whether the hook is
+    still working. `agnes push` for a typical workspace (10 session
+    JSONLs) takes 5-30s, so a synchronous form gets killed mid-first-
+    upload and most files never reach the server. The hook MUST run
+    detached so the upload child survives the hook subprocess being
+    torn down.
+
+    This test pins the wrapper shape — `bash -c "( nohup ... & ) ; true"` —
+    so a future refactor that re-introduces the synchronous form fails
+    loudly here instead of silently regressing in production.
+    """
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    ends = _commands_for(cfg, "SessionEnd")
+    assert len(ends) == 1
+    cmd = ends[0]
+    assert "agnes push" in cmd, f"SessionEnd must still call agnes push; got: {cmd!r}"
+    # Detachment markers — every one of these is load-bearing:
+    # - `nohup` ignores SIGHUP if the controlling terminal disappears
+    # - `&` backgrounds the child inside the subshell
+    # - `</dev/null` decouples stdin so the parent doesn't wait on a pipe
+    # - `>/dev/null 2>&1` decouples stdout/stderr likewise
+    assert "nohup" in cmd, f"SessionEnd push must use nohup for detachment; got: {cmd!r}"
+    assert "&" in cmd, f"SessionEnd push must background with &; got: {cmd!r}"
+    assert "</dev/null" in cmd, (
+        f"SessionEnd push must redirect stdin from /dev/null; got: {cmd!r}"
+    )
+    assert ">/dev/null 2>&1" in cmd, (
+        f"SessionEnd push must redirect stdout/stderr to /dev/null; got: {cmd!r}"
+    )
+    # `bash -c` wrapping is required because Claude Code on Windows runs
+    # hook commands directly (no shell), so the subshell + redirection
+    # syntax wouldn't parse otherwise.
+    assert cmd.startswith("bash -c "), (
+        f"SessionEnd push must be wrapped in bash -c for Windows; got: {cmd!r}"
+    )
+
+
+def test_install_replaces_old_synchronous_session_end_push(tmp_path):
+    """A workspace bootstrapped before the detachment fix has the old
+    synchronous `agnes push --quiet 2>/dev/null || true` SessionEnd entry.
+    On the next `agnes init`, that entry must be matched by the
+    `agnes push` marker and replaced with the new detached form — not
+    stacked alongside it."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "SessionEnd": [
+                {"hooks": [{"type": "command", "command": "agnes push --quiet 2>/dev/null || true"}]},
+            ],
+        }
+    }))
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    ends = _commands_for(cfg, "SessionEnd")
+    assert len(ends) == 1, ends
+    assert "nohup" in ends[0], (
+        f"Old synchronous push entry must have been replaced with the detached form; got: {ends!r}"
+    )
