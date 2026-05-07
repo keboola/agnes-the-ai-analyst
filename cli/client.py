@@ -387,6 +387,14 @@ def api_patch(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
         raise _translate_transport_error(exc, context=f"PATCH {path}", timeout_s=timeout) from exc
 
 
+def api_put(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
+    try:
+        with get_client(timeout=timeout) as client:
+            return client.put(path, **kwargs)
+    except httpx.HTTPError as exc:
+        raise _translate_transport_error(exc, context=f"PUT {path}", timeout_s=timeout) from exc
+
+
 def _is_transient(exc: Exception) -> bool:
     """Worth retrying? Network blip or 5xx — yes. Auth / 4xx — no."""
     if isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.WriteError,

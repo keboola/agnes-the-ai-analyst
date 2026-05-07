@@ -113,3 +113,29 @@ class TestVerificationCodes:
 
         result = verify_code("123456")
         assert result is None
+
+    def test_code_uses_csprng_not_random_module(self, storage_paths):
+        """Issue #84: pairing-code RNG must not be derivable from
+        `random.seed`. Pre-fix the generator used `random.choices`, which
+        means an attacker who scrapes one code can recover the PRNG state
+        and predict subsequent codes issued in the same process. The fix
+        switched to `secrets.choice` (CSPRNG-backed); seeding the `random`
+        module must therefore have no effect on the produced codes.
+        """
+        import random as _random
+        from services.telegram_bot.storage import _generate_code
+
+        _random.seed(42)
+        first = _generate_code()
+        _random.seed(42)
+        second = _generate_code()
+        # If the generator still used `random`, seed(42) would force two
+        # identical sequences. With `secrets`, they're independent draws
+        # from the OS CSPRNG and equal only by astronomical coincidence
+        # — well below any reasonable test flake threshold for a
+        # length-CODE_LENGTH digit string (1 in 10**CODE_LENGTH).
+        assert first != second, (
+            f"Generator appears to use seedable PRNG (got identical "
+            f"codes {first!r} after re-seeding); fix #84 may have "
+            f"regressed."
+        )
