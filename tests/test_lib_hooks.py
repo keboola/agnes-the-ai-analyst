@@ -27,12 +27,14 @@ def test_install_creates_settings_file(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    # SessionStart has two entries: (1) chained self-upgrade ; pull —
+    # SessionStart has three entries: (1) chained self-upgrade ; pull —
     # self-upgrade runs first so a wire-protocol bump lands before pull
     # tries to use the new CLI; (2) refresh-marketplace as a separate
     # entry so a failure (e.g. fresh workspace with no clone) doesn't
-    # suppress the data pull above.
-    assert len(starts) == 2
+    # suppress the data pull above; (3) push as a self-heal for orphan
+    # session JSONLs from `claude -p` headless mode (where Claude Code
+    # does NOT fire SessionEnd) or abnormal exits.
+    assert len(starts) == 3
     chain = next(
         (c for c in starts if "agnes self-upgrade" in c and "agnes pull" in c),
         None,
@@ -50,6 +52,14 @@ def test_install_creates_settings_file(tmp_path):
     assert refresh.startswith("bash -c "), (
         f"refresh-marketplace hook must be wrapped in bash -c for Windows; got: {refresh!r}"
     )
+    # The push self-heal entry is also bash-c-wrapped for Windows parity.
+    push_start = next((c for c in starts if "agnes push" in c), None)
+    assert push_start is not None, (
+        "Expected SessionStart self-heal `agnes push` entry for orphan JSONLs"
+    )
+    assert push_start.startswith("bash -c "), (
+        f"push self-heal hook must be wrapped in bash -c for Windows; got: {push_start!r}"
+    )
     ends = _commands_for(cfg, "SessionEnd")
     assert len(ends) == 1
     assert "agnes push --quiet" in ends[0]
@@ -59,9 +69,9 @@ def test_install_idempotent(tmp_path):
     install_claude_hooks(tmp_path)
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
-    # Two SessionStart entries (pull + refresh-marketplace), one SessionEnd
-    # entry (push). Re-install must NOT duplicate them.
-    assert len(cfg["hooks"]["SessionStart"]) == 2
+    # Three SessionStart entries (pull + refresh-marketplace + push self-heal),
+    # one SessionEnd entry (push). Re-install must NOT duplicate them.
+    assert len(cfg["hooks"]["SessionStart"]) == 3
     assert len(cfg["hooks"]["SessionEnd"]) == 1
 
 
@@ -79,9 +89,10 @@ def test_install_replaces_old_da_sync_entries(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    assert len(starts) == 2
+    assert len(starts) == 3
     assert any("agnes pull" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
+    assert any("agnes push" in c for c in starts)
     # Legacy command must be gone from BOTH starts.
     assert not any("da sync" in c for c in starts)
 
@@ -89,8 +100,8 @@ def test_install_replaces_old_da_sync_entries(tmp_path):
 def test_install_replaces_prior_single_pull_entry(tmp_path):
     """Workspaces bootstrapped by a CLI version that only installed a
     single SessionStart entry (`agnes pull`, no refresh-marketplace) must
-    upgrade to the two-entry layout on the next install — not end up with
-    three entries (one old + two new)."""
+    upgrade to the three-entry layout on the next install — not end up
+    with four entries (one old + three new)."""
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(json.dumps({
@@ -103,9 +114,10 @@ def test_install_replaces_prior_single_pull_entry(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    assert len(starts) == 2
+    assert len(starts) == 3
     assert any("agnes pull" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
+    assert any("agnes push" in c for c in starts)
 
 
 def test_install_replaces_v0_43_chained_self_upgrade_pull_entry(tmp_path):
@@ -134,14 +146,15 @@ def test_install_replaces_v0_43_chained_self_upgrade_pull_entry(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    # Exactly two entries — the v0.43 chained line was replaced, not stacked.
-    assert len(starts) == 2, starts
+    # Exactly three entries — the v0.43 chained line was replaced, not stacked.
+    assert len(starts) == 3, starts
     chain = next(
         (c for c in starts if "agnes self-upgrade" in c and "agnes pull" in c),
         None,
     )
     assert chain is not None
     assert any("agnes refresh-marketplace" in c for c in starts)
+    assert any("agnes push" in c for c in starts)
     # SessionEnd untouched (single push entry).
     ends = _commands_for(cfg, "SessionEnd")
     assert len(ends) == 1
@@ -160,11 +173,12 @@ def test_install_preserves_third_party_hooks(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    # Third-party entry stays + both agnes entries get added.
-    assert len(starts) == 3
+    # Third-party entry stays + all three agnes entries get added.
+    assert len(starts) == 4
     assert any("echo hi from another tool" in c for c in starts)
     assert any("agnes pull" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
+    assert any("agnes push" in c for c in starts)
     # Other event types untouched.
     assert cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo pre"
 
@@ -208,9 +222,10 @@ def test_install_idempotent_chained_entry(tmp_path):
     install_claude_hooks(tmp_path)
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
-    # Two SessionStart entries (chained self-upgrade+pull plus refresh-
-    # marketplace) — re-install must not duplicate either.
-    assert len(cfg["hooks"]["SessionStart"]) == 2
+    # Three SessionStart entries (chained self-upgrade+pull, refresh-
+    # marketplace, and the push self-heal) — re-install must not
+    # duplicate any of them.
+    assert len(cfg["hooks"]["SessionStart"]) == 3
     assert len(cfg["hooks"]["SessionEnd"]) == 1
 
 

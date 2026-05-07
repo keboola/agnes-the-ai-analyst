@@ -10,6 +10,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.47.1] — 2026-05-07
+
+Keboola connector v27 — incremental, partitioned, where_filters, typed parquet.
+
+### Added
+
+- **`query_mode='local'` for Keboola** is back — admins can opt specific tables out of the v26 materialized default and into a per-table sync-strategy dispatcher (full_refresh / incremental / partitioned). The radio sits in the `/admin/tables` Edit modal; metadata stored in seven new `table_registry` columns (see schema v27 below).
+- **Three Keboola sync strategies**:
+  - `full_refresh` (default): full-table export-async, replaces the on-disk parquet atomically. Same shape as the v26 materialized default.
+  - `incremental`: delta export by `incremental_column` (timestamp), merge into existing parquet keyed by primary_key. New `_convert_column` path coerces string-typed deltas to the existing parquet's typed columns; PK conversion failure now raises hard (was silent mixed-type column → broken dedup).
+  - `partitioned`: per-partition export by `partition_by` (date/timestamp column), `partition_granularity` (DAY / MONTH / YEAR), with `initial_load_chunk_days` for backfill. Each partition lives in its own parquet under `data/<table>/partition_<value>.parquet`.
+- **`where_filters` per table** — JSON list of column-value predicates injected as Storage API export filters; lets admins narrow a wide source table at the connector edge.
+- **Typed parquet writes** — Keboola Storage API exports are CSVs with all string columns; the new pipeline reads the table schema (column types) via `get_table_info` and coerces each column to its target dtype before writing parquet. Types preserved across `agnes pull` instead of every analyst seeing strings.
+
+### Changed
+
+- **Schema v26 → v27.** Auto-migration adds the seven new columns to `table_registry`: `incremental_window_days`, `max_history_days`, `incremental_column`, `where_filters`, `partition_by`, `partition_granularity`, `initial_load_chunk_days`. NULL on existing rows; meaningful only when paired with the matching strategy. Pre-existing `sync_strategy` column (default `'full_refresh'`) is now load-bearing — pre-v27 it was inert catalog metadata; post-v27 the Keboola extractor dispatches off it.
+- **`PUT /api/admin/registry/{id}`** changed from `{k: v for k, v in request.model_dump().items() if v is not None}` to `request.model_dump(exclude_unset=True)`. Semantic shift: previously, sending explicit `null` in the request body was silently ignored (field kept its existing value); now explicit `null` propagates as a real null update. Intentional — the v27 Edit modal needs to clear `incremental_column` etc. when an admin switches strategy from `incremental` back to `full_refresh`. Inline comment + regression test pin the new behavior.
+
+### Fixed (Devin Review)
+
+- **Schema docs in CLAUDE.md** updated from v25 to v27, with v25→v26 and v26→v27 migration entries describing what each version adds.
+- **`update_table` exclude_unset semantic shift** documented inline; `test_api_put_clears_v26_fields_on_strategy_switch` pins the explicit-null-propagates behavior.
+- **`incremental.py:_convert_column` failure on primary_key column** now raises hard (was silent mixed-type column → broken dedup downstream). Test added.
+
 ## [0.47.0] — 2026-05-07
 
 Catalog metadata enrichment + cache discipline + automatic warmup.
