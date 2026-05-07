@@ -153,12 +153,15 @@ docker compose up
 
 `agnes pull` is the canonical analyst-side distribution path: pulls the RBAC-filtered manifest from the server, downloads parquets whose MD5 changed (skipping `query_mode='remote'` rows), rebuilds local DuckDB views over them. `agnes push` mirrors it for the upload direction (sessions, CLAUDE.local.md).
 
-`agnes init` writes two hooks into `<workspace>/.claude/settings.json`:
+`agnes init` writes hooks into `<workspace>/.claude/settings.json`:
 
-- `SessionStart` → `agnes pull --quiet` — pulls fresh parquets at the start of every Claude Code session
-- `SessionEnd`   → `agnes push --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
+- `SessionStart` (3 entries):
+  1. `agnes self-upgrade --quiet; agnes pull --quiet` — chained: bump CLI to the server-pinned version first, then pull fresh parquets / rebuild local DuckDB views.
+  2. `agnes refresh-marketplace --quiet` — keep the per-user Claude Code marketplace clone in sync (separate entry so a fresh-workspace failure here doesn't suppress the data pull above).
+  3. `agnes push --quiet` — self-heal: upload any orphan session JSONLs left behind by previous `claude -p` invocations (where Claude Code does NOT fire SessionEnd) or abnormal exits. Symmetric with `agnes pull`.
+- `SessionEnd` (1 entry) → `agnes push --quiet` — upload this session's JSONL + `CLAUDE.local.md` to the server.
 
-Both pass `--quiet` so they don't pollute Claude Code stdout, and trail with `|| true` so a server outage never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace, not in unrelated sessions on the same machine.
+All entries pass `--quiet` so they don't pollute Claude Code stdout, and trail with `|| true` so a server outage never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace, not in unrelated sessions on the same machine.
 
 Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `agnes pull` downloads it. No per-user sync config; the admin layer is the single source of truth.
 
