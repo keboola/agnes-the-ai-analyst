@@ -150,3 +150,46 @@ class TestLocalQuery:
         result = runner.invoke(app, ["query", "SELECT * FROM nonexistent_table_xyz"])
         assert result.exit_code == 1
         assert "Query error" in result.output
+
+    def test_local_query_missing_table_hints_remote(self, tmp_config):
+        """Querying a table absent from local DuckDB surfaces a hint about
+        `query_mode='remote'` tables alongside the original DuckDB error.
+
+        Reproduces the analyst-session UX gap where DuckDB's nearest-name
+        ("Did you mean <other_table>") suggestion sent the user down the
+        wrong path — they thought the table didn't exist or they typo'd,
+        when in fact it's a remote table that intentionally has no local
+        view.
+        """
+        import duckdb
+        db_dir = tmp_config / "local" / "user" / "duckdb"
+        db_dir.mkdir(parents=True)
+        duckdb.connect(str(db_dir / "analytics.duckdb")).close()
+
+        result = runner.invoke(app, ["query", "DESCRIBE unit_economics"])
+        assert result.exit_code == 1
+        # Original DuckDB diagnostic must remain visible (don't break logging).
+        assert "Query error" in result.output
+        assert "Table with name unit_economics does not exist" in result.output
+        # New hint fires.
+        assert "query_mode='remote'" in result.output
+        assert "agnes catalog" in result.output
+        assert "agnes schema" in result.output
+        assert "agnes query --remote" in result.output
+
+    def test_local_query_syntax_error_does_not_show_remote_hint(self, tmp_config):
+        """A non-missing-table failure (e.g. raw syntax error) must NOT
+        trigger the new remote-mode hint — the regex only matches DuckDB's
+        `Table with name X does not exist` shape.
+        """
+        import duckdb
+        db_dir = tmp_config / "local" / "user" / "duckdb"
+        db_dir.mkdir(parents=True)
+        duckdb.connect(str(db_dir / "analytics.duckdb")).close()
+
+        # Trailing FROM with no relation -> ParserException, not CatalogException.
+        result = runner.invoke(app, ["query", "SELECT * FROM"])
+        assert result.exit_code == 1
+        assert "Query error" in result.output
+        assert "query_mode='remote'" not in result.output
+        assert "agnes query --remote" not in result.output
