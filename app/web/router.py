@@ -21,8 +21,14 @@ from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
     get_instance_name, get_instance_subtitle, get_datasets,
-    get_theme, get_corporate_memory_config,
+    get_theme, get_corporate_memory_config, get_home_route,
+    get_gws_oauth_credentials, get_home_automode_visibility,
 )
+
+
+def _resolved_home_route() -> str:
+    """Lazy wrapper so tests/monkeypatch on env vars are honoured per-request."""
+    return get_home_route()
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.knowledge import KnowledgeRepository
@@ -339,6 +345,19 @@ def _build_context(
         "session": _FlexDict({"user": user}) if user else _FlexDict(),
         "setup_instructions_lines": setup_instructions_lines,
         "server_url": ctx_server_url,
+        # Resolved per AGNES_HOME_ROUTE env > instance.home_route YAML >
+        # /dashboard. The shared navbar's "Dashboard" link uses this so a
+        # single env flip routes the primary nav target between /home
+        # (state-aware landing) and /dashboard (legacy table inventory).
+        "home_route": _resolved_home_route(),
+        # Pre-configured Google Workspace CLI OAuth client for the
+        # /home connector prompt. {} when unset → template falls back
+        # to manual `gws auth setup`. See app.instance_config docstring.
+        "gws_oauth": get_gws_oauth_credentials(),
+        # Whether /home renders the "Step 3 — turn on auto-accept mode"
+        # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
+        # for cautious rollouts; same content stays on /setup-advanced.
+        "home_automode": {"show": get_home_automode_visibility()},
     }
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
@@ -352,7 +371,8 @@ def _build_context(
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, user: Optional[dict] = Depends(get_optional_user)):
     if user:
-        return RedirectResponse(url="/dashboard", status_code=302)
+        from app.instance_config import get_home_route
+        return RedirectResponse(url=get_home_route(), status_code=302)
     return RedirectResponse(url="/login", status_code=302)
 
 
@@ -523,6 +543,59 @@ async def dashboard(
         user_knowledge_stats={"authored": 0, "votes_given": 0},
     )
     return templates.TemplateResponse(request, "dashboard.html", ctx)
+
+
+@router.get("/home", response_class=HTMLResponse)
+async def home_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """State-aware /home — full inline install for not-onboarded users,
+    clean nav hub once onboarded. The boolean drives template selection;
+    no auto-transition (manual reload picks up the flip after
+    ``agnes init`` POSTs ``/api/me/onboarded``).
+
+    See origin: docs/brainstorms/home-page-requirements.md.
+    """
+    row = conn.execute(
+        "SELECT onboarded FROM users WHERE id = ?", [user["id"]]
+    ).fetchone()
+    onboarded = bool(row[0]) if row else False
+
+    template = "home_onboarded.html" if onboarded else "home_not_onboarded.html"
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        onboarded=onboarded,
+        is_admin=is_user_admin(user["id"], conn),
+    )
+    return templates.TemplateResponse(request, template, ctx)
+
+
+@router.get("/setup-advanced", response_class=HTMLResponse)
+async def setup_advanced_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Advanced setup reference — VS Code layout, recommended plugins,
+    multi-model second opinions, custom skills, cost guidance.
+
+    Pulls the deeper Chief-of-Stuff guide content out of /home so /home
+    stays scannable for first-hour onboarding. Linked from /home's
+    "Want to look around first?" explore card and from any deep-link
+    anchors emitted by other pages (e.g. /home's auto-mode block points
+    at #yolo).
+    """
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+    )
+    return templates.TemplateResponse(request, "setup_advanced.html", ctx)
 
 
 @router.get("/catalog", response_class=HTMLResponse)

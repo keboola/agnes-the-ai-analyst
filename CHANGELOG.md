@@ -10,6 +10,73 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **State-aware `/home` landing page** — alternative to `/dashboard` for
+  not-onboarded users. Inline 3-step install (Claude Code via OS-tabbed
+  installer, `agnes pull` bootstrap, optional auto-accept mode), one-click
+  "Setup a new Claude Code" CTA that mints a 90-day PAT and copies a
+  ready-to-paste setup script to the clipboard, and connector-card prompts
+  for Asana / Google Workspace / Atlassian. Onboarded users see a clean
+  nav-hub. Manual reload picks up the flip after `agnes init` POSTs
+  `/api/me/onboarded`. Templates: `app/web/templates/home_not_onboarded.html`,
+  `home_onboarded.html`. Origin doc: `docs/brainstorms/home-page-requirements.md`
+  (kept locally, not committed — contains customer-fork tokens by design).
+- **`POST /api/me/onboarded`** — flips `users.onboarded=TRUE` for the calling
+  user, audit-logged with `source ∈ {agnes_init, self_acknowledged}`. Idempotent.
+  Backed by new `users.onboarded` column added in schema v28 (`src/db.py`).
+- **`/setup-advanced` page** — second-hour reference covering VS Code
+  layout, recommended Claude Code plugins (with copy-able `/plugin install`
+  slash commands), multi-model second opinions (Codex + Gemini install
+  prompts using the same `read -srp` keychain helper-script pattern as the
+  /home connectors), skills/rules/hooks concepts, project workflows,
+  tips/cost guidance, plus an anchored YOLO-mode section with the
+  `--dangerously-skip-permissions` + `~/.claude/settings.local.json`
+  allowlist warning. Linked from `/home` via a "Going deeper" pointer card
+  and a 5th explore-list item. Template: `app/web/templates/setup_advanced.html`.
+- **Schema v28** — consolidates the v21 `welcome_template` and v23
+  `claude_md_template` singleton tables into a generic
+  `instance_templates(key, content, previous_content, updated_at, updated_by)`
+  table and adds `users.onboarded BOOLEAN NOT NULL DEFAULT FALSE`. Legacy
+  table content migrates into the consolidated table; the legacy tables are
+  dropped post-migration. Repository APIs preserved
+  (`WelcomeTemplateRepository`, `ClaudeMdTemplateRepository`) — internally
+  redirected to the new table so existing callers keep working.
+- **Shared `_claude_setup_cta.jinja` partial** — extracts the ~150 lines
+  of "Setup a new Claude Code" JS + clipboard-fallback CSS out of
+  `dashboard.html` into a single include consumed by both `/dashboard` and
+  the new `/home`. Net: dashboard.html shrinks ~150 lines, /home reuses the
+  exact same payload + behaviour, including admin override via the
+  consolidated `instance_templates WHERE key='welcome'` row.
+- **Configurable home route** — `AGNES_HOME_ROUTE` env (Terraform-friendly)
+  > `instance.home_route` YAML > default `/dashboard`. Validated to start
+  with `/` and not `//`. The shared navbar's "Dashboard" link uses this
+  resolved route so a single env flip routes the primary nav target between
+  `/home` and `/dashboard`. Setup-local-agent nav link is hidden when
+  `AGNES_HOME_ROUTE=/home` (the new /home covers the same content).
+  `app/instance_config.py:get_home_route`.
+- **Configurable Google Workspace CLI OAuth client** — `AGNES_GWS_CLIENT_ID`
+  / `AGNES_GWS_CLIENT_SECRET` / `AGNES_GWS_PROJECT_ID` /
+  `AGNES_GWS_OAUTHLIB_INSECURE_TRANSPORT` env vars (Terraform-friendly) >
+  matching `instance.gws.*` YAML > unset. When set, `/home`'s Google
+  Workspace connector prompt skips `gws auth setup` and tells Claude to
+  write `~/.config/gws/client_secret.json` directly with the operator's
+  pre-provisioned OAuth app. When unset, the prompt walks the user through
+  the manual Cloud Console OAuth flow. `project_id` derives from the
+  numeric prefix of `client_id` when not explicitly set.
+  `app/instance_config.py:get_gws_oauth_credentials`.
+- **Configurable auto-accept mode visibility** — `AGNES_HOME_SHOW_AUTOMODE`
+  env > `instance.home.show_automode` YAML > default `True`. When false,
+  hides the /home Step 3 auto-accept card; the same content stays
+  available on `/setup-advanced`. `app/instance_config.py:get_home_automode_visibility`.
+
+### Changed
+- **`LOCAL_DEV_MODE=1` now also enables the FastAPI debug toolbar.**
+  Previously the toolbar required a separate `DEBUG=1`; in practice every
+  local-dev session wants both, and forgetting one led to confused "where
+  did my toolbar go?" sessions after env-var refactors. `DEBUG=1` alone
+  still works (production-mirror smoke tests). `app/main.py:_is_truthy_env`
+  factors the shared check.
+
 ## [0.47.3] — 2026-05-07
 
 ### Fixed

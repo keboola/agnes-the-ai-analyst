@@ -96,6 +96,7 @@ from app.api.catalog import router as catalog_router
 from app.api.telegram import router as telegram_router
 from app.api.access import router as access_router, me_router as me_access_router
 from app.api.me_debug import router as me_debug_router
+from app.api.me import router as me_router
 from app.api.admin import router as admin_router
 from app.api.admin_bigquery_test import router as admin_bigquery_test_router
 from app.api.jira_webhooks import router as jira_webhooks_router
@@ -156,7 +157,14 @@ async def lifespan(app):
     close_system_db()
 
 
-DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+def _is_truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").lower() in ("1", "true", "yes")
+
+
+# DEBUG turns the toolbar on; LOCAL_DEV_MODE implies it (auth-bypassed dev
+# environment is by definition a debugging context — no point in making
+# operators set both).
+DEBUG = _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
 
 
 def _toolbar_show_callback(request, settings) -> bool:
@@ -165,9 +173,10 @@ def _toolbar_show_callback(request, settings) -> bool:
     Replaces the upstream default (which reads `request.app.debug`) — we keep
     `app.debug=False` so our @app.exception_handler(Exception) runs instead of
     Starlette's debug-only ServerErrorMiddleware, but we still want the
-    toolbar mounted. Read DEBUG env directly.
+    toolbar mounted. Read DEBUG / LOCAL_DEV_MODE env directly so operators who
+    flip the env at runtime (rare) see the change without re-import.
     """
-    return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+    return _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
 
 
 def create_app() -> FastAPI:
@@ -540,6 +549,7 @@ def create_app() -> FastAPI:
     app.include_router(access_router)
     app.include_router(me_access_router)
     app.include_router(me_debug_router)
+    app.include_router(me_router)
     app.include_router(jira_webhooks_router)
     app.include_router(metrics_router)
     app.include_router(metadata_router)
