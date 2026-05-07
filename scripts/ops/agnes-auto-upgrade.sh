@@ -138,6 +138,24 @@ if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
     REASON=()
     [ "$BEFORE" != "$AFTER" ] && REASON+=("image digest")
     [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ] && REASON+=("config files")
+
+    # Sync-in-flight defer guard. ``docker compose up -d`` recreates the
+    # uvicorn worker, which kills any in-flight extractor / materialized
+    # pass that was holding ``_sync_lock``. The next 5-min cron tick
+    # picks up the same change — we just delay the upgrade until the
+    # current sync finishes (typically minutes for small tables, longer
+    # for big Snowflake UNLOADs). curl with a 5s timeout: if the app is
+    # unreachable for any reason (already crashed, port not bound,
+    # older app version without /api/sync/status), we proceed with the
+    # upgrade — being stuck on a wedged previous version is worse than
+    # interrupting a hypothetical sync.
+    LOCK_JSON=$(curl -sf --max-time 5 http://localhost:8000/api/sync/status 2>/dev/null || true)
+    if echo "$LOCK_JSON" | grep -q '"locked"[[:space:]]*:[[:space:]]*true'; then
+        echo "$(date): sync in flight (${REASON[*]} pending) — deferring recreate to next tick"
+        logger -t agnes-auto-upgrade "deferred recreate: sync in flight (${REASON[*]})"
+        exit 0
+    fi
+
     echo "$(date): change detected (${REASON[*]}) — recreating containers"
 
     # Re-align ownership of mounted state to the image's runtime user

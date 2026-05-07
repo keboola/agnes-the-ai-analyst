@@ -66,12 +66,22 @@ def _materialize_table(
     )
 
 
-def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
+def _run_materialized_pass(
+    conn: duckdb.DuckDBPyConnection,
+    bq,
+    tables: Optional[List[str]] = None,
+) -> dict:
     """Walk `table_registry` for `query_mode='materialized'` rows and run any
     that are due, dispatching by ``source_type`` to the correct connector's
     materialize_query. Honors per-table `sync_schedule` via `is_table_due()`,
     computes the file hash inline, and updates `sync_state` so the manifest
     can serve the row to `agnes pull` without re-hashing on every request.
+
+    ``tables`` (when not None) restricts the pass to a specific subset —
+    targeted re-syncs from the operator (POST /api/sync/trigger with a
+    body) need this, otherwise an admin asking to re-sync `kbc_job` would
+    re-process every other materialized row that's also due. Matched
+    against both the registry id and name (admins often pass either).
 
     BigQuery rows go through BqAccess + bigquery_query() (jobs API),
     optionally cost-guarded by ``max_bytes_per_materialize``.
@@ -119,6 +129,14 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
     summary = {"materialized": [], "skipped": [], "errors": []}
     keboola_access = None  # lazy-init on first Keboola row
 
+    # Targeted-trigger filter. Compare against both id and name so an admin
+    # who passes either form (the registry id slug, or the human-friendly
+    # name) gets the same result. `None` means "no filter — process all
+    # due materialized rows".
+    target_set: Optional[set] = (
+        set(tables) if tables is not None else None
+    )
+
     for row in registry.list_all():
         if row.get("query_mode") != "materialized":
             continue
@@ -131,6 +149,14 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
         # `orders_90d`) would see `query_mode` default to `"local"` in the
         # manifest because the lookup misses on `id`.
         ref_name = row["name"]
+
+        if target_set is not None and not (
+            ref_name in target_set or row.get("id") in target_set
+        ):
+            summary["skipped"].append(
+                {"table": ref_name, "reason": "not_in_target"}
+            )
+            continue
 
         last = state.get_last_sync(ref_name)
         last_iso = last.isoformat() if last else None
@@ -566,7 +592,9 @@ sys.exit(compute_exit_code(result, len(configs)))
             bq_access = get_bq_access()  # sentinel if no BQ project; OK
             mat_conn = _get_system_db()
             try:
-                mat_summary = _run_materialized_pass(mat_conn, bq_access)
+                mat_summary = _run_materialized_pass(
+                    mat_conn, bq_access, tables=tables,
+                )
             finally:
                 mat_conn.close()
             skipped_count = len(mat_summary["skipped"])
@@ -718,6 +746,25 @@ async def sync_manifest(
 ):
     """Return hash-based manifest of all synced data, filtered per user."""
     return _build_manifest_for_user(conn, user)
+
+
+# ---- Status ----
+
+@router.get("/status")
+async def sync_status():
+    """Whether a sync is currently in flight on this app process.
+
+    Public (no auth) — used by the host-side ``agnes-auto-upgrade.sh``
+    cron to decide whether to skip a `docker compose up -d` that would
+    kill a running extractor / materialized pass mid-flight. Cheap to
+    serve (single Lock.locked() check) and contains no sensitive data.
+
+    Returns:
+        ``{"locked": bool}`` — True if `_sync_lock` is currently held by
+        a `_run_sync` invocation. The host script defers the upgrade
+        when this is True and retries on the next 5-min cron tick.
+    """
+    return {"locked": _sync_lock.locked()}
 
 
 # ---- Trigger ----

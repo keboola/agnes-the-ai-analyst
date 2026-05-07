@@ -167,3 +167,58 @@ def test_trigger_rejects_malformed_bodies(bad_body):
         resp = client.post("/api/sync/trigger", json=bad_body)
     assert resp.status_code == 422, resp.text
     assert not run_mock.called
+
+
+# ---- /api/sync/status (auto-upgrade defer probe) --------------------------
+
+def test_sync_status_unlocked_returns_locked_false():
+    """Default state: no sync running → ``{"locked": false}``. No auth
+    required (host-side cron probes from outside the auth boundary)."""
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(sync_module.router)
+    client = TestClient(app)
+
+    if sync_module._sync_lock.locked():
+        sync_module._sync_lock.release()
+
+    resp = client.get("/api/sync/status")
+    assert resp.status_code == 200
+    assert resp.json() == {"locked": False}
+
+
+def test_sync_status_locked_returns_locked_true():
+    """Held lock → ``{"locked": true}``. agnes-auto-upgrade.sh greps for
+    `"locked":true` to defer the recreate, so the wire format must be
+    exactly this shape."""
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(sync_module.router)
+    client = TestClient(app)
+
+    sync_module._sync_lock.acquire()
+    try:
+        resp = client.get("/api/sync/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"locked": True}
+    finally:
+        sync_module._sync_lock.release()
+
+
+def test_sync_status_does_not_require_auth():
+    """No `require_admin` / `get_current_user` dependency — the host's
+    cron has no PAT and shouldn't need one for a status check."""
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(sync_module.router)
+    client = TestClient(app)
+    # No auth headers at all.
+    resp = client.get("/api/sync/status")
+    assert resp.status_code == 200

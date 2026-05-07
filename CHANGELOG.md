@@ -10,8 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- `GET /api/sync/status` returns `{"locked": bool}` — public, no auth. Consumed by the host-side `agnes-auto-upgrade.sh` cron to decide whether to defer `docker compose up -d` until the running sync finishes. Cheap (single Lock check), no sensitive data.
+
 ### Fixed
 
+- `app/api/sync.py`: `POST /api/sync/trigger` with a `tables` payload now actually scopes the materialized pass too. Previously the targeted trigger only filtered the legacy extractor subprocess; `_run_materialized_pass` still iterated every materialized row in the registry, so an admin asking to re-sync `kbc_job` re-ran every other due materialized row alongside it. The pass now takes a `tables` arg and skips rows not in the target set with `reason="not_in_target"`. Both registry id and name match.
+- `scripts/ops/agnes-auto-upgrade.sh`: defers `docker compose up -d` while a sync is in flight. Probes `GET /api/sync/status` with a 5s timeout; if the response carries `"locked":true`, exits 0 with a deferred-recreate log line and waits for the next 5-min cron tick. Connection failures (older app version without the endpoint, app crashed, etc.) fall through to the upgrade — being stuck on a wedged image is worse than interrupting a hypothetical sync.
 - `connectors/keboola/extractor.py`: `materialize_query` per-call tempdir is now opened with `ignore_cleanup_errors=True`. Previously a worker death mid-write under disk-full state could leave a multi-GiB stale slice tree (12 GiB seen on agnes-dev) because `TemporaryDirectory.__exit__` itself raised, masking the original exception and skipping cleanup. Now cleanup is best-effort and always fires.
 - `src/scheduler.py`: `is_valid_schedule` now accepts `every 0m` (interval = 0 = "always due"). Useful as a force-resync override on a row whose previous attempt errored without recording `last_sync` — the default `every 1h` would otherwise block the retry for an hour. Existing values reject as before.
 - `app/api/sync.py`: `POST /api/sync/trigger` now accepts both `["table_id"]` (legacy) and `{"tables": ["table_id"]}` (mirrors response shape) request bodies, plus `null` / no body for "sync everything". Malformed shapes return HTTP 422 with a structured detail. No client breakage — the old wire format keeps working.
