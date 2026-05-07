@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -268,7 +268,18 @@ CREATE TABLE IF NOT EXISTS table_registry (
     folder VARCHAR,
     description TEXT,
     registered_by VARCHAR,
-    registered_at TIMESTAMP DEFAULT current_timestamp
+    registered_at TIMESTAMP DEFAULT current_timestamp,
+    -- v26: Keboola sync-strategy support columns. NULL on existing rows;
+    -- meaningful only when sync_strategy ∈ {'incremental', 'partitioned'}
+    -- (or any strategy + where_filters). API-layer validators enforce the
+    -- per-strategy required-field rules.
+    incremental_window_days INTEGER,
+    max_history_days INTEGER,
+    incremental_column VARCHAR,
+    where_filters VARCHAR,
+    partition_by VARCHAR,
+    partition_granularity VARCHAR,
+    initial_load_chunk_days INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -1803,6 +1814,37 @@ _V24_TO_V25_MIGRATIONS = [
 ]
 
 
+# v26: Keboola sync-strategy support columns on table_registry.
+#
+# The existing `sync_strategy` column (added pre-v18, defaulting to
+# 'full_refresh') is reused to mean one of {'full_refresh', 'incremental',
+# 'partitioned'} from v26 onward. The seven columns added here are the
+# per-strategy knobs:
+#   - incremental_window_days: backtrack window applied to last_sync (default 7)
+#   - max_history_days: cap on first-sync history depth
+#   - incremental_column: reserved for future use when changedSince's
+#     lastChangeDate isn't the right mutation column for a table
+#   - where_filters: JSON array of {column, operator, values} filter entries
+#     resolved at sync time (date placeholders like {{last_3_months}})
+#   - partition_by: column whose value drives the partition key
+#   - partition_granularity: 'day' | 'month' | 'year'
+#   - initial_load_chunk_days: chunked initial-load step size (default 30)
+#
+# All NULL on existing rows → no behavior change for tables that don't opt in.
+# API-layer validators enforce per-strategy required-field combinations
+# (e.g. partitioned ⇒ partition_by required) and reject conflicting combos
+# (e.g. incremental + where_filters → 400).
+_V25_TO_V26_MIGRATIONS = [
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS incremental_window_days INTEGER",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS max_history_days INTEGER",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS incremental_column VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS where_filters VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS partition_by VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS partition_granularity VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS initial_load_chunk_days INTEGER",
+]
+
+
 # v24: rewrite materialized BQ source_query from DuckDB-flavor
 # (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
 # so the new connectors.bigquery.extractor.materialize_query wrapping
@@ -2055,6 +2097,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v23_to_v24_finalize(conn)
             if current < 25:
                 for sql in _V24_TO_V25_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 26:
+                for sql in _V25_TO_V26_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
