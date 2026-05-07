@@ -303,15 +303,23 @@ def _fetch_rows_and_size(bq, req: MetadataRequest) -> dict | None:
     """Return {rows, size_bytes} for a BQ table, or None on failure.
 
     Uses INFORMATION_SCHEMA.TABLE_STORAGE at REGION scope (the only
-    valid scope per live verification on prj-grp-foundryai-dev-7c37
-    2026-05-07 — see Open Question §1 in the spec). Falls back to
-    legacy __TABLES__ when region resolution fails.
+    valid scope per live verification 2026-05-07 — see Open Question §1).
+    Falls through to legacy __TABLES__ on TABLE_STORAGE failure (e.g.
+    operator typo'd the location config, region mismatch, IAM gap).
+
+    For VIEW-backed entries both views return no rows; caller gets
+    None which is the correct answer (a view has no inherent scan size).
     """
     location = _resolve_bq_location(bq, req)
     if location:
-        return _fetch_via_table_storage(bq, req, location)
-    # No region known and dataset.get() failed — last-resort fallback.
-    # Same row + size numbers, but loses multi-region portability.
+        result = _fetch_via_table_storage(bq, req, location)
+        if result is not None:
+            return result
+        # TABLE_STORAGE failed despite a configured location. Could be
+        # a typo (`us-central` vs `us-central1`), a multi-region dataset
+        # the operator misclassified, or a transient permission gap.
+        # Try __TABLES__ before giving up — same numbers, different
+        # IAM surface.
     return _fetch_via_legacy_tables(bq, req)
 
 
@@ -345,12 +353,24 @@ def _resolve_bq_location(bq, req: MetadataRequest) -> str | None:
 
 
 def _fetch_via_table_storage(bq, req: MetadataRequest, location: str) -> dict | None:
-    """Region-scoped INFORMATION_SCHEMA.TABLE_STORAGE — preferred path."""
+    """Region-scoped INFORMATION_SCHEMA.TABLE_STORAGE — preferred path.
+
+    `validate_quoted_identifier` accepts `us-central1`, `europe-west1`,
+    `EU`, `us` etc. (regex `^[a-zA-Z0-9_][a-zA-Z0-9_.\\-]{0,127}$` —
+    verified 2026-05-07). Refuses anything that could break out of the
+    backtick-quoted path.
+
+    The size_bytes reported is `active + long_term` logical bytes —
+    a full BQ scan reads both, so reporting only `active` undercounts
+    aged partitioned tables. See spec Open Question §1 for rationale.
+    """
+    from src.identifier_validation import validate_quoted_identifier
     if not validate_quoted_identifier(location, "BQ region"):
         return None
     try:
         bq_sql = (
-            f"SELECT total_rows, active_logical_bytes "
+            f"SELECT total_rows, "
+            f"IFNULL(active_logical_bytes, 0) + IFNULL(long_term_logical_bytes, 0) "
             f"FROM `{bq.projects.data}.region-{location}.INFORMATION_SCHEMA.TABLE_STORAGE` "
             f"WHERE table_schema = ? AND table_name = ?"
         )
@@ -366,7 +386,9 @@ def _fetch_via_table_storage(bq, req: MetadataRequest, location: str) -> dict | 
         )
         return None
     if row is None:
-        return None
+        return None  # row absent ⇒ entry is a VIEW, or table lives in
+                     # a different region than the configured one.
+                     # Caller falls through to __TABLES__.
     rows_, size_bytes = row
     return {
         "rows": int(rows_) if rows_ is not None else None,
@@ -417,9 +439,7 @@ Notes:
 import logging
 
 from app.api._metadata_models import MetadataRequest, TableMetadata
-from connectors.keboola.client import (
-    _resolve_keboola_url, _resolve_keboola_token,
-)  # see Token-resolution note below
+from connectors.keboola.client import KeboolaClient
 from connectors.keboola.storage_api import (
     KeboolaStorageClient, StorageApiError,
 )
@@ -428,15 +448,22 @@ logger = logging.getLogger(__name__)
 
 
 def fetch(req: MetadataRequest) -> TableMetadata | None:
-    url = _resolve_keboola_url()
-    token = _resolve_keboola_token()
-    if not url or not token:
+    # Reuse KeboolaClient's existing env-fallback path (KEBOOLA_STACK_URL
+    # + KEBOOLA_STORAGE_TOKEN env vars, mirrors instance.yaml token_env
+    # convention). We construct it just to read `.token` and `.url` —
+    # this is intentional; KeboolaClient.__init__ has no side effects
+    # beyond setting those two attributes (verified
+    # connectors/keboola/client.py:90-99). When a future refactor extracts
+    # `_resolve_keboola_credentials()` as a standalone helper, switch the
+    # provider to call that directly.
+    creds = KeboolaClient(token=None, url=None)
+    if not creds.url or not creds.token:
         return None  # not configured — same posture as BQ sentinel
 
     table_id = f"{req.bucket}.{req.source_table}"
     try:
-        client = KeboolaStorageClient(url=url, token=token)
-        info = client.get_table_info(table_id)  # NEW thin wrapper — see below
+        storage = KeboolaStorageClient(url=creds.url, token=creds.token)
+        info = storage.get_table_info(table_id)  # NEW thin wrapper — see below
     except (StorageApiError, ValueError) as e:
         logger.warning("Keboola metadata fetch failed for %s: %s", table_id, e)
         return None
@@ -450,12 +477,16 @@ def fetch(req: MetadataRequest) -> TableMetadata | None:
     )
 ```
 
-**Token resolution: reuse one path, do not invent a third.** `connectors/keboola/extractor.py` and `connectors/keboola/client.py` already resolve URL + token from a defined hierarchy:
+**Token resolution: reuse `KeboolaClient.__init__`'s existing env-fallback.** Verified at `connectors/keboola/client.py:90-99`:
 
-1. Env vars `KEBOOLA_STACK_URL` + `KEBOOLA_STORAGE_TOKEN` (or whatever `instance.yaml`'s `token_env` field points at).
-2. Fallback to `instance.yaml.data_source.keboola.{storage_url, token_env}`.
+```python
+def __init__(self, token: Optional[str] = None, url: Optional[str] = None):
+    ...
+    self.token = token or os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+    self.url = url or os.environ.get("KEBOOLA_STACK_URL", "")
+```
 
-The provider MUST call the existing helpers (`_resolve_keboola_url`, `_resolve_keboola_token` — names are placeholders; the implementation plan locks down whichever symbols actually ship). **Adding a third token-lookup path is rejected at review time.** The previous spec's `_get_storage_token()` "mirrors extractor.py" was hand-waving the wrong direction; the right move is `from connectors.keboola.client import the_existing_helper`.
+Constructing `KeboolaClient(token=None, url=None)` is a zero-side-effect way to inherit the same env-var hierarchy the rest of the codebase uses. **No third token-lookup path is invented.** A small future refactor could extract a standalone `_resolve_keboola_credentials()` helper that both `KeboolaClient.__init__` and this provider call directly; tracked as a low-priority follow-up nit, not a blocker.
 
 **`get_table_info(table_id)` — thin wrapper added to `KeboolaStorageClient` in this PR.** The previous spec called `client._get(f"/tables/{table_id}")` directly; that bleeds a `_`-private method out of the module and reviewers will (rightly) push back. One-line wrapper:
 
@@ -562,7 +593,7 @@ One conditional, mirrors the existing pattern. No new flag.
 
 - `connectors/bigquery/metadata.py` — `fetch(row)` returning `TableMetadata | None`.
 - `connectors/keboola/metadata.py` — same shape, Storage API path.
-- `connectors/_metadata_models.py` (or directly in each — TBD by reviewer; importing from a sibling `connectors/_models.py` is the cleanest, but pulls in a small refactor of how connectors are organised). Provisional location: a new `connectors/__init__.py` exposing `TableMetadata`. Per existing repo convention, I lean toward a top-level shared module since other dataclasses (e.g. `dataclass PullResult` in `cli/lib/pull.py`) live alongside their primary consumer.
+- `app/api/_metadata_models.py` — single shared module for `MetadataRequest` + `TableMetadata`. Lives under `app/api/` (not `connectors/`) because the primary consumer is `app/api/v2_catalog.py` and the providers (which sit one layer down in `connectors/`) import upward into the API layer rather than the reverse. This avoids the layering inversion of having `app/api/v2_catalog.py` import from `connectors/__init__.py`.
 - `tests/test_connectors_bigquery_metadata.py` — unit tests with mocked `bq.duckdb_session`.
 - `tests/test_connectors_keboola_metadata.py` — unit tests with mocked `KeboolaStorageClient`.
 - `tests/test_v2_catalog_remote_metadata.py` — integration test against the catalog endpoint with a registered remote row, mocked provider returning a `TableMetadata`. Verifies the response shape and the cache-bust path.
@@ -570,7 +601,7 @@ One conditional, mirrors the existing pattern. No new flag.
 ### Edited files
 
 - `app/api/v2_catalog.py` — rename `_materialized_size_hint` → `_size_hint_for_row`, add provider dispatch, add `_metadata_cache` (TTLCache, 15 min), extend response shape with the new fields. ~50 LOC delta.
-- `app/api/admin.py` — wire `_invalidate_metadata_cache(table_id)` into the success path of `register_table` and `update_table`. ~5 LOC.
+- `app/api/admin.py` — wire `v2_catalog.invalidate_for_table(table_id)` into the success path of `register_table`, `update_table`, and `unregister_table`. ~6 LOC.
 - `cli/commands/admin.py` — extend the post-register hint as above. ~5 LOC.
 - `app/web/templates/admin_tables.html` — `?` icon + doc link next to `query_mode`. ~10 LOC.
 
@@ -586,9 +617,14 @@ One conditional, mirrors the existing pattern. No new flag.
 
 | Layer | Coverage |
 |---|---|
-| Provider (BQ) | mocked `bq.duckdb_session().execute().fetchone()` returns a synthetic row → `fetch(row)` returns expected `TableMetadata`; `BqAccessError` → `None`; row missing `bucket` → `None`; query raises → `None` |
-| Provider (Keboola) | mocked `KeboolaStorageClient._get` returns `{rowsCount, dataSizeBytes, columns}` → `fetch(row)` returns expected metadata; missing token → `None`; `StorageApiError` → `None` |
-| Catalog endpoint | for a `query_mode='local'` row → existing parquet-stat path; for a `query_mode='remote'` BQ row → provider called, response has the new fields populated; cache-bust after `register_table` makes the next catalog request hit the provider again |
+| Provider (BQ) — happy path | mocked `bq.duckdb_session()` returns synthetic row → `fetch(req)` returns expected `TableMetadata` with `size_bytes = active + long_term` |
+| Provider (BQ) — sentinel | `bq.projects.data == ""` → returns `None` before any query, never imports `validate_quoted_identifier` |
+| Provider (BQ) — VIEW path | TABLE_STORAGE returns no rows, `__TABLES__` also returns no rows → `TableMetadata(rows=None, size_bytes=None, partition_by=<from COLUMNS>, clustered_by=<from COLUMNS>)`. Asserts the view-aware fall-through documented in §"View-backed remote tables" |
+| Provider (BQ) — region typo | location set to `"us-central"` (invalid) → `_fetch_via_table_storage` raises BQ "not found", `_fetch_rows_and_size` falls through to `_fetch_via_legacy_tables` → still returns rows + size |
+| Provider (BQ) — both paths fail | TABLE_STORAGE raises and `__TABLES__` raises → `_fetch_rows_and_size` returns `None`; `fetch()` still returns a `TableMetadata` with partition/cluster populated (only the size pieces are `None`) |
+| Provider (Keboola) | mocked `KeboolaStorageClient.get_table_info` returns `{rowsCount, dataSizeBytes}` → `fetch(req)` returns expected metadata; `KeboolaClient(token=None, url=None)` with empty env → `None`; `StorageApiError` → `None` |
+| Catalog endpoint | for a `query_mode='local'` row → existing parquet-stat path unchanged; for a `query_mode='remote'` BQ row → provider called, response has the new fields populated; cache hit returns cached metadata without re-calling provider |
+| Cache-bust | `register_table` flushes both `_table_rows_cache` and `_metadata_cache`; `update_table` same; `unregister_table` same. After bust, next catalog request reflects the new state immediately. |
 | `agnes catalog` CLI | smoke test that the new fields surface in `--json` output and don't break the text-mode renderer |
 | Sample endpoint | smoke test against a registered remote BQ row; verify it returns sample rows. If broken, separate fix path; not bundled in this PR's scope |
 
@@ -631,12 +667,16 @@ Three candidates were surveyed and tested against `audrius_test.product_inventor
 **Locked SQL for the BQ provider:**
 
 ```sql
-SELECT total_rows, active_logical_bytes
+SELECT
+  total_rows,
+  IFNULL(active_logical_bytes, 0) + IFNULL(long_term_logical_bytes, 0) AS total_logical_bytes
 FROM `<project>.region-<location>.INFORMATION_SCHEMA.TABLE_STORAGE`
 WHERE table_schema = ? AND table_name = ?
 ```
 
-Mapped to `TableMetadata` as `rows = total_rows`, `size_bytes = active_logical_bytes`. The `long_term_*` and `physical_bytes` variants are deliberately NOT exposed — they're storage-billing concepts the analyst doesn't act on; collapsing to a single number keeps the catalog response simple.
+Mapped to `TableMetadata` as `rows = total_rows`, `size_bytes = total_logical_bytes` (active + long-term). **The sum is correct for the cost-warning use case** — a full BQ table scan reads both partitions; reporting only `active_logical_bytes` would undercount on partitioned tables that have aged into long-term storage (≥ 90 days untouched), and the analyst's mental model of "this is a 200-GB table" includes long-term. The `physical_bytes` variants are NOT exposed — they're compression-aware storage billing, not scan-cost.
+
+**View-backed remote tables:** `INFORMATION_SCHEMA.TABLE_STORAGE` returns **no rows** for entries whose `table_type = 'VIEW'` (verified: TABLE_STORAGE only covers physical storage). For a `query_mode='remote'` row pointing at a VIEW, `_fetch_via_table_storage` returns `None`, and the legacy `__TABLES__` fallback also returns `None` for views. The final `TableMetadata` therefore has `rows=None, size_bytes=None` — which is **correct**: a view's scan cost depends on the underlying query, not on the view itself. The analyst Claude reads `null` and applies the existing CLAUDE.md guidance (*"treat as potentially large; use `agnes snapshot create --estimate` first"*). Partition + cluster metadata DOES surface for views via `INFORMATION_SCHEMA.COLUMNS` if the underlying tables are partitioned, so the response isn't entirely empty. Materialised views (`MATERIALIZED_VIEW`) DO appear in TABLE_STORAGE because they have stored bytes, so the path works for them out-of-the-box. Tested behavior, not theoretical: implementation plan includes a unit test that mocks TABLE_STORAGE returning empty for a view and asserts `TableMetadata(rows=None, size_bytes=None, partition_by=...)`.
 
 ### 1a. Where does `<region>` come from?
 
