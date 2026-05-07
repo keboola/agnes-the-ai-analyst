@@ -10,6 +10,88 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.47.0] — 2026-05-07
+
+Catalog metadata enrichment + cache discipline + automatic warmup.
+Closes #155 + #156.
+
+### Added
+
+- **`/api/v2/catalog` returns four new optional fields per row** — `rows`,
+  `size_bytes`, `partition_by`, `clustered_by` — populated by per-source-type
+  metadata providers (`connectors/bigquery/metadata.py`,
+  `connectors/keboola/metadata.py`). For `query_mode='remote'` BigQuery rows,
+  `size_bytes` is `active_logical_bytes + long_term_logical_bytes` (a full
+  scan reads both); region resolved from `data_source.bigquery.location` →
+  `bq_client.get_dataset(...)` → fall back to legacy `__TABLES__`.
+  Existing CLI consumers reading only `rough_size_hint` are unaffected.
+- **Automatic cache warmup at startup.** FastAPI startup event schedules
+  a background task that walks BQ remote rows and pre-populates
+  `_metadata_cache` + `_schema_cache` with bounded concurrency (default 4,
+  tunable via `AGNES_WARMUP_CONCURRENCY`). Doesn't block readiness;
+  per-row failures logged + skipped. Opt-out via `AGNES_SKIP_CACHE_WARMUP=1`.
+- **Three new admin endpoints under `/api/admin/cache-warmup/*`:**
+  - `GET /status` — JSON snapshot of the latest run.
+  - `POST /run` — manual trigger, idempotent under concurrent invocation.
+  - `GET /stream` — Server-Sent Events with `start` / `row` / `complete`
+    events for live UI updates.
+- **`/admin/tables` cache freshness panel.** Toolbar above the per-source-type
+  listings with progress bar + "Re-warm all" button + collapsible
+  terminal-style log fed by SSE (polling fallback at 3 s). Per-row badge
+  in the existing `col-status` column updates live (fresh / warming /
+  pending / error).
+- **`docs/admin/query-modes.md`** — source-agnostic admin reference for
+  registering tables as `local` / `remote` / `materialized`. Decision
+  tree, per-source-type IAM + setup, three worked examples. Linked from
+  the `?` icon next to the `query_mode` field in the admin UI edit modal
+  and from the third post-register hint in `agnes admin register-table`.
+- **`agnes admin register-table` post-register hint** for `query_mode=remote`:
+  points at `agnes query --remote "SELECT COUNT(*)..."` as the IAM smoke
+  check so a missing `dataViewer` / `jobUser` surfaces at registration
+  time, not 30 minutes later.
+
+### Changed
+
+- **`/api/v2/schema/{id}` cache miss now does 1 BQ job instead of 2.**
+  `connectors/bigquery/access.py:fetch_bq_columns_full` collapses what
+  used to be `_fetch_bq_schema` + `_fetch_bq_table_options` into a single
+  `INFORMATION_SCHEMA.COLUMNS` query (same view, same predicate, just a
+  combined SELECT list). The metadata provider's partition/cluster path
+  shares the same helper — zero SQL duplication across the two consumers.
+- **All four catalog/schema/sample/metadata caches are flushed on registry
+  change.** `app/api/v2_catalog.py:invalidate_for_table` is wired into
+  `POST /api/admin/register-table`, `PUT /api/admin/registry/{id}`, and
+  `DELETE /api/admin/registry/{id}`. After a registry write, a single-row
+  re-warm task is scheduled in the background so the admin's verification
+  request hits warm caches within ~1 s instead of waiting for the next
+  analyst miss. Pre-fix none of the caches were invalidated — admin
+  registers a table, `agnes catalog` doesn't show the new row for up to
+  5 min; admin updates a row's bucket, `agnes schema` returns the OLD
+  column list for up to 1 hour.
+- **`v2_schema.build_schema` split into RBAC-aware outer + RBAC-naive
+  inner (`build_schema_uncached`).** Live endpoint behavior unchanged;
+  warmup uses the inner entry point to populate `_schema_cache` without
+  a user context.
+
+### Internal
+
+- New shared dataclass module `app/api/_metadata_models.py` with
+  `MetadataRequest` (frozen) + `TableMetadata` for source-agnostic
+  provider input/output.
+- New `connectors/keboola/storage_api.py:KeboolaStorageClient.get_table_info`
+  thin wrapper — keeps `_get` private to the module.
+- New env vars (operator-facing tuning, no required setup change):
+  - `AGNES_SKIP_CACHE_WARMUP` — opt-out of startup warmup.
+  - `AGNES_WARMUP_CONCURRENCY` — default 4, max parallel BQ
+    INFORMATION_SCHEMA jobs during a warmup pass.
+- New runtime dependency: `sse-starlette>=2.0` (Server-Sent Events
+  responses for the cache-warmup stream).
+- Tests added: `test_metadata_models`, `test_v2_schema_columns_consolidation`,
+  `test_v2_catalog_dispatcher`, `test_connectors_bigquery_metadata`,
+  `test_connectors_keboola_metadata`, `test_v2_catalog_remote_metadata`,
+  `test_v2_catalog_invalidation`, `test_cache_warmup`,
+  `test_main_startup_warmup`, `test_admin_tables_warmup_ui`.
+
 ## [0.46.5] — 2026-05-07
 
 ### Fixed
