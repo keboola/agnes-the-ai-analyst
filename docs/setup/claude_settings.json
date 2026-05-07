@@ -8,14 +8,6 @@
                         "command": "agnes pull --quiet 2>/dev/null || true"
                     }
                 ]
-            },
-            {
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "bash -c \"agnes push --quiet 2>/dev/null || true\""
-                    }
-                ]
             }
         ],
         "SessionEnd": [

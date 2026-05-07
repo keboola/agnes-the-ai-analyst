@@ -15,6 +15,11 @@ def _auth(token):
 
 
 def test_put_preserves_omitted_sync_strategy(seeded_app):
+    """v26: sync_strategy drives the extractor dispatcher and is enforced
+    against {full_refresh, incremental, partitioned}. partitioned requires
+    partition_by, so we use partition_by + partition_granularity here to
+    pass the model validator while still verifying the PUT-preservation
+    invariant: a body that omits sync_strategy must not erase it."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     auth = _auth(token)
@@ -26,6 +31,8 @@ def test_put_preserves_omitted_sync_strategy(seeded_app):
         "source_table": "events",
         "query_mode": "local",
         "sync_strategy": "partitioned",
+        "partition_by": "event_date",
+        "partition_granularity": "month",
     })
     assert r.status_code == 201, r.text
 
@@ -39,6 +46,7 @@ def test_put_preserves_omitted_sync_strategy(seeded_app):
     rows = r.json()["tables"]
     row = next(t for t in rows if t["id"] == "events_partitioned")
     assert row["sync_strategy"] == "partitioned"
+    assert row["partition_by"] == "event_date"
 
 
 def test_put_preserves_omitted_primary_key(seeded_app):

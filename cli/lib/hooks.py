@@ -13,7 +13,7 @@ Design notes:
   Third-party hooks (mixed entries, foreign commands) are left alone.
 - Uses `|| true` in the hook command so the hook never blocks a session on
   a transient sync error.
-- SessionStart gets three entries:
+- SessionStart gets two entries:
     1. Chained `agnes self-upgrade; agnes pull` — self-upgrade runs first
        so any wire-protocol bump lands before pull tries to use the new
        CLI version. Both `|| true`-guarded so an upgrade failure doesn't
@@ -21,11 +21,6 @@ Design notes:
     2. `agnes refresh-marketplace` — independent entry so a fresh
        workspace (no marketplace cloned yet) failing this command doesn't
        suppress the data pull above.
-    3. `agnes push` — uploads any session JSONLs that haven't reached the
-       server yet (orphans from `claude -p` headless mode where Claude Code
-       does NOT fire SessionEnd, or from abnormal session exits). Symmetric
-       with `agnes pull` so the workspace heals on the next interactive
-       session start.
 """
 
 from __future__ import annotations
@@ -101,7 +96,6 @@ def install_claude_hooks(workspace: Path) -> None:
         "agnes self-upgrade --quiet 2>/dev/null || true; "
         "agnes pull --quiet 2>/dev/null || true",
         'bash -c "agnes refresh-marketplace --quiet 2>/dev/null || true"',
-        'bash -c "agnes push --quiet 2>/dev/null || true"',
     ])
     _replace_or_add("SessionEnd", [
         "agnes push --quiet 2>/dev/null || true",
