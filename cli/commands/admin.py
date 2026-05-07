@@ -231,6 +231,15 @@ def register_table(
             f"`agnes admin grant create <group> table {name}` to "
             f"make this visible in `agnes catalog` for non-admin users."
         )
+        # Third hint: BQ-remote rows can fail at first analyst query if the
+        # SA lacks dataViewer/jobUser. Pointing at the smoke command
+        # surfaces the failure at registration time, not 30 minutes later.
+        if query_mode == "remote":
+            typer.echo(
+                f"  Note: this is a remote-query table. Verify the SA can read it:\n"
+                f"    agnes query --remote \"SELECT COUNT(*) FROM {name}\"\n"
+                f"  If it 403s, see docs/admin/query-modes.md → \"BigQuery → IAM\"."
+            )
     elif resp.status_code == 409:
         typer.echo(f"Already exists: {name}")
     else:
