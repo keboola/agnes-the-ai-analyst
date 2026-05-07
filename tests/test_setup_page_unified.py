@@ -99,8 +99,11 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
 
     assert resp.status_code == 200
     text = resp.text
-    # Marketplace block markers.
-    assert "claude plugin install demo-plugin@agnes" in text
+    # Marketplace block marker. The per-plugin install lines moved inside
+    # `agnes refresh-marketplace --bootstrap`, so we check the section
+    # header + the one-liner instead of `claude plugin install <name>@agnes`.
+    assert "Register the Agnes Claude Code marketplace" in text
+    assert "agnes refresh-marketplace --bootstrap" in text
     # Layout shift: Confirm is now step 8 (was 6 without marketplace).
     assert "8) Confirm:" in text
     # Pre-flight is in the rendered prompt at step 4.
