@@ -3,7 +3,6 @@
 import asyncio
 from unittest.mock import patch
 
-import pytest
 from app.api.cache_warmup import WarmupRunState
 
 
@@ -24,9 +23,12 @@ def test_warmup_skips_when_env_set(monkeypatch):
     mock_bg.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_warmup_runs_one_per_remote_row(monkeypatch):
-    """`_warm_catalog_caches_bg` calls `_warm_one` once per remote row."""
+def test_warmup_runs_one_per_remote_row(monkeypatch):
+    """`_warm_catalog_caches_bg` calls `_warm_one` once per remote row.
+
+    Uses asyncio.run rather than @pytest.mark.asyncio to match the
+    convention in this repo (see tests/test_selective_gzip.py).
+    """
     from app.api import cache_warmup
 
     # Stub the registry to return 3 remote BQ rows + 1 local row.
@@ -42,7 +44,7 @@ async def test_warmup_runs_one_per_remote_row(monkeypatch):
 
     monkeypatch.setattr(cache_warmup, "_list_remote_rows", lambda: fake_rows)
     monkeypatch.setattr(cache_warmup, "_warm_one", fake_warm_one)
-    await cache_warmup._warm_catalog_caches_bg(trigger="manual")
+    asyncio.run(cache_warmup._warm_catalog_caches_bg(trigger="manual"))
 
     assert sorted(warmed) == ["r1", "r2", "r3"]
 
