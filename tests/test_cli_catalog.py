@@ -125,9 +125,9 @@ def test_da_describe_json_output():
         return sample_payload
 
     with patch("cli.commands.describe.api_get_json", side_effect=fake_get):
-        from cli.commands.describe import describe_app
+        from cli.main import app
         runner = CliRunner()
-        result = runner.invoke(describe_app, ["--json", "orders"])
+        result = runner.invoke(app, ["describe", "--json", "orders"])
     assert result.exit_code == 0
     out = json.loads(result.stdout)
     assert "schema" in out
@@ -160,9 +160,9 @@ def test_da_describe_human_output():
         return sample_payload
 
     with patch("cli.commands.describe.api_get_json", side_effect=fake_get):
-        from cli.commands.describe import describe_app
+        from cli.main import app
         runner = CliRunner()
-        result = runner.invoke(describe_app, ["orders"])
+        result = runner.invoke(app, ["describe", "orders"])
     assert result.exit_code == 0
     assert "orders" in result.stdout
     assert "id" in result.stdout

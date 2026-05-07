@@ -40,7 +40,7 @@ from cli.commands.server import server_app
 from cli.commands.explore import explore_app
 from cli.commands.catalog import catalog_app
 from cli.commands.schema import schema_app
-from cli.commands.describe import describe_app
+from cli.commands.describe import describe
 from cli.commands.snapshot import snapshot_app
 from cli.commands.disk_info import disk_info_app
 from cli.commands.store import store_app
@@ -124,7 +124,7 @@ app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")
 app.add_typer(catalog_app, name="catalog")
 app.add_typer(schema_app, name="schema")
-app.add_typer(describe_app, name="describe")
+app.command("describe")(describe)
 app.add_typer(snapshot_app, name="snapshot")
 app.add_typer(disk_info_app, name="disk-info")
 app.add_typer(store_app, name="store")

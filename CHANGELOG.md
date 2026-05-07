@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.46.5] — 2026-05-07
+
+### Fixed
+
+- `agnes describe <table> -n 5` previously failed with `Missing argument 'TABLE_ID'` because the command was registered as a `Typer.Typer` subcommand group; the combination of positional `table_id` + short option `-n INTEGER` mis-parses in that pattern. Switched to a flat `@app.command("describe")` registration. All forms (`-n` before/after positional, `--rows=N`, default n=5) now parse correctly. Surfaced from a real analyst session following the CLAUDE.md "agent rails" discovery workflow.
+- `/api/v2/sample/<id>` (called by `agnes describe`) returned HTTP 500 with `ValueError: Out of range float values are not JSON compliant: nan` when the result rows contained NaN values from the underlying DuckDB / BigQuery scan. The endpoint now sanitizes NaN/±inf to JSON `null` before serialization. Same surfaced from a real analyst session.
+
 ## [0.46.4] — 2026-05-07
 
 ### Fixed
