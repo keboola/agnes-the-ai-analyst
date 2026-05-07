@@ -28,7 +28,6 @@ from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.users import UserRepository
 from src.repositories.profiles import ProfileRepository
-from src.repositories.access_requests import AccessRequestRepository
 from src.repositories.metrics import MetricRepository
 from src.repositories.notifications import TelegramRepository
 

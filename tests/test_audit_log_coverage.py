@@ -44,12 +44,12 @@ def _seed_admin():
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="admin@test", name="Admin", role="admin")
+        UserRepository(conn).create(id=uid, email="admin@test", name="Admin")
         admin_gid = conn.execute(
             "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
         ).fetchone()[0]
         UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
-        return uid, create_access_token(user_id=uid, email="admin@test", role="admin")
+        return uid, create_access_token(user_id=uid, email="admin@test")
     finally:
         conn.close()
 
@@ -290,12 +290,12 @@ def test_admin_register_table_writes_audit(fresh_db):
     r = client.post(
         "/api/admin/register-table",
         headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Orders", "folder": "data", "sync_strategy": "full"},
+        json={"name": "Orders", "folder": "data", "sync_strategy": "full_refresh"},
     )
     assert r.status_code == 201, r.text
-    rows = _audit_rows(action_prefix="registry.register", user_id=uid)
+    rows = _audit_rows(action_prefix="register_table", user_id=uid)
     assert len(rows) == 1
-    assert rows[0]["resource"] == "admin:orders"
+    assert rows[0]["resource"] == "orders"
 
 
 def test_admin_unregister_table_writes_audit(fresh_db):
@@ -305,100 +305,15 @@ def test_admin_unregister_table_writes_audit(fresh_db):
     client.post(
         "/api/admin/register-table",
         headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Orders", "folder": "data", "sync_strategy": "full"},
+        json={"name": "Orders", "folder": "data", "sync_strategy": "full_refresh"},
     )
     r = client.delete(
         "/api/admin/registry/orders",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 204, r.text
-    rows = _audit_rows(action_prefix="registry.unregister", user_id=uid)
+    rows = _audit_rows(action_prefix="unregister_table", user_id=uid)
     assert len(rows) == 1
-
-
-# ── permissions.py (legacy dataset_permissions) ─────────────────────────
-
-
-def test_permissions_grant_writes_audit(fresh_db):
-    from app.main import app
-    uid, token = _seed_admin()
-    client = TestClient(app)
-    r = client.post(
-        "/api/admin/permissions",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"user_id": "victim", "dataset": "orders", "access": "read"},
-    )
-    assert r.status_code == 201, r.text
-    rows = _audit_rows(action_prefix="permission.grant", user_id=uid)
-    assert len(rows) == 1
-
-
-def test_permissions_revoke_writes_audit(fresh_db):
-    from app.main import app
-    uid, token = _seed_admin()
-    client = TestClient(app)
-    client.post(
-        "/api/admin/permissions",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"user_id": "victim", "dataset": "orders", "access": "read"},
-    )
-    r = client.request(
-        "DELETE", "/api/admin/permissions",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"user_id": "victim", "dataset": "orders"},
-    )
-    assert r.status_code == 200, r.text
-    rows = _audit_rows(action_prefix="permission.revoke", user_id=uid)
-    assert len(rows) == 1
-
-
-# ── access_requests.py ──────────────────────────────────────────────────
-
-
-def test_access_request_create_writes_audit(fresh_db):
-    from app.main import app
-    uid, token = _seed_admin()
-    client = TestClient(app)
-    r = client.post(
-        "/api/access-requests",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"table_id": "orders", "reason": "I need it"},
-    )
-    assert r.status_code == 201, r.text
-    rows = _audit_rows(action_prefix="access_request.create", user_id=uid)
-    assert len(rows) == 1
-
-
-def test_access_request_approve_and_deny_write_audit(fresh_db):
-    from app.main import app
-    uid, token = _seed_admin()
-    client = TestClient(app)
-    # Create one to approve
-    create1 = client.post(
-        "/api/access-requests",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"table_id": "orders", "reason": ""},
-    )
-    rid1 = create1.json()["id"]
-    a = client.post(
-        f"/api/access-requests/{rid1}/approve",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert a.status_code == 200, a.text
-    # Create another to deny
-    create2 = client.post(
-        "/api/access-requests",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"table_id": "customers", "reason": ""},
-    )
-    rid2 = create2.json()["id"]
-    d = client.post(
-        f"/api/access-requests/{rid2}/deny",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert d.status_code == 200, d.text
-    assert len(_audit_rows(action_prefix="access_request.approve", user_id=uid)) == 1
-    assert len(_audit_rows(action_prefix="access_request.deny", user_id=uid)) == 1
 
 
 # ── metadata.py ─────────────────────────────────────────────────────────
