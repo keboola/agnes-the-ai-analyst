@@ -971,6 +971,16 @@ def _bq_quota_and_cap_guard(
     queries via `remote_scan_too_large`. Forbidden / upstream errors
     still propagate as HTTP 502.
 
+    On retry-failure the surfaced `underlying` is the FIRST exception's
+    message (the rewritten-SQL diagnostic) — not the second's. For the
+    common case where the user references a catalog id (no qualifying
+    dataset in their SQL), the second attempt is guaranteed to fail
+    with the unhelpful ``Table "<id>" must be qualified with a dataset``,
+    masking the actually-useful ``Unrecognized name: <column>`` /
+    ``Syntax error`` diagnostic from the rewritten attempt. The
+    second-attempt message is preserved as `underlying_original` for
+    operator visibility.
+
     Flow:
     1. `check_daily_budget` — over-cap users get 429 BEFORE any BQ work.
     2. `quota.acquire(user_id)` opened — concurrent-slot held throughout.
@@ -1068,15 +1078,26 @@ def _bq_quota_and_cap_guard(
                     raise HTTPException(status_code=400, detail={
                         "kind": "remote_estimate_failed",
                         "message": (
-                            "Could not estimate scan size for this query."
+                            "BigQuery rejected this query during cost "
+                            "estimation."
                         ),
                         "hint": (
-                            "Use a registered table name from `agnes "
-                            "catalog`, or write BQ-native SQL with full "
-                            "backtick paths. Pure DuckDB-only syntax is "
-                            "not supported for --remote queries."
+                            "Most often this means a column referenced "
+                            "in WHERE/SELECT/etc doesn't exist on the "
+                            "table — verify with `agnes schema <id>`. "
+                            "Otherwise: use a registered table name from "
+                            "`agnes catalog`, or write BQ-native SQL "
+                            "with full backtick paths."
                         ),
-                        "underlying": exc2.message,
+                        # Surface the FIRST attempt's diagnostic (rewritten
+                        # SQL — has the real "Unrecognized name" / syntax
+                        # info). Second attempt for catalog-id-only SQL
+                        # always fails with the unhelpful "must be
+                        # qualified" message, so we keep it as
+                        # `underlying_original` for operator context but
+                        # don't lead with it.
+                        "underlying": exc.message,
+                        "underlying_original": exc2.message,
                     })
 
             # Distribute the total to dry_run_set so the caller's
