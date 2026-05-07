@@ -10,6 +10,46 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.44.0] — 2026-05-07
+
+### Added
+- `agnes refresh-marketplace` — single CLI command that owns the per-user
+  filtered Claude Code marketplace lifecycle. `--bootstrap` does the
+  first-time setup: clones the per-user marketplace bare repo to
+  `~/.agnes/marketplace`, strips the PAT from the cloned origin URL so it
+  doesn't sit in plaintext at rest, registers the local path with Claude
+  Code, and installs every plugin in the served manifest at
+  `--scope project`. Without `--bootstrap` it does an incremental refresh:
+  fetch + reset to the remote, then version-aware reconcile (install missing
+  plugins, update on version diff, skip on match). Plugins removed from the
+  manifest are deliberately NOT auto-uninstalled — a transient empty manifest
+  from the server would otherwise wipe the user's stack.
+- `agnes init` now installs a SessionStart hook that runs
+  `agnes refresh-marketplace --quiet` on every Claude Code session,
+  alongside the existing chained `agnes self-upgrade; agnes pull` entry.
+  The marketplace refresh runs as a *separate* hook entry (not chained)
+  so a failure (e.g. fresh workspace with no clone yet) doesn't suppress
+  the data pull. The refresh command is wrapped in `bash -c "..."`
+  because Claude Code on Windows runs hook commands directly without a
+  shell, which would otherwise leave the `2>/dev/null || true` syntax
+  uninterpreted.
+- When `agnes refresh-marketplace` detects an actual change, it emits
+  Claude Code hook JSON on stdout — `systemMessage` (transient toast)
+  and `additionalContext` (model-side system reminder) — both pointing
+  at `/reload-plugins` so the running session loads new plugins without
+  a restart.
+
+### Changed
+- Install-prompt step 5 (in the dashboard-served setup payload) collapses
+  from a 15-line inline shell sequence — `rm -rf` + `git clone` + per-plugin
+  `claude plugin install` calls — to a single `agnes refresh-marketplace
+  --bootstrap` invocation. The old inline form tripped Claude Code's agent
+  `rm -rf` permission gate on first run.
+- `scripts/dev/agnes-client-reset.sh`: now cleans
+  `~/.claude/plugins/{marketplaces,cache}/agnes`, drops the uv build cache,
+  and documents workspace-scoped residue that can't be enumerated from a
+  user-level reset.
+
 ## [0.43.0] — 2026-05-06
 
 ### Added
