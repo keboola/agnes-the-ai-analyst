@@ -475,13 +475,13 @@ def test_quiet_emits_hook_json_when_plugin_installed(
     assert "/reload-plugins" in additional
 
 
-def test_manual_mode_prints_restart_hint_when_anything_changed(
+def test_manual_mode_prints_reload_hint_when_anything_changed(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
     """When `agnes refresh-marketplace` runs without --quiet AND something
     actually got installed/updated, the operator needs to know they should
-    /exit + restart Claude Code for the change to take effect (Claude only
-    scans plugins at session start). Print the hint at end of run."""
+    `/reload-plugins` in Claude Code to pick up the change. Print the hint
+    at end of run."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
@@ -492,15 +492,14 @@ def test_manual_mode_prints_restart_hint_when_anything_changed(
     result = runner.invoke(refresh_marketplace_app, [])
     assert result.exit_code == 0
     out = _clean(result.output)
-    assert "Restart Claude Code" in out or "restart" in out.lower()
-    assert "/exit" in out
+    assert "/reload-plugins" in out
 
 
-def test_manual_mode_no_change_does_not_print_restart_hint(
+def test_manual_mode_no_change_does_not_print_reload_hint(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
     """Manual `agnes refresh-marketplace` over an already-up-to-date stack
-    must NOT spam the restart hint — there's nothing to restart for."""
+    must NOT spam the reload hint — there's nothing to reload for."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
@@ -514,9 +513,7 @@ def test_manual_mode_no_change_does_not_print_restart_hint(
     result = runner.invoke(refresh_marketplace_app, [])
     assert result.exit_code == 0
     out = _clean(result.output)
-    # The restart hint sentence specifically — not the substring "restart"
-    # which might appear elsewhere benignly.
-    assert "Restart Claude Code" not in out
+    assert "/reload-plugins" not in out
 
 
 def test_quiet_emits_hook_json_when_bundle_silently_auto_updated_by_claude(
