@@ -1,10 +1,29 @@
-"""Health check endpoint — structured diagnostics for AI agents."""
+"""Health check endpoint — structured diagnostics for AI agents.
+
+## Severity vocabulary
+
+Per-check `status` values, in order of escalation:
+
+- `ok`     — nothing to surface.
+- `info`   — non-trivial observation worth showing the operator, but the
+             situation isn't broken. **Does not** promote the overall
+             status to `degraded` (issue #178).
+- `unknown`— check couldn't run (missing dependency, FS error). Surfaced
+             but doesn't promote overall.
+- `warning`— real issue, operator should look. Promotes overall to
+             `degraded`.
+- `error`  — critical. Promotes overall to `unhealthy`.
+
+Add an `info`-tier check by returning `{"status": "info", ...}` from the
+check function. The aggregator at the bottom of `health_check_detailed`
+treats `info` as non-promoting.
+"""
 
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 import duckdb
 
 from app.auth.dependencies import _get_db, get_current_user
@@ -66,15 +85,18 @@ def _check_bq_billing_project() -> dict | None:
         return {"status": "ok", "detail": "BigQuery project not configured"}
 
     if billing == data:
+        # Issue #178: this is informational, not a fault. Many valid
+        # single-project dev instances run with billing == data and the SA
+        # has `serviceusage.services.use`. Keep the message visible but
+        # don't promote the overall status to `degraded` for it.
         return {
-            "status": "warning",
+            "status": "info",
             "detail": "BigQuery billing project equals data project",
             "hint": (
-                "Set data_source.bigquery.billing_project in instance.yaml to a "
+                "If the SA hits USER_PROJECT_DENIED 403, set "
+                "data_source.bigquery.billing_project in instance.yaml to a "
                 "project the SA can bill against (typically your dev/billable "
                 "project, distinct from a shared read-only data project). "
-                "Otherwise BQ calls 403 USER_PROJECT_DENIED whenever the SA "
-                "lacks serviceusage.services.use on the data project. "
                 "Configurable via /admin/server-config UI."
             ),
             "billing_project": billing,
@@ -230,9 +252,21 @@ async def health_check():
 async def health_check_detailed(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
     _user: dict = Depends(get_current_user),
+    include: str = Query(
+        "",
+        description=(
+            "Comma-separated list of optional checks to include. "
+            "Recognised values: `schema` (DB schema version against the "
+            "expected migration). The default response omits these because "
+            "they're rarely actionable on a healthy instance and add noise "
+            "to `agnes diagnose` output (issue #204). Pass `?include=schema` "
+            "to get the legacy behavior."
+        ),
+    ),
 ):
     """Structured health check with deployment metadata. Requires authentication."""
     checks = {}
+    include_set = {p.strip() for p in include.split(",") if p.strip()}
 
     # DuckDB state
     try:
@@ -241,8 +275,14 @@ async def health_check_detailed(
     except Exception as e:
         checks["duckdb_state"] = {"status": "error", "detail": str(e)}
 
-    # DB schema version check
-    checks["db_schema"] = _check_db_schema()
+    # DB schema version check — opt-in (issue #204). Operators who run a
+    # fresh release pinned to the same image as the running schema rarely
+    # care about this number; analysts hitting the endpoint via
+    # `agnes diagnose` see it as noise. Surface it on demand via
+    # `?include=schema` (the dashboard / admin UI passes this; default
+    # CLI does not).
+    if "schema" in include_set:
+        checks["db_schema"] = _check_db_schema()
 
     # Sync state summary
     try:
@@ -292,6 +332,10 @@ async def health_check_detailed(
     except Exception as e:
         checks["session_pipeline"] = {"status": "unknown", "detail": str(e)}
 
+    # Aggregate to overall status. `info` and `unknown` surface in the
+    # response but never escalate the headline (issue #178). `warning`
+    # promotes to `degraded`; `error` (or a schema mismatch when the
+    # caller asked for it) promotes to `unhealthy`.
     overall = "healthy"
     for check in checks.values():
         if check.get("status") == "error":
@@ -299,8 +343,9 @@ async def health_check_detailed(
             break
         if check.get("status") == "warning":
             overall = "degraded"
-    # DB schema mismatch or unreachable also makes the overall status unhealthy
-    if checks.get("db_schema", {}).get("db_schema") != "ok":
+    # Schema mismatch only escalates when the caller asked for the check
+    # — otherwise the absent key is treated as "not asserted".
+    if "db_schema" in checks and checks["db_schema"].get("db_schema") != "ok":
         overall = "unhealthy"
 
     return {

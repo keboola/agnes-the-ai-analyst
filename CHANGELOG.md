@@ -10,9 +10,116 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-05-07
+
+Operator-and-analyst quality bundle: a security fix for the optional
+Telegram bot, two CLI gaps closed, and three rounds of UX polish on
+`agnes diagnose` and `agnes pull` so non-TTY consumers (CI runners,
+Claude Code SessionStart hooks, sub-agent watchdogs) get readable,
+actionable signal. Closes #84, #164, #177, #178, #203, #204.
+
+### Security
+
+- **Telegram bot pairing-code RNG hardened (#84).** The pairing code
+  used to link a Telegram chat to an Agnes user is now generated via
+  `secrets.choice` (CSPRNG) rather than `random.choices`. Pre-fix an
+  attacker who scraped one issued code could recover the `random`
+  module's PRNG state and predict subsequent codes issued in the same
+  process — the fix neutralizes that class of attack
+  (`services/telegram_bot/storage.py:_generate_code`).
+- **Telegram script runner refuses out-of-shape usernames (#84).** The
+  optional notification runner shells out via `sudo -u <username>`. A
+  username controlled by an attacker — e.g. via tampering with
+  `telegram_users.json` — could otherwise carry sudo flags
+  (`-u`, `--shell=…`) or shell metacharacters. The runner now validates
+  the value against a POSIX-conservative regex
+  (`^[a-z_][a-z0-9._-]{0,31}$`) and returns `None` before invoking
+  `subprocess.run` if it doesn't match
+  (`services/telegram_bot/runner.py:_USERNAME_RE`).
+
+### Added
+
+- `agnes admin unregister-table <id>` — CLI wrapper for
+  `DELETE /api/admin/registry/{id}` (#177). Confirms before destructive
+  action; pass `--yes` to skip the prompt in scripts. The server-side
+  endpoint already does the parquet/`sync_state` cleanup; the CLI is a
+  thin client.
+- `agnes admin update-table <id>` — CLI wrapper for
+  `PUT /api/admin/registry/{id}` (#177). Only the supplied flags go in
+  the body (`--name`, `--bucket`, `--source-table`, `--query-mode`,
+  `--query`, `--description`, `--sync-schedule`, `--source-type`); the
+  rest stay unchanged on the server. `--query` accepts `@path/to.sql`
+  for files. Calling with no flags errors (`No fields supplied`)
+  instead of silently no-opping.
+- `agnes diagnose --include-schema` (#204). The default `agnes
+  diagnose` no longer surfaces the DB schema-version check — analysts
+  hitting the CLI rarely care about the integer, and it dominated the
+  agent-facing output. Pass `--include-schema` (or query
+  `/api/health/detailed?include=schema` directly) when verifying a
+  migration.
+- **`info` severity tier in `/api/health/detailed`** (#178). Sits
+  between `ok` and `warning`: surfaces a non-trivial observation
+  worth reading without promoting the headline status to `degraded`.
+  See the module docstring at `app/api/health.py` for the full
+  severity ladder. The BQ billing-equals-data check is the first
+  consumer (was `warning` → now `info`).
+- `AGNES_PULL_PROGRESS_INTERVAL_SECONDS` and
+  `AGNES_PULL_PROGRESS_INTERVAL_BYTES` env knobs for the textual
+  progress emitter (#203). Defaults are tighter than pre-fix (5 s /
+  1 MiB vs the previous 30 s / 10%-of-total) so non-TTY consumers
+  see continuous output and don't trip dead-process watchdogs on
+  multi-GB parquets. Override either independently.
+
+### Changed
+
+- **`agnes pull` non-TTY progress is more chatty by default (#203).**
+  Previous cadence (30 s / 10%) produced one line every several
+  minutes on multi-GB parquets, long enough for Claude Code
+  sub-agent watchdogs to kill the pull as a hung process. New
+  defaults: emit when *any* of (10% boundary, 5 s elapsed, 1 MiB
+  bytes since last emit). The 10% boundary is unchanged so small
+  files still get the original visual rhythm.
+- **`/api/health/detailed` no longer includes `db_schema` by default
+  (#204).** Pass `?include=schema` to opt back in. The aggregator
+  treats the schema check as "not asserted" when absent, so
+  unrelated services can still drive the headline. Operators using
+  the legacy entry should add the parameter to their probe
+  configuration.
+- **BQ billing-project equals data-project surfaces as `info`, not
+  `warning` (#178).** Many valid single-project dev instances run
+  with billing == data; the message is informational. The `detail`
+  + `hint` strings are unchanged so the operator still gets the
+  USER_PROJECT_DENIED context if they're hitting it. Pre-fix, the
+  message alone promoted the overall headline to `degraded` even on
+  intentionally collapsed setups.
+- `agnes init --force` now snapshots the prior `CLAUDE.md` to
+  `CLAUDE.md.bak.<ISO-timestamp>` before regenerating it (#164). Each
+  re-run produces a fresh backup; the prior backup is not clobbered.
+  A FS error on the backup path is logged but does not abort the
+  init (the existing-workspace gate still requires `--force`).
+
 ### Internal
 
-- `infra/modules/customer-instance` (tag `infra-v1.8.0`): `startup-script.sh.tpl` no longer overwrites operator-edited `AGNES_TAG` / `AGNES_TEMP_DIR` in `/opt/agnes/.env` on every boot. Reads the existing values when present and lets them win over the template-computed `$IMAGE_TAG`. Pre-fix, an in-place TF action that stopped/started the VM (e.g. `machine_type` change) would re-run the startup script and clobber any manually-pinned image tag — operators had to re-edit the file post-restart. Fresh provisions still get the TF-driven values; the `.env` file's existence is the disambiguator. To force a TF-driven reset, `rm /opt/agnes/.env` and reboot.
+- New `cli.client.api_put` helper to mirror `api_get` /
+  `api_post` / `api_delete` / `api_patch` for the new
+  `update-table` command.
+- Tests added: `tests/test_telegram_bot_runner.py`,
+  `tests/test_health_schema_gate.py`, plus extensions to
+  `test_telegram_storage`, `test_pull_progress`, `test_diagnose_billing`,
+  `test_cli_admin`, `test_cli_init`.
+- `infra/modules/customer-instance` (tag `infra-v1.8.0`):
+  `startup-script.sh.tpl` no longer overwrites operator-edited
+  `AGNES_TAG` / `AGNES_TEMP_DIR` in `/opt/agnes/.env` on every boot.
+  Reads the existing values when present and lets them win over the
+  template-computed `$IMAGE_TAG`. Pre-fix, an in-place TF action that
+  stopped/started the VM (e.g. `machine_type` change) would re-run the
+  startup script and clobber any manually-pinned image tag — operators
+  had to re-edit the file post-restart. Fresh provisions still get the
+  TF-driven values; the `.env` file's existence is the disambiguator.
+  To force a TF-driven reset, `rm /opt/agnes/.env` and reboot. Folded
+  in from #214, which landed on main between 0.44.1 and this cut.
+
+## [0.44.1] — 2026-05-07
 
 ### Fixed
 

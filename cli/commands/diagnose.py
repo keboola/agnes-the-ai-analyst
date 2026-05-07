@@ -16,6 +16,16 @@ def diagnose(
     symptom: str = typer.Option(None, "--symptom", help="Describe the problem"),
     component: str = typer.Option(None, "--component", help="Check specific component"),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+    include_schema: bool = typer.Option(
+        False,
+        "--include-schema",
+        help=(
+            "Include the DB schema-version check. Off by default since the "
+            "answer is rarely actionable on a healthy instance and shows up "
+            "as noise in the agent-facing output (issue #204). On when the "
+            "operator is verifying a migration."
+        ),
+    ),
 ):
     """Run comprehensive system diagnostics. AI-agent friendly output."""
     # If a subcommand was invoked (e.g. `agnes diagnose system`), defer to it
@@ -33,7 +43,8 @@ def diagnose(
 
         # Detailed health (auth required) for service-level checks
         try:
-            resp_d = api_get("/api/health/detailed")
+            params = {"include": "schema"} if include_schema else None
+            resp_d = api_get("/api/health/detailed", params=params)
             detailed = resp_d.json()
             for svc_name, svc_data in detailed.get("services", {}).items():
                 check = {"name": svc_name, "status": svc_data.get("status", "unknown")}
@@ -45,7 +56,8 @@ def diagnose(
     except Exception as e:
         checks.append({"name": "api", "status": "error", "detail": str(e)})
 
-    # Determine overall
+    # Determine overall — `info` and `unknown` surface in the per-check
+    # output but never promote the headline (issue #178).
     overall = "healthy"
     for c in checks:
         if c["status"] == "error":

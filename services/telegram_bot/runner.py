@@ -7,6 +7,7 @@ Runs the script as the owning user via the notify-scripts helper.
 
 import json
 import logging
+import re
 import subprocess
 
 from . import config
@@ -15,12 +16,22 @@ logger = logging.getLogger(__name__)
 
 NOTIFY_SCRIPTS_BIN = "/usr/local/bin/notify-scripts"
 
+# POSIX-conservative username shape: alphanumerics, dot, hyphen, underscore;
+# must start with `[a-z_]` so the value can never be interpreted as a sudo
+# flag (e.g. `-u`, `--shell`). Mirrors the `useradd` defaults. Anything
+# outside this shape is refused before we hand it to `sudo -u`.
+_USERNAME_RE = re.compile(r"^[a-z_][a-z0-9._-]{0,31}$")
+
 
 def run_user_script(username: str, script_name: str) -> dict | None:
     """Run a notification script as the specified user and return parsed JSON output.
 
     Returns None on error, or the parsed JSON dict on success.
     """
+    if not _USERNAME_RE.match(username):
+        logger.error(f"Refusing to run script: invalid username shape: {username!r}")
+        return None
+
     if not script_name.endswith(".py"):
         logger.warning(f"Not a Python script: {script_name}")
         return None

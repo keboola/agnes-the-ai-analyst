@@ -123,6 +123,39 @@ def test_init_force_preserves_local_md(tmp_path, monkeypatch):
     assert "my notes" in (tmp_path / ".claude" / "CLAUDE.local.md").read_text()
 
 
+def test_init_force_backs_up_existing_claude_md(tmp_path, monkeypatch):
+    """Issue #164: --force overwrites CLAUDE.md, but the prior content
+    must be preserved as `CLAUDE.md.bak.<timestamp>` so an operator who
+    edited it can recover their notes. The backup carries an ISO
+    timestamp so re-running --force in the same workspace doesn't
+    clobber a prior backup.
+    """
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    # Seed an existing CLAUDE.md the operator has edited.
+    (tmp_path / "CLAUDE.md").write_text(
+        "# AI Data Analyst\n\nMy custom edits — must survive reinit.\n"
+    )
+
+    r = runner.invoke(init_app, [
+        "--server-url", "http://x",
+        "--token", "t",
+        "--workspace", str(tmp_path),
+        "--force",
+    ])
+    assert r.exit_code == 0, r.output
+
+    # Backup file: glob since the timestamp is dynamic.
+    backups = list(tmp_path.glob("CLAUDE.md.bak.*"))
+    assert len(backups) == 1, [p.name for p in backups]
+    assert "must survive reinit" in backups[0].read_text()
+    # The summary line names the backup so the operator can find it.
+    assert "Backed up" in r.output, r.output
+
+
 def test_init_partial_state_friendly_exit(tmp_path, monkeypatch):
     """CLAUDE.md exists with marker but no settings.json -> friendly hint, exit 1."""
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))

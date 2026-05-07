@@ -65,6 +65,44 @@ class PullResult:
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 
 
+def _read_progress_interval_seconds() -> float:
+    """Seconds between forced progress emissions per file. Default 5 s.
+
+    Tighter cadence than the original 30 s default keeps non-TTY consumers
+    (Claude Code sub-agent watchdogs, CI runners) from killing the process
+    on apparent silence during a slow chunk. Override via
+    `AGNES_PULL_PROGRESS_INTERVAL_SECONDS`. Issue #203.
+    """
+    raw = os.environ.get("AGNES_PULL_PROGRESS_INTERVAL_SECONDS", "")
+    if raw:
+        try:
+            v = float(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return 5.0
+
+
+def _read_progress_interval_bytes() -> int:
+    """Bytes between forced progress emissions per file. Default 1 MiB.
+
+    Complements the time-based cadence so fast downloads also emit at a
+    reasonable rate (the original "every 10% of total" boundary went
+    unobserved on multi-GB parquets where 10% is tens of seconds of bytes).
+    Override via `AGNES_PULL_PROGRESS_INTERVAL_BYTES`. Issue #203.
+    """
+    raw = os.environ.get("AGNES_PULL_PROGRESS_INTERVAL_BYTES", "")
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return 1024 * 1024
+
+
 class _TextualProgress:
     """Plain-text progress emitter for non-TTY stderr.
 
@@ -74,9 +112,17 @@ class _TextualProgress:
     minutes on a multi-GB parquet) or emits raw ANSI noise. This class
     instead emits one terse line per file at sensible cadence.
 
-    Cadence policy: emit when *either*:
+    Cadence policy: emit when *any* of:
       - per-file bytes-downloaded crosses a 10%-of-total boundary, OR
-      - 30 s have elapsed since this file's last emission.
+      - more than ``AGNES_PULL_PROGRESS_INTERVAL_BYTES`` bytes (default
+        1 MiB) since this file's last emission, OR
+      - more than ``AGNES_PULL_PROGRESS_INTERVAL_SECONDS`` (default 5 s)
+        since this file's last emission.
+
+    The byte+second floor exists because sub-agent / CI watchdogs read
+    "no output for N seconds" as a hung process and kill it (issue #203);
+    the original 30 s / 10% policy was silent enough to trip those gates
+    on slow links.
 
     Always emits one final "done" line per file via `finish()` so the
     operator sees a confirmed completion even on tiny files.
@@ -102,11 +148,14 @@ class _TextualProgress:
         self._total_files = total_files
         self._file_sizes = file_sizes
         self._lock = threading.Lock()
+        self._interval_seconds = _read_progress_interval_seconds()
+        self._interval_bytes = _read_progress_interval_bytes()
         # Per-file state.
         self._bytes: dict[str, int] = {tid: 0 for tid in file_sizes}
         self._started_at: dict[str, float] = {}
         self._last_emit_at: dict[str, float] = {}
         self._last_emit_pct: dict[str, int] = {}
+        self._last_emit_bytes: dict[str, int] = {}
         self._finished_idx: int = 0  # files whose `finish` line has been emitted
 
     def advance(self, tid: str, n: int) -> None:
@@ -118,16 +167,23 @@ class _TextualProgress:
                 self._started_at[tid] = now
                 self._last_emit_at[tid] = now
                 self._last_emit_pct[tid] = 0
+                self._last_emit_bytes[tid] = 0
             self._bytes[tid] = self._bytes.get(tid, 0) + n
 
             total = self._file_sizes.get(tid, 0)
             current = self._bytes[tid]
             pct = int((current * 100) / total) if total > 0 else 0
             elapsed = now - self._last_emit_at[tid]
+            bytes_since_emit = current - self._last_emit_bytes.get(tid, 0)
             crossed_10 = pct >= self._last_emit_pct[tid] + 10
-            if crossed_10 or elapsed >= 30.0:
+            if (
+                crossed_10
+                or elapsed >= self._interval_seconds
+                or bytes_since_emit >= self._interval_bytes
+            ):
                 self._last_emit_at[tid] = now
                 self._last_emit_pct[tid] = pct - (pct % 10)
+                self._last_emit_bytes[tid] = current
                 self._emit_line(tid, current, total, now)
 
     def finish(self) -> None:

@@ -4,7 +4,7 @@ import json
 
 import typer
 
-from cli.client import api_get, api_post, api_delete, api_patch
+from cli.client import api_get, api_post, api_delete, api_patch, api_put
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.admin_store import admin_store_app
 from cli.commands.memory_admin import memory_admin_app
@@ -322,6 +322,139 @@ def list_tables(as_json: bool = typer.Option(False, "--json")):
         typer.echo(f"Registered tables: {data['count']}")
         for t in data["tables"]:
             typer.echo(f"  {t['name']:30s} src={t.get('source_type','?'):10s} mode={t.get('query_mode','?'):6s} bucket={t.get('bucket',''):20s}")
+
+
+@admin_app.command("unregister-table")
+def unregister_table(
+    table_id: str = typer.Argument(..., help="Table id to unregister"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the confirmation prompt (for scripts).",
+    ),
+):
+    """Unregister a table from the registry.
+
+    Calls `DELETE /api/admin/registry/{table_id}`. The server unhooks the
+    master view, removes the canonical parquet for materialized rows, and
+    clears the matching `sync_state` row. Issue #177.
+    """
+    if not yes:
+        typer.echo(f"About to unregister table: {table_id}")
+        if not typer.confirm("Continue?"):
+            typer.echo("Aborted.")
+            raise typer.Exit(0)
+    resp = api_delete(f"/api/admin/registry/{table_id}")
+    if resp.status_code == 204:
+        typer.echo(f"Unregistered: {table_id}")
+        return
+    if resp.status_code == 404:
+        typer.echo(f"Not registered: {table_id}", err=True)
+        raise typer.Exit(1)
+    try:
+        detail = resp.json().get("detail", resp.text)
+    except Exception:
+        detail = resp.text
+    typer.echo(f"Failed: {detail}", err=True)
+    raise typer.Exit(1)
+
+
+@admin_app.command("update-table")
+def update_table(
+    table_id: str = typer.Argument(..., help="Table id to update"),
+    name: str = typer.Option(None, "--name", help="New display name"),
+    bucket: str = typer.Option(None, "--bucket", help="New bucket / dataset"),
+    source_table: str = typer.Option(
+        None, "--source-table", help="New source table name"
+    ),
+    query_mode: str = typer.Option(
+        None,
+        "--query-mode",
+        help="New query mode: local | remote | materialized",
+    ),
+    query: str = typer.Option(
+        None,
+        "--query",
+        help=(
+            "New SQL body for query_mode='materialized' (BigQuery). "
+            "Inline SQL or `@path/to.sql` to read from disk. Use "
+            "`--query=` (empty value) to clear."
+        ),
+    ),
+    description: str = typer.Option(
+        None, "--description", help="New description"
+    ),
+    sync_schedule: str = typer.Option(
+        None,
+        "--sync-schedule",
+        help="New cron schedule (e.g. 'every 6h' / 'daily 03:00'); honored by materialized BQ rows",
+    ),
+    source_type: str = typer.Option(
+        None,
+        "--source-type",
+        help="Change source type. Rare — most edits keep this fixed.",
+    ),
+):
+    """Update a registered table.
+
+    Calls `PUT /api/admin/registry/{table_id}` with only the supplied
+    fields. Field omitted → unchanged. Issue #177.
+
+    For BQ rows, the server schedules a background rebuild so the master
+    view picks up the change without waiting for the next scheduled sync.
+    Switching `query_mode` away from `materialized` clears the stale
+    `source_query` automatically.
+    """
+    from pathlib import Path
+
+    payload: dict = {}
+    if name is not None:
+        payload["name"] = name
+    if bucket is not None:
+        payload["bucket"] = bucket
+    if source_table is not None:
+        payload["source_table"] = source_table
+    if query_mode is not None:
+        payload["query_mode"] = query_mode
+    if description is not None:
+        payload["description"] = description
+    if sync_schedule is not None:
+        payload["sync_schedule"] = sync_schedule
+    if source_type is not None:
+        payload["source_type"] = source_type
+    if query is not None:
+        if query.startswith("@"):
+            sql_path = Path(query[1:])
+            if not sql_path.exists():
+                typer.echo(f"Error: SQL file not found: {sql_path}", err=True)
+                raise typer.Exit(2)
+            payload["source_query"] = sql_path.read_text(encoding="utf-8").strip()
+        else:
+            payload["source_query"] = query.strip()
+
+    if not payload:
+        typer.echo(
+            "No fields supplied. Pass at least one of --name, --bucket, "
+            "--source-table, --query-mode, --query, --description, "
+            "--sync-schedule, --source-type.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    resp = api_put(f"/api/admin/registry/{table_id}", json=payload)
+    if resp.status_code == 200:
+        data = resp.json()
+        updated = data.get("updated") or sorted(payload.keys())
+        typer.echo(f"Updated {table_id}: {', '.join(updated)}")
+        return
+    if resp.status_code == 404:
+        typer.echo(f"Not registered: {table_id}", err=True)
+        raise typer.Exit(1)
+    try:
+        detail = resp.json().get("detail", resp.text)
+    except Exception:
+        detail = resp.text
+    typer.echo(f"Failed: {detail}", err=True)
+    raise typer.Exit(1)
 
 
 @admin_app.command("metadata-show")
