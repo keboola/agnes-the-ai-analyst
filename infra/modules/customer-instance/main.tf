@@ -184,6 +184,15 @@ resource "google_compute_instance" "vm" {
   zone         = var.zone
   tags         = ["agnes-${var.customer_name}"]
 
+  # Without this, a `machine_type` change in TF triggers a full
+  # ForceNew (destroy + recreate) of the VM. The data disk would
+  # survive (it's a separate `attached_disk`), but VM-local state
+  # — fingerprints, journald, ephemeral caches — would not. With
+  # `true`, the provider stops the VM, mutates the field, and
+  # restarts it in place, which is what an operator resizing a
+  # running deployment actually wants.
+  allow_stopping_for_update = true
+
   boot_disk {
     initialize_params {
       image = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"
