@@ -87,11 +87,21 @@ def _reset_module_caches():
         _vc._metadata_cache.clear()
     except (ImportError, AttributeError):
         pass
+    try:
+        import app.api.cache_warmup as _cw
+        _cw.WARMUP_STATE = None
+    except (ImportError, AttributeError):
+        pass
     yield
     try:
         from app.api import v2_catalog as _vc
         _vc._table_rows_cache.clear()
         _vc._metadata_cache.clear()
+    except (ImportError, AttributeError):
+        pass
+    try:
+        import app.api.cache_warmup as _cw
+        _cw.WARMUP_STATE = None
     except (ImportError, AttributeError):
         pass
 
