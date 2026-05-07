@@ -356,8 +356,9 @@ class TestBuildSchemaUncached:
         from app.api import v2_schema
 
         called_with = {}
-        def fake_uncached(conn, table_id, *, bq):
+        def fake_uncached(conn, table_id, *, bq, row=None):
             called_with["table_id"] = table_id
+            called_with["row"] = row
             return {"table_id": table_id, "columns": []}
 
         monkeypatch.setattr(v2_schema, "build_schema_uncached", fake_uncached)
@@ -375,3 +376,22 @@ class TestBuildSchemaUncached:
             conn=MagicMock(), user={"id": "u"}, table_id="x", bq=MagicMock(),
         )
         assert called_with["table_id"] == "x"
+
+    def test_uncached_raises_notfound_for_unregistered_table(self):
+        """Warmup-direct call against an unregistered id raises NotFound,
+        not FileNotFoundError or other surprise."""
+        from app.api.v2_schema import build_schema_uncached, NotFound
+        from unittest.mock import MagicMock
+
+        conn = MagicMock()
+        repo_mock = MagicMock()
+        repo_mock.get.return_value = None
+        # Patch the repo lookup the same way the implementation imports it.
+        import app.api.v2_schema as v2_schema_mod
+        original = v2_schema_mod.TableRegistryRepository
+        v2_schema_mod.TableRegistryRepository = lambda c: repo_mock
+        try:
+            with pytest.raises(NotFound):
+                build_schema_uncached(conn, "nonexistent", bq=MagicMock())
+        finally:
+            v2_schema_mod.TableRegistryRepository = original
