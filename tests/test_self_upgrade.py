@@ -223,7 +223,13 @@ def test_smoke_fail_no_prior_url_prints_install_sh_recovery():
 
 
 def test_smoke_pass_records_last_known_good_then_invalidates_cache():
-    """Convention: record before invalidate."""
+    """Convention in `_do_install_with_smoke_and_rollback`: record, then
+    invalidate. The OTHER invalidate call here (the FIRST one in call_order)
+    is the pre-probe invalidate inside `_resolve_info` that ensures
+    `agnes self-upgrade` always re-probes /cli/latest instead of trusting
+    the 24h cache — see `test_self_upgrade_bypasses_24h_cache_without_force`.
+    Both invalidates are intentional; we pin only the record→invalidate pair
+    of the post-install bookkeeping by looking at the LAST invalidate."""
     call_order = []
     with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
          patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
@@ -238,7 +244,10 @@ def test_smoke_pass_records_last_known_good_then_invalidates_cache():
         result = runner.invoke(app, ["self-upgrade"])
         assert result.exit_code == 0
         record_idx = next(i for i, c in enumerate(call_order) if c[0] == "record")
-        invalidate_idx = next(i for i, c in enumerate(call_order) if c[0] == "invalidate")
+        # LAST invalidate — the post-install bookkeeping one.
+        invalidate_idx = max(
+            i for i, c in enumerate(call_order) if c[0] == "invalidate"
+        )
         assert record_idx < invalidate_idx, call_order
         assert call_order[record_idx] == ("record", _OUTDATED_URL)
 
@@ -286,6 +295,64 @@ def test_smoke_test_detects_version_mismatch(install_method, patch_target):
         assert "version mismatch" in detail
         assert "0.40.0" in detail and "0.30.0" in detail
         assert mock_run.call_args.args[0][0] == fake_bin
+
+
+def test_self_upgrade_bypasses_24h_cache_without_force(tmp_path, monkeypatch):
+    """Plain `agnes self-upgrade` (no --force) MUST re-probe /cli/latest
+    even when the local update_check.json cache claims we're current.
+
+    Pre-fix the cache short-circuited and the command was a silent no-op
+    after a server bump within the 24h window. Empirically observed:
+    prod 0.47.1 → 0.47.2 didn't propagate to clients with a fresh cache.
+    """
+    import json
+    import time
+    from cli.commands import self_upgrade as su
+    from cli import update_check as uc
+
+    # Redirect the on-disk cache to tmp_path via _config_dir's env override.
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+
+    # Arrange: stale cache claims installed=latest=0.47.1, written 1 minute
+    # ago — well within the 24h positive-cache TTL.
+    cache_path = tmp_path / "update_check.json"
+    cache_path.write_text(json.dumps({
+        "installed": "0.47.1",
+        "server_url": "http://server.test",
+        "latest": "0.47.1",
+        "download_url": "http://server.test/cli/wheel/agnes-0.47.1-py3-none-any.whl",
+        "checked_at": time.time() - 60,
+    }), encoding="utf-8")
+
+    # Mock the network probe to return 0.47.2 — the bumped server.
+    monkeypatch.setattr(uc, "_fetch_latest", lambda url: {
+        "version": "0.47.2",
+        "download_url_path": "/cli/wheel/agnes-0.47.2-py3-none-any.whl",
+    })
+    # Pin the installed version to 0.47.1 (matches the stale cache).
+    monkeypatch.setattr(uc, "_installed_version", lambda: "0.47.1")
+    # Pin the server URL so the cache key matches.
+    monkeypatch.setattr(su, "get_server_url", lambda: "http://server.test")
+
+    # Act: explicit self-upgrade WITHOUT --force.
+    info = su._resolve_info(force=False)
+
+    # Assert: returns UpdateInfo carrying the FRESH 0.47.2, not cached 0.47.1.
+    assert info is not None and not isinstance(info, su._Unreachable)
+    assert info.latest == "0.47.2", (
+        f"expected fresh probe to return 0.47.2; got {info.latest} "
+        "(cache short-circuit regressed)"
+    )
+    assert info.installed == "0.47.1"
+    assert info.download_url == (
+        "http://server.test/cli/wheel/agnes-0.47.2-py3-none-any.whl"
+    )
+
+    # Assert: cache was rewritten with the fresh latest. Proves the probe
+    # actually ran rather than the stale cache satisfying the call via
+    # some other path that happened to leave 0.47.1 untouched on disk.
+    refreshed = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert refreshed["latest"] == "0.47.2"
 
 
 def test_smoke_test_passes_with_pep440_local_version():
