@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.46.2] — 2026-05-07
+
+### Fixed
+
+- `agnes query` against a `query_mode='remote'` table previously surfaced DuckDB's misleading "did you mean <similar materialized table>" suggestion. Now appends a friendlier hint pointing users to `agnes catalog`, `agnes schema <id>`, and `agnes query --remote`. Reproduces from a real analyst session where `DESCRIBE unit_economics` (a remote table) sent the user down a 30-second wrong path.
+
 ## [0.46.1] — 2026-05-07
 
 ### Fixed
