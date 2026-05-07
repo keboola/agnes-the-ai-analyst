@@ -61,6 +61,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **`system.duckdb` WAL replay corruption from interrupted v27 migration.** DuckDB's `ReplayAlter` path raises `INTERNAL Error: Calling DatabaseManager::GetDefaultDatabase with no default database set` when the WAL contains an unflushed `ALTER TABLE … ADD COLUMN` op left over from an interrupted migration. Reproduced on agnes-dev: `docker compose up -d` (auto-upgrade cron) within seconds of the first migration run on an existing v25/v26 deployment killed the container before DuckDB's implicit checkpoint flushed the WAL → next start was permanently `unhealthy db_schema=unreachable` until the operator restored the pre-migrate snapshot by hand. Two-pronged fix:
+  1. `_ensure_schema` runs `CHECKPOINT` immediately after the migration ladder, collapsing the unflushed-WAL window.
+  2. `_try_open_system_db` catches the WAL-replay error class and auto-restores from `system.duckdb.pre-migrate` (the snapshot the existing migration code already takes). The migration ladder re-runs idempotently on the restored DB. Narrow error-class match: only the WAL-replay signatures fire the recovery; unrelated errors propagate so a real corruption isn't silently masked. Broken DB + WAL are moved aside as `system.duckdb.broken.<unix-ts>` for forensics.
 - **fix(keboola/legacy)**: the Storage API export-async path (used since
   v0.46.0 for all Keboola extraction) now preserves column types from
   Keboola Storage metadata via the provider cascade
