@@ -262,8 +262,13 @@ class OpenAICompatExtractor:
             ]
             kwargs["messages"] = messages
 
+        from src.observability import trace_generation
+
         try:
-            response = self._client.chat.completions.create(**kwargs)
+            with trace_generation(provider="openai_compat", model=self._model) as _trace:
+                _trace.set_input(prompt)
+                response = self._client.chat.completions.create(**kwargs)
+                _trace.set_output_from_openai(response)
         except openai.AuthenticationError as e:
             raise LLMAuthError(
                 f"OpenAI-compat authentication failed at {self._safe_url} (check API key)"

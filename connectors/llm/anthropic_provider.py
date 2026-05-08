@@ -125,18 +125,23 @@ class AnthropicExtractor:
             attempt, MAX_RETRIES, self._model, schema_name,
         )
 
+        from src.observability import trace_generation
+
         try:
-            response = self._client.messages.create(
-                model=self._model,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-                output_config={
-                    "format": {
-                        "type": "json_schema",
-                        "schema": _strict_json_schema(json_schema),
+            with trace_generation(provider="anthropic", model=self._model) as _trace:
+                _trace.set_input(prompt)
+                response = self._client.messages.create(
+                    model=self._model,
+                    max_tokens=max_tokens,
+                    messages=[{"role": "user", "content": prompt}],
+                    output_config={
+                        "format": {
+                            "type": "json_schema",
+                            "schema": _strict_json_schema(json_schema),
+                        },
                     },
-                },
-            )
+                )
+                _trace.set_output_from_anthropic(response)
         except anthropic.AuthenticationError as e:
             raise LLMAuthError("Anthropic authentication failed (check API key)") from e
         except anthropic.RateLimitError as e:

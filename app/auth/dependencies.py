@@ -145,6 +145,22 @@ def _get_local_dev_user(conn: duckdb.DuckDBPyConnection) -> Optional[dict]:
     return user
 
 
+def _stash_user(request: Optional[Request], user: dict) -> dict:
+    """Park the resolved user on ``request.state.user``.
+
+    Read by response-phase middleware (e.g. the PostHog snippet injector
+    and the 500 handler) so they can identify the actor without re-running
+    the auth dependency. Tolerant of ``None`` requests (background paths
+    that call this helper from non-HTTP contexts).
+    """
+    if request is not None:
+        try:
+            request.state.user = user
+        except Exception:
+            pass
+    return user
+
+
 async def get_current_user(
     request: Request = None,
     authorization: Optional[str] = Header(None),
@@ -159,7 +175,7 @@ async def get_current_user(
         user = _get_local_dev_user(conn)
         if user:
             _attach_admin_flag(user, conn)
-            return user
+            return _stash_user(request, user)
         # Fall through to normal auth if seed missing — surfaces the bug
         # instead of hiding it.
 
@@ -188,7 +204,7 @@ async def get_current_user(
         scheduler_user = get_scheduler_user(conn)
         if scheduler_user:
             _attach_admin_flag(scheduler_user, conn)
-            return scheduler_user
+            return _stash_user(request, scheduler_user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Scheduler user not provisioned",
@@ -198,7 +214,7 @@ async def get_current_user(
     user, reason = resolve_token_to_user(conn, token, request)
     if user:
         _attach_admin_flag(user, conn)
-        return user
+        return _stash_user(request, user)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=_AUTH_DETAIL_BY_REASON.get(reason, "Invalid or expired token"),

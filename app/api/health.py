@@ -443,6 +443,39 @@ async def health_check_detailed(
     }
 
 
+@router.get("/api/debug/throw")
+async def debug_throw(
+    user: dict = Depends(get_current_user),
+    kind: str = "RuntimeError",
+    msg: str = "intentional debug throw",
+):
+    """Deliberate-crash route for verifying observability wiring.
+
+    Gated by ``DEBUG=1`` — returns 404 in production. Always raises after
+    the auth dependency resolves, so ``request.state.user`` is populated
+    by the time the unhandled-exception handler captures the event. Use
+    to confirm that PostHog receives the exception with full user context
+    (``distinct_id``, ``user_id``, ``user_email``) and not just
+    ``request_id``.
+
+    Optional query params let you pick the exception type and message:
+        /api/debug/throw?kind=ValueError&msg=hello
+    """
+    if os.environ.get("DEBUG", "").strip().lower() not in ("1", "true", "yes", "on"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404)
+
+    types = {
+        "RuntimeError": RuntimeError,
+        "ValueError": ValueError,
+        "ZeroDivisionError": ZeroDivisionError,
+        "KeyError": KeyError,
+        "TypeError": TypeError,
+    }
+    cls = types.get(kind, RuntimeError)
+    raise cls(msg)
+
+
 @router.get("/api/version")
 async def version_info():
     """Lightweight version info — cacheable, no DB touch. Used by UI footer badge."""
