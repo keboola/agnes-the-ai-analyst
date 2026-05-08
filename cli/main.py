@@ -131,7 +131,28 @@ app.add_typer(store_app, name="store")
 app.add_typer(my_stack_app, name="my-stack")
 
 
-def _run_with_clean_errors() -> None:
+def _capture_cli_exception(exc: BaseException, kind: str) -> None:
+    """Best-effort PostHog forward for CLI-level errors. No-op when off."""
+    try:
+        from src.observability import get_posthog
+        argv = sys.argv[1:]
+        command = argv[0] if argv else "<no-command>"
+        get_posthog().capture_exception(
+            exc,
+            distinct_id="cli",
+            properties={
+                "component": "cli",
+                "command": command,
+                "argv": " ".join(argv)[:512],
+                "error_kind": kind,
+            },
+        )
+        get_posthog().shutdown()
+    except Exception:
+        pass  # never replace the user-visible error with a tracing failure
+
+
+def main() -> None:
     """Wrap ``app()`` so AgnesTransportError (and other typed CLI errors)
     surface as a one-line message + exit, never as a Python traceback. The
     full traceback is already logged to ``~/.config/agnes/last-error.log``
@@ -139,6 +160,11 @@ def _run_with_clean_errors() -> None:
     forwarding. Anything that escapes this wrapper IS a CLI bug worth
     fixing — log + print "internal error" so the analyst doesn't see a
     Pythonist's traceback either.
+
+    Also forwards captured exceptions to PostHog (no-op when disabled) so
+    operators can see CLI-level failures alongside server-side ones.
+    Normal control-flow exits (typer.Exit / SystemExit / KeyboardInterrupt)
+    are never reported.
 
     Pavel's #185 Phase 3B: previously a `httpx.ReadTimeout` from an
     `agnes query --remote` against a slow BQ view dumped a 30-frame
@@ -148,7 +174,8 @@ def _run_with_clean_errors() -> None:
     from cli.client import AgnesTransportError, _log_traceback, _LOG_FILE
     try:
         app()
-    except (AgnesTransportError) as exc:
+    except AgnesTransportError as exc:
+        _capture_cli_exception(exc, kind="transport")
         typer.echo(f"Error: {exc.user_message}", err=True)
         if exc.hint:
             typer.echo(exc.hint, err=True)
@@ -158,6 +185,7 @@ def _run_with_clean_errors() -> None:
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:  # last-resort net — escaped exceptions are bugs
+        _capture_cli_exception(exc, kind="unhandled")
         log = _log_traceback(exc, context="unhandled at CLI top-level")
         typer.echo(
             f"Error: internal CLI error ({type(exc).__name__}). "
@@ -168,4 +196,4 @@ def _run_with_clean_errors() -> None:
 
 
 if __name__ == "__main__":
-    _run_with_clean_errors()
+    main()

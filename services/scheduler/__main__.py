@@ -194,6 +194,15 @@ def _call_api(endpoint: str, method: str, timeout_sec: int) -> bool:
             return False
     except Exception as e:
         logger.error(f"Job {endpoint} failed: {e}")
+        try:
+            from src.observability import get_posthog
+            get_posthog().capture_exception(
+                e,
+                distinct_id="system",
+                properties={"job": endpoint, "method": method, "component": "scheduler"},
+            )
+        except Exception:
+            logger.exception("PostHog capture_exception failed in scheduler")
         return False
 
 

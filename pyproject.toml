@@ -77,9 +77,19 @@ dependencies = [
     # SDK stays for the metadata reads.
     "kbcstorage>=0.9.0",
     "sse-starlette>=2.0",
+    # Optional observability — pure-Python, no compilation. Lazily initialized
+    # in src/observability/posthog_client.py and only emits events when
+    # POSTHOG_API_KEY is set in the environment. With the key unset the
+    # integration is fully off (no network, no init). See docs/observability.md.
+    "posthog>=3.7.0",
 ]
 
 [project.optional-dependencies]
+observability = [
+    # Already in base dependencies — listed here so operators who want to
+    # be explicit can `pip install -e ".[observability]"` and signal intent.
+    "posthog>=3.7.0",
+]
 dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
@@ -96,7 +106,7 @@ dev = [
 ]
 
 [project.scripts]
-agnes = "cli.main:_run_with_clean_errors"
+agnes = "cli.main:main"
 
 [build-system]
 requires = ["hatchling"]
