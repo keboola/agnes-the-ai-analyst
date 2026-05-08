@@ -139,11 +139,16 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
 
     Heuristic (#176):
       max(mtime of /data/user_sessions/**/*.jsonl) <=
-      max(processed_at in session_extraction_state) + grace_seconds
+      max(processed_at in session_processor_state where processor='verification') + grace_seconds
 
     grace_seconds = 2 × the verification-detector cadence (default 15m → 30m).
     Operators with a custom SCHEDULER_VERIFICATION_DETECTOR_INTERVAL can
     extend the grace by setting that env var.
+
+    The check is scoped to the verification processor specifically — that's
+    the LLM-gated pipeline an operator most needs to know is stuck. Other
+    processors in the framework (e.g. usage) might lag for benign reasons
+    (no LLM, lighter scan cadence) and shouldn't trip a warning.
 
     Returns ``warning`` (never ``error``) — the LLM may be down for
     maintenance, not a hard failure. Returns ``ok`` when no session
@@ -167,32 +172,33 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
     except OSError:
         return {"status": "unknown", "detail": "could not stat session files"}
 
-    # Look up the most recent processed_at.
+    # Look up the most recent processed_at for the verification processor.
     try:
         row = conn.execute(
-            "SELECT MAX(processed_at) FROM session_extraction_state"
+            "SELECT MAX(processed_at) FROM session_processor_state WHERE processor_name = ?",
+            ["verification"],
         ).fetchone()
     except Exception as e:
-        return {"status": "unknown", "detail": f"could not query session_extraction_state: {e}"}
+        return {"status": "unknown", "detail": f"could not query session_processor_state: {e}"}
 
     last_processed = row[0] if row else None
 
     grace_seconds = _verification_detector_grace_seconds()
 
     if last_processed is None:
-        # Files exist but state table is empty — pipeline never ran here.
+        # Files exist but verification has no state rows — pipeline never ran here.
         if (datetime.now(timezone.utc).timestamp() - latest_session_mtime) > grace_seconds:
             return {
                 "status": "warning",
                 "detail": (
-                    "session_extraction_state is empty but jsonl files exist. "
+                    "session_processor_state has no verification rows but jsonl files exist. "
                     "Check the verification-detector scheduler job."
                 ),
                 "session_files": len(session_files),
             }
         return {"status": "ok", "session_files": len(session_files)}
 
-    # Both available — compare. session_extraction_state.processed_at is
+    # Both available — compare. session_processor_state.processed_at is
     # stored as DuckDB TIMESTAMP (naive). DuckDB converts tz-aware writes
     # to local time before storing, so the only safe interpretation is
     # local-naive on read. Compute the lag against `datetime.now()` (also
@@ -210,7 +216,7 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
         return {
             "status": "warning",
             "detail": (
-                f"session jsonls newer than session_extraction_state by ~{lag_seconds}s "
+                f"session jsonls newer than verification's session_processor_state rows by ~{lag_seconds}s "
                 f"(grace={grace_seconds}s). Check the verification-detector scheduler "
                 f"job — uploads are not being processed."
             ),
@@ -221,22 +227,24 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
     # FIFO check (#0.47.4): the MAX-only comparison above can pass silently
     # when the verification-detector skips a particular file but keeps
     # processing newer ones. Detect that case by finding the oldest FS
-    # jsonl whose path is NOT in session_extraction_state.session_file
-    # and surfacing it once it's older than _stuck_file_grace_seconds.
+    # jsonl whose path is NOT in session_processor_state.session_file
+    # (for processor_name='verification') and surfacing it once it's older
+    # than _stuck_file_grace_seconds.
     try:
         processed = {
             row[0]
             for row in conn.execute(
-                "SELECT session_file FROM session_extraction_state"
+                "SELECT session_file FROM session_processor_state WHERE processor_name = ?",
+                ["verification"],
             ).fetchall()
         }
     except Exception as e:
         # Don't fail the health check on this enrichment.
-        logger.debug("FIFO check: could not read session_extraction_state: %s", e)
+        logger.debug("FIFO check: could not read session_processor_state: %s", e)
         return {"status": "ok", "session_files": len(session_files)}
 
-    # session_extraction_state.session_file is stored as the path the
-    # extractor saw. Older rows store an absolute path (e.g.
+    # session_processor_state.session_file is stored as the path the
+    # processor saw. Older rows store an absolute path (e.g.
     # "/data/user_sessions/x/y.jsonl"); newer code stores a relative path
     # ("x/y.jsonl"). Match on either form so the FIFO check is robust to
     # both — a row stored under either spelling counts as processed.

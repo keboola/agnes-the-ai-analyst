@@ -10,8 +10,8 @@ Two paths to a working LLM pipeline must both function:
 
 Path 2 used to be dead code: the three LLM consumers
 (``services.corporate_memory.collector.collect_all``,
-``app.api.admin.run_verification_detector`` and
-``services.verification_detector.__main__``) imported from
+``services.session_processors.verification.build_verification_processor``
+and ``services.verification_detector.__main__``) imported from
 ``config.loader.load_instance_config`` (overlay-blind), and even if they
 hadn't, ``app.instance_config.load_instance_config`` deep-merged the
 overlay through raw ``yaml.safe_load`` without resolving ``${ENV_VAR}``
@@ -135,26 +135,37 @@ class TestConsumersUseOverlayAwareLoader:
         assert "from app.instance_config import load_instance_config" in src
         assert "from config.loader import load_instance_config" not in src
 
-    def test_admin_run_verification_detector_uses_overlay_loader(self):
-        """``run_verification_detector`` imports the overlay-aware loader."""
+    def test_verification_processor_factory_uses_overlay_loader(self):
+        """``build_verification_processor`` imports the overlay-aware loader.
+
+        Post session-pipeline refactor the LLM extractor is constructed by
+        services.session_processors.verification.build_verification_processor
+        rather than inline in the admin endpoint."""
         import inspect
 
-        from app.api.admin import run_verification_detector
+        from services.session_processors.verification import build_verification_processor
 
-        src = inspect.getsource(run_verification_detector)
+        src = inspect.getsource(build_verification_processor)
         assert "from app.instance_config import load_instance_config" in src
         assert "from config.loader import load_instance_config" not in src
 
-    def test_verification_detector_main_uses_overlay_loader(self):
-        """The verification-detector CLI main reads through the overlay."""
+    def test_verification_detector_main_delegates_to_overlay_factory(self):
+        """The verification-detector CLI main reads through the overlay.
+
+        Post session-pipeline refactor it does so by delegating to
+        ``build_verification_processor`` (which is itself overlay-aware,
+        verified by ``test_verification_processor_factory_uses_overlay_loader``)
+        rather than calling the loader inline. Pin the delegation so a
+        future "simplify" refactor doesn't accidentally bypass the factory
+        and re-introduce direct ``config.loader`` usage."""
         import inspect
 
         from services.verification_detector import __main__ as vd_main
 
         src = inspect.getsource(vd_main)
-        assert "from app.instance_config import load_instance_config" in src
-        # config.loader may legitimately appear in other contexts in this
-        # module someday; keep the assertion narrow to the same statement.
+        assert "build_verification_processor" in src
+        # Whichever loader the CLI ends up calling, it must NOT be the
+        # overlay-blind one from config.loader.
         assert "from config.loader import load_instance_config" not in src
 
 

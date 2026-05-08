@@ -36,6 +36,38 @@ def _fresh_db(tmp_path, monkeypatch):
     return conn
 
 
+def _run_verification_processor(conn, extractor, session_data_dir=None):
+    """Run the verification processor through the new framework.
+
+    Returns a stats dict with both new keys (scanned/processed/skipped/
+    items_extracted) AND legacy aliases (sessions_scanned/sessions_processed/
+    sessions_skipped/verifications_extracted/items_created/contradictions_recorded)
+    derived from pre/post row counts so existing assertions keep working
+    after the session-pipeline refactor.
+    """
+    from services.session_pipeline.runner import run_processor
+    from services.session_processors.verification import VerificationProcessor
+
+    pre_evidence = conn.execute("SELECT COUNT(*) FROM verification_evidence").fetchone()[0]
+    pre_contradictions = conn.execute("SELECT COUNT(*) FROM knowledge_contradictions").fetchone()[0]
+
+    processor = VerificationProcessor(extractor)
+    stats = run_processor(conn, processor, session_data_dir=session_data_dir)
+
+    post_evidence = conn.execute("SELECT COUNT(*) FROM verification_evidence").fetchone()[0]
+    post_contradictions = conn.execute("SELECT COUNT(*) FROM knowledge_contradictions").fetchone()[0]
+
+    return {
+        **stats,
+        "sessions_scanned": stats["scanned"],
+        "sessions_processed": stats["processed"],
+        "sessions_skipped": stats["skipped"],
+        "verifications_extracted": post_evidence - pre_evidence,
+        "items_created": stats["items_extracted"],
+        "contradictions_recorded": post_contradictions - pre_contradictions,
+    }
+
+
 def _load_golden(name: str) -> dict:
     """Load a golden verification output file."""
     with open(VERIFICATIONS_DIR / f"{name}.json") as f:
@@ -65,7 +97,11 @@ class TestSchemaV8Migration:
             ).fetchall()
         }
         assert "knowledge_contradictions" in tables
-        assert "session_extraction_state" in tables
+        # v29 renamed session_extraction_state → session_processor_state with
+        # composite (processor_name, session_file) PK so multiple processors
+        # can track their own processed-set independently.
+        assert "session_processor_state" in tables
+        assert "session_extraction_state" not in tables
         conn.close()
 
     def test_knowledge_items_has_new_columns(self, tmp_path, monkeypatch):
@@ -214,16 +250,25 @@ class TestKnowledgeRepositoryV1:
         assert resolved[0]["resolution"] == "kept_a"
         conn.close()
 
-    def test_session_extraction_state(self, tmp_path, monkeypatch):
+    def test_session_processor_state(self, tmp_path, monkeypatch):
+        """Post-v29: session-processed bookkeeping moved out of
+        KnowledgeRepository into SessionProcessorStateRepository, keyed by
+        (processor_name, session_file). Each processor tracks its own
+        processed-set independently."""
         conn = _fresh_db(tmp_path, monkeypatch)
-        from src.repositories.knowledge import KnowledgeRepository
-        repo = KnowledgeRepository(conn)
+        from src.repositories.session_processor_state import SessionProcessorStateRepository
+        repo = SessionProcessorStateRepository(conn)
 
-        assert repo.is_session_processed("alice/session1.jsonl") is False
+        assert repo.is_processed("verification", "alice/session1.jsonl", "abc123") is False
 
-        repo.mark_session_processed("alice/session1.jsonl", "alice", 3, "abc123")
-        assert repo.is_session_processed("alice/session1.jsonl") is True
-        assert repo.is_session_processed("alice/session2.jsonl") is False
+        repo.mark_processed("verification", "alice/session1.jsonl", "alice", 3, "abc123")
+        assert repo.is_processed("verification", "alice/session1.jsonl", "abc123") is True
+        # Different hash → treated as unprocessed (live append invalidation).
+        assert repo.is_processed("verification", "alice/session1.jsonl", "different") is False
+        # Another session not seen at all.
+        assert repo.is_processed("verification", "alice/session2.jsonl", "any") is False
+        # Different processor → independent state.
+        assert repo.is_processed("usage", "alice/session1.jsonl", "abc123") is False
         conn.close()
 
     def test_find_contradiction_candidates(self, tmp_path, monkeypatch):
@@ -401,7 +446,7 @@ class TestSessionParsing:
     """Test JSONL session file parsing (no LLM)."""
 
     def test_parse_correction_session(self):
-        from services.verification_detector.detector import parse_session
+        from services.session_pipeline.lib import parse_jsonl as parse_session
         turns = parse_session(SESSIONS_DIR / "correction_churn_metric.jsonl")
         assert len(turns) == 4
         assert turns[0]["role"] == "assistant"
@@ -409,14 +454,14 @@ class TestSessionParsing:
         assert "wrong" in turns[1]["content"].lower()
 
     def test_parse_empty_file(self, tmp_path):
-        from services.verification_detector.detector import parse_session
+        from services.session_pipeline.lib import parse_jsonl as parse_session
         empty_file = tmp_path / "empty.jsonl"
         empty_file.write_text("")
         turns = parse_session(empty_file)
         assert turns == []
 
     def test_parse_malformed_line_skipped(self, tmp_path):
-        from services.verification_detector.detector import parse_session
+        from services.session_pipeline.lib import parse_jsonl as parse_session
         bad_file = tmp_path / "bad.jsonl"
         bad_file.write_text('{"role": "user", "content": "ok"}\nNOT_JSON\n{"role": "assistant", "content": "sure"}\n')
         turns = parse_session(bad_file)
@@ -472,7 +517,7 @@ class TestVerificationDetectorIntegration:
     def test_correction_pipeline(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
 
         golden = _load_golden("correction_churn_metric")
         extractor = _mock_extractor(golden)
@@ -499,7 +544,7 @@ class TestVerificationDetectorIntegration:
 
     def test_empty_session_skipped(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
 
         golden = _load_golden("no_verifications")
         extractor = _mock_extractor(golden)
@@ -519,7 +564,7 @@ class TestVerificationDetectorIntegration:
     def test_idempotency(self, tmp_path, monkeypatch):
         """Running twice on same session should not create duplicate items."""
         conn = _fresh_db(tmp_path, monkeypatch)
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
 
         golden = _load_golden("correction_churn_metric")
         extractor = _mock_extractor(golden)
@@ -534,13 +579,19 @@ class TestVerificationDetectorIntegration:
         stats2 = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
 
         assert stats1["items_created"] == 1
-        assert stats2["sessions_scanned"] == 0  # Already processed
+        # Post-refactor: stable sessions (mtime <= processed_at) are filtered
+        # at scan via the mtime precheck so the runner never sees them →
+        # `scanned == 0`, not `skipped == 1`. PR #232 review fix avoided an
+        # MD5-rehash storm per scheduler tick.
+        assert stats2["sessions_processed"] == 0
+        assert stats2["scanned"] == 0
+        assert stats2["items_created"] == 0
         conn.close()
 
     def test_mixed_session_multiple_items(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
 
         golden = _load_golden("mixed_session")
         extractor = _mock_extractor(golden)
@@ -560,28 +611,12 @@ class TestVerificationDetectorIntegration:
         assert len(items) == 2
         conn.close()
 
-    def test_dry_run_no_writes(self, tmp_path, monkeypatch):
-        conn = _fresh_db(tmp_path, monkeypatch)
-        from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
-
-        golden = _load_golden("correction_churn_metric")
-        extractor = _mock_extractor(golden)
-
-        session_dir = tmp_path / "user_sessions" / "alice"
-        session_dir.mkdir(parents=True)
-        import shutil
-        shutil.copy(SESSIONS_DIR / "correction_churn_metric.jsonl", session_dir / "s1.jsonl")
-
-        stats = run(conn, extractor, dry_run=True, session_data_dir=tmp_path / "user_sessions")
-
-        assert stats["verifications_extracted"] == 1
-        assert stats["items_created"] == 0  # dry run
-
-        repo = KnowledgeRepository(conn)
-        items = repo.list_items(source_type="user_verification")
-        assert len(items) == 0
-        conn.close()
+    # The legacy `dry_run` flag was dropped in the session-pipeline refactor —
+    # there is no equivalent in the new framework. The runner always persists
+    # state on success; the only way to observe a "what would happen" output
+    # is to wrap the processor in a transaction-rolling-back fixture, which
+    # is more trouble than the test was worth (it only validated a flag that
+    # had one in-tree caller — the dropped CLI shim).
 
 
 class TestContradictionDetectionIntegration:
@@ -860,7 +895,7 @@ class TestDetectorIgnoresLLMConfidence:
     def test_llm_returned_base_confidence_is_overridden(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
 
         # Hostile golden: LLM tries to claim confidence=0.99 on a confirmation
         # (which should be 0.60 in code).
@@ -904,7 +939,7 @@ class TestDetectorIgnoresLLMConfidence:
         accepting an LLM-supplied number."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
 
         hallucinated = {
             "verifications": [{
@@ -939,7 +974,7 @@ class TestDetectorPersistsEvidence:
     def test_evidence_row_created_per_verification(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
 
         golden = _load_golden("correction_churn_metric")
         extractor = _mock_extractor(golden)
@@ -970,7 +1005,7 @@ class TestDetectorPersistsEvidence:
         their respective items. Each row carries its own user_quote."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
 
         golden = _load_golden("mixed_session")
         extractor = _mock_extractor(golden)
@@ -1007,7 +1042,7 @@ class TestDetectorPersistsEvidence:
         import shutil
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
         repo = KnowledgeRepository(conn)
         golden = _load_golden("correction_churn_metric")
 
@@ -1051,7 +1086,7 @@ class TestDetectorWiresContradictionDetection:
     def test_contradiction_recorded_when_judge_says_yes(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
         from unittest.mock import MagicMock
 
         repo = KnowledgeRepository(conn)
@@ -1108,7 +1143,7 @@ class TestDetectorWiresContradictionDetection:
         """Judge returns contradicts=false → item still created, contradictions_recorded=0."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
         from unittest.mock import MagicMock
 
         repo = KnowledgeRepository(conn)
@@ -1161,7 +1196,7 @@ class TestDetectorWiresContradictionDetection:
         judge is degraded mode, not a fatal error."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
-        from services.verification_detector.detector import run
+        run = _run_verification_processor
         from connectors.llm.exceptions import LLMError
         from unittest.mock import MagicMock
 
@@ -1200,7 +1235,11 @@ class TestDetectorWiresContradictionDetection:
         assert stats["contradictions_recorded"] == 0
         assert stats["sessions_processed"] == 1
         # Session is marked processed so we don't re-run on next sweep.
-        assert repo.is_session_processed("alice/s.jsonl") is True
+        from services.session_pipeline.lib import compute_file_hash
+        from src.repositories.session_processor_state import SessionProcessorStateRepository
+        state_repo = SessionProcessorStateRepository(conn)
+        h = compute_file_hash(session_dir / "s.jsonl")
+        assert state_repo.is_processed("verification", "alice/s.jsonl", h) is True
         conn.close()
 
 

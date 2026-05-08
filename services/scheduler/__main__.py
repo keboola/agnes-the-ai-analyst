@@ -21,7 +21,9 @@ Usage: python -m services.scheduler
 import logging
 import os
 import signal
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import httpx
@@ -80,7 +82,13 @@ _DEFAULTS = {
     # staleness grace window in app/api/health.py — single env var drives
     # both, so an operator changing the cadence moves both.
     "SCHEDULER_SESSION_COLLECTOR_INTERVAL":     10 * 60,
+    # Drives the verification session-processor cadence AND the
+    # health-check staleness grace window in app/api/health.py
+    # (single env var → both, so an operator changing the cadence moves
+    # both). Name retained post session-pipeline refactor for operator
+    # compatibility — existing docker-compose env files keep working.
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL": 15 * 60,
+    "SCHEDULER_USAGE_PROCESSOR_INTERVAL":       10 * 60,
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL":      17 * 60,
 }
 
@@ -139,9 +147,10 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     scripts = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
     sess    = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
     verify  = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
+    usage   = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
     corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
     tick    = _read_positive_int("SCHEDULER_TICK_SECONDS")
-    smallest = min(refresh, health, scripts, sess, verify, corpmem)
+    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem)
     if tick > smallest:
         raise ValueError(
             f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
@@ -161,7 +170,14 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # single source of truth for the health-check staleness grace
         # window in app/api/health.py (which uses 2x the cadence).
         ("session-collector",     _seconds_to_schedule(sess),    "/api/admin/run-session-collector",     "POST", 300),
-        ("verification-detector", _seconds_to_schedule(verify),  "/api/admin/run-verification-detector", "POST", 900),
+        # session-pipeline processors — independent loops, each invoked on
+        # its own cadence via the parametrized run-session-processor endpoint.
+        # Adding a third processor in the future is one line here + one entry
+        # in services/session_processors/__init__.py registry.
+        ("session-processor:verification", _seconds_to_schedule(verify),
+            "/api/admin/run-session-processor?processor=verification", "POST", 900),
+        ("session-processor:usage",        _seconds_to_schedule(usage),
+            "/api/admin/run-session-processor?processor=usage",        "POST", 300),
         ("corporate-memory",      _seconds_to_schedule(corpmem), "/api/admin/run-corporate-memory",      "POST", 900),
     ]
 
@@ -220,18 +236,66 @@ def run():
 
     last_run: dict[str, str | None] = {name: None for name, *_ in jobs}
 
+    # Per-tick concurrency: one thread per job slot, so a 900s verification
+    # run can't block the 60s health-check or the 30s data-refresh from
+    # firing on their own cadences (PR #232 review fix). Pure I/O workload
+    # (httpx) — GIL is irrelevant. `in_flight` prevents the same job being
+    # re-launched on a subsequent tick while the previous invocation is
+    # still running; otherwise a 10-min run during which 20 ticks fire
+    # would queue 20 duplicate POSTs against the same processor (the
+    # admin endpoint's per-processor lock would 409 most of them, but
+    # they'd still be wasted requests + audit-log noise).
+    in_flight: set[str] = set()
+    in_flight_lock = threading.Lock()
+    executor = ThreadPoolExecutor(max_workers=max(4, len(jobs)))
+
     while _running:
         now_iso = datetime.now(timezone.utc).isoformat()
         for name, schedule, endpoint, method, timeout_sec in jobs:
             if not is_table_due(schedule, last_run[name]):
                 continue
+            with in_flight_lock:
+                if name in in_flight:
+                    # Previous tick's invocation hasn't returned yet; skip.
+                    continue
+                in_flight.add(name)
             logger.info("Running job: %s (%s)", name, schedule)
-            ok = _call_api(endpoint, method, timeout_sec)
-            if ok:
-                last_run[name] = now_iso
+            executor.submit(
+                _run_job, name, endpoint, method, timeout_sec, now_iso,
+                last_run, in_flight, in_flight_lock,
+            )
         time.sleep(tick)
 
+    logger.info("Scheduler stopping; waiting for in-flight jobs.")
+    executor.shutdown(wait=True)
     logger.info("Scheduler stopped.")
+
+
+def _run_job(
+    name: str,
+    endpoint: str,
+    method: str,
+    timeout: int,
+    now_iso: str,
+    last_run: dict[str, "str | None"],
+    in_flight: set[str],
+    in_flight_lock: threading.Lock,
+) -> None:
+    """Execute one scheduled job + bookkeeping. Lifted out of run() so it's
+    unit-testable.
+
+    Advances last_run on terminal state (success OR failure) so a permanently
+    failing job retries on its cadence (e.g. 15 min), not on every scheduler
+    tick (default 30s). Pre-fix behavior caused a hot-loop on persistent 5xx —
+    30× more requests + LLM tokens than the operator configured. Errors still
+    surface via _call_api's logging + audit_log on the receiving side.
+    """
+    try:
+        _call_api(endpoint, method, timeout)
+    finally:
+        last_run[name] = now_iso
+        with in_flight_lock:
+            in_flight.discard(name)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 import duckdb
@@ -37,6 +37,30 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # drop the first patch. Single-process FastAPI workers; multi-worker deployments
 # would need an OS-level file lock — documented limitation.
 _overlay_write_lock = threading.Lock()
+
+# Per-processor advisory locks for /api/admin/run-session-processor.
+# Two trigger paths exist for the same processor (scheduler tick + manual
+# admin POST). Without serialization, overlapping runs would re-process the
+# same /data/user_sessions/* set, double-call the LLM, and pile up duplicate
+# `verification_evidence` rows — the dedup short-circuit in
+# VerificationProcessor only catches the create+contradiction branches, not
+# create_evidence (per ADR Decision 3, which expects evidence to accumulate
+# per distinct verification event). Lock is non-blocking → second caller
+# gets 409 Conflict so the operator sees what happened instead of stacking
+# behind a long-running tick.
+_processor_run_locks: dict[str, threading.Lock] = {}
+_processor_run_locks_mutex = threading.Lock()
+
+
+def _get_processor_run_lock(name: str) -> threading.Lock:
+    """Per-name lock factory; the registry mutex guards dict insertion so
+    two threads simultaneously asking for a never-seen processor don't
+    each install their own lock instance."""
+    with _processor_run_locks_mutex:
+        if name not in _processor_run_locks:
+            _processor_run_locks[name] = threading.Lock()
+        return _processor_run_locks[name]
+
 
 # SSRF protection: reject private/internal URLs for keboola_url
 import ipaddress as _ipaddress
@@ -3336,44 +3360,55 @@ def run_session_collector(
     return {"ok": rc == 0, "details": {"rc": rc, **stats}}
 
 
-@router.post("/run-verification-detector")
-def run_verification_detector(
+@router.post("/run-session-processor")
+def run_session_processor(
+    processor: str = Query(..., description="Processor name (e.g. 'verification', 'usage')"),
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Trigger the verification-detector job from the scheduler.
+    """Trigger one session-pipeline processor against /data/user_sessions/*.
 
-    Reads collected session transcripts, extracts verified knowledge
-    via the LLM, and writes pending items to knowledge_items. The
-    /corporate-memory/admin queue picks them up for triage.
+    Replaces the per-processor /run-* endpoints with a single parametrized
+    entry. The scheduler invokes this once per registered processor on its
+    own cadence; processors are independent (one slow / failing processor
+    can't block any other).
+
+    Returns 400 if `processor` is unknown. The verification processor
+    requires an LLM extractor — if the instance has no ai: config and no
+    ANTHROPIC_API_KEY / LLM_API_KEY, it won't appear in the registry and
+    the call returns 400 the same as a misspelled name.
     """
-    from connectors.llm import create_extractor_from_env_or_config
-    from services.verification_detector import detector
+    from services.session_pipeline.runner import run_processor as _run_processor
+    from services.session_processors import get_processor, list_processor_names
     from src.db import get_system_db
 
-    # Build the extractor lazily so the endpoint surfaces a 500 with the
-    # factory's actionable error when no ai: block + no env keys are set.
-    # Use the overlay-aware loader (#179 review fix) so an ai: block written
-    # by /api/admin/configure to DATA_DIR/state/instance.yaml actually flows
-    # through to the factory.
-    try:
-        from app.instance_config import load_instance_config
-        try:
-            instance_config = load_instance_config()
-        except (ValueError, FileNotFoundError):
-            instance_config = {}
-        ai_config = instance_config.get("ai") if instance_config else None
-        extractor = create_extractor_from_env_or_config(ai_config)
-    except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    proc = get_processor(processor)
+    if proc is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown processor '{processor}'. "
+                f"Known: {', '.join(list_processor_names())}"
+            ),
+        )
+
+    # Reject overlapping invocations of the same processor (PR #232 review).
+    # See `_get_processor_run_lock` docstring for why this matters
+    # (verification_evidence row duplication on race).
+    proc_lock = _get_processor_run_lock(processor)
+    if not proc_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Processor '{processor}' is already running",
+        )
 
     job_conn = get_system_db()
     stats: dict = {}
     job_error: Optional[Exception] = None
     try:
-        stats = detector.run(job_conn, extractor, dry_run=False)
+        stats = _run_processor(job_conn, proc)
     except Exception as e:
-        # Capture and re-raise after audit so an unhandled detector error
+        # Capture and re-raise after audit so an unhandled runner error
         # (DuckDB lock, network blip, unexpected SDK type) still leaves a
         # row in audit_log — the /admin/scheduler-runs page is the
         # operator's only signal beyond docker logs.
@@ -3383,25 +3418,32 @@ def run_verification_detector(
             job_conn.close()
         except Exception:
             pass
+        # Always release, even if the runner raised. A leaked lock would
+        # wedge the processor permanently until process restart.
+        proc_lock.release()
 
     audit_params: dict = {
-        "items_created": stats.get("items_created", 0),
-        "errors": len(stats.get("errors", [])),
+        "processor": processor,
+        "scanned": stats.get("scanned", 0),
+        "processed": stats.get("processed", 0),
+        "skipped": stats.get("skipped", 0),
+        "errors": stats.get("errors", 0),
+        "items_extracted": stats.get("items_extracted", 0),
     }
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
     AuditRepository(conn).log(
         user_id=user.get("id"),
-        action="run_verification_detector",
-        resource="job:verification-detector",
+        action=f"run_session_processor:{processor}",
+        resource=f"job:session-processor:{processor}",
         params=audit_params,
     )
 
     if job_error is not None:
         raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
 
-    return {"ok": not stats.get("errors"), "details": stats}
+    return {"ok": stats.get("errors", 0) == 0, "details": stats}
 
 
 @router.post("/run-corporate-memory")

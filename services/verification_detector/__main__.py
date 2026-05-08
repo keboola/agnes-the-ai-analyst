@@ -1,17 +1,14 @@
-"""CLI entry point for the verification detector service.
+"""CLI entry point for ad-hoc local runs of the verification processor.
 
 Usage:
-    python -m services.verification_detector [--dry-run] [--verbose] [--reset]
+    python -m services.verification_detector [--verbose] [--reset]
 
-TODO(scheduler-v2): Trigger is manual-only today (CLI) but detect_and_record is
-also called inline per new knowledge item submission. Wire into
-services/scheduler/__main__.py JOBS list (e.g. hourly) and expose an admin
-endpoint /api/admin/run-verification that calls detector.run() so the
-scheduler stays the single source of truth for cadence.
-
-TODO(notifications): When new pending items land in knowledge_items via
-detector.run(), there is no admin notification. Hook into services/telegram_bot
-or email so km_admins are pinged with a digest of pending items to triage.
+After the session-pipeline refactor the canonical execution path is the
+admin endpoint POST /api/admin/run-session-processor?processor=verification
+driven by the scheduler. This CLI shim is kept as a developer convenience
+for running the verification flow against a local instance without going
+through HTTP — it constructs the VerificationProcessor and runs it through
+the shared runner.
 """
 
 import argparse
@@ -19,9 +16,9 @@ import logging
 import sys
 
 from app.logging_config import setup_logging
+from services.session_pipeline.runner import run_processor
+from services.session_processors.verification import build_verification_processor
 from src.db import get_system_db
-
-from . import detector
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +28,6 @@ def main() -> None:
         description="Extract verified organizational knowledge from analyst session transcripts."
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Analyze sessions but do not write results to the database.",
-    )
-    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug-level logging.",
@@ -43,29 +35,17 @@ def main() -> None:
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="Reset session processing state before running.",
+        help="Reset the verification processor's session-processed state before running.",
     )
     args = parser.parse_args()
 
     setup_logging(__name__, level="DEBUG" if args.verbose else "INFO")
 
-    # Load AI config; fail fast on missing config + env (#176).
-    # Use the overlay-aware loader (#179 review fix) so an ai: block written
-    # by /api/admin/configure to DATA_DIR/state/instance.yaml actually flows
-    # through to the factory.
-    from connectors.llm import create_extractor_from_env_or_config
     try:
-        from app.instance_config import load_instance_config
-
-        try:
-            config = load_instance_config()
-        except (ValueError, FileNotFoundError):
-            config = {}
-        ai_config = config.get("ai") if config else None
-        extractor = create_extractor_from_env_or_config(ai_config)
+        processor = build_verification_processor()
     except (ValueError, FileNotFoundError) as e:
         logger.error(
-            "Failed to initialize verification detector: %s. "
+            "Failed to initialize verification processor: %s. "
             "Configure ai: in instance.yaml or set ANTHROPIC_API_KEY / LLM_API_KEY.",
             e,
         )
@@ -74,24 +54,23 @@ def main() -> None:
     conn = get_system_db()
 
     if args.reset:
-        logger.info("Resetting session extraction state...")
-        conn.execute("DELETE FROM session_extraction_state")
-        logger.info("Session extraction state cleared.")
+        logger.info("Resetting verification processor state...")
+        conn.execute(
+            "DELETE FROM session_processor_state WHERE processor_name = ?",
+            [processor.name],
+        )
 
-    stats = detector.run(conn, extractor, dry_run=args.dry_run)
+    stats = run_processor(conn, processor)
 
-    print("\n--- Verification Detector Summary ---")
-    print(f"Sessions scanned:        {stats['sessions_scanned']}")
-    print(f"Sessions processed:      {stats['sessions_processed']}")
-    print(f"Sessions skipped:        {stats['sessions_skipped']}")
-    print(f"Verifications extracted:  {stats['verifications_extracted']}")
-    print(f"Items created:           {stats['items_created']}")
+    print("\n--- Verification Processor Summary ---")
+    print(f"Sessions scanned:        {stats['scanned']}")
+    print(f"Sessions processed:      {stats['processed']}")
+    print(f"Sessions skipped:        {stats['skipped']}")
+    print(f"Items created:           {stats['items_extracted']}")
     if stats["errors"]:
-        print(f"Errors:                  {len(stats['errors'])}")
-        for err in stats["errors"]:
+        print(f"Errors:                  {stats['errors']}")
+        for err in stats["errors_detail"]:
             print(f"  - {err}")
-    if args.dry_run:
-        print("\n(dry-run mode -- no changes were written)")
 
     if stats["errors"]:
         sys.exit(1)

@@ -13,7 +13,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_30():
+def test_schema_version_is_31():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -27,7 +27,12 @@ def test_schema_version_is_30():
     # v29 → v30: news_template — single versioned table for the /home
     # news perex + /news permalink page. See
     # tests/test_news_template_repository.py.
-    assert SCHEMA_VERSION == 30
+    # v30 → v31: session-pipeline framework. Renames session_extraction_state
+    # → session_processor_state with composite PK (processor_name,
+    # session_file) so multiple processors can track their own
+    # processed-set independently. Existing rows are copied across with
+    # processor_name='verification'; the old table is dropped.
+    assert SCHEMA_VERSION == 31
 
 
 def test_v20_adds_source_query(tmp_path):

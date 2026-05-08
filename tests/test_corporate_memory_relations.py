@@ -282,7 +282,8 @@ class TestRunPopulatesDuplicateStats:
     def test_run_records_duplicates_when_two_items_share_entities(
         self, tmp_path, monkeypatch
     ):
-        from services.verification_detector.detector import run
+        from services.session_pipeline.runner import run_processor
+        from services.session_processors.verification import VerificationProcessor
         conn = _fresh_db(tmp_path, monkeypatch)
 
         # Mocked golden: two items in same domain sharing 2 entities
@@ -316,11 +317,19 @@ class TestRunPopulatesDuplicateStats:
         # Minimal valid JSONL transcript with at least one turn
         (session_dir / "s1.jsonl").write_text('{"role":"user","content":"hi"}\n')
 
-        stats = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
-        assert stats["items_created"] >= 1
+        stats = run_processor(
+            conn, VerificationProcessor(extractor),
+            session_data_dir=tmp_path / "user_sessions",
+        )
+        assert stats["items_extracted"] >= 1
         # The second item's duplicate-candidate hook should fire against the
-        # first one (same entities, same domain).
-        assert stats["duplicate_candidates_recorded"] >= 1
+        # first one (same entities, same domain). Post-refactor the runner
+        # doesn't surface a duplicate counter in stats; query the table that
+        # _record_duplicate_candidates writes into instead.
+        dup_rows = conn.execute(
+            "SELECT COUNT(*) FROM knowledge_item_relations WHERE relation_type = 'likely_duplicate'"
+        ).fetchone()[0]
+        assert dup_rows >= 1
         conn.close()
 
 
