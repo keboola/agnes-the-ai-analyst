@@ -32,8 +32,9 @@ def test_format_guide_renders_for_logged_in_user(seeded_app):
 
     The rendered HTML must:
     * carry the curator-focused title (post-walkthrough rewrite),
-    * include the explicit "Curated Marketplace channel only" disclaimer
-      that distinguishes this guide from the Flea wizard,
+    * include the disclaimer scoping the guide to the Curated Marketplace
+      channel only (so a curator doesn't think it applies to the Flea
+      upload wizard),
     * render the fenced JSON example as a <pre><code> block.
     """
     client = seeded_app["client"]
@@ -43,8 +44,8 @@ def test_format_guide_renders_for_logged_in_user(seeded_app):
     body = r.text
     # Title points at curators (rewrite from the original "format guide").
     assert "Curated Marketplace" in body
-    # Disclaimer making the curated/flea split explicit.
-    assert "Flea Market" in body
+    # Channel-scoping disclaimer near the top of the page.
+    assert "Curated Marketplace channel only" in body
     # JSON examples render as code blocks.
     assert "<pre>" in body or "<code" in body
 
