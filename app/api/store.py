@@ -1491,6 +1491,12 @@ async def import_bundle(
 async def _save_docs(docs: List[UploadFile], entity_id: str) -> List[str]:
     """Save user-uploaded auxiliary docs into ``assets/docs/``.
 
+    v32: file types restricted to PDF / Markdown / plain text via the shared
+    allowlist in ``src.marketplace_assets``. Anything outside the allowlist
+    (DOCX, HTML, images, archives, …) returns HTTP 415 so the wizard can
+    surface a precise rejection message. Same allowlist is enforced on the
+    Curated mirror side so the two surfaces stay aligned.
+
     Filenames are sanitized (basename only — strips any directory
     component sent by the browser). On collision the file is suffixed
     with a counter so two ``readme.md`` uploads don't overwrite each
@@ -1498,6 +1504,8 @@ async def _save_docs(docs: List[UploadFile], entity_id: str) -> List[str]:
     """
     if not docs:
         return []
+    from src.marketplace_assets import validate_doc_file
+
     docs_dir = _assets_dir(entity_id) / "docs"
     docs_dir.mkdir(parents=True, exist_ok=True)
     saved: List[str] = []
@@ -1513,7 +1521,26 @@ async def _save_docs(docs: List[UploadFile], entity_id: str) -> List[str]:
         )
         try:
             tmp.close()
+            # Validate body+extension against the allowlist BEFORE moving the
+            # temp file into the assets dir. Reading the first 8 bytes is
+            # enough for the PDF magic-byte check; Markdown / plain text
+            # validators don't sniff body, so we don't pay any cost for them.
+            with open(tmp.name, "rb") as fh:
+                head = fh.read(8)
+            check = validate_doc_file(safe_name, head)
+            if not check.ok:
+                Path(tmp.name).unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=415,
+                    detail=(
+                        f"unsupported_doc_type: {check.reason}. "
+                        "Allowed: PDF (.pdf), Markdown (.md, .markdown), "
+                        "plain text (.txt)."
+                    ),
+                )
             shutil.move(tmp.name, str(target))
+        except HTTPException:
+            raise
         except Exception:
             Path(tmp.name).unlink(missing_ok=True)
             raise
@@ -1538,7 +1565,13 @@ def _unique_doc_path(docs_dir: Path, filename: str) -> Path:
 async def _save_photo(photo: UploadFile, entity_id: str) -> str:
     """Save the uploaded photo into the entity's assets dir. Returns the path
     relative to the entity dir (what gets stored on the row).
+
+    v32: extension allowlist (PNG / JPEG / WEBP) is now backed by a
+    body-level magic-bytes check so a renamed ``payload.png`` carrying SVG
+    XML or arbitrary bytes can't smuggle through. Source: ``src.marketplace_assets``.
     """
+    from src.marketplace_assets import validate_image_file
+
     raw_name = photo.filename or "photo"
     ext = Path(raw_name).suffix.lower()
     if ext not in ALLOWED_PHOTO_EXT:
@@ -1546,6 +1579,17 @@ async def _save_photo(photo: UploadFile, entity_id: str) -> str:
     tmp, size = await _stream_to_temp(photo, MAX_PHOTO_SIZE, suffix=ext)
     try:
         tmp.close()
+        # Magic-bytes verification on the saved temp file. Reading the first
+        # 16 bytes covers PNG (8), JPEG (3), and WEBP (12 — RIFF header).
+        with open(tmp.name, "rb") as fh:
+            head = fh.read(16)
+        check = validate_image_file(raw_name, head)
+        if not check.ok:
+            Path(tmp.name).unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=415,
+                detail=f"photo_validation_failed: {check.reason}",
+            )
         assets = _assets_dir(entity_id)
         assets.mkdir(parents=True, exist_ok=True)
         target_name = f"photo{ext}"
@@ -1557,6 +1601,8 @@ async def _save_photo(photo: UploadFile, entity_id: str) -> str:
             except OSError:
                 pass
         shutil.move(tmp.name, str(target))
+    except HTTPException:
+        raise
     except Exception:
         Path(tmp.name).unlink(missing_ok=True)
         raise

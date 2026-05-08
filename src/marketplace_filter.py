@@ -199,10 +199,36 @@ BUNDLE_DESCRIPTION = "Skills and agents you've installed from the Agnes Store"
 _BUNDLE_EXCLUDE_DIR = ".claude-plugin"
 
 
+def is_agnes_only_path(rel_parts: tuple[str, ...]) -> bool:
+    """True when a relative path inside a plugin / bundle source is Agnes-only.
+
+    Two patterns covered:
+
+    * any segment named ``.agnes`` — convention dir for cover photos and
+      docs that should NEVER reach the synth Claude Code marketplace,
+    * file named ``agnes-metadata.json`` at any depth (typically lives at
+      ``.claude-plugin/agnes-metadata.json`` at the repo root, but this
+      catches it wherever it appears).
+
+    Used by both the synth ZIP/git tree assembly path and the ETag
+    computation so adding/removing Agnes-only content never invalidates
+    user-side caches.
+    """
+    if not rel_parts:
+        return False
+    if any(part == ".agnes" for part in rel_parts):
+        return True
+    if rel_parts[-1] == "agnes-metadata.json":
+        return True
+    return False
+
+
 def _bundle_files(bundle_dirs: list[Path]) -> list[tuple[str, Path]]:
     """Return [(relpath_in_bundle, abs_path)] for every file across the bundle
     sources, dropping each per-entity ``.claude-plugin/`` content (the bundle
-    has its own synth plugin.json)."""
+    has its own synth plugin.json) AND any Agnes-only file (``.agnes/**`` or
+    ``agnes-metadata.json``) so the served Claude Code marketplace stays
+    clean of Agnes-side enrichment."""
     out: list[tuple[str, Path]] = []
     for src in bundle_dirs:
         if not src.is_dir():
@@ -210,6 +236,8 @@ def _bundle_files(bundle_dirs: list[Path]) -> list[tuple[str, Path]]:
         for f in sorted(p for p in src.rglob("*") if p.is_file()):
             rel_parts = f.relative_to(src).parts
             if rel_parts and rel_parts[0] == _BUNDLE_EXCLUDE_DIR:
+                continue
+            if is_agnes_only_path(rel_parts):
                 continue
             out.append((Path(*rel_parts).as_posix(), f))
     return out
@@ -400,6 +428,9 @@ def compute_etag(plugins: Iterable[dict]) -> str:
             plugin_dir: Path = plugin["plugin_dir"]
             if plugin_dir is not None and plugin_dir.is_dir():
                 for f in _iter_files(plugin_dir):
+                    rel_parts = f.relative_to(plugin_dir).parts
+                    if is_agnes_only_path(rel_parts):
+                        continue
                     rel = f.relative_to(plugin_dir).as_posix()
                     files.append([rel, _sha256_file(f)])
         tokens.append(

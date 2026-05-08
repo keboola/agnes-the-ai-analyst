@@ -599,9 +599,20 @@ function renderGrid(items) {
     const card = document.createElement('a');
     card.className = 'mp-card' + (it.installed ? ' is-installed' : '');
     card.href = it.detail_url;
+    // Cover photo with broken-image fallback. When the <img> 404s (e.g. an
+    // agnes-metadata.json `cover_photo` references a file the curator forgot
+    // to commit, or an external mirror failed), browsers paint their default
+    // broken-image icon — which looks worse than the gradient placeholder we
+    // render when no cover_photo_url is set at all. The `onerror` swaps the
+    // parent's content for the same fallback initials (PL/SK/AG) so the card
+    // looks identical to the no-photo case.
+    const fallbackInitials = esc(typeIcon(it.type));
     const photoMarkup = it.photo_url
-      ? `<div class="photo"><img src="${esc(it.photo_url)}" alt=""></div>`
-      : `<div class="photo">${esc(typeIcon(it.type))}</div>`;
+      ? `<div class="photo"><img src="${esc(it.photo_url)}" alt=""
+            onerror="this.parentElement.classList.add('photo-failed');
+                     this.parentElement.textContent=this.dataset.fallback;"
+            data-fallback="${fallbackInitials}"></div>`
+      : `<div class="photo">${fallbackInitials}</div>`;
     const installedBadge = it.installed
       ? `<div class="installed-badge" title="In your stack">
            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"

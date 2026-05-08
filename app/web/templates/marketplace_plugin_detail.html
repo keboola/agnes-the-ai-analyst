@@ -203,6 +203,16 @@
     margin-bottom: 24px;
     align-items: stretch;
   }
+
+  /* Spacing between the bottom panels (video / docs / internal structure).
+     The hero-row has its own margin-bottom; subsequent stacked panels need
+     equivalent breathing room or they collide visually (~2px between
+     bordered cards looks like a render bug). */
+  .plugin-detail #panel-video,
+  .plugin-detail #panel-docs,
+  .plugin-detail .structure {
+    margin-top: 24px;
+  }
   @media (max-width: 900px) {
     .plugin-detail .top-row { grid-template-columns: 1fr; }
   }
@@ -254,6 +264,32 @@
     font-size: 12px; color: var(--text-secondary); font-family: var(--font-mono);
   }
 
+  /* v32: demo video + doc links */
+  .plugin-detail .video-wrap {
+    position: relative;
+    padding-bottom: 56.25%;     /* 16:9 — keeps the iframe from shifting layout */
+    background: #000; border-radius: 10px; overflow: hidden;
+  }
+  .plugin-detail .video-wrap iframe,
+  .plugin-detail .video-wrap video {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%; border: 0;
+  }
+  .plugin-detail .doc-link-list {
+    list-style: none; padding: 0; margin: 0;
+    display: grid; gap: 8px;
+  }
+  .plugin-detail .doc-link-list li {
+    padding: 10px 12px; border-radius: 8px;
+    background: var(--surface-alt, #f9fafb);
+    border: 1px solid var(--border);
+  }
+  .plugin-detail .doc-link-list a {
+    color: var(--primary); text-decoration: none; font-weight: 500;
+    display: block;
+  }
+  .plugin-detail .doc-link-list a:hover { text-decoration: underline; }
+
   /* Inner cards (skills + agents) */
   .plugin-detail .inner-grid {
     display: grid; gap: 14px;
@@ -282,6 +318,10 @@
     font-size: 18px; font-weight: var(--font-bold);
     letter-spacing: 0.5px;
     border: none; border-radius: 0;
+    overflow: hidden;
+  }
+  .plugin-detail .inner-card .photo img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
   }
   .plugin-detail .inner-card[data-type="skill"] .photo {
     background: linear-gradient(135deg, rgba(16,183,127,0.18) 0%, #ecfdf5 100%);
@@ -402,6 +442,20 @@
     </div>
   </div>
 
+  <!-- v32: video + doc_links section. Both blocks stay hidden until populated
+       so the layout collapses gracefully when an upstream marketplace ships
+       no agnes-metadata.json. Doc icons differentiate internal-cached files
+       (📄) from external links (🔗) so the user knows what's a click away. -->
+  <div class="panel" id="panel-video" hidden>
+    <h2>Demo video</h2>
+    <div class="video-wrap" id="video-wrap"></div>
+  </div>
+
+  <div class="panel" id="panel-docs" hidden>
+    <h2>Documentation</h2>
+    <ul class="doc-link-list" id="doc-link-list"></ul>
+  </div>
+
   <div class="structure" id="structure" hidden>
     <h2>Internal structure</h2>
     <div id="struct-skills"></div>
@@ -508,7 +562,16 @@
   // Cover photo
   const photoEl = document.getElementById('hero-photo');
   if (d.cover_photo_url) {
-    photoEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt="">`;
+    // Same fallback pattern as the marketplace card grid — when the cover
+    // 404s (missing internal file, or external mirror failed and the
+    // pass-through URL is dead), restore the initials placeholder so the
+    // hero looks identical to the no-cover case rather than showing the
+    // browser's broken-image icon.
+    const initials = photoEl.textContent || 'PL';
+    photoEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
+        onerror="this.parentElement.classList.add('photo-failed');
+                 this.parentElement.textContent=this.dataset.fallback;"
+        data-fallback="${esc(initials)}">`;
   } else {
     photoEl.textContent = 'PL';
   }
@@ -567,6 +630,76 @@
     document.getElementById('panel-what').hidden = true;
   }
 
+  // ── v32: demo video (agnes-metadata.json :: video_url) ─────────
+  // YouTube and Vimeo URLs are auto-converted to embed shape so the iframe
+  // works without requiring the curator to know the embed URL format.
+  // Other URLs (Loom, self-hosted .mp4, etc.) get a plain `<video>` element
+  // — the browser handles MIME detection from the file extension.
+  if (d.video_url) {
+    const wrap = document.getElementById('video-wrap');
+    let embedHtml = '';
+    const url = d.video_url;
+    let m;
+    // YouTube — use the privacy-enhanced nocookie domain. It's identical
+    // to the standard embed but loads less tracking-related JS, which on
+    // some corporate / private-CA setups makes the difference between a
+    // blank black frame and a working player. The `allow` and
+    // `referrerpolicy` attributes are the YouTube-recommended set for
+    // generic embeds (autoplay/encrypted-media/picture-in-picture/etc.).
+    if ((m = url.match(/youtube\.com\/watch\?.*v=([A-Za-z0-9_-]+)/))
+       || (m = url.match(/youtu\.be\/([A-Za-z0-9_-]+)/))
+       || (m = url.match(/youtube\.com\/embed\/([A-Za-z0-9_-]+)/))) {
+      embedHtml = `<iframe
+        src="https://www.youtube-nocookie.com/embed/${m[1]}?rel=0"
+        title="YouTube video player"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        referrerpolicy="strict-origin-when-cross-origin"
+        allowfullscreen></iframe>`;
+    } else if ((m = url.match(/vimeo\.com\/(?:video\/)?(\d+)/))) {
+      embedHtml = `<iframe
+        src="https://player.vimeo.com/video/${m[1]}"
+        title="Vimeo video player"
+        allow="autoplay; fullscreen; picture-in-picture"
+        allowfullscreen></iframe>`;
+    } else if (/\.(mp4|webm|ogg)(\?|$)/i.test(url)) {
+      embedHtml = `<video controls preload="metadata" src="${esc(url)}"></video>`;
+    } else {
+      // Unknown host → render as plain link so we don't load arbitrary 3rd-party
+      // pages in an iframe (mixed-origin issues, X-Frame-Options DENY, etc).
+      embedHtml = `<a href="${esc(url)}" target="_blank" rel="noopener" `
+        + `style="position:absolute;inset:0;display:flex;align-items:center;`
+        + `justify-content:center;color:#fff;text-decoration:underline;">`
+        + `Watch on external site ↗</a>`;
+    }
+    wrap.innerHTML = embedHtml;
+    document.getElementById('panel-video').hidden = false;
+  }
+
+  // ── v32: doc_links (agnes-metadata.json :: doc_links[]) ────────
+  // The user contract: every entry in this list is a real downloadable
+  // document Agnes can serve (PDF / Markdown / plain text). Sync pipeline
+  // already dropped HTML pages, 404s, SSRF-blocked URLs, and any internal
+  // path with the wrong extension — what remains is one shape: clickable
+  // link, browser starts a download. No badges, no chips, no source
+  // distinction in the UI (where the file lives is a sync-time concern,
+  // not something the analyst clicking the link cares about).
+  //
+  // The `download` attribute is honored for same-origin URLs (which all of
+  // ours are — both /doc/ and /mirrored/ are Agnes endpoints). The server
+  // also sets Content-Disposition: attachment, so even cross-origin tools
+  // that ignore the attribute still trigger a download.
+  const docLinks = (d.docs && d.docs.length) ? d.docs : [];
+  if (docLinks.length) {
+    const list = document.getElementById('doc-link-list');
+    list.innerHTML = docLinks.map(doc => {
+      const url = doc.url || '#';
+      return `<li>
+        <a href="${esc(url)}" download>${esc(doc.name)}</a>
+      </li>`;
+    }).join('');
+    document.getElementById('panel-docs').hidden = false;
+  }
+
   // ── Details ─────────────────────────────────────────────────────
   // Render only rows that have a real value — missing/null/owner_todo
   // entries get hidden so the panel stays compact.
@@ -599,15 +732,28 @@
   // ── Internal structure ─────────────────────────────────────────
   function buildCardSection(title, items, type) {
     if (!items || !items.length) return '';
-    const cards = items.map(it => `
+    // Inner cards render the agnes-metadata cover photo when present
+    // (mirrored OK for external, file exists for internal); otherwise the
+    // initials fall through ("SK" / "AG") on the colored gradient. Same
+    // onerror fallback as the top-level cards so a missing file doesn't
+    // produce the browser's broken-image icon.
+    const initials = type === 'skill' ? 'SK' : 'AG';
+    const cards = items.map(it => {
+      const photoMarkup = it.cover_photo_url
+        ? `<div class="photo"><img src="${esc(it.cover_photo_url)}" alt=""
+              onerror="this.parentElement.classList.add('photo-failed');
+                       this.parentElement.textContent='${initials}';"></div>`
+        : `<div class="photo">${initials}</div>`;
+      return `
       <a class="inner-card" data-type="${type}" href="${esc(it.detail_url || '#')}">
-        <div class="photo">${type === 'skill' ? 'SK' : 'AG'}</div>
+        ${photoMarkup}
         <div class="body">
           <span class="type-badge">${type}</span>
           <div class="name">${esc(it.name)}</div>
           <div class="desc">${esc(it.description || '')}</div>
         </div>
-      </a>`).join('');
+      </a>`;
+    }).join('');
     return `
       <div class="substruct">
         <div class="head">

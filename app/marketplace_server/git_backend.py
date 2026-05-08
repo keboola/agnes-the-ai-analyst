@@ -121,6 +121,14 @@ def file_set_for_user(
         if plugin_dir is None or not plugin_dir.is_dir():
             continue
         for f in sorted(p for p in plugin_dir.rglob("*") if p.is_file()):
+            rel_parts = f.relative_to(plugin_dir).parts
+            # v32: same Agnes-only file stripping as the ZIP path —
+            # `.agnes/**` and `agnes-metadata.json` never enter the synth
+            # Claude Code git tree. See app/marketplace_server/packager.py
+            # for context.
+            from src.marketplace_filter import is_agnes_only_path
+            if is_agnes_only_path(rel_parts):
+                continue
             rel = f.relative_to(plugin_dir).as_posix()
             arc = f"plugins/{prefix}/{rel}"
             files[arc] = f.read_bytes()

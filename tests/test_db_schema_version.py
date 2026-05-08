@@ -13,7 +13,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_31():
+def test_schema_version_is_32():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -32,7 +32,96 @@ def test_schema_version_is_31():
     # session_file) so multiple processors can track their own
     # processed-set independently. Existing rows are copied across with
     # processor_name='verification'; the old table is dropped.
-    assert SCHEMA_VERSION == 31
+    # v31 → v32: curated marketplace enrichment from
+    # `.claude-plugin/agnes-metadata.json` plus mandatory curator identity on
+    # marketplace_registry. Adds curator_name + curator_email to
+    # marketplace_registry, and cover_photo_url + video_url + doc_links to
+    # marketplace_plugins.
+    assert SCHEMA_VERSION == 32
+
+
+def test_v32_marketplace_curator_columns(tmp_path):
+    """Fresh install reaches v32 with the new marketplace columns present."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    registry_cols = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'marketplace_registry'"
+        ).fetchall()
+    }
+    assert {"curator_name", "curator_email"} <= registry_cols, (
+        f"curator columns missing from marketplace_registry: {registry_cols}"
+    )
+
+    plugin_cols = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'marketplace_plugins'"
+        ).fetchall()
+    }
+    assert {"cover_photo_url", "video_url", "doc_links"} <= plugin_cols, (
+        f"enrichment columns missing from marketplace_plugins: {plugin_cols}"
+    )
+    conn.close()
+
+
+def test_v31_db_migrates_to_v32(tmp_path):
+    """Pre-existing v31 DB (with the v31 schema) upgrades cleanly to v32 without
+    losing existing marketplace_registry / marketplace_plugins rows."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    # Stand up a minimal v31-shape registry + plugin row, plus the
+    # schema_version row that pins us to 31.
+    conn.execute(
+        "CREATE TABLE schema_version (version INTEGER, "
+        "applied_at TIMESTAMP DEFAULT current_timestamp)"
+    )
+    conn.execute("INSERT INTO schema_version (version) VALUES (31)")
+    conn.execute("""CREATE TABLE marketplace_registry (
+        id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
+        url VARCHAR NOT NULL, branch VARCHAR, token_env VARCHAR,
+        description TEXT, registered_by VARCHAR,
+        registered_at TIMESTAMP DEFAULT current_timestamp,
+        last_synced_at TIMESTAMP, last_commit_sha VARCHAR, last_error TEXT
+    )""")
+    conn.execute("""CREATE TABLE marketplace_plugins (
+        marketplace_id VARCHAR NOT NULL, name VARCHAR NOT NULL,
+        description TEXT, version VARCHAR, author_name VARCHAR,
+        homepage VARCHAR, category VARCHAR, source_type VARCHAR,
+        source_spec JSON, raw JSON,
+        created_at TIMESTAMP DEFAULT current_timestamp,
+        updated_at TIMESTAMP DEFAULT current_timestamp,
+        PRIMARY KEY (marketplace_id, name)
+    )""")
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url) "
+        "VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
+    )
+    conn.execute(
+        "INSERT INTO marketplace_plugins (marketplace_id, name) "
+        "VALUES ('legacy', 'foo')"
+    )
+
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    # New columns exist and existing rows preserved with NULL enrichment.
+    row = conn.execute(
+        "SELECT curator_name, curator_email FROM marketplace_registry "
+        "WHERE id = 'legacy'"
+    ).fetchone()
+    assert row == (None, None)
+
+    row = conn.execute(
+        "SELECT cover_photo_url, video_url, doc_links FROM marketplace_plugins "
+        "WHERE marketplace_id = 'legacy' AND name = 'foo'"
+    ).fetchone()
+    assert row == (None, None, None)
+    conn.close()
 
 
 def test_v20_adds_source_query(tmp_path):

@@ -13,6 +13,19 @@ def get_marketplaces_dir() -> Path:
     return get_data_dir() / "marketplaces"
 
 
+def get_marketplace_cache_dir() -> Path:
+    """Root for the curated-marketplace external-asset mirror.
+
+    Each registered marketplace gets a sub-directory keyed by slug holding a
+    ``manifest.json`` and one file per mirrored URL. Lives outside the cloned
+    git working tree so its contents don't interfere with ``git status`` /
+    ``git fetch --depth 1 ; git reset --hard`` semantics. Cleaned up
+    alongside the working tree on marketplace unregister
+    (``src.marketplace.delete_marketplace_dir``).
+    """
+    return get_data_dir() / "marketplace-cache"
+
+
 def get_store_dir() -> Path:
     """Root for community-uploaded Store entities.
 

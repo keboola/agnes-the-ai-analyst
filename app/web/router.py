@@ -1294,6 +1294,52 @@ async def marketplace_guide_flea(
     return templates.TemplateResponse(request, "marketplace_guide.html", ctx)
 
 
+@router.get("/marketplace/format-guide", response_class=HTMLResponse)
+async def marketplace_format_guide(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Render docs/curated-marketplace-format.md as a logged-in HTML page.
+
+    The Markdown source is the canonical reference for upstream curators —
+    living it next to docs/ in the repo means it's also discoverable on the
+    public GitHub mirror, so an external maintainer can read it without
+    needing an Agnes account. The web rendering exists for the in-product
+    flow (link from /admin/marketplaces) and uses Python's ``markdown``
+    library with the standard extensions for fenced code + tables.
+
+    Auth: ``Depends(get_current_user)`` only — no admin requirement. The
+    audience is "anyone authoring or reviewing a curated marketplace,"
+    which is broader than admins and could include non-admin curators.
+    """
+    # markdown-it-py is already a transitive dep (rich → markdown-it-py),
+    # so no new pinning is needed. Commonmark preset + the table extension
+    # gives us fenced code blocks (rendered as <pre><code class="language-X">)
+    # and GFM-style tables — enough to render the format guide cleanly.
+    from markdown_it import MarkdownIt
+    from pathlib import Path
+
+    md_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "docs" / "curated-marketplace-format.md"
+    )
+    try:
+        md_text = md_path.read_text(encoding="utf-8")
+    except OSError:
+        md_text = (
+            "# Format guide unavailable\n\n"
+            "The source markdown file is missing from this deployment."
+        )
+    rendered = MarkdownIt("commonmark", {"breaks": False}).enable("table").render(md_text)
+    ctx = _build_context(
+        request, user=user,
+        rendered_html=rendered,
+    )
+    return templates.TemplateResponse(
+        request, "marketplace_format_guide.html", ctx,
+    )
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
