@@ -85,6 +85,8 @@ def _posthog_config_global() -> dict:
         "api_key_public": pc.api_key_public,
         "replay_enabled": pc.replay_enabled,
         "replay_mask_selector_extra": pc.replay_mask_selector_extra,
+        "environment": pc.environment,
+        "release": pc.release,
     }
 
 

@@ -46,6 +46,25 @@ That's the entire minimum. Defaults will:
 | `POSTHOG_REPLAY` | `true` | Disable replay only, keeping errors / events / flags. |
 | `POSTHOG_REPLAY_MASK_SELECTOR` | empty | CSS selector appended to the default mask list. |
 | `POSTHOG_LLM_PAYLOADS` | `0` | `1` adds `$ai_input` + `$ai_output_choices` to LLM events. Off by default. |
+| `POSTHOG_ENVIRONMENT` | auto | Tagged on every event as the `environment` super-property. Auto-resolves to `local` when `LOCAL_DEV_MODE=1`, else `RELEASE_CHANNEL`, else `AGNES_DEPLOYMENT_ENV`, else `unknown`. |
+
+## Splitting traffic by environment
+
+Every captured event — backend exceptions, `$ai_generation`, browser
+`$pageview`, JS errors, custom events — is tagged with two super
+properties so PostHog dashboards can slice cleanly:
+
+- `environment` — resolved at startup (see table above). Operators
+  typically set this to `local`, `staging`, or `production` explicitly,
+  or rely on the auto-resolver.
+- `release` — the running `AGNES_VERSION`, falling back to
+  `RELEASE_CHANNEL`. Useful for "is this error new in this release?"
+  cohorting.
+
+Both apply to backend events via the SDK's `super_properties` and to
+browser events via `posthog.register({...})` in the loaded callback, so
+filtering by `environment = production` in PostHog hides every event
+generated from a developer laptop, CI, or staging.
 
 ## Privacy posture
 
