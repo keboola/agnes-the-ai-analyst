@@ -379,6 +379,14 @@ async def delete_marketplace(
             "WHERE resource_type = ? AND starts_with(resource_id, ? || '/')",
             [ResourceType.MARKETPLACE_PLUGIN.value, marketplace_id],
         )
+        # Drop user subscriptions to plugins from this marketplace so a
+        # re-registered slug doesn't inherit stale subscribe state.
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+        UserCuratedSubscriptionsRepository(conn).delete_for_marketplace(
+            marketplace_id
+        )
     except Exception as e:
         logger.warning("cleanup for marketplace %s failed: %s", marketplace_id, e)
     purged = False

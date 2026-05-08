@@ -2049,6 +2049,10 @@ a.slack-badge:hover {
     border-bottom: 1px solid var(--border, #e5e7eb);
     padding: 0 32px;
     height: 72px;
+    /* Override the legacy generic `header { margin-bottom: 24px }` rule from
+       style.css — the .app-header sits flush against the page container so
+       all base.html pages match the dashboard's header-to-content spacing. */
+    margin-bottom: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -2242,3 +2246,15 @@ a.app-header-logo:focus-visible {
     .app-header-email { display: none; }
     .app-nav-link { padding: 6px 8px; }
 }
+
+/* ── Standard page shell ─────────────────────────────────────────────
+   Shared layout container for pages that extend base.html. Matches the
+   dashboard's `.main` dimensions so /dashboard, /marketplace, and the
+   marketplace detail pages all align. Add `page-shell` to a page's root
+   wrapper to opt in. */
+.container:has(.page-shell) {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 28px 32px 48px;
+}
+.container:has(.page-shell) > main { margin: 0; padding: 0; }

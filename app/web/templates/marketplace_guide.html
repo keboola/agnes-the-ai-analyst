@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}{{ guide_title }} — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+{# Publication-flow guide. Reached from the action-row CTA on /marketplace
+   ("Submit a plugin" on the curated tab; the flea variant is reachable
+   only as a fallback since flea has a self-service +Upload button).
+
+   Two distinct flows, one template — `guide_kind` switches the body. #}
+<style>
+  .guide-page {
+    max-width: 760px; margin: 0 auto;
+    padding: 16px 24px 64px;
+    color: var(--text-primary);
+  }
+  .guide-page .back {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-bottom: 12px;
+    color: var(--text-secondary); font-size: 13px;
+    text-decoration: none;
+  }
+  .guide-page .back:hover { color: var(--primary); }
+
+  .guide-page h1 {
+    font-size: 26px; font-weight: 700;
+    margin: 0 0 8px;
+    letter-spacing: -0.3px;
+  }
+  .guide-page .lede {
+    font-size: 15px; color: var(--text-secondary);
+    line-height: 1.6; margin: 0 0 28px;
+  }
+
+  /* ── Steps ──────────────────────────────────────────────────────── */
+  .guide-steps {
+    list-style: none; padding: 0; margin: 0 0 32px;
+    counter-reset: step;
+  }
+  .guide-steps li {
+    position: relative;
+    padding: 14px 18px 14px 56px;
+    margin-bottom: 10px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    counter-increment: step;
+    line-height: 1.55;
+    font-size: 14px;
+  }
+  .guide-steps li::before {
+    content: counter(step);
+    position: absolute; left: 16px; top: 14px;
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--primary); color: #fff;
+    border-radius: 999px;
+    font-size: 13px; font-weight: 700;
+  }
+  .guide-steps li strong { color: var(--text-primary); font-weight: 600; }
+  .guide-steps li code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: rgba(0,0,0,0.05); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+  .guide-steps li .note {
+    display: block; margin-top: 4px;
+    font-size: 12.5px; color: var(--text-secondary);
+  }
+
+  /* Flea variant uses purple step bubbles (matches flea badge accent). */
+  .guide-page[data-kind="flea"] .guide-steps li::before { background: #6D28D9; }
+
+  /* ── Section block ──────────────────────────────────────────────── */
+  .guide-section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 26px;
+    margin-bottom: 18px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .guide-section h2 {
+    font-size: 16px; font-weight: 700;
+    margin: 0 0 12px;
+  }
+  .guide-section p {
+    margin: 0 0 10px; font-size: 14px; line-height: 1.6;
+    color: var(--text-secondary);
+  }
+  .guide-section p:last-child { margin-bottom: 0; }
+  .guide-section p strong { color: var(--text-primary); font-weight: 600; }
+  .guide-section code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: rgba(0,0,0,0.05); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+
+  /* ── CTA bar ────────────────────────────────────────────────────── */
+  .guide-cta {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    margin-top: 24px;
+  }
+  .guide-cta a {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 16px;
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    border-radius: 8px;
+    font-size: 13px; font-weight: 500;
+    text-decoration: none;
+    transition: all 0.15s ease;
+  }
+  .guide-cta a:hover { border-color: var(--primary); color: var(--primary); }
+  .guide-cta a.primary {
+    background: var(--primary); color: #fff; border-color: var(--primary);
+  }
+  .guide-cta a.primary:hover { background: var(--primary-dark, #0056A3); color: #fff; }
+  .guide-page[data-kind="flea"] .guide-cta a.primary {
+    background: #6D28D9; border-color: #6D28D9;
+  }
+  .guide-page[data-kind="flea"] .guide-cta a.primary:hover {
+    background: #5B21B6; border-color: #5B21B6;
+  }
+</style>
+
+<div class="guide-page" data-kind="{{ guide_kind }}">
+  <a class="back" href="/marketplace?tab={{ guide_kind }}">← Back to {{ 'Curated Marketplace' if guide_kind == 'curated' else 'Flea Market' }}</a>
+  <h1>{{ guide_title }}</h1>
+
+  {% if guide_kind == 'curated' %}
+  {# Curated submission guide — body intentionally left minimal; full
+     content to be authored separately. The CTA buttons at the bottom of
+     the page still let the user jump back to the Curated tab or browse
+     the Flea Market as a self-service alternative. #}
+  <p class="lede">
+    The Curated Marketplace is publish-by-curator only. To get your skill,
+    agent, or plugin listed, hand it off to a curator who reviews and
+    publishes it on your behalf.
+  </p>
+  {% else %}
+  {# Flea publishing guide — body intentionally left minimal; full content
+     to be authored separately. The CTA buttons at the bottom of the page
+     still let the user jump to /store/new or browse the Flea Market. #}
+  <p class="lede">
+    The Flea Market is self-service. Anyone in the company can upload a
+    skill, agent, or plugin.
+  </p>
+  {% endif %}
+
+  <div class="guide-cta">
+    <a class="primary" href="{{ '/store/new' if guide_kind == 'flea' else '/marketplace?tab=curated' }}">
+      {{ '+ Upload to Flea Market' if guide_kind == 'flea' else '← Back to Curated' }}
+    </a>
+    <a href="/marketplace?tab={{ 'flea' if guide_kind == 'curated' else 'curated' }}">
+      {{ 'Browse Flea Market' if guide_kind == 'curated' else 'Browse Curated' }} →
+    </a>
+  </div>
+</div>
+{% endblock %}

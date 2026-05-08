@@ -111,6 +111,7 @@ from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
+from app.api.marketplace import router as marketplace_router
 from app.api.welcome import router as welcome_router
 from app.api.claude_md import router as claude_md_router
 from app.api.cache_warmup import router as cache_warmup_router
@@ -554,6 +555,7 @@ def create_app() -> FastAPI:
     app.include_router(marketplaces_router)
     app.include_router(store_router)
     app.include_router(my_stack_router)
+    app.include_router(marketplace_router)
     app.include_router(welcome_router)
     app.include_router(claude_md_router)
     app.include_router(cache_warmup_router)

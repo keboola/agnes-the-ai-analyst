@@ -50,10 +50,10 @@ def show_stack(
 def toggle(
     marketplace_id: str = typer.Argument(...),
     plugin_name: str = typer.Argument(...),
-    on: bool = typer.Option(False, "--on", help="Enable (drop opt-out)"),
-    off: bool = typer.Option(False, "--off", help="Disable (set opt-out)"),
+    on: bool = typer.Option(False, "--on", help="Subscribe (add to served set)"),
+    off: bool = typer.Option(False, "--off", help="Unsubscribe (remove from served set)"),
 ):
-    """Toggle a curated plugin on or off (writes a `user_plugin_optouts` row)."""
+    """Subscribe or unsubscribe from a curated plugin."""
     if on == off:
         typer.echo("Pass exactly one of --on / --off.", err=True)
         raise typer.Exit(2)

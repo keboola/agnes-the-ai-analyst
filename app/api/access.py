@@ -712,19 +712,20 @@ async def delete_grant(
     grants.delete(grant_id)
 
     # v24: re-grant of the same plugin must reset every user to the default
-    # (enabled). Drop matching opt-outs the same time we drop the grant so
-    # state stays consistent — see src/repositories/user_plugin_optouts.py.
+    # (subscribed). Drop matching subscriptions at the same time we drop the
+    # grant so state stays consistent — see
+    # src/repositories/user_curated_subscriptions.py.
     optouts_dropped = 0
     if existing["resource_type"] == "marketplace_plugin":
         rid = existing["resource_id"] or ""
         if "/" in rid:
             mp_id, plugin_name = rid.split("/", 1)
-            from src.repositories.user_plugin_optouts import (
-                UserPluginOptoutsRepository,
+            from src.repositories.user_curated_subscriptions import (
+                UserCuratedSubscriptionsRepository,
             )
-            optouts_dropped = UserPluginOptoutsRepository(conn).delete_for_plugin(
-                mp_id, plugin_name,
-            )
+            optouts_dropped = UserCuratedSubscriptionsRepository(
+                conn
+            ).delete_for_plugin(mp_id, plugin_name)
         try:
             from app.marketplace_server import packager
             packager.invalidate_etag_cache()

@@ -106,6 +106,18 @@ def git_env(e2e_env, monkeypatch):
         rg.create(group_id=admin_gid, resource_type="marketplace_plugin", resource_id="mkt-b/plug-y")
         rg.create(group_id=test_group_gid, resource_type="marketplace_plugin", resource_id="mkt-b/plug-y")
 
+        # Model B (v27+): explicit subscriptions are required for plugins
+        # to enter the served set. Pre-existing tests below assume the
+        # admin sees both plugins and the analyst sees plug-y; mirror
+        # those expectations by subscribing both users.
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+        subs = UserCuratedSubscriptionsRepository(conn)
+        subs.subscribe("admin1", "mkt-a", "plug-x")
+        subs.subscribe("admin1", "mkt-b", "plug-y")
+        subs.subscribe("analyst1", "mkt-b", "plug-y")
+
         # Create real PAT rows so resolve_token_to_user passes.
         token_repo = AccessTokenRepository(conn)
         pats: dict[str, str] = {}

@@ -126,35 +126,58 @@ class TestUserStoreInstalls:
         assert rows[0]["owner_username"] == "u1"
 
 
-class TestUserPluginOptouts:
-    def test_set_toggle(self, db_conn):
-        from src.repositories.user_plugin_optouts import UserPluginOptoutsRepository
-        _make_user(db_conn, user_id="u1", email="u1@x")
-        repo = UserPluginOptoutsRepository(db_conn)
-        repo.set("u1", "mkt", "p1", opted_out=True)
-        assert repo.is_opted_out("u1", "mkt", "p1") is True
-        assert ("mkt", "p1") in repo.opted_out_set("u1")
-        repo.set("u1", "mkt", "p1", opted_out=False)
-        assert repo.is_opted_out("u1", "mkt", "p1") is False
-        assert repo.opted_out_set("u1") == set()
+class TestUserCuratedSubscriptions:
+    """Same physical table (user_plugin_optouts) as the legacy opt-out repo,
+    but with v27+ Model B semantics: presence = subscribed.
+    """
 
-    def test_set_idempotent(self, db_conn):
-        from src.repositories.user_plugin_optouts import UserPluginOptoutsRepository
+    def test_subscribe_unsubscribe(self, db_conn):
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
         _make_user(db_conn, user_id="u1", email="u1@x")
-        repo = UserPluginOptoutsRepository(db_conn)
-        repo.set("u1", "mkt", "p1", opted_out=True)
-        repo.set("u1", "mkt", "p1", opted_out=True)  # second call: no-op
+        repo = UserCuratedSubscriptionsRepository(db_conn)
+        assert repo.subscribe("u1", "mkt", "p1") is True
+        assert repo.is_subscribed("u1", "mkt", "p1") is True
+        assert ("mkt", "p1") in repo.subscribed_set("u1")
+        assert repo.unsubscribe("u1", "mkt", "p1") is True
+        assert repo.is_subscribed("u1", "mkt", "p1") is False
+        assert repo.subscribed_set("u1") == set()
+
+    def test_subscribe_idempotent(self, db_conn):
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+        _make_user(db_conn, user_id="u1", email="u1@x")
+        repo = UserCuratedSubscriptionsRepository(db_conn)
+        assert repo.subscribe("u1", "mkt", "p1") is True
+        assert repo.subscribe("u1", "mkt", "p1") is False  # second call: no-op
         assert len(repo.list_for_user("u1")) == 1
 
     def test_delete_for_plugin_drops_all_users(self, db_conn):
-        from src.repositories.user_plugin_optouts import UserPluginOptoutsRepository
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
         _make_user(db_conn, user_id="u1", email="u1@x")
         _make_user(db_conn, user_id="u2", email="u2@x")
-        repo = UserPluginOptoutsRepository(db_conn)
-        repo.set("u1", "mkt", "p1", opted_out=True)
-        repo.set("u2", "mkt", "p1", opted_out=True)
-        repo.set("u1", "mkt", "p2", opted_out=True)  # different plugin — survives
+        repo = UserCuratedSubscriptionsRepository(db_conn)
+        repo.subscribe("u1", "mkt", "p1")
+        repo.subscribe("u2", "mkt", "p1")
+        repo.subscribe("u1", "mkt", "p2")  # different plugin — survives
         dropped = repo.delete_for_plugin("mkt", "p1")
         assert dropped == 2
-        assert repo.opted_out_set("u1") == {("mkt", "p2")}
-        assert repo.opted_out_set("u2") == set()
+        assert repo.subscribed_set("u1") == {("mkt", "p2")}
+        assert repo.subscribed_set("u2") == set()
+
+    def test_delete_for_marketplace(self, db_conn):
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+        _make_user(db_conn, user_id="u1", email="u1@x")
+        repo = UserCuratedSubscriptionsRepository(db_conn)
+        repo.subscribe("u1", "mkt-a", "p1")
+        repo.subscribe("u1", "mkt-a", "p2")
+        repo.subscribe("u1", "mkt-b", "p1")
+        dropped = repo.delete_for_marketplace("mkt-a")
+        assert dropped == 2
+        assert repo.subscribed_set("u1") == {("mkt-b", "p1")}

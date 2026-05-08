@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -368,6 +368,7 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     source_type     VARCHAR,
     source_spec     JSON,
     raw             JSON,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (marketplace_id, name)
 );
@@ -944,6 +945,7 @@ _V10_TO_V11_MIGRATIONS = [
         source_type     VARCHAR,
         source_spec     JSON,
         raw             JSON,
+        created_at      TIMESTAMP DEFAULT current_timestamp,
         updated_at      TIMESTAMP DEFAULT current_timestamp,
         PRIMARY KEY (marketplace_id, name)
     )
@@ -1931,6 +1933,36 @@ _V26_TO_V27_MIGRATIONS = [
 ]
 
 
+# v28: introduce explicit-install (Model B) for curated marketplace plugins.
+#
+# Pre-v28 the served set was (rbac ∖ user_plugin_optouts) — a curated plugin
+# the admin granted appeared in the user's marketplace until the user opted
+# out via /my-ai-stack. From v28 the served set is (rbac ∩ subscriptions) —
+# users explicitly install each curated plugin from /marketplace.
+#
+# We keep the table+column names (`user_plugin_optouts.opted_out_at`) to
+# avoid DDL churn on running operator instances. Row PRESENCE flips meaning
+# from "excluded" to "subscribed", so we wipe rows so the inverted reading
+# starts from a clean baseline. Users will re-install via /marketplace.
+#
+# Also adds marketplace_plugins.created_at (per-plugin "newest first" sort
+# on /marketplace). Backfilled from parent marketplace_registry.registered_at
+# so existing plugins get a sensible date until the next sync overwrites
+# with CURRENT_TIMESTAMP.
+_V27_TO_V28_MIGRATIONS = [
+    "DELETE FROM user_plugin_optouts",
+    "ALTER TABLE marketplace_plugins ADD COLUMN created_at TIMESTAMP",
+    """
+    UPDATE marketplace_plugins
+       SET created_at = (
+           SELECT registered_at FROM marketplace_registry
+            WHERE marketplace_registry.id = marketplace_plugins.marketplace_id
+       )
+     WHERE created_at IS NULL
+    """,
+]
+
+
 # v24: rewrite materialized BQ source_query from DuckDB-flavor
 # (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
 # so the new connectors.bigquery.extractor.materialize_query wrapping
@@ -2189,6 +2221,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 27:
                 for sql in _V26_TO_V27_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 28:
+                for sql in _V27_TO_V28_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
