@@ -199,6 +199,13 @@ class PosthogClient:
                 props.setdefault("method", str(request.method))
             except Exception:
                 pass
+            # Attach user attributes to the exception event itself so a
+            # reviewer can see *who* the user was inline on the event,
+            # without clicking through to the person profile. Honors
+            # POSTHOG_IDENTIFY_PII (none / id / email / full).
+            user_props = self._user_props_for_event(request)
+            for key, value in user_props.items():
+                props.setdefault(key, value)
             if distinct_id is None:
                 distinct_id = self._distinct_id_from_request(request)
 
@@ -263,6 +270,50 @@ class PosthogClient:
             logger.exception("PostHog shutdown failed")
 
     # ----- helpers -----
+
+    def _user_props_for_event(self, request: Any) -> dict:
+        """Return the user attributes attached to a captured event.
+
+        Mirrors :func:`app.web.router._posthog_user_block` but for
+        backend-emitted events. Respects ``POSTHOG_IDENTIFY_PII``:
+
+            none  -> {}
+            id    -> {user_id}
+            email -> {user_id, user_email}
+            full  -> {user_id, user_email, user_name}
+
+        Keys are namespaced with ``user_`` so they don't collide with
+        anything PostHog inserts on its side. Returns ``{}`` for
+        anonymous requests (no ``request.state.user``) or when the
+        identify mode is ``none``.
+        """
+        if self._identify_mode == "none":
+            return {}
+        try:
+            user = getattr(request.state, "user", None)
+        except Exception:
+            user = None
+        if not user:
+            return {}
+
+        def _get(attr: str):
+            if isinstance(user, dict):
+                return user.get(attr)
+            return getattr(user, attr, None)
+
+        out: dict = {}
+        uid = _get("id") or _get("user_id")
+        if uid:
+            out["user_id"] = str(uid)
+        if self._identify_mode in ("email", "full"):
+            email = _get("email")
+            if email:
+                out["user_email"] = str(email)
+        if self._identify_mode == "full":
+            name = _get("name") or _get("full_name")
+            if name:
+                out["user_name"] = str(name)
+        return out
 
     @staticmethod
     def _distinct_id_from_request(request: Any) -> str | None:
