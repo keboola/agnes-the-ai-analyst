@@ -579,11 +579,12 @@ class TestVerificationDetectorIntegration:
         stats2 = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
 
         assert stats1["items_created"] == 1
-        # Post-refactor: scan returns all jsonls, runner skips ones the
-        # processor already saw at this file_hash. Old assertion was
-        # `sessions_scanned == 0`; new shape is "scanned 1, skipped 1".
+        # Post-refactor: stable sessions (mtime <= processed_at) are filtered
+        # at scan via the mtime precheck so the runner never sees them →
+        # `scanned == 0`, not `skipped == 1`. PR #232 review fix avoided an
+        # MD5-rehash storm per scheduler tick.
         assert stats2["sessions_processed"] == 0
-        assert stats2["skipped"] == 1
+        assert stats2["scanned"] == 0
         assert stats2["items_created"] == 0
         conn.close()
 

@@ -168,6 +168,66 @@ class TestSessionProcessorStateRepository:
         assert results[0][0] == "alice"
         conn.close()
 
+    def test_scan_filters_stable_sessions_via_mtime(self, tmp_path, monkeypatch):
+        """Files with mtime <= processed_at are filtered at scan — the
+        runner never sees them and never hashes them. PR #232 review fix:
+        before the mtime precheck, every stable session was rehashed on
+        every scheduler tick."""
+        import os
+        import time
+        from datetime import datetime, timezone
+
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        (sessions / "alice").mkdir(parents=True)
+        stable = sessions / "alice" / "stable.jsonl"
+        stable.write_text("{}\n")
+        # Force mtime well in the past so we can set processed_at to "now"
+        # and have the precheck reliably skip.
+        old = time.time() - 3600
+        os.utime(stable, (old, old))
+
+        repo = SessionProcessorStateRepository(conn)
+        repo.mark_processed("verification", "alice/stable.jsonl", "alice", 1, "h1")
+
+        results = repo.scan_unprocessed_for("verification", sessions)
+        assert results == [], "stable session must be filtered at scan"
+
+        # New file alongside it surfaces — not in state at all.
+        new_file = sessions / "alice" / "new.jsonl"
+        new_file.write_text("{}\n")
+        results = repo.scan_unprocessed_for("verification", sessions)
+        assert [str(p.name) for _, p in results] == ["new.jsonl"]
+        conn.close()
+
+    def test_scan_surfaces_session_modified_after_processing(self, tmp_path, monkeypatch):
+        """File touched after processed_at — likely a Claude Code live append —
+        must come back through scan so the runner can hash + decide."""
+        import os
+        import time
+        from datetime import datetime, timezone
+
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        (sessions / "alice").mkdir(parents=True)
+        f = sessions / "alice" / "live.jsonl"
+        f.write_text("{}\n")
+
+        repo = SessionProcessorStateRepository(conn)
+        # Mark processed at past time, then bump the file mtime to "now"
+        # to simulate a post-processing append.
+        past = datetime.now(timezone.utc).replace(microsecond=0)
+        conn.execute(
+            "INSERT INTO session_processor_state VALUES (?, ?, ?, ?, ?, ?)",
+            ["verification", "alice/live.jsonl", "alice", past, 0, "h1"],
+        )
+        future = time.time() + 60
+        os.utime(f, (future, future))
+
+        results = repo.scan_unprocessed_for("verification", sessions)
+        assert [str(p.name) for _, p in results] == ["live.jsonl"]
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # run_processor
@@ -218,8 +278,12 @@ class TestRunProcessor:
         assert proc.calls == ["alice/s.jsonl"]
 
         stats2 = run_processor(conn, proc, session_data_dir=sessions)
+        # Stable session (mtime <= processed_at) is filtered at scan, so the
+        # runner never sees it — `scanned == 0`, not `skipped == 1`. The
+        # earlier shape (return-everything-then-runner-skips) caused an
+        # MD5-rehash storm per tick (PR #232 review fix).
         assert stats2["processed"] == 0
-        assert stats2["skipped"] == 1
+        assert stats2["scanned"] == 0
         assert proc.calls == ["alice/s.jsonl"]  # not invoked again
         conn.close()
 
@@ -260,8 +324,9 @@ class TestRunProcessor:
         assert stats1["items_extracted"] == 0
 
         stats2 = run_processor(conn, proc, session_data_dir=sessions)
+        # Filtered at scan via mtime precheck — see test_processed_then_skipped_on_second_call.
         assert stats2["processed"] == 0
-        assert stats2["skipped"] == 1
+        assert stats2["scanned"] == 0
         conn.close()
 
     def test_file_hash_invalidates_state(self, tmp_path, monkeypatch):

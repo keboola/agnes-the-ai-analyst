@@ -57,6 +57,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `GET /api/marketplace/curated/<slug>/<plugin>/{skill,agent}/<name>` now containment-checks the resolved file path against `plugin_root` via a new `_safe_join` helper (`resolve(strict=True)` + `relative_to`). The direct URL exploit was already blocked by Starlette's `[^/]+` path-param regex, but a curator-planted symlink inside a curated marketplace's git mirror could previously dereference outside the plugin tree on read. Now centralized so `_read_inner`, the skill `files` walk, and the agent `stat` call all share the same boundary.
 
+### Fixed (PR #232 review)
+
+- `SessionProcessorStateRepository.scan_unprocessed_for` had a dead `if/else` where both branches surfaced every jsonl, making the `SELECT session_file FROM session_processor_state` round-trip pointless and forcing the runner to MD5-rehash every stable session on every scheduler tick. Replaced with an mtime precheck: stable sessions (mtime <= processed_at) are filtered at scan and the runner never reads or hashes them. Files modified since the last run still surface for the runner's authoritative `file_hash` invalidation.
+- `POST /api/admin/run-session-processor` now takes a per-processor advisory lock (`threading.Lock` keyed by name) before invoking the runner. Two trigger paths exist for the same processor (scheduler tick + manual admin POST); without serialization, overlapping runs would re-process the same `/data/user_sessions/*` set, double-call the LLM, and pile up duplicate `verification_evidence` rows (the dedup short-circuit only catches the create+contradiction branches, not `create_evidence`, per ADR Decision 3). Concurrent invocation returns HTTP 409 Conflict so the operator sees what happened instead of stacking behind a long-running tick. Lock releases unconditionally in `finally:` so a runner exception can't wedge the processor permanently.
+
 ### Internal
 
 - `services/session_processors/verification.py:build_verification_processor` factory mirrors the lazy LLM-extractor construction previously inlined in `app/api/admin.run_verification_detector` and `services/verification_detector/__main__`. Single source of truth for processor instantiation.

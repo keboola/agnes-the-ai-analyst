@@ -149,6 +149,58 @@ class TestRunSessionProcessor:
         assert resp.status_code == 400
         assert "Unknown processor" in resp.json()["detail"]
 
+    def test_concurrent_invocation_returns_409(self, seeded_app):
+        """Per-processor advisory lock rejects overlapping calls so
+        scheduler tick + manual admin POST don't double up on the same
+        sessions and pile up duplicate verification_evidence rows
+        (PR #232 review)."""
+        from app.api.admin import _get_processor_run_lock
+        from services.session_processors import _build_registry
+        _build_registry.cache_clear()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        # Hold the lock externally to simulate an in-flight invocation.
+        lock = _get_processor_run_lock("usage")
+        lock.acquire()
+        try:
+            resp = c.post(
+                "/api/admin/run-session-processor?processor=usage",
+                headers=_auth(token),
+            )
+        finally:
+            lock.release()
+
+        assert resp.status_code == 409
+        assert "already running" in resp.json()["detail"]
+
+    def test_lock_released_on_runner_exception(self, seeded_app):
+        """Even when the runner raises, the lock must release so the next
+        scheduler tick / admin POST can proceed. A leaked lock would wedge
+        the processor permanently until process restart."""
+        from app.api.admin import _get_processor_run_lock
+        from services.session_processors import _build_registry
+        _build_registry.cache_clear()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        with patch(
+            "services.session_pipeline.runner.run_processor",
+            side_effect=RuntimeError("simulated"),
+        ):
+            resp = c.post(
+                "/api/admin/run-session-processor?processor=usage",
+                headers=_auth(token),
+            )
+        assert resp.status_code == 500
+
+        # Lock must be free now — second invocation can grab it.
+        lock = _get_processor_run_lock("usage")
+        assert lock.acquire(blocking=False), "lock leaked after runner exception"
+        lock.release()
+
     def test_non_admin_blocked(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
