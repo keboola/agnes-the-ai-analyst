@@ -22,6 +22,9 @@ body:has(.home-mock) { background: #F9FAFB; }
     color: var(--hp-text-primary);
     font-size: 14px;
     line-height: 1.5;
+    /* Container padding-top is 0 so the hero owns its own top spacing.
+       Add it back here so the hero doesn't hug the site nav. */
+    padding-top: 24px;
 }
 .home-mock * { box-sizing: border-box; }
 

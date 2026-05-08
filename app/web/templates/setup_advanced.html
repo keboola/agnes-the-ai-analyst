@@ -305,7 +305,7 @@ body:has(.advanced-mock) { background: #F9FAFB; }
 
     <section class="ad-section" id="vscode">
         <h2>1. VS Code as your workspace</h2>
-        <p class="ad-lead">CoS is terminal-centric. You spend most of your time talking to Claude in terminals. Files open as tabs when you need them.</p>
+        <p class="ad-lead">Agnes is terminal-driven. You spend most of your time talking to Claude in a terminal — not in a web app. VS Code's split-terminal layout gives you one panel for the conversation, one for diffs and tool output, and an optional third for parallel work. Files open as tabs when you need them.</p>
 
         <h3>Recommended layout</h3>
         <ul>
@@ -355,7 +355,7 @@ body:has(.advanced-mock) { background: #F9FAFB; }
         <ol>
             <li>Open terminal in <code>~/Agnes</code>.</li>
             <li>Type <code>claude</code> (or <code>yolo</code>).</li>
-            <li>The cos-welcome menu shows recent projects ranked by activity. Pick a number, type a name, or describe what you want.</li>
+            <li>The agnes-welcome menu shows recent projects ranked by activity. Pick a number, type a name, or describe what you want.</li>
         </ol>
 
         <h3>Creating + switching projects</h3>
@@ -363,11 +363,11 @@ body:has(.advanced-mock) { background: #F9FAFB; }
         <ul>
             <li><em>"Create a new project called 'website redesign' under work"</em> — Claude scaffolds folders, initializes Git, drops in a CLAUDE.md.</li>
             <li><em>"Switch to the quarterly review project"</em> — Claude <code>cd</code>s and loads project context.</li>
-            <li><em>"Go back to CoS root"</em> — returns to <code>~/Agnes</code>.</li>
+            <li><em>"Go back to Agnes root"</em> — returns to <code>~/Agnes</code>.</li>
         </ul>
 
         <h3>Why this matters</h3>
-        <p>The cos-welcome hook fires only when Claude starts in <code>~/Agnes</code>. Prompt-history logging uses <code>$PWD</code> to route prompts to the right project's history. Launch Claude from inside a project folder and you skip both.</p>
+        <p>The agnes-welcome hook fires only when Claude starts in <code>~/Agnes</code>. Prompt-history logging uses <code>$PWD</code> to route prompts to the right project's history. Launch Claude from inside a project folder and you skip both.</p>
     </section>
 
     <section class="ad-section" id="plugins">
@@ -447,7 +447,7 @@ body:has(.advanced-mock) { background: #F9FAFB; }
 
     <section class="ad-section" id="second-opinions">
         <h2>5. Multi-model second opinions</h2>
-        <p class="ad-lead">Send your work to multiple AI models for independent review. They catch blind spots, challenge assumptions, improve quality. One of CoS's most useful features.</p>
+        <p class="ad-lead">Send your work to multiple AI models for independent review. They catch blind spots, challenge assumptions, improve quality. One of the most useful workflows you can run inside Agnes.</p>
 
         <h3>Codex CLI (OpenAI)</h3>
         <p>Paste this into Claude Code:</p>
@@ -468,7 +468,7 @@ body:has(.advanced-mock) { background: #F9FAFB; }
 4. Verify: `gemini --version` and a low-cost test prompt.</pre>
 
         <h3>How review-panel + second-opinion work together</h3>
-        <p>CoS ships two skills:</p>
+        <p>The bundled Agnes plugin ships two skills:</p>
         <ul>
             <li><strong>review-panel</strong> — runs 4 internal persona reviewers (engineer, executive, skeptic, user-voice) inside a single Claude process. Catches domain-specific blind spots before external review. No extra setup.</li>
             <li><strong>second-opinion</strong> — sends work to whichever external CLIs are installed (Claude, Codex, Gemini) in parallel, collects feedback, synthesizes agreement vs disagreement, and presents prioritized action items.</li>
@@ -478,7 +478,7 @@ body:has(.advanced-mock) { background: #F9FAFB; }
 
     <section class="ad-section" id="skills-rules-hooks">
         <h2>6. Skills, rules, hooks</h2>
-        <p class="ad-lead">The mechanics that turn Claude from a blank slate into a workspace that follows your conventions. Most of CoS's power lives here.</p>
+        <p class="ad-lead">The mechanics that turn Claude from a blank slate into a workspace that follows your conventions. Most of Agnes's day-to-day power lives here.</p>
 
         <h3>Skills</h3>
         <p>Reusable workflow templates at <code>.claude/skills/&lt;name&gt;/SKILL.md</code>. Invoked by name or automatically.</p>
@@ -500,7 +500,7 @@ body:has(.advanced-mock) { background: #F9FAFB; }
         <h3>Hooks</h3>
         <p>Scripts in <code>.claude/hooks/</code> that fire automatically on events:</p>
         <ul>
-            <li><strong>SessionStart</strong> — runs <code>agnes pull --quiet</code> so data is fresh, fires the cos-welcome project picker.</li>
+            <li><strong>SessionStart</strong> — runs <code>agnes pull --quiet</code> so data is fresh, fires the agnes-welcome project picker.</li>
             <li><strong>SessionEnd</strong> — runs <code>agnes push --quiet</code> so session jsonl + CLAUDE.local.md flow back to the server.</li>
             <li><strong>UserPromptSubmit</strong> — appends prompt to history, can inject reminders or enforce workflows.</li>
         </ul>
@@ -549,8 +549,8 @@ Add-Content $PROFILE 'function yolo { claude --dangerously-skip-permissions @arg
         <h3>Claude plan tier</h3>
         <table class="ad-table">
             <tr><th>Plan</th><th>Price</th><th>Best for</th></tr>
-            <tr><td><strong>Pro</strong></td><td>$20/mo</td><td>Trying CoS — base limits, resets every 5–8h. Will hit limits within first week of real use.</td></tr>
-            <tr><td><strong>Max 5×</strong></td><td>$100/mo</td><td>The natural home for daily CoS use. 5× Pro limits, weekly reset.</td></tr>
+            <tr><td><strong>Pro</strong></td><td>$20/mo</td><td>Trying Agnes — base limits, resets every 5–8h. Will hit limits within first week of real use.</td></tr>
+            <tr><td><strong>Max 5×</strong></td><td>$100/mo</td><td>The natural home for daily Agnes use. 5× Pro limits, weekly reset.</td></tr>
             <tr><td><strong>Max 20×</strong></td><td>$200/mo</td><td>Heavy parallel work — multiple subagents, long sessions, power users.</td></tr>
         </table>
         <p>Subagents and long conversations burn through quota faster than quick questions. Treat it like a data plan: Pro is the trial, Max 5× is the real subscription.</p>

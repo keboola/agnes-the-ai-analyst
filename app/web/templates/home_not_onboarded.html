@@ -29,6 +29,9 @@ body:has(.home-mock) { background: #F9FAFB; }
     color: var(--hp-text-primary);
     font-size: 14px;
     line-height: 1.5;
+    /* Container padding-top is 0 so the hero owns its own top spacing.
+       Add it back here so the hero doesn't hug the site nav. */
+    padding-top: 24px;
 }
 .home-mock * { box-sizing: border-box; }
 
@@ -59,7 +62,6 @@ body:has(.home-mock) { background: #F9FAFB; }
 .home-mock .install-hero .lead {
     font-size: 15px;
     opacity: 0.94;
-    max-width: 680px;
     line-height: 1.6;
     margin-bottom: 22px;
 }
@@ -189,69 +191,6 @@ body:has(.home-mock) { background: #F9FAFB; }
     border-radius: 4px;
     font-family: var(--hp-font-mono);
     font-size: 11.5px;
-}
-
-.home-mock details.prereq-check {
-    margin-bottom: 14px;
-    padding: 12px 16px;
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-radius: 10px;
-    font-size: 13px;
-}
-.home-mock details.prereq-check > summary {
-    cursor: pointer;
-    list-style: none;
-    font-weight: 600;
-    color: var(--hp-text-primary);
-    user-select: none;
-}
-.home-mock details.prereq-check > summary::-webkit-details-marker { display: none; }
-.home-mock details.prereq-check > summary::before {
-    content: "▸ ";
-    color: var(--hp-primary);
-    margin-right: 4px;
-}
-.home-mock details.prereq-check[open] > summary::before { content: "▾ "; }
-.home-mock details.prereq-check p {
-    color: var(--hp-text-secondary);
-    margin-top: 8px;
-    line-height: 1.55;
-}
-.home-mock details.prereq-check .prereq-list {
-    list-style: none;
-    padding: 0;
-    margin: 8px 0;
-}
-.home-mock details.prereq-check .prereq-list li {
-    padding: 8px 0;
-    border-bottom: 1px solid var(--hp-border-light);
-    line-height: 1.55;
-    color: var(--hp-text-secondary);
-}
-.home-mock details.prereq-check .prereq-list li:last-child { border-bottom: none; }
-.home-mock details.prereq-check .prereq-list strong {
-    display: block;
-    color: var(--hp-text-primary);
-    margin-bottom: 2px;
-    font-size: 13px;
-}
-.home-mock details.prereq-check code {
-    font-family: var(--hp-font-mono);
-    font-size: 11.5px;
-    background: var(--hp-border-light);
-    padding: 1px 5px;
-    border-radius: 3px;
-    color: var(--hp-text-primary);
-}
-.home-mock details.prereq-check a { color: var(--hp-primary); }
-.home-mock details.prereq-check .prereq-note {
-    margin-top: 10px;
-    padding: 8px 12px;
-    background: var(--hp-primary-light);
-    border-radius: 6px;
-    color: var(--hp-text-primary);
-    font-size: 12.5px;
 }
 
 .home-mock .automode-card {
@@ -763,7 +702,7 @@ body:has(.home-mock) { background: #F9FAFB; }
         <div class="eyebrow">Welcome, {{ display_name }} — let's get you set up</div>
         <h1>{{ instance_name or "Agnes" }} is your team's AI workspace</h1>
         <p class="lead">
-            Two things live here:
+            <strong>{{ instance_name or "Agnes" }} is terminal-driven</strong> — you live in your terminal alongside Claude Code, not in a web app. This site is just where you set things up, browse plugins, and check what data is available; the work itself happens in Claude Code on your machine. Two things live here:
             <strong>a plugin marketplace</strong> with curated and community-built tools for Claude Code,
             and <strong>access to your team's curated data</strong>.
             To use any of it from your machine, you install Claude Code and Agnes once. Everything Agnes touches goes in a single folder: <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/Agnes</code>.
@@ -782,29 +721,6 @@ body:has(.home-mock) { background: #F9FAFB; }
             </a>
         </div>
 
-        <details class="prereq-check">
-            <summary>Before you start — Node.js 20+, Git, VS Code</summary>
-            <p>Claude Code runs on top of Node.js, uses Git for versioning your work, and feels best inside VS Code's split-terminal layout. Three quick installs (~3 minutes), all free, no sudo on most paths:</p>
-            <ul class="prereq-list">
-                <li>
-                    <strong>Node.js 20+</strong>
-                    macOS / Linux: <code>curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash &amp;&amp; nvm install --lts</code>.
-                    Windows: <code>winget install Schniz.fnm --scope user</code> then <code>fnm install --lts</code>.
-                    Verify: <code>node --version</code> shows v20+ or v22+.
-                </li>
-                <li>
-                    <strong>Git</strong>
-                    macOS: typing <code>git --version</code> in Terminal pops Xcode Command Line Tools — click Install.
-                    Linux: <code>sudo apt-get install -y git</code> / <code>sudo dnf install -y git</code> (most distros ship with it).
-                    Windows: <code>winget install Git.Git</code>.
-                </li>
-                <li>
-                    <strong>VS Code</strong>
-                    Free from <a href="https://code.visualstudio.com">code.visualstudio.com</a>. Open <code>~/Agnes</code> as a folder once installed (File → Open Folder…). Cmd+&#96; (Ctrl+&#96; on Windows) opens the built-in terminal.
-                </li>
-            </ul>
-            <p class="prereq-note">If you're not sure whether something's already installed, just paste this into Claude Code: <em>"Check if I have Node.js 20+, Git, and VS Code. Install whatever's missing, no sudo where avoidable."</em> Claude will verify each one and walk you through any missing piece.</p>
-        </details>
 
         <div class="install-block">
             <div class="label">Step 1 — install Claude Code</div>
