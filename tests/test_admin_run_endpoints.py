@@ -1,19 +1,17 @@
 """Admin run-* endpoints that wire the LLM pipeline into scheduler-v2.
 
-The scheduler container must drive corporate-memory, verification-detector,
-and session-collector through HTTP — see services/scheduler/__main__.py
+The scheduler container must drive corporate-memory, the session-pipeline
+processors, and session-collector through HTTP — see services/scheduler/__main__.py
 docstring for why in-process invocation is not safe (DuckDB single-writer
 contention with the long-lived app handle).
 
 Endpoints:
 - POST /api/admin/run-session-collector
-- POST /api/admin/run-verification-detector
+- POST /api/admin/run-session-processor?processor=<name>
 - POST /api/admin/run-corporate-memory
 
 All admin-gated. Request body is empty. Response is the underlying job
 stats dict.
-
-Closes one of five defects in #176.
 """
 
 from __future__ import annotations
@@ -79,39 +77,122 @@ class TestRunSessionCollector:
         assert "PermissionError" in params_json
 
 
-class TestRunVerificationDetector:
-    def test_admin_can_trigger_verification_detector(self, seeded_app, monkeypatch):
-        # Set the env so the factory's env-fallback returns a real (mocked
-        # at the SDK boundary) extractor without 500-ing on missing config.
+class TestRunSessionProcessor:
+    """Parametrized session-processor endpoint replaces the per-processor
+    /run-* endpoints. The scheduler invokes it once per registered processor
+    on its own cadence."""
+
+    def test_admin_can_trigger_verification(self, seeded_app, monkeypatch):
+        # Need an LLM key in env so build_verification_processor() doesn't
+        # raise during registry construction.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        # Reset the lazily-built registry so the new env is picked up.
+        from services.session_processors import _build_registry
+        _build_registry.cache_clear()
+
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         fake_stats = {
-            "sessions_scanned": 3,
-            "sessions_processed": 2,
-            "sessions_skipped": 1,
-            "verifications_extracted": 5,
-            "items_created": 4,
-            "errors": [],
+            "processor": "verification",
+            "scanned": 3, "processed": 2, "skipped": 1, "errors": 0,
+            "items_extracted": 4, "errors_detail": [],
         }
         with patch(
-            "services.verification_detector.detector.run",
+            "services.session_pipeline.runner.run_processor",
             return_value=fake_stats,
-        ) as m, patch(
-            "connectors.llm.factory.AnthropicExtractor"
-        ):
-            resp = c.post("/api/admin/run-verification-detector", headers=_auth(token))
+        ) as m, patch("connectors.llm.factory.AnthropicExtractor"):
+            resp = c.post(
+                "/api/admin/run-session-processor?processor=verification",
+                headers=_auth(token),
+            )
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["ok"] is True
-        assert body["details"]["items_created"] == 4
+        assert body["details"]["items_extracted"] == 4
         m.assert_called_once()
+
+    def test_admin_can_trigger_usage_skeleton(self, seeded_app):
+        """The usage processor is registered as a no-op skeleton — endpoint
+        should route to it without needing any LLM config."""
+        from services.session_processors import _build_registry
+        _build_registry.cache_clear()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_stats = {
+            "processor": "usage",
+            "scanned": 0, "processed": 0, "skipped": 0, "errors": 0,
+            "items_extracted": 0, "errors_detail": [],
+        }
+        with patch(
+            "services.session_pipeline.runner.run_processor",
+            return_value=fake_stats,
+        ) as m:
+            resp = c.post(
+                "/api/admin/run-session-processor?processor=usage",
+                headers=_auth(token),
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["ok"] is True
+        m.assert_called_once()
+
+    def test_unknown_processor_returns_400(self, seeded_app):
+        from services.session_processors import _build_registry
+        _build_registry.cache_clear()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/run-session-processor?processor=bogus",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "Unknown processor" in resp.json()["detail"]
 
     def test_non_admin_blocked(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
-        resp = c.post("/api/admin/run-verification-detector", headers=_auth(token))
+        resp = c.post(
+            "/api/admin/run-session-processor?processor=verification",
+            headers=_auth(token),
+        )
         assert resp.status_code == 403
+
+    def test_unhandled_exception_still_audits(self, seeded_app, monkeypatch):
+        """Mirror the run_session_collector / run_corporate_memory pattern —
+        record the failure in audit_log even when the runner raises so
+        /admin/scheduler-runs sees the failure instead of only docker logs."""
+        from src.db import get_system_db
+        from services.session_processors import _build_registry
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        _build_registry.cache_clear()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch(
+            "services.session_pipeline.runner.run_processor",
+            side_effect=RuntimeError("simulated DuckDB lock"),
+        ), patch("connectors.llm.factory.AnthropicExtractor"):
+            resp = c.post(
+                "/api/admin/run-session-processor?processor=verification",
+                headers=_auth(token),
+            )
+        assert resp.status_code == 500
+        assert "RuntimeError" in resp.json()["detail"]
+
+        conn = get_system_db()
+        try:
+            rows = conn.execute(
+                "SELECT params FROM audit_log "
+                "WHERE action = 'run_session_processor:verification' "
+                "ORDER BY timestamp DESC LIMIT 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "audit row missing on unhandled exception"
+        params_json = rows[0][0]
+        assert "unhandled_error" in params_json
+        assert "RuntimeError" in params_json
 
 
 class TestRunCorporateMemory:
@@ -192,7 +273,9 @@ class TestSchedulerJobsWireUp:
         names = {n for n, *_ in build_jobs()}
         assert "session-collector" in names
 
-    def test_scheduler_includes_verification_detector(self, monkeypatch):
+    def test_scheduler_includes_session_processors(self, monkeypatch):
+        """Post-refactor: the verification-detector + usage processors are
+        wired through the parametrized run-session-processor endpoint."""
         for v in (
             "SCHEDULER_DATA_REFRESH_INTERVAL",
             "SCHEDULER_HEALTH_CHECK_INTERVAL",
@@ -202,7 +285,8 @@ class TestSchedulerJobsWireUp:
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
         names = {n for n, *_ in build_jobs()}
-        assert "verification-detector" in names
+        assert "session-processor:verification" in names
+        assert "session-processor:usage" in names
 
     def test_scheduler_includes_corporate_memory(self, monkeypatch):
         for v in (
@@ -230,7 +314,7 @@ class TestSchedulerJobsWireUp:
         assert endpoint == "/api/admin/run-session-collector"
         assert method == "POST"
 
-    def test_verification_detector_endpoint_is_registered(self, monkeypatch):
+    def test_session_processor_endpoints_are_registered(self, monkeypatch):
         for v in (
             "SCHEDULER_DATA_REFRESH_INTERVAL",
             "SCHEDULER_HEALTH_CHECK_INTERVAL",
@@ -239,10 +323,13 @@ class TestSchedulerJobsWireUp:
         ):
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
-        target = next(j for j in build_jobs() if j[0] == "verification-detector")
-        _, _, endpoint, method, _t = target
-        assert endpoint == "/api/admin/run-verification-detector"
-        assert method == "POST"
+        jobs = {n: (endpoint, method) for n, _, endpoint, method, _ in build_jobs()}
+        assert jobs["session-processor:verification"] == (
+            "/api/admin/run-session-processor?processor=verification", "POST",
+        )
+        assert jobs["session-processor:usage"] == (
+            "/api/admin/run-session-processor?processor=usage", "POST",
+        )
 
     def test_corporate_memory_endpoint_is_registered(self, monkeypatch):
         for v in (
@@ -273,6 +360,10 @@ class TestSchedulerJobsWireUp:
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
         targets = {n: schedule for n, schedule, *_ in build_jobs()
-                   if n in ("session-collector", "verification-detector", "corporate-memory")}
+                   if n in (
+                       "session-collector",
+                       "session-processor:verification",
+                       "corporate-memory",
+                   )}
         # All three present.
         assert len(targets) == 3

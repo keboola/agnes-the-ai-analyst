@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -182,15 +182,19 @@ CREATE TABLE IF NOT EXISTS knowledge_item_relations (
 CREATE INDEX IF NOT EXISTS idx_knowledge_item_relations_resolved
     ON knowledge_item_relations(resolved);
 
--- v15: track which session JSONL files the verification detector has already
--- processed so re-runs over the same session dir are idempotent and the
--- detector can resume mid-batch on crash.
-CREATE TABLE IF NOT EXISTS session_extraction_state (
-    session_file VARCHAR PRIMARY KEY,
+-- v15→v29: state tracking for any session-pipeline processor (verification,
+-- usage, future extractors). Composite PK (processor_name, session_file) so
+-- each processor has its own independent processed-set keyed by jsonl path.
+-- file_hash invalidates state when a session jsonl grows (live append from
+-- an active Claude Code session) so processors reprocess the new content.
+CREATE TABLE IF NOT EXISTS session_processor_state (
+    processor_name VARCHAR NOT NULL,
+    session_file VARCHAR NOT NULL,
     username VARCHAR NOT NULL,
     processed_at TIMESTAMP DEFAULT current_timestamp,
     items_extracted INTEGER DEFAULT 0,
-    file_hash VARCHAR
+    file_hash VARCHAR,
+    PRIMARY KEY (processor_name, session_file)
 );
 
 -- v16: per-detection evidence rows — one knowledge_item can accumulate
@@ -1968,6 +1972,65 @@ _V27_TO_V28_MIGRATIONS = [
 ]
 
 
+# v29: rename session_extraction_state → session_processor_state with composite
+# PK (processor_name, session_file). The session pipeline framework
+# (services/session_pipeline/) lets multiple processors track their own
+# processed-set independently; each gets its own row keyed by name. Existing
+# rows belong to the verification detector, so they're copied across with
+# processor_name='verification'. The old single-PK table is dropped — its only
+# caller (services/verification_detector/detector.py) is rewritten in the same
+# PR to use the new repository.
+#
+# Implemented as a function rather than a SQL list because the INSERT-from-old
+# step depends on whether `session_extraction_state` actually exists. Fresh
+# installs at a pre-v29 schema_version (test fixtures hand-rolling a v19/v20
+# DB) come through `_SYSTEM_SCHEMA` which already creates
+# `session_processor_state` at the new shape — but does NOT create the old
+# `session_extraction_state` (we removed that). So the migration must skip
+# the copy + drop when the old table is missing rather than 500 on
+# CatalogException.
+_V28_TO_V29_CREATE_NEW_TABLE = """
+    CREATE TABLE IF NOT EXISTS session_processor_state (
+        processor_name VARCHAR NOT NULL,
+        session_file VARCHAR NOT NULL,
+        username VARCHAR NOT NULL,
+        processed_at TIMESTAMP DEFAULT current_timestamp,
+        items_extracted INTEGER DEFAULT 0,
+        file_hash VARCHAR,
+        PRIMARY KEY (processor_name, session_file)
+    )
+"""
+
+
+def _v28_to_v29_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """Run the v29 migration steps with conditional copy from the legacy table."""
+    conn.execute(_V28_TO_V29_CREATE_NEW_TABLE)
+
+    # Skip the copy + drop when the legacy table doesn't exist (fresh
+    # install or upgrade path that started at >= v29). Otherwise migrate
+    # rows over with processor_name='verification' (the only writer of the
+    # legacy table).
+    has_legacy = conn.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'main' AND table_name = 'session_extraction_state'"
+    ).fetchone()
+    if not has_legacy:
+        return
+
+    # INSERT OR IGNORE on the (processor_name, session_file) PK so a
+    # re-run idempotently no-ops if a verification row was already
+    # written at the new shape.
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO session_processor_state
+            (processor_name, session_file, username, processed_at, items_extracted, file_hash)
+        SELECT 'verification', session_file, username, processed_at, items_extracted, file_hash
+          FROM session_extraction_state
+        """
+    )
+    conn.execute("DROP TABLE session_extraction_state")
+
+
 # v24: rewrite materialized BQ source_query from DuckDB-flavor
 # (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
 # so the new connectors.bigquery.extractor.materialize_query wrapping
@@ -2230,6 +2293,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 28:
                 for sql in _V27_TO_V28_MIGRATIONS:
                     conn.execute(sql)
+            if current < 29:
+                _v28_to_v29_migrate(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -13,20 +13,19 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_28():
-    # v26 → v27: Keboola sync-strategy support columns on table_registry
-    # (incremental_window_days, max_history_days, incremental_column,
-    # where_filters, partition_by, partition_granularity,
-    # initial_load_chunk_days). Existing sync_strategy column reused;
-    # admins can opt specific tables back to query_mode='local' for the
-    # new dispatcher (incremental, partitioned, full_refresh + where_filters).
-    # v27 → v28 (this PR): explicit-install (Model B) for curated
-    # marketplace plugins. user_plugin_optouts row presence flips meaning
-    # from "excluded" to "subscribed"; the migration wipes existing rows
-    # so the inverted reading starts from a clean baseline. Also adds
+def test_schema_version_is_29():
+    # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
+    # user_plugin_optouts row presence flips meaning from "excluded" to
+    # "subscribed"; the migration wipes existing rows so the inverted
+    # reading starts from a clean baseline. Also adds
     # marketplace_plugins.created_at (per-plugin "newest first" sort on
     # /marketplace), backfilled from parent marketplace_registry.registered_at.
-    assert SCHEMA_VERSION == 28
+    # v28 → v29: session-pipeline framework. Renames session_extraction_state
+    # → session_processor_state with composite PK (processor_name,
+    # session_file) so multiple processors can track their own
+    # processed-set independently. Existing rows are copied across with
+    # processor_name='verification'; the old table is dropped.
+    assert SCHEMA_VERSION == 29
 
 
 def test_v20_adds_source_query(tmp_path):
