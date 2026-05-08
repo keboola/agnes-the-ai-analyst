@@ -1,16 +1,14 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - Data Analyst Portal</title>
-    {% if not config.THEME_FONT_URL %}
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    {% endif %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
-    <style>
+{% extends "base.html" %}
+
+{% block title %}Dashboard - {{ config.INSTANCE_NAME or 'Data Analyst Portal' }}{% endblock %}
+
+{% block head_extra %}
+{% if not config.THEME_FONT_URL %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+{% endif %}
+<style>
         /* ── Header ── */
         .header {
             background: var(--surface);
@@ -1259,86 +1257,12 @@
         }
         .setup-link-banner a:hover { text-decoration: underline; }
 
-        /* Error banner for setup flow */
-        .setup-error {
-            margin-top: 12px;
-            padding: 10px 14px;
-            background: rgba(234, 88, 12, 0.12);
-            border-left: 3px solid #EA580C;
-            border-radius: 6px;
-            color: #FFF;
-            font-size: 13px;
-        }
         .env-setup-cta .btn-setup[disabled] {
             opacity: 0.7;
             cursor: wait;
         }
-
-        /* Fallback modal (when clipboard is blocked) */
-        .setup-fallback-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.45);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-        }
-        .setup-fallback-modal {
-            background: var(--surface);
-            border-radius: 12px;
-            padding: 20px;
-            max-width: 720px;
-            width: calc(100% - 32px);
-            max-height: calc(100vh - 64px);
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            box-shadow: 0 20px 48px rgba(0, 0, 0, 0.3);
-        }
-        .setup-fallback-modal h4 {
-            margin: 0;
-            font-size: 15px;
-            color: var(--text-primary);
-        }
-        .setup-fallback-modal p {
-            margin: 0;
-            font-size: 13px;
-            color: var(--text-secondary);
-        }
-        .setup-fallback-modal textarea {
-            flex: 1;
-            min-height: 260px;
-            font-family: var(--font-mono);
-            font-size: 12px;
-            padding: 10px;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            background: var(--background);
-            color: var(--text-primary);
-            resize: vertical;
-        }
-        .setup-fallback-actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: 8px;
-        }
-        .setup-fallback-actions button {
-            font-family: var(--font-primary);
-            font-size: 13px;
-            font-weight: 500;
-            padding: 8px 16px;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-            background: var(--surface);
-            color: var(--text-primary);
-            cursor: pointer;
-        }
-        .setup-fallback-actions button.primary {
-            background: var(--primary);
-            color: #FFF;
-            border-color: var(--primary);
-        }
+        /* .setup-error + .setup-fallback-* styles now live in
+           templates/_claude_setup_cta.jinja so /home reuses them. */
 
         .btn-setup-secondary {
             font-family: var(--font-primary);
@@ -1913,13 +1837,9 @@
             }
         }
     </style>
-    {% include '_theme.html' %}
-</head>
-<body>
+{% endblock %}
 
-    <!-- ═══════════════ HEADER (shared partial) ═══════════════ -->
-    {% include '_app_header.html' %}
-
+{% block layout %}
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
     <div class="flash-messages">
@@ -2442,25 +2362,15 @@
     <footer class="footer">
         <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }}</p>
         </footer>
-    <script>
-    function copyToClipboard(text) {
-        if (navigator.clipboard && window.isSecureContext) {
-            return navigator.clipboard.writeText(text);
-        }
-        var ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        ta.style.top = '-9999px';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        return new Promise(function(resolve, reject) {
-            document.execCommand('copy') ? resolve() : reject();
-            document.body.removeChild(ta);
-        });
-    }
+    {# Setup-CTA JS (copyToClipboard, defaultTokenName, showSetupFallback,
+       setupNewClaude) + the SETUP_INSTRUCTIONS_TEMPLATE renderer all live
+       in the shared partial below. Both /dashboard and /home include it
+       so the clipboard payload, error handling, and fallback modal stay
+       in lockstep. The partial exposes copyToClipboard on window so the
+       copyCode / copyTermLine helpers below resolve it via global scope. #}
+    {% include "_claude_setup_cta.jinja" %}
 
+    <script>
     function copyCode(button, text) {
         var originalHTML = button.innerHTML;
         copyToClipboard(text).then(function() {
@@ -2482,114 +2392,6 @@
                 button.classList.remove('copied');
             }, 2000);
         });
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    // "Setup a new Claude Code" one-click flow
-    // ══════════════════════════════════════════════════════════════════
-    // Template + renderer included from _claude_setup_instructions.jinja
-    // so dashboard.html and install.html always render the same payload.
-    {% include "_claude_setup_instructions.jinja" %}
-
-    function defaultTokenName() {
-        var stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
-        return "Claude Code — " + stamp;
-    }
-
-    function showSetupFallback(instructions) {
-        // Clipboard blocked (non-secure context, permission denied, etc.).
-        // Show a modal with the instructions preselected so the user can Ctrl+C.
-        var overlay = document.createElement('div');
-        overlay.className = 'setup-fallback-overlay';
-        overlay.innerHTML =
-            '<div class="setup-fallback-modal" role="dialog" aria-modal="true" aria-labelledby="setupFallbackTitle">' +
-                '<h4 id="setupFallbackTitle">Copy these setup instructions</h4>' +
-                '<p>Your browser blocked automatic clipboard access. Select all, copy, then paste into Claude Code.</p>' +
-                '<textarea readonly></textarea>' +
-                '<div class="setup-fallback-actions">' +
-                    '<button type="button" data-action="close">Close</button>' +
-                    '<button type="button" class="primary" data-action="select">Select all</button>' +
-                '</div>' +
-            '</div>';
-        document.body.appendChild(overlay);
-        var ta = overlay.querySelector('textarea');
-        ta.value = instructions;
-        ta.focus();
-        ta.select();
-        overlay.addEventListener('click', function(ev) {
-            if (ev.target === overlay) { document.body.removeChild(overlay); }
-        });
-        overlay.querySelector('[data-action="close"]').addEventListener('click', function() {
-            document.body.removeChild(overlay);
-        });
-        overlay.querySelector('[data-action="select"]').addEventListener('click', function() {
-            ta.focus();
-            ta.select();
-        });
-    }
-
-    async function setupNewClaude(btn) {
-        var errEl = document.getElementById('setupClaudeError');
-        if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
-        var origText = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = 'Generating token…';
-        try {
-            var resp = await fetch('/auth/tokens', {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: defaultTokenName(),
-                    expires_in_days: 90,
-                }),
-            });
-            if (resp.status === 401) {
-                // Session expired mid-flight — bounce to login and come back.
-                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
-                return;
-            }
-            if (!resp.ok) {
-                var detail = 'HTTP ' + resp.status;
-                try {
-                    var body = await resp.json();
-                    if (body && body.detail) { detail = body.detail; }
-                } catch (_) { /* non-JSON */ }
-                throw new Error(detail);
-            }
-            var data = await resp.json();
-            if (!data || !data.token) {
-                throw new Error('Server did not return a token.');
-            }
-            var serverUrl = window.location.origin;
-            var instructions = renderSetupInstructions(serverUrl, data.token);
-
-            try {
-                await copyToClipboard(instructions);
-                btn.textContent = 'Copied! Paste into Claude Code';
-                btn.classList.add('copied');
-                setTimeout(function() {
-                    btn.textContent = origText;
-                    btn.classList.remove('copied');
-                    btn.disabled = false;
-                }, 3000);
-            } catch (clipErr) {
-                // Clipboard denied — fall back to modal. Re-enable the button immediately.
-                btn.textContent = origText;
-                btn.disabled = false;
-                showSetupFallback(instructions);
-            }
-            // Token is NOT stored in DOM after the modal closes / flash disappears.
-        } catch (err) {
-            btn.textContent = origText;
-            btn.disabled = false;
-            if (errEl) {
-                errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
-                errEl.style.display = 'block';
-            } else {
-                alert('Setup failed: ' + (err && err.message ? err.message : err));
-            }
-        }
     }
 
     async function updateSyncSettings() {
@@ -2721,6 +2523,4 @@
         }
     }
     </script>
-    {% include "_version_badge.html" %}
-</body>
-</html>
+{% endblock %}

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}News — {{ instance_name or "AI Data Analyst" }}{% endblock %}
+
+{% block head_extra %}
+<style>
+/* Page chrome only. The author-content vocabulary (callout, video-embed,
+   news-hero, news-grid-*, news-cta, table/code/pre overrides) lives in
+   app/web/static/style-custom.css under "News content vocabulary
+   (shared)" — editing it there updates /home, /news, and the admin
+   preview pane together. */
+
+body.news-page .container { max-width: 1280px; padding: 0 32px 48px; }
+body.news-page { background: #F9FAFB; }
+
+body.news-page main { color: #111827; line-height: 1.6; }
+
+body.news-page .news-card {
+    margin-top: 28px;
+    background: white;
+    border: 1px solid #E5E7EB;
+    border-radius: 12px;
+    padding: 32px 40px;
+}
+
+body.news-page .news-meta {
+    font-size: 12px;
+    color: #6B7280;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 16px;
+}
+
+body.news-page .news-intro {
+    font-size: 16px;
+    color: #374151;
+    line-height: 1.55;
+    margin-bottom: 22px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid #F3F4F6;
+}
+body.news-page .news-intro p { margin: 0 0 8px; }
+body.news-page .news-intro p:last-child { margin-bottom: 0; }
+
+body.news-page .news-empty {
+    text-align: center;
+    padding: 64px 24px;
+    color: #6B7280;
+}
+body.news-page .news-empty h2 {
+    margin-bottom: 8px;
+    color: #374151;
+}
+</style>
+<script>
+// Tag the body so the chrome rules above apply only on /news. The
+// author-content rules in style-custom.css are global by design.
+document.addEventListener('DOMContentLoaded', function () {
+    document.body.classList.add('news-page');
+});
+</script>
+{% endblock %}
+
+{% block content %}
+<div class="news-card">
+    {% if news %}
+    <div class="news-meta">
+        Version {{ news.version }} · published {{ news.published_at.strftime('%Y-%m-%d') if news.published_at else '' }}
+        {% if news.published_by %} by {{ news.published_by }}{% endif %}
+    </div>
+    {% if news.intro %}
+    <div class="news-intro">{{ news.intro | safe }}</div>
+    {% endif %}
+    <div class="news-content">{{ news.content | safe }}</div>
+    {% else %}
+    <div class="news-empty">
+        <h2>No news yet</h2>
+        <p>An admin hasn't published a news update on this instance yet. Check back soon — or, if you're an admin, head to <a href="/admin/news">/admin/news</a> to write the first one.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -13,20 +13,21 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_28():
-    # v26 → v27: Keboola sync-strategy support columns on table_registry
-    # (incremental_window_days, max_history_days, incremental_column,
-    # where_filters, partition_by, partition_granularity,
-    # initial_load_chunk_days). Existing sync_strategy column reused;
-    # admins can opt specific tables back to query_mode='local' for the
-    # new dispatcher (incremental, partitioned, full_refresh + where_filters).
-    # v27 → v28 (this PR): explicit-install (Model B) for curated
-    # marketplace plugins. user_plugin_optouts row presence flips meaning
-    # from "excluded" to "subscribed"; the migration wipes existing rows
-    # so the inverted reading starts from a clean baseline. Also adds
-    # marketplace_plugins.created_at (per-plugin "newest first" sort on
-    # /marketplace), backfilled from parent marketplace_registry.registered_at.
-    assert SCHEMA_VERSION == 28
+def test_schema_version_is_30():
+    # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
+    # user_plugin_optouts row presence flips meaning from "excluded" to
+    # "subscribed"; migration wipes existing rows so the inverted reading
+    # starts from a clean baseline. Also adds marketplace_plugins.created_at
+    # (per-plugin "newest first" sort on /marketplace), backfilled from
+    # parent marketplace_registry.registered_at.
+    # v28 → v29: /home page rollout — instance_templates singleton
+    # consolidation (welcome_template + claude_md_template merged) + new
+    # users.onboarded column. See tests/test_v29_home_migration.py for
+    # the exhaustive coverage of that step.
+    # v29 → v30: news_template — single versioned table for the /home
+    # news perex + /news permalink page. See
+    # tests/test_news_template_repository.py.
+    assert SCHEMA_VERSION == 30
 
 
 def test_v20_adds_source_query(tmp_path):
@@ -45,8 +46,14 @@ def test_v20_adds_source_query(tmp_path):
     conn.close()
 
 
-def test_v23_adds_claude_md_template(tmp_path):
-    """v23 must create the claude_md_template singleton table."""
+def test_claude_md_template_seeded_in_instance_templates(tmp_path):
+    """v23 introduced claude_md_template as a singleton table; v28 consolidates
+    it into instance_templates keyed 'claude_md'. Post-v28 the legacy table is
+    dropped — the canonical lookup is `instance_templates WHERE key='claude_md'`.
+
+    See tests/test_v28_migration.py for the migration path coverage. This test
+    just verifies the seeded row is present on a fresh install.
+    """
     db_path = tmp_path / "system.duckdb"
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
@@ -57,12 +64,16 @@ def test_v23_adds_claude_md_template(tmp_path):
             "WHERE table_schema = 'main'"
         ).fetchall()
     }
-    assert "claude_md_template" in tables, f"claude_md_template missing from {tables}"
+    assert "instance_templates" in tables
+    assert "claude_md_template" not in tables, (
+        "claude_md_template should be consolidated away post-v28"
+    )
 
-    # Singleton row seeded
-    row = conn.execute("SELECT id, content FROM claude_md_template WHERE id = 1").fetchone()
+    row = conn.execute(
+        "SELECT key, content FROM instance_templates WHERE key = 'claude_md'"
+    ).fetchone()
     assert row is not None
-    assert row[0] == 1
+    assert row[0] == "claude_md"
     assert row[1] is None  # default = no override
     conn.close()
 
@@ -95,7 +106,7 @@ def test_v19_db_migrates_to_v20(tmp_path):
 
     _ensure_schema(conn)
 
-    assert get_schema_version(conn) == SCHEMA_VERSION  # bumped 19→26 forward
+    assert get_schema_version(conn) == SCHEMA_VERSION  # bumped 19→28 forward
     cols = {
         r[0] for r in conn.execute(
             "SELECT column_name FROM information_schema.columns "

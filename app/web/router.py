@@ -21,13 +21,20 @@ from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
     get_instance_name, get_instance_subtitle, get_datasets,
-    get_theme, get_corporate_memory_config,
+    get_theme, get_corporate_memory_config, get_home_route,
+    get_gws_oauth_credentials, get_home_automode_visibility,
 )
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.users import UserRepository
 from src.repositories.profiles import ProfileRepository
+
+
+def _resolved_home_route() -> str:
+    """Lazy wrapper so tests/monkeypatch on env vars are honoured per-request."""
+    return get_home_route()
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["web"])
@@ -339,6 +346,19 @@ def _build_context(
         "session": _FlexDict({"user": user}) if user else _FlexDict(),
         "setup_instructions_lines": setup_instructions_lines,
         "server_url": ctx_server_url,
+        # Resolved per AGNES_HOME_ROUTE env > instance.home_route YAML >
+        # /dashboard. The shared navbar's "Dashboard" link uses this so a
+        # single env flip routes the primary nav target between /home
+        # (state-aware landing) and /dashboard (legacy table inventory).
+        "home_route": _resolved_home_route(),
+        # Pre-configured Google Workspace CLI OAuth client for the
+        # /home connector prompt. {} when unset → template falls back
+        # to manual `gws auth setup`. See app.instance_config docstring.
+        "gws_oauth": get_gws_oauth_credentials(),
+        # Whether /home renders the "Step 3 — turn on auto-accept mode"
+        # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
+        # for cautious rollouts; same content stays on /setup-advanced.
+        "home_automode": {"show": get_home_automode_visibility()},
     }
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
@@ -352,7 +372,8 @@ def _build_context(
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, user: Optional[dict] = Depends(get_optional_user)):
     if user:
-        return RedirectResponse(url="/dashboard", status_code=302)
+        from app.instance_config import get_home_route
+        return RedirectResponse(url=get_home_route(), status_code=302)
     return RedirectResponse(url="/login", status_code=302)
 
 
@@ -372,13 +393,13 @@ async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depen
 async def login_page(request: Request):
     from app.auth.dependencies import is_local_dev_mode, _get_local_dev_user
     if is_local_dev_mode():
-        # Only short-circuit to /dashboard if the dev user is actually seeded.
-        # Otherwise the 401 from /dashboard would bounce back to /login and loop.
+        # Only short-circuit to the home route if the dev user is actually
+        # seeded. Otherwise a 401 there would bounce back to /login and loop.
         from src.db import get_system_db
         conn = get_system_db()
         try:
             if _get_local_dev_user(conn):
-                return RedirectResponse(url="/dashboard", status_code=302)
+                return RedirectResponse(url=get_home_route(), status_code=302)
         finally:
             conn.close()
         # Fall through to the normal login form so the missing-seed error is visible.
@@ -523,6 +544,116 @@ async def dashboard(
         user_knowledge_stats={"authored": 0, "votes_given": 0},
     )
     return templates.TemplateResponse(request, "dashboard.html", ctx)
+
+
+@router.get("/home", response_class=HTMLResponse)
+async def home_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """State-aware /home — full inline install for not-onboarded users,
+    clean nav hub once onboarded. The boolean drives template selection;
+    no auto-transition (manual reload picks up the flip after
+    ``agnes init`` POSTs ``/api/me/onboarded``).
+
+    See origin: docs/brainstorms/home-page-requirements.md.
+    """
+    row = conn.execute(
+        "SELECT onboarded FROM users WHERE id = ?", [user["id"]]
+    ).fetchone()
+    onboarded = bool(row[0]) if row else False
+
+    # Pull the latest published news intro for the bottom-of-page section.
+    # Template renders the section only when intro is non-empty, so an
+    # instance that has never published news shows nothing extra.
+    from src.repositories.news_template import NewsTemplateRepository
+    news = NewsTemplateRepository(conn).get_current_published()
+    news_intro = news["intro"] if (news and news.get("intro")) else ""
+
+    # Single template renders both states. The post-onboarding view keeps
+    # the install-steps + connector prompts + auto-mode card visible —
+    # they stay relevant for adding a second machine, a missing connector,
+    # or re-running auto-mode setup. Hero copy + the self-mark control
+    # branch on the boolean. The legacy `home_onboarded.html` is kept on
+    # disk for a release as a fallback but no route renders it.
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        onboarded=onboarded,
+        is_admin=is_user_admin(user["id"], conn),
+        news_intro=news_intro,
+    )
+    return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
+
+
+@router.get("/news", response_class=HTMLResponse)
+async def news_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Permalink page for the latest published news. Renders empty-state
+    copy when no version is published. Authed-only (same as /home).
+    """
+    from src.repositories.news_template import NewsTemplateRepository
+    news = NewsTemplateRepository(conn).get_current_published()
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+        news=news,
+    )
+    return templates.TemplateResponse(request, "news.html", ctx)
+
+
+@router.get("/admin/news", response_class=HTMLResponse)
+async def admin_news_editor(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Admin authoring surface — current published banner, draft editor,
+    versions table. JS hits the /api/admin/news/* endpoints for the
+    write paths."""
+    from src.repositories.news_template import NewsTemplateRepository
+    repo = NewsTemplateRepository(conn)
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=True,
+        news_current=repo.get_current_published(),
+        news_draft=repo.get_active_draft(),
+        news_versions=repo.list_versions(limit=50),
+    )
+    return templates.TemplateResponse(request, "admin/news_editor.html", ctx)
+
+
+@router.get("/setup-advanced", response_class=HTMLResponse)
+async def setup_advanced_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Advanced setup reference — VS Code layout, recommended plugins,
+    multi-model second opinions, custom skills, cost guidance.
+
+    Pulls the deeper Chief-of-Stuff guide content out of /home so /home
+    stays scannable for first-hour onboarding. Linked from /home's
+    "Want to look around first?" explore card and from any deep-link
+    anchors emitted by other pages (e.g. /home's auto-mode block points
+    at #yolo).
+    """
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+    )
+    return templates.TemplateResponse(request, "setup_advanced.html", ctx)
 
 
 @router.get("/catalog", response_class=HTMLResponse)

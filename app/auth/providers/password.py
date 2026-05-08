@@ -254,7 +254,11 @@ async def password_login_web(
         logger.exception("Unexpected error during web password verification for %s", email)
         return RedirectResponse(url="/login/password?err=auth_internal", status_code=302)
 
-    target = next if (next.startswith("/") and not next.startswith("//")) else "/dashboard"
+    if next.startswith("/") and not next.startswith("//"):
+        target = next
+    else:
+        from app.instance_config import get_home_route
+        target = get_home_route()
     response = RedirectResponse(url=target, status_code=302)
     _set_login_cookie(response, user["id"], user["email"])
     return response
@@ -528,6 +532,7 @@ async def setup_confirm(
         updates["name"] = name.strip()
     repo.update(id=user["id"], **updates)
 
-    response = RedirectResponse(url="/dashboard", status_code=302)
+    from app.instance_config import get_home_route
+    response = RedirectResponse(url=get_home_route(), status_code=302)
     _set_login_cookie(response, user["id"], user["email"])
     return response

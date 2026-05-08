@@ -1,0 +1,248 @@
+{# Shared "Setup a new Claude Code" behaviour.
+
+   Provides the JS + CSS that drives any page's "Setup a new Claude Code"
+   button. The button itself is rendered by the consuming page (because
+   each page wraps it in its own card chrome — dashboard's blue CTA card,
+   /home's hero, /install's section). The contract is:
+
+   - A button with `onclick="setupNewClaude(this)"` and ideally id
+     `setupClaudeBtn` so the visible-state transitions read sensibly.
+   - Optional `<div id="setupClaudeError">` for inline error reporting.
+     If absent, errors fall back to `alert()`.
+
+   The clipboard payload is single-sourced through
+   `_claude_setup_instructions.jinja` (preview_mode=False), which emits
+   `SETUP_INSTRUCTIONS_TEMPLATE` + `renderSetupInstructions(server, token)`.
+
+   Pages that ALSO render the read-only preview (e.g. via
+   `{% include "_claude_setup_instructions.jinja" %}` with preview_mode=True
+   in their own template tree) just show the same lines under
+   `<pre class="setup-preview-pre">`. The JS here doesn't touch that pre.
+#}
+<style>
+.setup-fallback-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.setup-fallback-modal {
+    background: var(--surface, #fff);
+    border-radius: 12px;
+    padding: 20px;
+    max-width: 720px;
+    width: calc(100% - 32px);
+    max-height: calc(100vh - 64px);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.3);
+}
+.setup-fallback-modal h4 {
+    margin: 0;
+    font-size: 15px;
+    color: var(--text-primary, #111827);
+}
+.setup-fallback-modal p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary, #6B7280);
+}
+.setup-fallback-modal textarea {
+    flex: 1;
+    min-height: 260px;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Consolas, monospace);
+    font-size: 12px;
+    padding: 10px;
+    border: 1px solid var(--border, #E5E7EB);
+    border-radius: 8px;
+    background: var(--background, #F9FAFB);
+    color: var(--text-primary, #111827);
+    resize: vertical;
+}
+.setup-fallback-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.setup-fallback-actions button {
+    font-family: var(--font-primary, "Inter", -apple-system, BlinkMacSystemFont, sans-serif);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border, #E5E7EB);
+    background: var(--surface, #fff);
+    color: var(--text-primary, #111827);
+    cursor: pointer;
+}
+.setup-fallback-actions button.primary {
+    background: var(--primary, #0073D1);
+    color: #FFF;
+    border-color: var(--primary, #0073D1);
+}
+
+.setup-error {
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: rgba(234, 88, 12, 0.12);
+    border-left: 3px solid #EA580C;
+    border-radius: 6px;
+    color: #FFF;
+    font-size: 13px;
+}
+</style>
+
+<script>
+(function () {
+    if (window.__setupCtaWired) return;
+    window.__setupCtaWired = true;
+
+    {% include "_claude_setup_instructions.jinja" %}
+
+    function copyToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        return new Promise(function (resolve, reject) {
+            document.execCommand('copy') ? resolve() : reject();
+            document.body.removeChild(ta);
+        });
+    }
+
+    function defaultTokenName() {
+        var stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+        return "Claude Code — " + stamp;
+    }
+
+    function showSetupFallback(instructions) {
+        var overlay = document.createElement('div');
+        overlay.className = 'setup-fallback-overlay';
+        overlay.innerHTML =
+            '<div class="setup-fallback-modal" role="dialog" aria-modal="true" aria-labelledby="setupFallbackTitle">' +
+                '<h4 id="setupFallbackTitle">Copy these setup instructions</h4>' +
+                '<p>Your browser blocked automatic clipboard access. Select all, copy, then paste into Claude Code.</p>' +
+                '<textarea readonly></textarea>' +
+                '<div class="setup-fallback-actions">' +
+                    '<button type="button" data-action="close">Close</button>' +
+                    '<button type="button" class="primary" data-action="select">Select all</button>' +
+                '</div>' +
+            '</div>';
+        document.body.appendChild(overlay);
+        var ta = overlay.querySelector('textarea');
+        ta.value = instructions;
+        ta.focus();
+        ta.select();
+        overlay.addEventListener('click', function (ev) {
+            if (ev.target === overlay) { document.body.removeChild(overlay); }
+        });
+        overlay.querySelector('[data-action="close"]').addEventListener('click', function () {
+            document.body.removeChild(overlay);
+        });
+        overlay.querySelector('[data-action="select"]').addEventListener('click', function () {
+            ta.focus();
+            ta.select();
+        });
+    }
+
+    async function setupNewClaude(btn) {
+        var errEl = document.getElementById('setupClaudeError');
+        if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+        var origText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Generating token…';
+        try {
+            var resp = await fetch('/auth/tokens', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: defaultTokenName(),
+                    expires_in_days: 90,
+                }),
+            });
+            if (resp.status === 401) {
+                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                return;
+            }
+            if (!resp.ok) {
+                var detail = 'HTTP ' + resp.status;
+                try {
+                    var body = await resp.json();
+                    if (body && body.detail) { detail = body.detail; }
+                } catch (_) { /* non-JSON */ }
+                throw new Error(detail);
+            }
+            var data = await resp.json();
+            if (!data || !data.token) {
+                throw new Error('Server did not return a token.');
+            }
+            var serverUrl = window.location.origin;
+            var instructions = renderSetupInstructions(serverUrl, data.token);
+
+            // Replace the inline preview's placeholder with the real token so
+            // users can see what got copied (and re-copy by hand if the
+            // clipboard write failed). The placeholder span lives inside the
+            // shared `_claude_setup_instructions.jinja` preview-mode block;
+            // not every page renders that block, so guard for absence.
+            var placeholders = document.querySelectorAll('.placeholder-token');
+            placeholders.forEach(function (span) {
+                span.textContent = data.token;
+                span.classList.remove('placeholder-token');
+                span.classList.add('token-revealed');
+                span.setAttribute(
+                    'aria-label',
+                    'Generated personal access token — already copied to your clipboard'
+                );
+                // Intentionally do NOT auto-open the parent <details>. The
+                // primary path is "Copied! Paste into Claude Code"; the
+                // manual-paste preview is a secondary affordance and should
+                // stay collapsed unless the user opens it themselves.
+            });
+
+            try {
+                await copyToClipboard(instructions);
+                btn.textContent = 'Copied! Paste into Claude Code';
+                btn.classList.add('copied');
+                setTimeout(function () {
+                    btn.textContent = origText;
+                    btn.classList.remove('copied');
+                    btn.disabled = false;
+                }, 3000);
+            } catch (clipErr) {
+                btn.textContent = origText;
+                btn.disabled = false;
+                showSetupFallback(instructions);
+            }
+        } catch (err) {
+            btn.textContent = origText;
+            btn.disabled = false;
+            if (errEl) {
+                errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
+                errEl.style.display = 'block';
+            } else {
+                alert('Setup failed: ' + (err && err.message ? err.message : err));
+            }
+        }
+    }
+
+    // Expose globally so inline onclick handlers can reach them.
+    window.copyToClipboard = copyToClipboard;
+    window.defaultTokenName = defaultTokenName;
+    window.showSetupFallback = showSetupFallback;
+    window.setupNewClaude = setupNewClaude;
+    window.renderSetupInstructions = renderSetupInstructions;
+    window.SETUP_INSTRUCTIONS_TEMPLATE = SETUP_INSTRUCTIONS_TEMPLATE;
+})();
+</script>

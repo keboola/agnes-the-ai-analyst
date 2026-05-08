@@ -14,9 +14,9 @@ from src.db import SCHEMA_VERSION, _V26_TO_V27_MIGRATIONS
 
 def test_schema_version_constant_is_at_least_27():
     # v27 is the first version where Keboola sync-strategy columns exist.
-    # The repo may have moved past v27 (e.g. v28 added Model B opt-in for
-    # curated marketplace plugins); this test only guards that v27 has
-    # landed, not the exact current version.
+    # SCHEMA_VERSION may have advanced past 27 (e.g. v28 added Model B
+    # opt-in for curated marketplace plugins; v29 added /home + onboarded;
+    # v30 added news_template). Pin lower bound, not an exact match.
     assert SCHEMA_VERSION >= 27
 
 

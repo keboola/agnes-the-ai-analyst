@@ -524,6 +524,31 @@ Customer-specific automation, hostnames, and identities live in private infra re
 
 **If you find yourself opening a PR without a CHANGELOG entry, stop and add one before requesting review.** Reviewers should bounce PRs that touch user-visible behavior without a changelog update — same way they'd bounce a PR with no test changes for new logic.
 
+## Run tests before every push — non-negotiable
+
+**Before `git push`, run the full pytest suite locally.** CI runs the same command (`.github/workflows/ci.yml:29` → `pytest tests/ -v --tb=short -n auto`); a failure that surfaces in CI was discoverable in 90 seconds locally. Pushing first and watching CI fail wastes operator time, slows the PR, and trains everyone to ignore CI badges.
+
+**Command (matches CI):**
+
+```bash
+.venv/bin/pytest tests/ --tb=short -n auto -q
+```
+
+`-n auto` parallelizes across CPU cores; the suite runs in ~90s on a modern laptop. Local-only env (no `instance.yaml`, dev defaults) is fine — fixtures use `fresh_db` per-test isolation.
+
+**When tests fail:**
+- **Failures in code you touched** → fix before pushing. Update test expectations when the behavior change is intentional and documented (e.g. template restructure that changes assertion strings).
+- **Failures unrelated to your diff** → confirm with `git stash && pytest <failing-test> && git stash pop`. If they reproduce on a clean branch, they are pre-existing — note them in the PR body but don't block your push on them. Don't silently skip; flag them so someone owns the fix.
+- **Flaky tests** → re-run once. Two consecutive failures = real failure, fix or quarantine with a tracked issue.
+
+**Smoke shortcuts (when full suite is too slow during iteration):**
+- `pytest tests/ -k <pattern> -q` for area-scoped checks while iterating
+- `pytest tests/test_X.py tests/test_Y.py -q` for the modules you touched
+
+But the **full** `pytest tests/ -n auto` runs once before push. No exceptions.
+
+If a CHANGELOG entry, doc edit, or pure-formatting commit genuinely doesn't touch any code path the tests exercise, you can skip the full run — but be honest with yourself about whether that's actually the case.
+
 ## Git Commits & Pull Requests
 
 - Keep commit messages clean and concise

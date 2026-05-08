@@ -10,10 +10,17 @@
     </div>
     <div class="app-header-right">
         {% set _path = request.url.path %}
-        <a class="app-nav-link {% if _path == '/dashboard' or _path == '/' %}is-active{% endif %}" href="/dashboard">Dashboard</a>
+        {% set _home = home_route or '/dashboard' %}
+        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Dashboard</a>
+        {# Setup-local-agent nav link hidden when /home is the active landing —
+           the not-onboarded /home view already carries the full install flow,
+           the one-click setup CTA, and the connector prompts. /setup itself
+           still works for direct deep-links and admin-override editing. #}
+        {% if _home != '/home' %}
         <a class="app-nav-link {% if _path.startswith('/setup') or _path.startswith('/install') %}is-active{% endif %}" href="/setup">Setup local agent</a>
         <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
         <a class="app-nav-link {% if _path.startswith('/my-ai-stack') %}is-active{% endif %}" href="/marketplace?tab=my">My Stack</a>
+        {% endif %}
         {% if session.user.is_admin %}
         {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/scheduler-runs') %}
         <div class="app-nav-menu" id="adminNavMenu">
