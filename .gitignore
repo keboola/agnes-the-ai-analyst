@@ -1,6 +1,9 @@
 # Claude Code
 .claude/
 
+# Git worktrees (parallel Claude Code sessions)
+.worktrees/
+
 # Local dev data (copied from server for testing)
 dev_data/
 session-analysis/
