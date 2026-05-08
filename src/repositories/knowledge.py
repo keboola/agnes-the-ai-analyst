@@ -420,33 +420,6 @@ class KnowledgeRepository:
         ).fetchall()
         return self._rows_to_dicts(results)
 
-    # --- Session Extraction State ---
-
-    def mark_session_processed(
-        self,
-        session_file: str,
-        username: str,
-        items_extracted: int = 0,
-        file_hash: Optional[str] = None,
-    ) -> None:
-        now = datetime.now(timezone.utc)
-        self.conn.execute(
-            """INSERT INTO session_extraction_state (session_file, username, processed_at, items_extracted, file_hash)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (session_file) DO UPDATE
-            SET processed_at = excluded.processed_at,
-                items_extracted = excluded.items_extracted,
-                file_hash = excluded.file_hash""",
-            [session_file, username, now, items_extracted, file_hash],
-        )
-
-    def is_session_processed(self, session_file: str) -> bool:
-        result = self.conn.execute(
-            "SELECT 1 FROM session_extraction_state WHERE session_file = ?",
-            [session_file],
-        ).fetchone()
-        return result is not None
-
     # --- Item relations (duplicate-candidate hints, etc.) ---
 
     @staticmethod

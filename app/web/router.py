@@ -1449,7 +1449,8 @@ async def admin_marketplaces_page(
 # those endpoints, add the matching action strings to this list.
 SCHEDULER_AUDIT_ACTIONS = [
     "run_session_collector",
-    "run_verification_detector",
+    "run_session_processor:verification",
+    "run_session_processor:usage",
     "run_corporate_memory",
     "marketplace.sync_all",
 ]
@@ -1615,11 +1616,11 @@ async def profile_sessions_page(
     """User-self-view of own uploaded sessions and their extraction state.
 
     Walks `${DATA_DIR}/user_sessions/<user_id>/*.jsonl` for the caller's
-    own user_id, joins each file against `session_extraction_state` to
-    surface processed_at + items_extracted, and renders a table.
-    Items_extracted = 0 means the verification_detector ran but the LLM
-    found no claims worth tracking — that's the documented "no items"
-    outcome; it does NOT mean the pipeline is broken.
+    own user_id, joins each file against the verification processor's
+    rows in `session_processor_state` to surface processed_at + items_extracted,
+    and renders a table. Items_extracted = 0 means the verification processor
+    ran but the LLM found no claims worth tracking — that's the documented
+    "no items" outcome; it does NOT mean the pipeline is broken.
     """
     import pathlib
     user_id = user["id"]
@@ -1653,8 +1654,9 @@ async def profile_sessions_page(
         placeholders = ",".join("?" for _ in keys)
         rows = conn.execute(
             f"""SELECT session_file, processed_at, items_extracted, file_hash
-                FROM session_extraction_state
-                WHERE session_file IN ({placeholders})""",
+                FROM session_processor_state
+                WHERE processor_name = 'verification'
+                  AND session_file IN ({placeholders})""",
             keys,
         ).fetchall()
         cols = [d[0] for d in conn.description]

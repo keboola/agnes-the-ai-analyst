@@ -336,7 +336,11 @@ class TestAdminRoleGuards:
         r = web_client.get("/admin/scheduler-runs", cookies=admin_cookie, follow_redirects=False)
         assert r.status_code == 200
         assert b"run_session_collector" in r.content
-        assert b"run_verification_detector" in r.content
+        # Post-refactor: per-processor audit actions instead of one
+        # run_verification_detector. Both processors are wired in
+        # SCHEDULER_AUDIT_ACTIONS.
+        assert b"run_session_processor:verification" in r.content
+        assert b"run_session_processor:usage" in r.content
         assert b"run_corporate_memory" in r.content
         # Devin Review on e86dd5ed: list must use the actual logged action
         # string, not a guess.

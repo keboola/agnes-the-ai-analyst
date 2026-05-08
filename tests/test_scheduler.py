@@ -425,7 +425,7 @@ class TestLLMPipelineCadenceEnvVars:
         from services.scheduler.__main__ import build_jobs
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
         assert jobs["session-collector"]     == "every 10m"
-        assert jobs["verification-detector"] == "every 15m"
+        assert jobs["session-processor:verification"] == "every 15m"
         assert jobs["corporate-memory"]      == "every 17m"
 
     def test_session_collector_env_override_changes_cadence(self, monkeypatch) -> None:
@@ -435,7 +435,7 @@ class TestLLMPipelineCadenceEnvVars:
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
         assert jobs["session-collector"] == "every 5m"
         # Other LLM jobs must be unaffected.
-        assert jobs["verification-detector"] == "every 15m"
+        assert jobs["session-processor:verification"] == "every 15m"
         assert jobs["corporate-memory"]      == "every 17m"
 
     def test_verification_detector_env_override_changes_cadence(self, monkeypatch) -> None:
@@ -443,7 +443,7 @@ class TestLLMPipelineCadenceEnvVars:
         monkeypatch.setenv("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL", "600")  # 10m
         from services.scheduler.__main__ import build_jobs
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        assert jobs["verification-detector"] == "every 10m"
+        assert jobs["session-processor:verification"] == "every 10m"
         assert jobs["session-collector"] == "every 10m"
         assert jobs["corporate-memory"]  == "every 17m"
 
@@ -454,7 +454,7 @@ class TestLLMPipelineCadenceEnvVars:
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
         assert jobs["corporate-memory"]      == "every 30m"
         assert jobs["session-collector"]     == "every 10m"
-        assert jobs["verification-detector"] == "every 15m"
+        assert jobs["session-processor:verification"] == "every 15m"
 
     @pytest.mark.parametrize("var", [
         "SCHEDULER_SESSION_COLLECTOR_INTERVAL",
@@ -484,7 +484,7 @@ class TestVerificationDetectorGraceFollowsCadence:
         # operator who throttles the detector for any reason (rate-limit,
         # cost, debugging) gets a proportionally wider staleness window
         # automatically — no second knob to forget.
-        assert jobs["verification-detector"] == "every 10m"
+        assert jobs["session-processor:verification"] == "every 10m"
         assert _verification_detector_grace_seconds() == 2 * 600
 
     def test_grace_uses_default_cadence_when_env_unset(self, monkeypatch) -> None:

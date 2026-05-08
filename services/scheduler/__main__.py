@@ -80,7 +80,13 @@ _DEFAULTS = {
     # staleness grace window in app/api/health.py — single env var drives
     # both, so an operator changing the cadence moves both.
     "SCHEDULER_SESSION_COLLECTOR_INTERVAL":     10 * 60,
+    # Drives the verification session-processor cadence AND the
+    # health-check staleness grace window in app/api/health.py
+    # (single env var → both, so an operator changing the cadence moves
+    # both). Name retained post session-pipeline refactor for operator
+    # compatibility — existing docker-compose env files keep working.
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL": 15 * 60,
+    "SCHEDULER_USAGE_PROCESSOR_INTERVAL":       10 * 60,
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL":      17 * 60,
 }
 
@@ -139,9 +145,10 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     scripts = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
     sess    = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
     verify  = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
+    usage   = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
     corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
     tick    = _read_positive_int("SCHEDULER_TICK_SECONDS")
-    smallest = min(refresh, health, scripts, sess, verify, corpmem)
+    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem)
     if tick > smallest:
         raise ValueError(
             f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
@@ -161,7 +168,14 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # single source of truth for the health-check staleness grace
         # window in app/api/health.py (which uses 2x the cadence).
         ("session-collector",     _seconds_to_schedule(sess),    "/api/admin/run-session-collector",     "POST", 300),
-        ("verification-detector", _seconds_to_schedule(verify),  "/api/admin/run-verification-detector", "POST", 900),
+        # session-pipeline processors — independent loops, each invoked on
+        # its own cadence via the parametrized run-session-processor endpoint.
+        # Adding a third processor in the future is one line here + one entry
+        # in services/session_processors/__init__.py registry.
+        ("session-processor:verification", _seconds_to_schedule(verify),
+            "/api/admin/run-session-processor?processor=verification", "POST", 900),
+        ("session-processor:usage",        _seconds_to_schedule(usage),
+            "/api/admin/run-session-processor?processor=usage",        "POST", 300),
         ("corporate-memory",      _seconds_to_schedule(corpmem), "/api/admin/run-corporate-memory",      "POST", 900),
     ]
 

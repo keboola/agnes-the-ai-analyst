@@ -1,11 +1,12 @@
 """Health-check coverage for the session pipeline (#176).
 
 GET /api/health/detailed must surface a `session_pipeline` service entry
-that warns when freshly-uploaded session jsonls aren't being processed.
+that warns when freshly-uploaded session jsonls aren't being processed
+by the verification processor.
 
 Heuristic:
   max(mtime of /data/user_sessions/**/*.jsonl) <=
-  max(processed_at in session_extraction_state) + grace
+  max(processed_at in session_processor_state where processor='verification') + grace
 
 Where grace = 2 * scheduler verification-detector cadence (default 15m).
 
@@ -29,15 +30,15 @@ def _auth(token: str) -> dict:
 
 
 def _seed_extraction_state(processed_at: datetime, session_file: str = "/data/user_sessions/x/y.jsonl"):
-    """Insert a synthetic row into session_extraction_state."""
+    """Insert a synthetic verification-processor state row."""
     from src.db import get_system_db
 
     conn = get_system_db()
     conn.execute(
-        "INSERT OR REPLACE INTO session_extraction_state "
-        "(session_file, username, processed_at, items_extracted, file_hash) "
-        "VALUES (?, ?, ?, ?, ?)",
-        [session_file, "x", processed_at, 0, "deadbeef"],
+        "INSERT OR REPLACE INTO session_processor_state "
+        "(processor_name, session_file, username, processed_at, items_extracted, file_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ["verification", session_file, "x", processed_at, 0, "deadbeef"],
     )
     conn.close()
 
@@ -97,7 +98,7 @@ class TestSessionPipelineHealthCheck:
         assert body["status"] == "degraded"
 
     def test_session_files_never_processed_returns_warning(self, seeded_app):
-        """Files exist but session_extraction_state is empty → warning."""
+        """Files exist but verification has no rows in session_processor_state → warning."""
         env = seeded_app["env"]
         _make_session_file(env["data_dir"], "neverprocessed.jsonl", mtime_ago_seconds=7200)
 
