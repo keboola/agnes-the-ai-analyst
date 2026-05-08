@@ -12,8 +12,12 @@ import pytest
 from src.db import SCHEMA_VERSION, _V26_TO_V27_MIGRATIONS
 
 
-def test_schema_version_constant_is_27():
-    assert SCHEMA_VERSION == 27
+def test_schema_version_constant_is_at_least_27():
+    # v27 is the first version where Keboola sync-strategy columns exist.
+    # The repo may have moved past v27 (e.g. v28 added Model B opt-in for
+    # curated marketplace plugins); this test only guards that v27 has
+    # landed, not the exact current version.
+    assert SCHEMA_VERSION >= 27
 
 
 def test_migrations_add_seven_columns(tmp_path):
