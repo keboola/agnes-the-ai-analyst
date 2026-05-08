@@ -10,6 +10,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **News content CSS consolidated into `app/web/static/style-custom.css`** —
+  the `.callout`, `.video-embed`, `.news-grid-2/3`, `.news-cta`,
+  `.news-section`, plus `.news-content`-scoped `<table>` / `<pre>` /
+  `<code>` / `<blockquote>` styling now live in a single block under
+  "News content vocabulary (shared)" instead of duplicated inline
+  in `home_not_onboarded.html` and `news.html`. Editing those rules
+  in one place updates `/home` perex, `/news` body, and the
+  `/admin/news` preview together.
+- **Code-inside-`<pre>` contrast fix** — inline `<code>` rule (light
+  gray pill, dark text) was inheriting into `<pre><code>` blocks and
+  producing the unreadable "amber-on-silver" combo. New
+  `.news-content pre code { background: transparent; color: inherit }`
+  resets the inner `<code>` so the dark-navy block + amber text scheme
+  actually applies.
+- **Tables in `.news-content`** got proper styling — bordered, header
+  band, row-hover, rounded outer corners — replacing the unstyled
+  default that landed alongside the news feature.
+
+### Added
+- **`.news-hero` reusable block** — blue-gradient highlight with
+  eyebrow + title + lead, same vocabulary the `/home` install hero
+  uses. Authors drop `<section class="news-hero">…</section>` to
+  recreate the landing-page look in news content. Documented in
+  `docs/operator/news-content-guide.md`.
+
 ### Added
 - **News section on `/home` + `/news` permalink + `/admin/news` editor** —
   admin-edited rich content (intro shown at the bottom of `/home`, full

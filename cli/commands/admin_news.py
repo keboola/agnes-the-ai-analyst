@@ -65,10 +65,13 @@ def _load_from_file(path: str) -> tuple[str, str]:
         text = sys.stdin.read()
     else:
         text = Path(path).read_text(encoding="utf-8")
+    # Try YAML first (it is a superset of JSON). Fall back to JSON only
+    # for YAMLError to avoid swallowing unrelated exceptions like
+    # ImportError or KeyboardInterrupt.
+    import yaml
     try:
-        import yaml
         data = yaml.safe_load(text)
-    except Exception:  # pragma: no cover — fall back to JSON
+    except yaml.YAMLError:
         data = json.loads(text)
     if not isinstance(data, dict):
         raise typer.BadParameter("file must contain a mapping with `intro` and `content` keys")

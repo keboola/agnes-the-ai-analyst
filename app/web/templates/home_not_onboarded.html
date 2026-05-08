@@ -751,58 +751,10 @@
 .home-mock .home-news-body p { margin: 0 0 8px; }
 .home-mock .home-news-body p:last-child { margin-bottom: 0; }
 
-/* Callout vocabulary — used inside .home-news-body and /news content.
-   Authors apply these classes via the documented HTML examples; the
-   sanitizer permits `class` on <div>/<span>/<p>/<h*>/<table>. */
-.home-mock .callout,
-body.news-page .callout {
-    border-left: 4px solid var(--hp-primary);
-    background: var(--hp-primary-light);
-    padding: 10px 14px;
-    border-radius: 6px;
-    margin: 10px 0;
-    color: var(--hp-text-primary);
-}
-.home-mock .callout-info,
-body.news-page .callout-info {
-    border-left-color: #0073D1;
-    background: #E6F3FC;
-}
-.home-mock .callout-warn,
-body.news-page .callout-warn {
-    border-left-color: #C2410C;
-    background: #FED7AA;
-}
-.home-mock .callout-success,
-body.news-page .callout-success {
-    border-left-color: #047857;
-    background: #D1FAE5;
-}
-.home-mock .callout-danger,
-body.news-page .callout-danger {
-    border-left-color: #B91C1C;
-    background: #FEE2E2;
-}
-
-/* 16:9 wrapper for YouTube/Vimeo/Loom iframes. Author writes:
-   <div class="video-embed"><iframe src="..."></iframe></div> */
-.home-mock .video-embed,
-body.news-page .video-embed {
-    position: relative;
-    padding-bottom: 56.25%;
-    height: 0;
-    overflow: hidden;
-    border-radius: 8px;
-    margin: 12px 0;
-    background: black;
-}
-.home-mock .video-embed iframe,
-body.news-page .video-embed iframe {
-    position: absolute;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
-    border: 0;
-}
+/* Callout, video-embed, news-hero, news-grid-*, news-cta — shared news
+   content vocabulary now lives in app/web/static/style-custom.css under
+   "News content vocabulary (shared)". Editing those rules in one place
+   updates /home perex, /news, and /admin/news preview together. */
 
 .home-mock .install-done code {
     background: rgba(15, 23, 42, 0.55);

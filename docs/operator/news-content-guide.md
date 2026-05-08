@@ -69,7 +69,19 @@ The `class` attribute is permitted only on the structural tags listed; it's used
 
 ## Documented class vocabulary
 
-Use these classes via copy-and-edit. They render consistently on `/home` (perex) and `/news` (full body).
+Use these classes via copy-and-edit. They render consistently on `/home` (perex) and `/news` (full body). The CSS lives in one place: `app/web/static/style-custom.css` under "News content vocabulary (shared)" — editing it there updates `/home`, `/news`, and the `/admin/news` preview pane together.
+
+### Hero block — landing-page-style highlight
+
+Blue-gradient block with eyebrow line, title, and a one-line lead. Same vocabulary the `/home` install hero uses; surfaced as `div.news-hero` so news authors can recreate the look without reaching into `/home`-specific selectors. Use sparingly — at most one per news entity, usually at the top.
+
+```html
+<section class="news-hero">
+  <div class="eyebrow">Release · v0.40</div>
+  <h2>News section is live</h2>
+  <p class="lead">A reusable hero block for landing-page-style highlights — eyebrow + heading + one-line lead in the brand-blue gradient.</p>
+</section>
+```
 
 ### Callouts — boxed notice with colored left border
 
