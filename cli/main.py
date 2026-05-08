@@ -26,6 +26,7 @@ if sys.platform == "win32":
 
 from cli.commands.auth import auth_app
 from cli.commands.init import init_app
+from cli.commands.onboarded import onboarded_app
 from cli.commands.pull import pull_app
 from cli.commands.push import push_app
 from cli.commands.refresh_marketplace import refresh_marketplace_app
@@ -110,6 +111,7 @@ def _maybe_warn_outdated() -> None:
 # Register subcommands
 app.add_typer(auth_app, name="auth")
 app.add_typer(init_app, name="init")
+app.add_typer(onboarded_app, name="onboarded")
 app.add_typer(pull_app, name="pull")
 app.add_typer(push_app, name="push")
 app.add_typer(refresh_marketplace_app, name="refresh-marketplace")
