@@ -718,28 +718,32 @@
    they live on /news where the layout has more room. */
 .home-mock .home-news {
     margin-top: 28px;
-    padding: 22px 24px;
     background: white;
     border: 1px solid var(--hp-border);
     border-radius: 12px;
+    overflow: hidden;     /* keep the green strip's corners rounded */
 }
 .home-mock .home-news-head {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    margin-bottom: 10px;
     gap: 16px;
+    padding: 12px 22px;
+    background: #D1FAE5;          /* same green as .callout-success */
+    border-bottom: 1px solid #A7F3D0;
 }
 .home-mock .home-news-head h2 {
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: #047857;               /* darker green for contrast on the band */
     margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
 }
 .home-mock .home-news-more {
     font-size: 13px;
     font-weight: 500;
-    color: var(--hp-primary);
+    color: #047857;
     text-decoration: none;
 }
 .home-mock .home-news-more:hover { text-decoration: underline; }
@@ -747,6 +751,7 @@
     font-size: 14px;
     line-height: 1.55;
     color: var(--hp-text-primary);
+    padding: 18px 22px;
 }
 .home-mock .home-news-body p { margin: 0 0 8px; }
 .home-mock .home-news-body p:last-child { margin-bottom: 0; }
@@ -1091,7 +1096,7 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
     <p class="look-around-lead">You don't need Agnes installed locally to browse what's available. Anything you bookmark or subscribe to will be there waiting after you set Agnes up.</p>
 
     <div class="what-is look-around-grid">
-        <a class="what-is-item" href="/store">
+        <a class="what-is-item" href="/marketplace">
             <span class="ico">&#x1F9E9;</span>
             <div class="ttl">Plugin marketplace <span class="arrow">&rarr;</span></div>
             <div class="desc">Curated and community-built plugins for Claude Code — Asana, Jira, Google Workspace, and more. Browse, install, sync.</div>

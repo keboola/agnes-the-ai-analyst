@@ -11,18 +11,22 @@
     <div class="app-header-right">
         {% set _path = request.url.path %}
         {% set _home = home_route or '/dashboard' %}
-        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Dashboard</a>
-        {# Setup-local-agent nav link hidden when /home is the active landing —
-           the not-onboarded /home view already carries the full install flow,
-           the one-click setup CTA, and the connector prompts. /setup itself
-           still works for direct deep-links and admin-override editing. #}
-        {% if _home != '/home' %}
-        <a class="app-nav-link {% if _path.startswith('/setup') or _path.startswith('/install') %}is-active{% endif %}" href="/setup">Setup local agent</a>
-        <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
-        <a class="app-nav-link {% if _path.startswith('/my-ai-stack') %}is-active{% endif %}" href="/marketplace?tab=my">My Stack</a>
-        {% endif %}
+        {# Primary nav: Home → Marketplace → Data Packages → Memory.
+           Activity Center moved into the Admin dropdown — its content
+           is per-team adoption analytics that only admins consume in
+           practice (the route still allows any authed user for
+           direct deep-links). The "Home" link points at the
+           operator-resolved `home_route` (defaults to /dashboard for
+           OSS; customer instances flip to /home via env / yaml).
+           Setup local agent + My Stack used to live in the nav too;
+           Setup is reached from /home's install flow and My Stack
+           lives inside /marketplace as a tab. #}
+        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Home</a>
+        <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') or _path.startswith('/my-ai-stack') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
+        <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog">Data Packages</a>
+        <a class="app-nav-link {% if _path.startswith('/corporate-memory') %}is-active{% endif %}" href="/corporate-memory">Memory</a>
         {% if session.user.is_admin %}
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/scheduler-runs') %}
+        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/activity') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
@@ -44,6 +48,7 @@
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Agent Setup Prompt</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Agent Workspace Prompt</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/scheduler-runs') %}is-active{% endif %}" role="menuitem" href="/admin/scheduler-runs">Scheduler runs</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/activity') %}is-active{% endif %}" role="menuitem" href="/activity-center">Activity center</a>
             </div>
         </div>
         {% endif %}
