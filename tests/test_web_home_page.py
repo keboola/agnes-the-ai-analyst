@@ -102,6 +102,74 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
     assert "Step 2 — install Agnes from inside Claude Code" not in body
 
 
+def test_step3_and_connectors_render_flat_when_onboarded_by_default(fresh_db):
+    """Step 3 + Connect-your-tools sections must NOT auto-collapse on the
+    server-side `users.onboarded=TRUE` flip. They render flat (in <details
+    open>) by default; only an explicit user click on the in-hero
+    "Minimize setup view" toggle (persisted in localStorage, not server)
+    activates the collapsed bar layout."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=True)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    resp = c.get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    body = resp.text
+    # The full Step 3 + Connect-your-tools content is in the body.
+    assert 'class="automode-card"' in body
+    assert 'class="connector-tiles"' in body
+    # Each section is wrapped in <details open> so the body is visible
+    # without a click. The summary is rendered but CSS-hidden until
+    # the page-level data-setup-minimized="1" attribute is set.
+    assert 'class="setup-collapsible" data-section="step3" open' in body
+    assert 'class="setup-collapsible" data-section="connectors" open' in body
+    # Server-rendered HTML never carries the data-setup-minimized
+    # attribute on the .home-mock root — that's a client-side
+    # localStorage decision applied via JS on load. The token still
+    # appears in inline CSS selectors and the JS body, which is fine.
+    assert '<div class="home-mock" data-setup-minimized' not in body
+    assert 'class="home-mock"\n' in body or '<div class="home-mock">' in body
+
+
+def test_minimize_toggle_visible_only_when_onboarded(fresh_db):
+    """The "Minimize setup view" toggle markup is rendered for onboarded
+    users (so they can opt into the collapsed view) and absent for
+    not-onboarded users (where the install steps already dominate)."""
+    from src.db import get_system_db, close_system_db
+
+    # Not-onboarded → no toggle button.
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+    c = _client()
+    resp = c.get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    assert '<button id="setupMinimizeToggle"' not in resp.text
+    assert 'class="setup-minimize"' not in resp.text
+
+    # Onboarded → toggle button rendered inside the install-hero.
+    conn = get_system_db()
+    try:
+        _, sess2 = _make_user_and_session(conn, email="b@example.com", onboarded=True)
+    finally:
+        conn.close()
+        close_system_db()
+    c2 = _client()
+    resp2 = c2.get("/home", cookies={"access_token": sess2})
+    assert resp2.status_code == 200
+    assert '<button id="setupMinimizeToggle"' in resp2.text
+    assert 'class="setup-minimize"' in resp2.text
+
+
 def test_home_no_auto_transition_after_post_until_reload(fresh_db):
     """POST /api/me/onboarded flips the flag in the DB but the in-flight
     /home response from before the POST keeps showing the setup view —
