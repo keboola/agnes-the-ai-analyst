@@ -1,0 +1,1215 @@
+{% extends "base.html" %}
+
+{% block title %}Setup — {{ instance_name or "AI Data Analyst" }}{% endblock %}
+
+{% block content %}
+{% include "_page_chrome.html" %}
+<style>
+.home-mock {
+    --hp-primary: #0073D1;
+    --hp-primary-dark: #0056A3;
+    --hp-primary-light: #E6F3FC;
+    --hp-border: #E5E7EB;
+    --hp-border-light: #F3F4F6;
+    --hp-text-primary: #111827;
+    --hp-text-secondary: #6B7280;
+    --hp-text-muted: #9CA3AF;
+    --hp-orange: #C2410C;
+    --hp-orange-light: #FED7AA;
+    --hp-font-mono: ui-monospace, "SF Mono", Consolas, monospace;
+    color: var(--hp-text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+}
+.home-mock * { box-sizing: border-box; }
+
+.home-mock .install-hero {
+    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    color: white;
+    border-radius: 16px;
+    padding: 38px 40px;
+    margin-bottom: 22px;
+    box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
+}
+.home-mock .install-hero .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    opacity: 0.85;
+    margin-bottom: 10px;
+}
+.home-mock .install-hero h1 {
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.4px;
+    margin-bottom: 12px;
+    line-height: 1.2;
+    color: white;
+}
+.home-mock .install-hero .lead {
+    font-size: 15px;
+    opacity: 0.94;
+    line-height: 1.6;
+    margin-bottom: 22px;
+}
+.home-mock .install-hero .lead strong { font-weight: 600; }
+
+.home-mock .what-is {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+    margin-bottom: 18px;
+}
+.home-mock .what-is-item {
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    color: inherit;
+    text-decoration: none;
+    display: block;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.home-mock a.what-is-item:hover {
+    border-color: var(--hp-primary);
+    box-shadow: 0 4px 12px rgba(0, 115, 209, 0.10);
+    transform: translateY(-1px);
+}
+.home-mock .what-is-item .ico { font-size: 22px; margin-bottom: 8px; display: block; }
+.home-mock .what-is-item .ttl {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--hp-text-primary);
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.home-mock .what-is-item .ttl .arrow {
+    color: var(--hp-primary);
+    font-weight: 600;
+    transition: transform 0.15s ease;
+}
+.home-mock a.what-is-item:hover .ttl .arrow {
+    transform: translateX(2px);
+}
+.home-mock .what-is-item .desc {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    line-height: 1.55;
+}
+
+.home-mock .look-around-lead {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    line-height: 1.55;
+    margin: -4px 0 12px;
+}
+.home-mock .look-around-grid {
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    margin-bottom: 22px;
+}
+
+.home-mock .connector-tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+    margin-bottom: 26px;
+}
+.home-mock .connector-tile {
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 20px 22px;
+    display: flex;
+    flex-direction: column;
+}
+.home-mock .connector-tile .ico {
+    font-size: 24px;
+    margin-bottom: 10px;
+    line-height: 1;
+}
+.home-mock .connector-tile .ttl {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--hp-text-primary);
+    margin-bottom: 6px;
+}
+.home-mock .connector-tile .desc {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    line-height: 1.55;
+    margin-bottom: 14px;
+    flex: 1;
+}
+.home-mock .connector-tile .connector-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.home-mock .connector-tile .connector-copy {
+    align-self: flex-start;
+}
+
+.home-mock .install-block {
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 12px;
+    padding: 18px 20px;
+}
+.home-mock .install-block + .install-block { margin-top: 14px; }
+.home-mock .os-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+.home-mock .os-tab {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.60);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 8px 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    font-family: inherit;
+}
+.home-mock .os-tab:hover { color: rgba(255, 255, 255, 0.85); }
+.home-mock .os-tab.is-active {
+    color: white;
+    border-bottom-color: #FBBF24;
+}
+/* `[hidden]` UA stylesheet has lower specificity than `.install-cmd { display: flex }`,
+   so we need an explicit override to actually hide the inactive tab panel. */
+.home-mock .install-cmd[hidden] { display: none; }
+.home-mock .install-block .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    opacity: 0.78;
+    margin-bottom: 10px;
+    font-weight: 600;
+}
+.home-mock .install-cmd {
+    background: #0F172A;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-family: var(--hp-font-mono);
+    font-size: 13.5px;
+    color: #FBBF24;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+.home-mock .install-cmd .multiline { display: block; line-height: 1.7; white-space: pre-wrap; flex: 1; }
+.home-mock .install-cmd .copy-btn {
+    background: rgba(255, 255, 255, 0.10);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+.home-mock .install-cmd .copy-btn:hover { background: rgba(255, 255, 255, 0.18); }
+
+.home-mock .install-note {
+    font-size: 12.5px;
+    color: rgba(255, 255, 255, 0.85);
+    margin-top: 12px;
+    line-height: 1.55;
+}
+.home-mock .install-note code,
+.home-mock .install-note > code {
+    background: rgba(255, 255, 255, 0.12);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+}
+
+.home-mock .automode-card {
+    margin: 22px 0;
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 18px 22px;
+}
+.home-mock .automode-head {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    margin-bottom: 14px;
+}
+.home-mock .automode-head .ico {
+    font-size: 22px;
+    flex-shrink: 0;
+    line-height: 1;
+}
+.home-mock .automode-head h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--hp-text-primary);
+}
+.home-mock .automode-head p {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    line-height: 1.55;
+    margin: 0;
+}
+.home-mock .automode-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+}
+.home-mock .automode-step {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px;
+    background: var(--hp-border-light);
+    border-radius: 8px;
+}
+.home-mock .automode-step .num {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--hp-primary-light);
+    color: var(--hp-primary);
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 11px;
+}
+.home-mock .automode-step .step-text {
+    flex: 1;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--hp-text-secondary);
+}
+.home-mock .automode-step .step-text strong {
+    display: block;
+    color: var(--hp-text-primary);
+    margin-bottom: 4px;
+    font-size: 13px;
+}
+.home-mock .automode-step kbd {
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-family: var(--hp-font-mono);
+    color: var(--hp-text-primary);
+}
+.home-mock .automode-step code {
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+    background: white;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--hp-text-primary);
+    border: 1px solid var(--hp-border);
+}
+.home-mock .automode-code {
+    background: #0F172A;
+    color: #FBBF24;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-top: 6px;
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre;
+}
+.home-mock .automode-foot {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--hp-border-light);
+    font-size: 12px;
+    color: var(--hp-text-secondary);
+    line-height: 1.5;
+}
+.home-mock .automode-foot a { color: var(--hp-primary); text-decoration: underline; }
+.home-mock .automode-foot code {
+    font-family: var(--hp-font-mono);
+    font-size: 11px;
+    background: var(--hp-border-light);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
+.home-mock .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--hp-text-secondary);
+    margin: 30px 0 12px;
+}
+
+.home-mock .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin-bottom: 18px;
+}
+.home-mock .card {
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 22px;
+}
+.home-mock .card h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.home-mock .card p { font-size: 13px; color: var(--hp-text-secondary); line-height: 1.55; margin-bottom: 12px; }
+.home-mock .card-list { list-style: none; padding: 0; margin: 0; }
+.home-mock .card-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 0;
+    font-size: 13px;
+    border-bottom: 1px solid var(--hp-border-light);
+}
+.home-mock .card-list li:last-child { border-bottom: none; }
+.home-mock .card-list .num {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--hp-primary-light);
+    color: var(--hp-primary);
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 11px;
+}
+.home-mock .card-list .step-text { flex: 1; line-height: 1.55; }
+.home-mock .card-list .step-text strong { display: block; margin-bottom: 2px; }
+.home-mock .card-list .step-text code,
+.home-mock .card-mini-cmd code {
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+    background: var(--hp-border-light);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--hp-text-primary);
+}
+
+.home-mock .card-mini-cmd {
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: #0F172A;
+    color: #FBBF24;
+    border-radius: 6px;
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+.home-mock .card-mini-cmd code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    flex: 1;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.home-mock .connector-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.home-mock .connector-head strong {
+    display: inline;
+    margin-bottom: 0;
+}
+.home-mock .connector-copy {
+    background: var(--hp-primary);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    flex-shrink: 0;
+}
+.home-mock .connector-copy:hover { background: var(--hp-primary-dark); }
+.home-mock .connector-copy.copied { background: #047857; }
+.home-mock details.connector-preview {
+    margin-top: 6px;
+}
+.home-mock details.connector-preview > summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 11.5px;
+    color: var(--hp-text-secondary);
+    padding: 2px 0;
+    user-select: none;
+}
+.home-mock details.connector-preview > summary::-webkit-details-marker { display: none; }
+.home-mock details.connector-preview > summary::before {
+    content: "▸ ";
+    margin-right: 2px;
+}
+.home-mock details.connector-preview[open] > summary::before { content: "▾ "; }
+.home-mock details.connector-preview > summary:hover { color: var(--hp-text-primary); }
+.home-mock details.connector-preview .card-mini-cmd { margin-top: 6px; }
+
+.home-mock .explore-list { list-style: none; padding: 0; margin: 0; }
+.home-mock .explore-list li + li { margin-top: 8px; }
+.home-mock .explore-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    background: var(--hp-border-light);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--hp-text-primary);
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.home-mock .explore-item:hover {
+    border-color: var(--hp-primary);
+    background: var(--hp-primary-light);
+}
+.home-mock .explore-item .ico {
+    font-size: 22px;
+    flex-shrink: 0;
+    width: 28px;
+    text-align: center;
+}
+.home-mock .explore-item .explore-text {
+    flex: 1;
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    line-height: 1.45;
+}
+.home-mock .explore-item .explore-text strong {
+    display: block;
+    color: var(--hp-text-primary);
+    font-size: 13.5px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.home-mock .explore-item .arrow {
+    color: var(--hp-primary);
+    font-size: 16px;
+    flex-shrink: 0;
+    font-weight: 600;
+}
+
+.home-mock .advanced-pointer {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 10px;
+    padding: 16px 22px;
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-left: 4px solid var(--hp-primary);
+    border-radius: 12px;
+    text-decoration: none;
+    color: inherit;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.home-mock .advanced-pointer:hover {
+    background: var(--hp-primary-light);
+    border-color: var(--hp-primary);
+}
+.home-mock .advanced-pointer .ico {
+    font-size: 22px;
+    flex-shrink: 0;
+    line-height: 1;
+}
+.home-mock .advanced-pointer-text {
+    flex: 1;
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    line-height: 1.55;
+}
+.home-mock .advanced-pointer-text strong {
+    display: block;
+    color: var(--hp-text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.home-mock .advanced-pointer .arrow {
+    color: var(--hp-primary);
+    font-size: 16px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.home-mock .setup-cta-lead {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.82);
+    margin-bottom: 14px;
+    line-height: 1.55;
+}
+.home-mock .setup-cta-lead code {
+    background: rgba(255, 255, 255, 0.12);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+}
+.home-mock .setup-cta-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+}
+.home-mock .btn-setup-primary {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--hp-primary);
+    background: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 22px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+    transition: background 0.15s ease;
+}
+.home-mock .btn-setup-primary:hover { background: #F0F7FF; }
+.home-mock .btn-setup-primary.copied { background: #047857; color: #fff; }
+.home-mock .btn-setup-primary[disabled] { opacity: 0.7; cursor: wait; }
+.home-mock .setup-cta-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.home-mock .setup-cta-hint {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.65);
+}
+.home-mock details.manual-fallback {
+    margin-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.10);
+    padding-top: 12px;
+}
+.home-mock details.manual-fallback > summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 12.5px;
+    color: rgba(255, 255, 255, 0.78);
+    padding: 4px 0;
+    user-select: none;
+}
+.home-mock details.manual-fallback > summary::-webkit-details-marker { display: none; }
+.home-mock details.manual-fallback > summary::before {
+    content: "▸ ";
+    display: inline-block;
+    transition: transform 0.15s ease;
+    margin-right: 4px;
+}
+.home-mock details.manual-fallback[open] > summary::before { content: "▾ "; }
+.home-mock .manual-preview-wrap { margin-top: 10px; }
+.home-mock .manual-preview-wrap .setup-preview-pre {
+    background: #0F172A;
+    color: #E2E8F0;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: var(--hp-font-mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
+/* Override the global `code { background: var(--bg); }` rule so the inner
+   <code> renders white-on-navy instead of dark-on-pale (unreadable). */
+.home-mock .manual-preview-wrap .setup-preview-pre code,
+.home-mock .manual-preview-wrap .setup-preview-code {
+    background: transparent;
+    color: #E2E8F0;
+    padding: 0;
+    border-radius: 0;
+    font-family: inherit;
+    font-size: inherit;
+}
+.home-mock .manual-preview-wrap .placeholder-token {
+    background: rgba(251, 191, 36, 0.20);
+    color: #FBBF24;
+    padding: 0 4px;
+    border-radius: 3px;
+    font-style: italic;
+}
+.home-mock .manual-preview-wrap .token-revealed {
+    background: rgba(16, 185, 129, 0.18);
+    color: #6EE7B7;
+    padding: 0 4px;
+    border-radius: 3px;
+    font-style: normal;
+    word-break: break-all;
+}
+
+/* In-hero (dark) variant: shown for not-onboarded users underneath the
+   inline install steps inside the blue hero. */
+.home-mock .self-mark {
+    margin-top: 16px;
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.85);
+}
+.home-mock .self-mark button {
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.30);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    margin-left: 6px;
+}
+.home-mock .self-mark button:hover { background: rgba(255, 255, 255, 0.25); }
+.home-mock .self-mark button:disabled { opacity: 0.5; cursor: default; }
+.home-mock .self-mark .status { margin-left: 10px; font-style: italic; }
+
+/* Onboarded "steps complete" badge — shown inside the blue hero in
+   place of the hidden Step 1 + Step 2 install-blocks. */
+.home-mock .install-done {
+    margin-top: 4px;
+    margin-bottom: 4px;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 10px;
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 13px;
+    line-height: 1.55;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+.home-mock .install-done .check {
+    font-size: 16px;
+    line-height: 1.3;
+    flex-shrink: 0;
+}
+.home-mock .install-done strong { font-weight: 600; color: white; }
+
+/* News perex (admin-edited) — bottom of /home.
+   Keeps the styling within the admin-defined class vocabulary
+   (callout, video-embed) so authors get a predictable surface.
+   Full-width grid classes are intentionally NOT included here —
+   they live on /news where the layout has more room. */
+.home-mock .home-news {
+    margin-top: 28px;
+    padding: 22px 24px;
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+}
+.home-mock .home-news-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    gap: 16px;
+}
+.home-mock .home-news-head h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--hp-text-primary);
+    margin: 0;
+}
+.home-mock .home-news-more {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--hp-primary);
+    text-decoration: none;
+}
+.home-mock .home-news-more:hover { text-decoration: underline; }
+.home-mock .home-news-body {
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--hp-text-primary);
+}
+.home-mock .home-news-body p { margin: 0 0 8px; }
+.home-mock .home-news-body p:last-child { margin-bottom: 0; }
+
+/* Callout, video-embed, news-hero, news-grid-*, news-cta — shared news
+   content vocabulary now lives in app/web/static/style-custom.css under
+   "News content vocabulary (shared)". Editing those rules in one place
+   updates /home perex, /news, and /admin/news preview together. */
+
+.home-mock .install-done code {
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--hp-font-mono);
+    font-size: 12px;
+    color: #FBBF24;
+}
+</style>
+
+<div class="home-mock">
+
+    {% set display_name = (user.name or (user.email or "").split("@")[0] or "there") %}
+
+    <div class="install-hero">
+        {% if onboarded %}
+        <div class="eyebrow">Welcome back, {{ display_name }} — your workspace is ready</div>
+        <h1>You're set up — keep this page handy</h1>
+        <p class="lead">
+            Your local Agnes install is confirmed. The steps below stay useful for <strong>adding another machine</strong>, <strong>connecting more services</strong>, or <strong>turning on auto-accept mode</strong>. Skip whatever you don't need; nothing here re-runs unless you click it.
+        </p>
+        {% else %}
+        <div class="eyebrow">Welcome, {{ display_name }} — let's get you set up</div>
+        <h1>{{ instance_name or "Agnes" }} is your team's AI workspace</h1>
+        <p class="lead">
+            <strong>{{ instance_name or "Agnes" }} is terminal-driven</strong> — you live in your terminal alongside Claude Code, not in a web app. This site is just where you set things up, browse plugins, and check what data is available; the work itself happens in Claude Code on your machine. Two things live here:
+            <strong>a plugin marketplace</strong> with curated and community-built tools for Claude Code,
+            and <strong>access to your team's curated data</strong>.
+            To use any of it from your machine, you install Claude Code and Agnes once. Everything Agnes touches goes in a single folder: <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/Agnes</code>.
+        </p>
+        {% endif %}
+
+        {% if onboarded %}
+        <div class="install-done" role="status" aria-live="polite">
+            <span class="check" aria-hidden="true">&#x2705;</span>
+            <span><strong>Step 1 &amp; Step 2 done</strong> — Claude Code is installed and Agnes finished setting up <code>~/Agnes</code>. The full install steps stay one click away under the offboard control below.</span>
+        </div>
+        {% endif %}
+
+        {% if not onboarded %}
+        <div class="install-block">
+            <div class="label">Step 1 — install Claude Code</div>
+            <div class="os-tabs" role="tablist" aria-label="Operating system">
+                <button type="button" role="tab" class="os-tab is-active"
+                        data-os-tab="unix" aria-selected="true">macOS / Linux / WSL</button>
+                <button type="button" role="tab" class="os-tab"
+                        data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
+            </div>
+            <div class="install-cmd" role="tabpanel" data-os-panel="unix">
+                <span class="multiline" id="install-cmd-claude-unix">curl -fsSL https://claude.ai/install.sh | bash</span>
+                <button class="copy-btn" data-copy-target="install-cmd-claude-unix">Copy</button>
+            </div>
+            <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
+                <span class="multiline" id="install-cmd-claude-windows">irm https://claude.ai/install.ps1 | iex</span>
+                <button class="copy-btn" data-copy-target="install-cmd-claude-windows">Copy</button>
+            </div>
+            <div class="install-note">
+                Verify with <code>claude --version</code>. Sign in once with <code>claude</code> and complete the OAuth flow.
+            </div>
+        </div>
+
+        <div class="install-block">
+            <div class="label">Step 2 — install Agnes from inside Claude Code</div>
+            <p class="setup-cta-lead">
+                Click the button — Agnes mints a 90-day personal access token, copies a ready-to-paste setup script to your clipboard, and the script bootstraps everything in <code>~/Agnes</code> when you paste it into Claude Code.
+            </p>
+            <div class="setup-cta-row">
+                <button type="button" id="setupClaudeBtn" class="btn-setup-primary" onclick="setupNewClaude(this)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    Setup a new Claude Code
+                </button>
+                <span class="setup-cta-meta">
+                    <span class="setup-cta-hint">Valid 90 days · token stays in clipboard only</span>
+                </span>
+            </div>
+            <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
+
+            <details class="manual-fallback">
+                <summary>Or paste manually (preview the script)</summary>
+                <div class="manual-preview-wrap">
+                    {% with preview_mode=True %}
+                    {% include "_claude_setup_instructions.jinja" %}
+                    {% endwith %}
+                </div>
+                <div class="install-note">
+                    The preview above is the exact text the button copies; the placeholder is replaced with a real token at click time. Don't create <code>~/Agnes/Projects/</code> manually — the bundled plugin offers to set it up after install.
+                </div>
+            </details>
+
+        </div>
+        {% endif %}
+
+        {# Self-mark control lives inside the blue hero in both states.
+           When onboarded, the install steps above are hidden so this is
+           the only thing rendered below the lead paragraph. #}
+        <div class="self-mark">
+            {% if onboarded %}
+            Wiped your workspace or want the full setup view back?
+            <button id="self-mark-btn" type="button"
+                    data-target-onboarded="false"
+                    data-target-source="self_unmark">Mark me as offboarded</button>
+            {% else %}
+            Already set this up?
+            <button id="self-mark-btn" type="button"
+                    data-target-onboarded="true"
+                    data-target-source="self_acknowledged">Mark me as onboarded</button>
+            {% endif %}
+            <span id="self-mark-status" class="status" role="status" aria-live="polite"></span>
+        </div>
+    </div>
+
+    {% if home_automode.show %}
+    <div class="automode-card">
+        <div class="automode-head">
+            <span class="ico">&#x26A1;&#xFE0F;</span>
+            <div>
+                <h3>Step 3 — turn on auto-accept mode (recommended)</h3>
+                <p>By default, Claude asks permission before every action. Auto-accept mode auto-approves file edits while keeping shell commands and other side-effect tools gated — fast for daily work, still safe.</p>
+            </div>
+        </div>
+        <div class="automode-grid">
+            <div class="automode-step">
+                <div class="num">1</div>
+                <div class="step-text">
+                    <strong>One session</strong>
+                    Inside any active Claude Code session, press <kbd>Shift</kbd> + <kbd>Tab</kbd> to cycle modes:<br>
+                    default → <strong>auto-accept edits</strong> → plan mode → default. The footer shows <code>⏵⏵</code> when auto-accept is on.
+                </div>
+            </div>
+            <div class="automode-step">
+                <div class="num">2</div>
+                <div class="step-text">
+                    <strong>Persist across sessions</strong>
+                    Add to <code>~/.claude/settings.json</code>:
+                    <pre class="automode-code">{
+  "permissions": {
+    "defaultMode": "acceptEdits"
+  }
+}</pre>
+                </div>
+            </div>
+        </div>
+        <p class="automode-foot">
+            Want full auto-approve including Bash? See <a href="/setup-advanced#yolo">YOLO mode</a> on /setup-advanced — pairs <code>--dangerously-skip-permissions</code> with a reviewed <code>~/.claude/settings.local.json</code> allowlist. Skip if you're not sure.
+        </p>
+    </div>
+    {% endif %}
+
+    <div class="section-label">Once Agnes is installed — connect your tools</div>
+
+    <div class="connector-tiles">
+        <div class="connector-tile">
+            <span class="ico">&#x2705;</span>
+            <div class="ttl">Asana</div>
+            <div class="desc">Read tasks and projects, comment, create updates — Claude works alongside your project boards without leaving the terminal.</div>
+            <div class="connector-actions">
+                <button class="connector-copy" data-copy-target="asana-prompt">Copy prompt</button>
+                <details class="connector-preview">
+                    <summary>Show prompt</summary>
+                    <div class="card-mini-cmd"><code id="asana-prompt">Set up an Asana personal access token for Claude Code. Walk me through it step by step:
+0. Precheck — skip the rest if Asana is already connected. Detect my OS, then look up an existing keychain entry under the service name `agnes-asana-pat` and verify it against Asana's API. macOS: `t=$(security find-generic-password -s 'agnes-asana-pat' -w 2&gt;/dev/null) &amp;&amp; curl -fsS -H "Authorization: Bearer $t" https://app.asana.com/api/1.0/users/me | jq -r '.data | "Already connected as \(.name) (\(.workspaces | length) workspace(s)). Skipping setup."' &amp;&amp; exit 0`. Linux: `t=$(secret-tool lookup service agnes-asana-pat username "$USER" 2&gt;/dev/null) &amp;&amp; ...same curl...`. Windows PowerShell: `$cred = cmdkey /list:agnes-asana-pat 2&gt;$null; if ($LASTEXITCODE -eq 0) { Write-Host "Asana cred entry found — verify in your terminal before re-running setup." }` (Windows can't read the password back without a CredentialManager module — print a hint and let me confirm). If the verify call returns 200, print the one-line "Already connected" message and STOP. Only continue to step 1 when no cred exists OR the cached token returns 401.
+1. Open the Asana developer tokens page in my default browser — use your Bash tool: `open https://app.asana.com/0/developer-console/tokens` on macOS, `xdg-open https://app.asana.com/0/developer-console/tokens` on Linux/WSL, or `Start-Process https://app.asana.com/0/developer-console/tokens` on Windows. Detect OS first. If that URL doesn't render the tokens UI (rare), tell me to click my avatar (top right) → Settings → "Apps" tab → "Manage Developer Apps" → Personal access tokens.
+2. Tell me to click "+ New access token", name it "Claude Code — Agnes", and click "Create token". Warn me the token is shown ONCE and Asana PATs do not expire — I'd need to revoke it from the same page if it leaks.
+3. Important: do NOT ask me to paste the token into the chat. Chat input is saved to ~/.claude/projects/.../*.jsonl. Instead, prepare a tiny helper script for me to run in my real terminal:
+   a. Detect my OS. Use the Write/Edit tool (NOT a shell here-doc that prints the body) to create ~/.claude/agnes/bin/store-asana.sh on macOS/Linux, or ~/.claude/agnes/bin/store-asana.ps1 on Windows. chmod 700 the file. Body for macOS:
+      #!/usr/bin/env bash
+      set -e
+      read -srp 'Paste Asana token (hidden): ' t; echo
+      security add-generic-password -U -s 'agnes-asana-pat' -a "$USER" -w "$t"
+      unset t
+      echo 'Stored in macOS Keychain.'
+      Linux variant: same shape but `printf %s "$t" | secret-tool store --label='Agnes Asana PAT' service agnes-asana-pat username "$USER"`. Windows .ps1: `$t = Read-Host 'Paste Asana token' -AsSecureString; $p = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($t)); cmdkey /generic:agnes-asana-pat /user:$env:USERNAME /pass:$p > $null; Remove-Variable p,t; 'Stored.'`
+   b. Tell me to open a real terminal (Terminal.app / iTerm / WSL / PowerShell — NOT Claude Code's `!` prefix, which has no TTY) and run `bash ~/.claude/agnes/bin/store-asana.sh` (or `pwsh ~/.claude/agnes/bin/store-asana.ps1` on Windows). The script will wait silently at the hidden prompt.
+   c. Walk me through the clipboard order: copy the launcher first, paste it in my terminal, press Enter (terminal now waiting). Switch to the Asana tab, copy the token from step 2. Switch back to terminal, paste at the silent prompt, press Enter. Token enters via stdin only — not shown on screen, not in shell history, not in clipboard at the moment Claude is involved.
+4. After I report "Stored", verify by calling `curl -sS -H "Authorization: Bearer $(security find-generic-password -s 'agnes-asana-pat' -w)" https://app.asana.com/api/1.0/users/me | jq -r '.data | "\(.name) — \(.workspaces | length) workspace(s)"'` (macOS; Linux uses `secret-tool lookup` instead). Print only the one-line result. Never echo the token.
+5. Remind me where the token is stored and how to revoke: in macOS Keychain Access search "agnes-asana-pat" or run `security delete-generic-password -s 'agnes-asana-pat'`; on Asana, revoke from the same developer-console page.</code></div>
+                </details>
+            </div>
+        </div>
+
+        <div class="connector-tile">
+            <span class="ico">&#x1F4DA;</span>
+            <div class="ttl">Google Workspace</div>
+            <div class="desc">Drive, Calendar, Gmail, Docs, Sheets, Chat — Claude reads and acts across your work account via the official <code>gws</code> CLI.</div>
+            <div class="connector-actions">
+                <button class="connector-copy" data-copy-target="gws-prompt">Copy prompt</button>
+                <details class="connector-preview">
+                    <summary>Show prompt</summary>
+                    <div class="card-mini-cmd"><code id="gws-prompt">Set up Google Workspace access for Claude Code using the official `gws` CLI from https://github.com/googleworkspace/cli (install steps: README → Installation). The npm path is what we'll use because (a) it's the README's documented convenience path, (b) it works the same on macOS / Linux / WSL / Windows, and (c) it can run with zero admin rights when Node is managed by `nvm` (Unix) or `fnm` (Windows).
+
+YOU run every command via your Bash tool. Do NOT print install commands and ask me to type them. Only stop and ask me when I have to (a) approve an OAuth consent screen in a browser, (b) make a product decision (Cloud project name), or (c) paste OAuth client credentials Google shows me.
+
+0. Precheck — skip the rest if Google Workspace is already connected. Run `command -v gws` AND `gws auth status` AND a low-impact verify call: `gws drive files list --params '{"pageSize": 1}' &amp;&amp; gws chat spaces list --params '{"pageSize": 1}'`. If both succeed, the gws CLI is installed AND authed AND the Chat scope is present. Print "Already connected as &lt;email from `gws auth status`&gt; — Drive + Chat scopes verified. Skipping setup." and STOP. If `gws drive` succeeds but `gws chat` fails with 403/PERMISSION_DENIED, the user authed without `--full` previously — skip to step 6 (re-login with widened scopes), do NOT re-install. Only walk steps 1–5 (install + OAuth client setup) when `command -v gws` itself fails.
+
+1. Detect my OS (`uname -s` → Darwin / Linux, or PowerShell `$env:OS` → Windows_NT). On Linux check `grep -qi microsoft /proc/version` and treat WSL as Linux.
+
+2. Check `command -v gws` (or `Get-Command gws` on Windows). If `gws` is already installed, skip to step 5.
+
+3. Install Node.js 18+ to my user directory — no sudo, no UAC, no system package manager.
+
+   Unix (macOS / Linux / WSL):
+   a. Check `command -v node && node --version` — if 18+ already, skip.
+   b. Otherwise install nvm into ~/.nvm: `curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash`. The installer writes to ~/.nvm and appends shellenv to ~/.bashrc / ~/.zshrc — no sudo. Source it for the current shell: `export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"`.
+   c. `nvm install --lts && nvm use --lts`. Verify `node --version` shows v20.x or v22.x.
+
+   Native Windows (NOT WSL):
+   a. Check `node --version` — if 18+, skip.
+   b. Install fnm to user profile (no admin): run `winget install Schniz.fnm --scope user --accept-source-agreements --accept-package-agreements`. If winget triggers UAC, fall back to the manual zip from https://github.com/Schniz/fnm/releases/latest — extract `fnm.exe` to `$HOME\.local\bin\` and add that dir to my user PATH via `[Environment]::SetEnvironmentVariable('Path', "$env:Path;$HOME\.local\bin", 'User')`.
+   c. `fnm install --lts; fnm use lts-latest`. `fnm env --use-on-cd | Out-String | Invoke-Expression` to source it for the current shell.
+
+4. Install `gws` via npm — runs as my user because Node is managed by nvm/fnm, so the global prefix lives inside ~/.nvm/versions/node/&lt;v&gt;/lib/ (Unix) or ~/.fnm/.../lib/ (Windows). No sudo, no UAC, no `npm config set prefix` workaround needed.
+
+   a. `npm install -g @googleworkspace/cli` (run via Bash tool). Wait for it. If npm fails (network, registry, peer-dep), report the exact stderr and pause — don't half-finish.
+
+   b. nvm/fnm Node + npm-installed binaries land under ~/.nvm/versions/node/&lt;v&gt;/bin/ — only on PATH when nvm is sourced interactively. YOUR Bash tool runs non-interactive subshells that do NOT source ~/.zshrc or ~/.bashrc, so `gws` and `node` will appear "not found" on the very next call. Symlink them into ~/.local/bin (which is on PATH in every shell context) right after install:
+      `mkdir -p ~/.local/bin`
+      `ln -sf "$(command -v gws)" ~/.local/bin/gws`
+      `ln -sf "$(command -v node)" ~/.local/bin/node`
+      Run these while nvm/fnm is sourced in the same Bash call so `command -v` resolves correctly. On native Windows, copy `gws.cmd` from the npm prefix into `$HOME\.local\bin\` instead — symlinks need admin on Windows by default.
+
+   c. Verify `gws --version` from a fresh `bash -c 'gws --version'` (deliberately non-interactive) — confirms the symlink path works for future tool calls.
+
+{% if gws_oauth.configured %}5. The Agnes operator has already provisioned a shared Google Workspace OAuth app for this instance. Skip `gws auth setup` entirely. Do NOT use environment variables (Claude Code's security layer redacts vars containing the substring "SECRET" from non-interactive subshells, so the env-var approach is unreliable). Instead, write the credentials directly to the file `gws auth status` reads as `credential_source`:
+
+   Use the Write tool to create `~/.config/gws/client_secret.json` (or `%APPDATA%\gws\client_secret.json` on native Windows) with EXACTLY the schema Google Cloud Console exports — the gws CLI's Rust struct rejects partial files with "Invalid client_secret.json format: missing field 'project_id'". Both `installed.project_id` (numeric project number) and the URI fields are mandatory:
+   {
+     "installed": {
+       "client_id": "{{ gws_oauth.client_id }}",
+       "project_id": "{{ gws_oauth.project_id }}",
+       "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+       "token_uri": "https://oauth2.googleapis.com/token",
+       "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+       "client_secret": "{{ gws_oauth.client_secret }}",
+       "redirect_uris": ["http://127.0.0.1"]
+     }
+   }
+
+   Then `mkdir -p ~/.config/gws && chmod 700 ~/.config/gws && chmod 600 ~/.config/gws/client_secret.json`. Verify by running `gws auth status` — it should report this file as `credential_source` without complaining about missing fields. The values identify the OAuth app, not me; treat the secret like a publishable bundle key, not a per-user credential.
+{% else %}5. Run `gws auth setup` for me. This is a one-time Google Cloud project config; gcloud is NOT required (when gcloud is absent, `gws auth setup` walks through the manual OAuth flow). Open the URL it prints in my default browser, then walk me through each click because I am NOT a GCP admin:
+   a. Pick or create a Google Cloud project (free tier is fine).
+   b. Enable the APIs the connector needs: Google Drive API, Google Calendar API, Gmail API. Tell me each menu click.
+   c. Create an OAuth 2.0 client of type "Desktop app".
+   d. Copy the resulting client_id and client_secret. Paste them back into the terminal where `gws auth setup` is waiting. These identify the OAuth app — not the user — but still don't echo them back to me in chat.{% endif %}
+
+6. Run `gws auth login --full` (no `--readonly` flag — Agnes uses full read + write access across Drive / Calendar / Gmail / Sheets / Docs / Chat so the agent can actually create, edit, and send on my behalf). The `--full` flag widens the default scope picker; without it Chat / People / Tasks scopes are silently dropped. One env var the loopback redirect needs is OAUTHLIB_INSECURE_TRANSPORT — set it in the SAME Bash invocation that runs login: `OAUTHLIB_INSECURE_TRANSPORT={{ gws_oauth.oauthlib_insecure_transport if gws_oauth.configured else "1" }} gws auth login --full`. The CLI binds a local loopback server at http://127.0.0.1:8080 and prints an OAuth URL.
+
+   Capture the URL from gws's stdout. Before opening the browser, append the Chat write scopes (`https://www.googleapis.com/auth/chat.spaces` and `https://www.googleapis.com/auth/chat.messages`) to the URL's `scope=` query parameter — `--full` includes the readonly Chat scopes but NOT the read+write ones, and `gws chat ... send` calls fail without them. Decode the existing scope list, append the two URLs space-separated, re-encode, then open. Python one-liner via Bash tool:
+
+      `URL=$(printf '%s' "$URL" | python3 -c 'import sys,urllib.parse as u; q=u.urlparse(sys.stdin.read().strip()); p=u.parse_qs(q.query); s=set(p.get("scope",[""])[0].split()); s |= {"https://www.googleapis.com/auth/chat.spaces","https://www.googleapis.com/auth/chat.messages"}; p["scope"]=[" ".join(sorted(s))]; print(q._replace(query=u.urlencode(p, doseq=True, quote_via=u.quote)).geturl())')`
+
+   Then open the rewritten URL programmatically — do NOT print it to chat. Markdown line-wrapping in chat corrupts the long scope query string when the user copies it. Use your Bash tool: macOS `open "$URL"`, Linux/WSL `xdg-open "$URL"`, Windows `Start-Process "$URL"`. Detect OS first.
+
+   While the browser tab is loading, read each requested scope in plain language for me — full read + write across Drive, Calendar, Gmail, Chat, and the rest — so I know what I'm consenting to before I click Approve. Tell me I can revoke any time at https://myaccount.google.com/permissions if I change my mind.
+
+   If `gws auth status` later shows Chat scopes missing (e.g. on a re-run where a stale token cached the previous scope set), `rm ~/.config/gws/token.json` (or `%APPDATA%\gws\token.json` on native Windows) and re-run this step — the OAuth flow re-prompts with the new scope list.
+
+7. Find where gws stored my credentials (`gws auth status` should show the path; typically ~/.config/gws/ on Unix, %APPDATA%\gws\ on Windows). chmod 600 on Unix; on native Windows, restrict ACLs to my user with `icacls "$creds_path" /inheritance:r /grant:r "$env:USERNAME:F"` — file is already in my user profile so this needs no admin.
+
+8. Verify with two low-impact reads, one per scope group: `gws drive files list --params '{"pageSize": 1}'` (Drive scope landed) and `gws chat spaces list --params '{"pageSize": 1}'` (Chat scope landed). Print only "Connected as &lt;my email&gt;" plus the file + space counts. Never echo tokens, file/message metadata, or scope strings to chat.
+
+9. Remind me how to revoke later: `gws auth logout` clears local creds; the OAuth grant also appears at https://myaccount.google.com/permissions for Google-side revocation.</code></div>
+                </details>
+            </div>
+        </div>
+
+        <div class="connector-tile">
+            <span class="ico">&#x1F39F;&#xFE0F;</span>
+            <div class="ttl">Atlassian (Jira / Confluence)</div>
+            <div class="desc">Read and write Jira issues, search Confluence pages — Claude pulls ticket context and posts updates without leaving the workspace.</div>
+            <div class="connector-actions">
+                <button class="connector-copy" data-copy-target="jira-prompt">Copy prompt</button>
+                <details class="connector-preview">
+                    <summary>Show prompt</summary>
+                    <div class="card-mini-cmd"><code id="jira-prompt">Set up Atlassian (Jira + Confluence) API access for Claude Code. Walk me through it step by step:
+0. Precheck — skip the rest if Atlassian is already connected. The setup script stores email + base URL in `~/.claude/agnes/secrets.env` and the API token in the OS keychain under `agnes-atlassian-api-token`. Verify all three exist + auth works before reinstalling. macOS: `[ -r ~/.claude/agnes/secrets.env ] &amp;&amp; . ~/.claude/agnes/secrets.env &amp;&amp; t=$(security find-generic-password -s 'agnes-atlassian-api-token' -a "$ATLASSIAN_EMAIL" -w 2&gt;/dev/null) &amp;&amp; curl -fsS -u "$ATLASSIAN_EMAIL:$t" "$ATLASSIAN_BASE_URL/rest/api/3/myself" | jq -r '"Already connected as \(.displayName) (\(.emailAddress)) on '"$ATLASSIAN_BASE_URL"'. Skipping setup."' &amp;&amp; exit 0`. Linux: same shape but `t=$(secret-tool lookup service agnes-atlassian-api-token username "$ATLASSIAN_EMAIL")`. Windows: read `secrets.env`, then `cmdkey /list:agnes-atlassian-api-token` — if entry exists, print "Atlassian cred entry found — verify in your real terminal before re-running setup." and let me confirm rather than auto-skipping. If the verify call returns 200, STOP with the "Already connected" line. Continue to step 1 only when secrets.env is missing OR keychain lookup fails OR `myself` returns 401.
+1. Ask me for my Atlassian Cloud site URL (looks like https://&lt;myorg&gt;.atlassian.net) and the email I sign in with. Site URL and email are NOT secrets — fine to type into chat. Don't proceed until I've given you both.
+2. Open the Atlassian API tokens page in my default browser — use your Bash tool: `open https://id.atlassian.com/manage-profile/security/api-tokens` on macOS, `xdg-open ...` on Linux/WSL, or `Start-Process ...` on Windows. Detect OS first. If I land on a generic profile page, tell me: avatar (top right) → Manage account → Security → "Create and manage API tokens".
+3. Tell me to click "Create API token" (NOT "Create API token with scopes" unless I specifically need fine-grained — one-line trade-off: scoped tokens are limited per project but expire and need rotation; unscoped is simplest for personal use). Label it "Claude Code — Agnes", click Create, copy the token. Warn me it is shown ONCE.
+4. Important: do NOT ask me to paste the token into the chat. Prepare a helper script for me to run in my real terminal, with my email and site URL baked in as literals (so they're not re-prompted at runtime):
+   a. Use the Write tool to create ~/.claude/agnes/bin/store-atlassian.sh on macOS/Linux (or .ps1 on Windows). chmod 700. The script must (i) reject obviously-truncated tokens via a length floor and (ii) verify the credentials against the Atlassian API BEFORE writing anything to the keychain. Both guards exist because Atlassian's "shown ONCE" copy panel commonly truncates if the user click-copies instead of using the panel's Copy button — silently storing a 43-char fragment then discovering it later is the failure mode we're avoiding. Body for macOS:
+      #!/usr/bin/env bash
+      set -e
+      EMAIL='&lt;the email I gave you&gt;'
+      BASE_URL='&lt;the site URL I gave you, no trailing slash&gt;'
+      read -srp 'Paste Atlassian API token (hidden): ' t; echo
+
+      # Guard 1 — Atlassian Cloud tokens are typically 192+ chars; sub-100
+      # means a truncated copy. Bail before touching the keychain.
+      tlen=$(printf %s "$t" | wc -c | tr -d ' ')
+      if [ "$tlen" -lt 100 ]; then
+        echo "Token looks too short ($tlen chars) — copy the full value via the Copy button on the Atlassian token page. Aborting." >&amp;2
+        unset t
+        exit 1
+      fi
+
+      # Guard 2 — verify against the live API before storing. If auth fails
+      # the keychain stays untouched and we know immediately why.
+      tmp=$(mktemp)
+      status=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$EMAIL:$t" "$BASE_URL/rest/api/3/myself" || true)
+      if [[ "$status" != "200" ]]; then
+        echo "API verification failed (HTTP $status). Aborting without storing." >&amp;2
+        cat "$tmp" >&amp;2 2&gt;/dev/null || true
+        rm -f "$tmp"; unset t
+        exit 1
+      fi
+      display=$(python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("displayName","?"))' &lt; "$tmp")
+      rm -f "$tmp"
+
+      # Verified — write token to Keychain + URL/email to secrets.env.
+      security add-generic-password -U -s 'agnes-atlassian-api-token' -a "$EMAIL" -w "$t"
+      umask 077; mkdir -p ~/.claude/agnes
+      printf 'ATLASSIAN_EMAIL=%s\nATLASSIAN_BASE_URL=%s\n' "$EMAIL" "$BASE_URL" &gt; ~/.claude/agnes/secrets.env
+      chmod 600 ~/.claude/agnes/secrets.env
+      unset t
+      echo "Stored. Verified as $display."
+
+      Linux variant: replace `security add-generic-password ...` with `printf %s "$t" | secret-tool store --label='Agnes Atlassian token' service agnes-atlassian-api-token username "$EMAIL"`. Both guards (length floor, API verification) stay identical — they run before the storage call. Windows .ps1: same control flow using `Read-Host -AsSecureString`, convert to plain via `Marshal::PtrToStringAuto`, check `$t.Length -lt 100`, run `Invoke-RestMethod -Uri "$BASE_URL/rest/api/3/myself" -Authentication Basic -Credential (New-Object PSCredential($EMAIL, $secureToken))` wrapped in try/catch (writes to `cmdkey` only on success), then write secrets.env via Set-Content.
+   b. Tell me to open a real terminal (not Claude Code's `!`) and run `bash ~/.claude/agnes/bin/store-atlassian.sh` (or `pwsh ~/.claude/agnes/bin/store-atlassian.ps1` on Windows). The script will wait silently at the hidden prompt.
+   c. Walk me through clipboard order: copy the launcher first, paste in terminal, Enter (terminal waiting). Switch to the Atlassian tab, copy the token from step 3 — use the panel's "Copy" button, NOT click-and-drag (which often truncates). Switch back to terminal, paste at the silent prompt, Enter. The script will print "Stored. Verified as &lt;your name&gt;." on success, or fail loudly with the exact reason (too short / HTTP 401 / etc.) without writing anything.
+5. Register the on-demand Atlassian MCP under .claude/mcp/atlassian referencing the stored credentials (read token from keychain via `security find-generic-password -s 'agnes-atlassian-api-token' -w` at MCP startup).
+6. The store script already verified the token end-to-end. If I want a second redacted readback later, you can hit `GET $BASE_URL/rest/api/3/myself` again and print just displayName + accountId — never the token.
+7. Remind me how to revoke: same API tokens page on Atlassian, plus `security delete-generic-password -s 'agnes-atlassian-api-token'` locally (macOS) / `secret-tool clear service agnes-atlassian-api-token` (Linux) / `cmdkey /delete:agnes-atlassian-api-token` (Windows).</code></div>
+                </details>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-label">Want to look around first?</div>
+    <p class="look-around-lead">You don't need Agnes installed locally to browse what's available. Anything you bookmark or subscribe to will be there waiting after you set Agnes up.</p>
+
+    <div class="what-is look-around-grid">
+        <a class="what-is-item" href="/store">
+            <span class="ico">&#x1F9E9;</span>
+            <div class="ttl">Plugin marketplace <span class="arrow">&rarr;</span></div>
+            <div class="desc">Curated and community-built plugins for Claude Code — Asana, Jira, Google Workspace, and more. Browse, install, sync.</div>
+        </a>
+        <a class="what-is-item" href="/catalog">
+            <span class="ico">&#x1F4E6;</span>
+            <div class="ttl">Curated data packages <span class="arrow">&rarr;</span></div>
+            <div class="desc">Tables, schema, and metric definitions your team has registered. Subscribe and Claude can query them with documented business rules.</div>
+        </a>
+        <a class="what-is-item" href="/corporate-memory">
+            <span class="ico">&#x1F9E0;</span>
+            <div class="ttl">Corporate memory <span class="arrow">&rarr;</span></div>
+            <div class="desc">Shared analyst knowledge and prior solutions to draw from. Searchable, versioned, fed back into Claude's context on demand.</div>
+        </a>
+        {% if is_admin %}
+        <a class="what-is-item" href="/activity-center">
+            <span class="ico">&#x1F4C8;</span>
+            <div class="ttl">Activity center <span class="arrow">&rarr;</span></div>
+            <div class="desc">Per-user analytics on Agnes adoption across your team. Sessions, plugin installs, prompt patterns.</div>
+        </a>
+        {% endif %}
+    </div>
+
+    <a class="advanced-pointer" href="/setup-advanced">
+        <span class="ico">&#x1F6E0;&#xFE0F;</span>
+        <div class="advanced-pointer-text">
+            <strong>Going deeper — Advanced setup</strong>
+            VS Code split-terminal layout, recommended Claude Code plugins (with copy-able install commands), multi-model second opinions (Codex + Gemini), custom skills + rules + hooks, project workflows, plan tier guidance.
+        </div>
+        <span class="arrow">&rarr;</span>
+    </a>
+
+    {% if news_intro %}
+    <section class="home-news">
+        <header class="home-news-head">
+            <h2>What's new</h2>
+            <a class="home-news-more" href="/news">Read more &rarr;</a>
+        </header>
+        <div class="home-news-body">{{ news_intro | safe }}</div>
+    </section>
+    {% endif %}
+
+</div>
+
+{# Shared "Setup a new Claude Code" CTA behaviour — provides the JS that
+   POSTs /auth/tokens, copies the rendered instructions to the clipboard,
+   and falls back to a modal when the clipboard API is blocked. The button
+   above (id="setupClaudeBtn") is the primary trigger. #}
+{% include "_claude_setup_cta.jinja" %}
+
+<script>
+(function () {
+    function wireCopy(btn) {
+        btn.addEventListener('click', function () {
+            var src = document.getElementById(btn.getAttribute('data-copy-target'));
+            if (!src) return;
+            // textContent (not innerText) so collapsed <details> content still
+            // copies — innerText returns "" for nodes whose ancestor has
+            // display:none (which is what closed <details> applies).
+            var raw = src.textContent || '';
+            var text = raw.replace(/ /g, ' ');
+            navigator.clipboard.writeText(text).then(function () {
+                var orig = btn.textContent;
+                btn.textContent = 'Copied';
+                setTimeout(function () { btn.textContent = orig; }, 1500);
+            }).catch(function () { btn.textContent = 'Copy failed'; });
+        });
+    }
+    document.querySelectorAll('.copy-btn[data-copy-target], .connector-copy[data-copy-target]').forEach(wireCopy);
+
+    // OS tab switching for Step 1.
+    document.querySelectorAll('.os-tab[data-os-tab]').forEach(function (tab) {
+        tab.addEventListener('click', function () {
+            var target = tab.getAttribute('data-os-tab');
+            var scope = tab.closest('.install-block') || document;
+            scope.querySelectorAll('.os-tab[data-os-tab]').forEach(function (t) {
+                var on = t.getAttribute('data-os-tab') === target;
+                t.classList.toggle('is-active', on);
+                t.setAttribute('aria-selected', on ? 'true' : 'false');
+            });
+            scope.querySelectorAll('[data-os-panel]').forEach(function (p) {
+                if (p.getAttribute('data-os-panel') === target) {
+                    p.removeAttribute('hidden');
+                } else {
+                    p.setAttribute('hidden', '');
+                }
+            });
+        });
+    });
+
+    var btn = document.getElementById('self-mark-btn');
+    var status = document.getElementById('self-mark-status');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        // Direction comes from data-attrs the template sets per render —
+        // onboarded view → flip to FALSE (offboard), not-onboarded → flip to TRUE.
+        var targetOnboarded = btn.getAttribute('data-target-onboarded') === 'true';
+        var targetSource = btn.getAttribute('data-target-source') || 'self_acknowledged';
+        btn.disabled = true;
+        status.textContent = targetOnboarded ? 'Marking…' : 'Resetting…';
+        fetch('/api/me/onboarded', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: targetSource, onboarded: targetOnboarded }),
+        }).then(function (resp) {
+            if (resp.ok) {
+                status.textContent = 'Done. Reloading…';
+                window.location.reload();
+            } else {
+                status.textContent = 'Failed (' + resp.status + '). Try again.';
+                btn.disabled = false;
+            }
+        }).catch(function () {
+            status.textContent = 'Network error. Try again.';
+            btn.disabled = false;
+        });
+    });
+})();
+</script>
+{% endblock %}

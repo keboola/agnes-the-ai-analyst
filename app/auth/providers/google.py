@@ -217,9 +217,9 @@ async def google_callback(request: Request):
 
         # Redirect to the post-login target. Prefer the value stashed by
         # google_login() — re-sanitize defensively in case of session tampering.
-        target = safe_next_path(
-            request.session.pop("login_next", None), default="/dashboard"
-        )
+        # default=None → safe_next_path resolves to the operator-configured
+        # home route (AGNES_HOME_ROUTE / instance.home_route / /dashboard).
+        target = safe_next_path(request.session.pop("login_next", None))
 
         # Redirect to target with token in cookie. Match password/email providers:
         # Secure only when DOMAIN is set (production with TLS), so the cookie is

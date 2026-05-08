@@ -82,6 +82,12 @@ dependencies = [
     # POSTHOG_API_KEY is set in the environment. With the key unset the
     # integration is fully off (no network, no init). See docs/observability.md.
     "posthog>=3.7.0",
+    # Rust-backed (ammonia) HTML sanitizer for admin-edited rich content
+    # (news intro + body). Allowlist-based with per-tag attribute scoping;
+    # closes the bypass shapes the legacy regex sanitizer in
+    # src/welcome_template.py was vulnerable to. Pre-built wheels published
+    # for all supported (mac/linux/windows × arm64/x86_64) targets.
+    "nh3>=0.2",
 ]
 
 [project.optional-dependencies]

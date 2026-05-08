@@ -1,0 +1,320 @@
+{% extends "base.html" %}
+
+{% block title %}Admin · News — {{ instance_name or "AI Data Analyst" }}{% endblock %}
+
+{% block head_extra %}
+<style>
+body.news-admin .container { max-width: 1280px; padding: 0 32px 48px; }
+body.news-admin h1 { font-size: 22px; margin: 24px 0 10px; }
+body.news-admin h2 { font-size: 16px; margin: 18px 0 8px; color: #374151; }
+
+body.news-admin .panel {
+    background: white;
+    border: 1px solid #E5E7EB;
+    border-radius: 12px;
+    padding: 22px 26px;
+    margin-bottom: 18px;
+}
+body.news-admin .meta {
+    font-size: 12px;
+    color: #6B7280;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+body.news-admin .empty { color: #6B7280; font-style: italic; }
+
+body.news-admin .editor-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+}
+body.news-admin .editor-col label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+body.news-admin textarea {
+    width: 100%;
+    min-height: 220px;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 13px;
+    padding: 10px 12px;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    resize: vertical;
+    box-sizing: border-box;
+}
+body.news-admin textarea#content { min-height: 360px; }
+body.news-admin .preview-frame {
+    width: 100%;
+    min-height: 360px;
+    border: 1px solid #E5E7EB;
+    border-radius: 6px;
+    background: white;
+}
+
+body.news-admin .row-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-top: 14px;
+}
+body.news-admin button.primary {
+    background: #0073D1;
+    color: white;
+    border: 1px solid #0073D1;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+}
+body.news-admin button.primary:hover { background: #0056A3; }
+body.news-admin button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+body.news-admin button.ghost {
+    background: white;
+    color: #374151;
+    border: 1px solid #D1D5DB;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+}
+body.news-admin button.ghost:hover { border-color: #0073D1; color: #0073D1; }
+body.news-admin .status { font-size: 13px; color: #6B7280; margin-left: 6px; }
+
+body.news-admin table.versions {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+body.news-admin table.versions th,
+body.news-admin table.versions td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid #F3F4F6;
+}
+body.news-admin .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+body.news-admin .badge-draft     { background: #FEF3C7; color: #92400E; }
+body.news-admin .badge-published { background: #D1FAE5; color: #047857; }
+
+body.news-admin details.format-help {
+    margin-top: 14px;
+    background: #F9FAFB;
+    border: 1px solid #E5E7EB;
+    border-radius: 6px;
+    padding: 10px 14px;
+}
+body.news-admin details.format-help summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #374151;
+    font-size: 13px;
+}
+body.news-admin details.format-help pre {
+    background: #0F172A;
+    color: #FBBF24;
+    padding: 10px 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 12px;
+    margin: 8px 0;
+}
+</style>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    document.body.classList.add('news-admin');
+
+    var introEl = document.getElementById('intro');
+    var contentEl = document.getElementById('content');
+    var previewFrame = document.getElementById('preview');
+    var saveBtn = document.getElementById('save-btn');
+    var publishBtn = document.getElementById('publish-btn');
+    var saveStatus = document.getElementById('save-status');
+
+    function refreshPreview() {
+        fetch('/api/admin/news/preview', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ intro: introEl.value, content: contentEl.value }),
+        }).then(function (r) { return r.json(); }).then(function (data) {
+            // Use srcdoc + sandbox="" so the preview iframe can't access the
+            // parent origin even if the sanitizer ever lets something
+            // through. Empty sandbox = strictest possible posture.
+            var html = '<style>body{font-family:Inter,system-ui,sans-serif;font-size:14px;color:#111827;margin:0;padding:18px;}</style>'
+                + '<div>' + (data.intro || '') + '</div>'
+                + '<hr style="border:0;border-top:1px solid #E5E7EB;margin:14px 0">'
+                + '<div>' + (data.content || '') + '</div>';
+            previewFrame.setAttribute('srcdoc', html);
+        }).catch(function () { /* ignore preview failures silently */ });
+    }
+    introEl.addEventListener('blur', refreshPreview);
+    contentEl.addEventListener('blur', refreshPreview);
+    refreshPreview();
+
+    saveBtn.addEventListener('click', function () {
+        saveBtn.disabled = true;
+        saveStatus.textContent = 'Saving…';
+        fetch('/api/admin/news/draft', {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ intro: introEl.value, content: contentEl.value }),
+        }).then(function (r) {
+            if (!r.ok) throw new Error(r.status);
+            return r.json();
+        }).then(function () {
+            saveStatus.textContent = 'Saved.';
+            window.location.reload();
+        }).catch(function (e) {
+            saveStatus.textContent = 'Save failed (' + e.message + ').';
+            saveBtn.disabled = false;
+        });
+    });
+
+    publishBtn && publishBtn.addEventListener('click', function () {
+        if (!confirm('Publish the active draft? This makes it the version everyone sees on /home and /news.')) return;
+        publishBtn.disabled = true;
+        saveStatus.textContent = 'Publishing…';
+        fetch('/api/admin/news/publish', { method: 'POST', credentials: 'same-origin' })
+            .then(function (r) {
+                if (!r.ok) throw new Error(r.status);
+                return r.json();
+            }).then(function () { window.location.reload(); })
+            .catch(function (e) {
+                saveStatus.textContent = 'Publish failed (' + e.message + ').';
+                publishBtn.disabled = false;
+            });
+    });
+
+    document.querySelectorAll('button.unpublish-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var v = btn.getAttribute('data-version');
+            if (!confirm('Unpublish version ' + v + '? /home and /news will fall back to the next-highest published version.')) return;
+            btn.disabled = true;
+            fetch('/api/admin/news/unpublish/' + v, { method: 'POST', credentials: 'same-origin' })
+                .then(function (r) {
+                    if (!r.ok) throw new Error(r.status);
+                    window.location.reload();
+                }).catch(function (e) {
+                    alert('Unpublish failed: ' + e.message);
+                    btn.disabled = false;
+                });
+        });
+    });
+});
+</script>
+{% endblock %}
+
+{% block content %}
+<h1>News editor</h1>
+
+<div class="panel">
+    <h2>Currently published</h2>
+    {% if news_current %}
+    <div class="meta">
+        Version {{ news_current.version }} ·
+        published {{ news_current.published_at.strftime('%Y-%m-%d %H:%M UTC') if news_current.published_at else '' }}
+        {% if news_current.published_by %} by {{ news_current.published_by }}{% endif %}
+    </div>
+    <p style="margin:0">View live at <a href="/news">/news</a>.</p>
+    {% else %}
+    <p class="empty">No version published yet — write a draft below and click Publish.</p>
+    {% endif %}
+</div>
+
+<div class="panel">
+    <h2>{% if news_draft %}Draft (v{{ news_draft.version }}){% else %}New draft{% endif %}</h2>
+    <div class="editor-row">
+        <div class="editor-col">
+            <label for="intro">Intro / perex (shown on /home)</label>
+            <textarea id="intro" placeholder="<p>Short HTML perex shown at the bottom of /home. Keep it tight.</p>">{{ news_draft.intro if news_draft else '' }}</textarea>
+
+            <label for="content" style="margin-top:14px">Full content (shown on /news)</label>
+            <textarea id="content" placeholder="<h1>Full body</h1>&#10;<p>Use the documented classes — see Format help below.</p>">{{ news_draft.content if news_draft else '' }}</textarea>
+
+            <div class="row-actions">
+                <button type="button" class="primary" id="save-btn">Save draft</button>
+                <button type="button" class="primary" id="publish-btn"
+                        {% if not news_draft %}disabled title="Save a draft first"{% endif %}>
+                    Publish this draft
+                </button>
+                <span class="status" id="save-status"></span>
+            </div>
+
+            <details class="format-help">
+                <summary>Format help — what HTML and classes are allowed</summary>
+                <p>Tags allowed: <code>p, h1–h6, ul, ol, li, strong, em, code, pre, blockquote, a, img, span, div, section, table, thead, tbody, tr, th, td, details, summary, figure, figcaption, iframe</code>. Anything else is stripped.</p>
+                <p>Use these documented classes for consistent styling:</p>
+                <pre>&lt;div class=&quot;callout callout-warn&quot;&gt;&lt;strong&gt;Heads up:&lt;/strong&gt; rolling restart 14:00 UTC.&lt;/div&gt;
+
+&lt;div class=&quot;video-embed&quot;&gt;
+  &lt;iframe src=&quot;https://www.youtube.com/embed/abc123&quot;&gt;&lt;/iframe&gt;
+&lt;/div&gt;
+
+&lt;section class=&quot;news-section&quot;&gt;
+  &lt;h2&gt;Big news&lt;/h2&gt;
+  &lt;div class=&quot;news-grid-2&quot;&gt;
+    &lt;div&gt;Column 1&lt;/div&gt;
+    &lt;div&gt;Column 2&lt;/div&gt;
+  &lt;/div&gt;
+&lt;/section&gt;
+
+&lt;a class=&quot;news-cta&quot; href=&quot;/setup-advanced&quot;&gt;Open advanced setup&lt;/a&gt;</pre>
+                <p>Iframe <code>src</code> must be on YouTube, Vimeo, or Loom — anything else has the iframe stripped on save.</p>
+            </details>
+        </div>
+
+        <div class="editor-col">
+            <label>Preview (sanitized)</label>
+            <iframe id="preview" class="preview-frame" sandbox=""></iframe>
+        </div>
+    </div>
+</div>
+
+<div class="panel">
+    <h2>Versions</h2>
+    {% if news_versions %}
+    <table class="versions">
+        <thead>
+            <tr>
+                <th>v</th><th>Status</th><th>Created</th><th>By</th>
+                <th>Published</th><th>Intro preview</th><th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for v in news_versions %}
+            <tr>
+                <td><strong>{{ v.version }}</strong></td>
+                <td><span class="badge badge-{{ v.status }}">{{ v.status }}</span></td>
+                <td>{{ v.created_at.strftime('%Y-%m-%d %H:%M') if v.created_at else '' }}</td>
+                <td>{{ v.created_by or '' }}</td>
+                <td>{{ v.published_at.strftime('%Y-%m-%d %H:%M') if v.published_at else '' }}</td>
+                <td>{{ v.intro_preview }}</td>
+                <td>
+                    {% if v.published %}
+                    <button type="button" class="ghost unpublish-btn" data-version="{{ v.version }}">Unpublish</button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No versions yet.</p>
+    {% endif %}
+</div>
+{% endblock %}

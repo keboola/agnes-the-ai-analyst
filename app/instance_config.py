@@ -145,6 +145,111 @@ def get_data_source_type() -> str:
     return os.environ.get("DATA_SOURCE", get_value("data_source", "type", default="local"))
 
 
+def get_home_route() -> str:
+    """Path that ``/`` redirects to for an authenticated user.
+
+    Resolution order: ``AGNES_HOME_ROUTE`` env var (Terraform-friendly,
+    overrides everything) > ``instance.home_route`` in instance.yaml >
+    default ``/dashboard``. The env-overrides-yaml shape mirrors
+    :func:`get_data_source_type` (precedent in this file) so operators
+    can flip a fork to ``/home`` per-deployment without forking the
+    YAML.
+
+    Validated to start with ``/`` and not ``//`` so a misconfigured
+    value can't pivot the root redirect to an external host.
+    """
+    raw = os.environ.get("AGNES_HOME_ROUTE") or get_value(
+        "instance", "home_route", default="/dashboard"
+    )
+    route = (raw or "").strip()
+    if not route.startswith("/") or route.startswith("//"):
+        return "/dashboard"
+    return route
+
+
+def get_gws_oauth_credentials() -> dict:
+    """Pre-configured Google Workspace CLI OAuth client (client_id + secret).
+
+    When set, /home renders a connector prompt that tells the analyst (and
+    Claude) to export `GOOGLE_WORKSPACE_CLI_CLIENT_ID` and
+    `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET` and skip the "create your own GCP
+    project" walkthrough — the operator has already provisioned a shared
+    OAuth app for the instance. When unset, the prompt falls back to the
+    manual `gws auth setup` flow.
+
+    OAuth client_id + secret here are app identifiers for an installed
+    "Desktop app" OAuth client, not a per-user secret. They're rendered
+    into the public /home page on purpose — they identify the OAuth app,
+    and the redirect-URI / scope guardrails on the GCP-side OAuth client
+    are what enforce safety. Treat them like a publishable bundle ID,
+    not a credential.
+
+    Resolution order (env-overrides-yaml, mirrors :func:`get_home_route`):
+
+    - ``AGNES_GWS_CLIENT_ID`` env > ``instance.gws.client_id`` YAML > None
+    - ``AGNES_GWS_CLIENT_SECRET`` env > ``instance.gws.client_secret`` YAML > None
+    - ``AGNES_GWS_OAUTHLIB_INSECURE_TRANSPORT`` env > ``instance.gws.oauthlib_insecure_transport`` YAML > "1"
+      (kept as "1" by default because the gws CLI binds an HTTP loopback
+       on 127.0.0.1:8080 for the OAuth redirect, and Google's oauthlib
+       refuses non-HTTPS redirects without this flag).
+
+    Both id and secret must be set for the configured branch to engage;
+    a half-configured instance falls back to manual setup with a warning.
+    """
+    cid = os.environ.get("AGNES_GWS_CLIENT_ID") or get_value(
+        "instance", "gws", "client_id", default=""
+    )
+    secret = os.environ.get("AGNES_GWS_CLIENT_SECRET") or get_value(
+        "instance", "gws", "client_secret", default=""
+    )
+    insecure = os.environ.get("AGNES_GWS_OAUTHLIB_INSECURE_TRANSPORT") or get_value(
+        "instance", "gws", "oauthlib_insecure_transport", default="1"
+    )
+    project_id = os.environ.get("AGNES_GWS_PROJECT_ID") or get_value(
+        "instance", "gws", "project_id", default=""
+    )
+    cid = (cid or "").strip()
+    secret = (secret or "").strip()
+    project_id = (project_id or "").strip()
+    # Derive project_id from the client_id when not explicitly set. Google's
+    # OAuth client_id format is "<numeric-project-number>-<random>.apps.
+    # googleusercontent.com"; the numeric prefix is required by the
+    # client_secret.json schema (gws CLI's Rust struct treats it as
+    # non-Option). Falls back to "" when the client_id is empty or
+    # malformed; the configured branch in the template degrades gracefully.
+    if not project_id and cid and "-" in cid:
+        project_id = cid.split("-", 1)[0]
+    return {
+        "client_id": cid,
+        "client_secret": secret,
+        "project_id": project_id,
+        "oauthlib_insecure_transport": str(insecure).strip() or "1",
+        "configured": bool(cid and secret),
+    }
+
+
+def get_home_automode_visibility() -> bool:
+    """Whether /home renders the "Step 3 — turn on auto-accept mode"
+    install-block. Auto-accept mode is the recommended middle ground
+    between default per-action prompting (slow) and full YOLO
+    (`--dangerously-skip-permissions`, broad blast radius).
+
+    Cautious-rollout instances can hide the section by setting
+    ``AGNES_HOME_SHOW_AUTOMODE=0`` so users learn the permission flow
+    first; the same content stays available on /setup-advanced.
+
+    Resolution: env var > ``instance.home.show_automode`` YAML > True.
+    Mirrors :func:`get_home_route` shape so Terraform overrides work
+    the same way.
+    """
+    raw = os.environ.get("AGNES_HOME_SHOW_AUTOMODE")
+    if raw is None:
+        raw = get_value("instance", "home", "show_automode", default=True)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+
 def get_instance_name() -> str:
     return get_value("instance", "name", default="AI Data Analyst")
 
