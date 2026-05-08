@@ -528,9 +528,11 @@ class TestStoreSecurityFixes:
         assert u.status_code == 403
         assert u.json()["detail"] == "not_owner"
 
-    def test_admin_sees_action_buttons_on_store_detail(self, web_client):
-        """F4 — admin must see Edit/Delete in store_detail UI even when
-        not the owner."""
+    def test_admin_sees_action_buttons_on_marketplace_flea_detail(self, web_client):
+        """F4 (v32+ port): admin must see owner-actions panel on the
+        unified /marketplace/flea/{id} detail page even when not the
+        owner. Original test targeted the now-deleted /store/{id};
+        the policy itself is unchanged."""
         from argon2 import PasswordHasher
         from src.db import get_system_db
         from src.repositories.users import UserRepository
@@ -556,13 +558,13 @@ class TestStoreSecurityFixes:
         ).json()["access_token"]
         admin_cookies = {"access_token": admin_token}
 
-        page = web_client.get(f"/store/{eid}", cookies=admin_cookies)
+        page = web_client.get(f"/marketplace/flea/{eid}", cookies=admin_cookies)
         assert page.status_code == 200, page.text
-        # Admin-non-owner sees the owner-actions panel — pre-fix, the
-        # `is_owner` gate hid it. Same gate now reads `is_owner or
-        # is_admin`.
+        # Admin-non-owner sees the owner-actions panel.
         assert "owner-actions" in page.text
-        assert 'id="delete-btn"' in page.text
+        # v35: admin sees Archive (soft) + Hard delete buttons.
+        assert 'id="owner-archive-btn"' in page.text
+        assert 'id="owner-hard-delete-btn"' in page.text
 
     def test_cross_owner_suffix_collision_rejected(self, web_client):
         """F5 — two emails can sanitize to the same username
@@ -894,7 +896,11 @@ class TestInstallCycle:
         det = web_client.get(f"/api/store/entities/{eid}", cookies=owner_cookies).json()
         assert det["install_count"] == 1
 
-    def test_delete_entity_cascades_installs(self, web_client):
+    def test_owner_delete_archives_but_preserves_existing_installs(self, web_client):
+        """v35 soft-delete semantics. Owner DELETE = soft archive. Bundle
+        + install rows preserved so already-installed users keep getting
+        the plugin through marketplace.zip / .git. The installer still
+        sees the entity in their My AI Stack with an 'Archived' badge."""
         _, owner_cookies = _create_user(web_client, "o2@x.com")
         r = web_client.post(
             "/api/store/entities",
@@ -906,13 +912,61 @@ class TestInstallCycle:
         _, u_cookies = _create_user(web_client, "victim@x.com")
         web_client.post(f"/api/store/entities/{eid}/install", cookies=u_cookies)
 
-        # Owner deletes.
+        # Owner soft-archives (default DELETE semantics in v35).
         d = web_client.delete(f"/api/store/entities/{eid}", cookies=owner_cookies)
         assert d.status_code == 200
 
-        # GET 404.
-        assert web_client.get(f"/api/store/entities/{eid}", cookies=owner_cookies).status_code == 404
-        # The install row is gone — installer's /api/my-stack store list shrunk.
+        # Detail still reachable for owner — visibility flipped, not deleted.
+        det = web_client.get(f"/api/store/entities/{eid}", cookies=owner_cookies).json()
+        assert det["visibility_status"] == "archived"
+
+        # Installer's My AI Stack STILL contains the entity (existing
+        # install survives archive — that's the whole point).
+        ms = web_client.get("/api/my-stack", cookies=u_cookies).json()
+        assert any(e["entity_id"] == eid for e in ms["store"]), (
+            "archived entity must remain in existing installer's stack"
+        )
+        archived_entry = next(e for e in ms["store"] if e["entity_id"] == eid)
+        assert archived_entry["visibility_status"] == "archived"
+
+    def test_admin_hard_delete_cascades_installs(self, web_client):
+        """v35 hard delete (admin only): bundle dropped + install rows
+        cascade. Existing users lose the plugin on next sync."""
+        _, owner_cookies = _create_user(web_client, "owner-hd@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("cascade-hd"), "application/zip")},
+            data={"type": "skill"},
+            cookies=owner_cookies,
+        )
+        eid = r.json()["id"]
+        _, u_cookies = _create_user(web_client, "victim-hd@x.com")
+        web_client.post(f"/api/store/entities/{eid}/install", cookies=u_cookies)
+
+        # Admin hard-deletes via ?hard=true.
+        from argon2 import PasswordHasher
+        from src.db import get_system_db as _gdb
+        from src.repositories.users import UserRepository
+        from tests.helpers.auth import grant_admin
+        ph = PasswordHasher()
+        conn = _gdb()
+        UserRepository(conn).create(id="adm-hd", email="adm-hd@x.com", name="adm",
+                                    password_hash=ph.hash("AdminPass1!"))
+        grant_admin(conn, "adm-hd")
+        conn.close()
+        admin_token = web_client.post(
+            "/auth/token", json={"email": "adm-hd@x.com", "password": "AdminPass1!"}
+        ).json()["access_token"]
+        d = web_client.delete(
+            f"/api/store/entities/{eid}?hard=true",
+            cookies={"access_token": admin_token},
+        )
+        assert d.status_code == 200, d.text
+
+        # GET 404 + install row gone.
+        assert web_client.get(
+            f"/api/store/entities/{eid}", cookies=owner_cookies,
+        ).status_code == 404
         ms = web_client.get("/api/my-stack", cookies=u_cookies).json()
         assert all(e["entity_id"] != eid for e in ms["store"])
 
@@ -1071,7 +1125,9 @@ class TestWebPages:
         assert r.status_code == 200
         assert "My AI Stack" in r.text
 
-    def test_store_detail_page_renders(self, web_client):
+    def test_marketplace_flea_detail_page_renders(self, web_client):
+        """v32+: /store/{id} was deleted; /marketplace/flea/{id} is the
+        canonical detail surface."""
         _, cookies = _create_user(web_client, "page4@x.com")
         r = web_client.post(
             "/api/store/entities",
@@ -1080,9 +1136,12 @@ class TestWebPages:
             cookies=cookies,
         )
         eid = r.json()["id"]
-        det = web_client.get(f"/store/{eid}", cookies=cookies)
+        det = web_client.get(f"/marketplace/flea/{eid}", cookies=cookies)
         assert det.status_code == 200
         assert "page-skill" in det.text
+        # Confirm the legacy URL is gone (404, not 200).
+        legacy = web_client.get(f"/store/{eid}", cookies=cookies)
+        assert legacy.status_code == 404
 
 
 class TestMyStackOptout:

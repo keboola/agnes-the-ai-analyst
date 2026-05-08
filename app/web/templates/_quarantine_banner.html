@@ -1,0 +1,188 @@
+{# Shared quarantine banner partial.
+
+   Surfaces submission status (under review / quarantined / hidden /
+   override-applied) to the entity owner + admins. Self-guarded so it's
+   safe to {% include %} from any detail page — renders nothing when
+   the entity is approved or the viewer isn't owner/admin.
+
+   Required scope:
+     entity         — store_entities row (must carry visibility_status,
+                      visibility_status; entity.id surfaces in admin
+                      detail link)
+     quarantine_sub — latest store_submissions row for entity, or None
+     is_owner       — bool, viewer == entity.owner_user_id
+     is_admin       — bool, viewer is in Admin group
+
+   Mirror of the version that previously lived in store_detail.html.
+   Wording stays consistent with the per-status messaging the user
+   approved earlier — only the rendering location changed.
+#}
+
+{% if entity.visibility_status != 'approved' and (is_owner or is_admin) %}
+<style>
+  .vis-banner {
+    margin: 12px 0 16px 0;
+    padding: 14px 18px;
+    border-radius: 10px;
+    font-size: 14px;
+    border: 1px solid;
+  }
+  .vis-banner.pending  { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+  .vis-banner.blocked  { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+  .vis-banner.hidden   { background: #e5e7eb; color: #374151; border-color: #d1d5db; }
+  .vis-banner h3 { margin: 0 0 6px 0; font-size: 15px; font-weight: 600; }
+  .vis-banner ul { margin: 6px 0 0 0; padding-left: 20px; font-size: 13px; }
+  .vis-banner code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  .vis-banner .actions { margin-top: 10px; }
+  .vis-banner .actions a {
+    display: inline-block; padding: 5px 12px; border-radius: 6px;
+    background: rgba(0,0,0,0.08); color: inherit; text-decoration: none;
+    font-size: 12px; font-weight: 500;
+  }
+</style>
+
+{% set sub = quarantine_sub %}
+{% set st  = sub.status if sub else entity.visibility_status %}
+{% set bcls = 'pending' if st in ['pending_inline','pending_llm','pending']
+              else ('blocked' if st in ['blocked_inline','blocked_llm','review_error']
+                    else 'hidden') %}
+
+<div class="vis-banner {{ bcls }}">
+  {% if st == 'pending_llm' or st == 'pending_inline' or st == 'pending' %}
+    <h3>⟳ Under review</h3>
+    <div>
+      Your submission is being checked. It is hidden from the public
+      Store and from anyone else's view until all checks pass. Page
+      refreshes automatically when the verdict lands — usually a few
+      seconds.
+    </div>
+
+  {% elif st == 'blocked_inline' %}
+    <h3>⚠ Quarantined — automated checks failed</h3>
+    <div>
+      Your submission failed at least one automated check and has been
+      quarantined. It is hidden from the public Store and from every
+      other user; nobody can install it. Fix the issues below and
+      re-upload to retry, or wait for an admin to resolve the
+      quarantine.
+    </div>
+    {% if sub and sub.inline_checks %}
+      {% set ic = sub.inline_checks %}
+      {% if ic.manifest and ic.manifest.issues %}
+      <ul>
+        {% for issue in ic.manifest.issues %}<li>manifest: <code>{{ issue }}</code></li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if ic.static_security and ic.static_security.findings %}
+      <ul>
+        {% for f in ic.static_security.findings[:6] %}
+        <li>security: <code>{{ f.file }}:{{ f.line }}</code> — {{ f.reason }}</li>
+        {% endfor %}
+        {% if ic.static_security.findings|length > 6 %}
+        <li><em>… and {{ ic.static_security.findings|length - 6 }} more</em></li>
+        {% endif %}
+      </ul>
+      {% endif %}
+    {% endif %}
+
+  {% elif st == 'blocked_llm' %}
+    <h3>⚠ Quarantined — security review flagged risk</h3>
+    <div>
+      The security reviewer flagged this submission. It is hidden from
+      the public Store and from every other user; nobody can install
+      it. Address the findings below and re-upload, or wait for an
+      admin to resolve the quarantine.
+    </div>
+    {% if sub and sub.llm_findings %}
+      {% if sub.llm_findings.summary %}
+      <div style="margin-top: 6px;"><em>{{ sub.llm_findings.summary }}</em></div>
+      {% endif %}
+      {% if sub.llm_findings.findings %}
+      <ul>
+        {% for f in sub.llm_findings.findings[:6] %}
+        <li>[{{ f.severity }}] <code>{{ f.file }}</code> — {{ f.explanation }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    {% endif %}
+
+  {% elif st == 'review_error' %}
+    <h3>⚠ Under review — security check errored</h3>
+    <div>
+      The security reviewer couldn't complete its check. The submission
+      stays hidden until an admin retries. No action needed from you.
+    </div>
+
+  {% elif st == 'overridden' %}
+    <h3>✓ Admin override applied</h3>
+    <div>This submission was force-published by an admin.</div>
+
+  {% else %}
+    <h3>Hidden</h3>
+    <div>
+      This entity is not visible in the public Store
+      (<code>visibility_status = "{{ entity.visibility_status }}"</code>).
+    </div>
+  {% endif %}
+
+  {% if is_admin and sub %}
+  <div class="actions">
+    <a href="/admin/store/submissions/{{ sub.id }}">Open submission detail →</a>
+  </div>
+  {% endif %}
+</div>
+
+{# Auto-refresh while the verdict is pending. Banner copy promises
+   "page refreshes automatically when the verdict lands" — this is
+   what does it. Polls the owner-accessible flea detail endpoint and
+   reloads when EITHER visibility flips off 'pending' OR the
+   submission verdict flips off 'pending_inline' / 'pending_llm'.
+   Both signals are needed because `blocked_llm` keeps the entity at
+   `visibility_status='pending'` (admin can override → publish), so
+   visibility alone doesn't fire. Only emits the script while the
+   verdict itself is still pending; terminal states render the
+   final banner copy and don't need to reload. #}
+{% if quarantine_sub and quarantine_sub.status in ['pending_inline', 'pending_llm'] %}
+<script>
+(function () {
+  const entityId = {{ entity.id|tojson }};
+  const initialSubStatus = {{ quarantine_sub.status|tojson }};
+  const initialVisibility = {{ entity.visibility_status|tojson }};
+  let attempts = 0;
+  async function tick() {
+    attempts++;
+    try {
+      const r = await fetch(`/api/marketplace/flea/${entityId}/detail`, {
+        credentials: 'same-origin',
+        headers: {'Accept': 'application/json'},
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const subFlipped = data.submission_status
+          && data.submission_status !== initialSubStatus
+          && data.submission_status !== 'pending_inline'
+          && data.submission_status !== 'pending_llm';
+        const visFlipped = data.visibility_status
+          && data.visibility_status !== initialVisibility;
+        if (subFlipped || visFlipped) {
+          window.location.reload();
+          return;
+        }
+      } else if (r.status === 404) {
+        // Entity might have been archived/deleted — reload so the
+        // page refetches and renders the new state (or a 404).
+        window.location.reload();
+        return;
+      }
+    } catch (e) { /* network blip; keep polling */ }
+    // First 30 attempts at 3s = 90s of fast polling, then back off
+    // to 10s. Same cadence as admin detail polling so an LLM review
+    // on Sonnet/Opus has room to land.
+    const next = attempts < 30 ? 3000 : 10000;
+    setTimeout(tick, next);
+  }
+  setTimeout(tick, 3000);
+})();
+</script>
+{% endif %}
+{% endif %}

@@ -3,7 +3,8 @@
 
 {% block content %}
 <style>
-  .container:has(.stack-page) { max-width: 1280px; margin: 0 auto; padding: 16px 32px 48px; }
+  /* Width + padding come from .page-shell (style-custom.css) — same
+     1280px container as /dashboard, /marketplace, /store, /admin/* peers. */
   .container:has(.stack-page) > main { margin: 0; padding: 0; }
 
   /* ── Page header (slim — no gradient) ──────────────────────────── */
@@ -232,7 +233,7 @@
   .empty a:hover { text-decoration: underline; }
 </style>
 
-<div class="stack-page">
+<div class="stack-page page-shell">
   <header class="stack-header">
     <h1>My AI Stack</h1>
     <p class="sub">What ships into your Claude Code marketplace right now.
@@ -352,12 +353,19 @@ function renderStore(items) {
   for (const e of items) {
     const card = document.createElement('div');
     card.className = 'store-card';
-    card.dataset.href = `/store/${encodeURIComponent(e.entity_id)}`;
+    card.dataset.href = `/marketplace/flea/${encodeURIComponent(e.entity_id)}`;
     const photoMarkup = e.photo_url
       ? `<img class="photo" src="${escapeAttr(e.photo_url)}" alt="">`
       : `<div class="photo">${escapeHtml(typeIcon(e.type))}</div>`;
     const ownerLabel = e.owner_display_name || e.owner_username;
+    // v35: archived plugins still appear in My AI Stack (bundle still
+    // served to existing installs) but get a subtle badge so the user
+    // knows the owner / admin retired it. They can still Uninstall.
+    const archivedBadge = (e.visibility_status === 'archived')
+      ? `<div title="Owner archived this plugin. It's hidden from the public Store + uninstallable elsewhere, but your existing install keeps working." style="position:absolute;top:8px;left:8px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;background:#e5e7eb;color:#374151;border:1px solid #d1d5db;z-index:2;">Archived by owner</div>`
+      : '';
     card.innerHTML = `
+      ${archivedBadge}
       ${photoMarkup}
       <div class="body">
         <span class="type-badge">${escapeHtml(e.type)}</span>

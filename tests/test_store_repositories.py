@@ -22,7 +22,14 @@ def _make_user(conn, *, user_id: str, email: str) -> None:
 
 
 def _create_entity(conn, *, owner_id: str, owner_username: str, name: str,
-                   type_: str = "skill") -> str:
+                   type_: str = "skill",
+                   visibility_status: str = "approved") -> str:
+    """Create an entity for repo-level tests.
+
+    Defaults to ``visibility_status='approved'`` so install/list assertions
+    don't have to thread the guardrail flow — the guardrail wiring lives
+    above the repo at ``app/api/store.py`` and has its own end-to-end tests.
+    """
     from src.repositories.store_entities import StoreEntitiesRepository
     repo = StoreEntitiesRepository(conn)
     eid = uuid.uuid4().hex
@@ -30,6 +37,7 @@ def _create_entity(conn, *, owner_id: str, owner_username: str, name: str,
         id=eid, owner_user_id=owner_id, owner_username=owner_username,
         type=type_, name=name, description="desc", category=None,
         version="abcd1234abcd1234", file_size=100,
+        visibility_status=visibility_status,
     )
     return eid
 

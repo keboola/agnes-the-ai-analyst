@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 35
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -490,21 +490,36 @@ CREATE INDEX IF NOT EXISTS ix_news_template_pub_ver
 -- time the ladder reaches them. App-level deletes already cascade
 -- explicitly (see app/api/store.py + the resource_grant-deletion hook).
 CREATE TABLE IF NOT EXISTS store_entities (
-    id              VARCHAR PRIMARY KEY,
-    owner_user_id   VARCHAR NOT NULL,
-    owner_username  VARCHAR NOT NULL,
-    type            VARCHAR NOT NULL CHECK (type IN ('skill','agent','plugin')),
-    name            VARCHAR NOT NULL,
-    description     TEXT,
-    category        VARCHAR,
-    version         VARCHAR NOT NULL,
-    photo_path      VARCHAR,
-    video_url       VARCHAR,
-    doc_paths       JSON,
-    file_size       BIGINT,
-    install_count   BIGINT NOT NULL DEFAULT 0,
-    created_at      TIMESTAMP DEFAULT current_timestamp,
-    updated_at      TIMESTAMP DEFAULT current_timestamp,
+    id                VARCHAR PRIMARY KEY,
+    owner_user_id     VARCHAR NOT NULL,
+    owner_username    VARCHAR NOT NULL,
+    type              VARCHAR NOT NULL CHECK (type IN ('skill','agent','plugin')),
+    name              VARCHAR NOT NULL,
+    description       TEXT,
+    category          VARCHAR,
+    version           VARCHAR NOT NULL,
+    photo_path        VARCHAR,
+    video_url         VARCHAR,
+    doc_paths         JSON,
+    file_size         BIGINT,
+    install_count     BIGINT NOT NULL DEFAULT 0,
+    -- v29: flea-market guardrails. Non-approved entities are hidden from
+    -- non-admin browse + per-user marketplace composition until the LLM
+    -- review (or an admin override) flips them to 'approved'. Existing
+    -- v28 rows backfill to 'approved' so current uploads stay visible
+    -- through the upgrade.
+    -- v35: 'archived' added — owner soft-delete state. Hidden from
+    -- every browse listing (including the owner's own My AI Stack
+    -- "card" filter), but still served to existing user_store_installs
+    -- so previously-installed users keep getting the bundle through
+    -- marketplace.zip / .git. Hard delete remains admin-only via
+    -- DELETE ?hard=true.
+    visibility_status VARCHAR NOT NULL DEFAULT 'pending'
+                      CHECK (visibility_status IN ('pending','approved','hidden','archived')),
+    archived_at       TIMESTAMP,
+    archived_by       VARCHAR,
+    created_at        TIMESTAMP DEFAULT current_timestamp,
+    updated_at        TIMESTAMP DEFAULT current_timestamp,
     UNIQUE (owner_user_id, name)
 );
 
@@ -522,6 +537,53 @@ CREATE TABLE IF NOT EXISTS user_plugin_optouts (
     opted_out_at   TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (user_id, marketplace_id, plugin_name)
 );
+
+-- v29: flea-market upload guardrails — every POST/PUT to /api/store/entities
+-- writes a submissions row capturing the inline check verdicts, the async
+-- LLM review outcome, and any admin override. Powers /admin/store/submissions.
+-- Status values follow a small FSM:
+--   pending_inline  → inline checks running (transient — rarely visible)
+--   blocked_inline  → at least one inline check failed (manifest / static
+--                     security / quality). entity_id is set but the
+--                     store_entities row is NOT created (rolled back).
+--   pending_llm     → inline checks passed; LLM review enqueued
+--   approved        → review concluded safe; visibility_status flipped
+--   blocked_llm     → review flagged risk ≥ high; entity stays hidden
+--   review_error    → LLM call errored or timed out; admin can retry
+--   overridden      → admin force-published a previously blocked submission
+CREATE TABLE IF NOT EXISTS store_submissions (
+    id              VARCHAR PRIMARY KEY,
+    entity_id       VARCHAR,
+    submitter_id    VARCHAR NOT NULL,
+    submitter_email VARCHAR,
+    type            VARCHAR NOT NULL,
+    name            VARCHAR NOT NULL,
+    version         VARCHAR,
+    status          VARCHAR NOT NULL,
+    inline_checks   JSON,
+    llm_findings    JSON,
+    reviewed_by_model VARCHAR,
+    override_by     VARCHAR,
+    override_reason TEXT,
+    -- v30: forensic columns. file_size + bundle_sha256 are populated at
+    -- upload time and survive the TTL purge so admins can correlate
+    -- repeat-payload attempts after the bundle bytes are gone.
+    -- bundle_purged_at lets the detail UI render "Bundle purged on …"
+    -- instead of an empty Download cell.
+    file_size        BIGINT,
+    bundle_sha256    VARCHAR,
+    bundle_purged_at TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE INDEX IF NOT EXISTS idx_store_submissions_status ON store_submissions(status);
+CREATE INDEX IF NOT EXISTS idx_store_submissions_entity ON store_submissions(entity_id);
+-- NOTE: no created_at index. DuckDB 1.x has a bug where
+-- `ORDER BY <indexed col> DESC LIMIT N` short-returns on small tables
+-- (reproduced with N=2 against 3 rows during /admin/store/submissions
+-- paging). Submissions table is admin-only and bounded by upload
+-- volume, so the index buys little; dropping it sidesteps the bug.
 """
 
 
@@ -2102,6 +2164,115 @@ _V29_TO_V30_MIGRATIONS = [
 ]
 
 
+# v32: flea-market upload guardrails — create store_submissions table +
+# add visibility_status to store_entities. (Originally drafted as v29
+# but renumbered to v32 after rebase onto upstream's v29/v30/v31.)
+#
+#   * `store_entities.visibility_status` (default 'pending'). Existing
+#     rows backfill to 'approved' so live uploads survive the upgrade —
+#     the guardrail pipeline only gates NEW submissions.
+#   * `store_submissions` table holds the per-upload audit trail
+#     powering /admin/store/submissions. The CREATE lives in
+#     _SYSTEM_SCHEMA; this migration only adds the column + backfill.
+#
+# IF NOT EXISTS guard on the ALTER mirrors v27/v28 — fresh installs at
+# pre-v32 (test fixtures) come up with the column already present via
+# _SYSTEM_SCHEMA.
+_V31_TO_V32_MIGRATIONS = [
+    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS visibility_status VARCHAR",
+    "UPDATE store_entities SET visibility_status = 'approved' WHERE visibility_status IS NULL",
+]
+
+
+# v33: forensic columns on store_submissions — file_size, bundle_sha256,
+# bundle_purged_at. Underpins persist-blocked-bundle behavior: blocked
+# uploads keep the bundle on disk so admins can Rescan / Override /
+# Download. The 30-day TTL purge then clears bytes while leaving the
+# row + sha intact for forensic correlation. file_size on existing rows
+# is backfilled from the linked entity row (when present);
+# bundle_sha256 stays NULL on legacy rows since we no longer have the
+# bytes to hash. Renumbered from v30 → v33 after rebase onto upstream's
+# v29/v30/v31 sequence.
+_V32_TO_V33_MIGRATIONS = [
+    "ALTER TABLE store_submissions ADD COLUMN IF NOT EXISTS file_size BIGINT",
+    "ALTER TABLE store_submissions ADD COLUMN IF NOT EXISTS bundle_sha256 VARCHAR",
+    "ALTER TABLE store_submissions ADD COLUMN IF NOT EXISTS bundle_purged_at TIMESTAMP",
+    """
+    UPDATE store_submissions
+       SET file_size = (
+           SELECT file_size FROM store_entities
+            WHERE store_entities.id = store_submissions.entity_id
+       )
+     WHERE file_size IS NULL AND entity_id IS NOT NULL
+    """,
+]
+
+
+# v34: drop store_submissions.retry_count. Counter mixed two unrelated
+# things (LLM error count + admin rescan count), was asymmetric (Retry
+# LLM didn't bump but Rescan did), and is fully redundant with the
+# audit_log timeline now rendered on the detail page — every rescan /
+# retry / review_error is a row there with timestamp + actor. SELECT
+# COUNT(*) FROM audit_log WHERE resource = 'store_submission:<id>' AND
+# action IN (…) gives the same number when an admin actually wants it.
+# v35: store_entities gains 'archived' as a fourth visibility state +
+# audit columns (archived_at, archived_by). Owner soft-delete writes
+# this state instead of dropping the row; existing user_store_installs
+# keep serving the bundle through marketplace.zip / .git so already-
+# installed users don't lose the plugin. Hard delete (admin only via
+# DELETE ?hard=true) remains the path for legal / privacy removals.
+#
+# DuckDB doesn't support ALTER COLUMN ADD CHECK in-place; the existing
+# CHECK constraint allows {pending, approved, hidden}. Workaround:
+# rebuild via column-rebuild — but DuckDB DROP COLUMN can fail on
+# indexed tables (we hit this in v34). Easier: drop the CHECK constraint
+# implicitly by not relying on it (the application validates via
+# StoreEntitiesRepository.set_visibility), and just add the new
+# columns. The CHECK still rejects 'archived' on inserts via DuckDB
+# but DuckDB's CHECK constraint is informational on existing tables
+# under ALTER — verify in migration testing.
+#
+# Concretely: drop and re-add the visibility_status column rebuilt
+# without the CHECK, OR use ALTER TABLE … DROP CONSTRAINT. DuckDB
+# supports neither cleanly on the indexed `store_entities`. Workaround:
+# rename to a temp column, copy values, drop original, rename back.
+# Two-step: first add the new audit columns (always safe); then
+# rebuild visibility_status without the CHECK so 'archived' becomes a
+# valid value.
+_V34_TO_V35_MIGRATIONS = [
+    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
+    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR",
+    # Rebuild visibility_status to drop the legacy CHECK (which forbade
+    # 'archived'). DuckDB lacks DROP CONSTRAINT for table-level CHECKs,
+    # so we copy → drop → rename. Defaults preserved; existing values
+    # survive verbatim.
+    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS _vis_v35 VARCHAR",
+    "UPDATE store_entities SET _vis_v35 = visibility_status WHERE _vis_v35 IS NULL",
+    "ALTER TABLE store_entities DROP COLUMN visibility_status",
+    "ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status",
+    # Re-establish NOT NULL + default semantics at the application
+    # layer; DuckDB's ALTER ADD CONSTRAINT is limited. The repo always
+    # writes a value; the original column had DEFAULT 'pending' which
+    # only mattered on INSERT, and INSERT is always done via the repo.
+]
+
+
+_V33_TO_V34_MIGRATIONS = [
+    # DuckDB blocks DROP COLUMN while indexes reference the table
+    # ("Dependency Error: Cannot alter entry … because there are entries
+    # that depend on it"), even when the index doesn't reference the
+    # dropped column. Drop both indexes, drop the column, then re-create
+    # the indexes from _SYSTEM_SCHEMA's CREATE INDEX IF NOT EXISTS
+    # statements (which already ran above this block — but DROP+CREATE
+    # is idempotent here too).
+    "DROP INDEX IF EXISTS idx_store_submissions_status",
+    "DROP INDEX IF EXISTS idx_store_submissions_entity",
+    "ALTER TABLE store_submissions DROP COLUMN IF EXISTS retry_count",
+    "CREATE INDEX IF NOT EXISTS idx_store_submissions_status ON store_submissions(status)",
+    "CREATE INDEX IF NOT EXISTS idx_store_submissions_entity ON store_submissions(entity_id)",
+]
+
+
 # v31: rename session_extraction_state → session_processor_state with composite
 # PK (processor_name, session_file). The session pipeline framework
 # (services/session_pipeline/) lets multiple processors track their own
@@ -2436,6 +2607,18 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 31:
                 _v30_to_v31_migrate(conn)
+            if current < 32:
+                for sql in _V31_TO_V32_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 33:
+                for sql in _V32_TO_V33_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 34:
+                for sql in _V33_TO_V34_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 35:
+                for sql in _V34_TO_V35_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

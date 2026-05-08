@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 import duckdb
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -45,12 +46,20 @@ from pydantic import BaseModel
 
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
+from app.instance_config import get_guardrails_enabled
 from app.utils import get_store_dir
+from src.db import get_system_db
 from src.repositories.audit import AuditRepository
 from src.repositories.store_entities import StoreEntitiesRepository
+from src.repositories.store_submissions import StoreSubmissionsRepository
 from src.repositories.user_store_installs import UserStoreInstallsRepository
 from src.repositories.users import UserRepository
 from src.store_categories import STORE_CATEGORIES, is_valid_category
+from src.store_guardrails import InlineResult, run_inline_checks, run_llm_review
+from src.store_guardrails.runner import (
+    default_api_key_loader,
+    default_model_loader,
+)
 from src.store_naming import (
     compute_entity_version,
     sanitize_username,
@@ -151,6 +160,9 @@ class StoreEntityResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     invocation_name: str  # what the user types in Claude Code
+    # v32+ quarantine: surface visibility so /store browse can render
+    # the corner badge on the submitter's own non-approved cards.
+    visibility_status: Optional[str] = None
 
 
 class StoreEntityListResponse(BaseModel):
@@ -196,6 +208,30 @@ def _audit(
         )
     except Exception:
         pass
+
+
+def _schedule_llm_review(
+    background_tasks: BackgroundTasks,
+    submission_id: str,
+    plugin_dir: Path,
+) -> None:
+    """Defer the LLM security review to FastAPI's BackgroundTasks queue.
+
+    Runs after the response has been sent so the uploader sees the 202
+    immediately while the (slow) Anthropic call happens in the background.
+    Pulls a *fresh* DuckDB cursor inside the task — sharing the request's
+    cursor across the background path would close it before the task
+    fires (FastAPI yields cursors from ``_get_db`` and the cleanup runs
+    on the response yield).
+    """
+    background_tasks.add_task(
+        run_llm_review,
+        submission_id,
+        plugin_dir=plugin_dir,
+        conn_factory=get_system_db,
+        api_key_loader=default_api_key_loader,
+        model_loader=default_model_loader,
+    )
 
 
 def _categories_for_user(conn: duckdb.DuckDBPyConnection, user_id: str) -> List[str]:
@@ -267,6 +303,7 @@ def _entity_to_response(
         created_at=_to_iso(entity.get("created_at")),
         updated_at=_to_iso(entity.get("updated_at")),
         invocation_name=suffixed_name(entity["name"], entity["owner_username"]),
+        visibility_status=entity.get("visibility_status") or "approved",
     )
 
 
@@ -619,16 +656,32 @@ async def list_owners(
     """Owners who have at least one entity in the Store — populates the
     listing-page owner filter. Sorted by display name (name fallbacks to
     email then to username) so the dropdown is alphabetical and stable.
+
+    Visibility filter (v32+/v35): non-admin sees owners-of-approved
+    only (a submitter with N quarantined uploads must not surface in
+    the public dropdown until at least one is approved). Admin sees
+    every owner regardless of state.
     """
+    if is_user_admin(user["id"], conn):
+        where_sql = ""
+        params: list = []
+    else:
+        # 'approved' is the public set. Owners of only-archived /
+        # only-pending / only-blocked entries don't appear in the
+        # public dropdown — they have nothing to filter to.
+        where_sql = "WHERE se.visibility_status = 'approved'"
+        params = []
     rows = conn.execute(
-        """SELECT
+        f"""SELECT
                se.owner_user_id,
                COALESCE(NULLIF(TRIM(u.name), ''), u.email, se.owner_username) AS display_name,
                COUNT(*) AS entity_count
            FROM store_entities se
            LEFT JOIN users u ON u.id = se.owner_user_id
+           {where_sql}
            GROUP BY se.owner_user_id, display_name
-           ORDER BY display_name"""
+           ORDER BY display_name""",
+        params,
     ).fetchall()
     return [
         OwnerOption(
@@ -654,6 +707,24 @@ async def list_entities(
     if type and type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
     repo = StoreEntitiesRepository(conn)
+    # Visibility filter: hide pending/blocked from the public flea browse.
+    # An owner viewing their own uploads (`owner=<self_id>`) sees their
+    # whole catalogue regardless of guardrail status — same goes for
+    # admins via the existing /admin path. Anyone else only sees approved.
+    visibility_filter: Optional[List[str]]
+    include_owner_id: Optional[str] = None
+    is_admin = is_user_admin(user["id"], conn)
+    is_self_owner = bool(owner and owner == user["id"])
+    if is_admin or is_self_owner:
+        visibility_filter = None
+    else:
+        visibility_filter = ["approved"]
+        # Owner sees their own non-approved entries in the listing too
+        # so they spot what they uploaded that's still under review or
+        # quarantined. The card template renders a status badge for
+        # those rows; without this an upload silently disappears from
+        # the grid the moment it's quarantined.
+        include_owner_id = user["id"]
     items, total = repo.list(
         skip=skip,
         limit=limit,
@@ -661,6 +732,8 @@ async def list_entities(
         category=category,
         search=search,
         owner_user_id=owner,
+        visibility_status=visibility_filter,
+        include_owner_id=include_owner_id,
     )
     return StoreEntityListResponse(
         items=[_entity_to_response(conn, e) for e in items],
@@ -668,6 +741,21 @@ async def list_entities(
         skip=skip,
         limit=limit,
     )
+
+
+def _enforce_visibility(entity: dict, user: dict, conn) -> None:
+    """Refuse asset reads on quarantined entities for non-owner non-admin.
+
+    Returns 404 (not 403) so the existence of the entity is not leaked
+    via timing / status-code differences. Owner + admin always pass.
+    """
+    if entity.get("visibility_status") == "approved":
+        return
+    if entity.get("owner_user_id") == user.get("id"):
+        return
+    if is_user_admin(user["id"], conn):
+        return
+    raise HTTPException(status_code=404, detail="entity_not_found")
 
 
 @router.get("/entities/{entity_id}", response_model=StoreEntityResponse)
@@ -679,6 +767,7 @@ async def get_entity(
     entity = StoreEntitiesRepository(conn).get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
+    _enforce_visibility(entity, user, conn)
     return _entity_to_response(conn, entity)
 
 
@@ -691,6 +780,7 @@ async def list_entity_files(
     entity = StoreEntitiesRepository(conn).get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
+    _enforce_visibility(entity, user, conn)
     plugin_dir = _plugin_dir(entity_id)
     if not plugin_dir.is_dir():
         return {"files": []}
@@ -715,6 +805,7 @@ async def get_entity_photo(
     entity = StoreEntitiesRepository(conn).get(entity_id)
     if not entity or not entity.get("photo_path"):
         raise HTTPException(status_code=404, detail="photo_not_found")
+    _enforce_visibility(entity, user, conn)
     abs_path = _entity_dir(entity_id) / entity["photo_path"]
     if not abs_path.is_file():
         raise HTTPException(status_code=404, detail="photo_not_found")
@@ -732,6 +823,7 @@ async def get_entity_doc(
     entity = StoreEntitiesRepository(conn).get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
+    _enforce_visibility(entity, user, conn)
     docs_dir = (_assets_dir(entity_id) / "docs").resolve()
     abs_path = (docs_dir / filename).resolve()
     try:
@@ -792,6 +884,7 @@ async def preview_entity(
 
 @router.post("/entities", response_model=StoreEntityResponse, status_code=201)
 async def create_entity(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     type: str = Form(...),
     name: Optional[str] = Form(None),
@@ -816,6 +909,29 @@ async def create_entity(
         raise HTTPException(status_code=400, detail="invalid_category")
 
     video_url = _validate_video_url(video_url)
+
+    # Per-submitter spam quota (v30). When persisted-bundle is on, a bot
+    # looping on malformed ZIPs would otherwise fill disk + the admin
+    # queue with noise. Cap rejected uploads per submitter per 24h;
+    # operator can disable by setting the knob to 0.
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from app.instance_config import get_guardrails_blocked_quota_per_day
+    quota = get_guardrails_blocked_quota_per_day()
+    if quota > 0:
+        since = _dt.now(_tz.utc) - _td(hours=24)
+        recent_blocked = StoreSubmissionsRepository(conn) \
+            .count_blocked_inline_for_submitter_since(user["id"], since)
+        if recent_blocked >= quota:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "quota_exceeded",
+                    "blocked_in_last_24h": recent_blocked,
+                    "limit": quota,
+                    "hint": "Fix the previous upload errors before retrying. "
+                            "Quota resets 24h after each blocked attempt.",
+                },
+            )
 
     # Stream + extract ZIP into a scratch dir. Both the temp-file (`tmp`)
     # AND the scratch dir need cleanup on every exit path, including
@@ -870,6 +986,86 @@ async def create_entity(
         )
         version = compute_entity_version(plugin_dir)
 
+        # ---- Guardrail pipeline ------------------------------------------
+        #
+        # Inline checks (manifest, static security, quality+templating)
+        # run synchronously against the BAKED plugin tree.
+        #
+        # On fail (v30): we KEEP the bundle on disk, create the entity
+        # row at ``visibility_status='hidden'`` (invisible in flea
+        # browse + served marketplace), persist the submission with
+        # entity_id + sha + size. Admin can Rescan / Override /
+        # Download from /admin/store/submissions. The 30-day TTL job
+        # purges bundle bytes later but keeps the audit row.
+        #
+        # On pass: create the entity in 'pending' visibility, schedule
+        # the (slow) LLM review on BackgroundTasks. Entity only
+        # becomes visible after the review approves it (or admin
+        # overrides). See docs/STORE_GUARDRAILS.md.
+        from src.store_guardrails.bundle_meta import compute_bundle_meta
+        bundle_meta = compute_bundle_meta(plugin_dir)
+        inline = run_inline_checks(
+            plugin_dir, type_=type, description=final_description,
+        )
+        subs_repo = StoreSubmissionsRepository(conn)
+        if not inline.passed:
+            # Persist the bundle on disk so admins can Rescan/Download.
+            # No rmtree here — TTL purge owns deletion now.
+            photo_rel = await _save_photo(photo, entity_id) if photo else None
+            doc_rels = await _save_docs(docs, entity_id)
+            repo.create(
+                id=entity_id,
+                owner_user_id=user["id"],
+                owner_username=username,
+                type=type,
+                name=final_name,
+                description=final_description,
+                category=category,
+                version=version,
+                photo_path=photo_rel,
+                video_url=video_url,
+                doc_paths=doc_rels,
+                file_size=file_size,
+                visibility_status="hidden",
+            )
+            sub_id = subs_repo.create(
+                submitter_id=user["id"],
+                submitter_email=user.get("email"),
+                type=type,
+                name=final_name,
+                version=version,
+                status="blocked_inline",
+                entity_id=entity_id,
+                inline_checks=inline.to_response_dict(),
+                file_size=bundle_meta.file_size,
+                bundle_sha256=bundle_meta.sha256,
+            )
+            _audit(
+                conn, user["id"], "store.submission.blocked_inline",
+                sub_id, {
+                    "type": type, "name": final_name,
+                    "entity_id": entity_id,
+                    "manifest": inline.manifest.get("status"),
+                    "static_security": inline.static_security.get("status"),
+                    "static_findings": len(inline.static_security.get("findings") or []),
+                    "sha256": bundle_meta.sha256,
+                    "file_size": bundle_meta.file_size,
+                },
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "submission_blocked",
+                    "submission_id": sub_id,
+                    "checks": inline.to_response_dict(),
+                },
+            )
+
+        guardrails_on = get_guardrails_enabled()
+        # When the pipeline is disabled (local dev / no ANTHROPIC_API_KEY)
+        # we approve immediately. Inline checks ran above and recorded a
+        # passing verdict; skip the async LLM step and the 'pending' hold.
+        initial_visibility = "approved" if not guardrails_on else "pending"
         photo_rel = await _save_photo(photo, entity_id) if photo else None
         doc_rels = await _save_docs(docs, entity_id)
 
@@ -886,6 +1082,7 @@ async def create_entity(
             video_url=video_url,
             doc_paths=doc_rels,
             file_size=file_size,
+            visibility_status=initial_visibility,
         )
         _audit(
             conn,
@@ -894,6 +1091,29 @@ async def create_entity(
             entity_id,
             {"type": type, "name": final_name, "version": version, "size": file_size},
         )
+
+        sub_id = subs_repo.create(
+            submitter_id=user["id"],
+            submitter_email=user.get("email"),
+            type=type,
+            name=final_name,
+            version=version,
+            status="approved" if not guardrails_on else "pending_llm",
+            entity_id=entity_id,
+            inline_checks=inline.to_response_dict(),
+            file_size=bundle_meta.file_size,
+            bundle_sha256=bundle_meta.sha256,
+        )
+        _audit(
+            conn, user["id"],
+            "store.submission.accepted" if guardrails_on else "store.submission.approved",
+            sub_id, {
+                "entity_id": entity_id,
+                "guardrails_enabled": guardrails_on,
+            },
+        )
+        if guardrails_on:
+            _schedule_llm_review(background_tasks, sub_id, plugin_dir)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -910,6 +1130,7 @@ async def create_entity(
 @router.put("/entities/{entity_id}", response_model=StoreEntityResponse)
 async def update_entity(
     entity_id: str,
+    background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None),
     description: Optional[str] = Form(None),
     category: Optional[str] = Form(None),
@@ -932,6 +1153,7 @@ async def update_entity(
 
     new_version: Optional[str] = None
     new_size: Optional[int] = None
+    inline_after_update: Optional[InlineResult] = None
     if file is not None:
         # Same single-try/finally invariant as create_entity — see the comment
         # there. ZIP-validation HTTPExceptions raised inside _safe_zip_extract
@@ -939,7 +1161,15 @@ async def update_entity(
         tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
         tmp.close()
         scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
+        # Snapshot of the existing baked tree, so we can roll back the
+        # on-disk update if guardrails reject the new bundle. Without
+        # this, a failed re-upload leaves the entity pointing at a
+        # half-overwritten tree.
+        rollback_dir = Path(tempfile.mkdtemp(prefix="agnes_store_rollback_"))
         try:
+            existing_plugin = _plugin_dir(entity_id)
+            if existing_plugin.exists():
+                shutil.copytree(existing_plugin, rollback_dir / "plugin")
             try:
                 with zipfile.ZipFile(tmp.name, "r") as zf:
                     _safe_zip_extract(zf, scratch)
@@ -953,14 +1183,60 @@ async def update_entity(
             new_size = _bake_plugin_tree(
                 type_=entity["type"],
                 extracted_root=scratch,
-                plugin_dir=_plugin_dir(entity_id),
+                plugin_dir=existing_plugin,
                 final_name=entity["name"],
                 suffixed=suffixed,
                 description=description if description is not None else entity.get("description"),
             )
-            new_version = compute_entity_version(_plugin_dir(entity_id))
+            new_version = compute_entity_version(existing_plugin)
+
+            inline_after_update = run_inline_checks(
+                existing_plugin,
+                type_=entity["type"],
+                description=description if description is not None
+                            else entity.get("description"),
+            )
+            if not inline_after_update.passed:
+                # Compute the rejected bundle's sha+size BEFORE rollback
+                # so the submission row carries forensics about what was
+                # tried, even though the bytes themselves get reverted.
+                from src.store_guardrails.bundle_meta import compute_bundle_meta
+                rejected_meta = compute_bundle_meta(existing_plugin)
+                # Restore prior bundle from rollback snapshot so the
+                # uploader's old (already-approved) entity stays usable.
+                shutil.rmtree(existing_plugin, ignore_errors=True)
+                if (rollback_dir / "plugin").exists():
+                    shutil.copytree(rollback_dir / "plugin", existing_plugin)
+                subs_repo = StoreSubmissionsRepository(conn)
+                sub_id = subs_repo.create(
+                    submitter_id=user["id"],
+                    submitter_email=user.get("email"),
+                    type=entity["type"],
+                    name=entity["name"],
+                    version=new_version,
+                    status="blocked_inline",
+                    entity_id=entity_id,
+                    inline_checks=inline_after_update.to_response_dict(),
+                    file_size=rejected_meta.file_size,
+                    bundle_sha256=rejected_meta.sha256,
+                )
+                _audit(
+                    conn, user["id"], "store.submission.blocked_inline",
+                    sub_id, {"entity_id": entity_id, "on": "update",
+                             "sha256": rejected_meta.sha256,
+                             "file_size": rejected_meta.file_size},
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "submission_blocked",
+                        "submission_id": sub_id,
+                        "checks": inline_after_update.to_response_dict(),
+                    },
+                )
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
+            shutil.rmtree(rollback_dir, ignore_errors=True)
 
     photo_rel: Optional[str] = None
     if photo is not None:
@@ -982,6 +1258,42 @@ async def update_entity(
         video_url=video_url,
         file_size=new_size,
     )
+
+    # Re-run the LLM review whenever the bundle bytes changed. New
+    # version = new submission row; visibility flips back to 'pending'
+    # until the review approves the new tree. Description-only / photo-
+    # only edits don't re-trigger.
+    if file is not None:
+        guardrails_on = get_guardrails_enabled()
+        if guardrails_on:
+            repo.set_visibility(entity_id, "pending")
+        subs_repo = StoreSubmissionsRepository(conn)
+        # Compute sha256 for the accepted re-upload so the submission row
+        # carries forensics for retry-chain correlation.
+        from src.store_guardrails.bundle_meta import compute_bundle_meta
+        accepted_meta = compute_bundle_meta(_plugin_dir(entity_id))
+        sub_id = subs_repo.create(
+            submitter_id=user["id"],
+            submitter_email=user.get("email"),
+            type=entity["type"],
+            name=entity["name"],
+            version=new_version,
+            status="approved" if not guardrails_on else "pending_llm",
+            entity_id=entity_id,
+            inline_checks=inline_after_update.to_response_dict()
+                          if inline_after_update else None,
+            file_size=accepted_meta.file_size,
+            bundle_sha256=accepted_meta.sha256,
+        )
+        _audit(
+            conn, user["id"],
+            "store.submission.accepted" if guardrails_on else "store.submission.approved",
+            sub_id, {"entity_id": entity_id, "on": "update",
+                     "guardrails_enabled": guardrails_on},
+        )
+        if guardrails_on:
+            _schedule_llm_review(background_tasks, sub_id, _plugin_dir(entity_id))
+
     _audit(
         conn,
         user["id"],
@@ -1001,24 +1313,98 @@ async def update_entity(
 @router.delete("/entities/{entity_id}", response_model=OkResponse)
 async def delete_entity(
     entity_id: str,
+    hard: bool = False,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """Soft-archive (default) or hard-delete (admin-only).
+
+    * **Soft (default)** — flips `visibility_status='archived'`. Bundle
+      stays on disk; existing user_store_installs continue serving the
+      bundle through marketplace.zip / .git so already-installed users
+      don't lose the plugin. Browse listings hide it; install endpoint
+      refuses new installs. Owner + admin can soft-archive an
+      approved entity.
+    * **Hard (`?hard=true`)** — admin-only. Drops the row, removes the
+      bundle from disk, deletes user_store_installs (existing users
+      lose the plugin). Use for legal / privacy removals where the
+      bytes have to go.
+
+    Quarantined (pending / blocked / hidden) entities: only admins can
+    archive or hard-delete; owner is refused so they can't erase the
+    evidence of a flagged upload before triage.
+    """
     entity = StoreEntitiesRepository(conn).get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
-    if entity["owner_user_id"] != user["id"] and not is_user_admin(user["id"], conn):
+    is_admin_caller = is_user_admin(user["id"], conn)
+    if entity["owner_user_id"] != user["id"] and not is_admin_caller:
         raise HTTPException(status_code=403, detail="not_owner")
 
-    UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
-    StoreEntitiesRepository(conn).delete(entity_id)
-    shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
+    # Hard delete is admin-only. Owners (or admins without ?hard=true)
+    # take the soft archive path below.
+    if hard and not is_admin_caller:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "hard_delete_admin_only",
+                "hint": "Hard delete is admin-only — it drops the bundle "
+                        "from disk and removes existing installs. Use the "
+                        "default Archive button to soft-delete (keeps "
+                        "existing installs working).",
+            },
+        )
+
+    # Quarantined (non-approved + non-archived): owner can't touch.
+    # Admin can either Archive (soft) or Hard Delete from here.
+    if (
+        entity.get("visibility_status") not in ("approved", "archived")
+        and not is_admin_caller
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "quarantined_owner_cannot_delete",
+                "hint": "This submission is under quarantine while admins "
+                        "review it. Edit and re-upload to fix the issues, "
+                        "or wait for an admin to resolve the quarantine.",
+            },
+        )
+
+    if hard:
+        # Mark linked submissions before dropping the entity row so
+        # mark_deleted_for_entity can find them by entity_id.
+        StoreSubmissionsRepository(conn).mark_deleted_for_entity(entity_id)
+        UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
+        StoreEntitiesRepository(conn).delete(entity_id)
+        shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
+        _audit(
+            conn,
+            user["id"],
+            "store.entity.hard_delete",
+            entity_id,
+            {"name": entity.get("name"),
+             "owner_user_id": entity.get("owner_user_id")},
+        )
+        _invalidate_etag()
+        return OkResponse()
+
+    # Soft archive — preserves disk + installs + audit chain.
+    # v36+: lifecycle lives only on the entity row; the admin queue
+    # surfaces archived submissions via LEFT JOIN at query time, so
+    # no denormalization back to store_submissions.status. Adversarial
+    # review locked this in: any future code path that flips
+    # entity.visibility_status (admin override, rescan, bulk ops)
+    # automatically reflects in the queue without a parallel write.
+    StoreEntitiesRepository(conn).archive(entity_id, by_user_id=user["id"])
     _audit(
         conn,
         user["id"],
-        "store.entity.delete",
+        "store.entity.archive",
         entity_id,
-        {"name": entity.get("name")},
+        {"name": entity.get("name"),
+         "owner_user_id": entity.get("owner_user_id"),
+         "by_admin": is_admin_caller and entity["owner_user_id"] != user["id"]},
     )
     _invalidate_etag()
     return OkResponse()
@@ -1039,6 +1425,14 @@ async def install_entity(
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
+    # Block installs against entities still in guardrail review or that
+    # have been hidden — they are not visible in the public flea browse,
+    # but a user with the entity_id in hand could otherwise install
+    # directly. Owner installing their own pending entity gets the same
+    # 409 — they preview before publishing via /api/store/entities/preview
+    # or wait for approval.
+    if entity.get("visibility_status") != "approved" and not is_user_admin(user["id"], conn):
+        raise HTTPException(status_code=409, detail="entity_not_approved")
     installs = UserStoreInstallsRepository(conn)
     inserted = installs.install(user["id"], entity_id)
     if inserted:

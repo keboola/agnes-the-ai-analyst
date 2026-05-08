@@ -1,0 +1,548 @@
+{% extends "base.html" %}
+{% block title %}Submission {{ sub.id[:8] }} — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  /* Width + padding come from .page-shell (style-custom.css) — same
+     1280px container as /dashboard, /marketplace, /admin/* peers. */
+  .det-back { font-size: 13px; color: var(--text-secondary, #6b7280); text-decoration: none; }
+  .det-back:hover { color: var(--text, #111827); text-decoration: underline; }
+
+  .det-header {
+    margin-top: 8px; margin-bottom: 20px;
+    padding: 16px 20px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+  }
+  .det-header h1 { margin: 0 0 6px 0; font-size: 20px; font-weight: 600; }
+  .det-header .id-line {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .det-meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 24px; margin-top: 12px; font-size: 13px; }
+  .det-meta dt { color: var(--text-secondary, #6b7280); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .det-meta dd { margin: 0 0 8px 0; }
+  .det-meta dd a { color: var(--text, #111827); text-decoration: none; }
+  .det-meta dd a:hover { text-decoration: underline; }
+
+  .det-card {
+    margin-bottom: 16px; padding: 16px 20px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+  }
+  .det-card h2 { margin: 0 0 12px 0; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-secondary, #6b7280); }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .badge.pass, .badge.safe, .badge.low, .badge.approved      { background: #d1fae5; color: #065f46; }
+  .badge.warn, .badge.medium                                  { background: #fef3c7; color: #92400e; }
+  .badge.fail, .badge.high, .badge.critical, .badge.blocked_inline, .badge.blocked_llm, .badge.review_error { background: #fee2e2; color: #991b1b; }
+  .badge.pending_inline, .badge.pending_llm                   { background: #fef3c7; color: #92400e; }
+  .badge.overridden                                           { background: #dbeafe; color: #1e40af; }
+  .badge.archived                                             { background: #e5e7eb; color: #374151; }
+  .badge.deleted                                              { background: #4b5563; color: #f3f4f6; }
+
+  table.sub-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.sub-table th, table.sub-table td {
+    text-align: left; padding: 6px 10px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: top;
+  }
+  table.sub-table th { color: var(--text-secondary, #6b7280); text-transform: uppercase; letter-spacing: 0.4px; font-size: 10px; }
+  table.sub-table code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  ul.issues { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+
+  .det-summary { font-size: 14px; line-height: 1.5; margin: 8px 0 12px 0; }
+  .det-error-box {
+    padding: 10px 12px; border-radius: 6px;
+    background: #fee2e2; color: #991b1b; font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-word;
+  }
+  .det-recommendation {
+    padding: 10px 12px; border-radius: 6px;
+    background: #dbeafe; color: #1e40af; font-size: 13px;
+    margin-top: 8px;
+  }
+
+  .override-block {
+    padding: 10px 12px; border-radius: 6px;
+    background: #dbeafe; color: #1e40af;
+    font-size: 13px;
+  }
+
+  .det-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .btn {
+    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff); cursor: pointer;
+    font-size: 13px; font-weight: 500; color: var(--text, #111827);
+  }
+  .btn.primary { background: var(--text, #111827); color: var(--surface, #fff); border-color: var(--text, #111827); }
+  .btn.danger { color: #b91c1c; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .empty-msg { font-size: 13px; color: var(--text-secondary, #6b7280); font-style: italic; }
+
+  .timeline { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+  .timeline li {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: baseline;
+  }
+  .timeline li:last-child { border-bottom: none; }
+  .timeline .ts {
+    font-variant-numeric: tabular-nums; color: var(--text-secondary, #6b7280);
+    font-size: 12px; white-space: nowrap;
+  }
+  .timeline .action {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  }
+  .timeline .actor { color: var(--text-secondary, #6b7280); font-size: 12px; }
+  .timeline .relative { font-size: 11px; color: var(--text-secondary, #9ca3af); }
+
+  /* Pending banner — surfaces above the header when status is pending_*.
+     Auto-polls and reloads when status flips. */
+  .pending-banner {
+    margin-top: 8px; margin-bottom: 12px;
+    padding: 12px 16px;
+    background: #fef3c7; color: #92400e;
+    border: 1px solid #fde68a; border-radius: 8px;
+    font-size: 13px; display: flex; align-items: center; gap: 10px;
+  }
+  .pending-banner .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid #fcd34d; border-top-color: #92400e;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pending-banner .elapsed { color: #92400e; opacity: 0.7; font-variant-numeric: tabular-nums; margin-left: auto; }
+
+  /* Toast — short-lived "action queued" message after rescan/retry.
+     Fades out so admins know the request was accepted before the page
+     reloads on completion. */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--text, #111827); color: var(--surface, #fff);
+    padding: 10px 16px; border-radius: 8px;
+    font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+    opacity: 0; transition: opacity .25s ease;
+    z-index: 9999;
+  }
+  .toast.show { opacity: 1; }
+</style>
+
+<div class="det-page page-shell">
+  <a class="det-back" href="/admin/store/submissions">← Back to all submissions</a>
+
+  {% if sub.status in ['pending_inline','pending_llm'] %}
+  <div class="pending-banner" id="pendingBanner">
+    <div class="spinner" aria-hidden="true"></div>
+    <div>
+      <strong>Review in progress</strong> — checks running against the bundle.
+      Page auto-refreshes when verdict lands.
+    </div>
+    <span class="elapsed" id="pendingElapsed" data-since="{{ sub.updated_at.isoformat() if sub.updated_at else '' }}">0s</span>
+  </div>
+  {% endif %}
+
+  <div class="det-header">
+    <h1>{{ sub.type }} · <strong>{{ sub.name }}</strong> {% if sub.version %}<span style="color: var(--text-secondary, #6b7280); font-weight: normal;">v{{ sub.version }}</span>{% endif %}</h1>
+    <div class="id-line">{{ sub.id }}</div>
+    <dl class="det-meta">
+      <div>
+        <dt>Status (verdict)</dt>
+        <dd><span class="badge {{ sub.status }}">{{ sub.status }}</span></dd>
+      </div>
+      <div>
+        <dt>Entity lifecycle</dt>
+        <dd>
+          {%- if entity_visibility_status -%}
+            <span class="badge {{ entity_visibility_status }}">{{ entity_visibility_status }}</span>
+            {%- if entity_visibility_status != sub.status %}
+            <span style="font-size: 11px; color: var(--text-secondary, #9ca3af); margin-left: 6px;">live state — verdict immutable</span>
+            {%- endif %}
+          {%- else -%}
+            <span class="empty-msg">entity gone</span>
+          {%- endif -%}
+        </dd>
+      </div>
+      <div>
+        <dt>Submitter</dt>
+        <dd><a href="/admin/store/submissions?submitter={{ sub.submitter_id }}">{{ sub.submitter_email or sub.submitter_id }}</a></dd>
+      </div>
+      <div>
+        <dt>Created</dt>
+        <dd>{{ sub.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") if sub.created_at else "" }}</dd>
+      </div>
+      <div>
+        <dt>Last update</dt>
+        <dd>
+          {%- if sub.updated_at -%}
+          {{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}
+          <span class="relative" data-rel-since="{{ sub.updated_at.isoformat() }}"
+                style="display:block; font-size:11px; color: var(--text-secondary, #9ca3af);">just now</span>
+          {%- endif -%}
+        </dd>
+      </div>
+      <div>
+        <dt>Reviewed by model</dt>
+        <dd>{{ sub.reviewed_by_model or "—" }}</dd>
+      </div>
+      <div>
+        <dt>Entity ID</dt>
+        <dd>{% if sub.entity_id %}<code style="font-size:12px;">{{ sub.entity_id }}</code>{% else %}<span class="empty-msg">none — bundle purged or legacy row</span>{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Bundle size</dt>
+        <dd>{% if sub.file_size is not none %}{% if sub.file_size < 1024 %}{{ sub.file_size }} B{% elif sub.file_size < 1048576 %}{{ "%.1f"|format(sub.file_size / 1024) }} KB{% else %}{{ "%.1f"|format(sub.file_size / 1048576) }} MB{% endif %}{% else %}—{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Bundle SHA256</dt>
+        <dd>{% if sub.bundle_sha256 %}<code style="font-size:11px; word-break: break-all;">{{ sub.bundle_sha256 }}</code>{% else %}<span class="empty-msg">—</span>{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Bundle status</dt>
+        <dd>
+          {%- if sub.bundle_purged_at -%}
+            <span class="badge blocked_inline">purged</span>
+            <span style="font-size: 12px; color: var(--text-secondary, #6b7280); margin-left: 6px;">on {{ sub.bundle_purged_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}</span>
+          {%- elif sub.entity_id -%}
+            <span class="badge approved">on disk</span>
+          {%- else -%}
+            <span class="empty-msg">no bundle (legacy row)</span>
+          {%- endif -%}
+        </dd>
+      </div>
+    </dl>
+
+    {# Action buttons — same JSON endpoints as the list page. #}
+    <div class="det-actions">
+      {% if sub.status in ['blocked_inline','blocked_llm','review_error'] and sub.entity_id %}
+      <button class="btn primary" data-action="override" title="Force-publish this entity. Requires reason; recorded in audit_log.">Override + publish</button>
+      {% endif %}
+      {% if sub.entity_id %}
+      <button class="btn" data-action="rescan" title="Re-run all checks (inline + LLM) against the current bundle. Use after check rules change.">Rescan</button>
+      {% endif %}
+      {% if sub.entity_id and not sub.bundle_purged_at %}
+      <a class="btn" href="/api/admin/store/submissions/{{ sub.id }}/bundle.zip"
+         title="Download the on-disk bundle as a ZIP for forensic inspection. Audit-logged.">Download bundle</a>
+      {% endif %}
+      {% if sub.status in ['review_error','blocked_llm'] and sub.entity_id %}
+      <button class="btn" data-action="retry" title="Re-queue LLM review only (skips inline checks).">Retry LLM</button>
+      {% endif %}
+      <button class="btn danger" data-action="delete">Delete</button>
+    </div>
+    {# Help text: explain why override isn't shown on this row, when applicable. #}
+    {% if sub.status == 'approved' %}
+      <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 8px 0 0 0;">
+        Already approved — no override needed. Use <strong>Rescan</strong> to re-evaluate against current rules; it may flip the verdict.
+      </p>
+    {% elif sub.status == 'overridden' %}
+      <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 8px 0 0 0;">
+        Already admin-overridden. Rescan to clear the override and re-evaluate.
+      </p>
+    {% elif sub.status in ['blocked_inline','blocked_llm','review_error'] and not sub.entity_id %}
+      <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 8px 0 0 0;">
+        No override available — inline-blocked submissions are rolled back at upload time, so there's no bundle to publish. Submitter must fix and re-upload.
+      </p>
+    {% endif %}
+  </div>
+
+  {# ── Override history ────────────────────────────────────────────────────── #}
+  {% if sub.override_by %}
+  <div class="det-card">
+    <h2>Override</h2>
+    <div class="override-block">
+      Overridden by <strong>{{ override_email or sub.override_by }}</strong>{% if sub.updated_at %} on {{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}{% endif %}.
+      {% if sub.override_reason %}<br><em>Reason:</em> {{ sub.override_reason }}{% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Activity timeline ───────────────────────────────────────────────────── #}
+  {% if audit_rows %}
+  <div class="det-card">
+    <h2>Activity timeline</h2>
+    <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 0 0 8px 0;">
+      Every recorded action on this submission + linked entity, newest first.
+      Use this to confirm a verdict is fresh (e.g. the timestamp on the latest
+      <code>store.submission.rescan</code> row matches the time you clicked Rescan).
+    </p>
+    <ul class="timeline">
+      {% for row in audit_rows %}
+      <li>
+        <span class="ts">{{ row.timestamp.strftime("%Y-%m-%d %H:%M:%S") if row.timestamp else "" }}</span>
+        <span>
+          <span class="action">{{ row.action }}</span>
+          {% if row.actor_email %}<span class="actor"> · {{ row.actor_email }}</span>{% endif %}
+          {% if row.params and row.params is mapping %}
+            {% if row.params.outcome %}<span class="actor"> · → {{ row.params.outcome }}</span>{% endif %}
+            {% if row.params.risk_level %}<span class="actor"> · risk={{ row.params.risk_level }}</span>{% endif %}
+            {% if row.params.reason %}<span class="actor"> · "{{ row.params.reason[:80] }}"</span>{% endif %}
+          {% endif %}
+        </span>
+        <span class="relative" data-rel-since="{{ row.timestamp.isoformat() if row.timestamp else '' }}">just now</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Inline checks ───────────────────────────────────────────────────────── #}
+  {% set ic = sub.inline_checks or {} %}
+
+  <div class="det-card">
+    <h2>Manifest check {% if ic.manifest %}<span class="badge {{ ic.manifest.status or 'pass' }}">{{ ic.manifest.status or 'pass' }}</span>{% endif %}</h2>
+    {% if ic.manifest and ic.manifest.issues %}
+      <ul class="issues">
+        {% for issue in ic.manifest.issues %}<li><code>{{ issue }}</code></li>{% endfor %}
+      </ul>
+    {% else %}
+      <div class="empty-msg">No manifest issues.</div>
+    {% endif %}
+  </div>
+
+  <div class="det-card">
+    <h2>Static security scan {% if ic.static_security %}<span class="badge {{ ic.static_security.status or 'pass' }}">{{ ic.static_security.status or 'pass' }}</span>{% endif %}</h2>
+    {% if ic.static_security and ic.static_security.findings %}
+    <table class="sub-table">
+      <thead>
+        <tr><th>Severity</th><th>Category</th><th>File:line</th><th>Reason</th><th>Snippet</th></tr>
+      </thead>
+      <tbody>
+        {% for f in ic.static_security.findings %}
+        <tr>
+          <td><span class="badge {{ f.severity }}">{{ f.severity }}</span></td>
+          <td>{{ f.category }}</td>
+          <td><code>{{ f.file }}:{{ f.line }}</code></td>
+          <td>{{ f.reason }}</td>
+          <td><code>{{ f.snippet }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <div class="empty-msg">No security findings.</div>
+    {% endif %}
+  </div>
+
+  <div class="det-card">
+    <h2>Quality + templating {% if ic.quality %}<span class="badge {{ ic.quality.status or 'pass' }}">{{ ic.quality.status or 'pass' }}</span>{% endif %}</h2>
+    {% if ic.quality %}
+      <div style="font-size: 13px; color: var(--text-secondary, #6b7280); margin-bottom: 8px;">
+        Template placeholders found: <strong>{{ ic.quality.template_placeholders or 0 }}</strong>
+      </div>
+      {% if ic.quality.issues %}
+      <ul class="issues">
+        {% for issue in ic.quality.issues %}<li><code>{{ issue }}</code></li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if ic.quality.template_recommendation %}
+      <div class="det-recommendation">{{ ic.quality.template_recommendation }}</div>
+      {% endif %}
+    {% else %}
+      <div class="empty-msg">No quality data.</div>
+    {% endif %}
+  </div>
+
+  {# ── LLM review ──────────────────────────────────────────────────────────── #}
+  <div class="det-card">
+    <h2>LLM security review
+      {% if sub.llm_findings and sub.llm_findings.risk_level %}
+      <span class="badge {{ sub.llm_findings.risk_level }}">{{ sub.llm_findings.risk_level }}</span>
+      {% endif %}
+    </h2>
+    {% if sub.llm_findings %}
+      {% if sub.llm_findings.error %}
+        <div class="det-error-box"><strong>Error:</strong> {{ sub.llm_findings.error }}</div>
+      {% else %}
+        {% if sub.llm_findings.summary %}
+          <p class="det-summary">{{ sub.llm_findings.summary }}</p>
+        {% endif %}
+        {% if sub.llm_findings.findings %}
+        <table class="sub-table">
+          <thead>
+            <tr><th>Severity</th><th>Category</th><th>File</th><th>Explanation</th><th>Fix hint</th></tr>
+          </thead>
+          <tbody>
+            {% for f in sub.llm_findings.findings %}
+            <tr>
+              <td><span class="badge {{ f.severity }}">{{ f.severity }}</span></td>
+              <td>{{ f.category }}</td>
+              <td><code>{{ f.file }}</code></td>
+              <td>{{ f.explanation }}</td>
+              <td>{{ f.fix_hint or "" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+          <div class="empty-msg">No findings — model verdict was clean.</div>
+        {% endif %}
+      {% endif %}
+    {% elif sub.status in ['pending_inline', 'pending_llm'] %}
+      <div class="empty-msg">Review still in progress…</div>
+    {% else %}
+      <div class="empty-msg">No LLM verdict (review skipped or not yet run).</div>
+    {% endif %}
+  </div>
+
+  {# ── Other attempts by submitter ─────────────────────────────────────────── #}
+  {% if other_count %}
+  <div class="det-card">
+    <h2>Other attempts</h2>
+    <a href="/admin/store/submissions?submitter={{ sub.submitter_id }}">
+      View {{ other_count }} other submission{{ "" if other_count == 1 else "s" }} by {{ sub.submitter_email or sub.submitter_id }} →
+    </a>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  const subId = {{ sub.id|tojson }};
+  const currentStatus = {{ sub.status|tojson }};
+
+  // Fire-and-forget toast in the bottom-right.
+  function toast(msg, ms) {
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.textContent = msg;
+    document.body.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    setTimeout(() => {
+      el.classList.remove('show');
+      setTimeout(() => el.remove(), 300);
+    }, ms || 3500);
+  }
+
+  // Tick the "Xs / Xm Ys" elapsed counter on the pending banner.
+  function startElapsedTicker() {
+    const el = document.getElementById('pendingElapsed');
+    if (!el || !el.dataset.since) return;
+    const since = new Date(el.dataset.since);
+    if (isNaN(since.getTime())) return;
+    function tick() {
+      const sec = Math.max(0, Math.floor((Date.now() - since.getTime()) / 1000));
+      el.textContent = sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`;
+    }
+    tick();
+    setInterval(tick, 1000);
+  }
+
+  // Render relative timestamps ("3s ago", "12m ago", "2h ago", "3d ago")
+  // for every element with data-rel-since=ISO. Refreshes every 10s so
+  // an admin staring at the page sees the timer move and knows the
+  // render is live (and not a stale cached page).
+  function renderRelative() {
+    const now = Date.now();
+    document.querySelectorAll('[data-rel-since]').forEach((el) => {
+      const iso = el.dataset.relSince;
+      if (!iso) { el.textContent = ''; return; }
+      const t = new Date(iso).getTime();
+      if (isNaN(t)) return;
+      const sec = Math.max(0, Math.floor((now - t) / 1000));
+      let txt;
+      if (sec < 5) txt = 'just now';
+      else if (sec < 60) txt = `${sec}s ago`;
+      else if (sec < 3600) txt = `${Math.floor(sec / 60)}m ago`;
+      else if (sec < 86400) txt = `${Math.floor(sec / 3600)}h ago`;
+      else txt = `${Math.floor(sec / 86400)}d ago`;
+      el.textContent = txt;
+    });
+  }
+  renderRelative();
+  setInterval(renderRelative, 10000);
+
+  // Poll status; reload when it flips out of pending_*.
+  // ``initialDelayMs`` lets us wait a beat after a fresh action POST so
+  // we don't catch the database mid-write.
+  function startPolling(initialDelayMs) {
+    let attempts = 0;
+    const tick = async () => {
+      attempts++;
+      try {
+        const r = await fetch(`/api/admin/store/submissions/${subId}`, {
+          credentials: 'same-origin',
+        });
+        if (!r.ok) return;
+        const sub = await r.json();
+        if (sub.status !== 'pending_inline' && sub.status !== 'pending_llm') {
+          // Verdict landed — reload to render the new state.
+          window.location.reload();
+          return;
+        }
+      } catch (e) { /* network blip; keep polling */ }
+      // Back off after first 30 attempts (90s) to spare the LLM if it's
+      // running a long Sonnet/Opus review.
+      const next = attempts < 30 ? 3000 : 10000;
+      setTimeout(tick, next);
+    };
+    setTimeout(tick, initialDelayMs || 3000);
+  }
+
+  document.querySelectorAll('button[data-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const action = btn.dataset.action;
+      btn.disabled = true;
+      try {
+        if (action === 'override') {
+          const reason = prompt('Override reason (required, ≥ 4 chars):');
+          if (!reason || reason.length < 4) { btn.disabled = false; return; }
+          const r = await fetch(`/api/admin/store/submissions/${subId}/override`, {
+            method: 'POST', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({reason}),
+          });
+          if (!r.ok) { alert('Override failed: ' + await r.text()); btn.disabled = false; return; }
+          window.location.reload();
+        } else if (action === 'retry') {
+          const r = await fetch(`/api/admin/store/submissions/${subId}/retry`, {
+            method: 'POST', credentials: 'same-origin',
+          });
+          if (!r.ok) { alert('Retry failed: ' + await r.text()); btn.disabled = false; return; }
+          // Don't reload — show toast, let the polling pick up the
+          // verdict so the admin sees the in-progress state.
+          toast('LLM review re-queued — polling for verdict…');
+          setTimeout(() => window.location.reload(), 1500);
+        } else if (action === 'rescan') {
+          if (!confirm('Re-run all checks against the current bundle? Verdict may flip.')) {
+            btn.disabled = false; return;
+          }
+          const r = await fetch(`/api/admin/store/submissions/${subId}/rescan`, {
+            method: 'POST', credentials: 'same-origin',
+          });
+          if (!r.ok) { alert('Rescan failed: ' + await r.text()); btn.disabled = false; return; }
+          toast('Rescan queued — polling for verdict…');
+          // Reload after a beat so the page re-renders with the
+          // pending banner; that page will start its own poll loop.
+          setTimeout(() => window.location.reload(), 1500);
+        } else if (action === 'delete') {
+          if (!confirm('Delete submission and its bundle? This cannot be undone.')) {
+            btn.disabled = false; return;
+          }
+          const r = await fetch(`/api/admin/store/submissions/${subId}`, {
+            method: 'DELETE', credentials: 'same-origin',
+          });
+          if (!r.ok) { alert('Delete failed: ' + await r.text()); btn.disabled = false; return; }
+          window.location.href = '/admin/store/submissions';
+        }
+      } catch (e) {
+        alert('Action failed: ' + e);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  if (currentStatus === 'pending_inline' || currentStatus === 'pending_llm') {
+    startElapsedTicker();
+    startPolling(3000);
+  }
+})();
+</script>
+{% endblock %}

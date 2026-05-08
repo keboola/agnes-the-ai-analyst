@@ -49,22 +49,63 @@ class StoreEntitiesRepository:
         video_url: Optional[str] = None,
         doc_paths: Optional[List[str]] = None,
         file_size: int = 0,
+        visibility_status: str = "pending",
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO store_entities
                 (id, owner_user_id, owner_username, type, name, description,
                  category, version, photo_path, video_url, doc_paths,
-                 file_size, install_count, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
+                 file_size, install_count, visibility_status,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
             [
                 id, owner_user_id, owner_username, type, name, description,
                 category, version, photo_path, video_url,
                 json.dumps(doc_paths or []),
-                int(file_size), now, now,
+                int(file_size), visibility_status, now, now,
             ],
         )
         return self.get(id)  # type: ignore[return-value]
+
+    def set_visibility(self, id: str, status: str) -> None:
+        """Flip visibility_status on a submission's resolution.
+
+        Called by the guardrail runner after the LLM review completes
+        ('approved' on safe, 'hidden' on review_error/blocked) and by
+        the admin override path ('approved' after force-publish).
+        Soft-delete uses 'archived' via :meth:`archive` instead of this
+        helper so the actor + timestamp are recorded.
+        """
+        if status not in ("pending", "approved", "hidden", "archived"):
+            raise ValueError(f"invalid visibility_status: {status!r}")
+        self.conn.execute(
+            "UPDATE store_entities SET visibility_status = ?, updated_at = ? WHERE id = ?",
+            [status, datetime.now(timezone.utc), id],
+        )
+
+    def archive(self, id: str, *, by_user_id: str) -> None:
+        """Soft-delete: flip visibility to 'archived' + record actor +
+        timestamp.
+
+        Existing user_store_installs continue to serve the bundle
+        through marketplace.zip / .git (filter is approved + archived
+        in :class:`UserStoreInstallsRepository.list_for_user`), so
+        already-installed users don't lose the plugin.
+
+        Idempotent: re-archiving a row updates the timestamp + actor
+        (last archive wins). Use the audit_log for the full history.
+        """
+        now = datetime.now(timezone.utc)
+        self.conn.execute(
+            """UPDATE store_entities
+                  SET visibility_status = 'archived',
+                      archived_at = ?,
+                      archived_by = ?,
+                      updated_at = ?
+                WHERE id = ?""",
+            [now, by_user_id, now, id],
+        )
 
     def update(
         self,
@@ -140,11 +181,25 @@ class StoreEntitiesRepository:
         category: Optional[str] = None,
         search: Optional[str] = None,
         owner_user_id: Optional[str] = None,
+        visibility_status: Optional[List[str]] = None,
+        include_owner_id: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Filtered + paginated listing.
 
         Returns ``(items, total)`` where ``total`` is the unfiltered count
         across pages — used to render pagination controls.
+
+        ``visibility_status`` whitelists which guardrail states are visible.
+        Non-admin browse passes ``["approved"]``; admin/owner views pass
+        ``None`` (no filter) so pending/hidden entries surface in their UIs.
+
+        ``include_owner_id`` is the "show me my own pending stuff too"
+        knob: when set alongside a ``visibility_status`` whitelist, the
+        SQL becomes ``(visibility IN (...) OR owner_user_id = :uid)`` so
+        the caller's own non-approved entries surface in an otherwise
+        approved-only listing. Used by the marketplace + store browse
+        pages so submitters spot their own under-review uploads in the
+        grid.
         """
         clauses: List[str] = []
         params: List[Any] = []
@@ -168,6 +223,26 @@ class StoreEntitiesRepository:
             clauses.append("(LOWER(name) LIKE ? OR LOWER(description) LIKE ?)")
             like = f"%{search.lower()}%"
             params.extend([like, like])
+        if visibility_status:
+            placeholders = ",".join("?" for _ in visibility_status)
+            if include_owner_id:
+                # Approved (or whatever the whitelist allows) for everyone,
+                # plus the caller's OWN entries that aren't archived.
+                # Archived stays admin-only across browse — even the
+                # owner's own archived rows must NOT appear in browse
+                # listings (per user direction "only admins should see
+                # archived submissions"). My AI Stack uses a different
+                # path (user_store_installs.list_for_user) and DOES
+                # surface archived for already-installed plugins.
+                clauses.append(
+                    f"(visibility_status IN ({placeholders}) "
+                    f"OR (owner_user_id = ? AND visibility_status != 'archived'))"
+                )
+                params.extend(visibility_status)
+                params.append(include_owner_id)
+            else:
+                clauses.append(f"visibility_status IN ({placeholders})")
+                params.extend(visibility_status)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
         total = self.conn.execute(

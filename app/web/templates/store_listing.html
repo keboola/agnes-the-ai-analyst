@@ -169,7 +169,7 @@
   }
 </style>
 
-<div class="store-page">
+<div class="store-page page-shell">
   <div class="store-hero">
     <div class="titles">
       <div class="eyebrow">Store</div>
@@ -200,6 +200,11 @@
 </div>
 
 <script>
+// Server-injected viewer id — drives the v32+ owner-only quarantine
+// corner badge on cards (so a submitter sees their own non-approved
+// uploads marked, but other users browsing the same grid don't).
+const currentUserId = {{ session.user.id | tojson }};
+
 const state = {
   page: 1,
   pageSize: 24,
@@ -290,7 +295,7 @@ function renderGrid(items, installed) {
   for (const e of items) {
     const card = document.createElement('div');
     card.className = 'store-card';
-    card.dataset.href = `/store/${encodeURIComponent(e.id)}`;
+    card.dataset.href = `/marketplace/flea/${encodeURIComponent(e.id)}`;
     const photoMarkup = e.photo_url
       ? `<img class="photo" src="${escapeAttr(e.photo_url)}" alt="">`
       : `<div class="photo">${escapeHtml(typeIcon(e.type))}</div>`;
@@ -299,7 +304,29 @@ function renderGrid(items, installed) {
       ? `<button class="installed" data-id="${escapeAttr(e.id)}" data-action="uninstall">Installed ✓</button>`
       : `<button data-id="${escapeAttr(e.id)}" data-action="install">Install</button>`;
     const ownerLabel = e.owner_display_name || e.owner_username;
+    // v32+ quarantine corner badge — shown only to the submitter on
+    // their own non-approved cards. Approved cards + non-owner views
+    // omit it. The visibility filter on /api/store/entities already
+    // limits non-approved rows to the viewer's own; we still
+    // double-check `e.owner_user_id === currentUserId` here so the
+    // badge never paints on someone else's card if the API contract
+    // ever loosens.
+    let quarantineBadge = '';
+    if (
+      e.visibility_status && e.visibility_status !== 'approved'
+      && currentUserId && e.owner_user_id === currentUserId
+    ) {
+      const isPending = e.visibility_status === 'pending'
+        || e.visibility_status === 'pending_inline'
+        || e.visibility_status === 'pending_llm';
+      const label = isPending ? '⟳ Under review' : '⚠ Quarantined';
+      const palette = isPending
+        ? 'background:#fef3c7;color:#92400e;border:1px solid #fde68a;'
+        : 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;';
+      quarantineBadge = `<div title="Visible only to you. ${isPending ? 'Checks in progress.' : 'Failed automated/security checks — open detail to see why.'}" style="position:absolute;top:8px;left:8px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;${palette}z-index:2;">${label}</div>`;
+    }
     card.innerHTML = `
+      ${quarantineBadge}
       ${photoMarkup}
       <div class="body">
         <span class="type-badge">${escapeHtml(e.type)}</span>

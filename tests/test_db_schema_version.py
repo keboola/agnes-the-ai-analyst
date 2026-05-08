@@ -13,7 +13,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_31():
+def test_schema_version_is_35():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -27,12 +27,23 @@ def test_schema_version_is_31():
     # v29 → v30: news_template — single versioned table for the /home
     # news perex + /news permalink page. See
     # tests/test_news_template_repository.py.
-    # v30 → v31: session-pipeline framework. Renames session_extraction_state
-    # → session_processor_state with composite PK (processor_name,
-    # session_file) so multiple processors can track their own
-    # processed-set independently. Existing rows are copied across with
-    # processor_name='verification'; the old table is dropped.
-    assert SCHEMA_VERSION == 31
+    # v30 → v31: session-pipeline framework — session_processor_state
+    #            replaces session_extraction_state with composite PK.
+    # v31 → v32 (this PR): flea-market upload guardrails — adds
+    #            store_entities.visibility_status + creates store_submissions.
+    # v32 → v33 (this PR): forensic columns on store_submissions —
+    #            file_size, bundle_sha256, bundle_purged_at. Underpins the
+    #            persist-blocked-bundle behavior so admins can Rescan /
+    #            Override / Download; 30-day TTL purge clears bytes while
+    #            keeping the row + sha intact. See docs/STORE_GUARDRAILS.md.
+    # v33 → v34: drop store_submissions.retry_count — counter mixed LLM
+    #            error count + admin rescan count, redundant with audit_log.
+    # v34 → v35 (this PR): store_entities gains 'archived' visibility
+    #            state + archived_at + archived_by audit columns. Owner
+    #            soft-delete writes 'archived'; existing user_store_installs
+    #            keep serving the bundle through marketplace.zip / .git.
+    #            Hard delete (DELETE ?hard=true) remains admin-only.
+    assert SCHEMA_VERSION == 35
 
 
 def test_v20_adds_source_query(tmp_path):

@@ -245,6 +245,33 @@ ai:
 #   model: "anthropic/claude-3-haiku"
 #   structured_output: "auto"
 
+# --- Flea-market upload guardrails (optional) ---
+# Controls the pre-publish check pipeline for skill/agent/plugin uploads
+# to /store. See docs/STORE_GUARDRAILS.md for the full check catalogue.
+#
+# guardrails:
+#   # Master kill-switch. When false, inline manifest/security/quality
+#   # checks still run (they're free) but the LLM step is skipped and new
+#   # uploads are auto-approved. Useful for local dev without an LLM key.
+#   enabled: true
+#
+#   # Anthropic model tier for the LLM security review.
+#   # haiku  — ~$0.001/review, default, good enough for routine uploads
+#   # sonnet — ~$0.015/review, deeper reasoning, fewer false negatives
+#   # opus   — ~$0.075/review, only for high-stakes deployments
+#   # You can also pin a concrete model ID (e.g. "claude-haiku-4-5-20251001").
+#   review_model: "haiku"
+#
+#   # Per-submitter daily cap on inline-blocked uploads. Bounds disk +
+#   # admin-queue spam. Set to 0 to disable. Default 50.
+#   blocked_quota_per_day: 50
+#
+#   # How many days to keep blocked bundle bytes on disk before the
+#   # daily TTL job purges them. Submission row + sha256 + size always
+#   # survive — only the bundle bytes go. Set to 0 to retain forever
+#   # (rely on admin Delete). Default 30.
+#   blocked_bundle_ttl_days: 30
+
 # --- Corporate Memory governance (optional) ---
 # Controls how AI-extracted knowledge is reviewed and distributed.
 # If not present, system operates in legacy mode (democratic wiki, no admin review).

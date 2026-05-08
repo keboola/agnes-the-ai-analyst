@@ -3,8 +3,8 @@
 
 {% block content %}
 <style>
-  .container:has(.sched-page) { max-width: none; padding: 24px 16px; }
-  .sched-page { max-width: 1400px; margin: 0 auto; padding: 0; }
+  /* Width + padding come from .page-shell (style-custom.css) — same
+     1280px container as /dashboard, /marketplace, /admin/* peers. */
   .sched-title { margin: 0 0 8px 0; font-size: 22px; font-weight: 600; }
   .sched-help { color: var(--text-secondary, #6b7280); font-size: 13px; margin-bottom: 20px; }
   .sched-help code { background: var(--border-light, #f3f4f6); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
@@ -44,7 +44,7 @@
   }
 </style>
 
-<div class="sched-page">
+<div class="sched-page page-shell">
   <h1 class="sched-title">Scheduler runs</h1>
   <p class="sched-help">
     Last 200 audited scheduler-driven admin actions, newest first.

@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from app.auth.access import (
     _user_group_ids,
+    is_user_admin,
     require_resource_access,
 )
 from app.auth.dependencies import _get_db, get_current_user
@@ -79,6 +80,12 @@ class MarketplaceItem(BaseModel):
     marketplace_slug: Optional[str] = None
     marketplace_name: Optional[str] = None
     detail_url: str
+    # v32+ quarantine UX: surface the card's visibility + an
+    # is_viewer_owner flag so the listing template can render an
+    # "Under review" / "Quarantined" corner badge on the submitter's
+    # own non-approved cards. Approved cards omit both fields.
+    visibility_status: Optional[str] = None
+    is_viewer_owner: bool = False
 
 
 class ItemListResponse(BaseModel):
@@ -170,6 +177,17 @@ class PluginDetailResponse(BaseModel):
     # Bundle contents — used by the redesigned skill/agent/plugin detail pages
     files: List[FileEntry] = []
     docs: List[DocEntry] = []
+    # v32+ quarantine: surface the entity's visibility so the JS install
+    # path can refuse to render the install button when non-approved.
+    # Curated entries omit (always live).
+    visibility_status: Optional[str] = None
+    # Latest submission verdict for the linked entity — populated only
+    # for the owner / admin (the same audiences that see the quarantine
+    # banner). The banner's auto-refresh JS polls this field so it can
+    # reload the page when an LLM review lands; visibility alone is
+    # insufficient because `blocked_llm` keeps the entity at
+    # `visibility_status='pending'`.
+    submission_status: Optional[str] = None
 
 
 # Legacy alias kept so any unmigrated import continues to resolve. The new
@@ -312,13 +330,14 @@ def _curated_to_item(
 
 
 def _flea_to_item(
-    entity: dict, *, installed_set: set
+    entity: dict, *, installed_set: set, viewer_id: Optional[str] = None,
 ) -> MarketplaceItem:
     photo_url = (
         f"/api/store/entities/{entity['id']}/photo"
         if entity.get("photo_path") else None
     )
     invocation = suffixed_name(entity["name"], entity.get("owner_username") or "")
+    is_viewer_owner = bool(viewer_id and entity.get("owner_user_id") == viewer_id)
     return MarketplaceItem(
         id=f"flea-{entity['id']}",
         source="flea",
@@ -334,6 +353,8 @@ def _flea_to_item(
         marketplace_slug=None,
         marketplace_name=None,
         detail_url=_flea_detail_url(entity["id"]),
+        visibility_status=entity.get("visibility_status") or "approved",
+        is_viewer_owner=is_viewer_owner,
     )
 
 
@@ -401,11 +422,26 @@ async def list_items(
             row["id"]
             for row in UserStoreInstallsRepository(conn).list_for_user(user["id"])
         }
+        # Visibility filter: non-admin sees approved + their own
+        # non-approved (so submitters spot what's still under review
+        # in their own grid). Admin sees everything.
+        from app.auth.access import is_user_admin
+        if is_user_admin(user["id"], conn):
+            visibility_filter = None
+            include_owner = None
+        else:
+            visibility_filter = ["approved"]
+            include_owner = user["id"]
         rows, total = StoreEntitiesRepository(conn).list(
             skip=skip, limit=page_size,
             type=type, category=category, search=q or None,
+            visibility_status=visibility_filter,
+            include_owner_id=include_owner,
         )
-        items = [_flea_to_item(r, installed_set=installed_set) for r in rows]
+        items = [
+            _flea_to_item(r, installed_set=installed_set, viewer_id=user["id"])
+            for r in rows
+        ]
         return ItemListResponse(
             items=items, total=total, page=page, page_size=page_size,
         )
@@ -506,12 +542,26 @@ async def list_categories(
                 counts[cat] = counts.get(cat, 0) + 1
 
     if tab == "flea":
+        # Visibility filter (v32+/v35): non-admin counts approved + own
+        # non-archived non-approved (mirrors the listing endpoint so the
+        # category counts match what the user actually sees in the
+        # grid). Admin counts everything.
+        from app.auth.access import is_user_admin
+        clauses: List[str] = []
+        sql_params: List[Any] = []
+        if type:
+            clauses.append("type = ?"); sql_params.append(type)
+        if not is_user_admin(user["id"], conn):
+            clauses.append(
+                "(visibility_status = 'approved' "
+                "OR (owner_user_id = ? AND visibility_status != 'archived'))"
+            )
+            sql_params.append(user["id"])
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = conn.execute(
-            "SELECT COALESCE(NULLIF(TRIM(category),''), 'Other') AS cat, COUNT(*) "
-            "FROM store_entities "
-            + ("WHERE type = ? " if type else "")
-            + "GROUP BY cat",
-            ([type] if type else []),
+            f"SELECT COALESCE(NULLIF(TRIM(category),''), 'Other') AS cat, COUNT(*) "
+            f"FROM store_entities {where_sql} GROUP BY cat",
+            sql_params,
         ).fetchall()
         for r in rows:
             counts[str(r[0])] = counts.get(str(r[0]), 0) + int(r[1])
@@ -875,10 +925,17 @@ async def flea_detail(
     Flea entities live at ``${DATA_DIR}/store/<entity_id>/plugin/`` —
     canonical Claude Code plugin tree, so the same parsers apply.
     """
+    from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
     entity = StoreEntitiesRepository(conn).get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
+    # Same gate as /api/store/entities/{id}: non-owner non-admin gets
+    # 404 (not 403) for any non-approved entity. Without this, a user
+    # who guesses an entity_id can still pull the bundle metadata
+    # through the marketplace JSON feed even though it's quarantined
+    # and excluded from the public listing.
+    _enforce_visibility(entity, user, conn)
 
     plugin_root = Path(get_store_dir()) / entity_id / "plugin"
 
@@ -932,6 +989,19 @@ async def flea_detail(
         entity.get("owner_username") or "",
     )
 
+    # Surface the latest submission verdict to the owner / admin so the
+    # quarantine banner's auto-refresh JS has a signal to poll on.
+    # Visibility alone is not enough because `blocked_llm` keeps the
+    # entity at `visibility_status='pending'`.
+    submission_status: Optional[str] = None
+    is_owner = entity.get("owner_user_id") == user.get("id")
+    is_admin_user = is_user_admin(user["id"], conn)
+    if is_owner or is_admin_user:
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        if latest_sub:
+            submission_status = latest_sub.get("status")
+
     return PluginDetailResponse(
         source="flea",
         entity_id=entity_id,
@@ -956,6 +1026,8 @@ async def flea_detail(
         mcps=mcps,
         files=_walk_files(plugin_root),
         docs=docs,
+        visibility_status=entity.get("visibility_status") or "approved",
+        submission_status=submission_status,
     )
 
 

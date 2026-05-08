@@ -68,3 +68,39 @@ class AuditRepository:
             return []
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, row)) for row in results]
+
+    def query_for_resources(
+        self,
+        resources: List[str],
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Activity timeline for one or more resource refs.
+
+        Each ``resources`` entry is a full ``resource`` value (e.g.
+        ``"store_submission:abc123"``, ``"store_entity:def456"``). Used
+        by the submission-detail page to render *"when did each rescan /
+        override / approval happen, and who did it"* — proves that the
+        latest verdict on the row is fresh and not a stale render.
+        """
+        if not resources:
+            return []
+        placeholders = ",".join("?" for _ in resources)
+        sql = (
+            f"SELECT * FROM audit_log WHERE resource IN ({placeholders}) "
+            f"ORDER BY timestamp DESC LIMIT ?"
+        )
+        results = self.conn.execute(sql, list(resources) + [limit]).fetchall()
+        if not results:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        rows: List[Dict[str, Any]] = []
+        for row in results:
+            d = dict(zip(columns, row))
+            v = d.get("params")
+            if isinstance(v, str):
+                try:
+                    d["params"] = json.loads(v) if v else None
+                except (ValueError, TypeError):
+                    pass
+            rows.append(d)
+        return rows

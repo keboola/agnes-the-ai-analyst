@@ -58,6 +58,11 @@ class StoreInstallEntry(BaseModel):
     install_count: int
     photo_url: Optional[str] = None
     installed_at: Optional[str] = None
+    # v35: surface visibility so my_ai_stack.html can render an
+    # "Archived by owner" badge on cards whose owner soft-deleted the
+    # entity. Bundle still serves to existing installs (per
+    # UserStoreInstallsRepository.list_for_user filter).
+    visibility_status: Optional[str] = None
 
 
 class MyStackResponse(BaseModel):
@@ -145,6 +150,7 @@ async def get_my_stack(
                 install_count=int(row.get("install_count") or 0),
                 photo_url=photo_url,
                 installed_at=_to_iso(row.get("installed_at")),
+                visibility_status=row.get("visibility_status") or "approved",
             )
         )
 

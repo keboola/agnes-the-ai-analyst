@@ -67,13 +67,20 @@ def _seed_user_with_grant(conn, *, marketplace, plugin, user_id="u1"):
     _add_member(conn, user_id=user_id, group_id=gid)
 
 
-def _create_store_entity(conn, *, owner_id, owner_username, name, type_="skill"):
+def _create_store_entity(conn, *, owner_id, owner_username, name, type_="skill",
+                         visibility_status="approved"):
+    """Default ``visibility_status='approved'`` so these tests exercise the
+    marketplace filter, not the v29 guardrail flow. See
+    docs/STORE_GUARDRAILS.md — the guardrail wiring lives at the API layer
+    and gates uploads BEFORE rows reach this repo, so unit tests of the
+    composition layer skip it intentionally."""
     from src.repositories.store_entities import StoreEntitiesRepository
     eid = uuid.uuid4().hex
     StoreEntitiesRepository(conn).create(
         id=eid, owner_user_id=owner_id, owner_username=owner_username,
         type=type_, name=name, description="d", category=None,
         version="abc1234567890def", file_size=10,
+        visibility_status=visibility_status,
     )
     return eid
 

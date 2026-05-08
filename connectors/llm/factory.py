@@ -20,6 +20,37 @@ DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 # Default structured output strategy
 DEFAULT_STRUCTURED_OUTPUT = "auto"
 
+# Tier → concrete model ID. Used by guardrails (and any future feature)
+# that wants to expose a "haiku|sonnet|opus" knob to operators without
+# pinning them to a specific dated model. Update here when bumping the
+# fleet to a newer model family — callers stay on the abstract tier.
+MODEL_TIERS: dict[str, str] = {
+    "haiku":  "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-4-6",
+    "opus":   "claude-opus-4-7",
+}
+
+
+def resolve_model_tier(tier: str) -> str:
+    """Map an abstract tier ('haiku'|'sonnet'|'opus') to a concrete model ID.
+
+    Accepts the tier name OR a concrete model ID (passed through unchanged
+    so operators who already know the exact ID they want can hard-pin it
+    in instance.yaml). Unknown tier names raise ValueError so a typo in
+    config surfaces at startup, not at first review call.
+    """
+    if not tier:
+        return DEFAULT_MODEL
+    tier = tier.strip()
+    if tier in MODEL_TIERS:
+        return MODEL_TIERS[tier]
+    if tier.startswith("claude-"):
+        return tier
+    raise ValueError(
+        f"Unknown model tier {tier!r}. Use one of "
+        f"{sorted(MODEL_TIERS)} or a concrete claude-* model ID."
+    )
+
 
 def create_extractor(ai_config: dict) -> StructuredExtractor:
     """Create a structured extractor from the ai: config section.

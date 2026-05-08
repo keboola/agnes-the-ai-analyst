@@ -179,6 +179,12 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         ("session-processor:usage",        _seconds_to_schedule(usage),
             "/api/admin/run-session-processor?processor=usage",        "POST", 300),
         ("corporate-memory",      _seconds_to_schedule(corpmem), "/api/admin/run-corporate-memory",      "POST", 900),
+        # v30: TTL purge of blocked-bundle bytes. Cheap (just rmtree
+        # + UPDATE), runs once daily at 04:00 UTC so the spike is
+        # visible in audit_log without competing with the marketplaces
+        # job at 03:00. Endpoint reads guardrails.blocked_bundle_ttl_days
+        # from instance.yaml and short-circuits when set to 0.
+        ("store-blocked-purge",   "daily 04:00",                 "/api/admin/run-blocked-purge",         "POST", 600),
     ]
 
 _running = True

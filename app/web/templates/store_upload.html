@@ -4,7 +4,8 @@
 {% block content %}
 <style>
   /* ── Container override ────────────────────────────────────────── */
-  .container:has(.upload-page) { max-width: 880px; margin: 0 auto; padding: 16px 32px 48px; }
+  /* Width + padding come from .page-shell (style-custom.css) — same
+     1280px container as /dashboard, /marketplace, /admin/* peers. */
   .container:has(.upload-page) > main { margin: 0; padding: 0; }
 
   /* ── Hero (mirrors /setup) ─────────────────────────────────────── */
@@ -226,7 +227,7 @@
   .step.is-active { display: block; }
 </style>
 
-<div class="upload-page">
+<div class="upload-page page-shell">
   <div class="upload-hero">
     <div class="eyebrow">Store</div>
     <h1>Upload an entity</h1>
@@ -281,7 +282,10 @@
 
         <div class="field">
           <label class="field-label">ZIP archive</label>
-          <label class="file-drop" id="zip-drop">
+          {# Drop zone uses a <div> rather than <label> so the implicit
+             label→input click pickup doesn't fire on top of our explicit
+             JS handler — that combination opened the file picker twice. #}
+          <div class="file-drop" id="zip-drop">
             <div class="icon">📦</div>
             <div class="file-info">
               <div class="label" id="zip-label">No file selected</div>
@@ -289,7 +293,7 @@
             </div>
             <input type="file" id="zip" accept=".zip">
             <button type="button" id="zip-pick">Choose file</button>
-          </label>
+          </div>
         </div>
 
         <div class="actions">
@@ -335,7 +339,7 @@
 
         <div class="field">
           <label class="field-label">Cover photo <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
-          <label class="file-drop" id="photo-drop">
+          <div class="file-drop" id="photo-drop">
             <div class="icon">🖼</div>
             <div class="file-info">
               <div class="label" id="photo-label">No photo</div>
@@ -343,7 +347,7 @@
             </div>
             <input type="file" id="photo" accept="image/jpeg,image/png,image/webp">
             <button type="button" id="photo-pick">Choose</button>
-          </label>
+          </div>
         </div>
 
         <div class="field">
@@ -646,7 +650,7 @@ finishBtn.addEventListener('click', async () => {
     const res = await fetch('/api/store/entities', {method: 'POST', body: fd});
     if (res.ok) {
       const entity = await res.json();
-      window.location = `/store/${encodeURIComponent(entity.id)}`;
+      window.location = `/marketplace/flea/${encodeURIComponent(entity.id)}`;
       return;
     }
     let msg = 'Upload failed.';

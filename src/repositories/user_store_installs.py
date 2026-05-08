@@ -50,6 +50,19 @@ class UserStoreInstallsRepository:
     def list_for_user(self, user_id: str) -> List[Dict[str, Any]]:
         """Joins store_entities so a single round-trip returns everything the
         UI / marketplace builder needs.
+
+        Filters to approved + archived entities:
+
+        * **approved** — current public entries.
+        * **archived** — owner soft-deleted (or admin-archived) entries
+          that previously-installed users keep getting served. Pulling
+          them from the marketplace.zip would silently break a user's
+          existing setup; archive intentionally preserves the install.
+
+        **Excluded** — pending / hidden / blocked. A previously-installed
+        entity that subsequently gets blocked by guardrail review must
+        NOT continue serving until an admin override re-approves it,
+        otherwise a known-bad bundle keeps reaching Claude Code.
         """
         rows = self.conn.execute(
             """SELECT
@@ -57,10 +70,12 @@ class UserStoreInstallsRepository:
                    se.name, se.description, se.category, se.version,
                    se.photo_path, se.video_url, se.file_size,
                    se.install_count, se.created_at, se.updated_at,
+                   se.visibility_status,
                    usi.installed_at
                FROM user_store_installs usi
                JOIN store_entities se ON se.id = usi.entity_id
                WHERE usi.user_id = ?
+                 AND se.visibility_status IN ('approved', 'archived')
                ORDER BY usi.installed_at DESC, se.id""",
             [user_id],
         ).fetchall()
