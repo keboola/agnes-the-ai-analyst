@@ -1951,7 +1951,12 @@ _V26_TO_V27_MIGRATIONS = [
 # with CURRENT_TIMESTAMP.
 _V27_TO_V28_MIGRATIONS = [
     "DELETE FROM user_plugin_optouts",
-    "ALTER TABLE marketplace_plugins ADD COLUMN created_at TIMESTAMP",
+    # IF NOT EXISTS guard: `_SYSTEM_SCHEMA` runs before the migration ladder
+    # and creates `marketplace_plugins` with the full current-version
+    # column set (including `created_at`) on fresh installs that come up
+    # at any pre-v28 version via test fixtures. The ALTER would then trip
+    # on an existing column. Same idiom as upstream `_V26_TO_V27_MIGRATIONS`.
+    "ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
     """
     UPDATE marketplace_plugins
        SET created_at = (
