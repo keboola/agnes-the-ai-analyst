@@ -75,8 +75,11 @@ def test_home_not_onboarded_user_sees_setup_view(fresh_db):
 
 
 def test_home_onboarded_user_sees_nav_hub(fresh_db):
-    """A TRUE-onboarded user gets the clean nav hub template, identifiable
-    by 'Welcome back' and the absence of the install instructions."""
+    """A TRUE-onboarded user gets the post-onboarding view, identifiable by
+    the 'Welcome back' hero, the 'Step 1 & Step 2 done' completion badge,
+    the offboard control, and the absence of the inline Step 1 / Step 2
+    install commands. Step 3 (auto-mode), connectors, and the rest stay
+    visible — they remain useful after onboarding."""
     from src.db import get_system_db, close_system_db
 
     conn = get_system_db()
@@ -91,8 +94,12 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
     assert resp.status_code == 200
     body = resp.text
     assert "Welcome back" in body
-    assert "Quick links" in body
-    assert "install Claude Code" not in body  # not the setup view
+    assert "Step 1 &amp; Step 2 done" in body  # completion badge
+    assert "Mark me as offboarded" in body  # offboard control visible
+    # Inline Step 1 / Step 2 install-blocks are hidden post-onboarding —
+    # the labels rendered inside the install-block divs go away.
+    assert "Step 1 — install Claude Code" not in body
+    assert "Step 2 — install Agnes from inside Claude Code" not in body
 
 
 def test_home_no_auto_transition_after_post_until_reload(fresh_db):
