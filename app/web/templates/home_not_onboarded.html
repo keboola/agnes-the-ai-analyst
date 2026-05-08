@@ -59,27 +59,28 @@
     display: grid;
     grid-template-columns: repeat(2, 1fr);
     gap: 14px;
-    margin-bottom: 26px;
+    margin-bottom: 18px;
 }
 .home-mock .what-is-item {
-    background: rgba(255, 255, 255, 0.10);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 10px;
-    padding: 14px 16px;
-    color: white;
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    color: inherit;
     text-decoration: none;
     display: block;
-    transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 .home-mock a.what-is-item:hover {
-    background: rgba(255, 255, 255, 0.18);
-    border-color: rgba(255, 255, 255, 0.30);
+    border-color: var(--hp-primary);
+    box-shadow: 0 4px 12px rgba(0, 115, 209, 0.10);
     transform: translateY(-1px);
 }
 .home-mock .what-is-item .ico { font-size: 22px; margin-bottom: 8px; display: block; }
 .home-mock .what-is-item .ttl {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
+    color: var(--hp-text-primary);
     margin-bottom: 4px;
     display: flex;
     align-items: center;
@@ -87,15 +88,18 @@
     gap: 8px;
 }
 .home-mock .what-is-item .ttl .arrow {
+    color: var(--hp-primary);
     font-weight: 600;
-    opacity: 0.7;
-    transition: transform 0.15s ease, opacity 0.15s ease;
+    transition: transform 0.15s ease;
 }
 .home-mock a.what-is-item:hover .ttl .arrow {
     transform: translateX(2px);
-    opacity: 1;
 }
-.home-mock .what-is-item .desc { font-size: 12px; opacity: 0.85; line-height: 1.5; }
+.home-mock .what-is-item .desc {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    line-height: 1.55;
+}
 
 .home-mock .install-block {
     background: rgba(15, 23, 42, 0.55);
@@ -645,20 +649,6 @@
             To use any of it from your machine, you install Claude Code and Agnes once. Everything Agnes touches goes in a single folder: <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/Agnes</code>.
         </p>
 
-        <div class="what-is">
-            <a class="what-is-item" href="/store">
-                <span class="ico">&#x1F9E9;</span>
-                <div class="ttl">Plugin marketplace <span class="arrow">&rarr;</span></div>
-                <div class="desc">Browse, install, get plugins synced into Claude Code automatically — Asana, Jira, Google Workspace, and more.</div>
-            </a>
-            <a class="what-is-item" href="/catalog">
-                <span class="ico">&#x1F4E6;</span>
-                <div class="ttl">Curated data packages <span class="arrow">&rarr;</span></div>
-                <div class="desc">Subscribe to the datasets your team has registered — Claude can query them with documented schema and business rules.</div>
-            </a>
-        </div>
-
-
         <div class="install-block">
             <div class="label">Step 1 — install Claude Code</div>
             <div class="os-tabs" role="tablist" aria-label="Operating system">
@@ -757,6 +747,19 @@
     {% endif %}
 
     <div class="section-label">Once Agnes is installed — connect your tools</div>
+
+    <div class="what-is">
+        <a class="what-is-item" href="/store">
+            <span class="ico">&#x1F9E9;</span>
+            <div class="ttl">Plugin marketplace <span class="arrow">&rarr;</span></div>
+            <div class="desc">Browse, install, get plugins synced into Claude Code automatically — Asana, Jira, Google Workspace, and more.</div>
+        </a>
+        <a class="what-is-item" href="/catalog">
+            <span class="ico">&#x1F4E6;</span>
+            <div class="ttl">Curated data packages <span class="arrow">&rarr;</span></div>
+            <div class="desc">Subscribe to the datasets your team has registered — Claude can query them with documented schema and business rules.</div>
+        </a>
+    </div>
 
     <div class="grid-2">
         <div class="card">
@@ -959,16 +962,6 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
                         <span class="explore-text">
                             <strong>Plugin store</strong>
                             Curated and community-built plugins for Claude Code — Asana, Jira, Workspace, more.
-                        </span>
-                        <span class="arrow">&rarr;</span>
-                    </a>
-                </li>
-                <li>
-                    <a href="/setup-advanced" class="explore-item">
-                        <span class="ico">&#x1F6E0;&#xFE0F;</span>
-                        <span class="explore-text">
-                            <strong>Advanced setup</strong>
-                            VS Code layout, recommended plugins, multi-model second opinions, custom skills.
                         </span>
                         <span class="arrow">&rarr;</span>
                     </a>
