@@ -22,6 +22,7 @@ Example::
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from contextlib import contextmanager
@@ -30,6 +31,48 @@ from typing import Any, Iterator
 from src.observability.posthog_client import get_posthog
 
 logger = logging.getLogger(__name__)
+
+
+# Default character cap for LLM prompt / completion payloads. Sized to
+# leave ~2 KB of headroom under PostHog's ~32 KB per-event ingest limit
+# for the surrounding event envelope (provider, model, tokens, request
+# id, super-properties, etc.). Override via the env var below.
+_DEFAULT_LLM_PAYLOAD_MAX_CHARS = 30_000
+
+
+def _llm_payload_cap() -> int:
+    raw = os.environ.get("POSTHOG_LLM_PAYLOAD_MAX_CHARS", "").strip()
+    if not raw:
+        return _DEFAULT_LLM_PAYLOAD_MAX_CHARS
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "POSTHOG_LLM_PAYLOAD_MAX_CHARS=%r is not an int; falling back to %d",
+            raw, _DEFAULT_LLM_PAYLOAD_MAX_CHARS,
+        )
+        return _DEFAULT_LLM_PAYLOAD_MAX_CHARS
+    if value <= 0:
+        return _DEFAULT_LLM_PAYLOAD_MAX_CHARS
+    return value
+
+
+def _truncate(value: Any, max_chars: int) -> Any:
+    """Return ``value`` clipped to ``max_chars`` characters as a string.
+
+    Lists / dicts / non-string scalars get ``str()``-converted because
+    PostHog stores event properties as JSON and a multi-megabyte nested
+    structure would just silently get rejected at ingest. Truncated
+    payloads carry an explicit ``…[truncated N chars]`` suffix so a
+    reader doesn't mistake them for a complete capture.
+    """
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    if len(text) <= max_chars:
+        return text
+    dropped = len(text) - max_chars
+    return text[:max_chars] + f"…[truncated {dropped} chars]"
 
 
 class _Capture:
@@ -157,10 +200,24 @@ def trace_generation(
         if cap.output_tokens is not None:
             props["$ai_output_tokens"] = cap.output_tokens
         if pc.llm_payloads_enabled:
+            # PostHog drops events past its per-event ingest size limit
+            # (~32 KB by default; the SDK does not chunk and 413 responses
+            # are best-effort log lines only — oversized captures land on
+            # the floor with no signal). Agnes prompts routinely include
+            # sample rows / table schemas / analyst SQL that exceed this
+            # limit, which is *exactly* when an operator wants to inspect
+            # them. Truncate so the metadata (provider, model, tokens,
+            # latency, error) keeps flowing while bounding payload size.
+            # PR #231 review (minasarustamyan).
+            #
+            # Cap is overridable via ``POSTHOG_LLM_PAYLOAD_MAX_CHARS``; the
+            # default of 30_000 leaves headroom under the 32 KB ceiling
+            # for the rest of the event envelope.
+            cap_chars = _llm_payload_cap()
             if cap.prompt is not None:
-                props["$ai_input"] = cap.prompt
+                props["$ai_input"] = _truncate(cap.prompt, cap_chars)
             if cap.output is not None:
-                props["$ai_output_choices"] = cap.output
+                props["$ai_output_choices"] = _truncate(cap.output, cap_chars)
         for key, value in cap.extra.items():
             props.setdefault(key, value)
         if error is not None:

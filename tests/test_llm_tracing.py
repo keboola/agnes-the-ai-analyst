@@ -102,6 +102,76 @@ def test_set_output_from_anthropic_extracts_tokens(enabled_posthog):
         assert props["$ai_output_tokens"] == 22
 
 
+def test_payload_truncation_under_default_cap(enabled_posthog, monkeypatch):
+    """Oversized prompt/output gets clipped so PostHog doesn't drop the event.
+
+    Agnes ships LLM prompts containing sample rows / SQL that routinely
+    exceed PostHog's ~32 KB per-event ingest cap. Without truncation the
+    interesting events vanish silently. PR #231 review (minasarustamyan).
+    """
+    monkeypatch.setenv("POSTHOG_LLM_PAYLOADS", "1")
+    from src.observability import reset_posthog
+    reset_posthog()
+
+    big_prompt = "P" * 50_000
+    big_output = "O" * 50_000
+    sdk = MagicMock()
+    with patch("posthog.Posthog", return_value=sdk):
+        from src.observability import trace_generation
+        with trace_generation(provider="anthropic", model="claude-x") as t:
+            t.set_input(big_prompt)
+            t.set_output(big_output)
+            t.set_tokens(input_tokens=1, output_tokens=2)
+
+        props = sdk.capture.call_args.kwargs["properties"]
+        assert len(props["$ai_input"]) < len(big_prompt)
+        assert len(props["$ai_output_choices"]) < len(big_output)
+        # Truncation marker present so reader knows it was clipped.
+        assert "[truncated " in props["$ai_input"]
+        assert "[truncated " in props["$ai_output_choices"]
+        # Cap stays well under PostHog's ~32 KB per-event limit.
+        assert len(props["$ai_input"]) < 32_000
+        assert len(props["$ai_output_choices"]) < 32_000
+
+
+def test_payload_truncation_respects_env_override(enabled_posthog, monkeypatch):
+    monkeypatch.setenv("POSTHOG_LLM_PAYLOADS", "1")
+    monkeypatch.setenv("POSTHOG_LLM_PAYLOAD_MAX_CHARS", "100")
+    from src.observability import reset_posthog
+    reset_posthog()
+
+    sdk = MagicMock()
+    with patch("posthog.Posthog", return_value=sdk):
+        from src.observability import trace_generation
+        with trace_generation(provider="anthropic", model="claude-x") as t:
+            t.set_input("X" * 500)
+            t.set_output("Y" * 500)
+
+        props = sdk.capture.call_args.kwargs["properties"]
+        # Cap honored — first 100 chars then the marker.
+        assert props["$ai_input"].startswith("X" * 100)
+        assert props["$ai_input"].endswith("[truncated 400 chars]")
+
+
+def test_payload_under_cap_is_passed_through_unchanged(enabled_posthog, monkeypatch):
+    monkeypatch.setenv("POSTHOG_LLM_PAYLOADS", "1")
+    from src.observability import reset_posthog
+    reset_posthog()
+
+    sdk = MagicMock()
+    with patch("posthog.Posthog", return_value=sdk):
+        from src.observability import trace_generation
+        small = "tiny prompt"
+        with trace_generation(provider="anthropic", model="claude-x") as t:
+            t.set_input(small)
+            t.set_output(small)
+
+        props = sdk.capture.call_args.kwargs["properties"]
+        assert props["$ai_input"] == small
+        assert props["$ai_output_choices"] == small
+        assert "[truncated" not in props["$ai_input"]
+
+
 def test_set_output_from_openai_extracts_tokens(enabled_posthog):
     sdk = MagicMock()
     with patch("posthog.Posthog", return_value=sdk):

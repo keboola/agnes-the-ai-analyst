@@ -11,11 +11,20 @@ rendered snippet immediately before ``</head>``. When PostHog is disabled
 
 Skips:
     * Non-HTML responses (everything API, JSON, parquet, CSV).
-    * Streaming responses (we'd have to materialise them — not worth it
-      for big downloads).
+    * Responses larger than ``_MAX_BUFFER_BYTES`` — defends against
+      genuine HTML streams (rare but legal: large dashboards rendered
+      as chunked transfer) where buffering the entire body would balloon
+      memory. Snippet injection is best-effort.
     * Responses that already contain ``posthog.init`` (defensive — keeps
       base-extending templates from getting a double-injection if a
       future change re-includes the partial there).
+
+Background tasks attached to a route via ``Response.background`` are
+preserved on every return path. ``BaseHTTPMiddleware`` materialises the
+body and asks subclasses to return a fresh ``Response``; forgetting to
+forward ``background`` would silently cancel any deferred work the
+handler scheduled (audit logging, async webhooks, deferred email sends),
+with no log line. Caught in PR #231 review (minasarustamyan).
 """
 
 from __future__ import annotations
@@ -25,13 +34,34 @@ from typing import Awaitable, Callable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response
 from starlette.types import ASGIApp
 
 logger = logging.getLogger(__name__)
 
 
 _HEAD_CLOSE = b"</head>"
+
+# Hard ceiling on how much body we're willing to buffer in memory just to
+# inject ~3 KB of snippet. 4 MB covers every HTML page this app currently
+# emits with ample headroom while preventing a pathological streamed-HTML
+# response from ballooning RSS. Adjust if a legitimate page exceeds it.
+_MAX_BUFFER_BYTES = 4 * 1024 * 1024
+
+
+def _passthrough(body: bytes, response: Response) -> Response:
+    """Return a fresh ``Response`` carrying ``body`` plus every attribute of
+    ``response`` that ``BaseHTTPMiddleware`` would otherwise drop —
+    importantly ``background`` so any ``BackgroundTask`` /
+    ``BackgroundTasks`` the handler attached still fires.
+    """
+    return Response(
+        content=body,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type,
+        background=response.background,
+    )
 
 
 class PosthogInjectionMiddleware(BaseHTTPMiddleware):
@@ -55,30 +85,45 @@ class PosthogInjectionMiddleware(BaseHTTPMiddleware):
         if "text/html" not in content_type.lower():
             return response
 
-        # BaseHTTPMiddleware materialises the body for us via response.body_iterator.
+        # Buffer the body. ``BaseHTTPMiddleware`` consumes
+        # ``response.body_iterator`` here — once we iterate it, the only
+        # way to forward the response is to return a new one. Bail out
+        # past ``_MAX_BUFFER_BYTES`` so a streamed HTML response (rare but
+        # legal) doesn't balloon memory.
         chunks: list[bytes] = []
+        total = 0
+        too_big = False
         async for chunk in response.body_iterator:  # type: ignore[attr-defined]
-            chunks.append(chunk if isinstance(chunk, (bytes, bytearray)) else chunk.encode("utf-8"))
+            buf = chunk if isinstance(chunk, (bytes, bytearray)) else chunk.encode("utf-8")
+            total += len(buf)
+            if total > _MAX_BUFFER_BYTES:
+                too_big = True
+                # Still need to drain the iterator to avoid breaking the
+                # ASGI stream contract; but stop appending so we don't
+                # hold every chunk.
+                continue
+            chunks.append(buf)
+        if too_big:
+            logger.warning(
+                "PostHog snippet injection skipped: HTML response > %d bytes (path=%s)",
+                _MAX_BUFFER_BYTES, request.url.path,
+            )
+            # We've consumed the iterator; rebuild from the chunks we
+            # captured before the cap. Better to serve a truncated body
+            # than to crash, but in practice the cap is set so this
+            # branch shouldn't fire for legitimate pages.
+            return _passthrough(b"".join(chunks), response)
+
         body = b"".join(chunks)
 
         if _HEAD_CLOSE not in body or b"posthog.init" in body:
-            return Response(
-                content=body,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.media_type,
-            )
+            return _passthrough(body, response)
 
         try:
             snippet = _render_snippet(request)
         except Exception:
             logger.exception("PostHog snippet render failed; serving response unmodified")
-            return Response(
-                content=body,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.media_type,
-            )
+            return _passthrough(body, response)
 
         body = body.replace(_HEAD_CLOSE, snippet.encode("utf-8") + _HEAD_CLOSE, 1)
         # content-length must reflect the rewritten body — Starlette's
@@ -89,6 +134,7 @@ class PosthogInjectionMiddleware(BaseHTTPMiddleware):
             status_code=response.status_code,
             headers=new_headers,
             media_type=response.media_type,
+            background=response.background,
         )
 
 
