@@ -7,6 +7,7 @@ as /api/admin/configure for Keboola/BigQuery) — never stored in the DB.
 
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
@@ -76,6 +77,13 @@ class CreateMarketplaceRequest(BaseModel):
     branch: Optional[str] = None
     description: Optional[str] = None
     token: Optional[str] = None
+    # v32: required at create time. Surfaced on /marketplace cards + plugin
+    # detail in place of the historical owner_todo placeholder. The plan
+    # decision was to validate at the application layer (no DB NOT NULL)
+    # so existing rows survive the schema migration without forcing all
+    # admins to refill before the next request lands.
+    curator_name: Optional[str] = None
+    curator_email: Optional[str] = None
 
 
 class UpdateMarketplaceRequest(BaseModel):
@@ -85,6 +93,11 @@ class UpdateMarketplaceRequest(BaseModel):
     description: Optional[str] = None
     # None = leave untouched; empty string = clear token; non-empty = rotate
     token: Optional[str] = None
+    # Either field None = leave untouched; non-empty string = update.
+    # Empty string is treated the same as None on update so admins can't
+    # accidentally null out a curator by submitting an empty form input.
+    curator_name: Optional[str] = None
+    curator_email: Optional[str] = None
 
 
 class MarketplaceResponse(BaseModel):
@@ -100,6 +113,14 @@ class MarketplaceResponse(BaseModel):
     last_error: Optional[str] = None
     has_token: bool = False
     plugin_count: int = 0
+    curator_name: Optional[str] = None
+    curator_email: Optional[str] = None
+
+
+# Liberal email regex — RFC 5322 is too permissive to be useful at the
+# admin-form layer. Anchored, requires `local@domain.tld`, no whitespace,
+# 1-254 chars total. Matches what /admin UI expects an admin to type.
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 
 def _to_response(row: dict, plugin_count: int = 0) -> MarketplaceResponse:
@@ -118,6 +139,8 @@ def _to_response(row: dict, plugin_count: int = 0) -> MarketplaceResponse:
         last_error=row.get("last_error"),
         has_token=has_token,
         plugin_count=plugin_count,
+        curator_name=row.get("curator_name"),
+        curator_email=row.get("curator_email"),
     )
 
 
@@ -248,6 +271,24 @@ async def create_marketplace(
     if not (payload.name or "").strip():
         raise HTTPException(status_code=400, detail="name is required")
 
+    # v32: curator is mandatory at create time. Validation lives here (not in
+    # DB schema) so legacy rows that pre-date the column survive — admins
+    # patch them via the edit modal at their leisure.
+    curator_name = (payload.curator_name or "").strip()
+    curator_email = (payload.curator_email or "").strip()
+    if not curator_name:
+        raise HTTPException(
+            status_code=400, detail="curator_name is required",
+        )
+    if not curator_email:
+        raise HTTPException(
+            status_code=400, detail="curator_email is required",
+        )
+    if not _EMAIL_RE.match(curator_email):
+        raise HTTPException(
+            status_code=400, detail="curator_email is not a valid email address",
+        )
+
     repo = MarketplaceRegistryRepository(conn)
     if repo.get(slug):
         raise HTTPException(status_code=409, detail=f"marketplace '{slug}' already exists")
@@ -265,6 +306,8 @@ async def create_marketplace(
         token_env=token_env,
         description=payload.description,
         registered_by=user.get("email"),
+        curator_name=curator_name,
+        curator_email=curator_email,
     )
     _audit(
         conn,
@@ -297,6 +340,8 @@ async def update_marketplace(
         "token_env": existing.get("token_env"),
         "description": existing.get("description"),
         "registered_by": existing.get("registered_by"),
+        "curator_name": existing.get("curator_name"),
+        "curator_email": existing.get("curator_email"),
     }
     changed: dict = {}
     if payload.name is not None:
@@ -316,6 +361,20 @@ async def update_marketplace(
     if payload.description is not None:
         updated["description"] = payload.description
         changed["description"] = payload.description
+
+    # Curator fields: empty-string treated as "no change" so an admin
+    # editing only the URL doesn't accidentally null out curator metadata.
+    if payload.curator_name is not None and payload.curator_name.strip():
+        updated["curator_name"] = payload.curator_name.strip()
+        changed["curator_name"] = updated["curator_name"]
+    if payload.curator_email is not None and payload.curator_email.strip():
+        if not _EMAIL_RE.match(payload.curator_email.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail="curator_email is not a valid email address",
+            )
+        updated["curator_email"] = payload.curator_email.strip()
+        changed["curator_email"] = updated["curator_email"]
 
     if payload.token is not None:
         # None = untouched; "" = clear token_env binding; non-empty = rotate.
@@ -338,6 +397,8 @@ async def update_marketplace(
         token_env=updated["token_env"],
         description=updated["description"],
         registered_by=updated["registered_by"],
+        curator_name=updated["curator_name"],
+        curator_email=updated["curator_email"],
     )
     _audit(conn, user["id"], "marketplace.update", marketplace_id, changed)
     counts = MarketplacePluginsRepository(conn).count_by_marketplace()

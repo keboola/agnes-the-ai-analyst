@@ -347,7 +347,7 @@
             <div class="icon">🖼</div>
             <div class="file-info">
               <div class="label" id="photo-label">No photo</div>
-              <div class="meta">Drag & drop or click Choose · JPG, PNG, WebP · Max 5 MB</div>
+              <div class="meta">Drag & drop or click Choose · PNG / JPEG / WebP only · Max 5 MB</div>
             </div>
             <input type="file" id="photo" accept="image/jpeg,image/png,image/webp">
             <button type="button" id="photo-pick">Choose</button>
@@ -362,9 +362,10 @@
         <div class="field">
           <label class="field-label">Documentation <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
           <div class="doc-list" id="doc-list"></div>
-          <input type="file" id="doc-input" hidden>
+          <input type="file" id="doc-input" hidden
+            accept=".pdf,.md,.markdown,.txt,application/pdf,text/markdown,text/plain">
           <button type="button" class="doc-add" id="add-doc-btn">+ Add file</button>
-          <div class="field-hint">Each file max 10 MB. Add as many as you want.</div>
+          <div class="field-hint">PDF, Markdown (.md/.markdown), or plain text (.txt). Max 10 MB per file.</div>
         </div>
 
         <div class="actions">
@@ -602,9 +603,26 @@ wireDropZone(
 );
 
 // Docs
+// v32: client-side allowlist sanity check. The same allowlist is enforced
+// server-side (returns HTTP 415), so this is purely UX — give the user a
+// useful inline message before they submit instead of a generic error after
+// the round-trip.
+const ALLOWED_DOC_EXT = new Set(['.pdf', '.md', '.markdown', '.txt']);
 addDocBtn.addEventListener('click', () => docInput.click());
 docInput.addEventListener('change', () => {
-  for (const f of docInput.files) docs.push(f);
+  for (const f of docInput.files) {
+    const lower = (f.name || '').toLowerCase();
+    const dot = lower.lastIndexOf('.');
+    const ext = dot >= 0 ? lower.slice(dot) : '';
+    if (!ALLOWED_DOC_EXT.has(ext)) {
+      alert(
+        'Unsupported document format: "' + f.name + '". '
+        + 'Only PDF (.pdf), Markdown (.md, .markdown), and plain text (.txt) are accepted.'
+      );
+      continue;
+    }
+    docs.push(f);
+  }
   docInput.value = '';
   renderDocs();
 });

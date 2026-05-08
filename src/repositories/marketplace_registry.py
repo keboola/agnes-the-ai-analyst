@@ -27,19 +27,34 @@ class MarketplaceRegistryRepository:
         token_env: Optional[str] = None,
         description: Optional[str] = None,
         registered_by: Optional[str] = None,
+        curator_name: Optional[str] = None,
+        curator_email: Optional[str] = None,
     ) -> None:
+        # ON CONFLICT updates curator fields too — but ONLY when the caller
+        # supplied a non-None value. Passing curator_name=None on an UPDATE
+        # path (e.g. an admin "edit URL only" flow that didn't touch the
+        # curator inputs) must NOT clobber an existing curator with NULL.
+        # COALESCE(excluded.curator_name, marketplace_registry.curator_name)
+        # gives that semantics: when excluded is non-null it wins, otherwise
+        # the prior value survives.
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO marketplace_registry
-                (id, name, url, branch, token_env, description, registered_by, registered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, name, url, branch, token_env, description, registered_by,
+                 registered_at, curator_name, curator_email)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name,
                 url = excluded.url,
                 branch = excluded.branch,
                 token_env = excluded.token_env,
-                description = excluded.description""",
-            [id, name, url, branch, token_env, description, registered_by, now],
+                description = excluded.description,
+                curator_name = COALESCE(excluded.curator_name, marketplace_registry.curator_name),
+                curator_email = COALESCE(excluded.curator_email, marketplace_registry.curator_email)""",
+            [
+                id, name, url, branch, token_env, description, registered_by,
+                now, curator_name, curator_email,
+            ],
         )
 
     def unregister(self, marketplace_id: str) -> None:

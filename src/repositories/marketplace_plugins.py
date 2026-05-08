@@ -24,7 +24,10 @@ class MarketplacePluginsRepository:
         columns: List[str], row: tuple
     ) -> Dict[str, Any]:
         d = dict(zip(columns, row))
-        for k in ("source_spec", "raw"):
+        # ``doc_links`` joins ``source_spec`` / ``raw`` here — DuckDB stores
+        # JSON columns as VARCHAR via our INSERT path, so each fetch returns
+        # a string that the API layer wants as a parsed structure.
+        for k in ("source_spec", "raw", "doc_links"):
             v = d.get(k)
             if isinstance(v, str):
                 try:
@@ -121,7 +124,8 @@ class MarketplacePluginsRepository:
         rows = self.conn.execute(
             f"SELECT DISTINCT mp.marketplace_id, mp.name, mp.description, mp.version, "
             f"       mp.author_name, mp.homepage, mp.category, mp.source_type, "
-            f"       mp.source_spec, mp.raw, mp.created_at, mp.updated_at "
+            f"       mp.source_spec, mp.raw, mp.cover_photo_url, mp.video_url, "
+            f"       mp.doc_links, mp.created_at, mp.updated_at "
             f"FROM marketplace_plugins mp "
             f"JOIN resource_grants rg ON 1=1 "
             f"WHERE {where_sql} "
@@ -171,6 +175,19 @@ class MarketplacePluginsRepository:
         timestamp). Plugins that were in the previous snapshot but are no
         longer in the upstream ``marketplace.json`` are deleted.
 
+        Each ``plugins`` entry is the full marketplace.json plugin dict
+        optionally augmented with v32 enrichment keys produced by the
+        agnes-metadata.json reader:
+
+        * ``cover_photo_url`` (str | None)  — already-resolved served URL
+        * ``video_url`` (str | None)
+        * ``doc_links`` (list[dict] | None) — list of resolved doc-link
+          objects, each carrying ``{name, url, kind}`` where ``kind`` is
+          ``internal`` / ``mirrored`` / ``external``.
+
+        Absent keys are persisted as NULL — that's the steady state when the
+        upstream marketplace ships no agnes-metadata.json at all.
+
         Returns the number of plugins written.
         """
         plugins_list = list(plugins)
@@ -208,25 +225,40 @@ class MarketplacePluginsRepository:
                 source_spec_json = (
                     json.dumps(source_spec) if source_spec is not None else None
                 )
-                raw_json = json.dumps(p)
+                # `raw` continues to carry the unmerged upstream marketplace.json
+                # plugin entry — agnes-metadata enrichment is held in dedicated
+                # columns, never folded into `raw`. Keeps the contract clean for
+                # the synth marketplace flow that re-emits `raw` to Claude Code.
+                raw_payload = {k: v for k, v in p.items() if k not in (
+                    "cover_photo_url", "video_url", "doc_links",
+                )}
+                raw_json = json.dumps(raw_payload)
+                doc_links = p.get("doc_links")
+                doc_links_json = (
+                    json.dumps(doc_links) if isinstance(doc_links, list) else None
+                )
                 # Upsert: ON CONFLICT keeps the existing created_at and
                 # refreshes only the mutable fields. New rows get
                 # CURRENT_TIMESTAMP via the column's DEFAULT.
                 self.conn.execute(
                     """INSERT INTO marketplace_plugins
                         (marketplace_id, name, description, version, author_name,
-                         homepage, category, source_type, source_spec, raw, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         homepage, category, source_type, source_spec, raw,
+                         cover_photo_url, video_url, doc_links, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (marketplace_id, name) DO UPDATE SET
-                        description = EXCLUDED.description,
-                        version     = EXCLUDED.version,
-                        author_name = EXCLUDED.author_name,
-                        homepage    = EXCLUDED.homepage,
-                        category    = EXCLUDED.category,
-                        source_type = EXCLUDED.source_type,
-                        source_spec = EXCLUDED.source_spec,
-                        raw         = EXCLUDED.raw,
-                        updated_at  = EXCLUDED.updated_at""",
+                        description     = EXCLUDED.description,
+                        version         = EXCLUDED.version,
+                        author_name     = EXCLUDED.author_name,
+                        homepage        = EXCLUDED.homepage,
+                        category        = EXCLUDED.category,
+                        source_type     = EXCLUDED.source_type,
+                        source_spec     = EXCLUDED.source_spec,
+                        raw             = EXCLUDED.raw,
+                        cover_photo_url = EXCLUDED.cover_photo_url,
+                        video_url       = EXCLUDED.video_url,
+                        doc_links       = EXCLUDED.doc_links,
+                        updated_at      = EXCLUDED.updated_at""",
                     [
                         marketplace_id,
                         name,
@@ -238,6 +270,9 @@ class MarketplacePluginsRepository:
                         source_type,
                         source_spec_json,
                         raw_json,
+                        p.get("cover_photo_url"),
+                        p.get("video_url"),
+                        doc_links_json,
                         now,
                     ],
                 )

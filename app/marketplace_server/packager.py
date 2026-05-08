@@ -170,6 +170,14 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
         if plugin_dir is None or not plugin_dir.is_dir():
             continue
         for f in sorted(p for p in plugin_dir.rglob("*") if p.is_file()):
+            rel_parts = f.relative_to(plugin_dir).parts
+            # v32: strip Agnes-only files (`.agnes/**` and `agnes-metadata.json`)
+            # from the synth Claude Code marketplace so user instances never
+            # see enrichment metadata they don't need. ETag is computed from
+            # the same filtered set (compute_etag in marketplace_filter), so
+            # adding/removing these files never busts user-side caches.
+            if marketplace_filter.is_agnes_only_path(rel_parts):
+                continue
             rel = f.relative_to(plugin_dir).as_posix()
             arc = f"plugins/{prefix}/{rel}"
             members.append((arc, f.read_bytes()))
