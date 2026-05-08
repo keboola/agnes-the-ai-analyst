@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -446,6 +446,28 @@ CREATE TABLE IF NOT EXISTS instance_templates (
     updated_at TIMESTAMP,
     updated_by VARCHAR
 );
+
+-- v29: news_template — single table holding every saved version of the
+-- /home news perex + /news full body. `version` ↑ per save. `published`
+-- distinguishes the active draft (FALSE) from public versions (TRUE).
+-- Web reads `WHERE published = TRUE ORDER BY version DESC LIMIT 1`.
+-- Admin can browse all rows. Invariant: at most one row with
+-- `published = FALSE` at any time (the active draft). See
+-- src/repositories/news_template.py.
+CREATE TABLE IF NOT EXISTS news_template (
+    id              VARCHAR PRIMARY KEY,
+    version         INTEGER NOT NULL UNIQUE,
+    intro           TEXT,
+    content         TEXT,
+    published       BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    updated_at      TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    created_by      VARCHAR,
+    published_at    TIMESTAMP,
+    published_by    VARCHAR
+);
+CREATE INDEX IF NOT EXISTS ix_news_template_pub_ver
+    ON news_template (published, version DESC);
 
 -- v25: per-user marketplace composition layer on top of admin grants.
 --   * store_entities       — community-uploaded skills/agents/plugins
@@ -2015,6 +2037,36 @@ def _v27_to_v28_finalize(conn) -> None:
         )
 
 
+_V28_TO_V29_MIGRATIONS = [
+    # news_template: single table holding every saved version of the /home
+    # news perex + /news full body. `version` monotonically increases per
+    # save. `published` distinguishes the active draft (FALSE) from public
+    # versions (TRUE). Web reads `WHERE published = TRUE ORDER BY version
+    # DESC LIMIT 1`. Admin can browse all rows. See plan v29 §1.
+    """
+    CREATE TABLE IF NOT EXISTS news_template (
+        id              VARCHAR PRIMARY KEY,
+        version         INTEGER NOT NULL UNIQUE,
+        intro           TEXT,
+        content         TEXT,
+        published       BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at      TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        updated_at      TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        created_by      VARCHAR,
+        published_at    TIMESTAMP,
+        published_by    VARCHAR
+    )
+    """,
+    # Composite index supports both `WHERE published = TRUE ORDER BY version
+    # DESC LIMIT 1` (the hot read path on every /home + /news request) and
+    # full-table version listing in the admin UI.
+    """
+    CREATE INDEX IF NOT EXISTS ix_news_template_pub_ver
+        ON news_template (published, version DESC)
+    """,
+]
+
+
 # v24: rewrite materialized BQ source_query from DuckDB-flavor
 # (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
 # so the new connectors.bigquery.extractor.materialize_query wrapping
@@ -2279,6 +2331,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 for sql in _V27_TO_V28_MIGRATIONS:
                     conn.execute(sql)
                 _v27_to_v28_finalize(conn)
+            if current < 29:
+                for sql in _V28_TO_V29_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

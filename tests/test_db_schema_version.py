@@ -13,7 +13,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_28():
+def test_schema_version_is_29():
     # v25 → v26: migrate Keboola query_mode='local' rows to 'materialized' —
     # local mode is gone for Keboola now that the extractor talks Storage API
     # directly via signed URLs (NULL source_query = full-table export, same
@@ -27,9 +27,10 @@ def test_schema_version_is_28():
     # v27 → v28: /home page rollout — instance_templates singleton
     # consolidation (welcome_template + claude_md_template merged) + new
     # users.onboarded column. See tests/test_v28_migration.py for the
-    # exhaustive coverage; this assertion guards against accidental
-    # regression of the bumped constant.
-    assert SCHEMA_VERSION == 28
+    # exhaustive coverage of that step.
+    # v28 → v29: news_template — single versioned table for the /home news
+    # perex + /news permalink page. See tests/test_news_template_repository.py.
+    assert SCHEMA_VERSION == 29
 
 
 def test_v20_adds_source_query(tmp_path):

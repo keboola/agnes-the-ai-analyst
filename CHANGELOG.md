@@ -11,6 +11,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **News section on `/home` + `/news` permalink + `/admin/news` editor** —
+  admin-edited rich content (intro shown at the bottom of `/home`, full
+  body on `/news`). Single versioned entity in the new `news_template`
+  table (schema v29). Every save creates / updates a draft; the admin
+  must publish a draft before it goes live. Older versions stay
+  browsable; admin can roll back via "Unpublish version N" in
+  `/admin/news` or `agnes admin news unpublish N`. Drafts and
+  superseded published versions older than 30 days are pruned on save;
+  the currently-displayed published version is never pruned.
+  See `docs/operator/news-content-guide.md`.
+- **`agnes admin news` CLI** — `show`, `draft`, `edit`, `publish`,
+  `unpublish`, `versions`, `export`. Direct DB access (no API
+  roundtrip), same convention as `agnes admin metrics import`.
+- **Documented HTML / CSS vocabulary** for news authors —
+  `.callout` / `.callout-{info,warn,success,danger}`, `.video-embed`
+  16:9 wrapper, `.news-section`, `.news-grid-2` / `.news-grid-3`,
+  `.news-cta` button. Allowed tags + iframe host allowlist (YouTube /
+  Vimeo / Loom only) are documented in
+  `docs/operator/news-content-guide.md` and reproduced in the
+  `/admin/news` editor's "Format help" pane.
+- **`nh3>=0.2`** dependency — Rust-backed (ammonia) HTML sanitizer
+  used by the news pipeline (`src/sanitize_news.py`). Allowlist-based
+  with per-tag attribute scoping; closes the bypass shapes the legacy
+  regex sanitizer in `src/welcome_template.py` was vulnerable to. The
+  legacy sanitizer is left alone in this PR; replacing it is a
+  separate cleanup.
 - **State-aware `/home` landing page** — alternative to `/dashboard` for
   not-onboarded users. Inline 3-step install (Claude Code via OS-tabbed
   installer, `agnes pull` bootstrap, optional auto-accept mode), one-click

@@ -564,6 +564,13 @@ async def home_page(
     ).fetchone()
     onboarded = bool(row[0]) if row else False
 
+    # Pull the latest published news intro for the bottom-of-page section.
+    # Template renders the section only when intro is non-empty, so an
+    # instance that has never published news shows nothing extra.
+    from src.repositories.news_template import NewsTemplateRepository
+    news = NewsTemplateRepository(conn).get_current_published()
+    news_intro = news["intro"] if (news and news.get("intro")) else ""
+
     # Single template renders both states. The post-onboarding view keeps
     # the install-steps + connector prompts + auto-mode card visible —
     # they stay relevant for adding a second machine, a missing connector,
@@ -576,8 +583,53 @@ async def home_page(
         conn=conn,
         onboarded=onboarded,
         is_admin=is_user_admin(user["id"], conn),
+        news_intro=news_intro,
     )
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
+
+
+@router.get("/news", response_class=HTMLResponse)
+async def news_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Permalink page for the latest published news. Renders empty-state
+    copy when no version is published. Authed-only (same as /home).
+    """
+    from src.repositories.news_template import NewsTemplateRepository
+    news = NewsTemplateRepository(conn).get_current_published()
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+        news=news,
+    )
+    return templates.TemplateResponse(request, "news.html", ctx)
+
+
+@router.get("/admin/news", response_class=HTMLResponse)
+async def admin_news_editor(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Admin authoring surface — current published banner, draft editor,
+    versions table. JS hits the /api/admin/news/* endpoints for the
+    write paths."""
+    from src.repositories.news_template import NewsTemplateRepository
+    repo = NewsTemplateRepository(conn)
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=True,
+        news_current=repo.get_current_published(),
+        news_draft=repo.get_active_draft(),
+        news_versions=repo.list_versions(limit=50),
+    )
+    return templates.TemplateResponse(request, "admin/news_editor.html", ctx)
 
 
 @router.get("/setup-advanced", response_class=HTMLResponse)

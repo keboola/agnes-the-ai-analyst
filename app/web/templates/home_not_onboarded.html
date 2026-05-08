@@ -710,6 +710,100 @@
     flex-shrink: 0;
 }
 .home-mock .install-done strong { font-weight: 600; color: white; }
+
+/* News perex (admin-edited) — bottom of /home.
+   Keeps the styling within the admin-defined class vocabulary
+   (callout, video-embed) so authors get a predictable surface.
+   Full-width grid classes are intentionally NOT included here —
+   they live on /news where the layout has more room. */
+.home-mock .home-news {
+    margin-top: 28px;
+    padding: 22px 24px;
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+}
+.home-mock .home-news-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    gap: 16px;
+}
+.home-mock .home-news-head h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--hp-text-primary);
+    margin: 0;
+}
+.home-mock .home-news-more {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--hp-primary);
+    text-decoration: none;
+}
+.home-mock .home-news-more:hover { text-decoration: underline; }
+.home-mock .home-news-body {
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--hp-text-primary);
+}
+.home-mock .home-news-body p { margin: 0 0 8px; }
+.home-mock .home-news-body p:last-child { margin-bottom: 0; }
+
+/* Callout vocabulary — used inside .home-news-body and /news content.
+   Authors apply these classes via the documented HTML examples; the
+   sanitizer permits `class` on <div>/<span>/<p>/<h*>/<table>. */
+.home-mock .callout,
+body.news-page .callout {
+    border-left: 4px solid var(--hp-primary);
+    background: var(--hp-primary-light);
+    padding: 10px 14px;
+    border-radius: 6px;
+    margin: 10px 0;
+    color: var(--hp-text-primary);
+}
+.home-mock .callout-info,
+body.news-page .callout-info {
+    border-left-color: #0073D1;
+    background: #E6F3FC;
+}
+.home-mock .callout-warn,
+body.news-page .callout-warn {
+    border-left-color: #C2410C;
+    background: #FED7AA;
+}
+.home-mock .callout-success,
+body.news-page .callout-success {
+    border-left-color: #047857;
+    background: #D1FAE5;
+}
+.home-mock .callout-danger,
+body.news-page .callout-danger {
+    border-left-color: #B91C1C;
+    background: #FEE2E2;
+}
+
+/* 16:9 wrapper for YouTube/Vimeo/Loom iframes. Author writes:
+   <div class="video-embed"><iframe src="..."></iframe></div> */
+.home-mock .video-embed,
+body.news-page .video-embed {
+    position: relative;
+    padding-bottom: 56.25%;
+    height: 0;
+    overflow: hidden;
+    border-radius: 8px;
+    margin: 12px 0;
+    background: black;
+}
+.home-mock .video-embed iframe,
+body.news-page .video-embed iframe {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    border: 0;
+}
+
 .home-mock .install-done code {
     background: rgba(15, 23, 42, 0.55);
     border: 1px solid rgba(255, 255, 255, 0.18);
@@ -1077,6 +1171,16 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
         </div>
         <span class="arrow">&rarr;</span>
     </a>
+
+    {% if news_intro %}
+    <section class="home-news">
+        <header class="home-news-head">
+            <h2>What's new</h2>
+            <a class="home-news-more" href="/news">Read more &rarr;</a>
+        </header>
+        <div class="home-news-body">{{ news_intro | safe }}</div>
+    </section>
+    {% endif %}
 
 </div>
 

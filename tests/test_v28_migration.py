@@ -10,9 +10,15 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_26():
-    """v28 = home page (instance_templates consolidation + users.onboarded)."""
-    assert SCHEMA_VERSION == 28
+def test_v28_migration_landed():
+    """v28 = home page (instance_templates consolidation + users.onboarded).
+
+    The schema version moves on with subsequent migrations (v29 added the
+    news_template table). This test guards that v28's instance_templates
+    + users.onboarded landed and stayed; the exact SCHEMA_VERSION value
+    is verified in tests/test_db_schema_version.py.
+    """
+    assert SCHEMA_VERSION >= 28
 
 
 def test_v28_creates_instance_templates(tmp_path):
@@ -145,7 +151,11 @@ def test_v25_db_migrates_to_v28_preserving_template_content(tmp_path):
 
     _ensure_schema(conn)
 
-    assert get_schema_version(conn) == 28
+    # Migration is a one-shot ladder; once v25 runs, the connection lands
+    # at the current SCHEMA_VERSION (no longer 28 after v29 added the
+    # news_template table). Assert ≥ 28 so this test stays focused on
+    # what v28 itself contributed (instance_templates consolidation).
+    assert get_schema_version(conn) >= 28
 
     rows = {
         row[0]: row

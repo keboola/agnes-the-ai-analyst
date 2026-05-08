@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block title %}News — {{ instance_name or "AI Data Analyst" }}{% endblock %}
+
+{% block head_extra %}
+<style>
+body.news-page .container { max-width: 1280px; padding: 0 32px 48px; }
+body.news-page { background: #F9FAFB; }
+
+body.news-page main { color: #111827; line-height: 1.6; }
+
+body.news-page .news-card {
+    margin-top: 28px;
+    background: white;
+    border: 1px solid #E5E7EB;
+    border-radius: 12px;
+    padding: 32px 40px;
+}
+
+body.news-page .news-meta {
+    font-size: 12px;
+    color: #6B7280;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 8px;
+}
+
+body.news-page .news-intro {
+    font-size: 16px;
+    color: #374151;
+    line-height: 1.55;
+    margin-bottom: 22px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid #F3F4F6;
+}
+body.news-page .news-intro p { margin: 0 0 8px; }
+body.news-page .news-intro p:last-child { margin-bottom: 0; }
+
+body.news-page .news-content { font-size: 15px; }
+body.news-page .news-content h1 { font-size: 24px; margin: 24px 0 12px; }
+body.news-page .news-content h2 { font-size: 20px; margin: 22px 0 10px; }
+body.news-page .news-content h3 { font-size: 17px; margin: 18px 0 8px; }
+body.news-page .news-content p { margin: 0 0 12px; }
+body.news-page .news-content ul,
+body.news-page .news-content ol { margin: 0 0 12px 24px; }
+body.news-page .news-content li { margin: 4px 0; }
+body.news-page .news-content code {
+    background: #F3F4F6;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 13px;
+}
+body.news-page .news-content pre {
+    background: #0F172A;
+    color: #FBBF24;
+    padding: 14px 18px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 12px 0;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 13px;
+}
+body.news-page .news-content blockquote {
+    border-left: 4px solid #E5E7EB;
+    padding: 4px 14px;
+    margin: 12px 0;
+    color: #6B7280;
+}
+
+/* Documented section + grid + CTA classes the author can use. */
+body.news-page .news-section { margin-top: 28px; padding-top: 12px; }
+
+body.news-page .news-grid-2,
+body.news-page .news-grid-3 {
+    display: grid;
+    gap: 16px;
+    margin: 12px 0;
+}
+body.news-page .news-grid-2 { grid-template-columns: repeat(2, 1fr); }
+body.news-page .news-grid-3 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 720px) {
+    body.news-page .news-grid-2,
+    body.news-page .news-grid-3 { grid-template-columns: 1fr; }
+}
+
+body.news-page a.news-cta {
+    display: inline-block;
+    background: #0073D1;
+    color: white;
+    text-decoration: none;
+    padding: 9px 18px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    margin: 8px 0;
+}
+body.news-page a.news-cta:hover { background: #0056A3; }
+
+/* Callouts + video-embed live in the shared style block on /home and
+   are duplicated here so the /news permalink renders standalone. */
+body.news-page .callout {
+    border-left: 4px solid #0073D1;
+    background: #E6F3FC;
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 12px 0;
+}
+body.news-page .callout-info { border-left-color: #0073D1; background: #E6F3FC; }
+body.news-page .callout-warn { border-left-color: #C2410C; background: #FED7AA; }
+body.news-page .callout-success { border-left-color: #047857; background: #D1FAE5; }
+body.news-page .callout-danger { border-left-color: #B91C1C; background: #FEE2E2; }
+
+body.news-page .video-embed {
+    position: relative;
+    padding-bottom: 56.25%;
+    height: 0;
+    overflow: hidden;
+    border-radius: 8px;
+    margin: 14px 0;
+    background: black;
+}
+body.news-page .video-embed iframe {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    border: 0;
+}
+
+body.news-page .news-empty {
+    text-align: center;
+    padding: 64px 24px;
+    color: #6B7280;
+}
+body.news-page .news-empty h2 {
+    margin-bottom: 8px;
+    color: #374151;
+}
+</style>
+<script>
+// Tag the body so the styles above apply only on /news.
+document.addEventListener('DOMContentLoaded', function () {
+    document.body.classList.add('news-page');
+});
+</script>
+{% endblock %}
+
+{% block content %}
+<div class="news-card">
+    {% if news %}
+    <div class="news-meta">
+        Version {{ news.version }} · published {{ news.published_at.strftime('%Y-%m-%d') if news.published_at else '' }}
+        {% if news.published_by %} by {{ news.published_by }}{% endif %}
+    </div>
+    {% if news.intro %}
+    <div class="news-intro">{{ news.intro | safe }}</div>
+    {% endif %}
+    <div class="news-content">{{ news.content | safe }}</div>
+    {% else %}
+    <div class="news-empty">
+        <h2>No news yet</h2>
+        <p>An admin hasn't published a news update on this instance yet. Check back soon — or, if you're an admin, head to <a href="/admin/news">/admin/news</a> to write the first one.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
