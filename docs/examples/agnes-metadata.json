@@ -1,0 +1,41 @@
+{
+  "_comment": "Example .claude-plugin/agnes-metadata.json — copy to your marketplace repo and adjust. See docs/curated-marketplace-format.md for the full schema. The `_comment` keys are ignored by Agnes — they're here purely as inline documentation; remove them in production.",
+  "version": 1,
+  "plugins": {
+    "data-explorer": {
+      "_comment": "Plugin-level enrichment — surfaces on /marketplace cards and on the plugin detail page.",
+      "cover_photo": ".agnes/data-explorer-cover.png",
+      "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "category": "Data analysis",
+      "doc_links": [
+        { "name": "Setup guide", "path": "docs/setup.md" },
+        { "name": "API reference (PDF)", "url": "https://example.com/data-explorer-api.pdf" },
+        { "name": "Architecture overview", "url": "https://example.com/data-explorer-arch.md" }
+      ],
+      "skills": {
+        "explore-table": {
+          "_comment": "Skill-level enrichment — surfaces on /marketplace/curated/<slug>/data-explorer/skill/explore-table",
+          "cover_photo": ".agnes/skills/explore-table-cover.png",
+          "video_url": "https://www.youtube.com/watch?v=oHg5SJYRHA0",
+          "doc_links": [
+            { "name": "Cheatsheet", "path": "docs/skills/explore-table.md" }
+          ]
+        }
+      },
+      "agents": {
+        "query-planner": {
+          "cover_photo": "https://cdn.example.com/agents/query-planner.webp",
+          "video_url": "https://vimeo.com/123456789",
+          "doc_links": [
+            { "name": "Decision flow (PDF)", "url": "https://example.com/query-planner-flow.pdf" }
+          ]
+        }
+      }
+    },
+    "report-generator": {
+      "_comment": "Minimal example — only a cover photo + category override. Other fields default to absent and the UI hides those sections.",
+      "cover_photo": "https://cdn.example.com/report-generator-cover.png",
+      "category": "Reporting"
+    }
+  }
+}

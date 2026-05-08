@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.auth.access import (
@@ -34,7 +35,7 @@ from app.auth.access import (
 )
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
-from app.utils import get_marketplaces_dir
+from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
 from src.marketplace_filter import (
     resolve_allowed_plugins,
     resolve_manifest_name,
@@ -109,6 +110,11 @@ class InnerItemSummary(BaseModel):
     name: str
     description: Optional[str] = None
     detail_url: Optional[str] = None  # nested detail for skill/agent only
+    # v32: agnes-metadata-driven cover photo for the skill/agent card on the
+    # parent plugin detail page. Already in served-URL form (internal /asset/
+    # endpoint, mirrored /mirrored/ endpoint, or pass-through external URL).
+    # None → frontend renders initials placeholder ("SK" / "AG").
+    cover_photo_url: Optional[str] = None
 
 
 class CommandEntry(BaseModel):
@@ -160,9 +166,11 @@ class PluginDetailResponse(BaseModel):
     version: Optional[str] = None
     category: Optional[str] = None
     author_name: Optional[str] = None           # curated curator / flea owner
+    curator_email: Optional[str] = None         # curated only — surfaced for "contact curator"
     owner_display: Optional[str] = None         # flea: users.name → email → owner_username
     homepage: Optional[str] = None
-    cover_photo_url: Optional[str] = None       # /api/store/.../photo for flea, curator metadata for curated
+    cover_photo_url: Optional[str] = None       # /api/store/.../photo for flea, agnes-metadata for curated
+    video_url: Optional[str] = None             # v32: external (YouTube/Vimeo/Loom) embed URL
     bundle_size: Optional[int] = None           # bytes; None when unknown
     install_count: int = 0                      # flea only; curated leaves at 0
     released_at: Optional[str] = None           # ISO timestamp
@@ -216,6 +224,15 @@ class InnerDetailResponse(BaseModel):
     manifest_name: str = ""
     bundle_size: Optional[int] = None
     files: List[FileEntry] = []
+    # v32: per-skill / per-agent enrichment from agnes-metadata.json sub-tree.
+    # Read at request time from the cloned working tree (not cached in DB) so
+    # curators can update one inner asset without paying the cost of a full
+    # plugin-cache rewrite. Three-typed cover URL layout matches plugin
+    # detail: internal → /asset/, mirror status not yet checked here so
+    # external URLs pass through unmirrored (we don't run sync mid-request).
+    cover_photo_url: Optional[str] = None
+    video_url: Optional[str] = None
+    docs: List[DocEntry] = []
 
 
 class InstallActionResponse(BaseModel):
@@ -295,10 +312,39 @@ def _flea_detail_url(entity_id: str) -> str:
 def _resolve_marketplace_name(
     conn: duckdb.DuckDBPyConnection, marketplace_id: str
 ) -> str:
+    """Backwards-compatible name resolver kept for existing call sites.
+
+    New code should prefer :func:`_resolve_marketplace_meta` which returns
+    name and curator together, avoiding double DB hits when the caller needs
+    both fields.
+    """
+    meta = _resolve_marketplace_meta(conn, marketplace_id)
+    return meta["name"]
+
+
+def _resolve_marketplace_meta(
+    conn: duckdb.DuckDBPyConnection, marketplace_id: str
+) -> Dict[str, Optional[str]]:
+    """Look up display name + curator metadata in one DB hit.
+
+    Returns a dict with keys ``name``, ``curator_name``, ``curator_email``.
+    Missing rows fall back to the marketplace_id as ``name`` and ``None``
+    for the curator fields. Caller decides what to do with the absence
+    (typically: surface the ``OWNER_TODO_PLACEHOLDER``).
+    """
     row = MarketplaceRegistryRepository(conn).get(marketplace_id)
     if not row:
-        return marketplace_id
-    return (row.get("name") or "").strip() or marketplace_id
+        return {
+            "name": marketplace_id,
+            "curator_name": None,
+            "curator_email": None,
+        }
+    name = (row.get("name") or "").strip() or marketplace_id
+    return {
+        "name": name,
+        "curator_name": (row.get("curator_name") or "").strip() or None,
+        "curator_email": (row.get("curator_email") or "").strip() or None,
+    }
 
 
 def _curated_to_item(
@@ -306,11 +352,20 @@ def _curated_to_item(
     plugin_row: dict,
     *,
     subs: set,
-    marketplace_names: Dict[str, str],
+    marketplace_meta: Dict[str, Dict[str, Optional[str]]],
 ) -> MarketplaceItem:
     marketplace_id = plugin_row["marketplace_id"]
     plugin_name = plugin_row["name"]
-    mp_name = marketplace_names.get(marketplace_id) or marketplace_id
+    meta = marketplace_meta.get(marketplace_id) or {
+        "name": marketplace_id,
+        "curator_name": None,
+        "curator_email": None,
+    }
+    # v32: card "owner" is the curator from the marketplace registry — not the
+    # upstream `marketplace.json::author.name` we historically used. Curator
+    # is the human accountable for the plugin's presence in this Agnes
+    # instance; upstream author belongs in the plugin source repo.
+    owner = meta["curator_name"] or OWNER_TODO_PLACEHOLDER
     return MarketplaceItem(
         id=f"curated-{marketplace_id}/{plugin_name}",
         source="curated",
@@ -318,13 +373,16 @@ def _curated_to_item(
         type="plugin",
         category=plugin_row.get("category") or None,
         description=plugin_row.get("description"),
-        owner=plugin_row.get("author_name") or OWNER_TODO_PLACEHOLDER,
+        owner=owner,
         version=plugin_row.get("version"),
-        photo_url=None,
+        # Cover photo URL is already in served form (internal `/asset/`,
+        # mirrored `/mirrored/`, or pass-through external URL) — see
+        # src.marketplace._refresh_plugin_cache for the resolution path.
+        photo_url=plugin_row.get("cover_photo_url"),
         added=_to_iso(plugin_row.get("created_at")),
         installed=(marketplace_id, plugin_name) in subs,
         marketplace_slug=marketplace_id,
-        marketplace_name=mp_name,
+        marketplace_name=meta["name"],
         detail_url=_curated_detail_url(marketplace_id, plugin_name),
     )
 
@@ -411,13 +469,13 @@ async def list_items(
             skip=skip,
             limit=page_size,
         )
-        marketplace_names: Dict[str, str] = {}
+        marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
         if rows:
             distinct_ids = {r["marketplace_id"] for r in rows}
             for mp_id in distinct_ids:
-                marketplace_names[mp_id] = _resolve_marketplace_name(conn, mp_id)
+                marketplace_meta[mp_id] = _resolve_marketplace_meta(conn, mp_id)
         items = [
-            _curated_to_item(conn, r, subs=subs, marketplace_names=marketplace_names)
+            _curated_to_item(conn, r, subs=subs, marketplace_meta=marketplace_meta)
             for r in rows
         ]
         return ItemListResponse(
@@ -458,13 +516,21 @@ async def list_items(
 
     granted = resolve_allowed_plugins(conn, user)
     subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
-    marketplace_names: Dict[str, str] = {}
+    marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
     for p in granted:
         if (p["marketplace_id"], p["original_name"]) not in subs:
             continue
         mp_id = p["marketplace_id"]
-        if mp_id not in marketplace_names:
-            marketplace_names[mp_id] = _resolve_marketplace_name(conn, mp_id)
+        if mp_id not in marketplace_meta:
+            marketplace_meta[mp_id] = _resolve_marketplace_meta(conn, mp_id)
+        # `resolve_allowed_plugins` reads the upstream marketplace.json, so it
+        # doesn't see our agnes-metadata enrichment columns. The /my-stack
+        # surface still works because the curated card shape only needs
+        # category + description + photo from this synthetic row — none of
+        # which depend on agnes-metadata in steady state. Cover photos here
+        # fall through to the gradient placeholder until the user re-visits
+        # the curated browse tab (which goes through MarketplacePluginsRepository
+        # and gets the enriched cover_photo_url).
         author = p["raw"].get("author")
         plugin_row = {
             "marketplace_id": mp_id,
@@ -473,10 +539,11 @@ async def list_items(
             "version": p.get("version"),
             "category": p["raw"].get("category"),
             "author_name": author.get("name") if isinstance(author, dict) else None,
+            "cover_photo_url": None,
             "created_at": None,
         }
         items.append(_curated_to_item(
-            conn, plugin_row, subs=subs, marketplace_names=marketplace_names,
+            conn, plugin_row, subs=subs, marketplace_meta=marketplace_meta,
         ))
 
     flea_installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
@@ -861,14 +928,33 @@ async def curated_detail(
         Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     )
     skills = _list_inner_skills(plugin_root)
+    agents = _list_inner_agents(plugin_root)
+
+    # v32: enrich each skill/agent card with its agnes-metadata cover photo
+    # so the inner cards on the plugin detail page render the real image
+    # instead of just initials. Read agnes-metadata + mirror manifest once
+    # (cached by the helpers) and reuse for all inner items in the plugin.
+    from src.marketplace_metadata import read_agnes_metadata as _read_md
+    inner_metadata = _read_md(
+        Path(get_marketplaces_dir()) / marketplace_id,
+    )
+    inner_manifest = _load_mirror_manifest(marketplace_id)
+
     for s in skills:
         s.detail_url = (
             f"/marketplace/curated/{marketplace_id}/{plugin_name}/skill/{s.name}"
         )
-    agents = _list_inner_agents(plugin_root)
+        s.cover_photo_url = _curated_inner_cover(
+            marketplace_id, plugin_name, "skill", s.name,
+            manifest=inner_manifest, metadata=inner_metadata,
+        )
     for a in agents:
         a.detail_url = (
             f"/marketplace/curated/{marketplace_id}/{plugin_name}/agent/{a.name}"
+        )
+        a.cover_photo_url = _curated_inner_cover(
+            marketplace_id, plugin_name, "agent", a.name,
+            manifest=inner_manifest, metadata=inner_metadata,
         )
     commands = _list_commands(plugin_root)
     hooks = _list_hooks(plugin_root)
@@ -883,28 +969,37 @@ async def curated_detail(
         except (ValueError, TypeError):
             raw = {}
 
-    # Curated cover photo lives in dodatečná curator metadata (not in upstream
-    # plugin.json today). The raw row may carry it once curators populate the
-    # field; until then the value falls through to None and the frontend
-    # paints a gradient placeholder.
-    cover_url: Optional[str] = None
-    if isinstance(raw, dict):
-        candidate = raw.get("cover_photo_url") or raw.get("photo_url")
-        if isinstance(candidate, str) and candidate.strip():
-            cover_url = candidate.strip()
+    # v32: cover, video, and doc_links come from `agnes-metadata.json` via the
+    # sync pipeline (`src/marketplace.py::_refresh_plugin_cache`) — already in
+    # served-URL form when written to the DB. We pass them through the
+    # response model unchanged. Curator name + email come from the marketplace
+    # registry and surface as the plugin's accountable owner; the upstream
+    # `marketplace.json::author.name` is intentionally not used here so we
+    # have a single source of truth for "who runs this".
+    meta = _resolve_marketplace_meta(conn, marketplace_id)
+    doc_link_entries: List[DocEntry] = []
+    raw_links = plugin_row.get("doc_links")
+    if isinstance(raw_links, list):
+        for link in raw_links:
+            if isinstance(link, dict) and link.get("name") and link.get("url"):
+                doc_link_entries.append(
+                    DocEntry(name=str(link["name"]), url=str(link["url"]))
+                )
 
     return PluginDetailResponse(
         source="curated",
         marketplace_id=marketplace_id,
-        marketplace_name=_resolve_marketplace_name(conn, marketplace_id),
+        marketplace_name=meta["name"],
         plugin_name=plugin_name,
         manifest_name=(raw.get("name") if isinstance(raw, dict) else None) or plugin_name,
         description=plugin_row.get("description"),
         version=plugin_row.get("version"),
         category=plugin_row.get("category"),
-        author_name=plugin_row.get("author_name") or OWNER_TODO_PLACEHOLDER,
+        author_name=meta["curator_name"] or OWNER_TODO_PLACEHOLDER,
+        curator_email=meta["curator_email"],
         homepage=plugin_row.get("homepage"),
-        cover_photo_url=cover_url,
+        cover_photo_url=plugin_row.get("cover_photo_url"),
+        video_url=plugin_row.get("video_url"),
         bundle_size=_bundle_size(plugin_root),
         released_at=_to_iso(plugin_row.get("created_at")),
         updated_at=_to_iso(plugin_row.get("updated_at")),
@@ -915,6 +1010,7 @@ async def curated_detail(
         hooks=hooks,
         mcps=mcps,
         files=_walk_files(plugin_root),
+        docs=doc_link_entries,
     )
 
 
@@ -1172,13 +1268,192 @@ def _curated_inner_parent_fields(
     plugin_root = (
         Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     )
+    meta = _resolve_marketplace_meta(conn, marketplace_id)
     return {
-        "marketplace_name": _resolve_marketplace_name(conn, marketplace_id),
+        "marketplace_name": meta["name"],
         "category": plugin_row.get("category"),
-        "parent_author_name": plugin_row.get("author_name") or OWNER_TODO_PLACEHOLDER,
+        "parent_author_name": meta["curator_name"] or OWNER_TODO_PLACEHOLDER,
         "parent_updated_at": _to_iso(plugin_row.get("updated_at")),
         "manifest_name": resolve_manifest_name(plugin_root, fallback=plugin_name),
     }
+
+
+def _load_mirror_manifest(marketplace_id: str) -> Dict[str, Any]:
+    """Read the asset-mirror manifest for one marketplace into ``{url: entry}``.
+
+    Returns an empty dict when the cache directory or manifest doesn't exist
+    (fresh install, marketplace never synced) — callers treat that as "no
+    URL is mirrored" which collapses to the same path as a fetch failure.
+    """
+    from src.marketplace_asset_mirror import _load_manifest
+
+    cache_dir = get_marketplace_cache_dir() / marketplace_id
+    return _load_manifest(cache_dir)
+
+
+def _mirrored_url(marketplace_id: str, plugin_name: str, key: str) -> str:
+    """Served URL for a mirrored external asset under cache.
+
+    Mirror endpoint route — kept here as a local helper so ``app/api/`` does
+    not need a sync-side import. Same shape as ``src/marketplace.py``'s
+    ``_mirrored_asset_url``; the two must stay aligned with the FastAPI
+    route definition in this module (``/curated/{mp}/{plugin}/mirrored/{key}``).
+    """
+    return f"/api/marketplace/curated/{marketplace_id}/{plugin_name}/mirrored/{key}"
+
+
+def _resolve_external_via_mirror(
+    marketplace_id: str,
+    plugin_name: str,
+    url: str,
+    manifest: Dict[str, Any],
+) -> Optional[str]:
+    """Translate one external URL into the Agnes-served `/mirrored/` URL when
+    the asset mirror successfully cached it; ``None`` otherwise.
+
+    Used by the inner-detail (skill/agent) enrichment to apply the same
+    "drop entries Agnes can't deliver" rule that the plugin-level sync
+    flow already enforces. When this returns None the caller drops the
+    enrichment entry entirely (no broken external link surfaces in the UI).
+    """
+    entry = manifest.get(url)
+    if entry is None or entry.status != "ok" or not entry.local:
+        return None
+    # Manifest stores `local` as `<plugin>/<rest>`; the /mirrored/ endpoint
+    # expects just `<rest>` (the plugin segment is in the URL path). Same
+    # transform as src/marketplace.py uses on the plugin-level path.
+    rest = entry.local.split("/", 1)[1] if "/" in entry.local else entry.local
+    return _mirrored_url(marketplace_id, plugin_name, rest)
+
+
+def _curated_inner_enrichment(
+    marketplace_id: str,
+    plugin_name: str,
+    kind: str,
+    inner_name: str,
+) -> Dict[str, Any]:
+    """Load agnes-metadata.json sub-tree for a single skill/agent.
+
+    Lives here (not in the sync pipeline) so curators can update agnes-metadata
+    on a working tree and see the change at the next page refresh, without
+    waiting for a full plugin-cache rewrite. Read on every inner-detail
+    request — agnes-metadata.json is small enough that disk hit cost is
+    negligible compared to the SKILL.md / agent.md frontmatter parse the
+    endpoint already does.
+
+    External URL handling matches the plugin-level sync flow:
+    * cover_photo external → kept only when the asset mirror has a
+      successful cached copy (URL resolves to /mirrored/...). Else dropped
+      → the card / hero falls through to the gradient placeholder.
+    * doc_links external → same; entries that aren't mirrored OK get
+      dropped from the served list. Internal docs survive only when the
+      file actually exists in the working tree.
+
+    Returns a dict shaped for direct merge into the InnerDetailResponse:
+    ``cover_photo_url`` (resolved served URL or None),
+    ``video_url`` (str or None), ``docs`` (list of DocEntry).
+    """
+    from src.marketplace_metadata import (
+        read_agnes_metadata,
+        resolve_inner_metadata,
+    )
+
+    repo_root = Path(get_marketplaces_dir()) / marketplace_id
+    metadata = read_agnes_metadata(repo_root)
+    section_kind = "skills" if kind == "skill" else "agents"
+    resolved = resolve_inner_metadata(metadata, plugin_name, section_kind, inner_name)
+    if not resolved:
+        return {"cover_photo_url": None, "video_url": None, "docs": []}
+
+    manifest = _load_mirror_manifest(marketplace_id)
+
+    cover_url: Optional[str] = None
+    cover_ref = resolved.get("cover_photo_ref")
+    if isinstance(cover_ref, tuple):
+        ref_kind, target = cover_ref
+        if ref_kind == "internal":
+            local_path = repo_root / target
+            if local_path.is_file():
+                cover_url = (
+                    f"/api/marketplace/curated/{marketplace_id}/{plugin_name}"
+                    f"/asset/{target}"
+                )
+        elif ref_kind == "external":
+            cover_url = _resolve_external_via_mirror(
+                marketplace_id, plugin_name, target, manifest,
+            )
+
+    docs: List[DocEntry] = []
+    for link in resolved.get("doc_links") or []:
+        if not hasattr(link, "kind"):
+            continue
+        if link.kind == "internal":
+            local_path = repo_root / link.path
+            if not local_path.is_file():
+                continue
+            docs.append(DocEntry(
+                name=link.name,
+                url=(
+                    f"/api/marketplace/curated/{marketplace_id}/{plugin_name}"
+                    f"/doc/{link.path}"
+                ),
+            ))
+        else:
+            served = _resolve_external_via_mirror(
+                marketplace_id, plugin_name, link.url, manifest,
+            )
+            if served is None:
+                continue
+            docs.append(DocEntry(name=link.name, url=served))
+
+    return {
+        "cover_photo_url": cover_url,
+        "video_url": resolved.get("video_url"),
+        "docs": docs,
+    }
+
+
+def _curated_inner_cover(
+    marketplace_id: str,
+    plugin_name: str,
+    kind: str,
+    inner_name: str,
+    manifest: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Cheap helper: just the cover URL for one inner item.
+
+    Used by ``curated_detail`` to populate ``InnerItemSummary.cover_photo_url``
+    on the parent-plugin's skills/agents card list. Called once per inner
+    item; metadata + manifest are loaded once per plugin and passed in to
+    avoid N disk reads.
+    """
+    from src.marketplace_metadata import resolve_inner_metadata
+
+    if metadata is None:
+        from src.marketplace_metadata import read_agnes_metadata
+        repo_root = Path(get_marketplaces_dir()) / marketplace_id
+        metadata = read_agnes_metadata(repo_root)
+    if manifest is None:
+        manifest = _load_mirror_manifest(marketplace_id)
+
+    section_kind = "skills" if kind == "skill" else "agents"
+    resolved = resolve_inner_metadata(metadata, plugin_name, section_kind, inner_name)
+    cover_ref = resolved.get("cover_photo_ref") if resolved else None
+    if not isinstance(cover_ref, tuple):
+        return None
+    ref_kind, target = cover_ref
+    if ref_kind == "internal":
+        local_path = (Path(get_marketplaces_dir()) / marketplace_id / target)
+        if local_path.is_file():
+            return (
+                f"/api/marketplace/curated/{marketplace_id}/{plugin_name}"
+                f"/asset/{target}"
+            )
+        return None
+    return _resolve_external_via_mirror(
+        marketplace_id, plugin_name, target, manifest,
+    )
 
 
 @router.get(
@@ -1204,6 +1479,9 @@ async def curated_skill_detail(
     text, relpath = res
     fm = _parse_frontmatter(text)
     parent = _curated_inner_parent_fields(conn, marketplace_id, plugin_name)
+    enrichment = _curated_inner_enrichment(
+        marketplace_id, plugin_name, "skill", skill_name,
+    )
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
@@ -1215,6 +1493,7 @@ async def curated_skill_detail(
         bundle_size=_bundle_size(skill_dir),
         files=_walk_files(skill_dir),
         **parent,
+        **enrichment,
     )
 
 
@@ -1246,6 +1525,9 @@ async def curated_agent_detail(
     except OSError:
         agent_size = 0
     parent = _curated_inner_parent_fields(conn, marketplace_id, plugin_name)
+    enrichment = _curated_inner_enrichment(
+        marketplace_id, plugin_name, "agent", agent_name,
+    )
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
@@ -1257,4 +1539,157 @@ async def curated_agent_detail(
         bundle_size=agent_size,
         files=[FileEntry(path=f"{agent_name}.md", size=agent_size)],
         **parent,
+        **enrichment,
     )
+
+
+# ---------------------------------------------------------------------------
+# Asset / doc / mirrored serving endpoints (v32)
+# ---------------------------------------------------------------------------
+#
+# Three sibling endpoints that serve the binary content referenced from
+# `agnes-metadata.json`. All three:
+#
+#   * are gated by `require_resource_access(MARKETPLACE_PLUGIN, "{mp}/{plugin}")`
+#     so a user without RBAC can't side-load assets even with a direct URL,
+#   * resolve a candidate path with `Path.resolve(strict=True)` and verify the
+#     result lives under the expected root via `is_relative_to()` — defense
+#     against `..` / absolute paths / symlinks pointing out of the tree,
+#   * use FastAPI's `FileResponse` so Content-Type detection comes from the
+#     stdlib mimetypes module (good enough for the allowlisted set; binary
+#     fallback for anything we don't recognize).
+
+
+def _path_under(root: Path, *parts: str) -> Optional[Path]:
+    """Resolve ``root / *parts`` and confirm the result stays under ``root``.
+
+    Returns ``None`` if the file is missing, can't be resolved, or escapes
+    ``root`` (typical sources of escape: ``..`` segments, Windows backslashes
+    that survived path-param parsing, planted symlinks). Caller maps None to
+    a 404 — distinct from "found but rejected by allowlist" which the doc
+    endpoint surfaces as 415.
+    """
+    candidate = root.joinpath(*parts)
+    try:
+        resolved = candidate.resolve(strict=True)
+        anchor = root.resolve(strict=True)
+        resolved.relative_to(anchor)
+    except (OSError, ValueError):
+        return None
+    return resolved
+
+
+def _doc_disposition(filename: str) -> dict:
+    """Force-download headers for the /doc and /mirrored doc paths.
+
+    Browsers honor the frontend's `download` attribute only for same-origin
+    URLs; the explicit Content-Disposition header makes the download
+    behavior reliable regardless of how the link was opened (right-click →
+    open, programmatic fetch, curl, …). Filename is the basename so the
+    browser save dialog shows something readable.
+    """
+    safe = Path(filename).name or "download"
+    return {"Content-Disposition": f'attachment; filename="{safe}"'}
+
+
+@router.get("/curated/{marketplace_id}/{plugin_name}/asset/{path:path}")
+async def curated_asset(
+    marketplace_id: str,
+    plugin_name: str,
+    path: str,
+    _user: dict = Depends(require_resource_access(
+        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
+    )),
+):
+    """Serve an internal asset path from the cloned marketplace working tree.
+
+    Paths are repo-root-relative — ``{path}`` may be e.g.
+    ``.agnes/cover.png`` or ``plugins/foo/icon.png``. The response is the
+    raw file with stdlib-detected Content-Type. No allowlist check here —
+    cover photos are accepted through the asset endpoint (image allowlist
+    is enforced by the agnes-metadata parser at refresh time and again on
+    the mirror side for external URLs).
+
+    Inline rendering (no Content-Disposition) — covers display in <img>,
+    not as a download. The /doc and /mirrored siblings flip this for
+    documents.
+    """
+    repo_root = Path(get_marketplaces_dir()) / marketplace_id
+    if not repo_root.exists():
+        raise HTTPException(status_code=404, detail="marketplace_not_synced")
+    safe = _path_under(repo_root, path)
+    if safe is None or not safe.is_file():
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    return FileResponse(safe)
+
+
+@router.get("/curated/{marketplace_id}/{plugin_name}/doc/{path:path}")
+async def curated_doc(
+    marketplace_id: str,
+    plugin_name: str,
+    path: str,
+    _user: dict = Depends(require_resource_access(
+        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
+    )),
+):
+    """Serve an internal doc path from the cloned marketplace working tree.
+
+    Same path-traversal guard as ``/asset/``. Adds an allowlist check — the
+    doc endpoint refuses to serve a file whose extension isn't in the
+    documented PDF / Markdown / plain text set (HTTP 415). Defense-in-depth
+    even though the agnes-metadata parser already rejects out-of-allowlist
+    extensions during the doc_link parse — a curator who edits the working
+    tree directly (or whose JSON survived parsing because of a generic
+    extension match elsewhere) shouldn't be able to land a .docx through
+    a re-served doc URL.
+
+    Force-download via Content-Disposition: attachment — clicking a doc
+    link in the UI saves the file to disk rather than opening it in a tab.
+    """
+    from src.marketplace_assets import DOC_EXTENSIONS
+
+    repo_root = Path(get_marketplaces_dir()) / marketplace_id
+    if not repo_root.exists():
+        raise HTTPException(status_code=404, detail="marketplace_not_synced")
+    safe = _path_under(repo_root, path)
+    if safe is None or not safe.is_file():
+        raise HTTPException(status_code=404, detail="doc_not_found")
+    if safe.suffix.lower() not in DOC_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported_doc_extension: {safe.suffix.lower() or '(none)'}",
+        )
+    return FileResponse(safe, headers=_doc_disposition(safe.name))
+
+
+@router.get("/curated/{marketplace_id}/{plugin_name}/mirrored/{key:path}")
+async def curated_mirrored(
+    marketplace_id: str,
+    plugin_name: str,
+    key: str,
+    _user: dict = Depends(require_resource_access(
+        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
+    )),
+):
+    """Serve a mirrored external asset from the marketplace cache.
+
+    ``key`` is the ``local`` relpath stored in the cache manifest minus the
+    leading ``<plugin>/`` prefix — the mirror writes files at
+    ``${DATA_DIR}/marketplace-cache/<slug>/<plugin>/<rest>``, and this
+    endpoint expects ``{plugin}/{rest}`` so the same path-resolution check
+    catches escapes whether the caller provided ``cover.png`` or
+    ``docs/abc-setup.pdf``.
+
+    Doc-shaped paths (key starting with ``docs/``) get the same force-download
+    treatment as the internal /doc/ endpoint. Cover photos under the cache
+    root render inline so the <img> tag works.
+    """
+    cache_root = get_marketplace_cache_dir() / marketplace_id / plugin_name
+    if not cache_root.exists():
+        raise HTTPException(status_code=404, detail="mirror_cache_missing")
+    safe = _path_under(cache_root, key)
+    if safe is None or not safe.is_file():
+        raise HTTPException(status_code=404, detail="mirrored_asset_not_found")
+    if key.startswith("docs/"):
+        return FileResponse(safe, headers=_doc_disposition(safe.name))
+    return FileResponse(safe)
