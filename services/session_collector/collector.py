@@ -129,6 +129,25 @@ def run(dry_run: bool = False, verbose: bool = False) -> tuple[int, dict]:
 
     logger.info("Starting session transcript collection")
 
+    # Skip the legacy /home/*/user/sessions/ scan in deployment layouts that
+    # don't populate it (e.g. Docker compose, where Claude Code never lands
+    # session jsonls under /home). Without this, the scheduler's 10-min
+    # /api/admin/run-session-collector calls log "0 users, 0 files copied"
+    # plus a misleading "Group 'data-ops' not found" WARNING per run.
+    # Explicit env var only — no auto-detect: the bare-VM path *does*
+    # populate /home/*/, and the data-ops warning there is load-bearing
+    # for catching missing-group mis-deploys.
+    if os.environ.get("AGNES_SKIP_LEGACY_COLLECTOR", "").strip() in ("1", "true", "TRUE"):
+        logger.debug(
+            "AGNES_SKIP_LEGACY_COLLECTOR set; skipping legacy /home/*/user/sessions/ scan"
+        )
+        return 0, {
+            "users_processed": 0,
+            "files_copied": 0,
+            "files_skipped": 0,
+            "skipped": True,
+        }
+
     try:
         TARGET_BASE.mkdir(parents=True, exist_ok=True)
         os.chmod(TARGET_BASE, 0o2770)
