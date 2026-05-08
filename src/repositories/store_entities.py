@@ -151,7 +151,17 @@ class StoreEntitiesRepository:
         if type:
             clauses.append("type = ?"); params.append(type)
         if category:
-            clauses.append("category = ?"); params.append(category)
+            # "Other" is the synthetic bucket for entities with NULL / empty
+            # category (matches what /api/marketplace/categories reports for
+            # the Flea tab). An explicit category=='Other' string also lands
+            # here so a user who picked "Other" at upload time stays grouped.
+            if category == "Other":
+                clauses.append(
+                    "(category IS NULL OR TRIM(category) = '' OR category = ?)"
+                )
+                params.append(category)
+            else:
+                clauses.append("category = ?"); params.append(category)
         if owner_user_id:
             clauses.append("owner_user_id = ?"); params.append(owner_user_id)
         if search:

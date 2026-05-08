@@ -25,7 +25,9 @@ from app.auth.dependencies import _get_db, get_current_user
 from src.marketplace_filter import resolve_allowed_plugins
 from src.repositories.audit import AuditRepository
 from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.user_plugin_optouts import UserPluginOptoutsRepository
+from src.repositories.user_curated_subscriptions import (
+    UserCuratedSubscriptionsRepository,
+)
 from src.repositories.user_store_installs import UserStoreInstallsRepository
 from src.store_naming import suffixed_name
 
@@ -103,11 +105,14 @@ async def get_my_stack(
     and Store entities the caller has installed.
     """
     granted = resolve_allowed_plugins(conn, user)
-    optouts = UserPluginOptoutsRepository(conn).opted_out_set(user["id"])
+    # Model B (v28+): explicit subscriptions decide what's enabled.
+    # `enabled` mirrors the legacy "not opted_out" UX so the existing toggle
+    # remains semantically intuitive in /my-ai-stack.
+    subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
 
     curated: List[CuratedPlugin] = []
     for p in granted:
-        opted = (p["marketplace_id"], p["original_name"]) in optouts
+        is_subscribed = (p["marketplace_id"], p["original_name"]) in subs
         curated.append(
             CuratedPlugin(
                 marketplace_id=p["marketplace_id"],
@@ -116,7 +121,7 @@ async def get_my_stack(
                 manifest_name=p["manifest_name"],
                 description=p["raw"].get("description"),
                 version=p.get("version"),
-                enabled=not opted,
+                enabled=is_subscribed,
             )
         )
 
@@ -157,14 +162,14 @@ async def toggle_curated(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Toggle the opt-out for a single admin-granted plugin.
+    """Toggle subscribe/unsubscribe for a single admin-granted plugin.
 
-    UI thinks in terms of *enabled* (default true). The repository stores
-    *opt-out* (presence = disabled). ``enabled=false`` writes a row;
-    ``enabled=true`` removes it.
+    UI thinks in terms of *enabled* (default off in Model B). v28+ the
+    repository stores *subscribed* rows (presence = enabled in served set);
+    ``enabled=true`` writes a row, ``enabled=false`` removes it.
     """
     # Sanity: caller must actually have the plugin granted (otherwise the
-    # toggle is meaningless and would just leak opt-out rows).
+    # toggle is meaningless and would just leak rows for ungranted plugins).
     granted = resolve_allowed_plugins(conn, user)
     has_grant = any(
         p["marketplace_id"] == marketplace_id and p["original_name"] == plugin_name
@@ -173,8 +178,11 @@ async def toggle_curated(
     if not has_grant:
         raise HTTPException(status_code=404, detail="grant_not_found")
 
-    repo = UserPluginOptoutsRepository(conn)
-    repo.set(user["id"], marketplace_id, plugin_name, opted_out=not body.enabled)
+    repo = UserCuratedSubscriptionsRepository(conn)
+    if body.enabled:
+        repo.subscribe(user["id"], marketplace_id, plugin_name)
+    else:
+        repo.unsubscribe(user["id"], marketplace_id, plugin_name)
     _audit(
         conn,
         user["id"],
