@@ -38,6 +38,30 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # would need an OS-level file lock — documented limitation.
 _overlay_write_lock = threading.Lock()
 
+# Per-processor advisory locks for /api/admin/run-session-processor.
+# Two trigger paths exist for the same processor (scheduler tick + manual
+# admin POST). Without serialization, overlapping runs would re-process the
+# same /data/user_sessions/* set, double-call the LLM, and pile up duplicate
+# `verification_evidence` rows — the dedup short-circuit in
+# VerificationProcessor only catches the create+contradiction branches, not
+# create_evidence (per ADR Decision 3, which expects evidence to accumulate
+# per distinct verification event). Lock is non-blocking → second caller
+# gets 409 Conflict so the operator sees what happened instead of stacking
+# behind a long-running tick.
+_processor_run_locks: dict[str, threading.Lock] = {}
+_processor_run_locks_mutex = threading.Lock()
+
+
+def _get_processor_run_lock(name: str) -> threading.Lock:
+    """Per-name lock factory; the registry mutex guards dict insertion so
+    two threads simultaneously asking for a never-seen processor don't
+    each install their own lock instance."""
+    with _processor_run_locks_mutex:
+        if name not in _processor_run_locks:
+            _processor_run_locks[name] = threading.Lock()
+        return _processor_run_locks[name]
+
+
 # SSRF protection: reject private/internal URLs for keboola_url
 import ipaddress as _ipaddress
 import socket as _socket
@@ -3368,6 +3392,16 @@ def run_session_processor(
             ),
         )
 
+    # Reject overlapping invocations of the same processor (PR #232 review).
+    # See `_get_processor_run_lock` docstring for why this matters
+    # (verification_evidence row duplication on race).
+    proc_lock = _get_processor_run_lock(processor)
+    if not proc_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Processor '{processor}' is already running",
+        )
+
     job_conn = get_system_db()
     stats: dict = {}
     job_error: Optional[Exception] = None
@@ -3384,6 +3418,9 @@ def run_session_processor(
             job_conn.close()
         except Exception:
             pass
+        # Always release, even if the runner raised. A leaked lock would
+        # wedge the processor permanently until process restart.
+        proc_lock.release()
 
     audit_params: dict = {
         "processor": processor,
