@@ -45,6 +45,33 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _resolve_environment() -> str:
+    """Pick the environment label attached to every captured event.
+
+    Resolution order:
+        1. ``POSTHOG_ENVIRONMENT`` — explicit operator override.
+        2. ``local`` when ``LOCAL_DEV_MODE`` is on (dev laptops).
+        3. ``RELEASE_CHANNEL`` (the existing channel marker — typically
+           ``stable`` for production tags, ``dev`` for branch builds).
+        4. ``AGNES_DEPLOYMENT_ENV`` (free-form sister variable some
+           operator playbooks set).
+        5. ``unknown`` — final fallback so a missing label never silently
+           pollutes the production view.
+    """
+    explicit = os.environ.get("POSTHOG_ENVIRONMENT", "").strip()
+    if explicit:
+        return explicit
+    if os.environ.get("LOCAL_DEV_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        return "local"
+    channel = os.environ.get("RELEASE_CHANNEL", "").strip()
+    if channel:
+        return channel
+    deployment = os.environ.get("AGNES_DEPLOYMENT_ENV", "").strip()
+    if deployment:
+        return deployment
+    return "unknown"
+
+
 class PosthogClient:
     """Single-process PostHog client.
 
@@ -72,6 +99,8 @@ class PosthogClient:
         self._replay_enabled = _bool_env("POSTHOG_REPLAY", True)
         self._llm_payloads_enabled = _bool_env("POSTHOG_LLM_PAYLOADS", False)
         self._replay_extra_mask = os.environ.get("POSTHOG_REPLAY_MASK_SELECTOR", "").strip()
+        self._environment = _resolve_environment()
+        self._release = os.environ.get("AGNES_VERSION", "").strip() or os.environ.get("RELEASE_CHANNEL", "").strip() or None
 
         self._client: Any = None
 
@@ -85,11 +114,16 @@ class PosthogClient:
             self._enabled = False
             return
 
+        super_props: dict = {"environment": self._environment}
+        if self._release:
+            super_props["release"] = self._release
+
         try:
             self._client = Posthog(
                 project_api_key=api_key,
                 host=self._host,
                 feature_flags_request_timeout_seconds=2,
+                super_properties=super_props,
             )
         except Exception:
             logger.exception("PostHog client init failed; disabling integration.")
@@ -126,6 +160,14 @@ class PosthogClient:
     @property
     def replay_mask_selector_extra(self) -> str:
         return self._replay_extra_mask
+
+    @property
+    def environment(self) -> str:
+        return self._environment
+
+    @property
+    def release(self) -> str | None:
+        return self._release
 
     # ----- capture API -----
 

@@ -31,6 +31,14 @@
     disable_session_recording: true,
     {% endif %}
     loaded: function (ph) {
+      // Tag every browser event with the deployment environment +
+      // release so dashboards can split localhost / dev / production.
+      // register() values are sticky (stored in localStorage) and apply
+      // to $pageview, $exception, $autocapture, etc.
+      ph.register({
+        environment: {{ posthog_config.environment|tojson }}{% if posthog_config.release %},
+        release: {{ posthog_config.release|tojson }}{% endif %}
+      });
       {% set _u = posthog_user_block(request) %}
       {% if _u %}
       ph.identify({{ _u.distinct_id|tojson }}, {{ _u.props|tojson }});

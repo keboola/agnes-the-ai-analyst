@@ -150,6 +150,62 @@ def test_template_user_block_respects_identify_modes(monkeypatch):
     reset_posthog()
 
 
+def test_environment_resolution_explicit_wins(monkeypatch):
+    monkeypatch.setenv("POSTHOG_API_KEY", "phc_x")
+    monkeypatch.setenv("POSTHOG_ENVIRONMENT", "qa-7")
+    monkeypatch.setenv("LOCAL_DEV_MODE", "1")  # would otherwise resolve to "local"
+    monkeypatch.setenv("RELEASE_CHANNEL", "stable")
+    from src.observability import reset_posthog, get_posthog
+    reset_posthog()
+    with patch("posthog.Posthog") as ctor:
+        pc = get_posthog()
+        assert pc.environment == "qa-7"
+        kwargs = ctor.call_args.kwargs
+        assert kwargs["super_properties"]["environment"] == "qa-7"
+    reset_posthog()
+
+
+def test_environment_resolution_local_dev_short_circuit(monkeypatch):
+    monkeypatch.setenv("POSTHOG_API_KEY", "phc_x")
+    monkeypatch.delenv("POSTHOG_ENVIRONMENT", raising=False)
+    monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+    monkeypatch.setenv("RELEASE_CHANNEL", "stable")  # ignored when LOCAL_DEV_MODE wins
+    from src.observability import reset_posthog, get_posthog
+    reset_posthog()
+    with patch("posthog.Posthog"):
+        assert get_posthog().environment == "local"
+    reset_posthog()
+
+
+def test_environment_release_channel_fallback(monkeypatch):
+    monkeypatch.setenv("POSTHOG_API_KEY", "phc_x")
+    monkeypatch.delenv("POSTHOG_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    monkeypatch.setenv("RELEASE_CHANNEL", "stable")
+    from src.observability import reset_posthog, get_posthog
+    reset_posthog()
+    with patch("posthog.Posthog") as ctor:
+        pc = get_posthog()
+        assert pc.environment == "stable"
+        # release also surfaces from AGNES_VERSION → RELEASE_CHANNEL fallback
+        assert ctor.call_args.kwargs["super_properties"]["release"] == "stable"
+    reset_posthog()
+
+
+def test_environment_unknown_when_nothing_set(monkeypatch):
+    monkeypatch.setenv("POSTHOG_API_KEY", "phc_x")
+    for var in ("POSTHOG_ENVIRONMENT", "LOCAL_DEV_MODE", "RELEASE_CHANNEL", "AGNES_DEPLOYMENT_ENV", "AGNES_VERSION"):
+        monkeypatch.delenv(var, raising=False)
+    from src.observability import reset_posthog, get_posthog
+    reset_posthog()
+    with patch("posthog.Posthog") as ctor:
+        pc = get_posthog()
+        assert pc.environment == "unknown"
+        assert pc.release is None
+        assert "release" not in ctor.call_args.kwargs["super_properties"]
+    reset_posthog()
+
+
 def test_template_user_block_anonymous_returns_none(monkeypatch):
     monkeypatch.setenv("POSTHOG_API_KEY", "phc_x")
     from app.web.router import _posthog_user_block
