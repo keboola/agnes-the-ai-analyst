@@ -492,3 +492,124 @@ class TestVerificationDetectorGraceFollowsCadence:
         from app.api.health import _verification_detector_grace_seconds
         # Default cadence 900s -> grace 1800s.
         assert _verification_detector_grace_seconds() == 2 * 900
+
+
+# ---------------------------------------------------------------------------
+# services/scheduler/__main__._run_job — terminal-state bookkeeping
+# ---------------------------------------------------------------------------
+
+
+class TestRunJobBookkeeping:
+    """Per-job worker that advances last_run + clears in_flight on terminal
+    state (success OR failure). Pre-fix: last_run only advanced on success,
+    causing permanently failing jobs to retry every tick (30s) instead of
+    on cadence (15min). PR #232 review fix."""
+
+    def _setup(self):
+        import threading
+        last_run: dict[str, str | None] = {"verification": None}
+        in_flight: set[str] = {"verification"}
+        return last_run, in_flight, threading.Lock()
+
+    def test_advances_last_run_on_success(self, monkeypatch):
+        from services.scheduler import __main__ as sched
+        last_run, in_flight, lock = self._setup()
+        monkeypatch.setattr(sched, "_call_api", lambda *a, **kw: True)
+
+        sched._run_job(
+            "verification", "/api/admin/run-x", "POST", 60, "2026-01-01T00:00:00",
+            last_run, in_flight, lock,
+        )
+        assert last_run["verification"] == "2026-01-01T00:00:00"
+        assert "verification" not in in_flight
+
+    def test_advances_last_run_on_failure(self, monkeypatch):
+        """Permanently-failing jobs must NOT hot-loop every tick — last_run
+        advances even when _call_api returns False."""
+        from services.scheduler import __main__ as sched
+        last_run, in_flight, lock = self._setup()
+        monkeypatch.setattr(sched, "_call_api", lambda *a, **kw: False)
+
+        sched._run_job(
+            "verification", "/api/admin/run-x", "POST", 60, "2026-01-01T00:00:00",
+            last_run, in_flight, lock,
+        )
+        assert last_run["verification"] == "2026-01-01T00:00:00"
+        assert "verification" not in in_flight
+
+    def test_advances_last_run_when_call_raises(self, monkeypatch):
+        """`_call_api` catches its own exceptions and returns False, but a
+        synchronous bug above it (e.g. KeyError on jobs tuple unpacking)
+        could still bubble. The finally block must release in_flight either
+        way, otherwise the processor wedges until container restart."""
+        from services.scheduler import __main__ as sched
+        last_run, in_flight, lock = self._setup()
+
+        def _boom(*a, **kw):
+            raise RuntimeError("simulated unhandled scheduler bug")
+
+        monkeypatch.setattr(sched, "_call_api", _boom)
+
+        with pytest.raises(RuntimeError):
+            sched._run_job(
+                "verification", "/api/admin/run-x", "POST", 60, "2026-01-01T00:00:00",
+                last_run, in_flight, lock,
+            )
+        # Even on raise, bookkeeping ran.
+        assert last_run["verification"] == "2026-01-01T00:00:00"
+        assert "verification" not in in_flight
+
+
+class TestRunLoopParallelism:
+    """The scheduler tick must dispatch jobs in parallel — a 900s verification
+    run cannot block the 60s health-check from firing on its own cadence.
+    PR #232 review fix replaces the `for-loop + synchronous _call_api` with
+    a `ThreadPoolExecutor.submit` per due job."""
+
+    def test_in_flight_skip_prevents_duplicate_launches(self, monkeypatch):
+        """When a previous tick's job hasn't returned yet, the next tick
+        must NOT submit it again — otherwise a 10-min run during which
+        20 ticks fire would queue 20 duplicate POSTs against the same
+        processor (the admin endpoint's per-processor lock would 409 most
+        of them, but they'd still be wasted requests + audit-log noise)."""
+        import threading
+        import time as _time
+        from services.scheduler import __main__ as sched
+
+        # Single job that takes ~0.3s. Tick is 0.05s. Without in_flight
+        # protection we'd see >5 launches per the run loop's tick budget.
+        call_count = {"n": 0}
+        call_count_lock = threading.Lock()
+
+        def slow_call(*a, **kw):
+            with call_count_lock:
+                call_count["n"] += 1
+            _time.sleep(0.3)
+            return True
+
+        monkeypatch.setattr(sched, "_call_api", slow_call)
+        # Force a single short-cadence job + short tick.
+        monkeypatch.setattr(
+            sched, "build_jobs",
+            lambda: [("test-job", "every 1m", "/api/test", "POST", 60)],
+        )
+        monkeypatch.setattr(sched, "resolved_tick_seconds", lambda: 0)
+        # Always-due so the in_flight check is what gates the second launch.
+        monkeypatch.setattr(sched, "is_table_due", lambda *a, **kw: True)
+
+        # Kill the run loop after 0.4s — long enough for ≥5 ticks under
+        # the 0s tick budget, short enough that the job (0.3s) hasn't
+        # finished its first invocation yet.
+        sched._running = True
+
+        def _kill():
+            _time.sleep(0.4)
+            sched._running = False
+
+        threading.Thread(target=_kill, daemon=True).start()
+        sched.run()
+
+        # Without in_flight: ≥5 launches. With: exactly 1 (or maybe 2 if
+        # the first one finished mid-tick — both are correct, the bug is
+        # ≥5).
+        assert call_count["n"] <= 2, f"in_flight protection failed; {call_count['n']} launches"
