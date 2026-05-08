@@ -3,17 +3,8 @@
 {% block title %}Setup — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
 {% block content %}
+{% include "_page_chrome.html" %}
 <style>
-/* Lift the global 800px container constraint on /home and match the
-   dashboard's outer chrome (1280px wide, 28px / 32px / 48px padding) so
-   /home and /dashboard feel like the same surface. Scoped via :has() so
-   other pages keep their narrow defaults. */
-/* No container top-padding — the blue install-hero owns its own top
-   spacing (38px internal). The container's old 28px-top added a stripe
-   of pale grey above the hero that read as dead vertical space. */
-body:has(.home-mock) .container { max-width: 1280px; padding: 0 32px 48px; }
-body:has(.home-mock) { background: #F9FAFB; }
-
 .home-mock {
     --hp-primary: #0073D1;
     --hp-primary-dark: #0056A3;
@@ -29,9 +20,6 @@ body:has(.home-mock) { background: #F9FAFB; }
     color: var(--hp-text-primary);
     font-size: 14px;
     line-height: 1.5;
-    /* Container padding-top is 0 so the hero owns its own top spacing.
-       Add it back here so the hero doesn't hug the site nav. */
-    padding-top: 24px;
 }
 .home-mock * { box-sizing: border-box; }
 

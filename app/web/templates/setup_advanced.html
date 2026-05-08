@@ -3,10 +3,8 @@
 {% block title %}Advanced setup — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
 {% block content %}
+{% include "_page_chrome.html" %}
 <style>
-body:has(.advanced-mock) .container { max-width: 1100px; padding: 32px; }
-body:has(.advanced-mock) { background: #F9FAFB; }
-
 .advanced-mock {
     --hp-primary: #0073D1;
     --hp-primary-dark: #0056A3;
