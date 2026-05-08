@@ -36,10 +36,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `GET /api/marketplace/curated/<slug>/<plugin>/{skill,agent}/<name>` (`InnerDetailResponse`) now also returns `marketplace_name`, `category`, `parent_author_name`, `parent_updated_at`, `bundle_size`, and `files` (recursive listing with sizes) so the redesigned detail page can render the hero badges, sidebar, and Files section without a second roundtrip.
 - `GET /api/marketplace/flea/<entity_id>/detail` and `GET /api/marketplace/curated/<slug>/<plugin>` (`PluginDetailResponse`) now also return `files`, `docs`, `install_count`, and `owner_display` (friendly name resolved via `users.name → email → owner_username`, mirroring `/store/<id>`).
 
+### Security
+
+- `GET /api/marketplace/curated/<slug>/<plugin>/{skill,agent}/<name>` now containment-checks the resolved file path against `plugin_root` via a new `_safe_join` helper (`resolve(strict=True)` + `relative_to`). The direct URL exploit was already blocked by Starlette's `[^/]+` path-param regex, but a curator-planted symlink inside a curated marketplace's git mirror could previously dereference outside the plugin tree on read. Now centralized so `_read_inner`, the skill `files` walk, and the agent `stat` call all share the same boundary.
+
 ### Internal
 
 - Schema bumped v27 → v28 (`DELETE FROM user_plugin_optouts` for the semantic flip + `marketplace_plugins.created_at` with `registered_at` backfill).
-- New tests `tests/test_marketplace_api.py` (browse, categories, install/uninstall, RBAC 403). Existing `tests/test_marketplace_filter_store.py`, `tests/test_marketplace_server_zip.py`, `tests/test_marketplace_server_git.py`, `tests/test_store_api.py`, `tests/test_store_repositories.py` updated for Model B (explicit subscribe in fixtures).
+- New tests `tests/test_marketplace_api.py` (browse, categories, install/uninstall, RBAC 403, `_safe_join` containment). Existing `tests/test_marketplace_filter_store.py`, `tests/test_marketplace_server_zip.py`, `tests/test_marketplace_server_git.py`, `tests/test_store_api.py`, `tests/test_store_repositories.py` updated for Model B (explicit subscribe in fixtures).
 
 ## [0.47.4] — 2026-05-08
 

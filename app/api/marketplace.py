@@ -1026,6 +1026,26 @@ async def curated_uninstall(
 # ---------------------------------------------------------------------------
 
 
+def _safe_join(plugin_root: Path, *parts: str) -> Optional[Path]:
+    """Join ``parts`` onto ``plugin_root`` and return the resolved path only if
+    it actually lives under ``plugin_root``. Defends against ``..`` segments,
+    Windows ``\\`` separators that slip past Starlette's ``[^/]+`` path-param
+    regex, and symlinks planted inside a curated marketplace's git mirror that
+    point outside the plugin's own tree.
+
+    Returns ``None`` when the candidate doesn't exist, can't be resolved, or
+    escapes ``plugin_root``. Callers translate that into a 404.
+    """
+    candidate = plugin_root.joinpath(*parts)
+    try:
+        resolved = candidate.resolve(strict=True)
+        root = plugin_root.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return resolved
+
+
 def _read_inner(
     plugin_root: Path,
     sub: str,
@@ -1035,21 +1055,20 @@ def _read_inner(
 ) -> Optional[tuple[str, str]]:
     """Return (text, relpath) for a skill (sub='skills', is_dir=True) or
     agent (sub='agents', is_dir=False) inside the plugin tree, or None if
-    the file is missing.
+    the file is missing or escapes ``plugin_root`` (see ``_safe_join``).
     """
-    base = plugin_root / sub
     if is_dir_layout:
-        candidate = base / name / "SKILL.md"
+        candidate = _safe_join(plugin_root, sub, name, "SKILL.md")
     else:
-        candidate = base / f"{name}.md"
-    if not candidate.is_file():
+        candidate = _safe_join(plugin_root, sub, f"{name}.md")
+    if candidate is None:
         return None
     try:
         text = candidate.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     try:
-        rel = candidate.relative_to(plugin_root).as_posix()
+        rel = candidate.relative_to(plugin_root.resolve()).as_posix()
     except ValueError:
         rel = candidate.name
     return text, rel
@@ -1096,11 +1115,11 @@ async def curated_skill_detail(
         Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     )
     res = _read_inner(plugin_root, "skills", skill_name, is_dir_layout=True)
-    if res is None:
+    skill_dir = _safe_join(plugin_root, "skills", skill_name)
+    if res is None or skill_dir is None:
         raise HTTPException(status_code=404, detail="skill_not_found")
     text, relpath = res
     fm = _parse_frontmatter(text)
-    skill_dir = plugin_root / "skills" / skill_name
     parent = _curated_inner_parent_fields(conn, marketplace_id, plugin_name)
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
@@ -1133,12 +1152,12 @@ async def curated_agent_detail(
         Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     )
     res = _read_inner(plugin_root, "agents", agent_name, is_dir_layout=False)
-    if res is None:
+    agent_path = _safe_join(plugin_root, "agents", f"{agent_name}.md")
+    if res is None or agent_path is None:
         raise HTTPException(status_code=404, detail="agent_not_found")
     text, relpath = res
     fm = _parse_frontmatter(text)
     # Agents are flat single-file .md — bundle = file size, files = one entry.
-    agent_path = plugin_root / "agents" / f"{agent_name}.md"
     try:
         agent_size = agent_path.stat().st_size
     except OSError:

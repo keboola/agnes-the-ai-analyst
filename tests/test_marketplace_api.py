@@ -359,6 +359,91 @@ class TestCuratedInnerDetail:
         assert d["bundle_size"] == d["files"][0]["size"]
 
 
+class TestSafeJoinContainment:
+    """Defense-in-depth unit tests for ``_safe_join`` — the helper backing
+    ``_read_inner`` / ``curated_skill_detail`` / ``curated_agent_detail``.
+
+    The threat model is a curated marketplace's git mirror containing a
+    booby-trapped symlink (or a future regression in Starlette's ``[^/]+``
+    path-param regex letting ``..`` slip through). HTTP-level ``..`` tests
+    aren't useful — httpx normalizes ``..`` segments before they reach the
+    wire — so the guard is verified at the function boundary.
+    """
+
+    def _plugin_root(self, tmp_path):
+        root = tmp_path / "marketplaces" / "mkt-x" / "plugins" / "alpha"
+        (root / "skills").mkdir(parents=True)
+        (root / "agents").mkdir(parents=True)
+        return root
+
+    def test_resolves_normal_skill_path(self, tmp_path):
+        from app.api.marketplace import _safe_join
+        root = self._plugin_root(tmp_path)
+        skill_dir = root / "skills" / "data-explorer"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("body", encoding="utf-8")
+        result = _safe_join(root, "skills", "data-explorer", "SKILL.md")
+        assert result is not None
+        assert result == (skill_dir / "SKILL.md").resolve()
+
+    def test_dotdot_segment_escaping_root_returns_none(self, tmp_path):
+        from app.api.marketplace import _safe_join
+        root = self._plugin_root(tmp_path)
+        # Plant a sibling plugin's file that `..` traversal would otherwise reach.
+        sibling = tmp_path / "marketplaces" / "mkt-x" / "plugins" / "beta"
+        sibling.mkdir(parents=True)
+        (sibling / "SECRET.md").write_text("cross-plugin secret", encoding="utf-8")
+        # /skills/../../beta/SECRET.md would resolve to the sibling's file.
+        assert _safe_join(root, "skills", "..", "..", "beta", "SECRET.md") is None
+
+    def test_symlink_outside_plugin_returns_none(self, tmp_path):
+        import os, sys
+        if sys.platform == "win32":
+            pytest.skip("Symlink creation requires elevated permissions on Windows")
+        from app.api.marketplace import _safe_join
+        root = self._plugin_root(tmp_path)
+        outside = tmp_path / "secrets" / "OTHER.md"
+        outside.parent.mkdir(parents=True)
+        outside.write_text("cross-plugin secret", encoding="utf-8")
+        # A curator-planted symlink inside skills/evil/ pointing outside the
+        # plugin tree must not resolve through the guard.
+        evil_dir = root / "skills" / "evil"
+        evil_dir.mkdir()
+        os.symlink(outside, evil_dir / "SKILL.md")
+        assert _safe_join(root, "skills", "evil", "SKILL.md") is None
+
+    def test_missing_file_returns_none(self, tmp_path):
+        from app.api.marketplace import _safe_join
+        root = self._plugin_root(tmp_path)
+        assert _safe_join(root, "skills", "nope", "SKILL.md") is None
+
+    def test_inner_endpoint_404s_on_symlink_escape(self, web_client, tmp_path):
+        """End-to-end: the symlink containment check actually wires through
+        the HTTP endpoint to a 404 (not a leaked 200)."""
+        import os, sys
+        if sys.platform == "win32":
+            pytest.skip("Symlink creation requires elevated permissions on Windows")
+        user_id, cookies = _create_user(web_client, "alice@x.com")
+        _seed_curated_grant(user_id=user_id, marketplace="mkt-x", plugin="alpha")
+        outside = tmp_path / "secrets" / "OTHER.md"
+        outside.parent.mkdir(parents=True)
+        outside.write_text(
+            "---\nname: leaked\n---\ncross-plugin secret", encoding="utf-8",
+        )
+        evil_dir = (
+            tmp_path / "marketplaces" / "mkt-x" / "plugins" / "alpha"
+            / "skills" / "evil"
+        )
+        evil_dir.mkdir(parents=True)
+        os.symlink(outside, evil_dir / "SKILL.md")
+        r = web_client.get(
+            "/api/marketplace/curated/mkt-x/alpha/skill/evil",
+            cookies=cookies,
+        )
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"] == "skill_not_found"
+
+
 # ---------------------------------------------------------------------------
 # Flea standalone detail — extended response shape
 # ---------------------------------------------------------------------------
