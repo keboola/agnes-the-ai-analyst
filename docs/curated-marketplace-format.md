@@ -25,7 +25,6 @@ Minimal example — one plugin, one cover photo, nothing else:
 
 ```json
 {
-  "version": 1,
   "plugins": {
     "my-plugin": {
       "cover_photo": ".agnes/my-plugin-cover.png"
@@ -43,7 +42,6 @@ The same shape applies at three levels: plugin, skill, agent.
 
 ```json
 {
-  "version": 1,
   "plugins": {
     "<plugin-name>": {
       "cover_photo": "...",
@@ -123,7 +121,6 @@ Copy this and adjust:
 
 ```json
 {
-  "version": 1,
   "plugins": {
     "data-explorer": {
       "cover_photo": ".agnes/data-explorer-cover.png",
