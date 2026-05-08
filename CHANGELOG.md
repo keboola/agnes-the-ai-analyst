@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.47.4] — 2026-05-08
+
+### Fixed
+
+- `services/session_collector` no longer logs "Collection complete: 0 users, 0 files copied" + "Group 'data-ops' not found" every 10 minutes in the Docker layout where `/home/*/user/sessions/` doesn't exist. New env var `AGNES_SKIP_LEGACY_COLLECTOR=1` (set by default in `docker-compose.yml`) short-circuits the collector pass. The bare-VM deployment path (where /home/* IS populated by Claude Code) leaves this unset and continues to scan + log normally — including the data-ops warning, which is load-bearing for catching missing-group mis-deploys.
+- `agnes diagnose` `session_pipeline` check gains a FIFO-aware lookup: in addition to the existing MAX(processed_at) comparison (catches "detector hasn't run lately"), it now flags the case where an OLD jsonl never got processed even though newer ones did (= verification-detector skipped a file). Threshold defaults to 4× the verification-detector grace (= 2h with default 30min grace) and is configurable via `SESSION_PIPELINE_STUCK_FILE_GRACE_SECONDS`. Severity intentionally starts at `info` — operators can tighten to `warning` once they have prod data on false-positive rate.
+
 ## [0.47.3] — 2026-05-07
 
 ### Fixed

@@ -24,6 +24,11 @@ services:
       # storage_api.py:get_temp_root. Operators can override per
       # deployment via .env (or unset to fall back to system /tmp).
       - AGNES_TEMP_DIR=${AGNES_TEMP_DIR:-/data/tmp}
+      # /home/*/user/sessions/ doesn't exist in the Docker layout — skip
+      # the legacy session-collector to silence per-10-min "0 users, 0 files"
+      # + "Group 'data-ops' not found" log noise. The bare-VM deployment
+      # path leaves this unset and continues to scan + log normally.
+      - AGNES_SKIP_LEGACY_COLLECTOR=1
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
       interval: 30s
@@ -62,6 +67,11 @@ services:
       - AGNES_TEMP_DIR=${AGNES_TEMP_DIR:-/data/tmp}
       - API_URL=http://app:8000
       - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL:-}
+      # Mirror the app service: the scheduler calls /api/admin/run-session-collector
+      # over HTTP rather than running the collector in-process, but if anything
+      # ever invokes the collector module from this container directly, we want
+      # the same skip behavior. Bare-VM path leaves this unset.
+      - AGNES_SKIP_LEGACY_COLLECTOR=1
     depends_on:
       app:
         condition: service_healthy

@@ -19,9 +19,12 @@ check function. The aggregator at the bottom of `health_check_detailed`
 treats `info` as non-promoting.
 """
 
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, Query
 import duckdb
@@ -110,6 +113,27 @@ def _check_bq_billing_project() -> dict | None:
     }
 
 
+def _stuck_file_grace_seconds() -> int:
+    """How long (seconds) an unprocessed jsonl must sit before triggering
+    the FIFO check warning. Defaults to 4× the verification-detector grace
+    (= 2h with default 30min grace = 8 × 15min cadence). Configurable via
+    SESSION_PIPELINE_STUCK_FILE_GRACE_SECONDS env var.
+
+    Started conservatively at 4× to avoid false positives on routine LLM
+    API hiccups. Operators can tighten with the env var once they have
+    prod data on extraction throughput.
+    """
+    explicit = os.environ.get("SESSION_PIPELINE_STUCK_FILE_GRACE_SECONDS")
+    if explicit:
+        try:
+            v = int(explicit)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return 4 * _verification_detector_grace_seconds()
+
+
 def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
     """Detect a stuck session pipeline: jsonls land but never get processed.
 
@@ -193,6 +217,64 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
             "lag_seconds": lag_seconds,
             "session_files": len(session_files),
         }
+
+    # FIFO check (#0.47.4): the MAX-only comparison above can pass silently
+    # when the verification-detector skips a particular file but keeps
+    # processing newer ones. Detect that case by finding the oldest FS
+    # jsonl whose path is NOT in session_extraction_state.session_file
+    # and surfacing it once it's older than _stuck_file_grace_seconds.
+    try:
+        processed = {
+            row[0]
+            for row in conn.execute(
+                "SELECT session_file FROM session_extraction_state"
+            ).fetchall()
+        }
+    except Exception as e:
+        # Don't fail the health check on this enrichment.
+        logger.debug("FIFO check: could not read session_extraction_state: %s", e)
+        return {"status": "ok", "session_files": len(session_files)}
+
+    # session_extraction_state.session_file is stored as the path the
+    # extractor saw. Older rows store an absolute path (e.g.
+    # "/data/user_sessions/x/y.jsonl"); newer code stores a relative path
+    # ("x/y.jsonl"). Match on either form so the FIFO check is robust to
+    # both — a row stored under either spelling counts as processed.
+    user_sessions_root = data_dir / "user_sessions"
+    oldest_unprocessed: tuple[float, str] | None = None
+    for f in session_files:
+        try:
+            rel = str(f.relative_to(user_sessions_root))
+        except ValueError:
+            continue  # not under user_sessions_root, skip
+        absolute = str(f)
+        if rel in processed or absolute in processed:
+            continue
+        try:
+            mtime = f.stat().st_mtime
+        except OSError:
+            continue
+        if oldest_unprocessed is None or mtime < oldest_unprocessed[0]:
+            oldest_unprocessed = (mtime, rel)
+
+    if oldest_unprocessed is not None:
+        stuck_grace = _stuck_file_grace_seconds()
+        age_s = time_now() - oldest_unprocessed[0]
+        if age_s > stuck_grace:
+            return {
+                "status": "info",
+                "detail": (
+                    f"verification-detector skipped a file: oldest unprocessed "
+                    f"jsonl is ~{int(age_s)}s old "
+                    f"(stuck_grace={stuck_grace}s, file={oldest_unprocessed[1]}). "
+                    f"Newer files ARE being processed (this is FIFO-stuck, not "
+                    f"a backlog). Check the verification-detector logs for "
+                    f"this file's processing attempts."
+                ),
+                "stuck_file_age_seconds": int(age_s),
+                "stuck_file": oldest_unprocessed[1],
+                "session_files": len(session_files),
+            }
 
     return {"status": "ok", "session_files": len(session_files)}
 

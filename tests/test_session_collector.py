@@ -142,3 +142,85 @@ class TestRunHelper:
 
         rc = collector.main()
         assert rc == 0
+
+
+class TestRunSkipEnvVar:
+    """AGNES_SKIP_LEGACY_COLLECTOR=1 short-circuits the run before any FS or
+    grp lookups. Used in the Docker layout where /home/*/user/sessions/ is
+    empty by design — keeps logs quiet without auto-detect logic that would
+    mask real bare-VM mis-deploys.
+    """
+
+    def test_collector_run_skips_when_env_set(self, monkeypatch, tmp_path):
+        """AGNES_SKIP_LEGACY_COLLECTOR=1 → return early with skipped=True."""
+        from services.session_collector import collector
+
+        monkeypatch.setenv("AGNES_SKIP_LEGACY_COLLECTOR", "1")
+        # Point TARGET_BASE at tmp_path so even if the skip didn't fire we
+        # wouldn't touch /data — but the assertion below is that mkdir
+        # was NOT called on it.
+        target = tmp_path / "user_sessions"
+        monkeypatch.setattr(collector, "TARGET_BASE", target)
+
+        # If the skip didn't fire, find_user_home_dirs would be called.
+        called = []
+
+        def _spy():
+            called.append(True)
+            return iter([])
+
+        monkeypatch.setattr(collector, "find_user_home_dirs", _spy)
+
+        rc, stats = collector.run()
+        assert rc == 0
+        assert stats.get("skipped") is True
+        assert stats["files_copied"] == 0
+        assert stats["users_processed"] == 0
+        assert stats["files_skipped"] == 0
+        # Skip path must NOT touch the target directory or call into the
+        # /home scanner — those are exactly the operations we're avoiding.
+        assert not target.exists(), "TARGET_BASE.mkdir should not have run"
+        assert called == [], "find_user_home_dirs should not have been called"
+
+    @pytest.mark.parametrize("val", ["1", "true", "TRUE"])
+    def test_collector_run_skips_for_truthy_values(self, monkeypatch, tmp_path, val):
+        """The accepted truthy spellings are 1 / true / TRUE. Anything else
+        (including '0', 'false', 'yes') falls through to the normal pass."""
+        from services.session_collector import collector
+
+        monkeypatch.setenv("AGNES_SKIP_LEGACY_COLLECTOR", val)
+        monkeypatch.setattr(collector, "TARGET_BASE", tmp_path / "user_sessions")
+        monkeypatch.setattr(collector, "find_user_home_dirs", lambda: iter([]))
+
+        rc, stats = collector.run()
+        assert rc == 0
+        assert stats.get("skipped") is True
+
+    def test_collector_run_full_pass_when_env_unset(self, monkeypatch, tmp_path):
+        """No env var → existing scan path runs (returns stats without 'skipped')."""
+        from services.session_collector import collector
+
+        monkeypatch.delenv("AGNES_SKIP_LEGACY_COLLECTOR", raising=False)
+        target = tmp_path / "user_sessions"
+        monkeypatch.setattr(collector, "TARGET_BASE", target)
+        monkeypatch.setattr(collector, "find_user_home_dirs", lambda: iter([]))
+
+        rc, stats = collector.run()
+        assert rc == 0
+        # Bare-VM path: we ran, even if no users were scanned.
+        assert "skipped" not in stats
+        # mkdir should have happened.
+        assert target.exists()
+
+    def test_collector_run_full_pass_for_falsy_values(self, monkeypatch, tmp_path):
+        """AGNES_SKIP_LEGACY_COLLECTOR='0' should NOT skip — only the explicit
+        truthy spellings short-circuit."""
+        from services.session_collector import collector
+
+        monkeypatch.setenv("AGNES_SKIP_LEGACY_COLLECTOR", "0")
+        monkeypatch.setattr(collector, "TARGET_BASE", tmp_path / "user_sessions")
+        monkeypatch.setattr(collector, "find_user_home_dirs", lambda: iter([]))
+
+        rc, stats = collector.run()
+        assert rc == 0
+        assert "skipped" not in stats
