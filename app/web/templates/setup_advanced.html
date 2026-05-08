@@ -1,0 +1,591 @@
+{% extends "base.html" %}
+
+{% block title %}Advanced setup — {{ instance_name or "AI Data Analyst" }}{% endblock %}
+
+{% block content %}
+{% include "_page_chrome.html" %}
+<style>
+.advanced-mock {
+    --hp-primary: #0073D1;
+    --hp-primary-dark: #0056A3;
+    --hp-primary-light: #E6F3FC;
+    --hp-border: #E5E7EB;
+    --hp-border-light: #F3F4F6;
+    --hp-text-primary: #111827;
+    --hp-text-secondary: #6B7280;
+    --hp-text-muted: #9CA3AF;
+    --hp-font-mono: ui-monospace, "SF Mono", Consolas, monospace;
+    color: var(--hp-text-primary);
+    font-size: 14px;
+    line-height: 1.55;
+}
+.advanced-mock * { box-sizing: border-box; }
+
+.advanced-mock .ad-hero {
+    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    color: white;
+    border-radius: 16px;
+    padding: 32px 36px;
+    margin-bottom: 22px;
+    box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
+}
+.advanced-mock .ad-hero .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    opacity: 0.85;
+    margin-bottom: 8px;
+}
+.advanced-mock .ad-hero h1 {
+    font-size: 26px;
+    font-weight: 600;
+    color: white;
+    margin-bottom: 8px;
+    letter-spacing: -0.3px;
+}
+.advanced-mock .ad-hero p {
+    font-size: 14px;
+    opacity: 0.94;
+    max-width: 760px;
+}
+.advanced-mock .ad-hero a {
+    color: white;
+    text-decoration: underline;
+}
+
+.advanced-mock .ad-toc {
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 16px 22px;
+    margin-bottom: 22px;
+}
+.advanced-mock .ad-toc h2 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--hp-text-secondary);
+    margin-bottom: 10px;
+}
+.advanced-mock .ad-toc ol {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px 18px;
+}
+.advanced-mock .ad-toc ol li { counter-increment: ad-toc; }
+.advanced-mock .ad-toc ol { counter-reset: ad-toc; }
+.advanced-mock .ad-toc ol li::before {
+    content: counter(ad-toc) ". ";
+    color: var(--hp-text-muted);
+    margin-right: 4px;
+    font-variant-numeric: tabular-nums;
+}
+.advanced-mock .ad-toc a {
+    color: var(--hp-primary);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+}
+.advanced-mock .ad-toc a:hover { text-decoration: underline; }
+
+.advanced-mock .ad-section {
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 22px 26px;
+    margin-bottom: 18px;
+    scroll-margin-top: 90px;
+}
+.advanced-mock .ad-section h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--hp-text-primary);
+    margin-bottom: 6px;
+}
+.advanced-mock .ad-section .ad-lead {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    margin-bottom: 14px;
+}
+.advanced-mock .ad-section h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--hp-text-primary);
+    margin-top: 14px;
+    margin-bottom: 6px;
+}
+.advanced-mock .ad-section p {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    margin-bottom: 8px;
+    line-height: 1.6;
+}
+.advanced-mock .ad-section ul,
+.advanced-mock .ad-section ol {
+    padding-left: 22px;
+    margin-bottom: 10px;
+    color: var(--hp-text-secondary);
+}
+.advanced-mock .ad-section li {
+    margin-bottom: 4px;
+    line-height: 1.55;
+    font-size: 13px;
+}
+.advanced-mock .ad-section code {
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+    background: var(--hp-border-light);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--hp-text-primary);
+}
+.advanced-mock .ad-section a {
+    color: var(--hp-primary);
+}
+.advanced-mock .ad-section pre {
+    background: #0F172A;
+    color: #E2E8F0;
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-family: var(--hp-font-mono);
+    font-size: 12px;
+    line-height: 1.55;
+    overflow-x: auto;
+    margin: 8px 0 12px;
+    white-space: pre;
+}
+.advanced-mock .ad-section pre code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    border-radius: 0;
+    font-family: inherit;
+    font-size: inherit;
+}
+
+.advanced-mock kbd {
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-family: var(--hp-font-mono);
+    color: var(--hp-text-primary);
+}
+
+.advanced-mock table.ad-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 14px;
+    font-size: 13px;
+}
+.advanced-mock table.ad-table th,
+.advanced-mock table.ad-table td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--hp-border-light);
+    vertical-align: top;
+}
+.advanced-mock table.ad-table th {
+    background: var(--hp-border-light);
+    font-weight: 600;
+    color: var(--hp-text-primary);
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.advanced-mock table.ad-table td {
+    color: var(--hp-text-secondary);
+}
+.advanced-mock table.ad-table td strong {
+    color: var(--hp-text-primary);
+}
+
+.advanced-mock .ad-warn {
+    margin: 10px 0;
+    padding: 10px 14px;
+    background: #FFFBEB;
+    border-left: 3px solid #F59E0B;
+    border-radius: 4px;
+    color: #78350F;
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+.advanced-mock .ad-warn strong { color: #78350F; }
+.advanced-mock .ad-warn code { background: #FEF3C7; color: #78350F; }
+
+.advanced-mock .plugin-cmd {
+    display: inline-block;
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+    background: #0F172A;
+    color: #FBBF24;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-right: 6px;
+    word-break: break-all;
+}
+.advanced-mock .plugin-copy {
+    background: var(--hp-primary);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 3px 9px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    vertical-align: middle;
+}
+.advanced-mock .plugin-copy:hover { background: var(--hp-primary-dark); }
+.advanced-mock .plugin-copy.copied { background: #047857; }
+
+.advanced-mock .plugin-prompt-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    background: #0F172A;
+    color: #E2E8F0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-top: 6px;
+}
+.advanced-mock .plugin-prompt {
+    flex: 1;
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    border-radius: 0;
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.advanced-mock .plugin-prompt-row .plugin-copy {
+    flex-shrink: 0;
+    align-self: flex-start;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.20);
+}
+.advanced-mock .plugin-prompt-row .plugin-copy:hover {
+    background: rgba(255, 255, 255, 0.20);
+}
+</style>
+
+<div class="advanced-mock">
+
+    <div class="ad-hero">
+        <div class="eyebrow">Advanced setup</div>
+        <h1>Go deeper into your AI workspace</h1>
+        <p>Stuff you don't need on day one but will want by week one — VS Code layout, recommended plugins, multi-model second opinions, custom skills, project workflows, cost guidance. Read top to bottom or jump to whatever you need.</p>
+    </div>
+
+    <nav class="ad-toc" aria-label="Sections">
+        <h2>On this page</h2>
+        <ol>
+            <li><a href="#vscode">VS Code as your workspace</a></li>
+            <li><a href="#workspace">~/Agnes workspace anatomy</a></li>
+            <li><a href="#projects">Project workflows</a></li>
+            <li><a href="#plugins">Recommended plugins</a></li>
+            <li><a href="#second-opinions">Multi-model second opinions</a></li>
+            <li><a href="#skills-rules-hooks">Skills, rules, hooks</a></li>
+            <li><a href="#first-task">Your first real task</a></li>
+            <li><a href="#tips">Tips, cost &amp; troubleshooting</a></li>
+        </ol>
+    </nav>
+
+    <section class="ad-section" id="vscode">
+        <h2>1. VS Code as your workspace</h2>
+        <p class="ad-lead">Agnes is terminal-driven. You spend most of your time talking to Claude in a terminal — not in a web app. VS Code's split-terminal layout gives you one panel for the conversation, one for diffs and tool output, and an optional third for parallel work. Files open as tabs when you need them.</p>
+
+        <h3>Recommended layout</h3>
+        <ul>
+            <li>Open <code>~/Agnes</code>: <strong>File → Open Folder…</strong> → select <code>~/Agnes</code>.</li>
+            <li>Open the built-in terminal: <kbd>Cmd</kbd>+<kbd>&#96;</kbd> on macOS, <kbd>Ctrl</kbd>+<kbd>&#96;</kbd> on Windows/Linux.</li>
+            <li>Move terminal into the editor area: right-click the terminal tab → <strong>"Move Terminal into Editor Area"</strong>. Now it fills the main panel.</li>
+            <li>Split into more terminals: <kbd>Cmd</kbd>+<kbd>\</kbd> (or <kbd>Ctrl</kbd>+<kbd>\</kbd>) splits side-by-side. One for your Claude conversation, one for diffs/output, optional third for parallel work.</li>
+            <li>Start Claude: click into terminal → type <code>claude</code> (or <code>yolo</code> if you set that alias).</li>
+        </ul>
+
+        <h3>Useful shortcuts</h3>
+        <ul>
+            <li><kbd>Cmd</kbd>+<kbd>P</kbd> — quick-open file by name</li>
+            <li><kbd>Cmd</kbd>+<kbd>B</kbd> — toggle the sidebar (Explorer)</li>
+            <li><kbd>Cmd</kbd>+<kbd>K</kbd> <kbd>Z</kbd> — Zen Mode (fullscreen, no chrome)</li>
+            <li><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> — command palette (everything VS Code can do)</li>
+        </ul>
+    </section>
+
+    <section class="ad-section" id="workspace">
+        <h2>2. <code>~/Agnes</code> workspace anatomy</h2>
+        <p class="ad-lead">Your workspace was created by <code>agnes init</code> and the bundled Agnes plugin. Here's what each folder is for.</p>
+<pre>~/Agnes/
+├── .claude/
+│   ├── skills/      # Reusable workflow templates Claude follows
+│   ├── rules/       # Behavioral rules injected into every message
+│   ├── hooks/       # Scripts that fire on events (session start, etc.)
+│   └── settings.local.json   # Permissions allowlist (your safety net)
+├── docs/
+│   └── plans/       # Timestamped design docs and plans
+├── projects/
+│   ├── work/        # Company projects
+│   ├── personal/    # Personal projects
+│   └── learning/    # Experiments and tutorials
+├── tasks/           # Task lists, lessons learned
+├── temp/            # Scratch files, downloads
+├── logs/            # Action logs (auto-generated)
+└── CLAUDE.md        # Master instructions Claude reads every session</pre>
+        <p>The <code>CLAUDE.md</code> at the root is yours to customize. Add preferences, conventions, rules — Claude reads it at the start of every session. Tell Claude: <em>"Add a rule to CLAUDE.md that we always use metric units."</em></p>
+    </section>
+
+    <section class="ad-section" id="projects">
+        <h2>3. Project workflows</h2>
+        <p class="ad-lead">Every piece of work lives in a project folder. Always start Claude from the <code>~/Agnes</code> root — the welcome menu and prompt-history logging both depend on it.</p>
+
+        <h3>Daily startup</h3>
+        <ol>
+            <li>Open terminal in <code>~/Agnes</code>.</li>
+            <li>Type <code>claude</code> (or <code>yolo</code>).</li>
+            <li>The agnes-welcome menu shows recent projects ranked by activity. Pick a number, type a name, or describe what you want.</li>
+        </ol>
+
+        <h3>Creating + switching projects</h3>
+        <p>Just tell Claude in plain English:</p>
+        <ul>
+            <li><em>"Create a new project called 'website redesign' under work"</em> — Claude scaffolds folders, initializes Git, drops in a CLAUDE.md.</li>
+            <li><em>"Switch to the quarterly review project"</em> — Claude <code>cd</code>s and loads project context.</li>
+            <li><em>"Go back to Agnes root"</em> — returns to <code>~/Agnes</code>.</li>
+        </ul>
+
+        <h3>Why this matters</h3>
+        <p>The agnes-welcome hook fires only when Claude starts in <code>~/Agnes</code>. Prompt-history logging uses <code>$PWD</code> to route prompts to the right project's history. Launch Claude from inside a project folder and you skip both.</p>
+    </section>
+
+    <section class="ad-section" id="plugins">
+        <h2>4. Recommended plugins</h2>
+        <p class="ad-lead">Plugins extend Claude's capabilities. Install only what you need. Browse the operator-curated set at <a href="/store">/store</a> for the marketplace tied to this Agnes instance.</p>
+
+        <h3>How to install</h3>
+        <p>Inside any Claude Code session, run the slash command shown in the row's <strong>Install</strong> column — e.g. <code>/plugin install superpowers@every-marketplace</code>. Click <strong>Copy</strong>, switch to Claude Code, paste, hit Enter. If the marketplace isn't registered yet, Claude will tell you and you can add it with <code>/plugin marketplace add &lt;url&gt;</code> first. Or paste the catch-all prompt at the end of this section and let Claude do the registration + install in one go.</p>
+
+        <h3>Essential — install these first</h3>
+        <table class="ad-table">
+            <tr><th style="width: 18%">Plugin</th><th>What it does</th><th style="width: 30%">Install</th></tr>
+            <tr>
+                <td><strong>superpowers</strong></td>
+                <td>The workflow engine — brainstorming, planning, code review, parallel agents, skill creation. Most important plugin.</td>
+                <td><code class="plugin-cmd" id="cmd-superpowers">/plugin install superpowers@every-marketplace</code> <button class="plugin-copy" data-copy-target="cmd-superpowers">Copy</button></td>
+            </tr>
+            <tr>
+                <td><strong>context7</strong></td>
+                <td>Fetches current library/framework docs. Bypasses Claude's knowledge cutoff.</td>
+                <td><code class="plugin-cmd" id="cmd-context7">/plugin install context7@anthropic</code> <button class="plugin-copy" data-copy-target="cmd-context7">Copy</button></td>
+            </tr>
+            <tr>
+                <td><strong>github</strong></td>
+                <td>Read/write GitHub repos, PRs, issues. If you use GitHub for anything.</td>
+                <td><code class="plugin-cmd" id="cmd-github">/plugin install github@anthropic</code> <button class="plugin-copy" data-copy-target="cmd-github">Copy</button></td>
+            </tr>
+        </table>
+
+        <h3>Recommended — install when useful</h3>
+        <table class="ad-table">
+            <tr><th style="width: 18%">Plugin</th><th>What it does</th><th style="width: 30%">Install</th></tr>
+            <tr>
+                <td><strong>playwright</strong></td>
+                <td>Browser automation — screenshots, form fill, web scraping, end-to-end tests.</td>
+                <td><code class="plugin-cmd" id="cmd-playwright">/plugin install playwright@anthropic</code> <button class="plugin-copy" data-copy-target="cmd-playwright">Copy</button></td>
+            </tr>
+            <tr>
+                <td><strong>atlassian</strong></td>
+                <td>Read/write Jira issues + Confluence pages.</td>
+                <td><code class="plugin-cmd" id="cmd-atlassian">/plugin install atlassian@anthropic</code> <button class="plugin-copy" data-copy-target="cmd-atlassian">Copy</button></td>
+            </tr>
+            <tr>
+                <td><strong>code-simplifier</strong></td>
+                <td>Reviews + cleans up code for clarity and consistency.</td>
+                <td><code class="plugin-cmd" id="cmd-code-simplifier">/plugin install code-simplifier@every-marketplace</code> <button class="plugin-copy" data-copy-target="cmd-code-simplifier">Copy</button></td>
+            </tr>
+        </table>
+
+        <h3>Optional — niche use cases</h3>
+        <table class="ad-table">
+            <tr><th style="width: 18%">Plugin</th><th>What it does</th><th style="width: 30%">Install</th></tr>
+            <tr>
+                <td><strong>figma</strong></td>
+                <td>Read Figma designs, generate code from them.</td>
+                <td><code class="plugin-cmd" id="cmd-figma">/plugin install figma@anthropic</code> <button class="plugin-copy" data-copy-target="cmd-figma">Copy</button></td>
+            </tr>
+            <tr>
+                <td><strong>playground</strong></td>
+                <td>Create interactive HTML tools and explorers.</td>
+                <td><code class="plugin-cmd" id="cmd-playground">/plugin install playground@every-marketplace</code> <button class="plugin-copy" data-copy-target="cmd-playground">Copy</button></td>
+            </tr>
+            <tr>
+                <td><strong>ralph-loop</strong></td>
+                <td>Iterative refinement loop — runs after implementation to catch what the first pass missed.</td>
+                <td><code class="plugin-cmd" id="cmd-ralph-loop">/plugin install ralph-loop@every-marketplace</code> <button class="plugin-copy" data-copy-target="cmd-ralph-loop">Copy</button></td>
+            </tr>
+        </table>
+
+        <h3>Don't know which marketplace? Let Claude figure it out</h3>
+        <p>Paste this prompt instead — Claude detects which marketplaces are registered, registers any missing ones, and installs in the right order:</p>
+        <div class="plugin-prompt-row">
+            <code class="plugin-prompt" id="cmd-bulk-install">Install the superpowers, context7, and github plugins for me. If they're not in any of my registered marketplaces, find the canonical source on GitHub for each one (look up the marketplace.json), register the marketplace via `/plugin marketplace add &lt;url&gt;`, then run `/plugin install` for each. Verify with `/plugin list` and tell me which ones are now active.</code>
+            <button class="plugin-copy" data-copy-target="cmd-bulk-install">Copy prompt</button>
+        </div>
+    </section>
+
+    <section class="ad-section" id="second-opinions">
+        <h2>5. Multi-model second opinions</h2>
+        <p class="ad-lead">Send your work to multiple AI models for independent review. They catch blind spots, challenge assumptions, improve quality. One of the most useful workflows you can run inside Agnes.</p>
+
+        <h3>Codex CLI (OpenAI)</h3>
+        <p>Paste this into Claude Code:</p>
+<pre>Install OpenAI's Codex CLI for me. Walk me through it:
+1. `npm install -g @openai/codex` (run via Bash tool — npm prefix is under nvm/fnm so no sudo).
+2. Symlink the binary into ~/.local/bin so non-interactive subshells find it: `ln -sf "$(command -v codex)" ~/.local/bin/codex`.
+3. Authentication — pick whichever I prefer:
+   - ChatGPT login (easiest, Plus/Pro included): run `codex` and select "Sign in with ChatGPT".
+   - API key path: have me create a key at platform.openai.com, then store it in ~/.config/agnes/openai.env via a `read -srp` helper script (no chat exposure).
+4. Verify: `codex --version`.</pre>
+
+        <h3>Gemini CLI (Google)</h3>
+        <p>Paste this into Claude Code:</p>
+<pre>Install Google's Gemini CLI for me. Walk me through it:
+1. `npm install -g @google/gemini-cli`. Symlink to ~/.local/bin same as Codex.
+2. Get a free API key at https://aistudio.google.com/app/apikey — open the page in my browser via `open` / `xdg-open` / `Start-Process`.
+3. Tell me to copy the key. Prepare a `read -srp` helper script at ~/.claude/agnes/bin/store-gemini.sh that pipes my pasted key into the OS keychain (macOS: `security add-generic-password -U -s 'agnes-gemini-key' -a "$USER" -w "$t"`; Linux: secret-tool; Windows: cmdkey). Tell me to run `bash ~/.claude/agnes/bin/store-gemini.sh` in my terminal.
+4. Verify: `gemini --version` and a low-cost test prompt.</pre>
+
+        <h3>How review-panel + second-opinion work together</h3>
+        <p>The bundled Agnes plugin ships two skills:</p>
+        <ul>
+            <li><strong>review-panel</strong> — runs 4 internal persona reviewers (engineer, executive, skeptic, user-voice) inside a single Claude process. Catches domain-specific blind spots before external review. No extra setup.</li>
+            <li><strong>second-opinion</strong> — sends work to whichever external CLIs are installed (Claude, Codex, Gemini) in parallel, collects feedback, synthesizes agreement vs disagreement, and presents prioritized action items.</li>
+        </ul>
+        <p>Trigger them by saying <em>"Get a second opinion on this plan"</em>. Claude runs review-panel first, then second-opinion across all available external models.</p>
+    </section>
+
+    <section class="ad-section" id="skills-rules-hooks">
+        <h2>6. Skills, rules, hooks</h2>
+        <p class="ad-lead">The mechanics that turn Claude from a blank slate into a workspace that follows your conventions. Most of Agnes's day-to-day power lives here.</p>
+
+        <h3>Skills</h3>
+        <p>Reusable workflow templates at <code>.claude/skills/&lt;name&gt;/SKILL.md</code>. Invoked by name or automatically.</p>
+        <table class="ad-table">
+            <tr><th style="width: 28%">Skill</th><th>Fires when</th></tr>
+            <tr><td><strong>brainstorming</strong></td><td>Before any creative or design work — explores options before committing.</td></tr>
+            <tr><td><strong>writing-plans</strong></td><td>Before any multi-step task — produces a timestamped plan in <code>docs/plans/</code>.</td></tr>
+            <tr><td><strong>executing-plans</strong></td><td>Step-by-step plan execution with checkpoints.</td></tr>
+            <tr><td><strong>systematic-debugging</strong></td><td>Before any bug fix — narrows down the failure before changing anything.</td></tr>
+            <tr><td><strong>verification-before-completion</strong></td><td>Before claiming "done" — runs the actual checks.</td></tr>
+            <tr><td><strong>second-opinion</strong></td><td>After any plan or analysis — external model review (see §5).</td></tr>
+            <tr><td><strong>ralph-loop</strong></td><td>After implementation — iterative refinement to catch the first pass's misses.</td></tr>
+        </table>
+        <p>Create your own: <em>"Create a skill called weekly-digest that searches Gmail for important emails from the past 7 days, categorizes them by urgency, creates an HTML report, and lists action items with deadlines."</em> Claude writes the skill file. Then <em>"Run the weekly digest"</em> follows the recipe.</p>
+
+        <h3>Rules</h3>
+        <p>Files in <code>.claude/rules/</code> injected into every Claude message. Stronger than CLAUDE.md prose — Claude can't miss them. The most important is <strong>skill-enforcement</strong>: a decision matrix that maps task types to required skills (entry gates: brainstorming for creative work, systematic-debugging for bugs; exit gates: second-opinion after plans, verification-before-completion before "done"). Without this rule, Claude optimizes for speed and skips the skills.</p>
+
+        <h3>Hooks</h3>
+        <p>Scripts in <code>.claude/hooks/</code> that fire automatically on events:</p>
+        <ul>
+            <li><strong>SessionStart</strong> — runs <code>agnes pull --quiet</code> so data is fresh, fires the agnes-welcome project picker.</li>
+            <li><strong>SessionEnd</strong> — runs <code>agnes push --quiet</code> so session jsonl + CLAUDE.local.md flow back to the server.</li>
+            <li><strong>UserPromptSubmit</strong> — appends prompt to history, can inject reminders or enforce workflows.</li>
+        </ul>
+    </section>
+
+    <section class="ad-section" id="first-task">
+        <h2>7. Your first real task</h2>
+        <p class="ad-lead">Pick whichever you can run today.</p>
+
+        <h3>A. Create a project plan (no services needed)</h3>
+        <p>Paste this into Claude Code at the <code>~/Agnes</code> root:</p>
+<pre>Create a new project called "Q4 strategy review" under work. Then enter plan mode and draft a 6-week project plan covering: stakeholder interviews, current-state analysis, gap identification, recommendations, and stakeholder review. Save the plan to docs/plans/.</pre>
+
+        <h3>B. Process your emails (requires Google Workspace connected)</h3>
+        <p>Once GWS is set up (see /home § "connect your tools"), paste:</p>
+<pre>Search my Gmail for unread messages from the past 7 days. Extract anything that looks like a task or decision request, categorize by urgency (urgent / important / fyi), and produce an HTML dashboard at temp/email-digest.html with a one-line summary and link back to each message. Then tell me how many minutes it should take to clear urgent.</pre>
+
+        <h3>C. Get a second opinion (requires Codex or Gemini, see §5)</h3>
+        <p>After Claude produces any plan or analysis:</p>
+<pre>Get a second opinion on this. Run the review-panel first (4 internal personas), then send the result to all available external models (Codex, Gemini). Show me where they agree (high confidence) and where they disagree (needs my judgment).</pre>
+    </section>
+
+    <section class="ad-section" id="yolo">
+        <h2>YOLO mode (advanced)</h2>
+        <p class="ad-lead">Auto-accept mode (recommended on /home) auto-approves edits but still gates Bash. YOLO mode goes further — auto-approves everything. Faster, broader blast radius.</p>
+
+        <div class="ad-warn">
+            <strong>Review <code>~/.claude/settings.local.json</code> first.</strong> The permissions file is the actual safety net — YOLO mode + reviewed allowlist = fast AND safe. YOLO mode + missing allowlist = unbounded shell execution. Read the file before flipping the switch.
+        </div>
+
+        <h3>One-shot YOLO</h3>
+        <p>Run with the flag once: <code>claude --dangerously-skip-permissions</code>. Useful for trusted batch operations.</p>
+
+        <h3>Persistent YOLO via alias</h3>
+        <p>macOS / Linux (zsh):</p>
+<pre>echo 'alias yolo="claude --dangerously-skip-permissions"' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</pre>
+        <p>Windows PowerShell:</p>
+<pre>if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }
+Add-Content $PROFILE 'function yolo { claude --dangerously-skip-permissions @args }'</pre>
+        <p>Now <code>yolo</code> launches Claude in YOLO mode. The reference <code>~/.claude/settings.local.json</code> ships with safe defaults (read freely, run common dev tools, gate destructive ops). Customize as you learn what you trust.</p>
+    </section>
+
+    <section class="ad-section" id="tips">
+        <h2>8. Tips, cost &amp; troubleshooting</h2>
+
+        <h3>Claude plan tier</h3>
+        <table class="ad-table">
+            <tr><th>Plan</th><th>Price</th><th>Best for</th></tr>
+            <tr><td><strong>Pro</strong></td><td>$20/mo</td><td>Trying Agnes — base limits, resets every 5–8h. Will hit limits within first week of real use.</td></tr>
+            <tr><td><strong>Max 5×</strong></td><td>$100/mo</td><td>The natural home for daily Agnes use. 5× Pro limits, weekly reset.</td></tr>
+            <tr><td><strong>Max 20×</strong></td><td>$200/mo</td><td>Heavy parallel work — multiple subagents, long sessions, power users.</td></tr>
+        </table>
+        <p>Subagents and long conversations burn through quota faster than quick questions. Treat it like a data plan: Pro is the trial, Max 5× is the real subscription.</p>
+
+        <h3>Common pitfalls</h3>
+        <ul>
+            <li><strong>"<code>gws</code> not found" after npm install</strong> — nvm/fnm puts node binaries in a path that's only on PATH inside interactive shells. Symlink to <code>~/.local/bin/</code>: <code>ln -sf "$(command -v gws)" ~/.local/bin/gws</code>.</li>
+            <li><strong>Token verification fails after storing</strong> — Atlassian's "shown ONCE" copy panel often truncates click-and-drag selections. Use the panel's Copy button. Atlassian Cloud tokens are 192+ chars; sub-100 means truncated.</li>
+            <li><strong>Claude forgets things mid-session</strong> — long conversations push earlier context out. Move durable rules into <code>CLAUDE.md</code> or <code>.claude/rules/</code>; they survive across sessions.</li>
+            <li><strong>YOLO mode runs something destructive</strong> — review your <code>~/.claude/settings.local.json</code> allowlist. The reference one ships with sensible gates; customize as you learn what you trust.</li>
+        </ul>
+
+        <h3>Getting help</h3>
+        <p>The fastest debugger is Claude itself. Paste your error message into the chat. Most setup issues resolve in one or two turns.</p>
+    </section>
+
+</div>
+
+<script>
+(function () {
+    document.querySelectorAll('.plugin-copy[data-copy-target]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var src = document.getElementById(btn.getAttribute('data-copy-target'));
+            if (!src) return;
+            // textContent (not innerText) so collapsed-ancestor nodes still copy.
+            var text = (src.textContent || '').replace(/ /g, ' ');
+            navigator.clipboard.writeText(text).then(function () {
+                var orig = btn.textContent;
+                btn.textContent = 'Copied';
+                btn.classList.add('copied');
+                setTimeout(function () {
+                    btn.textContent = orig;
+                    btn.classList.remove('copied');
+                }, 1500);
+            }).catch(function () { btn.textContent = 'Copy failed'; });
+        });
+    });
+})();
+</script>
+{% endblock %}

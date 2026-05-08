@@ -52,6 +52,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Schema bumped v27 → v28 (`DELETE FROM user_plugin_optouts` for the semantic flip + `marketplace_plugins.created_at` with `registered_at` backfill).
 - New tests `tests/test_marketplace_api.py` (browse, categories, install/uninstall, RBAC 403, `_safe_join` containment). Existing `tests/test_marketplace_filter_store.py`, `tests/test_marketplace_server_zip.py`, `tests/test_marketplace_server_git.py`, `tests/test_store_api.py`, `tests/test_store_repositories.py` updated for Model B (explicit subscribe in fixtures).
 
+### Added (home + news work)
+
+- **State-aware `/home` landing page** — alternative to `/dashboard` for not-onboarded users. Inline 3-step install (Claude Code via OS-tabbed installer, `agnes pull` bootstrap, optional auto-accept mode), one-click "Setup a new Claude Code" CTA that mints a 90-day PAT and copies a ready-to-paste setup script to the clipboard, and connector-card prompts for Asana / Google Workspace / Atlassian. Onboarded users see a hero + green-check completion badge; install steps + connectors stay visible below for adding another machine or connecting more services. Manual reload picks up the flip after `agnes init` POSTs `/api/me/onboarded`.
+- **News section on `/home` + `/news` permalink + `/admin/news` editor** — admin-edited rich content (intro at the bottom of `/home`, full body on `/news`). Single versioned entity in the new `news_template` table (schema v30). Every save creates / updates a draft; admin must publish a draft before it goes live; older versions stay browsable; concurrent edits surface as 409 conflicts (`expected_version` query param + CLI `--version` flag) instead of silently overwriting. Drafts and superseded published versions older than 30 days are pruned on save; the currently-displayed published version is never pruned.
+- **`POST /api/me/onboarded`** — flips `users.onboarded` for the calling user (idempotent, audit-logged with `source ∈ {agnes_init, self_acknowledged, self_unmark}`). Optional `onboarded` body field toggles the flag back to FALSE for the "Mark me as offboarded" button on the post-onboarding /home view.
+- **`/setup-advanced` page** — second-hour reference covering VS Code layout, recommended plugins, multi-model second opinions, custom skills/rules/hooks, plus a YOLO-mode warning section.
+- **`agnes admin news` CLI** — `show`, `draft`, `edit`, `publish`, `unpublish`, `versions`, `export`. Talks to `/api/admin/news/*` endpoints (PAT-authed) so it coexists with a running uvicorn. Optimistic-lock guard via `--version N` (publish) and `--expect-version N` / `--force` (edit).
+- **`agnes onboarded {on,off,status}` CLI** — self-scoped flag toggle, equivalent to the in-page button on `/home`. POSTs `/api/me/onboarded` with `{onboarded: bool, source: 'self_acknowledged' | 'self_unmark' | …}`; the `--source` flag overrides the default source string for audit_log distinction (CLI vs web button vs `agnes init` automation).
+- **Schema v29** (instance_templates singleton consolidation + `users.onboarded`) → **v30** (`news_template` versioned). Legacy `welcome_template` + `claude_md_template` rows migrate into the consolidated `instance_templates` table; the legacy tables are dropped post-migration. Repository APIs preserved.
+- **Configurable home route** — `AGNES_HOME_ROUTE` env (Terraform-friendly) > `instance.home_route` YAML > default `/dashboard`. Allowlist-validated. Auth callbacks (Google OAuth, magic-link, password form, LOCAL_DEV_MODE) honor the resolved route — `safe_next_path(default=None)` resolves to `get_home_route()`.
+- **Configurable Google Workspace CLI OAuth client** — `AGNES_GWS_*` env > `instance.gws.*` YAML > unset. When set, /home's GWS connector prompt skips `gws auth setup` and writes `client_secret.json` directly with the operator's pre-provisioned OAuth app. GWS scope set widened to include `chat.spaces` + `chat.messages`.
+- **Connector setup prompts** (Asana / GWS / Atlassian) precheck whether the tool is already installed/connected before re-running setup.
+- **`.news-hero` / `.callout-{info,warn,success,danger}` / `.video-embed` / `.news-section` / `.news-grid-{2,3}` / `.news-cta`** author CSS vocabulary — single shared block in `style-custom.css` ("News content vocabulary (shared)") used by /home perex, /news body, and the /admin/news preview. Documented in `docs/operator/news-content-guide.md`. Iframe host allowlist (YouTube / Vimeo / Loom) enforced by `nh3`-backed sanitizer in `src/sanitize_news.py`.
+- **`nh3>=0.2`** dependency for the news sanitizer; closes the bypass shapes flagged on the legacy regex sanitizer in `src/welcome_template.py` (the legacy path is left alone in this PR).
+- **`scripts/dev/run-local.sh`** — local uvicorn launcher. Pulls Google OAuth client id/secret from GCP Secret Manager (`AGNES_OAUTH_GCP_PROJECT`-driven, no vendor defaults), points `AGNES_CLI_DIST_DIR` at `./dist` so the wheel endpoint resolves, and `--dev` flips `LOCAL_DEV_MODE=1` + `AGNES_HOME_ROUTE=/home` for one-command iteration.
+
+### Changed (home + news work)
+
+- **`dashboard.html` now extends `base.html`** via the new `{% block layout %}` opt-out (full-width pages skip the 800px `.container`). One shell, one place to fix chrome bugs.
+- **`style-custom.css` `:root`** extended with `--space-{7,9,10,12}`, `--radius-2xl`, `--shadow-{card,elevated}`, `--text-{muted,disabled}`, `--focus-ring`, `--transition-*`, `--width-{narrow,app,wide}` so inline page styles can migrate incrementally.
+- **`LOCAL_DEV_MODE=1`** now also enables the FastAPI debug toolbar (was gated on `DEBUG=1` separately; every local-dev session wants both).
+
+### Internal (home + news work)
+
+- Schema bumped v28 → v29 → v30. New tests: news repository (14), sanitizer (20), API (8), web (5), CLI (14) — 61 total — plus updated home/auth/template tests for the shared-shell architecture. CLAUDE.md "Run tests before every push" section codifies `pytest tests/ -n auto -q` as non-negotiable before each push.
+
 ## [0.47.4] — 2026-05-08
 
 ### Fixed
