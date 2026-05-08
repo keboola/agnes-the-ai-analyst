@@ -212,7 +212,8 @@ async def verify_magic_link_get(
     token: str,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Click-through variant — verifies token, sets cookie, redirects to /dashboard.
+    """Click-through variant — verifies token, sets cookie, redirects to the
+    operator-configured home route.
 
     This is the URL we embed in outgoing emails (and the dev-fallback link), so
     clicking it in a mail client logs the user in without a separate API call.
@@ -224,7 +225,8 @@ async def verify_magic_link_get(
     jwt_token = create_access_token(user["id"], user["email"])
     # secure=False when DOMAIN is unset so the cookie is actually sent on plain HTTP (dev).
     use_secure = os.environ.get("DOMAIN", "") != ""
-    response = RedirectResponse(url="/dashboard", status_code=302)
+    from app.instance_config import get_home_route
+    response = RedirectResponse(url=get_home_route(), status_code=302)
     response.set_cookie(
         key="access_token", value=jwt_token,
         httponly=True, max_age=86400, samesite="lax",

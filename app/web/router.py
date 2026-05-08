@@ -392,13 +392,13 @@ async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depen
 async def login_page(request: Request):
     from app.auth.dependencies import is_local_dev_mode, _get_local_dev_user
     if is_local_dev_mode():
-        # Only short-circuit to /dashboard if the dev user is actually seeded.
-        # Otherwise the 401 from /dashboard would bounce back to /login and loop.
+        # Only short-circuit to the home route if the dev user is actually
+        # seeded. Otherwise a 401 there would bounce back to /login and loop.
         from src.db import get_system_db
         conn = get_system_db()
         try:
             if _get_local_dev_user(conn):
-                return RedirectResponse(url="/dashboard", status_code=302)
+                return RedirectResponse(url=get_home_route(), status_code=302)
         finally:
             conn.close()
         # Fall through to the normal login form so the missing-seed error is visible.
