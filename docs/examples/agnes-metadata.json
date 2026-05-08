@@ -1,6 +1,5 @@
 {
   "_comment": "Example .claude-plugin/agnes-metadata.json — copy to your marketplace repo and adjust. See docs/curated-marketplace-format.md for the full schema. The `_comment` keys are ignored by Agnes — they're here purely as inline documentation; remove them in production.",
-  "version": 1,
   "plugins": {
     "data-explorer": {
       "_comment": "Plugin-level enrichment — surfaces on /marketplace cards and on the plugin detail page.",
