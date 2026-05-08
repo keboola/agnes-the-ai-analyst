@@ -52,11 +52,21 @@ dependencies = [
     # In-process TTL cache for marketplace etag (transitively present via
     # google-auth, declared explicitly here because we depend on it directly).
     "cachetools>=5.3.0",
+    # Optional observability — pure-Python, no compilation. Lazily initialized
+    # in src/observability/posthog_client.py and only emits events when
+    # POSTHOG_API_KEY is set in the environment. With the key unset the
+    # integration is fully off (no network, no init). See docs/observability.md.
+    "posthog>=3.7.0",
 ]
 
 [project.optional-dependencies]
 # keboola-legacy: install kbcstorage>=0.9.0 manually if you need the legacy
 # Keboola client fallback (primary path uses DuckDB Keboola extension)
+observability = [
+    # Already in base dependencies — listed here so operators who want to
+    # be explicit can `pip install -e ".[observability]"` and signal intent.
+    "posthog>=3.7.0",
+]
 dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
@@ -75,7 +85,7 @@ dev = [
 ]
 
 [project.scripts]
-da = "cli.main:app"
+da = "cli.main:main"
 
 [build-system]
 requires = ["hatchling"]

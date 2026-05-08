@@ -63,6 +63,72 @@ class _SafeEncoder(_json.JSONEncoder):
 templates.env.policies["json.dumps_function"] = lambda obj, **kw: _json.dumps(obj, cls=_SafeEncoder, **kw)
 
 
+# ---- PostHog template wiring ----
+# Two Jinja globals injected into every render so the `_posthog.html` partial
+# (included from `base.html` and `base_login.html`) can render the browser
+# snippet — or render nothing when the integration is disabled.
+#
+#   posthog_config              process-level static config (host, project key,
+#                               replay flag, extra mask selector). Resolved
+#                               once on first access.
+#   posthog_user_block(request) per-request identify payload honoring the
+#                               operator-chosen identify mode. Returns None
+#                               for anonymous renders.
+def _posthog_config_global() -> dict:
+    from src.observability import get_posthog
+    pc = get_posthog()
+    if not pc.enabled:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "host": pc.host,
+        "api_key_public": pc.api_key_public,
+        "replay_enabled": pc.replay_enabled,
+        "replay_mask_selector_extra": pc.replay_mask_selector_extra,
+    }
+
+
+def _posthog_user_block(request: Optional[Request]) -> Optional[dict]:
+    from src.observability import get_posthog
+    pc = get_posthog()
+    if not pc.enabled:
+        return None
+    mode = pc.identify_mode
+    if mode == "none":
+        return None
+    user = None
+    if request is not None:
+        try:
+            user = getattr(request.state, "user", None)
+        except Exception:
+            user = None
+    if not user:
+        return None
+
+    def _get(attr: str):
+        if isinstance(user, dict):
+            return user.get(attr)
+        return getattr(user, attr, None)
+
+    distinct_id = _get("id") or _get("user_id") or _get("email")
+    if not distinct_id:
+        return None
+    props: dict = {}
+    if mode in ("email", "full"):
+        email = _get("email")
+        if email:
+            props["email"] = str(email)
+    if mode == "full":
+        name = _get("name") or _get("full_name")
+        if name:
+            props["name"] = str(name)
+    return {"distinct_id": str(distinct_id), "props": props}
+
+
+templates.env.globals["posthog_config"] = _posthog_config_global()
+templates.env.globals["posthog_user_block"] = _posthog_user_block
+
+
 class _FlexDict(dict):
     """Dict that returns empty _FlexDict for missing keys and attributes.
     Prevents Jinja2 UndefinedError when templates access missing nested values."""

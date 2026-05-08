@@ -109,5 +109,43 @@ app.add_typer(snapshot_app, name="snapshot")
 app.add_typer(disk_info_app, name="disk-info")
 
 
+def main() -> None:
+    """Entry point — wraps the Typer app with PostHog exception capture.
+
+    Three rules:
+      * ``typer.Exit`` / ``SystemExit`` / ``KeyboardInterrupt`` are normal
+        control flow; never reported.
+      * Any other ``Exception`` is forwarded to PostHog (no-op when the
+        integration is off), the client is flushed, then the exception is
+        re-raised so Typer / Click can render its standard error.
+      * Flush always runs on exit so a short-lived CLI invocation doesn't
+        lose events to its own process termination.
+    """
+    import typer as _typer  # local import — cheap, keeps top-level fast
+    try:
+        app()
+    except (_typer.Exit, SystemExit, KeyboardInterrupt):
+        raise
+    except Exception as exc:
+        try:
+            from src.observability import get_posthog
+            import sys as _sys
+            argv = _sys.argv[1:]
+            command = argv[0] if argv else "<no-command>"
+            get_posthog().capture_exception(
+                exc,
+                distinct_id="cli",
+                properties={
+                    "component": "cli",
+                    "command": command,
+                    "argv": " ".join(argv)[:512],
+                },
+            )
+            get_posthog().shutdown()
+        except Exception:
+            pass  # never replace the user-visible error with a tracing failure
+        raise
+
+
 if __name__ == "__main__":
-    app()
+    main()

@@ -48,6 +48,19 @@ logger = logging.getLogger(__name__)
 
 _rebuild_lock = threading.Lock()
 
+
+def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
+    """Best-effort PostHog forward for rebuild failures. No-op when disabled."""
+    try:
+        from src.observability import get_posthog
+        get_posthog().capture_exception(
+            exc,
+            distinct_id="system",
+            properties={"component": "orchestrator", **props},
+        )
+    except Exception:
+        logger.debug("PostHog capture_exception failed in orchestrator", exc_info=True)
+
 # Identifier validation lives in src/identifier_validation.py so the
 # orchestrator and the extractors share the same regex (#81 Group D).
 # The local names are kept as aliases so existing call sites need no
@@ -101,12 +114,20 @@ class SyncOrchestrator:
         Returns: {source_name: [table_names]} for logging.
         """
         with _rebuild_lock:
-            return self._do_rebuild()
+            try:
+                return self._do_rebuild()
+            except Exception as exc:
+                _capture_orchestrator_exception(exc, op="rebuild")
+                raise
 
     def rebuild_source(self, source_name: str) -> List[str]:
         """Rebuild views from a single source (e.g. after Jira webhook)."""
         with _rebuild_lock:
-            return self._do_rebuild_source(source_name)
+            try:
+                return self._do_rebuild_source(source_name)
+            except Exception as exc:
+                _capture_orchestrator_exception(exc, op="rebuild_source", source=source_name)
+                raise
 
     def _scan_meta_pairs(self, extracts_dir: Path) -> tuple:
         """Read every connector's `_meta` and return (pairs, clean) where:
