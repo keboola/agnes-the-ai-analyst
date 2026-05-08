@@ -12,8 +12,12 @@ import pytest
 from src.db import SCHEMA_VERSION, _V26_TO_V27_MIGRATIONS
 
 
-def test_schema_version_constant_is_27():
-    assert SCHEMA_VERSION == 27
+def test_schema_version_constant_is_at_least_27():
+    # v27 introduced the Keboola sync-strategy columns this file covers.
+    # SCHEMA_VERSION may have advanced past 27 (e.g. /home page work landed
+    # at v28); the v26 → v27 migration this file tests must still apply.
+    # Pin lower bound, not an exact match.
+    assert SCHEMA_VERSION >= 27
 
 
 def test_migrations_add_seven_columns(tmp_path):
