@@ -208,6 +208,81 @@ def test_prune_skips_current_published(fresh_db):
         conn.close()
 
 
+def test_save_draft_expected_version_blocks_concurrent_overwrite(fresh_db):
+    """If admin A saves a draft (v1) and admin B then saves believing
+    nothing's there (`expected_version=0`), B's call must fail with
+    a VersionConflictError that names A as the actual author."""
+    from src.repositories.news_template import (
+        NewsTemplateRepository,
+        VersionConflictError,
+    )
+    conn = _conn()
+    try:
+        repo = NewsTemplateRepository(conn)
+        repo.save_draft(intro="<p>A1</p>", content="A1", by="alice@x")
+        with pytest.raises(VersionConflictError) as exc:
+            repo.save_draft(
+                intro="<p>B's draft</p>",
+                content="B",
+                by="bob@x",
+                expected_version=0,
+            )
+        assert exc.value.actual == 1
+        assert exc.value.actual_by == "alice@x"
+    finally:
+        conn.close()
+
+
+def test_save_draft_expected_version_matches_passes(fresh_db):
+    """expected_version equal to the current draft version succeeds."""
+    from src.repositories.news_template import NewsTemplateRepository
+    conn = _conn()
+    try:
+        repo = NewsTemplateRepository(conn)
+        first = repo.save_draft(intro="<p>v1</p>", content="V1", by="alice@x")
+        # Same author re-saving with the matching expected_version goes through.
+        second = repo.save_draft(
+            intro="<p>v1 edited</p>",
+            content="V1",
+            by="alice@x",
+            expected_version=first["version"],
+        )
+        assert second["intro"] == "<p>v1 edited</p>"
+        assert second["version"] == first["version"]
+    finally:
+        conn.close()
+
+
+def test_publish_draft_expected_version_blocks_replaced_draft(fresh_db):
+    """Admin reviews v2 draft; concurrent admin replaces it. publish
+    with --version 2 must refuse rather than ship the replacement."""
+    from src.repositories.news_template import (
+        NewsTemplateRepository,
+        VersionConflictError,
+    )
+    conn = _conn()
+    try:
+        repo = NewsTemplateRepository(conn)
+        repo.save_draft(intro="<p>v1</p>", content="V1", by="alice@x")
+        repo.publish_draft(by="alice@x")
+        repo.save_draft(intro="<p>v2 reviewed</p>", content="V2", by="alice@x")
+        # Carol overwrites v2's draft (uses --force / different author).
+        # The repo allows the overwrite at the row level; the version
+        # number stays the same, but contents + updated_by would differ
+        # in a real scenario. To simulate the "different draft" shape
+        # we publish v2 then create a fresh draft v3 — alice's --version 2
+        # publish should now refuse since the active draft is v3.
+        repo.publish_draft(by="alice@x")
+        repo.save_draft(intro="<p>v3 carol</p>", content="V3", by="carol@x")
+
+        with pytest.raises(VersionConflictError) as exc:
+            repo.publish_draft(by="alice@x", expected_version=2)
+        assert exc.value.actual == 3
+        assert exc.value.actual_by == "carol@x"
+    finally:
+        conn.close()
+
+
 def test_prune_drops_old_superseded_and_old_drafts(fresh_db):
     """An old draft + an old superseded published row should both go;
     the most-recent published row stays."""

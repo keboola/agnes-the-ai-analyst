@@ -181,6 +181,45 @@ def test_preview_sanitizes_without_persisting(fresh_db):
     assert c.get("/api/admin/news/draft").status_code == 404
 
 
+def test_publish_with_expected_version_mismatch_returns_409(fresh_db):
+    from src.db import get_system_db, close_system_db
+    conn = get_system_db()
+    try:
+        c = _make_admin_client(conn)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c.put("/api/admin/news/draft", json={"intro": "<p>v1</p>", "content": "V1"})
+    # Active draft is v1; publish with ?expected_version=42 must 409.
+    r = c.post("/api/admin/news/publish?expected_version=42")
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["error"] == "version_conflict"
+    assert detail["expected"] == 42
+    assert detail["actual"] == 1
+
+
+def test_put_draft_with_expected_version_mismatch_returns_409(fresh_db):
+    from src.db import get_system_db, close_system_db
+    conn = get_system_db()
+    try:
+        c = _make_admin_client(conn)
+    finally:
+        conn.close()
+        close_system_db()
+
+    # Admin A creates draft v1; admin B (same client here) tries to save
+    # believing no draft exists.
+    c.put("/api/admin/news/draft", json={"intro": "<p>v1</p>", "content": "V1"})
+    r = c.put(
+        "/api/admin/news/draft?expected_version=0",
+        json={"intro": "<p>fresh</p>", "content": "fresh"},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["error"] == "version_conflict"
+
+
 def test_unknown_version_returns_404(fresh_db):
     from src.db import get_system_db, close_system_db
     conn = get_system_db()

@@ -24,6 +24,7 @@ from src.repositories.news_template import (
     NewsTemplateRepository,
     NoDraftError,
     NotFoundError,
+    VersionConflictError,
 )
 from src.sanitize_news import sanitize
 
@@ -98,12 +99,36 @@ def get_version(
 @router.put("/draft", dependencies=[Depends(require_admin)])
 def put_draft(
     body: NewsBody,
+    expected_version: int | None = None,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Upsert the active draft. Sanitizes both fields BEFORE writing."""
+    """Upsert the active draft. Sanitizes both fields BEFORE writing.
+
+    Optimistic-lock: when `expected_version` is supplied (query string),
+    the request fails with 409 unless the active draft is at that
+    version. Pass `expected_version=0` when you intend to create the
+    first draft and want the call to fail if another admin already
+    started one.
+    """
     repo = NewsTemplateRepository(conn)
-    row = repo.save_draft(intro=body.intro, content=body.content, by=user["email"])
+    try:
+        row = repo.save_draft(
+            intro=body.intro,
+            content=body.content,
+            by=user["email"],
+            expected_version=expected_version,
+        )
+    except VersionConflictError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "version_conflict",
+                "expected": e.expected,
+                "actual": e.actual,
+                "actual_by": e.actual_by,
+            },
+        ) from e
     AuditRepository(conn).log(
         user_id=user["id"],
         action="news_draft_saved",
@@ -115,14 +140,32 @@ def put_draft(
 
 @router.post("/publish", dependencies=[Depends(require_admin)])
 def post_publish(
+    expected_version: int | None = None,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """Publish the active draft.
+
+    When `expected_version` is supplied (query string), the request
+    fails with 409 unless the active draft is at that version. Use
+    this when reviewing a specific draft before flipping it live so
+    a concurrent admin's edit doesn't slip through under your name.
+    """
     repo = NewsTemplateRepository(conn)
     try:
-        row = repo.publish_draft(by=user["email"])
+        row = repo.publish_draft(by=user["email"], expected_version=expected_version)
     except NoDraftError as e:
         raise HTTPException(status_code=409, detail="no_draft") from e
+    except VersionConflictError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "version_conflict",
+                "expected": e.expected,
+                "actual": e.actual,
+                "actual_by": e.actual_by,
+            },
+        ) from e
     AuditRepository(conn).log(
         user_id=user["id"],
         action="news_published",

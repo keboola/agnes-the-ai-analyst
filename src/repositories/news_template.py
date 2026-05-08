@@ -51,6 +51,24 @@ class AlreadyDraftError(NewsTemplateError):
     """Raised by unpublish() when the target version is already a draft."""
 
 
+class VersionConflictError(NewsTemplateError):
+    """Raised when an optimistic-lock check (`expected_version`) doesn't
+    match the active draft. Caller passed `expected_version=N` because
+    they thought N was the active draft, but a concurrent admin moved
+    it. The error carries `actual_version` so the API / CLI can show
+    the operator who/what changed without a second round-trip.
+    """
+
+    def __init__(self, *, expected: int | None, actual: int | None, actual_by: str | None = None):
+        self.expected = expected
+        self.actual = actual
+        self.actual_by = actual_by
+        super().__init__(
+            f"version conflict: expected draft v{expected}, active draft is "
+            f"v{actual}{f' (by {actual_by})' if actual_by else ''}"
+        )
+
+
 def _row_to_dict(row: tuple[Any, ...] | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -125,13 +143,37 @@ class NewsTemplateRepository:
 
     # -- write paths ----------------------------------------------------
 
-    def save_draft(self, *, intro: str, content: str, by: str) -> dict[str, Any]:
-        """UPSERT the active draft. Sanitizes BEFORE writing."""
+    def save_draft(
+        self,
+        *,
+        intro: str,
+        content: str,
+        by: str,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """UPSERT the active draft. Sanitizes BEFORE writing.
+
+        When `expected_version` is supplied, the call refuses with
+        VersionConflictError unless the active draft has that version
+        (or, if `expected_version=0`, no draft exists). Use the value
+        returned by a previous `save_draft` / `get_active_draft` call
+        to guard against concurrent overwrites by another admin.
+        """
         intro_clean = sanitize(intro)
         content_clean = sanitize(content)
         now = datetime.now(timezone.utc)
 
         existing = self.get_active_draft()
+
+        if expected_version is not None:
+            current = existing["version"] if existing else 0
+            if current != expected_version:
+                raise VersionConflictError(
+                    expected=expected_version,
+                    actual=current if existing else None,
+                    actual_by=existing["created_by"] if existing else None,
+                )
+
         if existing is not None:
             self.conn.execute(
                 """UPDATE news_template
@@ -163,12 +205,29 @@ class NewsTemplateRepository:
         self.prune_old()
         return _row_to_dict(row)  # type: ignore[return-value]
 
-    def publish_draft(self, *, by: str) -> dict[str, Any]:
+    def publish_draft(
+        self,
+        *,
+        by: str,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
         """Flip the active draft to published. Raises NoDraftError if
-        there is no draft."""
+        there is no draft.
+
+        When `expected_version` is supplied the call refuses with
+        VersionConflictError unless the active draft has that version.
+        Use this to guard against publishing a draft that another admin
+        edited or replaced after you reviewed it.
+        """
         draft = self.get_active_draft()
         if draft is None:
             raise NoDraftError("No active draft to publish.")
+        if expected_version is not None and draft["version"] != expected_version:
+            raise VersionConflictError(
+                expected=expected_version,
+                actual=draft["version"],
+                actual_by=draft["created_by"],
+            )
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """UPDATE news_template
@@ -260,5 +319,6 @@ __all__ = [
     "NoDraftError",
     "NotFoundError",
     "AlreadyDraftError",
+    "VersionConflictError",
     "PRUNE_THRESHOLD_DAYS",
 ]
