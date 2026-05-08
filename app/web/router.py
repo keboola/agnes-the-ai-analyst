@@ -934,6 +934,167 @@ async def my_ai_stack_page(
     return templates.TemplateResponse(request, "my_ai_stack.html", ctx)
 
 
+# ---------------------------------------------------------------------------
+# Marketplace — unified browse + detail pages.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/marketplace", response_class=HTMLResponse)
+async def marketplace_listing(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    import json as _json
+    from src.category_icons import all_paths
+    ctx = _build_context(
+        request, user=user,
+        category_icons_json=_json.dumps(all_paths()),
+    )
+    return templates.TemplateResponse(request, "marketplace.html", ctx)
+
+
+@router.get("/marketplace/flea/{entity_id}", response_class=HTMLResponse)
+async def marketplace_flea_detail(
+    request: Request,
+    entity_id: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Pick the right detail template based on the entity type:
+    plugins reuse the unified plugin layout; skills / agents render the
+    item-detail layout (matches curated nested skill / agent)."""
+    from src.repositories.store_entities import StoreEntitiesRepository
+    entity = StoreEntitiesRepository(conn).get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    if entity["type"] == "plugin":
+        ctx = _build_context(
+            request, user=user,
+            source="flea",
+            entity_id=entity_id,
+            plugin_name=entity["name"],
+        )
+        return templates.TemplateResponse(
+            request, "marketplace_plugin_detail.html", ctx,
+        )
+
+    ctx = _build_context(
+        request, user=user,
+        source="flea",
+        kind=entity["type"],
+        entity_id=entity_id,
+        item_name=entity["name"],
+    )
+    return templates.TemplateResponse(
+        request, "marketplace_item_detail.html", ctx,
+    )
+
+
+@router.get(
+    "/marketplace/curated/{marketplace_id}/{plugin_name}",
+    response_class=HTMLResponse,
+)
+async def marketplace_curated_detail(
+    request: Request,
+    marketplace_id: str,
+    plugin_name: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Server-renders only the shell — the page hydrates via
+    ``GET /api/marketplace/curated/{slug}/{plugin}`` which carries the
+    real RBAC guard. Direct URL access for users without the grant lands on
+    a shell that 403s on the first XHR; UX-level the page renders an empty
+    state and a back link."""
+    ctx = _build_context(
+        request,
+        user=user,
+        source="curated",
+        marketplace_id=marketplace_id,
+        plugin_name=plugin_name,
+    )
+    return templates.TemplateResponse(
+        request, "marketplace_plugin_detail.html", ctx,
+    )
+
+
+@router.get(
+    "/marketplace/curated/{marketplace_id}/{plugin_name}/skill/{skill_name}",
+    response_class=HTMLResponse,
+)
+async def marketplace_curated_skill_detail(
+    request: Request,
+    marketplace_id: str,
+    plugin_name: str,
+    skill_name: str,
+    user: dict = Depends(get_current_user),
+):
+    ctx = _build_context(
+        request,
+        user=user,
+        source="curated",
+        kind="skill",
+        marketplace_id=marketplace_id,
+        plugin_name=plugin_name,
+        inner_name=skill_name,
+    )
+    return templates.TemplateResponse(
+        request, "marketplace_item_detail.html", ctx,
+    )
+
+
+@router.get(
+    "/marketplace/curated/{marketplace_id}/{plugin_name}/agent/{agent_name}",
+    response_class=HTMLResponse,
+)
+async def marketplace_curated_agent_detail(
+    request: Request,
+    marketplace_id: str,
+    plugin_name: str,
+    agent_name: str,
+    user: dict = Depends(get_current_user),
+):
+    ctx = _build_context(
+        request,
+        user=user,
+        source="curated",
+        kind="agent",
+        marketplace_id=marketplace_id,
+        plugin_name=plugin_name,
+        inner_name=agent_name,
+    )
+    return templates.TemplateResponse(
+        request, "marketplace_item_detail.html", ctx,
+    )
+
+
+@router.get("/marketplace/guide/curated", response_class=HTMLResponse)
+async def marketplace_guide_curated(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    ctx = _build_context(
+        request, user=user,
+        guide_title="Submit a plugin to Curated Marketplace",
+        guide_kind="curated",
+    )
+    return templates.TemplateResponse(request, "marketplace_guide.html", ctx)
+
+
+@router.get("/marketplace/guide/flea", response_class=HTMLResponse)
+async def marketplace_guide_flea(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    ctx = _build_context(
+        request, user=user,
+        guide_title="Upload to Flea Market",
+        guide_kind="flea",
+    )
+    return templates.TemplateResponse(request, "marketplace_guide.html", ctx)
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,

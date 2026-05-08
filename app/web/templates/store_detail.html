@@ -185,9 +185,9 @@
       <div class="invocation" title="Invoke in Claude Code">{{ invocation_name }}</div>
       <div class="actions">
         {% if is_installed %}
-          <button class="btn-installed" id="action-btn" data-action="uninstall">Installed ✓ — Uninstall</button>
+          <button class="btn-installed" id="action-btn" data-action="uninstall">✓ In your stack — Remove</button>
         {% else %}
-          <button class="btn-primary" id="action-btn" data-action="install">+ Install</button>
+          <button class="btn-primary" id="action-btn" data-action="install">+ Add to my stack</button>
         {% endif %}
         {% if entity.video_url %}
           <a class="btn-link" href="{{ entity.video_url }}" target="_blank" rel="noopener">▶ Watch video</a>

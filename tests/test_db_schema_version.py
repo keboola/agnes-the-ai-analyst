@@ -13,19 +13,20 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_27():
-    # v25 → v26 (main): migrate Keboola query_mode='local' rows to
-    # 'materialized' — local mode is gone for Keboola now that the
-    # extractor talks Storage API directly via signed URLs (NULL
-    # source_query = full-table export, same effective behavior).
-    # v26 → v27 (this PR): Keboola sync-strategy support columns on
-    # table_registry (incremental_window_days, max_history_days,
-    # incremental_column, where_filters, partition_by,
-    # partition_granularity, initial_load_chunk_days). Existing
-    # sync_strategy column reused; admins can opt specific tables back
-    # to query_mode='local' for the new dispatcher (incremental,
-    # partitioned, full_refresh + where_filters).
-    assert SCHEMA_VERSION == 27
+def test_schema_version_is_28():
+    # v26 → v27: Keboola sync-strategy support columns on table_registry
+    # (incremental_window_days, max_history_days, incremental_column,
+    # where_filters, partition_by, partition_granularity,
+    # initial_load_chunk_days). Existing sync_strategy column reused;
+    # admins can opt specific tables back to query_mode='local' for the
+    # new dispatcher (incremental, partitioned, full_refresh + where_filters).
+    # v27 → v28 (this PR): explicit-install (Model B) for curated
+    # marketplace plugins. user_plugin_optouts row presence flips meaning
+    # from "excluded" to "subscribed"; the migration wipes existing rows
+    # so the inverted reading starts from a clean baseline. Also adds
+    # marketplace_plugins.created_at (per-plugin "newest first" sort on
+    # /marketplace), backfilled from parent marketplace_registry.registered_at.
+    assert SCHEMA_VERSION == 28
 
 
 def test_v20_adds_source_query(tmp_path):

@@ -44,7 +44,9 @@ import duckdb
 from app.auth.access import _user_group_ids
 from app.resource_types import ResourceType
 from app.utils import get_marketplaces_dir, get_store_dir
-from src.repositories.user_plugin_optouts import UserPluginOptoutsRepository
+from src.repositories.user_curated_subscriptions import (
+    UserCuratedSubscriptionsRepository,
+)
 from src.repositories.user_store_installs import UserStoreInstallsRepository
 from src.store_naming import suffixed_name
 
@@ -68,7 +70,7 @@ def _prefixed_name(slug: str, plugin_name: str) -> str:
     return f"{slug}-{plugin_name}"
 
 
-def _resolve_manifest_name(plugin_dir: Path, fallback: str) -> str:
+def resolve_manifest_name(plugin_dir: Path, fallback: str) -> str:
     """Return the plugin's authoritative `name` from its `.claude-plugin/plugin.json`.
 
     Claude Code resolves a loaded plugin back to its marketplace catalog
@@ -164,7 +166,7 @@ def resolve_allowed_plugins(
                 "marketplace_slug": slug,
                 "original_name": name,
                 "prefixed_name": _prefixed_name(slug, name),
-                "manifest_name": _resolve_manifest_name(plugin_dir, fallback=name),
+                "manifest_name": resolve_manifest_name(plugin_dir, fallback=name),
                 "version": version,
                 "raw": _resolve_raw(raw),
                 "plugin_dir": plugin_dir,
@@ -251,12 +253,14 @@ def resolve_user_marketplace(
 
     admin = resolve_allowed_plugins(conn, user)
 
-    optouts = UserPluginOptoutsRepository(conn).opted_out_set(user_id)
-    if optouts:
-        admin = [
-            p for p in admin
-            if (p["marketplace_id"], p["original_name"]) not in optouts
-        ]
+    # Model B (v28+): RBAC grant is only eligibility — the user must explicitly
+    # subscribe via /marketplace for a curated plugin to enter their served set.
+    # Pre-v28 the filter was (rbac ∖ opt_outs); now it's (rbac ∩ subscriptions).
+    subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user_id)
+    admin = [
+        p for p in admin
+        if (p["marketplace_id"], p["original_name"]) in subs
+    ]
     for p in admin:
         p["source"] = "marketplace"
 

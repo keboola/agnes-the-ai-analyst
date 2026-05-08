@@ -118,6 +118,20 @@ def marketplace_env(e2e_env, monkeypatch):
         rg.create(group_id=admin_gid, resource_type="marketplace_plugin", resource_id="mkt-b/plug-z")
         # TestGroup gets only plug-y
         rg.create(group_id=test_group_gid, resource_type="marketplace_plugin", resource_id="mkt-b/plug-y")
+
+        # Model B (v28+): grant alone is no longer enough — explicitly
+        # subscribe each user to every plugin they should see in the
+        # served set. Pre-v28 fixtures relied on the auto-included
+        # behavior; tests below still expect the same served sets, so we
+        # mirror those expectations with explicit subscriptions.
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+        subs = UserCuratedSubscriptionsRepository(conn)
+        subs.subscribe("admin1", "mkt-a", "plug-x")
+        subs.subscribe("admin1", "mkt-b", "plug-y")
+        subs.subscribe("admin1", "mkt-b", "plug-z")
+        subs.subscribe("analyst1", "mkt-b", "plug-y")
     finally:
         conn.close()
 

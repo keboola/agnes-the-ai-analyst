@@ -1113,7 +1113,9 @@ class TestMyStackOptout:
         )
         return gid, grant_id
 
-    def test_optout_removes_from_my_stack(self, web_client):
+    def test_subscribe_toggle_updates_my_stack(self, web_client):
+        """Model B: granted plugins start unsubscribed (`enabled=False`).
+        Toggling enabled=True writes a subscription; enabled=False removes it."""
         from src.db import get_system_db
         user_id, cookies = _create_user(web_client, "stack@x.com")
         conn = get_system_db()
@@ -1122,7 +1124,17 @@ class TestMyStackOptout:
 
         ms = web_client.get("/api/my-stack", cookies=cookies).json()
         assert len(ms["curated"]) == 1
-        assert ms["curated"][0]["enabled"] is True
+        assert ms["curated"][0]["enabled"] is False  # default unsubscribed
+
+        r = web_client.put(
+            "/api/my-stack/curated/mkt-x/alpha",
+            json={"enabled": True},
+            cookies=cookies,
+        )
+        assert r.status_code == 200
+
+        ms2 = web_client.get("/api/my-stack", cookies=cookies).json()
+        assert ms2["curated"][0]["enabled"] is True
 
         r = web_client.put(
             "/api/my-stack/curated/mkt-x/alpha",
@@ -1130,13 +1142,12 @@ class TestMyStackOptout:
             cookies=cookies,
         )
         assert r.status_code == 200
+        ms3 = web_client.get("/api/my-stack", cookies=cookies).json()
+        assert ms3["curated"][0]["enabled"] is False
 
-        ms2 = web_client.get("/api/my-stack", cookies=cookies).json()
-        assert ms2["curated"][0]["enabled"] is False
-
-    def test_grant_delete_drops_optouts(self, web_client):
-        """The admin grant-delete hook must clean up everyone's opt-outs so a
-        re-grant restarts at the default (enabled)."""
+    def test_grant_delete_drops_subscriptions(self, web_client):
+        """The admin grant-delete hook must clean up everyone's subscriptions
+        so a re-grant restarts at the default (unsubscribed)."""
         from src.db import get_system_db
         from tests.helpers.auth import grant_admin
         from src.repositories.users import UserRepository
@@ -1166,7 +1177,7 @@ class TestMyStackOptout:
 
         r = web_client.put(
             "/api/my-stack/curated/mkt-y/beta",
-            json={"enabled": False}, cookies=user_cookies,
+            json={"enabled": True}, cookies=user_cookies,
         )
         assert r.status_code == 200
 
@@ -1174,11 +1185,13 @@ class TestMyStackOptout:
         d = web_client.delete(f"/api/admin/grants/{grant_id}", cookies=admin_cookies)
         assert d.status_code == 204, d.text
 
-        # Opt-out should be gone.
-        from src.repositories.user_plugin_optouts import UserPluginOptoutsRepository
+        # Subscription should be gone too.
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
         conn = get_system_db()
         try:
-            assert UserPluginOptoutsRepository(conn).is_opted_out(
+            assert UserCuratedSubscriptionsRepository(conn).is_subscribed(
                 user_id, "mkt-y", "beta",
             ) is False
         finally:

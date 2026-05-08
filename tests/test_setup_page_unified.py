@@ -73,10 +73,14 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
     unified flow inserts the marketplace + plugins block (step 5) and
     Confirm shifts to step 8.
 
-    Stub `marketplace_filter.resolve_allowed_plugins` to return a
+    Stub `marketplace_filter.resolve_user_marketplace` to return a
     plugin so we don't have to seed the full marketplace plumbing in
     this test — we're verifying the layout switch, not the RBAC
-    resolver itself (covered by `test_marketplace_filter`)."""
+    resolver itself (covered by `test_marketplace_filter`).
+
+    Post-Model B (v28+): the setup page reads from
+    `resolve_user_marketplace` (which gates on explicit subscriptions)
+    rather than `resolve_allowed_plugins` (RBAC-only)."""
     from app.web.router import get_optional_user
     from fastapi import Request
     from src import marketplace_filter
@@ -87,7 +91,7 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
 
     monkeypatch.setattr(
         marketplace_filter,
-        "resolve_allowed_plugins",
+        "resolve_user_marketplace",
         lambda conn, user: [{"manifest_name": "demo-plugin"}],
     )
 

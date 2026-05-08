@@ -1,7 +1,8 @@
-"""Tests for the v24 composition layer in src.marketplace_filter.
+"""Tests for the composition layer in src.marketplace_filter.
 
-Covers ``resolve_user_marketplace`` — the served plugin set built from
-admin grants minus opt-outs, union store installs.
+Covers ``resolve_user_marketplace`` — Model B (v27+) served plugin set built
+from admin grants intersected with explicit user subscriptions, unioned with
+store installs.
 """
 
 from __future__ import annotations
@@ -82,20 +83,40 @@ def _install_for(conn, *, user_id, entity_id):
     UserStoreInstallsRepository(conn).install(user_id, entity_id)
 
 
+def _subscribe(conn, *, user_id, marketplace, plugin):
+    from src.repositories.user_curated_subscriptions import (
+        UserCuratedSubscriptionsRepository,
+    )
+    UserCuratedSubscriptionsRepository(conn).subscribe(user_id, marketplace, plugin)
+
+
 class TestResolveUserMarketplace:
-    def test_admin_only_baseline(self, db_conn):
+    def test_admin_grant_without_subscription_returns_empty(self, db_conn):
+        """Model B: RBAC grant alone is no longer enough — caller must
+        explicitly subscribe before the plugin enters the served set."""
         from src.marketplace_filter import resolve_user_marketplace
         _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1")
+        result = resolve_user_marketplace(db_conn, {"id": "u1"})
+        assert result == []
+
+    def test_admin_grant_plus_subscribe_yields_entry(self, db_conn):
+        from src.marketplace_filter import resolve_user_marketplace
+        _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1")
+        _subscribe(db_conn, user_id="u1", marketplace="mkt", plugin="p1")
         result = resolve_user_marketplace(db_conn, {"id": "u1"})
         assert len(result) == 1
         assert result[0]["source"] == "marketplace"
         assert result[0]["prefixed_name"] == "mkt-p1"
 
-    def test_optout_removes_from_view(self, db_conn):
+    def test_unsubscribe_removes_from_view(self, db_conn):
         from src.marketplace_filter import resolve_user_marketplace
-        from src.repositories.user_plugin_optouts import UserPluginOptoutsRepository
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
         _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1")
-        UserPluginOptoutsRepository(db_conn).set("u1", "mkt", "p1", opted_out=True)
+        repo = UserCuratedSubscriptionsRepository(db_conn)
+        repo.subscribe("u1", "mkt", "p1")
+        repo.unsubscribe("u1", "mkt", "p1")
         result = resolve_user_marketplace(db_conn, {"id": "u1"})
         assert result == []
 
@@ -105,6 +126,7 @@ class TestResolveUserMarketplace:
         named ``agnes-store-bundle`` regardless of how many are installed."""
         from src.marketplace_filter import resolve_user_marketplace
         _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1")
+        _subscribe(db_conn, user_id="u1", marketplace="mkt", plugin="p1")
         _make_user(db_conn, user_id="owner", email="owner@x")
         eid = _create_store_entity(db_conn, owner_id="owner", owner_username="owner", name="my-skill")
         _install_for(db_conn, user_id="u1", entity_id=eid)
@@ -191,15 +213,16 @@ class TestResolveUserMarketplace:
         bundle = next(p for p in result if p["source"] == "store-bundle")
         assert bundle["bundle_entity_ids"] == [s_eid]
 
-    def test_store_install_independent_of_optout(self, db_conn):
-        """Opt-outs only filter admin grants, not store installs."""
+    def test_store_install_independent_of_subscription(self, db_conn):
+        """Curated subscription state only gates curated entries — store
+        installs always pass through. Here u1 is granted a plugin but
+        never subscribes; the store-installed skill still appears."""
         from src.marketplace_filter import resolve_user_marketplace
-        from src.repositories.user_plugin_optouts import UserPluginOptoutsRepository
         _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1")
         _make_user(db_conn, user_id="owner", email="owner@x")
         eid = _create_store_entity(db_conn, owner_id="owner", owner_username="owner", name="my-skill")
         _install_for(db_conn, user_id="u1", entity_id=eid)
-        UserPluginOptoutsRepository(db_conn).set("u1", "mkt", "p1", opted_out=True)
+        # No subscribe call — admin grant alone shouldn't surface the plugin.
 
         result = resolve_user_marketplace(db_conn, {"id": "u1"})
         assert len(result) == 1
@@ -213,6 +236,7 @@ class TestResolveUserMarketplace:
     def test_admin_first_then_bundle_order(self, db_conn):
         from src.marketplace_filter import resolve_user_marketplace
         _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1")
+        _subscribe(db_conn, user_id="u1", marketplace="mkt", plugin="p1")
         _make_user(db_conn, user_id="owner", email="owner@x")
         eid = _create_store_entity(db_conn, owner_id="owner", owner_username="owner", name="my-skill")
         _install_for(db_conn, user_id="u1", entity_id=eid)
