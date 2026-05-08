@@ -31,15 +31,29 @@
     disable_session_recording: true,
     {% endif %}
     loaded: function (ph) {
-      // Tag every browser event with the deployment environment +
-      // release so dashboards can split localhost / dev / production.
-      // register() values are sticky (stored in localStorage) and apply
-      // to $pageview, $exception, $autocapture, etc.
-      ph.register({
+      // Tag every browser event with deployment environment + release
+      // and (when a user is logged in) user_id + email/name. register()
+      // values are sticky (localStorage-persisted) and apply to every
+      // event — $pageview, $exception, $autocapture, etc. — so the
+      // event-detail view in PostHog shows who the user was inline,
+      // without clicking through to the person profile. Mirrors the
+      // backend's super_properties + user_props_for_event so cross-
+      // referencing client and server events doesn't require a join.
+      var _superProps = {
         environment: {{ posthog_config.environment|tojson }}{% if posthog_config.release %},
         release: {{ posthog_config.release|tojson }}{% endif %}
-      });
+      };
       {% set _u = posthog_user_block(request) %}
+      {% if _u %}
+      _superProps.user_id = {{ _u.distinct_id|tojson }};
+      {% if _u.props.email %}
+      _superProps.user_email = {{ _u.props.email|tojson }};
+      {% endif %}
+      {% if _u.props.name %}
+      _superProps.user_name = {{ _u.props.name|tojson }};
+      {% endif %}
+      {% endif %}
+      ph.register(_superProps);
       {% if _u %}
       ph.identify({{ _u.distinct_id|tojson }}, {{ _u.props|tojson }});
       {% endif %}
