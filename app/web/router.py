@@ -564,7 +564,12 @@ async def home_page(
     ).fetchone()
     onboarded = bool(row[0]) if row else False
 
-    template = "home_onboarded.html" if onboarded else "home_not_onboarded.html"
+    # Single template renders both states. The post-onboarding view keeps
+    # the install-steps + connector prompts + auto-mode card visible —
+    # they stay relevant for adding a second machine, a missing connector,
+    # or re-running auto-mode setup. Hero copy + the self-mark control
+    # branch on the boolean. The legacy `home_onboarded.html` is kept on
+    # disk for a release as a fallback but no route renders it.
     ctx = _build_context(
         request,
         user=user,
@@ -572,7 +577,7 @@ async def home_page(
         onboarded=onboarded,
         is_admin=is_user_admin(user["id"], conn),
     )
-    return templates.TemplateResponse(request, template, ctx)
+    return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 
 
 @router.get("/setup-advanced", response_class=HTMLResponse)

@@ -193,3 +193,60 @@ def test_post_invalid_source_returns_422(fresh_db):
         cookies={"access_token": sess},
     )
     assert resp.status_code == 422
+
+
+def test_post_offboard_flips_to_false(fresh_db):
+    """Body {onboarded: false, source: 'self_unmark'} flips back. Used by the
+    'Mark me as offboarded' button shown on the post-onboarding /home view."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        uid, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    resp1 = c.post("/api/me/onboarded", cookies={"access_token": sess})
+    assert resp1.status_code == 200
+    resp2 = c.post(
+        "/api/me/onboarded",
+        json={"source": "self_unmark", "onboarded": False},
+        cookies={"access_token": sess},
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["onboarded"] is False
+
+    conn = get_system_db()
+    try:
+        assert _onboarded(conn, uid) is False
+        on_rows = _audit_rows(conn, uid, action="user_onboarded")
+        off_rows = _audit_rows(conn, uid, action="user_offboarded")
+        assert len(on_rows) == 1, "first POST should write user_onboarded"
+        assert len(off_rows) == 1, "second POST should write user_offboarded"
+        off_params = json.loads(off_rows[0][2]) if isinstance(off_rows[0][2], str) else off_rows[0][2]
+        assert off_params.get("source") == "self_unmark"
+    finally:
+        conn.close()
+        close_system_db()
+
+
+def test_post_invalid_source_self_unmark_accepted(fresh_db):
+    """`self_unmark` is now a valid source value (used by the offboard button)."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    resp = c.post(
+        "/api/me/onboarded",
+        json={"source": "self_unmark", "onboarded": False},
+        cookies={"access_token": sess},
+    )
+    assert resp.status_code == 200

@@ -692,6 +692,13 @@
     {% set display_name = (user.name or (user.email or "").split("@")[0] or "there") %}
 
     <div class="install-hero">
+        {% if onboarded %}
+        <div class="eyebrow">Welcome back, {{ display_name }} — your workspace is ready</div>
+        <h1>You're set up — keep this page handy</h1>
+        <p class="lead">
+            Your local Agnes install is confirmed. The steps below stay useful for <strong>adding another machine</strong>, <strong>connecting more services</strong>, or <strong>turning on auto-accept mode</strong>. Skip whatever you don't need; nothing here re-runs unless you click it.
+        </p>
+        {% else %}
         <div class="eyebrow">Welcome, {{ display_name }} — let's get you set up</div>
         <h1>{{ instance_name or "Agnes" }} is your team's AI workspace</h1>
         <p class="lead">
@@ -700,6 +707,7 @@
             and <strong>access to your team's curated data</strong>.
             To use any of it from your machine, you install Claude Code and Agnes once. Everything Agnes touches goes in a single folder: <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/Agnes</code>.
         </p>
+        {% endif %}
 
         <div class="install-block">
             <div class="label">Step 1 — install Claude Code</div>
@@ -754,8 +762,17 @@
             </details>
 
             <div class="self-mark">
+                {% if onboarded %}
+                Wiped your workspace or want the full setup view back?
+                <button id="self-mark-btn" type="button"
+                        data-target-onboarded="false"
+                        data-target-source="self_unmark">Mark me as offboarded</button>
+                {% else %}
                 Already set this up?
-                <button id="self-mark-btn" type="button">Mark me as onboarded</button>
+                <button id="self-mark-btn" type="button"
+                        data-target-onboarded="true"
+                        data-target-source="self_acknowledged">Mark me as onboarded</button>
+                {% endif %}
                 <span id="self-mark-status" class="status" role="status" aria-live="polite"></span>
             </div>
         </div>
@@ -1066,13 +1083,17 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
     var status = document.getElementById('self-mark-status');
     if (!btn) return;
     btn.addEventListener('click', function () {
+        // Direction comes from data-attrs the template sets per render —
+        // onboarded view → flip to FALSE (offboard), not-onboarded → flip to TRUE.
+        var targetOnboarded = btn.getAttribute('data-target-onboarded') === 'true';
+        var targetSource = btn.getAttribute('data-target-source') || 'self_acknowledged';
         btn.disabled = true;
-        status.textContent = 'Marking…';
+        status.textContent = targetOnboarded ? 'Marking…' : 'Resetting…';
         fetch('/api/me/onboarded', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source: 'self_acknowledged' }),
+            body: JSON.stringify({ source: targetSource, onboarded: targetOnboarded }),
         }).then(function (resp) {
             if (resp.ok) {
                 status.textContent = 'Done. Reloading…';
