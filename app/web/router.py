@@ -24,16 +24,17 @@ from app.instance_config import (
     get_theme, get_corporate_memory_config, get_home_route,
     get_gws_oauth_credentials, get_home_automode_visibility,
 )
-
-
-def _resolved_home_route() -> str:
-    """Lazy wrapper so tests/monkeypatch on env vars are honoured per-request."""
-    return get_home_route()
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.users import UserRepository
 from src.repositories.profiles import ProfileRepository
+
+
+def _resolved_home_route() -> str:
+    """Lazy wrapper so tests/monkeypatch on env vars are honoured per-request."""
+    return get_home_route()
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["web"])

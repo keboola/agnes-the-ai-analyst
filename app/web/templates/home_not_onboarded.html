@@ -152,7 +152,6 @@
     gap: 16px;
 }
 .home-mock .install-cmd .multiline { display: block; line-height: 1.7; white-space: pre-wrap; flex: 1; }
-.home-mock .install-cmd .comment { color: #94A3B8; font-style: italic; }
 .home-mock .install-cmd .copy-btn {
     background: rgba(255, 255, 255, 0.10);
     color: white;
@@ -369,18 +368,6 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
-.home-mock .card-mini-cmd .mini-copy {
-    background: rgba(255, 255, 255, 0.12);
-    color: white;
-    border: 1px solid rgba(255, 255, 255, 0.20);
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 10.5px;
-    cursor: pointer;
-    flex-shrink: 0;
-}
-.home-mock .card-mini-cmd .mini-copy:hover { background: rgba(255, 255, 255, 0.20); }
-
 .home-mock .connector-head {
     display: flex;
     align-items: center;
@@ -424,36 +411,6 @@
 .home-mock details.connector-preview[open] > summary::before { content: "▾ "; }
 .home-mock details.connector-preview > summary:hover { color: var(--hp-text-primary); }
 .home-mock details.connector-preview .card-mini-cmd { margin-top: 6px; }
-.home-mock details.connector-preview .card-mini-cmd + .os-label { margin-top: 12px; }
-.home-mock .connector-note {
-    font-size: 12.5px;
-    color: var(--hp-text-secondary);
-    margin: 6px 0 8px;
-    line-height: 1.5;
-}
-.home-mock .connector-note strong { color: var(--hp-text-primary); }
-.home-mock .os-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--hp-text-secondary);
-    margin-bottom: 4px;
-}
-.home-mock .connector-foot {
-    font-size: 12px;
-    color: var(--hp-text-secondary);
-    margin-top: 10px;
-    line-height: 1.5;
-}
-.home-mock .connector-foot a { color: var(--hp-primary); text-decoration: underline; }
-.home-mock .connector-foot code {
-    font-family: var(--hp-font-mono);
-    font-size: 11px;
-    background: var(--hp-border-light);
-    padding: 1px 4px;
-    border-radius: 3px;
-}
 
 .home-mock .explore-list { list-style: none; padding: 0; margin: 0; }
 .home-mock .explore-list li + li { margin-top: 8px; }
@@ -590,14 +547,6 @@
     font-size: 12px;
     color: rgba(255, 255, 255, 0.65);
 }
-.home-mock .setup-cta-link {
-    font-size: 13px;
-    color: rgba(255, 255, 255, 0.92);
-    text-decoration: underline;
-    text-underline-offset: 2px;
-}
-.home-mock .setup-cta-link:hover { color: #fff; }
-
 .home-mock details.manual-fallback {
     margin-top: 14px;
     border-top: 1px solid rgba(255, 255, 255, 0.10);
@@ -1085,7 +1034,7 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
             }).catch(function () { btn.textContent = 'Copy failed'; });
         });
     }
-    document.querySelectorAll('.copy-btn[data-copy-target], .mini-copy[data-copy-target], .connector-copy[data-copy-target]').forEach(wireCopy);
+    document.querySelectorAll('.copy-btn[data-copy-target], .connector-copy[data-copy-target]').forEach(wireCopy);
 
     // OS tab switching for Step 1.
     document.querySelectorAll('.os-tab[data-os-tab]').forEach(function (tab) {
