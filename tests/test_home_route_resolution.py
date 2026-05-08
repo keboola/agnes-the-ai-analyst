@@ -260,8 +260,8 @@ def test_home_hides_automode_block_when_env_off(fresh_db, monkeypatch):
     assert '<div class="automode-card">' not in body
 
 
-def test_navbar_dashboard_link_uses_home_route(fresh_db, monkeypatch):
-    """The shared navbar's primary "Dashboard" link respects
+def test_navbar_home_link_uses_home_route(fresh_db, monkeypatch):
+    """The shared navbar's primary "Home" link respects
     ``AGNES_HOME_ROUTE`` so a single env flip routes it to /home or
     /dashboard. Tested by rendering an authed page and grepping the
     rendered HTML — keeps the assertion close to what users see."""
@@ -281,4 +281,5 @@ def test_navbar_dashboard_link_uses_home_route(fresh_db, monkeypatch):
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
     # Navbar link href reflects the resolved home_route, not hard-coded /dashboard.
-    assert 'href="/home">Dashboard' in resp.text
+    # Label is "Home" (was "Dashboard" before the nav reorg).
+    assert 'href="/home">Home' in resp.text
