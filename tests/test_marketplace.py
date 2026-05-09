@@ -474,6 +474,81 @@ def test_api_curator_round_trip(seeded_app):
     assert r.status_code == 400
 
 
+def test_patch_legacy_row_without_curator_is_rejected(seeded_app):
+    """Pre-v32 rows can survive in the DB with NULL curator (the column is
+    nullable so the migration doesn't break operator instances). But the
+    moment an admin opens the edit modal — touches URL, description, name,
+    anything — the API must reject the PATCH unless the curator gap is
+    closed in the same payload. Otherwise the OWNER_TODO_PLACEHOLDER lingers
+    on every /marketplace card forever (PR #234 review #5).
+    """
+    from src.db import get_system_db
+    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+    client = seeded_app["client"]
+    token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    # Seed a legacy row directly via the repository — bypasses the API
+    # validation, mimicking a row that pre-dates v32.
+    conn = get_system_db()
+    try:
+        MarketplaceRegistryRepository(conn).register(
+            id="legacy-mp",
+            name="Legacy",
+            url="https://example.com/legacy.git",
+            # curator_name + curator_email default to None here
+        )
+    finally:
+        conn.close()
+
+    # PATCH that only updates the URL — must 400 because the existing row
+    # has no curator and the payload doesn't fill it.
+    r = client.patch(
+        "/api/marketplaces/legacy-mp",
+        headers=token_headers,
+        json={"url": "https://example.com/legacy-renamed.git"},
+    )
+    assert r.status_code == 400, r.text
+    assert "curator_name is required" in r.text
+
+    # Same PATCH with curator_name only — still 400 because email is empty.
+    r = client.patch(
+        "/api/marketplaces/legacy-mp",
+        headers=token_headers,
+        json={
+            "url": "https://example.com/legacy-renamed.git",
+            "curator_name": "Late Curator",
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "curator_email is required" in r.text
+
+    # Now fill BOTH — PATCH succeeds, the row carries the new curator.
+    r = client.patch(
+        "/api/marketplaces/legacy-mp",
+        headers=token_headers,
+        json={
+            "url": "https://example.com/legacy-renamed.git",
+            "curator_name": "Late Curator",
+            "curator_email": "late@example.com",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["curator_name"] == "Late Curator"
+    assert body["curator_email"] == "late@example.com"
+
+    # Subsequent PATCH on the now-fully-formed row that doesn't mention
+    # curator at all keeps working (sanity: the gate fires only when the
+    # row would persist with empty curator).
+    r = client.patch(
+        "/api/marketplaces/legacy-mp",
+        headers=token_headers,
+        json={"description": "Now annotated"},
+    )
+    assert r.status_code == 200, r.text
+
+
 def test_api_delete_clears_overlay_binding(seeded_app):
     client = seeded_app["client"]
     token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
