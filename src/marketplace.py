@@ -21,7 +21,7 @@ import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional  # noqa: F401  Optional kept for forward-compat
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, urlunparse
 
 from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
@@ -200,7 +200,6 @@ def _refresh_plugin_cache(slug: str) -> int:
     """
     from src.marketplace_asset_mirror import sync_assets
     from src.marketplace_metadata import (
-        build_db_payload,
         collect_all_external_urls,
         read_agnes_metadata,
         resolve_plugin_metadata,
@@ -318,9 +317,9 @@ def _refresh_plugin_cache(slug: str) -> int:
                 "url": served,
             })
 
-        # Now build the column-shape payload. We bypass build_db_payload's
-        # cover/doc handling because we've already pre-resolved internal
-        # references — instead, we pull the cover URL directly.
+        # Build the column-shape payload inline — strict-drop semantics
+        # need access to mirror status + on-disk existence per reference,
+        # which is decided here rather than in a generic translator.
         # Internal covers are dropped when the file doesn't exist on disk;
         # external covers are dropped when mirroring rejected/failed (no
         # successful mirror means the served URL is the original external

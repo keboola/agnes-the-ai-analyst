@@ -309,19 +309,6 @@ def _flea_detail_url(entity_id: str) -> str:
     return f"/marketplace/flea/{entity_id}"
 
 
-def _resolve_marketplace_name(
-    conn: duckdb.DuckDBPyConnection, marketplace_id: str
-) -> str:
-    """Backwards-compatible name resolver kept for existing call sites.
-
-    New code should prefer :func:`_resolve_marketplace_meta` which returns
-    name and curator together, avoiding double DB hits when the caller needs
-    both fields.
-    """
-    meta = _resolve_marketplace_meta(conn, marketplace_id)
-    return meta["name"]
-
-
 def _resolve_marketplace_meta(
     conn: duckdb.DuckDBPyConnection, marketplace_id: str
 ) -> Dict[str, Optional[str]]:

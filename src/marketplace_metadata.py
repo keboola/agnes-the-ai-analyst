@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from src.marketplace_assets import (
     DocLinkRef,
@@ -286,66 +286,3 @@ def collect_all_external_urls(
     return out
 
 
-def build_db_payload(
-    plugin_resolved: Dict[str, Any],
-    *,
-    served_url_for: Dict[str, Optional[str]],
-    mirror_status: Dict[str, str],
-) -> Dict[str, Any]:
-    """Translate resolved metadata + mirror outcomes into the DB column shape.
-
-    ``served_url_for`` maps original external URL → final served URL string.
-    Internal references are translated from the resolved tuple here without
-    consulting that map. ``mirror_status`` maps original URL → status string
-    (``ok`` / ``failed_recent`` / etc.) — used to decide whether an external
-    doc_link surfaces as ``mirrored`` or ``external``.
-
-    Output dict keys (any of which may be absent):
-
-    * ``cover_photo_url``  (str | None)
-    * ``video_url``        (str | None)
-    * ``category``         (str | None)
-    * ``doc_links``        (list of {name, url, kind} dicts)
-
-    These slot directly into the dict that
-    :meth:`MarketplacePluginsRepository.replace_for_marketplace` consumes.
-    """
-    out: Dict[str, Any] = {}
-
-    cover_ref = plugin_resolved.get("cover_photo_ref")
-    if isinstance(cover_ref, tuple):
-        kind, target = cover_ref
-        if kind == "internal":
-            out["cover_photo_url"] = target  # served via /asset/ — caller adds prefix
-        elif kind == "external":
-            out["cover_photo_url"] = served_url_for.get(target) or target
-
-    if "video_url" in plugin_resolved:
-        out["video_url"] = plugin_resolved["video_url"]
-
-    if "category" in plugin_resolved:
-        out["category"] = plugin_resolved["category"]
-
-    serialized_links: List[Dict[str, str]] = []
-    for link in plugin_resolved.get("doc_links") or []:
-        if not isinstance(link, DocLinkRef):
-            continue
-        if link.kind == "internal":
-            serialized_links.append({
-                "name": link.name,
-                "url": link.path,        # caller prefixes with /doc/ endpoint
-                "kind": "internal",
-            })
-        else:
-            served = served_url_for.get(link.url) or link.url
-            status = mirror_status.get(link.url, "")
-            kind = "mirrored" if status == "ok" and served != link.url else "external"
-            serialized_links.append({
-                "name": link.name,
-                "url": served,
-                "kind": kind,
-            })
-    if serialized_links:
-        out["doc_links"] = serialized_links
-
-    return out
