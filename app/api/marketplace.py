@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -1183,8 +1183,9 @@ def _curated_inner_parent_fields(
     }
 
 
-def _load_mirror_manifest(marketplace_id: str) -> Dict[str, Any]:
-    """Read the asset-mirror manifest for one marketplace into ``{url: entry}``.
+def _load_mirror_manifest(marketplace_id: str) -> Dict[Tuple[str, str], Any]:
+    """Read the asset-mirror manifest for one marketplace, keyed by
+    ``(plugin_name, url)``.
 
     Returns an empty dict when the cache directory or manifest doesn't exist
     (fresh install, marketplace never synced) — callers treat that as "no
@@ -1200,17 +1201,17 @@ def _resolve_external_via_mirror(
     marketplace_id: str,
     plugin_name: str,
     url: str,
-    manifest: Dict[str, Any],
+    manifest: Dict[Tuple[str, str], Any],
 ) -> Optional[str]:
     """Translate one external URL into the Agnes-served `/mirrored/` URL when
-    the asset mirror successfully cached it; ``None`` otherwise.
+    the asset mirror successfully cached it for THIS plugin; ``None`` otherwise.
 
     Used by the inner-detail (skill/agent) enrichment to apply the same
     "drop entries Agnes can't deliver" rule that the plugin-level sync
     flow already enforces. When this returns None the caller drops the
     enrichment entry entirely (no broken external link surfaces in the UI).
     """
-    entry = manifest.get(url)
+    entry = manifest.get((plugin_name, url))
     if entry is None or entry.status != "ok" or not entry.local:
         return None
     # Manifest stores `local` as `<plugin>/<rest>`; the /mirrored/ endpoint
@@ -1312,7 +1313,7 @@ def _curated_inner_cover(
     plugin_name: str,
     kind: str,
     inner_name: str,
-    manifest: Optional[Dict[str, Any]] = None,
+    manifest: Optional[Dict[Tuple[str, str], Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Cheap helper: just the cover URL for one inner item.
