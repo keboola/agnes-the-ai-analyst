@@ -1592,6 +1592,27 @@ def _doc_disposition(filename: str) -> dict:
     return {"Content-Disposition": f'attachment; filename="{safe}"'}
 
 
+# Mapping from validated image extension to the Content-Type we serve.
+# Pinned (not stdlib mimetypes) so an unexpected file with a known extension
+# can't push us into ``text/html`` territory — this endpoint NEVER serves
+# anything but image bytes labelled as image bytes.
+_ASSET_CONTENT_TYPE = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+# Defense-in-depth headers applied to every /asset/ response. ``nosniff``
+# stops browsers from second-guessing our Content-Type; the strict CSP is
+# a belt-and-suspenders block — even if a future regression let HTML
+# through, the browser still won't execute scripts/iframes/etc.
+_ASSET_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+}
+
+
 @router.get("/curated/{marketplace_id}/{plugin_name}/asset/{path:path}")
 async def curated_asset(
     marketplace_id: str,
@@ -1601,26 +1622,64 @@ async def curated_asset(
         ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
     )),
 ):
-    """Serve an internal asset path from the cloned marketplace working tree.
+    """Serve an internal image asset from the cloned marketplace working tree.
 
     Paths are repo-root-relative — ``{path}`` may be e.g.
-    ``.agnes/cover.png`` or ``plugins/foo/icon.png``. The response is the
-    raw file with stdlib-detected Content-Type. No allowlist check here —
-    cover photos are accepted through the asset endpoint (image allowlist
-    is enforced by the agnes-metadata parser at refresh time and again on
-    the mirror side for external URLs).
+    ``.agnes/cover.png`` or ``plugins/foo/icon.png``.
 
-    Inline rendering (no Content-Disposition) — covers display in <img>,
-    not as a download. The /doc and /mirrored siblings flip this for
-    documents.
+    **Image-only by contract.** The endpoint is the source of cover photos
+    referenced from ``agnes-metadata.json`` and from inner skill / agent
+    cards. A curator who could land an arbitrary file in the cloned repo
+    (HTML, JS, SVG with inline ``<script>``) would otherwise have a
+    same-origin XSS via this endpoint, since the response shares the
+    cookie scope with ``/admin`` and ``/api/me/*``. Three layered checks:
+
+    1. Extension must be in :data:`src.marketplace_assets.IMAGE_EXTENSIONS`
+       (``.png``/``.jpg``/``.jpeg``/``.webp``); anything else → 415.
+    2. Body must pass :func:`src.marketplace_assets.validate_image_file`
+       magic-bytes check; mismatch → 415 (defeats the rename-extension
+       attack: ``evil.png`` carrying ``<script>`` bytes).
+    3. ``Content-Type`` is pinned from the extension table above (not
+       stdlib mimetypes), so the response is never served as ``text/html``
+       even if mimetypes were misconfigured.
+
+    SVG is intentionally not in the allowlist — ``<script>`` inside SVG
+    executes in the browser. ``X-Content-Type-Options: nosniff`` plus a
+    strict CSP harden the response further.
+
+    Inline rendering (no ``Content-Disposition``) — covers display in
+    ``<img>``, not as a download.
     """
+    from src.marketplace_assets import IMAGE_EXTENSIONS, validate_image_file
+
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
     if not repo_root.exists():
         raise HTTPException(status_code=404, detail="marketplace_not_synced")
     safe = _path_under(repo_root, path)
     if safe is None or not safe.is_file():
         raise HTTPException(status_code=404, detail="asset_not_found")
-    return FileResponse(safe)
+
+    ext = safe.suffix.lower()
+    if ext not in IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported_asset_extension: {ext or '(none)'}",
+        )
+    try:
+        body = safe.read_bytes()
+    except OSError:
+        raise HTTPException(status_code=404, detail="asset_not_readable")
+    validation = validate_image_file(safe.name, body)
+    if not validation.ok:
+        raise HTTPException(
+            status_code=415,
+            detail=f"asset_validation_failed: {validation.reason}",
+        )
+    return FileResponse(
+        safe,
+        media_type=_ASSET_CONTENT_TYPE[ext],
+        headers=_ASSET_SECURITY_HEADERS,
+    )
 
 
 @router.get("/curated/{marketplace_id}/{plugin_name}/doc/{path:path}")
