@@ -16,7 +16,9 @@ Steps in order:
    RBAC-filtered, role-aware).
 5. Seed `.claude/settings.json` with default model + permissions, then call
    `cli.lib.hooks.install_claude_hooks` to merge in the SessionStart/End hook
-   commands. Idempotent on re-run.
+   commands. Then call `cli.lib.commands.install_claude_commands` to drop
+   the Agnes-managed slash commands (today: `/update-agnes-plugins`) into
+   `<workspace>/.claude/commands/`. Idempotent on re-run.
 6. Write the `.claude/CLAUDE.local.md` stub only when absent — `--force`
    regenerates CLAUDE.md but **never** clobbers the operator-edited
    CLAUDE.local.md.
@@ -44,6 +46,7 @@ import typer
 from cli.client import api_get
 from cli.config import save_config, save_token
 from cli.error_render import render_error
+from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
 from cli.lib.pull import PullResult, _override_server_env, run_pull
 
@@ -190,6 +193,7 @@ def init(
             indent=2,
         ), encoding="utf-8")
     install_claude_hooks(workspace)
+    install_claude_commands(workspace)
 
     # ------------------------------------------------------------------
     # Step 6: CLAUDE.local.md stub — only when absent. `--force` does NOT

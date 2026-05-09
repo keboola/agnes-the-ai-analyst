@@ -512,18 +512,12 @@
           <span class="title">✓ Added to your stack</span>
           <button class="dismiss" id="stack-hint-dismiss" type="button">Don’t show again</button>
         </div>
-        <div>To use it in Claude Code:</div>
-        <ol>
-          <li><strong>Open a new Claude Code session</strong> — it auto-installs via the SessionStart hook.</li>
-          <li>Or run now in your terminal:
-            <div class="cmd-chip">
-              <span class="prompt">$</span>
-              <span class="cmd">agnes refresh-marketplace</span>
-              <button class="btn-copy" id="stack-hint-copy" type="button">Copy</button>
-            </div>
-            Then in the running session: <code>/reload-plugins</code>
-          </li>
-        </ol>
+        <div>Open a new Claude Code session and run:</div>
+        <div class="cmd-chip">
+          <span class="prompt">/</span>
+          <span class="cmd">update-agnes-plugins</span>
+          <button class="btn-copy" id="stack-hint-copy" type="button">Copy</button>
+        </div>
       </div>
     </div>
     <div class="panel details" id="panel-details">
@@ -709,7 +703,7 @@
   document.getElementById('stack-hint-copy').addEventListener('click', async (ev) => {
     const copyBtn = ev.currentTarget;
     try {
-      await navigator.clipboard.writeText('agnes refresh-marketplace');
+      await navigator.clipboard.writeText('/update-agnes-plugins');
       const orig = copyBtn.textContent;
       copyBtn.classList.add('copied');
       copyBtn.textContent = 'Copied';
