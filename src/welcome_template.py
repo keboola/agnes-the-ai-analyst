@@ -20,7 +20,6 @@ See also: surfaced as the "Agent Setup Prompt" admin editor at /admin/agent-prom
 from __future__ import annotations
 
 import logging
-import os
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -183,9 +182,6 @@ def compute_default_agent_prompt(
             except Exception:
                 logger.exception("compute_default_agent_prompt: marketplace plugin resolution failed")
 
-        self_signed_tls = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
-            "1", "true", "yes",
-        )
         from urllib.parse import urlparse as _urlparse
         parsed = _urlparse(server_url)
         server_host = parsed.netloc or parsed.hostname or ""
@@ -200,7 +196,6 @@ def compute_default_agent_prompt(
         lines = resolve_lines(
             _wheel_filename,
             plugin_install_names=plugin_install_names,
-            self_signed_tls=self_signed_tls,
             server_host=server_host,
             ca_pem=ca_pem,
         )

@@ -490,8 +490,6 @@ def _preflight_block(step_num: str) -> list[str]:
 
 def _marketplace_block(
     plugin_install_names: list[str],
-    self_signed_tls: bool,
-    has_ca: bool,
     step_num: str,
 ) -> list[str]:
     """Build the marketplace + plugin-install block.
@@ -536,32 +534,23 @@ def _marketplace_block(
     plugin contents in place. Broken end-to-end on every Claude Code
     distribution; cloning is the only reliable install path.
 
-    With ``has_ca=False`` and ``self_signed_tls=True`` (legacy path,
-    AGNES_DEBUG_AUTH instances): we emit the host-scoped ``git config
-    sslVerify=false`` downgrade so system git's clone (which agnes
-    invokes via subprocess) accepts the un-trusted endpoint. With a
-    publicly-trusted cert (Let's Encrypt etc.) or a CA bundle in step 0,
-    no extra config needed — system git already trusts the chain.
+    TLS handling for the in-binary ``git clone`` is fully covered by the
+    cross-platform trust block (step 0) when the server's cert needs
+    bootstrapping (`ca_pem` non-empty), and by the OS trust store when
+    the cert is publicly-trusted. There used to be a legacy fallback
+    here that emitted a host-scoped ``git config http.<host>.sslVerify
+    false`` line for the ``AGNES_DEBUG_AUTH`` path; that's gone — it
+    masked operator misconfigurations (a ``self_signed_tls=True``
+    instance without ``/data/state/certs/fullchain.pem`` on disk) and
+    its ``sslVerify=false`` shell command tripped Claude Code auto-mode
+    classifiers. Operators serving a self-signed or private-CA cert
+    must place the fullchain at ``AGNES_TLS_FULLCHAIN_PATH`` (default
+    ``/data/state/certs/fullchain.pem``) so step 0 can read it via
+    ``_read_agnes_ca_pem``.
     """
-    lines: list[str] = [
+    return [
         "",
         f"{step_num}) Register the Agnes Claude Code marketplace and install plugins:",
-    ]
-
-    # The legacy AGNES_DEBUG_AUTH path needs sslVerify=false so system git
-    # accepts the self-signed cert during the bootstrap clone. has_ca path
-    # has GIT_SSL_CAINFO already set by step 0(d), so no extra config
-    # needed there.
-    if not has_ca and self_signed_tls:
-        lines.extend([
-            "   # Self-signed TLS cert on this Agnes instance — host-scoped",
-            "   # `sslVerify=false` so the marketplace `git clone` accepts it.",
-            "   # Without a CA bundle we can't do better than this; flip your",
-            "   # AGNES_DEBUG_AUTH instance to a real fullchain.pem to drop this line.",
-            "   git config --global http.\"{server_url}/\".sslVerify false",
-        ])
-
-    lines.extend([
         "   # `agnes refresh-marketplace --bootstrap` does:",
         "   #   1. clone the per-user marketplace bare repo to ~/.agnes/marketplace",
         "   #   2. strip the PAT from the cloned origin URL (refreshes use a",
@@ -580,8 +569,7 @@ def _marketplace_block(
         "   and run `claude` again so the new plugins load. From then on, the",
         "   SessionStart hook keeps the marketplace clone in sync via",
         "   `agnes refresh-marketplace --quiet` on every Claude Code session.",
-    ])
-    return lines
+    ]
 
 
 def _preamble_lines(*, has_ca: bool) -> list[str]:
@@ -656,7 +644,6 @@ def resolve_lines(
     wheel_filename: str,
     *,
     plugin_install_names: list[str] | None = None,
-    self_signed_tls: bool = False,
     server_host: str = "",
     ca_pem: str | None = None,
 ) -> list[str]:
@@ -678,13 +665,6 @@ def resolve_lines(
     needs the bootstrap (typically: skip for publicly-trusted certs like
     Let's Encrypt, emit for self-signed or private corp CA).
 
-    `self_signed_tls=True` is the legacy fallback when no `ca_pem` is
-    available — it prepends a host-scoped
-    `git config http."<host>/".sslVerify false` inside the marketplace
-    block (TLS *downgrade*, not bootstrap). When `ca_pem` is set, this
-    flag is ignored because the trust block subsumes it. No-op when the
-    marketplace block isn't rendered (no plugins).
-
     Fallback: callers pass `"agnes.whl"` when no wheel is present on disk.
     The resulting URL (`/cli/wheel/agnes.whl`) will 404 at download time, but
     the instruction text still renders so operators can see the snippet shape
@@ -693,10 +673,6 @@ def resolve_lines(
     names = list(plugin_install_names or [])
     has_marketplace = bool(names)
     has_ca = bool(ca_pem and ca_pem.strip())
-    # Trust block subsumes the legacy sslVerify-off downgrade. Don't emit
-    # both: with `~/.agnes/ca-bundle.pem` wired into GIT_SSL_CAINFO, git already
-    # trusts the host without disabling verification.
-    effective_self_signed = self_signed_tls and not has_ca
 
     # Step layout. Marketplace (when emitted) goes BEFORE diagnose/skills,
     # so the human-loop skills question is the last step before Confirm.
@@ -713,9 +689,7 @@ def resolve_lines(
     lines.extend(_init_lines())                        # 2, 3
     if has_marketplace:
         lines.extend(_preflight_block(steps["preflight"]))    # 4
-        lines.extend(_marketplace_block(                       # 5
-            names, effective_self_signed, has_ca=has_ca, step_num=steps["marketplace"],
-        ))
+        lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))  # 5
     # Diagnose + skills come AFTER the marketplace block (or right after
     # the catalog smoke verify if there's no marketplace step at all).
     lines.extend(_diagnose_skills_lines(
@@ -740,7 +714,6 @@ def render_setup_instructions(
     wheel_filename: str = "agnes.whl",
     *,
     plugin_install_names: list[str] | None = None,
-    self_signed_tls: bool = False,
     server_host: str = "",
     ca_pem: str | None = None,
 ) -> str:
@@ -749,12 +722,11 @@ def render_setup_instructions(
     Used server-side for tests and any non-JS rendering path. The browser
     clipboard flow uses the JS renderer embedded in the Jinja partial; both
     must produce byte-identical output for a given (server_url, token,
-    wheel, plugins, flag, host, ca_pem) tuple.
+    wheel, plugins, host, ca_pem) tuple.
     """
     lines = resolve_lines(
         wheel_filename,
         plugin_install_names=plugin_install_names,
-        self_signed_tls=self_signed_tls,
         server_host=server_host,
         ca_pem=ca_pem,
     )
