@@ -41,20 +41,19 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
-import http.client
 import ipaddress
 import json
 import logging
 import re
 import shutil
 import socket
-import urllib.error
-import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+import httpx
 
 from src.marketplace_asset_validation import (
     DOC_EXTENSIONS,
@@ -223,31 +222,30 @@ def _is_safe_url(url: str) -> Tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# SSRF-aware urllib opener
+# SSRF-aware httpx transport + shared client
 #
-# Two threats against the simple "validate URL, then urlopen" pattern:
-#   1. Redirect bypass — urllib follows up to 10 redirects with no SSRF
-#      re-check. An attacker 302s to http://169.254.169.254/... and we
-#      mirror cloud metadata.
-#   2. DNS rebinding — _resolve_safe calls getaddrinfo once; urllib calls
-#      it again to connect. Attacker DNS returns a public IP first, a
-#      private IP second.
+# Two threats against the simple "validate URL, then GET" pattern:
+#   1. Redirect bypass — without revalidation, an attacker 302s to
+#      http://169.254.169.254/... and we mirror cloud metadata.
+#   2. DNS rebinding — without IP pinning, the connect-time DNS lookup
+#      can return a different IP than the validation lookup.
 #
-# Mitigation is one shared opener built once, with three handlers:
-#   - _SafeRedirectHandler    — re-validates Location on every redirect
-#   - _PinnedHTTPHandler      — connects to the SSRF-validated IP, never
-#                                re-resolves the hostname
-#   - _PinnedHTTPSHandler     — same, with TLS SNI/cert verification still
-#                                bound to the original hostname
+# httpx makes both defences collapse into a single custom Transport:
+# httpx invokes ``handle_request()`` on EVERY outgoing request — including
+# every redirect hop — so re-running SSRF validation in the transport
+# closes the redirect bypass for free. Within ``handle_request`` we also
+# rewrite the URL host to the IP we just validated and stash the original
+# hostname in the ``Host`` header + the ``sni_hostname`` extension so TLS
+# SNI / cert verification still bind to the curator-supplied hostname.
 # ---------------------------------------------------------------------------
 
 
-class _UnsafeRedirectError(Exception):
-    """Raised by ``_SafeRedirectHandler`` when a redirect Location is unsafe.
+class _SSRFRejected(Exception):
+    """Raised inside ``_SSRFGuardTransport`` when the SSRF allowlist rejects
+    the (initial or redirected) URL.
 
-    Distinct exception type so ``_fetch_url`` can map this to
-    ``status='rejected'`` (terminal — security decision, not a transient
-    network failure to retry next sync).
+    Distinct from ``httpx.RequestError`` so ``_fetch_url`` maps this to
+    ``status='rejected'`` (terminal — security decision, never retry).
     """
 
     def __init__(self, reason: str) -> None:
@@ -255,126 +253,61 @@ class _UnsafeRedirectError(Exception):
         super().__init__(reason)
 
 
-class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Re-runs SSRF validation on every redirect ``Location`` header.
+class _SSRFGuardTransport(httpx.HTTPTransport):
+    """Transport that re-validates SSRF rules on every outgoing request and
+    pins the connection to the IP we just resolved.
 
-    The default ``HTTPRedirectHandler`` follows up to 10 redirects without
-    revalidation, defeating the pre-flight SSRF guard. Re-pinning the IP
-    on the new request preserves DNS-rebinding defence across hops too.
+    Redirect re-validation comes for free because httpx invokes
+    ``handle_request()`` once per redirect hop (when the client is
+    configured with ``follow_redirects=True``). DNS-rebinding defence
+    comes from rewriting the URL host to the validated IP — httpcore
+    no longer re-resolves the hostname at connect time.
     """
 
-    # Tightened from the urllib default of 10. Legitimate CDN chains
-    # (S3 → presigned, DOI → publisher) routinely use 3–4 hops; 5 leaves
-    # headroom without giving attackers many hops to scan.
-    max_redirections = 5
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        ok, reason, pinned_ip = _resolve_safe(newurl)
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        ok, reason, ip = _resolve_safe(str(request.url))
         if not ok:
-            raise _UnsafeRedirectError(f"redirect_blocked: {reason}")
-        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new_req is not None:
-            # Re-pin the validated IP so the next leg connects to it
-            # rather than re-resolving the hostname (rebinding defence).
-            new_req.pinned_ip = pinned_ip
-        return new_req
+            raise _SSRFRejected(reason)
+        original_host = request.url.host
+        # Rewrite the URL host to the validated IP. httpcore opens the
+        # connection to whatever ``request.url.host`` says, so this is what
+        # actually pins the connection.
+        request.url = request.url.copy_with(host=ip)
+        # Preserve the original hostname for vhost routing + TLS SNI / cert
+        # verification. ``sni_hostname`` is a documented httpx extension
+        # honored by the TLS layer in 0.24+.
+        request.headers["Host"] = original_host
+        request.extensions = {
+            **request.extensions,
+            "sni_hostname": original_host,
+        }
+        return super().handle_request(request)
 
 
-class _PinnedHTTPConnection(http.client.HTTPConnection):
-    """HTTPConnection that connects to a pre-resolved IP.
+_CLIENT: Optional[httpx.Client] = None
 
-    Replicates the parent ``connect()`` but skips the implicit DNS lookup
-    inside ``socket.create_connection``. The hostname stays in ``self.host``
-    for the ``Host:`` header so vhost routing still works.
+
+def _get_client() -> httpx.Client:
+    """Lazy module-level ``httpx.Client`` shared across the fetch pool.
+
+    Same lifecycle pattern as ``cli/client.py``'s ``_get_shared_client``:
+    build once on first use, reuse for the process lifetime. ``httpx.Client``
+    is thread-safe for concurrent ``send()`` / ``stream()`` calls so a
+    ``ThreadPoolExecutor`` can hammer it without external locking.
     """
-
-    def __init__(self, host, *, pinned_ip, **kwargs):
-        super().__init__(host, **kwargs)
-        self._pinned_ip = pinned_ip
-
-    def connect(self):
-        self.sock = socket.create_connection(
-            (self._pinned_ip, self.port),
-            self.timeout,
-            self.source_address,
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = httpx.Client(
+            transport=_SSRFGuardTransport(),
+            timeout=HTTP_TIMEOUT_SEC,
+            follow_redirects=True,
+            # Tightened from the httpx default of 20. Legitimate CDN chains
+            # (S3 → presigned, DOI → publisher) routinely use 3–4 hops;
+            # 5 leaves headroom without giving attackers many hops to scan.
+            max_redirects=5,
+            headers={"User-Agent": USER_AGENT},
         )
-        if self._tunnel_host:
-            self._tunnel()
-
-
-class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    """HTTPSConnection variant of ``_PinnedHTTPConnection``.
-
-    TLS SNI + certificate verification stay bound to the original hostname
-    (``self.host``) — the cert chain is validated against the hostname the
-    curator wrote, not the pinned IP. Connecting to a different IP than
-    DNS would currently return is exactly the point.
-    """
-
-    def __init__(self, host, *, pinned_ip, **kwargs):
-        super().__init__(host, **kwargs)
-        self._pinned_ip = pinned_ip
-
-    def connect(self):
-        sock = socket.create_connection(
-            (self._pinned_ip, self.port),
-            self.timeout,
-            self.source_address,
-        )
-        if self._tunnel_host:
-            server_hostname = self._tunnel_host
-        else:
-            server_hostname = self.host
-        self.sock = self._context.wrap_socket(sock, server_hostname=server_hostname)
-
-
-class _PinnedHTTPHandler(urllib.request.HTTPHandler):
-    def http_open(self, req):
-        pinned = getattr(req, "pinned_ip", None)
-        if not pinned:
-            # Fail closed: any unpinned request reaching the handler is a
-            # bug (caller forgot to use _PinnedRequest). Better to error
-            # than to silently re-resolve and lose the rebinding defence.
-            raise urllib.error.URLError("ssrf: missing pinned_ip on request")
-        return self.do_open(
-            lambda host, **kw: _PinnedHTTPConnection(host, pinned_ip=pinned, **kw),
-            req,
-        )
-
-
-class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
-    def https_open(self, req):
-        pinned = getattr(req, "pinned_ip", None)
-        if not pinned:
-            raise urllib.error.URLError("ssrf: missing pinned_ip on request")
-        return self.do_open(
-            lambda host, **kw: _PinnedHTTPSConnection(host, pinned_ip=pinned, **kw),
-            req,
-        )
-
-
-class _PinnedRequest(urllib.request.Request):
-    """``urllib.Request`` carrying the SSRF-validated IP for connection pinning."""
-
-    def __init__(self, url, *, pinned_ip, **kwargs):
-        super().__init__(url, **kwargs)
-        self.pinned_ip = pinned_ip
-
-
-_OPENER = urllib.request.build_opener(
-    _PinnedHTTPHandler(),
-    _PinnedHTTPSHandler(),
-    _SafeRedirectHandler(),
-)
-
-
-def _http_open(req, timeout):
-    """Single call site for outgoing HTTP — wraps the SSRF-aware opener.
-
-    Tests patch this symbol to inject fake responses without going through
-    the urllib stack. Production code never bypasses it.
-    """
-    return _OPENER.open(req, timeout=timeout)
+    return _CLIENT
 
 
 def _safe_filename(url: str, default_ext: str) -> str:
@@ -476,22 +409,36 @@ def _fetch_url(
     ``status="rejected"`` (terminal — caller doesn't retry); any transient
     network error produces ``status="failed"`` (caller may surface and try
     again next sync).
+
+    Pre-flight ``_resolve_safe`` here gives us a fast, type-safe rejection
+    *before* httpx is invoked. The transport will revalidate again (and
+    perform the IP pin), but bailing out early avoids the cost of building
+    a request object for an obviously bad URL.
     """
-    safe, reason, pinned_ip = _resolve_safe(url)
+    safe, reason, _ip = _resolve_safe(url)
     if not safe:
         return FetchOutcome(status="rejected", error=reason)
 
-    headers: Dict[str, str] = {"User-Agent": USER_AGENT}
+    headers: Dict[str, str] = {}
     if prior:
         if prior.etag:
             headers["If-None-Match"] = prior.etag
         if prior.last_modified:
             headers["If-Modified-Since"] = prior.last_modified
 
-    req = _PinnedRequest(url, pinned_ip=pinned_ip, headers=headers)
+    client = _get_client()
     try:
-        with _http_open(req, HTTP_TIMEOUT_SEC) as resp:
-            status_code = resp.status
+        with client.stream("GET", url, headers=headers) as resp:
+            status_code = resp.status_code
+            if status_code == 304:
+                return FetchOutcome(
+                    status="not_modified",
+                    etag=prior.etag if prior else "",
+                    last_modified=prior.last_modified if prior else "",
+                )
+            if status_code >= 400:
+                return FetchOutcome(status="failed", error=f"http_{status_code}")
+
             content_type = resp.headers.get("Content-Type", "") or ""
             etag = resp.headers.get("ETag", "") or ""
             last_modified = resp.headers.get("Last-Modified", "") or ""
@@ -508,39 +455,37 @@ def _fetch_url(
                     content_type=content_type,
                     error=check.reason,
                 )
-            # Read with a hard cap so a misbehaving server can't OOM us.
-            body = resp.read(MAX_BODY_BYTES + 1)
-            if len(body) > MAX_BODY_BYTES:
-                return FetchOutcome(
-                    status="rejected",
-                    error=f"body_exceeds_cap: > {MAX_BODY_BYTES} bytes",
-                )
+            # Stream with a hard cap so a misbehaving server can't OOM us.
+            # Bail out as soon as the cap is exceeded — don't read the
+            # rest of the body just to discard it.
+            body = bytearray()
+            for chunk in resp.iter_bytes(chunk_size=65536):
+                body.extend(chunk)
+                if len(body) > MAX_BODY_BYTES:
+                    return FetchOutcome(
+                        status="rejected",
+                        error=f"body_exceeds_cap: > {MAX_BODY_BYTES} bytes",
+                    )
             return FetchOutcome(
                 status="ok",
-                body=body,
+                body=bytes(body),
                 content_type=content_type,
                 etag=etag,
                 last_modified=last_modified,
             )
-    except _UnsafeRedirectError as e:
+    except _SSRFRejected as e:
         return FetchOutcome(status="rejected", error=e.reason)
-    except urllib.error.HTTPError as e:
-        if e.code == 304:
-            return FetchOutcome(
-                status="not_modified",
-                etag=prior.etag if prior else "",
-                last_modified=prior.last_modified if prior else "",
-            )
-        return FetchOutcome(status="failed", error=f"http_{e.code}")
-    except urllib.error.URLError as e:
-        # urllib wraps non-HTTPError exceptions raised inside handlers in
-        # URLError; unwrap so a redirect-blocked error doesn't get
-        # mis-classified as a transient failure.
-        if isinstance(getattr(e, "reason", None), _UnsafeRedirectError):
-            return FetchOutcome(status="rejected", error=e.reason.reason)
-        return FetchOutcome(status="failed", error=f"url_error: {e.reason}")
-    except (TimeoutError, socket.timeout):
+    except httpx.TooManyRedirects:
+        return FetchOutcome(status="failed", error="too_many_redirects")
+    except httpx.TimeoutException:
         return FetchOutcome(status="failed", error="timeout")
+    except httpx.HTTPError as e:
+        # Catches ConnectError, ReadError, RemoteProtocolError, and the
+        # rest of the httpx transport-error hierarchy. Same shape as
+        # ``cli/client.py:_translate_transport_error`` — collapse all
+        # transient failures into one ``failed`` outcome with an error tag
+        # the operator can grep for.
+        return FetchOutcome(status="failed", error=f"http_error: {e!r}")
     except Exception as e:  # noqa: BLE001 — defensive, never abort the sync
         logger.exception("mirror fetch crashed for %s", url)
         return FetchOutcome(status="failed", error=f"crash: {e!r}")
