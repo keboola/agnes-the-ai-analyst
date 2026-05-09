@@ -5,15 +5,22 @@ Three call paths share the same code:
   - `agnes refresh-marketplace --bootstrap` — first-time setup; clones the
     per-user marketplace bare repo, registers it with Claude Code, then
     falls through to fetch+reset+reconcile so plugins land installed.
-  - `agnes refresh-marketplace` — manual re-sync after a known stack change.
-  - `agnes refresh-marketplace --quiet` — SessionStart hook context. Emits
-    a Claude Code hook JSON object on stdout when something actually got
-    installed/updated; silent otherwise.
+  - `agnes refresh-marketplace` — manual re-sync after a known stack
+    change. This is what the `/update-agnes-plugins` slash command runs
+    inside Claude Code so the user sees install/update progress in the
+    transcript.
+  - `agnes refresh-marketplace --check` — SessionStart hook context.
+    Lightweight detector: `git fetch` only (no reset, no plugin
+    install/update side effects), compares local `HEAD` vs `FETCH_HEAD`,
+    emits a Claude Code hook JSON message pointing the user at
+    `/update-agnes-plugins` when there are remote changes. Silent
+    otherwise.
 
-Reconcile is version-aware (install missing / update on version diff /
-skip on match). Server-side stack composition lives in
-`src/marketplace_filter.py:resolve_user_marketplace`. Plugin installs use
-`--scope project` so they land in the workspace the hook fired in.
+Reconcile (default + --bootstrap paths) is version-aware (install
+missing / update on version diff / skip on match). Server-side stack
+composition lives in `src/marketplace_filter.py:resolve_user_marketplace`.
+Plugin installs use `--scope project` so they land in the workspace the
+caller invoked from.
 """
 
 from __future__ import annotations
@@ -47,9 +54,17 @@ _CREDENTIAL_HELPER = '!f() { printf "username=x\\npassword=%s\\n" "$AGNES_TOKEN"
 
 @refresh_marketplace_app.callback(invoke_without_command=True)
 def refresh_marketplace(
-    quiet: bool = typer.Option(
-        False, "--quiet",
-        help="Suppress success stdout (errors and warnings still surface on stderr).",
+    check: bool = typer.Option(
+        False, "--check",
+        help=(
+            "Detect-only mode for the SessionStart hook. Runs `git fetch` "
+            "and compares local HEAD with remote FETCH_HEAD. When they "
+            "differ, emits a Claude Code hook JSON message hinting the "
+            "user at `/update-agnes-plugins`. No `git reset`, no plugin "
+            "install/update side effects — fast, invisible when nothing "
+            "changed, fully recoverable interactively via the slash "
+            "command."
+        ),
     ),
     bootstrap: bool = typer.Option(
         False, "--bootstrap",
@@ -62,6 +77,13 @@ def refresh_marketplace(
     ),
 ):
     """Sync the marketplace clone, re-register with Claude, install/update plugins."""
+    if check and bootstrap:
+        typer.echo(
+            "error: --check and --bootstrap are mutually exclusive.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     clone_exists = (CLONE_DIR / ".git").is_dir()
 
     # Hook contexts hit the no-clone path on every workspace that didn't
@@ -69,7 +91,7 @@ def refresh_marketplace(
     # workspaces with the hook installed but no agnes token configured
     # (fresh CI checkout, etc.) must silent-noop, not surface auth_failed.
     if not clone_exists and not bootstrap:
-        if not quiet:
+        if not check:
             typer.echo(
                 f"No marketplace clone at {CLONE_DIR} — nothing to refresh. "
                 "Re-run setup with `agnes refresh-marketplace --bootstrap` "
@@ -89,12 +111,22 @@ def refresh_marketplace(
         raise typer.Exit(1)
 
     if not clone_exists:
-        if not _bootstrap_clone(token, quiet=quiet):
+        if not _bootstrap_clone(token):
             raise typer.Exit(1)
+
+    # --check: lightweight detector. Don't fetch+reset, don't reconcile
+    # plugins — that's the slash command's job. Just check whether the
+    # remote has new content and tell the user if so.
+    if check:
+        if not _git_fetch_only(token):
+            raise typer.Exit(1)
+        if _has_remote_changes():
+            _emit_check_hook_message()
+        raise typer.Exit(0)
 
     events: dict[str, list[str]] = {"installed": [], "updated": []}
 
-    if not _git_fetch_and_reset(token, quiet=quiet):
+    if not _git_fetch_and_reset(token):
         raise typer.Exit(1)
 
     # Snapshot installed versions BEFORE `claude plugin marketplace update`.
@@ -105,20 +137,18 @@ def refresh_marketplace(
     # would fire despite the plugin having actually changed.
     installed_pre = _list_installed_agnes_plugins_in_cwd()
 
-    _claude_marketplace_update(quiet=quiet)
+    _claude_marketplace_update()
 
-    _reconcile_with_manifest(quiet=quiet, events=events, installed_pre=installed_pre)
+    _reconcile_with_manifest(events=events, installed_pre=installed_pre)
 
-    if quiet and (events["installed"] or events["updated"]):
-        _emit_hook_message(events)
-    elif not quiet and (events["installed"] or events["updated"]):
+    if events["installed"] or events["updated"]:
         typer.echo(
             "\nRun `/reload-plugins` in Claude Code to load the "
             "new/updated plugins into the running session — no restart needed."
         )
 
 
-def _bootstrap_clone(token: str, *, quiet: bool) -> bool:
+def _bootstrap_clone(token: str) -> bool:
     """Initial clone of the per-user marketplace bare repo into ~/.agnes/marketplace.
 
     Wrapping the destructive prep in the agnes binary lets the CLI's
@@ -156,8 +186,7 @@ def _bootstrap_clone(token: str, *, quiet: bool) -> bool:
     auth_url = f"{scheme}://x:{token}@{server_host}/marketplace.git/"
     clean_url = f"{scheme}://{server_host}/marketplace.git/"
 
-    if not quiet:
-        typer.echo(f"Cloning marketplace from {clean_url} into {CLONE_DIR}...")
+    typer.echo(f"Cloning marketplace from {clean_url} into {CLONE_DIR}...")
 
     try:
         result = subprocess.run(
@@ -206,20 +235,21 @@ def _bootstrap_clone(token: str, *, quiet: bool) -> bool:
             )
             if add.stderr:
                 typer.echo(add.stderr.rstrip(), err=True)
-        elif not quiet and add.stdout:
+        elif add.stdout:
             typer.echo(add.stdout.rstrip())
 
-    if not quiet:
-        typer.echo(f"Marketplace bootstrapped at {CLONE_DIR}.")
+    typer.echo(f"Marketplace bootstrapped at {CLONE_DIR}.")
     return True
 
 
-def _git_fetch_and_reset(token: str, *, quiet: bool) -> bool:
-    """Fetch from origin then hard-reset to FETCH_HEAD.
+def _git_fetch_only(token: str) -> bool:
+    """Fetch from origin without resetting the working tree.
 
-    Not `pull --ff-only`: the marketplace bare repo on the server rebuilds
-    as a fresh orphan commit on every content change, so two snapshots
-    have unrelated histories and fast-forward is impossible.
+    Used by `--check` to learn whether the remote has new content without
+    actually applying it. The bare repo on the server rebuilds as a fresh
+    orphan commit on every content change, so FETCH_HEAD is always the
+    full new tree — comparing local HEAD to FETCH_HEAD is sufficient to
+    detect remote-side changes.
     """
     env = {**os.environ, "AGNES_TOKEN": token}
     fetch_cmd = [
@@ -234,13 +264,48 @@ def _git_fetch_and_reset(token: str, *, quiet: bool) -> bool:
             encoding="utf-8", errors="replace", check=False,
         )
     except FileNotFoundError:
-        typer.echo("error: `git` not found in PATH; cannot refresh marketplace.", err=True)
+        typer.echo("error: `git` not found in PATH; cannot check marketplace.", err=True)
         return False
     if fetch.returncode != 0:
         if fetch.stdout:
             typer.echo(fetch.stdout, err=True)
         if fetch.stderr:
             typer.echo(fetch.stderr, err=True)
+        return False
+    return True
+
+
+def _has_remote_changes() -> bool:
+    """Return True iff local HEAD differs from remote FETCH_HEAD.
+
+    Caller must have already run `git fetch origin`. Any rev-parse failure
+    (missing FETCH_HEAD, broken repo) is treated as "no detectable changes"
+    so the hook stays quiet rather than surfacing a misleading hint.
+    """
+    try:
+        local = subprocess.run(
+            ["git", "-C", str(CLONE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        )
+        remote = subprocess.run(
+            ["git", "-C", str(CLONE_DIR), "rev-parse", "FETCH_HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        )
+    except FileNotFoundError:
+        return False
+    if local.returncode != 0 or remote.returncode != 0:
+        return False
+    return local.stdout.strip() != remote.stdout.strip()
+
+
+def _git_fetch_and_reset(token: str) -> bool:
+    """Fetch from origin then hard-reset to FETCH_HEAD.
+
+    Not `pull --ff-only`: the marketplace bare repo on the server rebuilds
+    as a fresh orphan commit on every content change, so two snapshots
+    have unrelated histories and fast-forward is impossible.
+    """
+    if not _git_fetch_only(token):
         return False
 
     reset = subprocess.run(
@@ -254,12 +319,12 @@ def _git_fetch_and_reset(token: str, *, quiet: bool) -> bool:
             typer.echo(reset.stderr, err=True)
         return False
 
-    if not quiet and reset.stdout:
+    if reset.stdout:
         typer.echo(reset.stdout.rstrip())
     return True
 
 
-def _claude_marketplace_update(*, quiet: bool) -> None:
+def _claude_marketplace_update() -> None:
     """Tell Claude Code to re-read the marketplace clone. Soft-fail if `claude` is missing."""
     if shutil.which("claude") is None:
         typer.echo(
@@ -280,13 +345,12 @@ def _claude_marketplace_update(*, quiet: bool) -> None:
         if result.stderr:
             typer.echo(result.stderr.rstrip(), err=True)
         return
-    if not quiet and result.stdout:
+    if result.stdout:
         typer.echo(result.stdout.rstrip())
 
 
 def _reconcile_with_manifest(
     *,
-    quiet: bool,
     events: dict[str, list[str]],
     installed_pre: Optional[dict[str, str]] = None,
 ) -> None:
@@ -329,15 +393,13 @@ def _reconcile_with_manifest(
             to_update.append(name)
 
     if not to_install and not to_update:
-        if not quiet:
-            typer.echo(f"All {len(manifest)} Agnes-stack plugin(s) up to date.")
+        typer.echo(f"All {len(manifest)} Agnes-stack plugin(s) up to date.")
         return
 
-    if not quiet:
-        if to_install:
-            typer.echo(f"Installing {len(to_install)} new plugin(s): " + ", ".join(to_install))
-        if to_update:
-            typer.echo(f"Updating {len(to_update)} plugin(s) to latest version: " + ", ".join(to_update))
+    if to_install:
+        typer.echo(f"Installing {len(to_install)} new plugin(s): " + ", ".join(to_install))
+    if to_update:
+        typer.echo(f"Updating {len(to_update)} plugin(s) to latest version: " + ", ".join(to_update))
 
     for name in to_install:
         target = f"{name}@{MARKETPLACE_NAME}"
@@ -354,7 +416,7 @@ def _reconcile_with_manifest(
                 typer.echo(result.stderr.rstrip(), err=True)
             continue
         events["installed"].append(name)
-        if not quiet and result.stdout:
+        if result.stdout:
             typer.echo(result.stdout.rstrip())
 
     for name in to_update:
@@ -372,40 +434,28 @@ def _reconcile_with_manifest(
                 typer.echo(result.stderr.rstrip(), err=True)
             continue
         events["updated"].append(name)
-        if not quiet and result.stdout:
+        if result.stdout:
             typer.echo(result.stdout.rstrip())
 
 
-def _emit_hook_message(events: dict[str, list[str]]) -> None:
-    """Emit Claude Code hook JSON summarizing what changed.
+def _emit_check_hook_message() -> None:
+    """Emit Claude Code hook JSON pointing the user at `/update-agnes-plugins`.
 
-    `systemMessage` is a transient toast (often missed). `additionalContext`
-    is wrapped in a system reminder Claude reads at session start, so the
-    model can mention the change if it's relevant to the user's first ask.
-    Plugins land on disk during the hook; `/reload-plugins` loads them into
-    the running session without a restart.
+    `systemMessage` is a transient toast; `additionalContext` is wrapped in
+    a system reminder Claude reads at session start, so the model can
+    proactively mention the available update if the user's first ask is
+    plugin-related. The hook itself does NOT install anything — running
+    the slash command is the user's choice.
     """
-    parts: list[str] = []
-    if events["installed"]:
-        parts.append(
-            f"installed {len(events['installed'])} plugin(s): "
-            + ", ".join(events["installed"])
-        )
-    if events["updated"]:
-        parts.append(
-            f"updated {len(events['updated'])} plugin(s): "
-            + ", ".join(events["updated"])
-        )
-    summary = "Your Agnes stack changed: " + "; ".join(parts) + "."
-    restart_hint = (
-        "Run `/reload-plugins` to load the changes into this session — "
-        "no restart needed."
+    summary = (
+        "Agnes marketplace has updates available. "
+        "Run /update-agnes-plugins to install them."
     )
     payload = {
-        "systemMessage": f"{summary} {restart_hint}",
+        "systemMessage": summary,
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": f"{summary} {restart_hint}",
+            "additionalContext": summary,
         },
     }
     typer.echo(json.dumps(payload))

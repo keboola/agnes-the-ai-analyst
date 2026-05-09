@@ -130,14 +130,20 @@ def test_refresh_marketplace_help():
     result = runner.invoke(refresh_marketplace_app, ["--help"])
     assert result.exit_code == 0
     cleaned = _clean(result.output)
-    assert "--quiet" in cleaned
-    # --auto-upgrade is gone — version-aware reconcile is now the default.
+    # --check is the SessionStart-hook-friendly detector mode (replaced
+    # --quiet, which used to perform a full reconcile silently).
+    assert "--check" in cleaned
+    assert "--bootstrap" in cleaned
+    # --quiet was removed in favour of --check + the /update-agnes-plugins
+    # slash command. --auto-upgrade was removed earlier (version-aware
+    # reconcile is the default).
+    assert "--quiet" not in cleaned
     assert "--auto-upgrade" not in cleaned
 
 
-def test_refresh_marketplace_no_clone_is_silent_noop_with_quiet(tmp_path, monkeypatch, recorder):
+def test_refresh_marketplace_no_clone_is_silent_noop_with_check(tmp_path, monkeypatch, recorder):
     monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "nonexistent")
-    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
     assert _clean(result.output) == ""
     assert recorder.calls == []
@@ -154,7 +160,7 @@ def test_refresh_marketplace_no_clone_explains_in_manual_mode(tmp_path, monkeypa
 def test_no_clone_short_circuits_before_token_check(tmp_path, monkeypatch, recorder):
     """The no-clone no-op path must NOT require a token.
 
-    The SessionStart hook (`agnes refresh-marketplace --quiet`) runs in
+    The SessionStart hook (`agnes refresh-marketplace --check`) runs in
     every workspace that has the hook installed, including ones where no
     agnes token is configured (e.g. a fresh CI checkout, a workspace
     that never went through `agnes init`, a project sharing the user's
@@ -173,8 +179,8 @@ def test_no_clone_short_circuits_before_token_check(tmp_path, monkeypatch, recor
     monkeypatch.delenv("AGNES_TOKEN", raising=False)
     monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "nonexistent")
 
-    # --quiet (hook context).
-    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    # --check (hook context).
+    result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0, (
         f"hook context should silent-noop without a token; got exit "
         f"{result.exit_code} and output {result.output!r}"
@@ -182,7 +188,7 @@ def test_no_clone_short_circuits_before_token_check(tmp_path, monkeypatch, recor
     assert _clean(result.output) == ""
     assert recorder.calls == []
 
-    # Manual mode (no --quiet): hint, but still exit 0 + no token resolution.
+    # Manual mode (no flags): hint, but still exit 0 + no token resolution.
     result = runner.invoke(refresh_marketplace_app, [])
     assert result.exit_code == 0
     assert "No marketplace clone" in _clean(result.output)
@@ -440,39 +446,7 @@ def test_reconcile_warns_when_plugin_list_unparseable(
     assert not any(c.cmd[:3] == ["claude", "plugin", "update"] for c in recorder.calls)
 
 
-# --- Hook JSON output -----------------------------------------------------------
-
-
-def test_quiet_emits_hook_json_when_plugin_installed(
-    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
-):
-    """--quiet + new install → hook JSON on stdout with systemMessage +
-    additionalContext, both naming the plugin and the restart instruction."""
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    monkeypatch.chdir(workspace)
-    _set_marketplace_manifest(with_clone, [{"name": "grpn-fin", "version": "0.5.0"}])
-    recorder.script(("claude", "plugin", "list", "--json"),
-                    stdout=_plugin_list_json([]))
-
-    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
-    assert result.exit_code == 0
-
-    out = _clean(result.output).strip()
-    assert out, "expected hook JSON on stdout when a plugin was installed"
-    payload = json.loads(out)
-    assert "grpn-fin" in payload["systemMessage"]
-    assert "Agnes stack" in payload["systemMessage"]
-    assert "installed" in payload["systemMessage"]
-    # Reload hint: `/reload-plugins` loads the on-disk plugins into the
-    # running Claude Code session without a full restart.
-    assert "/reload-plugins" in payload["systemMessage"]
-
-    hook_specific = payload.get("hookSpecificOutput", {})
-    assert hook_specific.get("hookEventName") == "SessionStart"
-    additional = hook_specific.get("additionalContext", "")
-    assert "grpn-fin" in additional
-    assert "/reload-plugins" in additional
+# --- Reload hint (default + slash-command chatty path) -------------------------
 
 
 def test_manual_mode_prints_reload_hint_when_anything_changed(
@@ -516,152 +490,13 @@ def test_manual_mode_no_change_does_not_print_reload_hint(
     assert "/reload-plugins" not in out
 
 
-def test_quiet_emits_hook_json_when_bundle_silently_auto_updated_by_claude(
-    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
-):
-    """Regression: when a /store skill change bumps the agnes-store-bundle
-    content hash, `claude plugin marketplace update agnes` silently
-    auto-applies the new version on local-path marketplaces (Claude
-    re-reads the manifest off disk and updates the installed cache).
-
-    If we captured the installed snapshot AFTER `claude plugin marketplace
-    update`, the diff against the new manifest would be zero (Claude
-    already updated installed → matches manifest), `events["updated"]`
-    would stay empty, and the hook JSON wouldn't fire — leaving the user
-    with no notification despite the plugin actually changing.
-
-    Pin this by scripting `claude plugin list --json` to return DIFFERENT
-    versions before vs after the marketplace-update call. The first
-    invocation (pre-snapshot) returns the old version; subsequent calls
-    return the new version (Claude's auto-update). Reconcile must use
-    the FIRST call's snapshot, detect the diff, and fire the
-    notification."""
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    monkeypatch.chdir(workspace)
-    _set_marketplace_manifest(with_clone, [
-        {"name": "agnes-store-bundle", "version": "newhash"},
-    ])
-
-    # Track how many times `claude plugin list --json` was called so we
-    # can return DIFFERENT data on each invocation. The recorder's
-    # script() helper only does prefix-match with one fixed response
-    # per prefix, so we wrap its run() instead.
-    list_call_count = {"n": 0}
-    real_run = recorder.run
-
-    def staged_run(cmd, *args, **kwargs):
-        if cmd[:4] == ["claude", "plugin", "list", "--json"]:
-            # Record the call ourselves — we're bypassing recorder.run
-            # below, so we have to keep `recorder.calls` in sync.
-            recorder.calls.append(
-                _RecordedCall(cmd=list(cmd), env=dict(kwargs.get("env") or {}))
-            )
-            list_call_count["n"] += 1
-            payload = (
-                # Pre-snapshot (call 1): old version still observable.
-                _plugin_list_json([
-                    {"id": "agnes-store-bundle@agnes",
-                     "version": "oldhash",
-                     "projectPath": str(workspace)},
-                ])
-                if list_call_count["n"] == 1
-                else
-                # Post-marketplace-update (call 2+): Claude auto-applied
-                # the new version, version now matches manifest.
-                _plugin_list_json([
-                    {"id": "agnes-store-bundle@agnes",
-                     "version": "newhash",
-                     "projectPath": str(workspace)},
-                ])
-            )
-            return subprocess.CompletedProcess(args=list(cmd), returncode=0,
-                                                stdout=payload, stderr="")
-        return real_run(cmd, *args, **kwargs)
-
-    monkeypatch.setattr(rm_module.subprocess, "run", staged_run)
-
-    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
-    assert result.exit_code == 0
-
-    # Hook JSON must fire — even though by the time reconcile sees `claude
-    # plugin list --json` the second time, versions match.
-    out = _clean(result.output).strip()
-    assert out, "hook JSON missing — pre-snapshot ordering regression"
-    payload = json.loads(out)
-    assert "agnes-store-bundle" in payload["systemMessage"]
-    assert "updated" in payload["systemMessage"]
-
-    # Sanity: pre-snapshot was captured before `claude plugin marketplace update`.
-    # We expect at least 2 list calls (pre-snapshot + reconcile re-read) but
-    # the FIRST one must have come before the marketplace update call.
-    list_indices = [
-        i for i, c in enumerate(recorder.calls)
-        if c.cmd[:4] == ["claude", "plugin", "list", "--json"]
-    ]
-    market_update_indices = [
-        i for i, c in enumerate(recorder.calls)
-        if c.cmd[:4] == ["claude", "plugin", "marketplace", "update"]
-    ]
-    assert list_indices, "no claude plugin list calls recorded"
-    assert market_update_indices, "no claude plugin marketplace update call recorded"
-    assert list_indices[0] < market_update_indices[0], (
-        f"pre-snapshot must come before marketplace update; "
-        f"list at {list_indices[0]}, marketplace update at {market_update_indices[0]}"
-    )
-
-
-def test_quiet_emits_hook_json_when_plugin_updated(
-    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
-):
-    """--quiet + version-mismatch update (e.g. /store skill add bumping
-    the bundle) → hook JSON with `updated` count in systemMessage."""
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    monkeypatch.chdir(workspace)
-    _set_marketplace_manifest(with_clone, [
-        {"name": "agnes-store-bundle", "version": "newhash"},
-    ])
-    recorder.script(
-        ("claude", "plugin", "list", "--json"),
-        stdout=_plugin_list_json([
-            {"id": "agnes-store-bundle@agnes", "version": "oldhash",
-             "projectPath": str(workspace)},
-        ]),
-    )
-    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
-    assert result.exit_code == 0
-    out = _clean(result.output).strip()
-    assert out
-    payload = json.loads(out)
-    assert "updated" in payload["systemMessage"]
-    assert "agnes-store-bundle" in payload["systemMessage"]
-
-
-def test_quiet_emits_no_hook_json_when_nothing_changed(
-    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
-):
-    """--quiet + everything in sync → silent stdout (no spurious
-    notification on every session start)."""
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    monkeypatch.chdir(workspace)
-    _set_marketplace_manifest(with_clone, [{"name": "grpn-eng", "version": "1.0.0"}])
-    recorder.script(
-        ("claude", "plugin", "list", "--json"),
-        stdout=_plugin_list_json([
-            {"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)},
-        ]),
-    )
-    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
-    assert result.exit_code == 0
-    assert _clean(result.output).strip() == ""
-
-
 def test_manual_mode_does_not_emit_hook_json(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """Without --quiet, output is human-readable text — no JSON envelope."""
+    """Default mode (no flags) emits human-readable text — never a JSON envelope.
+
+    Hook JSON is reserved for `--check`. The slash command runs the
+    default chatty path, so its output is plain prose for the user."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
@@ -813,3 +648,190 @@ def test_bootstrap_with_existing_clone_skips_clone_proceeds_to_refresh(
     assert fetch_calls
     reset_calls = [c for c in recorder.calls if "reset" in c.cmd and "--hard" in c.cmd]
     assert reset_calls
+
+
+# --- --check flag (SessionStart-hook detector mode) -----------------------------
+
+
+def _stage_rev_parse(monkeypatch, recorder, *, head: str, fetch_head: str) -> None:
+    """Wrap recorder.run so `git rev-parse HEAD` and
+    `git rev-parse FETCH_HEAD` return scripted SHAs while every other
+    command falls through to the recorder's normal handling.
+
+    Used by --check tests to drive the HEAD-vs-FETCH_HEAD comparison
+    independently of the (mocked) git fetch.
+    """
+    real_run = recorder.run
+
+    def staged_run(cmd, *args, **kwargs):
+        # Match the trailing rev-parse target so `-C <path>` injection
+        # doesn't break the prefix.
+        if "rev-parse" in cmd:
+            recorder.calls.append(
+                _RecordedCall(cmd=list(cmd), env=dict(kwargs.get("env") or {}))
+            )
+            target = cmd[-1]
+            stdout = head if target == "HEAD" else fetch_head if target == "FETCH_HEAD" else ""
+            return subprocess.CompletedProcess(
+                args=list(cmd), returncode=0, stdout=stdout + "\n", stderr="",
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(rm_module.subprocess, "run", staged_run)
+
+
+def test_check_emits_hook_json_when_remote_changed(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """`--check` + local HEAD differs from remote FETCH_HEAD →
+    Claude Code hook JSON on stdout pointing the user at
+    `/update-agnes-plugins`. The hook never installs anything itself."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _stage_rev_parse(monkeypatch, recorder, head="abc123", fetch_head="def456")
+
+    result = runner.invoke(refresh_marketplace_app, ["--check"])
+    assert result.exit_code == 0
+
+    out = _clean(result.output).strip()
+    assert out, "--check must emit hook JSON when remote has changes"
+    payload = json.loads(out)
+    assert "/update-agnes-plugins" in payload["systemMessage"], payload
+    assert "marketplace" in payload["systemMessage"].lower(), payload
+    assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert "/update-agnes-plugins" in payload["hookSpecificOutput"]["additionalContext"]
+
+
+def test_check_silent_when_remote_unchanged(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """`--check` + HEAD == FETCH_HEAD → silent exit 0, no JSON output.
+    Avoids spamming the user with "updates available" on every session
+    start when nothing actually changed."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _stage_rev_parse(monkeypatch, recorder, head="samehash", fetch_head="samehash")
+
+    result = runner.invoke(refresh_marketplace_app, ["--check"])
+    assert result.exit_code == 0
+    assert _clean(result.output).strip() == ""
+
+
+def test_check_does_not_call_claude_plugin_anything(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """`--check` must NOT call `claude plugin install/update` or
+    `claude plugin marketplace update`. Those side effects belong to
+    the `/update-agnes-plugins` slash command, which the user runs
+    interactively when they're ready."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    # Even WITH a remote diff, --check must stay read-only.
+    _stage_rev_parse(monkeypatch, recorder, head="abc", fetch_head="def")
+
+    result = runner.invoke(refresh_marketplace_app, ["--check"])
+    assert result.exit_code == 0
+
+    forbidden_prefixes = (
+        ["claude", "plugin", "install"],
+        ["claude", "plugin", "update"],
+        ["claude", "plugin", "marketplace", "update"],
+    )
+    for prefix in forbidden_prefixes:
+        assert not any(c.cmd[: len(prefix)] == prefix for c in recorder.calls), (
+            f"--check must not invoke {' '.join(prefix)}; got: "
+            f"{[c.cmd for c in recorder.calls]!r}"
+        )
+
+
+def test_check_does_not_git_reset(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """`--check` is read-only against the git tree. Must NOT call
+    `git reset --hard` — that would silently apply remote changes the
+    user hasn't agreed to yet."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _stage_rev_parse(monkeypatch, recorder, head="abc", fetch_head="def")
+
+    result = runner.invoke(refresh_marketplace_app, ["--check"])
+    assert result.exit_code == 0
+
+    reset_calls = [c for c in recorder.calls if "reset" in c.cmd]
+    assert reset_calls == [], (
+        f"--check must not call git reset; got: {[c.cmd for c in reset_calls]!r}"
+    )
+
+
+def test_check_runs_git_fetch(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """`--check` must run `git fetch origin` (otherwise FETCH_HEAD is
+    stale and we'd compare against an old snapshot, missing real
+    remote changes)."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _stage_rev_parse(monkeypatch, recorder, head="abc", fetch_head="abc")
+
+    result = runner.invoke(refresh_marketplace_app, ["--check"])
+    assert result.exit_code == 0
+
+    fetch_calls = [
+        c for c in recorder.calls
+        if c.cmd and c.cmd[0] == "git" and "fetch" in c.cmd and "origin" in c.cmd
+    ]
+    assert fetch_calls, (
+        f"--check must run `git fetch origin`; got: {[c.cmd for c in recorder.calls]!r}"
+    )
+    # Same credential helper wiring as the default mode — PAT in env, not argv.
+    fetch = fetch_calls[0]
+    assert "-c" in fetch.cmd
+    assert fetch.cmd[fetch.cmd.index("-c") + 1].startswith("credential.helper=")
+    assert fetch.env.get("AGNES_TOKEN") == with_token
+
+
+def test_check_no_clone_silent_exit_zero(tmp_path, monkeypatch, with_token, recorder):
+    """`--check` on a workspace without a marketplace clone → silent
+    exit 0 (matches the old --quiet hook no-op semantics, so workspaces
+    that never bootstrapped don't spam "no clone" warnings on every
+    session start)."""
+    monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "nonexistent")
+    result = runner.invoke(refresh_marketplace_app, ["--check"])
+    assert result.exit_code == 0
+    assert _clean(result.output).strip() == ""
+    assert recorder.calls == []
+
+
+def test_check_fetch_failure_exits_one(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """A failed `git fetch` (network down, auth rejected, etc.) → exit 1
+    so the surrounding `|| true` in the hook command swallows it cleanly.
+    No hook JSON is emitted (we don't know if the remote changed)."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    recorder.script(("git", "-c"), returncode=1, stderr="fatal: unable to access ...")
+
+    result = runner.invoke(refresh_marketplace_app, ["--check"])
+    assert result.exit_code == 1
+    # No hook JSON on failure — the hook surrounding `|| true` swallows
+    # the non-zero exit so users don't see a half-written message.
+    assert not _clean(result.output).strip().startswith("{")
+
+
+def test_check_and_bootstrap_are_mutually_exclusive(
+    tmp_path, monkeypatch, with_token, recorder,
+):
+    """Mixing the two modes makes no sense (one is read-only detector,
+    the other is destructive clone-and-reconcile). Reject the combo
+    with a non-zero exit instead of silently picking one."""
+    monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "fresh_marketplace")
+    result = runner.invoke(refresh_marketplace_app, ["--check", "--bootstrap"])
+    assert result.exit_code == 2
+    assert recorder.calls == []

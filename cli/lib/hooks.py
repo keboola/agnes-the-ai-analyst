@@ -18,9 +18,14 @@ Design notes:
        so any wire-protocol bump lands before pull tries to use the new
        CLI version. Both `|| true`-guarded so an upgrade failure doesn't
        block the pull.
-    2. `agnes refresh-marketplace` — independent entry so a fresh
-       workspace (no marketplace cloned yet) failing this command doesn't
-       suppress the data pull above.
+    2. `agnes refresh-marketplace --check` — independent entry. Detector-
+       only (since the slash-command split): runs `git fetch` against the
+       marketplace clone and emits a Claude Code hook JSON message
+       hinting the user at `/update-agnes-plugins` when remote content
+       changed. Does NOT install/update plugins itself — the slash
+       command does that interactively, with full output visible in the
+       Claude Code transcript and under user control. Failure (no clone,
+       no token) silently no-ops via the surrounding `|| true`.
     3. `agnes push` — uploads any session JSONLs that haven't reached the
        server yet (orphans from `claude -p` headless mode where Claude Code
        does NOT fire SessionEnd, or from abnormal session exits). Symmetric
@@ -110,10 +115,17 @@ def install_claude_hooks(workspace: Path) -> None:
     # isn't churned for parity (the same redirection fluff applies but
     # changing the existing wire would force every workspace to re-write
     # its settings.json on the next `agnes init` for no behaviour gain).
+    #
+    # `--check` makes the marketplace entry a detector only: the actual
+    # plugin install/update happens in the `/update-agnes-plugins` slash
+    # command (installed by `cli.lib.commands.install_claude_commands`).
+    # Workspaces still on the older `--quiet` form auto-upgrade here
+    # because `_OUR_COMMAND_MARKERS` matches by substring on the
+    # `agnes refresh-marketplace` prefix.
     _replace_or_add("SessionStart", [
         "agnes self-upgrade --quiet 2>/dev/null || true; "
         "agnes pull --quiet 2>/dev/null || true",
-        'bash -c "agnes refresh-marketplace --quiet 2>/dev/null || true"',
+        'bash -c "agnes refresh-marketplace --check 2>/dev/null || true"',
         'bash -c "agnes push --quiet 2>/dev/null || true"',
     ])
     # SessionEnd push must run detached. Claude Code in `-p` (headless) mode

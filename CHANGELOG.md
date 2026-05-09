@@ -10,6 +10,46 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`/update-agnes-plugins` slash command** — installed automatically by
+  `agnes init` into `<workspace>/.claude/commands/`. Runs
+  `agnes refresh-marketplace` (the chatty default mode) so the user sees
+  install/update progress streamed into the Claude Code transcript and
+  can react to errors interactively, instead of having a full reconcile
+  happen silently behind a SessionStart hook.
+
+- **`agnes refresh-marketplace --check`** — lightweight detector mode for
+  the SessionStart hook. Runs `git fetch` only, compares local `HEAD`
+  with remote `FETCH_HEAD`, and emits a Claude Code hook JSON message
+  pointing the user at `/update-agnes-plugins` when there are remote
+  changes. Silent when up to date. No `git reset`, no
+  `claude plugin marketplace update`, no plugin install/update side
+  effects.
+
+### Changed
+
+- **SessionStart marketplace hook is now read-only.** The hook installed
+  by `agnes init` was previously `agnes refresh-marketplace --quiet`,
+  which performed a full fetch+reset+install cycle on every session start
+  (slow, invisible to the user, not interactively recoverable). It now
+  runs `agnes refresh-marketplace --check` — detect-only — and surfaces a
+  hint to run `/update-agnes-plugins` when updates are available.
+  Existing workspaces auto-upgrade on next `agnes init` (the substring
+  marker `agnes refresh-marketplace` matches both the old and new entry
+  shapes, so the idempotent-replace path correctly rewrites them).
+
+### Removed
+
+- **BREAKING: `agnes refresh-marketplace --quiet` flag.** Replaced by
+  `--check` (detect-only) and the new `/update-agnes-plugins` slash
+  command (interactive update). Existing SessionStart hooks calling
+  `--quiet` will silent-noop after the CLI upgrade — the hook's
+  `2>/dev/null || true` swallows the unknown-flag error — until the user
+  re-runs `agnes init`, which rewrites the hook to use `--check` and
+  installs the slash command. Dashboard `/setup` flow re-runs
+  `agnes init` automatically on next paste.
+
 ### Fixed
 
 - **`v34→v35` migration is now idempotent under partial-rebuild recovery.** The original list-form `_V34_TO_V35_MIGRATIONS` ran four ALTER statements in sequence: `ADD _vis_v35` → `UPDATE _vis_v35 = visibility_status` → `DROP visibility_status` → `RENAME _vis_v35 TO visibility_status`. If the RENAME failed for any reason after the DROP succeeded (DuckDB lock contention at startup, scheduler-vs-app race opening `system.duckdb`, container kill mid-migration, …), the DB was stranded with `_vis_v35` populated and `visibility_status` missing — and `schema_version` never bumped because the UPDATE at the bottom of the migration ladder only runs when *every* step succeeds. Subsequent restarts then hit `DROP visibility_status` again with no `IF EXISTS` guard and looped on the same error; the only recovery was hand-editing the DB. The migration is rewritten as a Python function `_v34_to_v35_migrate` that inspects the table's columns up front and dispatches into one of three paths: clean v34 (run the full rebuild), partial v35 with `_vis_v35` only (finish the RENAME alone), or both columns present (drop the temp). The audit columns (`archived_at`, `archived_by`) ship first behind `IF NOT EXISTS` so they're safe in all states. Operators stranded by the original bug recover automatically on next startup. Tests cover the three direct paths plus an end-to-end scenario where `_ensure_schema` walks a `schema_version=32` DB with the half-applied state up through to v36.

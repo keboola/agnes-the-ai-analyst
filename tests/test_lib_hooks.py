@@ -52,6 +52,16 @@ def test_install_creates_settings_file(tmp_path):
     assert refresh.startswith("bash -c "), (
         f"refresh-marketplace hook must be wrapped in bash -c for Windows; got: {refresh!r}"
     )
+    # Hook is now a detector — `--check` only. Plugin install/update
+    # happens in the `/update-agnes-plugins` slash command instead.
+    # Pinning the flag here prevents an accidental regression to the old
+    # `--quiet` form (which performed a full reconcile silently).
+    assert "--check" in refresh, (
+        f"refresh-marketplace hook must use --check (detector mode); got: {refresh!r}"
+    )
+    assert "--quiet" not in refresh, (
+        f"refresh-marketplace hook must NOT use --quiet (removed flag); got: {refresh!r}"
+    )
     # The push self-heal entry is also bash-c-wrapped for Windows parity.
     push_start = next((c for c in starts if "agnes push" in c), None)
     assert push_start is not None, (
@@ -159,6 +169,53 @@ def test_install_replaces_v0_43_chained_self_upgrade_pull_entry(tmp_path):
     ends = _commands_for(cfg, "SessionEnd")
     assert len(ends) == 1
     assert "agnes push --quiet" in ends[0]
+
+
+def test_install_replaces_old_quiet_refresh_with_check(tmp_path):
+    """A workspace bootstrapped before the slash-command split has the old
+    `--quiet` form in its refresh-marketplace SessionStart entry. The next
+    `agnes init` must replace that entry with the new `--check` form, NOT
+    stack the new entry alongside the old one (which would re-run the
+    full reconcile every session — exactly the behaviour we just moved
+    behind the slash command).
+    """
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": (
+                    "agnes self-upgrade --quiet 2>/dev/null || true; "
+                    "agnes pull --quiet 2>/dev/null || true"
+                )}]},
+                {"hooks": [{"type": "command", "command": (
+                    'bash -c "agnes refresh-marketplace --quiet 2>/dev/null || true"'
+                )}]},
+                {"hooks": [{"type": "command", "command": (
+                    'bash -c "agnes push --quiet 2>/dev/null || true"'
+                )}]},
+            ],
+            "SessionEnd": [
+                {"hooks": [{"type": "command", "command": (
+                    'bash -c "( nohup agnes push --quiet </dev/null '
+                    '>/dev/null 2>&1 & ) ; true"'
+                )}]},
+            ],
+        }
+    }))
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    starts = _commands_for(cfg, "SessionStart")
+    # Exactly one refresh-marketplace entry remains (no stacking).
+    refresh_entries = [c for c in starts if "agnes refresh-marketplace" in c]
+    assert len(refresh_entries) == 1, refresh_entries
+    refresh = refresh_entries[0]
+    assert "--check" in refresh, (
+        f"old --quiet entry must have been rewritten to --check; got: {refresh!r}"
+    )
+    assert "--quiet" not in refresh, (
+        f"old --quiet form must be gone after re-init; got: {refresh!r}"
+    )
 
 
 def test_install_preserves_third_party_hooks(tmp_path):
