@@ -2,68 +2,9 @@
 {% block title %}Marketplace Format Guide — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
-<style>
-  .container:has(.format-guide) { max-width: none; padding: 24px 16px; }
-  .format-guide { max-width: 880px; margin: 0 auto; padding: 0; line-height: 1.55; }
-  .format-guide h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; color: var(--text-primary, #111827); }
-  .format-guide .lead {
-    font-size: 15px; color: var(--text-secondary, #6b7280);
-    margin-bottom: 32px; padding-bottom: 16px;
-    border-bottom: 1px solid var(--border, #e5e7eb);
-  }
-  .format-guide h2 {
-    font-size: 20px; font-weight: 600; margin: 32px 0 12px;
-    color: var(--text-primary, #111827);
-  }
-  .format-guide h3 {
-    font-size: 16px; font-weight: 600; margin: 24px 0 8px;
-    color: var(--text-primary, #111827);
-  }
-  .format-guide p { margin: 0 0 12px; color: var(--text-primary, #111827); }
-  .format-guide a { color: var(--primary, #6366f1); text-decoration: none; }
-  .format-guide a:hover { text-decoration: underline; }
-  .format-guide code {
-    background: var(--surface-alt, #f3f4f6);
-    padding: 2px 6px; border-radius: 4px;
-    font-family: var(--font-mono, ui-monospace, monospace); font-size: 13px;
-  }
-  .format-guide pre {
-    background: #0f172a; color: #e2e8f0; padding: 16px;
-    border-radius: 8px; overflow-x: auto; font-size: 13px;
-    font-family: var(--font-mono, ui-monospace, monospace); line-height: 1.5;
-  }
-  .format-guide pre code { background: none; color: inherit; padding: 0; }
-  .format-guide table {
-    width: 100%; border-collapse: collapse; margin: 12px 0 20px;
-    font-size: 13.5px;
-  }
-  .format-guide th, .format-guide td {
-    text-align: left; padding: 8px 12px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-  }
-  .format-guide thead th {
-    background: var(--surface-alt, #f9fafb);
-    font-weight: 600; font-size: 12px; text-transform: uppercase;
-    letter-spacing: 0.4px; color: var(--text-secondary, #6b7280);
-  }
-  .format-guide ul, .format-guide ol {
-    margin: 0 0 12px; padding-left: 24px;
-  }
-  .format-guide li { margin-bottom: 6px; }
-  .format-guide blockquote {
-    border-left: 3px solid var(--primary, #6366f1);
-    margin: 12px 0; padding: 4px 12px;
-    background: var(--surface-alt, #f9fafb);
-    border-radius: 0 8px 8px 0;
-  }
-  .format-guide .back-link {
-    display: inline-flex; align-items: center; gap: 4px;
-    color: var(--text-secondary, #6b7280); font-size: 13px;
-    margin-bottom: 16px;
-  }
-  .format-guide .back-link:hover { color: var(--primary, #6366f1); }
-</style>
-
+{# Document chrome (typography, dark <pre>, table, blockquote) lives in
+   style-custom.css under the "Marketplace format guide page" section,
+   scoped to .format-guide so other pages aren't affected. #}
 <div class="format-guide">
   {# Markdown is rendered server-side via the standard library so we don't
      pull in a new dependency. The dark `<pre>` styling matches the JSON
