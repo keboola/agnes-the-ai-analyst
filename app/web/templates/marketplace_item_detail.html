@@ -388,7 +388,102 @@
      data-marketplace-id="{{ marketplace_id or '' }}"
      data-plugin-name="{{ plugin_name or '' }}"
      data-entity-id="{{ entity_id or '' }}"
-     data-inner-name="{{ inner_name or '' }}">
+     data-inner-name="{{ inner_name or '' }}"
+     data-visibility="{{ entity.visibility_status if entity else 'approved' }}">
+
+  {# v32+ quarantine banner. Owner / admin only when non-approved. #}
+  {% include "_quarantine_banner.html" %}
+
+  {% if entity and (is_owner or is_admin) %}
+  <style>
+    .item-detail .owner-actions {
+      display: flex; gap: 10px; margin: 0 0 16px 0; justify-content: flex-end;
+    }
+    .item-detail .owner-actions a,
+    .item-detail .owner-actions button {
+      padding: 6px 14px; border-radius: 8px;
+      font-size: 13px; font-weight: 500; font-family: var(--font-primary);
+      text-decoration: none; border: 1px solid var(--border, #e5e7eb);
+      background: var(--surface, #fff); color: var(--text, #111827);
+      cursor: pointer;
+    }
+    .item-detail .owner-actions .delete { color: #b91c1c; }
+    .item-detail .owner-actions button:disabled,
+    .item-detail .owner-actions a[aria-disabled="true"] {
+      color: #9ca3af !important; border-color: #e5e7eb !important;
+      background: #f3f4f6 !important; cursor: not-allowed;
+    }
+  </style>
+  <div class="owner-actions">
+    <a href="#" aria-disabled="true"
+       title="Edit flow lands in a follow-up — for now, re-upload to update.">
+      Edit (coming soon)
+    </a>
+    {# Same v35 delete UX as the plugin detail page — see comment there. #}
+    {% if is_admin %}
+      {% if entity.visibility_status == 'approved' %}
+        <button class="delete" id="owner-archive-btn" type="button"
+                title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle.">
+          Archive
+        </button>
+      {% elif entity.visibility_status == 'archived' %}
+        <button class="delete" type="button" disabled
+                title="Already archived. Hidden from browse; existing installs still served.">
+          Archived
+        </button>
+      {% else %}
+        <button class="delete" type="button" disabled
+                title="Archive is only available for approved entities. Use Override (in quarantine banner) to publish, Rescan to re-evaluate, or Hard delete to purge.">
+          Archive (not applicable while {{ entity.visibility_status }})
+        </button>
+      {% endif %}
+      <button class="delete" id="owner-hard-delete-btn" type="button"
+              style="border-color: rgba(185,28,28,0.45);"
+              title="Hard delete: drops the bundle + removes existing installs. Use only for legal / privacy removals.">
+        Hard delete (admin)
+      </button>
+    {% elif entity.visibility_status == 'approved' %}
+      <button class="delete" id="owner-archive-btn" type="button"
+              title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle.">
+        Archive
+      </button>
+    {% elif entity.visibility_status == 'archived' %}
+      <button class="delete" type="button" disabled
+              title="Already archived. Hidden from browse; existing installs still served.">
+        Archived
+      </button>
+    {% elif entity.visibility_status == 'pending' %}
+      <button class="delete" type="button" disabled
+              title="Submission is under review — Delete is locked until checks finish.">
+        Delete (locked — under review)
+      </button>
+    {% else %}
+      <button class="delete" type="button" disabled
+              title="Submission is quarantined. Only an admin can delete it. Edit + re-upload to fix.">
+        Delete (locked — quarantined)
+      </button>
+    {% endif %}
+  </div>
+  <script>
+  (function(){
+    const root = document.getElementById('root');
+    if (root.dataset.source !== 'flea' || !root.dataset.entityId) return;
+    function bindDel(id, opts){
+      const b = document.getElementById(id);
+      if (!b) return;
+      b.addEventListener('click', async () => {
+        if (!confirm(opts.confirm)) return;
+        const url = `/api/store/entities/${encodeURIComponent(root.dataset.entityId)}${opts.hard ? '?hard=true' : ''}`;
+        const r = await fetch(url, {method: 'DELETE'});
+        if (!r.ok) { alert((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')'); return; }
+        window.location = '/marketplace?tab=flea';
+      });
+    }
+    bindDel('owner-archive-btn', {hard: false, confirm: 'Archive this entity? Disappears from browse; existing installs keep working.'});
+    bindDel('owner-hard-delete-btn', {hard: true, confirm: 'HARD DELETE — drops bundle + removes ALL existing installs. Continue?'});
+  })();
+  </script>
+  {% endif %}
 
   <!-- Hero (full kind-coloured gradient, parity with plugin detail) -->
   <div class="hero">
@@ -664,9 +759,25 @@
         Add the bundle to your stack to use it.
       </div>`;
   } else {
-    const btnLabel = d.installed ? '✓ In your stack' : '+ Add to my stack';
-    const btnClass = d.installed ? 'btn primary installed' : 'btn primary';
-    actions.innerHTML = `<button class="${btnClass}" id="install-btn" type="button" data-installed="${d.installed ? '1' : '0'}">${btnLabel}</button>`;
+    // v32+ quarantine: when the entity is non-approved (only owner +
+    // admin land here — server-side gate 404s anyone else), render
+    // the install button gray + disabled with explanatory tooltip.
+    // The API also refuses POST /install with 409 entity_not_approved
+    // so a clever user toggling `disabled` in devtools still hits the
+    // gate. Skip listener wiring below for inert buttons.
+    const isQuarantined = d.visibility_status && d.visibility_status !== 'approved';
+    if (isQuarantined) {
+      const stateLabel = d.visibility_status === 'archived' ? 'archived' : 'under review';
+      actions.innerHTML = `<button class="btn primary" type="button" disabled
+        title="This submission is not approved yet — install is disabled until checks pass."
+        style="background:#e5e7eb;color:#6b7280;cursor:not-allowed;border:1px solid #d1d5db;">
+          + Add to my stack (unavailable while ${stateLabel})
+        </button>`;
+    } else {
+      const btnLabel = d.installed ? '✓ In your stack' : '+ Add to my stack';
+      const btnClass = d.installed ? 'btn primary installed' : 'btn primary';
+      actions.innerHTML = `<button class="${btnClass}" id="install-btn" type="button" data-installed="${d.installed ? '1' : '0'}">${btnLabel}</button>`;
+    }
     const dismissBtn = document.getElementById('stack-hint-dismiss');
     if (dismissBtn) {
       dismissBtn.addEventListener('click', () => {
@@ -687,18 +798,24 @@
         } catch { /* clipboard blocked — chip text remains selectable */ }
       });
     }
-    document.getElementById('install-btn').addEventListener('click', async (ev) => {
-      const btn = ev.currentTarget;
-      const installed = btn.dataset.installed === '1';
-      const method = installed ? 'DELETE' : 'POST';
-      const r = await fetch(`/api/store/entities/${encodeURIComponent(entityId)}/install`, { method });
-      if (!r.ok) { alert('Action failed (' + r.status + ')'); return; }
-      btn.dataset.installed = installed ? '0' : '1';
-      btn.classList.toggle('installed', !installed);
-      btn.textContent = installed ? '+ Add to my stack' : '✓ In your stack';
-      if (!installed) showHint();   // newly added → reveal next-steps
-      else hintEl.hidden = true;    // removed → hide stale hint
-    });
+    // install-btn id only exists in the non-quarantined branch above.
+    // Skip the click wiring entirely when the button is the inert
+    // disabled variant — addEventListener on null would 500.
+    const installBtnEl = document.getElementById('install-btn');
+    if (installBtnEl) {
+      installBtnEl.addEventListener('click', async (ev) => {
+        const btn = ev.currentTarget;
+        const installed = btn.dataset.installed === '1';
+        const method = installed ? 'DELETE' : 'POST';
+        const r = await fetch(`/api/store/entities/${encodeURIComponent(entityId)}/install`, { method });
+        if (!r.ok) { alert('Action failed (' + r.status + ')'); return; }
+        btn.dataset.installed = installed ? '0' : '1';
+        btn.classList.toggle('installed', !installed);
+        btn.textContent = installed ? '+ Add to my stack' : '✓ In your stack';
+        if (!installed) showHint();   // newly added → reveal next-steps
+        else hintEl.hidden = true;    // removed → hide stale hint
+      });
+    }
   }
 
   // ── Description (plain text — no markdown rendering, parity with flea) ─

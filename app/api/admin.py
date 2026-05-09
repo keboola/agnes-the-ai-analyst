@@ -3495,3 +3495,494 @@ def run_corporate_memory(
         raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
 
     return {"ok": not stats.get("errors"), "details": stats}
+
+
+# ---------------------------------------------------------------------------
+# Flea-market guardrails — admin endpoints
+#
+# Backs /admin/store/submissions (the human triage page) and the override /
+# retry / delete-submission action buttons. Every action here writes an
+# audit_log row so the trail of "who force-published what, and why" is
+# permanent — same governance posture as the corporate-memory + scheduler
+# runs surfaces.
+# ---------------------------------------------------------------------------
+
+import shutil as _shutil
+
+
+@router.get("/store/submissions")
+async def admin_list_store_submissions(
+    status: Optional[str] = None,
+    submitter: Optional[str] = None,
+    type: Optional[str] = None,  # noqa: A002 — FastAPI query-param name
+    name: Optional[str] = None,
+    version: Optional[str] = None,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+    limit: int = 100,
+    skip: int = 0,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """List flea-market guardrail submissions newest-first.
+
+    All filters AND together. ``status`` is comma-separated
+    (e.g. ``blocked_inline,blocked_llm``). ``submitter`` matches
+    ``submitter_id`` exactly. ``type`` is one of ``skill`` / ``agent`` /
+    ``plugin``. ``name`` and ``version`` are case-insensitive substrings.
+    ``limit`` clamped to [1, 500].
+    """
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+
+    statuses = None
+    if status:
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+    if type and type not in {"skill", "agent", "plugin"}:
+        raise HTTPException(status_code=400, detail="invalid_type")
+    limit = max(1, min(int(limit), 500))
+    skip = max(0, int(skip))
+
+    # v36+ chip routing: 'archived' / 'deleted' tokens in ?status=
+    # are LIFECYCLE filters, not verdict filters. The repo handles the
+    # JOIN-on-entity logic for archived; submission terminal marker
+    # for deleted. Verdict tokens (approved, blocked_*, pending_*,
+    # overridden, review_error) pass through unchanged.
+    lifecycle = None
+    if statuses == ["archived"]:
+        lifecycle = "archived"
+        statuses = None
+    elif statuses == ["deleted"]:
+        lifecycle = "deleted"
+        statuses = None
+
+    try:
+        items, total = StoreSubmissionsRepository(conn).list_for_admin(
+            status=statuses,
+            submitter_id=submitter or None,
+            type_=type or None,
+            name_substr=name or None,
+            version_substr=version or None,
+            sort_by=sort or None,
+            sort_order=order or None,
+            lifecycle=lifecycle,
+            limit=limit, skip=skip,
+        )
+    except ValueError as e:
+        # Sort key whitelist rejection (#23) — surface as 400 so the UI
+        # can show the operator a meaningful message instead of 500.
+        msg = str(e)
+        if msg.startswith("invalid_sort_key"):
+            raise HTTPException(status_code=400, detail="invalid_sort_key")
+        raise
+    return {"items": items, "total": total, "limit": limit, "skip": skip}
+
+
+@router.get("/store/submissions/{submission_id}")
+async def admin_get_store_submission(
+    submission_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+
+    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submission_not_found")
+    return sub
+
+
+class _OverrideRequest(BaseModel):
+    reason: str = Field(..., min_length=4, max_length=2000)
+
+
+@router.post("/store/submissions/{submission_id}/override")
+async def admin_override_store_submission(
+    submission_id: str,
+    body: _OverrideRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Force-publish a previously-blocked submission.
+
+    Flips the submission to ``status='overridden'`` and the linked
+    store_entities row to ``visibility_status='approved'``. Audit row
+    captures who, why, and the verdict that was overridden so the next
+    time this submission shows up, the trail is intact.
+    """
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+
+    subs = StoreSubmissionsRepository(conn)
+    sub = subs.get(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submission_not_found")
+    if sub["status"] not in {"blocked_inline", "blocked_llm", "review_error"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"cannot_override_status:{sub['status']}",
+        )
+
+    entity_id = sub.get("entity_id")
+    if not entity_id:
+        # v30+ ought to always carry entity_id. Legacy rows from the
+        # pre-v30 inline-rollback design land here — refuse with a
+        # message that points at the only path forward (Delete +
+        # ask submitter to re-upload).
+        raise HTTPException(
+            status_code=409,
+            detail="cannot_override_legacy_without_entity",
+        )
+
+    subs.set_override(submission_id, admin_user_id=user["id"], reason=body.reason)
+    StoreEntitiesRepository(conn).set_visibility(entity_id, "approved")
+
+    AuditRepository(conn).log(
+        user_id=user["id"],
+        action="store.submission.overridden",
+        resource=f"store_submission:{submission_id}",
+        params={
+            "entity_id": entity_id,
+            "reason": body.reason,
+            "prior_status": sub["status"],
+            "prior_findings": sub.get("llm_findings"),
+            "prior_inline": sub.get("inline_checks"),
+        },
+        result="ok",
+    )
+    return {"ok": True, "submission_id": submission_id, "entity_id": entity_id}
+
+
+@router.post("/store/submissions/{submission_id}/rescan")
+async def admin_rescan_store_submission(
+    submission_id: str,
+    background: BackgroundTasks,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Re-run **all** guardrail checks (inline + LLM) against the current
+    bundle.
+
+    Different from ``/retry``: rescan starts from scratch (re-runs the
+    deterministic inline checks too) and is allowed regardless of
+    current status. Use when check rules have changed and a previously-
+    approved entity might now fail (or vice versa).
+
+    Effects:
+      * inline checks run sync; verdict written to ``inline_checks``
+      * on inline fail → ``status='blocked_inline'``, entity hidden
+      * on inline pass → ``status='pending_llm'``, LLM call scheduled,
+        entity visibility flipped to ``pending`` until verdict lands
+      * audit_log entry recorded for both outcomes — admin sees the
+        rescan in the detail-page activity timeline
+      * audit row recorded
+
+    Requires the bundle to still be on disk. Inline-blocked submissions
+    whose bundle was rolled back (no ``entity_id``) cannot be rescanned —
+    nothing to scan.
+    """
+    from app.api.store import _plugin_dir
+    from src.db import get_system_db
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+    from src.store_guardrails import run_inline_checks
+    from src.store_guardrails.runner import (
+        default_api_key_loader,
+        default_model_loader,
+        run_llm_review,
+    )
+    from app.instance_config import get_guardrails_enabled
+
+    subs = StoreSubmissionsRepository(conn)
+    sub = subs.get(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submission_not_found")
+    entity_id = sub.get("entity_id")
+    if not entity_id:
+        raise HTTPException(status_code=409, detail="cannot_rescan_without_entity")
+
+    plugin_dir = _plugin_dir(entity_id)
+    if not plugin_dir.exists():
+        raise HTTPException(status_code=410, detail="bundle_missing")
+
+    ents = StoreEntitiesRepository(conn)
+    entity = ents.get(entity_id)
+    description = (entity or {}).get("description")
+
+    inline = run_inline_checks(
+        plugin_dir, type_=sub["type"], description=description,
+    )
+
+    if not inline.passed:
+        # Re-failed inline. Hide the entity (was approved or pending);
+        # admin can either fix the bundle (PUT to recreate) or override.
+        subs.conn.execute(
+            "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
+            "status = 'blocked_inline', updated_at = current_timestamp "
+            "WHERE id = ?",
+            [__import__("json").dumps(inline.to_response_dict()), submission_id],
+        )
+        ents.set_visibility(entity_id, "hidden")
+        AuditRepository(conn).log(
+            user_id=user["id"],
+            action="store.submission.rescan",
+            resource=f"store_submission:{submission_id}",
+            params={"entity_id": entity_id, "outcome": "blocked_inline"},
+        )
+        return {"ok": True, "submission_id": submission_id, "status": "blocked_inline"}
+
+    # Inline passes — schedule LLM if enabled, else auto-approve.
+    guardrails_on = get_guardrails_enabled()
+    new_status = "pending_llm" if guardrails_on else "approved"
+    subs.conn.execute(
+        "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
+        "status = ?, updated_at = current_timestamp "
+        "WHERE id = ?",
+        [__import__("json").dumps(inline.to_response_dict()), new_status, submission_id],
+    )
+    if guardrails_on:
+        ents.set_visibility(entity_id, "pending")
+    else:
+        ents.set_visibility(entity_id, "approved")
+    AuditRepository(conn).log(
+        user_id=user["id"],
+        action="store.submission.rescan",
+        resource=f"store_submission:{submission_id}",
+        params={"entity_id": entity_id, "outcome": new_status,
+                "guardrails_enabled": guardrails_on},
+    )
+    if guardrails_on:
+        background.add_task(
+            run_llm_review,
+            submission_id,
+            plugin_dir=plugin_dir,
+            conn_factory=get_system_db,
+            api_key_loader=default_api_key_loader,
+            model_loader=default_model_loader,
+        )
+    return {"ok": True, "submission_id": submission_id, "status": new_status}
+
+
+@router.post("/store/submissions/{submission_id}/retry")
+async def admin_retry_store_submission(
+    submission_id: str,
+    background: BackgroundTasks,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Re-queue the LLM review for a submission stuck in ``review_error``.
+
+    Only valid when the original submission's plugin tree is still on
+    disk — for inline-blocked rows the bundle was deleted at POST time.
+    """
+    from app.api.store import _plugin_dir
+    from src.db import get_system_db
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+    from src.store_guardrails.runner import (
+        default_api_key_loader,
+        default_model_loader,
+        run_llm_review,
+    )
+
+    subs = StoreSubmissionsRepository(conn)
+    sub = subs.get(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submission_not_found")
+    if sub["status"] not in {"review_error", "blocked_llm"}:
+        raise HTTPException(
+            status_code=409, detail=f"cannot_retry_status:{sub['status']}",
+        )
+    entity_id = sub.get("entity_id")
+    if not entity_id:
+        raise HTTPException(
+            status_code=409, detail="cannot_retry_without_entity",
+        )
+
+    plugin_dir = _plugin_dir(entity_id)
+    if not plugin_dir.exists():
+        raise HTTPException(status_code=410, detail="bundle_missing")
+
+    subs.update_status(submission_id, status="pending_llm")
+    AuditRepository(conn).log(
+        user_id=user["id"],
+        action="store.submission.retry",
+        resource=f"store_submission:{submission_id}",
+        params={"entity_id": entity_id},
+    )
+    background.add_task(
+        run_llm_review,
+        submission_id,
+        plugin_dir=plugin_dir,
+        conn_factory=get_system_db,
+        api_key_loader=default_api_key_loader,
+        model_loader=default_model_loader,
+    )
+    return {"ok": True, "submission_id": submission_id, "status": "pending_llm"}
+
+
+@router.delete("/store/submissions/{submission_id}")
+async def admin_delete_store_submission(
+    submission_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Hard-delete a submission record + its linked bundle (if any).
+
+    Use this for spam / accidental uploads after override-publish is the
+    wrong call. The audit_log row preserves what was deleted in case
+    triage needs the evidence trail later.
+    """
+    from app.api.store import _entity_dir
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+    from src.repositories.user_store_installs import UserStoreInstallsRepository
+
+    subs = StoreSubmissionsRepository(conn)
+    sub = subs.get(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submission_not_found")
+
+    entity_id = sub.get("entity_id")
+    if entity_id:
+        UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
+        StoreEntitiesRepository(conn).delete(entity_id)
+        _shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
+    conn.execute("DELETE FROM store_submissions WHERE id = ?", [submission_id])
+
+    AuditRepository(conn).log(
+        user_id=user["id"],
+        action="store.submission.deleted",
+        resource=f"store_submission:{submission_id}",
+        params={
+            "entity_id": entity_id,
+            "submitter_id": sub.get("submitter_id"),
+            "name": sub.get("name"),
+            "status": sub.get("status"),
+        },
+    )
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# v30: download blocked bundle for forensic inspection
+# ---------------------------------------------------------------------------
+
+from fastapi.responses import StreamingResponse
+
+
+@router.get("/store/submissions/{submission_id}/bundle.zip")
+async def admin_download_store_submission_bundle(
+    submission_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Stream the on-disk bundle as a fresh ZIP for admin inspection.
+
+    Required by the forensic use case: admin needs to inspect what a
+    submitter actually tried to upload (not just the verdict). Bundle
+    must still be on disk — TTL purge nulls ``entity_id`` and removes
+    the directory, in which case this returns 410.
+    """
+    import io as _io
+    import zipfile as _zipfile
+    from pathlib import Path as _P
+    from app.api.store import _plugin_dir as _sp_plugin_dir
+
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+
+    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submission_not_found")
+    entity_id = sub.get("entity_id")
+    if not entity_id:
+        raise HTTPException(status_code=410, detail="bundle_purged_or_missing")
+
+    plugin_dir = _sp_plugin_dir(entity_id)
+    if not plugin_dir.exists():
+        raise HTTPException(status_code=410, detail="bundle_missing")
+
+    AuditRepository(conn).log(
+        user_id=user["id"],
+        action="store.submission.bundle_downloaded",
+        resource=f"store_submission:{submission_id}",
+        params={"entity_id": entity_id, "name": sub.get("name")},
+    )
+
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(_P(plugin_dir).rglob("*")):
+            if not f.is_file():
+                continue
+            arcname = f.relative_to(plugin_dir).as_posix()
+            zf.write(f, arcname)
+    buf.seek(0)
+
+    safe_name = (sub.get("name") or "bundle").replace("/", "_")
+    filename = f"{safe_name}-{submission_id[:8]}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# v30: scheduled TTL purge of blocked bundle bytes
+# ---------------------------------------------------------------------------
+
+
+@router.post("/run-blocked-purge")
+async def run_blocked_purge(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Trigger the TTL purge of blocked bundle bytes.
+
+    Wraps :func:`src.store_guardrails.purge.purge_blocked_bundles`. The
+    scheduler service hits this endpoint daily (under
+    ``SCHEDULER_API_TOKEN`` like the corporate-memory + verification
+    jobs); admins can also run it on demand from the UI.
+    """
+    from app.instance_config import get_guardrails_blocked_bundle_ttl_days
+    from src.store_guardrails.purge import purge_blocked_bundles
+
+    ttl = get_guardrails_blocked_bundle_ttl_days()
+    result = purge_blocked_bundles(conn, ttl_days=ttl)
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="run_blocked_purge",
+        resource="job:store-blocked-purge",
+        params={"ttl_days": ttl, "purged": result.get("purged", 0),
+                "skipped": result.get("skipped", False)},
+    )
+    return {"ok": True, "details": result}
+
+
+@router.post("/run-reap-stuck-reviews")
+async def run_reap_stuck_reviews(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Trigger the stuck-review reaper.
+
+    Wraps :func:`src.store_guardrails.reaper.reap_stuck_llm_reviews`.
+    The scheduler hits this every 15 minutes; admins can run it on
+    demand if a worker crash is suspected. Flips any
+    ``status='pending_llm'`` row older than the configured grace to
+    ``review_error`` so the queue stops growing indefinitely.
+    """
+    from app.instance_config import get_guardrails_stuck_review_grace_seconds
+    from src.store_guardrails.reaper import reap_stuck_llm_reviews
+
+    grace = get_guardrails_stuck_review_grace_seconds()
+    result = reap_stuck_llm_reviews(conn, grace_seconds=grace)
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="run_reap_stuck_reviews",
+        resource="job:store-reap-stuck-reviews",
+        params={"grace_seconds": grace,
+                "reaped": result.get("reaped", 0),
+                "skipped": result.get("skipped", False)},
+    )
+    return {"ok": True, "details": result}

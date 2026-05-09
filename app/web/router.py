@@ -96,6 +96,18 @@ def _humanbytes(value) -> str:
 templates.env.filters["humanbytes"] = _humanbytes
 
 
+def _store_display_name(name: str | None) -> str:
+    """Strip the archive-rename suffix from a store entity's display
+    name so admin queue / my-stack / detail templates show the
+    original label instead of the internal `__archived__<epoch>`
+    marker. Safe on plain (non-archived) names — no-op."""
+    from src.store_naming import strip_archive_suffix
+    return strip_archive_suffix(name or "")
+
+
+templates.env.filters["store_display_name"] = _store_display_name
+
+
 # ---- PostHog template wiring ----
 # Two Jinja globals injected into every render so the `_posthog.html` partial
 # (included from `base.html` and `base_login.html`) can render the browser
@@ -1065,63 +1077,12 @@ async def store_new(
     return templates.TemplateResponse(request, "store_upload.html", ctx)
 
 
-@router.get("/store/{entity_id}", response_class=HTMLResponse)
-async def store_detail(
-    request: Request,
-    entity_id: str,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.user_store_installs import UserStoreInstallsRepository
-    from src.store_naming import suffixed_name
-    from app.utils import get_store_dir
-    from app.auth.access import is_user_admin
-
-    entity = StoreEntitiesRepository(conn).get(entity_id)
-    if not entity:
-        raise HTTPException(status_code=404, detail="Entity not found")
-
-    # File listing for the detail page (read directly from disk).
-    plugin_dir = get_store_dir() / entity_id / "plugin"
-    files = []
-    if plugin_dir.is_dir():
-        for f in sorted(plugin_dir.rglob("*")):
-            if f.is_file():
-                files.append(
-                    {
-                        "path": f.relative_to(plugin_dir).as_posix(),
-                        "size": f.stat().st_size,
-                    }
-                )
-
-    # Owner display name.
-    owner_row = conn.execute(
-        "SELECT name, email FROM users WHERE id = ?", [entity["owner_user_id"]]
-    ).fetchone()
-    owner_display = (owner_row[0] or owner_row[1]) if owner_row else entity["owner_username"]
-
-    is_installed = UserStoreInstallsRepository(conn).is_installed(
-        user["id"], entity_id
-    )
-    is_owner = entity["owner_user_id"] == user["id"]
-    # Admin can also Edit/Delete (parity with the API: store.py guards both
-    # mutations on owner OR admin). Without this the store_detail buttons
-    # would be hidden from admin even though they have authority.
-    is_admin = is_user_admin(user["id"], conn)
-
-    ctx = _build_context(
-        request,
-        user=user,
-        entity=entity,
-        invocation_name=suffixed_name(entity["name"], entity["owner_username"]),
-        owner_display=owner_display,
-        files=files,
-        is_installed=is_installed,
-        is_owner=is_owner,
-        is_admin=is_admin,
-    )
-    return templates.TemplateResponse(request, "store_detail.html", ctx)
+# Legacy /store/{id} detail surface removed in v32+. The unified
+# /marketplace/flea/{id} is the canonical detail page. All in-tree
+# callers (store_upload redirect, my_ai_stack card, store_listing
+# card) point straight at the new URL — there is no in-app
+# navigation that lands on /store/{id}. Stale external bookmarks 404,
+# accepted per design discussion.
 
 
 @router.get("/my-ai-stack", response_class=HTMLResponse)
@@ -1161,18 +1122,50 @@ async def marketplace_flea_detail(
 ):
     """Pick the right detail template based on the entity type:
     plugins reuse the unified plugin layout; skills / agents render the
-    item-detail layout (matches curated nested skill / agent)."""
+    item-detail layout (matches curated nested skill / agent).
+
+    Visibility (v32+): non-owner non-admin gets 404 on any non-approved
+    entity. Owner + admin see the page with a quarantine banner + the
+    owner-actions strip (Edit / Delete with locked variants).
+    """
+    from app.api.store import _enforce_visibility
+    from app.auth.access import is_user_admin
     from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+
     entity = StoreEntitiesRepository(conn).get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
 
+    # Refuse early — same gate as the API + the asset endpoints. 404
+    # (not 403) so the entity's existence isn't leaked.
+    _enforce_visibility(entity, user, conn)
+
+    is_owner = entity.get("owner_user_id") == user.get("id")
+    is_admin = is_user_admin(user["id"], conn)
+
+    # Pull the latest submission so the quarantine banner can render
+    # the most recent verdict (inline_checks + llm_findings). Skipped
+    # for plain non-owner non-admin viewers since they only see
+    # approved entities and don't need the diagnostic.
+    quarantine_sub = None
+    if (is_owner or is_admin) and entity.get("visibility_status") != "approved":
+        quarantine_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+
+    common = dict(
+        source="flea",
+        entity=entity,
+        entity_id=entity_id,
+        is_owner=is_owner,
+        is_admin=is_admin,
+        quarantine_sub=quarantine_sub,
+    )
+
     if entity["type"] == "plugin":
         ctx = _build_context(
             request, user=user,
-            source="flea",
-            entity_id=entity_id,
             plugin_name=entity["name"],
+            **common,
         )
         return templates.TemplateResponse(
             request, "marketplace_plugin_detail.html", ctx,
@@ -1180,10 +1173,9 @@ async def marketplace_flea_detail(
 
     ctx = _build_context(
         request, user=user,
-        source="flea",
         kind=entity["type"],
-        entity_id=entity_id,
         item_name=entity["name"],
+        **common,
     )
     return templates.TemplateResponse(
         request, "marketplace_item_detail.html", ctx,
@@ -1453,7 +1445,185 @@ SCHEDULER_AUDIT_ACTIONS = [
     "run_session_processor:usage",
     "run_corporate_memory",
     "marketplace.sync_all",
+    "run_blocked_purge",
 ]
+
+
+@router.get("/admin/store/submissions", response_class=HTMLResponse)
+async def admin_store_submissions_page(
+    request: Request,
+    status: Optional[str] = None,
+    submitter: Optional[str] = None,
+    type: Optional[str] = None,  # noqa: A002 — FastAPI query-param name
+    name: Optional[str] = None,
+    version: Optional[str] = None,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+    limit: int = 50,
+    skip: int = 0,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Triage page for flea-market guardrail submissions.
+
+    Lists every submission row newest-first with the inline-check verdicts,
+    LLM findings, and override action buttons. Server-side render keeps the
+    page accessible without JS for the read-only inspect path; mutating
+    actions (override, retry, delete) hit the JSON admin endpoints under
+    ``/api/admin/store/submissions``.
+
+    Filters AND together; URL is bookmarkable. Pagination via ``skip`` /
+    ``limit`` (default 50, clamped to [1, 200] for the UI page-size
+    selector).
+    """
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+
+    statuses = None
+    if status:
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+    valid_type = type if type in {"skill", "agent", "plugin"} else None
+    limit = max(1, min(int(limit), 200))
+    skip = max(0, int(skip))
+
+    # v36+ chip routing — see app/api/admin.py:admin_list_store_submissions
+    # for the same logic on the JSON endpoint. Lifecycle tokens
+    # ('archived', 'deleted') route to the JOIN-based filter; verdict
+    # tokens pass through.
+    lifecycle = None
+    if statuses == ["archived"]:
+        lifecycle = "archived"
+        statuses = None
+    elif statuses == ["deleted"]:
+        lifecycle = "deleted"
+        statuses = None
+
+    valid_sort = sort if sort in {"created_at", "file_size", "status", "name"} else None
+    valid_order = order if order in {"asc", "desc"} else None
+    items, total = StoreSubmissionsRepository(conn).list_for_admin(
+        status=statuses,
+        submitter_id=submitter or None,
+        type_=valid_type,
+        name_substr=name or None,
+        version_substr=version or None,
+        sort_by=valid_sort,
+        sort_order=valid_order,
+        lifecycle=lifecycle,
+        limit=limit, skip=skip,
+    )
+
+    # Resolve submitter_id → email for the active-filter chip when set.
+    # (The submitter id is opaque to admins; show the human label instead.)
+    submitter_email = ""
+    if submitter:
+        from src.repositories.users import UserRepository
+        urow = UserRepository(conn).get_by_id(submitter)
+        if urow:
+            submitter_email = urow.get("email") or submitter
+
+    pages = max(1, (int(total) + limit - 1) // limit)
+    current_page = (skip // limit) + 1
+
+    ctx = _build_context(
+        request, user=user,
+        items=items, total=total,
+        status_filter=status or "",
+        submitter_filter=submitter or "",
+        submitter_email=submitter_email,
+        type_filter=valid_type or "",
+        name_filter=name or "",
+        version_filter=version or "",
+        sort_filter=valid_sort or "",
+        order_filter=valid_order or "",
+        limit=limit, skip=skip,
+        pages=pages, current_page=current_page,
+    )
+    return templates.TemplateResponse(request, "admin_store_submissions.html", ctx)
+
+
+@router.get("/admin/store/submissions/{submission_id}", response_class=HTMLResponse)
+async def admin_store_submission_detail_page(
+    submission_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-submission detail with full verdict + override + retry actions."""
+    from src.repositories.audit import AuditRepository
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+    from src.repositories.users import UserRepository
+
+    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submission_not_found")
+
+    # Live entity lifecycle, separate from the submission's verdict.
+    # Verdict (sub.status) is immutable forensic record; lifecycle
+    # (entity.visibility_status) reflects current state — see plan
+    # "Admin Submissions Filter: Use Entity Visibility, Not Denormalized Status".
+    entity_visibility_status = None
+    if sub.get("entity_id"):
+        ent = StoreEntitiesRepository(conn).get(sub["entity_id"])
+        if ent:
+            entity_visibility_status = ent.get("visibility_status")
+
+    other_count = StoreSubmissionsRepository(conn).count_for_submitter(
+        sub["submitter_id"], exclude_id=submission_id,
+    )
+
+    user_repo = UserRepository(conn)
+    override_email = ""
+    if sub.get("override_by"):
+        urow = user_repo.get_by_id(sub["override_by"])
+        if urow:
+            override_email = urow.get("email") or sub["override_by"]
+
+    # Activity timeline — pull every audit_log row scoped to this
+    # submission OR its linked entity. Resolves actor user_id → email
+    # so the timeline reads naturally. Cached in-memory per-render so
+    # we don't fan out N user lookups on a 100-row history.
+    #
+    # Four resource patterns matter:
+    #   * "store_submission:{id}" — admin actions (override / rescan
+    #     / retry / delete / bundle download) + post-fix runner audits
+    #   * "store_entity:{id}"     — when {id} is a submission_id, this
+    #     is what the legacy `_audit` helper in app/api/store.py emits
+    #     for submission-scoped events because the helper hardcodes
+    #     the `store_entity:` prefix. Surface them under the timeline
+    #     so accepted / approved / blocked_inline audits are visible.
+    #   * "{id}" (bare submission id) — older runner.py rows from
+    #     before the prefix fix; kept for back-compat.
+    #   * "store_entity:{entity_id}" — entity-scoped events
+    #     (creation, hard delete). entity_id stays on submission
+    #     rows even after hard delete (tombstone), so the linkage
+    #     survives — see mark_deleted_for_entity.
+    resources = [
+        f"store_submission:{submission_id}",
+        f"store_entity:{submission_id}",
+        submission_id,
+    ]
+    if sub.get("entity_id"):
+        resources.append(f"store_entity:{sub['entity_id']}")
+    audit_rows = AuditRepository(conn).query_for_resources(resources, limit=100)
+    actor_cache: dict = {}
+    for row in audit_rows:
+        uid = row.get("user_id")
+        if not uid:
+            row["actor_email"] = ""
+            continue
+        if uid not in actor_cache:
+            urow = user_repo.get_by_id(uid)
+            actor_cache[uid] = (urow or {}).get("email") or uid
+        row["actor_email"] = actor_cache[uid]
+
+    ctx = _build_context(
+        request, user=user,
+        sub=sub, other_count=other_count,
+        override_email=override_email,
+        audit_rows=audit_rows,
+        entity_visibility_status=entity_visibility_status,
+    )
+    return templates.TemplateResponse(request, "admin_store_submission_detail.html", ctx)
 
 
 @router.get("/admin/scheduler-runs", response_class=HTMLResponse)

@@ -58,6 +58,11 @@ class StoreInstallEntry(BaseModel):
     install_count: int
     photo_url: Optional[str] = None
     installed_at: Optional[str] = None
+    # v35: surface visibility so my_ai_stack.html can render an
+    # "Archived by owner" badge on cards whose owner soft-deleted the
+    # entity. Bundle still serves to existing installs (per
+    # UserStoreInstallsRepository.list_for_user filter).
+    visibility_status: Optional[str] = None
 
 
 class MyStackResponse(BaseModel):
@@ -127,24 +132,36 @@ async def get_my_stack(
 
     installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
     store_items: List[StoreInstallEntry] = []
+    from src.store_naming import strip_archive_suffix
     for row in installs:
         photo_url = (
             f"/api/store/entities/{row['id']}/photo" if row.get("photo_path") else None
         )
+        # Display name strips the archive-rename suffix so the user
+        # sees their installed plugin's original label even after the
+        # owner archived (and renamed) it. The served ``invocation_name``
+        # carries the renamed slug since that's what Claude Code's
+        # `/plugin` lookup will resolve to after the next sync — this
+        # is the consumer-side rename described in the rename-on-
+        # archive plan; the My AI Stack card surfaces it via the
+        # "Archived by owner" badge already.
+        raw_name = row["name"]
+        display_name = strip_archive_suffix(raw_name)
         store_items.append(
             StoreInstallEntry(
                 entity_id=row["id"],
                 type=row["type"],
-                name=row["name"],
+                name=display_name,
                 description=row.get("description"),
                 category=row.get("category"),
                 version=row["version"],
                 owner_user_id=row["owner_user_id"],
                 owner_username=row["owner_username"],
-                invocation_name=suffixed_name(row["name"], row["owner_username"]),
+                invocation_name=suffixed_name(raw_name, row["owner_username"]),
                 install_count=int(row.get("install_count") or 0),
                 photo_url=photo_url,
                 installed_at=_to_iso(row.get("installed_at")),
+                visibility_status=row.get("visibility_status") or "approved",
             )
         )
 

@@ -611,6 +611,22 @@ function renderGrid(items) {
            In stack
          </div>` : '';
 
+    // v32+ quarantine: subtle corner badge on the submitter's own
+    // non-approved cards. Approved cards + non-owner views omit it.
+    let quarantineBadge = '';
+    if (it.is_viewer_owner && it.visibility_status && it.visibility_status !== 'approved') {
+      const isPending = it.visibility_status === 'pending'
+        || it.visibility_status === 'pending_inline'
+        || it.visibility_status === 'pending_llm';
+      const label = isPending ? '⟳ Under review' : '⚠ Quarantined';
+      const palette = isPending
+        ? 'background:#fef3c7;color:#92400e;border:1px solid #fde68a;'
+        : 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;';
+      quarantineBadge = `<div class="quarantine-badge"
+        title="Visible only to you. ${isPending ? 'Checks in progress.' : 'Failed automated/security checks — open the detail page to see why.'}"
+        style="position:absolute;top:8px;left:8px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:0.2px;${palette}z-index:2;">${label}</div>`;
+    }
+
     let ownerLine;
     if (it.source === 'curated') {
       const ownerVal = it.owner === 'owner_todo'
@@ -626,6 +642,7 @@ function renderGrid(items) {
     const catBadge = it.category ? `<span class="cat-badge">${esc(it.category)}</span>` : '';
 
     card.innerHTML = `
+      ${quarantineBadge}
       ${photoMarkup}
       ${installedBadge}
       <div class="body">

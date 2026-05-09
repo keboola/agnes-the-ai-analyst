@@ -22,7 +22,14 @@ def _make_user(conn, *, user_id: str, email: str) -> None:
 
 
 def _create_entity(conn, *, owner_id: str, owner_username: str, name: str,
-                   type_: str = "skill") -> str:
+                   type_: str = "skill",
+                   visibility_status: str = "approved") -> str:
+    """Create an entity for repo-level tests.
+
+    Defaults to ``visibility_status='approved'`` so install/list assertions
+    don't have to thread the guardrail flow — the guardrail wiring lives
+    above the repo at ``app/api/store.py`` and has its own end-to-end tests.
+    """
     from src.repositories.store_entities import StoreEntitiesRepository
     repo = StoreEntitiesRepository(conn)
     eid = uuid.uuid4().hex
@@ -30,6 +37,7 @@ def _create_entity(conn, *, owner_id: str, owner_username: str, name: str,
         id=eid, owner_user_id=owner_id, owner_username=owner_username,
         type=type_, name=name, description="desc", category=None,
         version="abcd1234abcd1234", file_size=100,
+        visibility_status=visibility_status,
     )
     return eid
 
@@ -89,6 +97,27 @@ class TestStoreEntities:
         # Floor at zero
         repo.bump_install_count(eid, -10)
         assert repo.get(eid)["install_count"] == 0
+
+    def test_set_visibility_clears_archive_metadata_on_un_archive(self, db_conn):
+        """#11 — admin un-archives an archived entity. archived_at and
+        archived_by carried stale metadata pre-fix. set_visibility must
+        null both columns when transitioning OUT of 'archived'."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+        _make_user(db_conn, user_id="u1", email="u1@x")
+        _make_user(db_conn, user_id="admin", email="admin@x")
+        eid = _create_entity(db_conn, owner_id="u1", owner_username="u1", name="x")
+        repo = StoreEntitiesRepository(db_conn)
+        repo.archive(eid, by_user_id="admin")
+        ent = repo.get(eid)
+        assert ent["visibility_status"] == "archived"
+        assert ent["archived_at"] is not None
+        assert ent["archived_by"] == "admin"
+
+        repo.set_visibility(eid, "approved")
+        ent = repo.get(eid)
+        assert ent["visibility_status"] == "approved"
+        assert ent["archived_at"] is None, "archived_at must reset on un-archive"
+        assert ent["archived_by"] is None, "archived_by must reset on un-archive"
 
 
 class TestUserStoreInstalls:

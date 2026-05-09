@@ -284,3 +284,101 @@ def get_auth_config() -> dict:
 
 def get_corporate_memory_config() -> dict:
     return get_value("corporate_memory", default={})
+
+
+def get_guardrails_config() -> dict:
+    """Flea-market upload-guardrail config (see docs/STORE_GUARDRAILS.md).
+
+    Returns the ``guardrails:`` block from instance.yaml, or an empty dict
+    when not configured. Call site: ``src/store_guardrails/runner.py``.
+    """
+    return get_value("guardrails", default={})
+
+
+def get_guardrails_review_model() -> str:
+    """Resolved Anthropic model ID used for the LLM security review.
+
+    Reads ``guardrails.review_model`` (one of ``haiku``, ``sonnet``,
+    ``opus``, or a concrete ``claude-*`` model ID) and returns the
+    concrete model ID. Defaults to Haiku — the cheapest tier — when the
+    operator hasn't set the key. Override per-instance for higher-stakes
+    review at proportionally higher cost.
+    """
+    from connectors.llm.factory import resolve_model_tier
+
+    raw = get_value("guardrails", "review_model", default="haiku")
+    return resolve_model_tier(raw)
+
+
+def get_guardrails_blocked_quota_per_day() -> int:
+    """Per-submitter cap on `blocked_inline` rows in the trailing 24h.
+
+    Defaults to 50. Set to 0 in instance.yaml to disable the quota
+    entirely (useful for trusted single-tenant deployments). Bounds the
+    worst case where a bot loops on malformed ZIPs and fills disk +
+    the admin queue with noise.
+    """
+    val = get_value("guardrails", "blocked_quota_per_day", default=50)
+    try:
+        return max(0, int(val))
+    except (TypeError, ValueError):
+        return 50
+
+
+def get_guardrails_blocked_bundle_ttl_days() -> int:
+    """How many days to keep a blocked bundle's bytes on disk.
+
+    Default 30. The submission row + sha256 + size always survive — only
+    the bundle bytes get removed. ``bundle_purged_at`` is stamped so the
+    detail UI renders *"Bundle purged on …"*. Set to 0 to disable the
+    TTL purge entirely (bundles persist indefinitely until manual
+    Delete).
+    """
+    val = get_value("guardrails", "blocked_bundle_ttl_days", default=30)
+    try:
+        return max(0, int(val))
+    except (TypeError, ValueError):
+        return 30
+
+
+def get_guardrails_stuck_review_grace_seconds() -> int:
+    """How long a submission may stay at ``status='pending_llm'`` before
+    the reaper flips it to ``review_error``.
+
+    The BackgroundTasks worker normally writes a verdict within a few
+    seconds. If the worker crashes between status flip and verdict
+    write, the row would otherwise sit at pending_llm forever — admin
+    queue surfaces it indefinitely; submitter never gets a verdict.
+
+    Default 1800s (30 min) comfortably exceeds the Sonnet/Opus p99
+    wall time for the configured ``MAX_REVIEW_BYTES`` payload. Set to
+    0 to disable the reaper entirely.
+    """
+    val = get_value("guardrails", "stuck_review_grace_seconds", default=1800)
+    try:
+        return max(0, int(val))
+    except (TypeError, ValueError):
+        return 1800
+
+
+def get_guardrails_enabled() -> bool:
+    """Master kill-switch for the guardrail pipeline.
+
+    Defaults to True. Operators can disable by setting ``guardrails.enabled:
+    false`` in instance.yaml — useful for local development against the
+    UI without burning Anthropic tokens. Inline checks always run; this
+    flag only gates the LLM step (and skips the pending → approved hold).
+
+    Auto-fallback: when the YAML says enabled but no ANTHROPIC_API_KEY /
+    LLM_API_KEY is set in the environment, behave as disabled. This
+    keeps the test suite + first-boot operator experience sane — uploads
+    auto-approve until the operator wires up an LLM provider rather than
+    silently piling up in ``review_error``.
+    """
+    if not bool(get_value("guardrails", "enabled", default=True)):
+        return False
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return True
+    if os.environ.get("LLM_API_KEY", "").strip():
+        return True
+    return False

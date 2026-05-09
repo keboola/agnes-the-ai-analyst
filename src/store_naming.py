@@ -62,6 +62,46 @@ def suffixed_name(original_name: str, username: str) -> str:
     return f"{original_name}-by-{username}"
 
 
+# v36+: archive renames the entity's `name` to free the (owner, name)
+# slot and the global suffix slot for re-upload. The marker is a
+# fixed-token plus epoch suffix so display-strip and is-archived
+# detection are deterministic. Uploaders are blocked from picking
+# a literal name matching this pattern via _NAME_RE in
+# app/api/store.py.
+_ARCHIVE_MARKER = "__archived__"
+_ARCHIVE_NAME_RE = re.compile(rf"{_ARCHIVE_MARKER}\d+$")
+
+
+def make_archive_name(original_name: str, archived_at_epoch: int) -> str:
+    """Compute the suffixed name to write into ``store_entities.name``
+    when an entity transitions to ``visibility_status='archived'``.
+
+    The suffix frees the per-owner (owner_user_id, name) UNIQUE slot
+    AND the global ``<name>-by-<username>`` slug slot, so the owner
+    can re-upload under the original name without picking a new one.
+    Existing installers see the renamed slug on the next sync.
+    """
+    return f"{original_name}{_ARCHIVE_MARKER}{int(archived_at_epoch)}"
+
+
+def is_archived_name(name: str) -> bool:
+    """Whether ``name`` carries the archive-rename suffix."""
+    return bool(_ARCHIVE_NAME_RE.search(name or ""))
+
+
+def strip_archive_suffix(name: str) -> str:
+    """Return the display form of a possibly-archived ``name``.
+
+    No-op when the input doesn't carry the archive suffix. Used by
+    admin queue + my-stack templates so the user-facing label shows
+    the original name with an "Archived" badge instead of the ugly
+    suffix.
+    """
+    if not name:
+        return name
+    return _ARCHIVE_NAME_RE.sub("", name)
+
+
 def compute_entity_version(plugin_dir: Path) -> str:
     """Content-addressed version for a Store entity's plugin tree.
 

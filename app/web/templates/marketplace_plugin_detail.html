@@ -350,7 +350,106 @@
      data-source="{{ source }}"
      data-marketplace-id="{{ marketplace_id or '' }}"
      data-plugin-name="{{ plugin_name or '' }}"
-     data-entity-id="{{ entity_id or '' }}">
+     data-entity-id="{{ entity_id or '' }}"
+     data-visibility="{{ entity.visibility_status if entity else 'approved' }}">
+  {# Quarantine banner — owner / admin only when non-approved. Self-guarded. #}
+  {% include "_quarantine_banner.html" %}
+
+  {# Owner-actions strip (Edit + Delete locked-when-not-approved). Mirrors
+     the policy that previously lived in store_detail.html. Edit is a
+     placeholder for now ("coming soon"); Delete is gated server-side
+     so the visible state matches what the API will accept. #}
+  {% if entity and (is_owner or is_admin) %}
+  <style>
+    .plugin-detail .owner-actions {
+      display: flex; gap: 10px; margin: 0 0 16px 0; justify-content: flex-end;
+    }
+    .plugin-detail .owner-actions a,
+    .plugin-detail .owner-actions button {
+      padding: 6px 14px; border-radius: 8px;
+      font-size: 13px; font-weight: 500; font-family: var(--font-primary);
+      text-decoration: none; border: 1px solid var(--border, #e5e7eb);
+      background: var(--surface, #fff); color: var(--text, #111827);
+      cursor: pointer;
+    }
+    .plugin-detail .owner-actions a:hover {
+      border-color: var(--primary, #0073D1); color: var(--primary, #0073D1);
+    }
+    .plugin-detail .owner-actions .delete {
+      color: #b91c1c; border-color: rgba(185,28,28,0.3);
+    }
+    .plugin-detail .owner-actions .delete:hover {
+      background: rgba(185,28,28,0.08); border-color: #b91c1c;
+    }
+    .plugin-detail .owner-actions button:disabled,
+    .plugin-detail .owner-actions a[aria-disabled="true"] {
+      color: #9ca3af !important; border-color: #e5e7eb !important;
+      background: #f3f4f6 !important; cursor: not-allowed;
+    }
+  </style>
+  <div class="owner-actions">
+    <a href="#" id="owner-edit-btn" aria-disabled="true"
+       title="Edit flow lands in a follow-up — for now, re-upload to update.">
+      Edit (coming soon)
+    </a>
+    {# v35 delete UX: Archive (soft) is the primary path. Owner sees
+       Archive only when the entity is approved or already archived
+       (re-archive is a no-op, but no point exposing). Admin gets
+       Archive AND Hard Delete (separate red button) regardless of
+       state. Quarantined (non-approved + non-archived) entities lock
+       both buttons for the owner — admin still sees both. #}
+    {% if is_admin %}
+      {# Archive (soft) only meaningful when the entity is currently
+         public (approved). For non-approved states the entity is
+         already hidden — archiving would just lose the quarantine /
+         pending state info. Admin still has Hard delete + the
+         override / rescan / retry actions on the quarantine banner
+         to manage non-approved entities. #}
+      {% if entity.visibility_status == 'approved' %}
+        <button class="delete" id="owner-archive-btn" type="button"
+                title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle.">
+          Archive
+        </button>
+      {% elif entity.visibility_status == 'archived' %}
+        <button class="delete" type="button" disabled
+                title="Already archived. Hidden from browse; existing installs still served. Use Hard delete to purge.">
+          Archived
+        </button>
+      {% else %}
+        <button class="delete" type="button" disabled
+                title="Archive is only available for approved entities. Use Override (in quarantine banner) to publish, Rescan to re-evaluate, or Hard delete to purge.">
+          Archive (not applicable while {{ entity.visibility_status }})
+        </button>
+      {% endif %}
+      <button class="delete" id="owner-hard-delete-btn" type="button"
+              style="border-color: rgba(185,28,28,0.45);"
+              title="Hard delete: drops the bundle from disk + removes existing user_store_installs. Use only for legal / privacy removals — existing users lose the plugin.">
+        Hard delete (admin)
+      </button>
+    {% elif entity.visibility_status == 'approved' %}
+      <button class="delete" id="owner-archive-btn" type="button"
+              title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle.">
+        Archive
+      </button>
+    {% elif entity.visibility_status == 'archived' %}
+      <button class="delete" type="button" disabled
+              title="Already archived. Hidden from browse; existing installs still served. Contact an admin for hard delete.">
+        Archived
+      </button>
+    {% elif entity.visibility_status == 'pending' %}
+      <button class="delete" type="button" disabled
+              title="Submission is under review — Delete is locked until checks finish.">
+        Delete (locked — under review)
+      </button>
+    {% else %}
+      <button class="delete" type="button" disabled
+              title="Submission is quarantined. Only an admin can delete it (so the failure evidence isn't lost). Edit + re-upload to fix the issues.">
+        Delete (locked — quarantined)
+      </button>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="hero">
     <div class="crumbs">
       <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}">Marketplace</a>
@@ -523,6 +622,20 @@
   }
   renderInstallBtn(!!d.installed);
 
+  // v32+ quarantine: when the entity is non-approved (only owner +
+  // admin land here in that state — gated server-side), disable the
+  // install button with a gray inert style + tooltip. The API also
+  // refuses POST /install with `entity_not_approved` so a clever user
+  // who toggles the disabled attribute in devtools still hits a 409.
+  if (d.visibility_status && d.visibility_status !== 'approved') {
+    btn.disabled = true;
+    btn.title = 'This submission is not approved yet — install is disabled until checks pass.';
+    btn.textContent = '+ Add to my stack (unavailable while under review)';
+    btn.style.background = '#e5e7eb';
+    btn.style.color = '#6b7280';
+    btn.style.cursor = 'not-allowed';
+  }
+
   // Post-add hint panel — fires only on the *transition* into 'installed'
   // and only when the user hasn't permanently dismissed it. The dismiss
   // flag lives in localStorage so a returning user who already understands
@@ -557,6 +670,38 @@
     renderInstallBtn(!installed);
     if (!installed) showHint();   // newly added → reveal next-steps
     else hintEl.hidden = true;    // removed → hide stale hint
+  });
+
+  // v35 owner / admin delete handlers. Two paths:
+  //   * Archive (soft) — DELETE /api/store/entities/{id}, default body.
+  //     Hides from browse, blocks new installs, KEEPS existing
+  //     user_store_installs serving the bundle.
+  //   * Hard delete (admin only) — DELETE /api/store/entities/{id}?hard=true.
+  //     Drops the bundle from disk + removes existing installs.
+  //     Existing users lose the plugin on next sync. Confirmation
+  //     mentions the install count so admin doesn't nuke a popular
+  //     plugin by accident.
+  function bindDelete(id, opts) {
+    const btn = document.getElementById(id);
+    if (!btn || root.dataset.source !== 'flea' || !root.dataset.entityId) return;
+    btn.addEventListener('click', async () => {
+      if (!confirm(opts.confirm)) return;
+      const url = `/api/store/entities/${encodeURIComponent(root.dataset.entityId)}${opts.hard ? '?hard=true' : ''}`;
+      const r = await fetch(url, { method: 'DELETE' });
+      if (!r.ok) {
+        alert((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')');
+        return;
+      }
+      window.location = '/marketplace?tab=flea';
+    });
+  }
+  bindDelete('owner-archive-btn', {
+    hard: false,
+    confirm: 'Archive this entity? It disappears from browse + nobody can install it. Existing installs keep working.',
+  });
+  bindDelete('owner-hard-delete-btn', {
+    hard: true,
+    confirm: 'HARD DELETE — this drops the bundle and removes ALL existing installs. Users who already added it will lose the plugin on next sync. Continue?',
   });
 
   // ── What it does ────────────────────────────────────────────────

@@ -13,7 +13,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_31():
+def test_schema_version_is_36():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -27,12 +27,30 @@ def test_schema_version_is_31():
     # v29 → v30: news_template — single versioned table for the /home
     # news perex + /news permalink page. See
     # tests/test_news_template_repository.py.
-    # v30 → v31: session-pipeline framework. Renames session_extraction_state
-    # → session_processor_state with composite PK (processor_name,
-    # session_file) so multiple processors can track their own
-    # processed-set independently. Existing rows are copied across with
-    # processor_name='verification'; the old table is dropped.
-    assert SCHEMA_VERSION == 31
+    # v30 → v31: session-pipeline framework — session_processor_state
+    #            replaces session_extraction_state with composite PK.
+    # v31 → v32 (this PR): flea-market upload guardrails — adds
+    #            store_entities.visibility_status + creates store_submissions.
+    # v32 → v33 (this PR): forensic columns on store_submissions —
+    #            file_size, bundle_sha256, bundle_purged_at. Underpins the
+    #            persist-blocked-bundle behavior so admins can Rescan /
+    #            Override / Download; 30-day TTL purge clears bytes while
+    #            keeping the row + sha intact. See docs/STORE_GUARDRAILS.md.
+    # v33 → v34: drop store_submissions.retry_count — counter mixed LLM
+    #            error count + admin rescan count, redundant with audit_log.
+    # v34 → v35 (this PR): store_entities gains 'archived' visibility
+    #            state + archived_at + archived_by audit columns. Owner
+    #            soft-delete writes 'archived'; existing user_store_installs
+    #            keep serving the bundle through marketplace.zip / .git.
+    #            Hard delete (DELETE ?hard=true) remains admin-only.
+    # v35 → v36 (PR #233 follow-up): re-apply NOT NULL + DEFAULT 'pending'
+    #            on store_entities.visibility_status. Lost in the v34→v35
+    #            column rebuild. Without this, an INSERT that omits the
+    #            column lands NULL → repo reads None → undefined behavior
+    #            in the visibility gates. Value-list invariant remains
+    #            enforced application-side (DuckDB ADD CHECK on existing
+    #            column not supported).
+    assert SCHEMA_VERSION == 36
 
 
 def test_v20_adds_source_query(tmp_path):
@@ -124,4 +142,35 @@ def test_v19_db_migrates_to_v20(tmp_path):
         "SELECT id, source_query FROM table_registry WHERE id='foo'"
     ).fetchone()
     assert row == ("foo", None)
+    conn.close()
+
+
+def test_v35_to_v36_reapplies_visibility_constraints(tmp_path):
+    """v34→v35 dropped NOT NULL + DEFAULT when rebuilding the column to
+    drop the legacy CHECK; v35→v36 re-applies them. Verifies that on a
+    freshly migrated DB, an INSERT omitting visibility_status either
+    inherits the default 'pending' or fails — never lands NULL.
+    """
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = conn.execute(
+        "SELECT column_name, is_nullable, column_default "
+        "FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' "
+        "  AND column_name = 'visibility_status'"
+    ).fetchall()
+    assert cols, "visibility_status column missing from store_entities"
+    name, is_nullable, default_expr = cols[0]
+    assert is_nullable == "NO", (
+        f"visibility_status must be NOT NULL after v36; got is_nullable={is_nullable!r}"
+    )
+    # DuckDB renders the default as a quoted literal — match either form.
+    assert default_expr is not None, "visibility_status DEFAULT must be set"
+    assert "pending" in str(default_expr).lower(), (
+        f"visibility_status DEFAULT must be 'pending'; got {default_expr!r}"
+    )
+
     conn.close()

@@ -10,12 +10,258 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Security
+
+- **Prompt-injection hardening for store guardrails LLM review (#1).**
+  `SYSTEM_PROMPT` is now passed via the Anthropic SDK's dedicated
+  `system=` parameter instead of being concatenated into the user
+  message. Bundle file contents are wrapped in `<bundle>...</bundle>`
+  sentinels that the system prompt declares data-only; literal sentinel
+  strings appearing in user content are escaped (`<_bundle_>`) so an
+  adversarial README can't forge a closing tag and inject
+  instructions. The system prompt explicitly tells the reviewer to
+  flag injection attempts inside `<bundle>` rather than follow them.
+  See `tests/test_store_guardrails_prompt_injection.py` for the corpus.
+
+- **Static security scan documented as signal, not gate (#6 partial).**
+  Module docstring + admin-queue copy + `docs/STORE_GUARDRAILS.md`
+  call out that substring matches are suggestive only — the LLM
+  verdict carries the safety determination. Documentation files
+  (`.md`, `.txt`, `.rst`, `.html`, `.json`, `.yaml`, `.yml`, `.toml`)
+  now skip static scan to avoid false positives on prose that
+  legitimately discusses `eval`/`exec`. AST-mode for Python source is
+  tracked as a follow-up.
+
+### Added
+
+- **Stuck-review reaper (schema v35 + new endpoint).**
+  `POST /api/admin/run-reap-stuck-reviews` flips submissions stuck at
+  `status='pending_llm'` past the configured grace
+  (`guardrails.stuck_review_grace_seconds`, default 1800s) to
+  `review_error`. Scheduler invokes every 15 min. Without this a
+  worker crash between status flip and verdict write left rows
+  pending forever. Set the knob to 0 to disable.
+
+- **PUT /api/store/entities/{id} atomic rename (#2).**
+  Bundle updates now bake into a sibling `plugin.staging-<rand>/`
+  dir, run inline checks against the staging copy, then atomic-
+  rename onto the live path on success. Failed checks leave the live
+  tree byte-for-byte intact. Pre-fix the bake wrote into the live
+  path BEFORE checks ran; concurrent GETs could see partial /
+  unverified content.
+
+- **Schema v35 → v36** re-applies `NOT NULL` + `DEFAULT 'pending'`
+  on `store_entities.visibility_status` (lost in the v34→v35 column
+  rebuild). Value-list invariant remains application-side enforced
+  via the repo whitelist (DuckDB `ADD CHECK` on existing columns is
+  not supported).
+
+### Changed
+
+- **BG-task verdict-vs-archive race fixed (#3).**
+  `StoreEntitiesRepository.set_visibility_if_pending` flips visibility
+  only when the row is still in the review window (`pending` /
+  `hidden`). When an admin archives an entity while the LLM review is
+  in flight, the BG verdict no longer clobbers the archive — admin's
+  decision wins. Skipped flips emit a
+  `store.submission.bg_verdict_skipped` audit row so admins can see
+  why an "approved" verdict didn't publish.
+
+- **Quota counter widened to all reject states (#9).**
+  `count_blocked_for_submitter_since` now counts `blocked_inline`,
+  `blocked_llm`, AND `review_error` against the per-submitter daily
+  cap. Pre-fix a bot triggering only LLM-blocked verdicts was
+  unbounded.
+
+- **Un-archive clears archive metadata (#11).**
+  `set_visibility` nulls `archived_at` + `archived_by` when
+  transitioning OUT of `'archived'` so a future read doesn't show
+  stale archive forensics on an approved row.
+
+- **Missing `risk_level` surfaces as `review_error` (#10).**
+  An LLM response that omits or empties `risk_level` no longer
+  defaults to `medium` (which looked like a model decision and
+  silently blocked); it persists as `review_error` with
+  `error='missing_risk_level'` so the admin gets a real Retry button.
+
+- **Sort-key whitelist for admin queue (#23).**
+  `/api/admin/store/submissions?sort=…` rejects unknown keys with
+  HTTP 400 `invalid_sort_key`. Pre-fix a substring-replace chain
+  could drop column references silently when one column name was a
+  substring of another.
+
+- **FSM doc comment in `_SYSTEM_SCHEMA` corrected (#12).**
+  Explicit insert/transition/lifecycle sections describe the actual
+  status machine instead of the misleading
+  `pending → pending_llm → ...` chain. `pending_inline` clarified as
+  reserved-but-unused.
+
+- **Soft delete (Archive) for store entities (schema v35).**
+  `DELETE /api/store/entities/{id}` is now soft by default — flips
+  `visibility_status='archived'` + stamps `archived_at` /
+  `archived_by`. Bundle stays on disk, existing
+  `user_store_installs` continue serving the bundle through
+  `marketplace.zip` / `.git` so already-installed users don't lose
+  the plugin. Browse listings hide archived entries from everyone
+  (including the owner — admins triage). New installs refused.
+  My AI Stack still shows installed-but-archived entries with a
+  subtle *"Archived by owner"* badge.
+
+  **Hard delete** moves to `DELETE /api/store/entities/{id}?hard=true`
+  — admin-only. Drops the bundle bytes + cascades to remove
+  `user_store_installs` (existing users lose the plugin on next sync).
+  Use only for legal / privacy removals where the bytes have to go.
+
+  Detail-page UX: owner of an approved entity sees an **Archive**
+  button. Admin sees both **Archive** and a separate red **Hard delete
+  (admin)** button with an install-count warning in the confirm
+  dialog. Quarantined (pending / blocked) entities lock both buttons
+  for the owner — admin still sees both.
+
+  **Visibility-leak gates (similar audit):** `/api/store/owners` +
+  `/api/marketplace/categories?tab=flea` now filter to
+  `visibility_status='approved'` for non-admin callers (admin sees all).
+  Without this, owner identity + per-category counts of quarantined or
+  archived entries leaked through the public dropdown / filter chips.
+
+### Changed
+
+- **Rename-on-archive frees the name for re-upload.** Archiving an
+  entity now appends `__archived__<epoch>` to `store_entities.name`
+  in the same UPDATE that flips `visibility_status='archived'`. The
+  on-disk skill / agent / plugin subdir is renamed in lockstep
+  (`skills/<old_suffix>/` → `skills/<new_suffix>/`) and SKILL.md /
+  agent.md / plugin.json frontmatter `name` is rewritten so
+  consumers' Claude Code resolves the new slug after their next sync.
+  The `(owner_user_id, name)` UNIQUE slot AND the global
+  `<name>-by-<owner_username>` invocation slot free up, so the same
+  owner can re-upload under the original name without picking a new
+  one. Admin un-archive (set_visibility from 'archived' to
+  'approved') strips the suffix; if the original slot is taken by a
+  re-upload, the un-archived row gets `<name>-restored-N`. Display
+  layer (admin queue, my-stack, marketplace cards / detail) strips
+  the suffix so users see the original label with an "Archived"
+  badge instead of the marker. Trade-off: existing installers see
+  the plugin renamed on next pull and need to re-add (one-tap
+  recovery via the My AI Stack card; same data, new slug).
+  `audit_log.params['original_name']` preserves forensic
+  traceability.
+
+- **Admin submissions queue: Archived chip filters live entity
+  visibility via LEFT JOIN, not denormalized submission status.**
+  Verdict (`store_submissions.status`) is immutable forensic record;
+  lifecycle (`store_entities.visibility_status`) is the live source
+  of truth. Any code path that flips visibility now surfaces in the
+  queue immediately — no denormalization to drift. *Deleted* chip
+  still filters `entity_id IS NULL AND status='deleted'` (entity
+  row is gone after hard delete; explicit marker required). The
+  submission detail page renders Status (verdict) and Entity
+  lifecycle side by side. Closes the bug where archiving an entity
+  outside the soft-delete API didn't surface under
+  `?status=archived`.
+
+- **Consolidated `/store/{id}` into `/marketplace/flea/{id}`.** The
+  legacy detail surface is gone; the unified marketplace detail page
+  is the canonical home for every flea entity. Three in-tree callers
+  (upload-success redirect, My AI Stack card href, /store browse card
+  href) now point straight at the new URL — no redirect hop. Stale
+  external `/store/{id}` bookmarks 404. The marketplace detail
+  templates (`marketplace_plugin_detail.html` +
+  `marketplace_item_detail.html`) gained the **quarantine banner**
+  (extracted into a shared `_quarantine_banner.html` partial), an
+  **owner-actions strip** (Edit "coming soon" + Delete with locked
+  variants), and the **install-button gating** (gray inert when
+  non-approved). The marketplace listing now surfaces a small
+  **"Under review" / "Quarantined"** corner badge on the submitter's
+  own non-approved cards (only visible to them; everyone else still
+  sees only approved entries).
+
+### Added
+
+- **Visibility gate on `/marketplace/flea/{id}` + `/api/marketplace/flea/{id}/detail`.**
+  Non-owner non-admin gets 404 (not 403, no leak) on any non-approved
+  entity — closes the bypass where guessing an entity_id pulled the
+  bundle metadata through the marketplace JSON feed even though the
+  entity was excluded from the public listing.
+- **`StoreEntitiesRepository.list(include_owner_id=…)`.** When set,
+  the WHERE expands to `(visibility_status IN (...) OR owner_user_id
+  = :uid)` so the caller's own non-approved entries surface alongside
+  everyone's approved ones. Used by `/api/store/entities` and
+  `/api/marketplace/items?tab=flea`.
+
+### Removed
+
+- **`/store/{id}` route + `store_detail.html` template.** Replaced by
+  the consolidated marketplace detail surface above.
+
+### Removed
+
+- **`store_submissions.retry_count` column (schema v34).** Counter mixed
+  two unrelated things (LLM error count + admin rescan count), was
+  asymmetric (Retry LLM didn't bump but Rescan did), and is fully
+  redundant with the audit_log activity timeline now rendered on the
+  detail page — every rescan / retry / review_error is a row there
+  with timestamp + actor. Removed from schema, repo signatures, admin
+  endpoints, and the detail-page metadata.
+
 ### Added
 
 - **Session pipeline framework** under `services/session_pipeline/` — pluggable processors for the centralized `/data/user_sessions/<key>/*.jsonl` tree. Each processor implements a `SessionProcessor` Protocol (`name`, `cadence_minutes`, `process_session(...)`) and runs through its own per-processor scheduler tick + scan loop. No cross-processor coupling: a slow or failing processor cannot block any other. Pure-utility lib (`parse_jsonl`, `compute_file_hash`) is shared; orchestration is per-processor in `runner.run_processor()`. Adding a new processor is one file in `services/session_processors/<name>.py`, one entry in the registry list, one entry in the scheduler `JOBS` list. See `services/session_pipeline/contract.py` for the protocol and `services/session_processors/__init__.py` for the registry pattern.
 - `services/session_processors/usage.py` — `UsageProcessor` skeleton (no-op, `cadence_minutes=10`). Reserves the registry slot + scheduler entry so the framework end-to-end exercises two processors. Extraction logic (skill / agent invocation events) and storage shape (DuckDB table vs. append-only parquet event log) are deferred to a separate brainstorm.
 - `POST /api/admin/run-session-processor?processor=<name>` — parametrized admin endpoint that drives one session-pipeline processor end-to-end. Admin-gated; same audit pattern as the other `/api/admin/run-*` endpoints (one row per call with action `run_session_processor:<name>`); 400 when `processor` is unknown.
 - `SessionProcessorStateRepository` in `src/repositories/session_processor_state.py` — backs the new state table.
+
+- **Flea-market upload guardrails (schema v32).** Every `POST` / `PUT` to
+  `/api/store/entities` now passes through a four-stage check pipeline before
+  the entity becomes visible in the public flea browse. Inline checks
+  (manifest shape, static security scan for shell-eval / hardcoded API
+  keys / reverse shells / pickle deserialization, quality + Jinja-template
+  recommendation) run synchronously and return a structured `422` body
+  listing every failed rule on rejection. An async LLM security review
+  then runs on `BackgroundTasks`; on `safe` / `low` risk with no
+  `high|critical` findings the entity flips to `visibility_status='approved'`,
+  otherwise it stays hidden until an admin overrides the verdict. Every
+  submission attempt — pass, fail, or in-flight — is captured in a new
+  `store_submissions` table that powers `/admin/store/submissions` with
+  override / retry / rescan / download / delete actions, all audit-logged.
+  The reviewer model is configurable via `instance.yaml` →
+  `guardrails.review_model: haiku|sonnet|opus` (default `haiku`); when no
+  `ANTHROPIC_API_KEY` is configured the LLM step auto-disables and uploads
+  auto-approve so first-boot UX stays sane. A non-blocking quality hint
+  encourages uploaders to add `{{var}}` placeholders so first-use
+  customization works. **Schema v32:** adds `store_entities.visibility_status`
+  (existing rows backfilled to `'approved'` so live uploads survive the
+  upgrade) and creates `store_submissions`.
+  `UserStoreInstallsRepository.list_for_user` now filters non-approved
+  entities so a user-installed entity that gets blocked by review stops
+  being served to Claude Code via `marketplace.zip` / `marketplace.git`
+  until override. See `docs/STORE_GUARDRAILS.md`.
+
+- **Blocked-bundle persistence + 30-day TTL purge (schema v33).**
+  Inline-blocked uploads no longer roll back the bundle at upload time
+  — the ZIP stays on disk under a `visibility_status='hidden'` entity
+  row so admins can **Rescan**, **Override + publish**, or
+  **Download bundle** for forensic inspection from
+  `/admin/store/submissions/{id}`. Three new columns on
+  `store_submissions`:
+  * `file_size` — bytes on disk; sortable in the admin list (click
+    the new **Size** column header).
+  * `bundle_sha256` — content-addressed hash; survives the TTL purge
+    so admins can correlate "this submitter / IP tried the same
+    payload N times" or match against a known-bad list.
+  * `bundle_purged_at` — TTL stamp, surfaces as *"Bundle purged on
+    YYYY-MM-DD"* on the detail page once the bytes are gone.
+  Two operator knobs under `guardrails:` in `instance.yaml`:
+  `blocked_bundle_ttl_days` (default 30; set to 0 to retain forever)
+  and `blocked_quota_per_day` (default 50; per-submitter cap on
+  rejected uploads in trailing 24h, returns 429 `quota_exceeded` once
+  exceeded). New scheduler job `store-blocked-purge` runs daily at
+  04:00 UTC against `POST /api/admin/run-blocked-purge`. Override no
+  longer 409s on inline-blocked submissions — flow is uniform with
+  blocked_llm. Detail page also shows an Activity timeline pulled
+  from `audit_log` so admins can confirm a verdict is fresh after
+  Rescan / Retry. See `docs/STORE_GUARDRAILS.md`.
+
 - **PostHog snippet middleware preserves `Response.background`** on every return path so any `BackgroundTask` / `BackgroundTasks` attached to an HTML route still fires once the integration is enabled (PR #231 review by minasarustamyan). `BaseHTTPMiddleware` materialises the body and asks subclasses to return a fresh `Response`; the previous implementation dropped `background` on three paths, silently cancelling deferred audit logging / async webhooks / email sends with no log line. Also adds a `_MAX_BUFFER_BYTES` (4 MB) cap so a streamed-HTML response can't balloon RSS — bigger bodies short-circuit through with a warning instead of being buffered. Regression tests in `tests/test_posthog_inject_middleware.py` exercise the four return paths plus the streaming guard.
 - **`POSTHOG_LLM_PAYLOAD_MAX_CHARS` (default 30000) clips `$ai_input` / `$ai_output_choices`** before they hit PostHog so oversized prompts don't get silently dropped at ingest. PostHog's per-event ceiling is ~32 KB and the SDK does not chunk; Agnes prompts routinely include sample rows / table schemas / analyst SQL that exceed it, and unbounded payloads landed *exactly* the calls operators wanted to inspect on the floor (PR #231 review by minasarustamyan). Truncated payloads carry an explicit `…[truncated N chars]` marker so a reader doesn't mistake them for a complete capture; metadata (provider, model, tokens, latency, error) flows regardless. Override the cap via the env var.
 - **PostHog event-level user attributes** so a reviewer reading an event in PostHog sees who the user was inline, without clicking through to the person profile. Backend `capture_exception` merges `user_id` / `user_email` / `user_name` (per `POSTHOG_IDENTIFY_PII`) into the event properties; browser snippet registers the same keys as super-properties via `posthog.register({...})` so every client-side event including `posthog.captureException()` carries them.
