@@ -1077,6 +1077,53 @@ async def store_new(
     return templates.TemplateResponse(request, "store_upload.html", ctx)
 
 
+@router.get("/marketplace/flea/{entity_id}/edit", response_class=HTMLResponse)
+async def store_edit(
+    entity_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Edit page for a flea-market entity (v37 edit feature).
+
+    Owner or admin only. Pre-fills metadata + lets the submitter
+    optionally upload a new bundle (creates v<N+1>). Skipping the
+    bundle field updates only metadata. Edit is blocked while a
+    prior version is under review — the form surfaces a banner and
+    disables Save in that case (the API gate also enforces 409
+    server-side).
+    """
+    from app.auth.access import is_user_admin
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+    from src.store_categories import STORE_CATEGORIES
+
+    entity = StoreEntitiesRepository(conn).get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    is_admin = is_user_admin(user["id"], conn)
+    if entity["owner_user_id"] != user["id"] and not is_admin:
+        # Same 404-no-leak as _enforce_visibility — strangers don't
+        # learn of the entity's existence.
+        raise HTTPException(status_code=404, detail="entity_not_found")
+
+    pending_sub = None
+    if entity.get("visibility_status") == "pending":
+        latest = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        if latest and latest.get("status") in ("pending_inline", "pending_llm"):
+            pending_sub = latest
+
+    ctx = _build_context(
+        request, user=user,
+        entity=entity,
+        is_admin=is_admin,
+        is_owner=entity["owner_user_id"] == user["id"],
+        categories=list(STORE_CATEGORIES),
+        pending_sub=pending_sub,
+    )
+    return templates.TemplateResponse(request, "store_edit.html", ctx)
+
+
 # Legacy /store/{id} detail surface removed in v32+. The unified
 # /marketplace/flea/{id} is the canonical detail page. All in-tree
 # callers (store_upload redirect, my_ai_stack card, store_listing
