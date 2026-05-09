@@ -203,6 +203,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   detail page — every rescan / retry / review_error is a row there
   with timestamp + actor. Removed from schema, repo signatures, admin
   endpoints, and the detail-page metadata.
+### Internal
+
+- Drop unused curated-marketplace helpers flagged in PR #234 review: `src.marketplace_metadata.build_db_payload` (imported but never called — strict-drop semantics were re-implemented inline in `src.marketplace._refresh_plugin_cache` and the standalone helper would have silently regressed back to "fall through to original external URL on mirror failure" if a future contributor re-wired it), `app.api.marketplace._resolve_marketplace_name` (one-line shim with no remaining call sites; callers use `_resolve_marketplace_meta` which returns name + curator together). Also removes the misleading `# noqa: F401  Optional kept for forward-compat` on `src/marketplace.py` — `Optional` IS used (twice in the file).
+
 ### Fixed
 
 - **Curator now mandatory on `PATCH /api/marketplaces/{id}` too** (PR #234 review). The POST handler enforced `curator_name` + `curator_email` at create time, but the PATCH handler treated empty / missing curator inputs as "no change" — so legacy rows that pre-date v32 (`curator_name=NULL`) could be edited indefinitely (URL, description, name) without ever filling the curator gap, and the `OWNER_TODO_PLACEHOLDER` lingered on every `/marketplace` card. The PATCH path now rejects with `400 curator_name is required` / `curator_email is required` when the post-merge row would persist with empty curator. The DB column itself stays nullable so untouched legacy rows continue to coexist; the gate fires only the moment an admin opens the edit modal. Existing PATCH semantics (empty-string input = "leave existing value alone", once-filled curator can't be cleared) are preserved.
