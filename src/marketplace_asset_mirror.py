@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import http.client
 import ipaddress
 import json
 import logging
@@ -149,33 +150,42 @@ class MirrorReport:
 # ---------------------------------------------------------------------------
 
 
-def _is_safe_url(url: str) -> Tuple[bool, str]:
-    """Reject URLs we shouldn't follow (non-http, private IPs, malformed).
+def _resolve_safe(url: str) -> Tuple[bool, str, str]:
+    """Reject URLs we shouldn't follow and return the IP the caller MUST connect to.
 
-    Returns ``(False, reason)`` for SSRF-relevant rejections; ``(True, "")``
-    otherwise. The DNS resolution step happens here so we can reject before
-    handing the URL to urllib's connection pool.
+    Returns ``(ok, reason, pinned_ip)``. On rejection ``pinned_ip`` is empty.
+
+    Why the pinned IP matters: ``urllib`` would otherwise re-resolve the
+    hostname at connection time, and an attacker-controlled DNS server can
+    return a public IP for the validation lookup and ``127.0.0.1`` /
+    ``169.254.169.254`` for the connection lookup (DNS rebinding). Resolving
+    once here and connecting to that exact IP defeats the rebind. ALL
+    addresses returned by ``getaddrinfo`` are validated — round-robin DNS
+    that mixes public + private IPs is treated as unsafe regardless of which
+    one we'd have picked first.
     """
     try:
         parts = urlparse(url)
     except ValueError as e:
-        return False, f"bad_url: {e}"
+        return False, f"bad_url: {e}", ""
     if parts.scheme not in ("http", "https"):
-        return False, f"unsupported_scheme: {parts.scheme}"
+        return False, f"unsupported_scheme: {parts.scheme}", ""
     host = parts.hostname or ""
     if not host:
-        return False, "missing_host"
+        return False, "missing_host", ""
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as e:
-        return False, f"dns_failure: {e}"
+        return False, f"dns_failure: {e}", ""
+
+    chosen_ip = ""
     for info in infos:
         sockaddr = info[4]
         ip_str = sockaddr[0]
         try:
             addr = ipaddress.ip_address(ip_str)
         except ValueError:
-            return False, f"unparseable_address: {ip_str}"
+            return False, f"unparseable_address: {ip_str}", ""
         if (
             addr.is_private
             or addr.is_loopback
@@ -184,12 +194,187 @@ def _is_safe_url(url: str) -> Tuple[bool, str]:
             or addr.is_reserved
             or addr.is_unspecified
         ):
-            return False, f"address_in_blocked_range: {ip_str}"
+            return False, f"address_in_blocked_range: {ip_str}", ""
         # AWS / GCP / Azure metadata endpoints fall under is_link_local
         # (169.254.169.254) above — explicit additional check for IPv6
         # ULA + the broad metadata-style catchall would be belt-and-
         # suspenders only.
-    return True, ""
+        # Prefer the first IPv4 result for connection pinning (broader CDN
+        # compatibility); fall back to the first record otherwise.
+        if not chosen_ip and info[0] == socket.AF_INET:
+            chosen_ip = ip_str
+    if not chosen_ip and infos:
+        chosen_ip = infos[0][4][0]
+    if not chosen_ip:
+        return False, "no_address", ""
+    return True, "", chosen_ip
+
+
+def _is_safe_url(url: str) -> Tuple[bool, str]:
+    """Backwards-compatible 2-tuple wrapper over :func:`_resolve_safe`.
+
+    Existing tests (and any external callers that only care about the
+    accept/reject decision) keep working unchanged. The pinned IP returned
+    by ``_resolve_safe`` is consumed internally by the connection-pinning
+    handlers below.
+    """
+    ok, reason, _ = _resolve_safe(url)
+    return ok, reason
+
+
+# ---------------------------------------------------------------------------
+# SSRF-aware urllib opener
+#
+# Two threats against the simple "validate URL, then urlopen" pattern:
+#   1. Redirect bypass — urllib follows up to 10 redirects with no SSRF
+#      re-check. An attacker 302s to http://169.254.169.254/... and we
+#      mirror cloud metadata.
+#   2. DNS rebinding — _resolve_safe calls getaddrinfo once; urllib calls
+#      it again to connect. Attacker DNS returns a public IP first, a
+#      private IP second.
+#
+# Mitigation is one shared opener built once, with three handlers:
+#   - _SafeRedirectHandler    — re-validates Location on every redirect
+#   - _PinnedHTTPHandler      — connects to the SSRF-validated IP, never
+#                                re-resolves the hostname
+#   - _PinnedHTTPSHandler     — same, with TLS SNI/cert verification still
+#                                bound to the original hostname
+# ---------------------------------------------------------------------------
+
+
+class _UnsafeRedirectError(Exception):
+    """Raised by ``_SafeRedirectHandler`` when a redirect Location is unsafe.
+
+    Distinct exception type so ``_fetch_url`` can map this to
+    ``status='rejected'`` (terminal — security decision, not a transient
+    network failure to retry next sync).
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-runs SSRF validation on every redirect ``Location`` header.
+
+    The default ``HTTPRedirectHandler`` follows up to 10 redirects without
+    revalidation, defeating the pre-flight SSRF guard. Re-pinning the IP
+    on the new request preserves DNS-rebinding defence across hops too.
+    """
+
+    # Tightened from the urllib default of 10. Legitimate CDN chains
+    # (S3 → presigned, DOI → publisher) routinely use 3–4 hops; 5 leaves
+    # headroom without giving attackers many hops to scan.
+    max_redirections = 5
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        ok, reason, pinned_ip = _resolve_safe(newurl)
+        if not ok:
+            raise _UnsafeRedirectError(f"redirect_blocked: {reason}")
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None:
+            # Re-pin the validated IP so the next leg connects to it
+            # rather than re-resolving the hostname (rebinding defence).
+            new_req.pinned_ip = pinned_ip
+        return new_req
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection that connects to a pre-resolved IP.
+
+    Replicates the parent ``connect()`` but skips the implicit DNS lookup
+    inside ``socket.create_connection``. The hostname stays in ``self.host``
+    for the ``Host:`` header so vhost routing still works.
+    """
+
+    def __init__(self, host, *, pinned_ip, **kwargs):
+        super().__init__(host, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._pinned_ip, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection variant of ``_PinnedHTTPConnection``.
+
+    TLS SNI + certificate verification stay bound to the original hostname
+    (``self.host``) — the cert chain is validated against the hostname the
+    curator wrote, not the pinned IP. Connecting to a different IP than
+    DNS would currently return is exactly the point.
+    """
+
+    def __init__(self, host, *, pinned_ip, **kwargs):
+        super().__init__(host, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        sock = socket.create_connection(
+            (self._pinned_ip, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            server_hostname = self._tunnel_host
+        else:
+            server_hostname = self.host
+        self.sock = self._context.wrap_socket(sock, server_hostname=server_hostname)
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        pinned = getattr(req, "pinned_ip", None)
+        if not pinned:
+            # Fail closed: any unpinned request reaching the handler is a
+            # bug (caller forgot to use _PinnedRequest). Better to error
+            # than to silently re-resolve and lose the rebinding defence.
+            raise urllib.error.URLError("ssrf: missing pinned_ip on request")
+        return self.do_open(
+            lambda host, **kw: _PinnedHTTPConnection(host, pinned_ip=pinned, **kw),
+            req,
+        )
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        pinned = getattr(req, "pinned_ip", None)
+        if not pinned:
+            raise urllib.error.URLError("ssrf: missing pinned_ip on request")
+        return self.do_open(
+            lambda host, **kw: _PinnedHTTPSConnection(host, pinned_ip=pinned, **kw),
+            req,
+        )
+
+
+class _PinnedRequest(urllib.request.Request):
+    """``urllib.Request`` carrying the SSRF-validated IP for connection pinning."""
+
+    def __init__(self, url, *, pinned_ip, **kwargs):
+        super().__init__(url, **kwargs)
+        self.pinned_ip = pinned_ip
+
+
+_OPENER = urllib.request.build_opener(
+    _PinnedHTTPHandler(),
+    _PinnedHTTPSHandler(),
+    _SafeRedirectHandler(),
+)
+
+
+def _http_open(req, timeout):
+    """Single call site for outgoing HTTP — wraps the SSRF-aware opener.
+
+    Tests patch this symbol to inject fake responses without going through
+    the urllib stack. Production code never bypasses it.
+    """
+    return _OPENER.open(req, timeout=timeout)
 
 
 def _safe_filename(url: str, default_ext: str) -> str:
@@ -259,11 +444,6 @@ class FetchOutcome:
     error: str = ""
 
 
-def _open_request(url: str, headers: Dict[str, str]) -> urllib.request.Request:
-    headers_full = {"User-Agent": USER_AGENT, **headers}
-    return urllib.request.Request(url, headers=headers_full)
-
-
 def _fetch_url(
     url: str,
     *,
@@ -277,20 +457,20 @@ def _fetch_url(
     network error produces ``status="failed"`` (caller may surface and try
     again next sync).
     """
-    safe, reason = _is_safe_url(url)
+    safe, reason, pinned_ip = _resolve_safe(url)
     if not safe:
         return FetchOutcome(status="rejected", error=reason)
 
-    headers: Dict[str, str] = {}
+    headers: Dict[str, str] = {"User-Agent": USER_AGENT}
     if prior:
         if prior.etag:
             headers["If-None-Match"] = prior.etag
         if prior.last_modified:
             headers["If-Modified-Since"] = prior.last_modified
 
-    req = _open_request(url, headers)
+    req = _PinnedRequest(url, pinned_ip=pinned_ip, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
+        with _http_open(req, HTTP_TIMEOUT_SEC) as resp:
             status_code = resp.status
             content_type = resp.headers.get("Content-Type", "") or ""
             etag = resp.headers.get("ETag", "") or ""
@@ -322,6 +502,8 @@ def _fetch_url(
                 etag=etag,
                 last_modified=last_modified,
             )
+    except _UnsafeRedirectError as e:
+        return FetchOutcome(status="rejected", error=e.reason)
     except urllib.error.HTTPError as e:
         if e.code == 304:
             return FetchOutcome(
@@ -331,6 +513,11 @@ def _fetch_url(
             )
         return FetchOutcome(status="failed", error=f"http_{e.code}")
     except urllib.error.URLError as e:
+        # urllib wraps non-HTTPError exceptions raised inside handlers in
+        # URLError; unwrap so a redirect-blocked error doesn't get
+        # mis-classified as a transient failure.
+        if isinstance(getattr(e, "reason", None), _UnsafeRedirectError):
+            return FetchOutcome(status="rejected", error=e.reason.reason)
         return FetchOutcome(status="failed", error=f"url_error: {e.reason}")
     except (TimeoutError, socket.timeout):
         return FetchOutcome(status="failed", error="timeout")
