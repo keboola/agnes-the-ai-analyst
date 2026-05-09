@@ -1,17 +1,31 @@
 """Static security scan for uploaded skill/agent/plugin bundles.
 
-Pure pattern matching — no LLM, no execution. Scans every text file in the
-baked plugin tree for high-confidence danger signals. Each finding cites
-the file + line so the uploader can fix and resubmit.
+**Static scan is signal, not gate.** Substring matches flag candidates
+for the LLM reviewer; treat them as suggestive, not authoritative. Any
+attacker willing to obfuscate (`getattr(__builtins__, "ev"+"al")`,
+base64-decoded eval, dynamic imports) trivially bypasses substring
+matching, and legitimate code (e.g. a script that calls subprocess
+intentionally) trips false positives that the LLM resolves with context.
 
-The check is intentionally template-aware: text that only contains
-"exec-like" tokens *inside* a Jinja-style ``{{...}}`` placeholder is not
-flagged, since first-use customization is a feature (see the quality
-check's templating recommendation). We strip placeholders before pattern
-matching, on a per-line basis.
+The pipeline still treats a static-security finding as inline-blocking
+because shipping known-bad patterns to the LLM is wasteful and the
+admin override path exists for false positives — but operators reading
+``inline_checks.static_security`` should NOT assume "no findings" means
+"safe". The LLM verdict carries that determination.
 
-Severity floor: any finding here blocks publication. We err strict — the
-admin override path exists for false positives.
+Implementation notes:
+
+- Pure pattern matching — no LLM, no execution.
+- Documentation files (`.md`, `.txt`, `.rst`, `.html`, `.json`,
+  `.yaml`, `.yml`) are skipped to avoid false positives on prose that
+  legitimately discusses ``eval`` / ``exec`` / etc. Code files (`.py`,
+  `.js`, `.sh`, …) remain in scope.
+- Template-aware: text that only contains "exec-like" tokens *inside*
+  a Jinja-style ``{{...}}`` placeholder is not flagged, since
+  first-use customization is a feature.
+
+Future work (tracked separately): AST mode for `.py` files behind a
+flag, with false-positive comparison before flipping the default.
 """
 
 from __future__ import annotations
@@ -21,13 +35,24 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
-# Files we don't bother scanning (binary, irrelevant to security review).
+# Files we don't bother scanning. Two categories:
+#   1. Binary content — irrelevant to a substring security scan.
+#   2. Documentation / config — substring matches on prose ("see also
+#      eval()", "configure exec_path:") are false positives that confuse
+#      uploaders without adding signal. Code files (.py, .js, .sh, …)
+#      remain in scope.
 _SKIP_EXTENSIONS = {
+    # Binary
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg",
     ".mp3", ".mp4", ".mov", ".webm",
     ".zip", ".tar", ".gz", ".7z",
     ".pdf", ".woff", ".woff2", ".ttf", ".otf",
     ".pyc", ".pyo", ".so", ".dylib", ".dll",
+    # Documentation / config (#6 honesty fix). Prose that mentions
+    # `eval` / `exec` is not a security signal; flagging it taught
+    # uploaders to ignore the static-security panel.
+    ".md", ".txt", ".rst", ".html",
+    ".json", ".yaml", ".yml", ".toml",
 }
 
 # Cap per file so a 50 MB README full of `eval(` doesn't OOM the worker.

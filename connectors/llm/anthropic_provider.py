@@ -67,14 +67,21 @@ class AnthropicExtractor:
         max_tokens: int,
         json_schema: dict,
         schema_name: str,
+        system: str | None = None,
     ) -> dict:
         """Extract structured JSON using the Anthropic API.
 
         Args:
-            prompt: The extraction prompt to send to the model.
+            prompt: User-content prompt sent to the model.
             max_tokens: Maximum tokens in the response.
             json_schema: JSON Schema that the response must conform to.
             schema_name: Human-readable name for the schema.
+            system: Optional system prompt — keeps trust boundary intact
+                when the user content contains untrusted data (e.g.
+                files uploaded by third parties). When the caller passes
+                a system prompt here, the prompt-injection threat model
+                relies on the SDK's separate ``system=`` parameter so a
+                crafted user payload can't override the rules.
 
         Returns:
             Parsed JSON dictionary conforming to the provided schema.
@@ -92,6 +99,7 @@ class AnthropicExtractor:
             try:
                 return self._attempt_extraction(
                     prompt, max_tokens, json_schema, schema_name, attempt,
+                    system=system,
                 )
             except LLMAuthError:
                 raise
@@ -118,6 +126,7 @@ class AnthropicExtractor:
         json_schema: dict,
         schema_name: str,
         attempt: int,
+        system: str | None = None,
     ) -> dict:
         """Single extraction attempt against the Anthropic API."""
         logger.info(
@@ -130,17 +139,20 @@ class AnthropicExtractor:
         try:
             with trace_generation(provider="anthropic", model=self._model) as _trace:
                 _trace.set_input(prompt)
-                response = self._client.messages.create(
-                    model=self._model,
-                    max_tokens=max_tokens,
-                    messages=[{"role": "user", "content": prompt}],
-                    output_config={
+                create_kwargs = {
+                    "model": self._model,
+                    "max_tokens": max_tokens,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "output_config": {
                         "format": {
                             "type": "json_schema",
                             "schema": _strict_json_schema(json_schema),
                         },
                     },
-                )
+                }
+                if system:
+                    create_kwargs["system"] = system
+                response = self._client.messages.create(**create_kwargs)
                 _trace.set_output_from_anthropic(response)
         except anthropic.AuthenticationError as e:
             raise LLMAuthError("Anthropic authentication failed (check API key)") from e

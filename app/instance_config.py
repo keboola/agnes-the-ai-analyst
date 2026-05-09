@@ -341,6 +341,26 @@ def get_guardrails_blocked_bundle_ttl_days() -> int:
         return 30
 
 
+def get_guardrails_stuck_review_grace_seconds() -> int:
+    """How long a submission may stay at ``status='pending_llm'`` before
+    the reaper flips it to ``review_error``.
+
+    The BackgroundTasks worker normally writes a verdict within a few
+    seconds. If the worker crashes between status flip and verdict
+    write, the row would otherwise sit at pending_llm forever — admin
+    queue surfaces it indefinitely; submitter never gets a verdict.
+
+    Default 1800s (30 min) comfortably exceeds the Sonnet/Opus p99
+    wall time for the configured ``MAX_REVIEW_BYTES`` payload. Set to
+    0 to disable the reaper entirely.
+    """
+    val = get_value("guardrails", "stuck_review_grace_seconds", default=1800)
+    try:
+        return max(0, int(val))
+    except (TypeError, ValueError):
+        return 1800
+
+
 def get_guardrails_enabled() -> bool:
     """Master kill-switch for the guardrail pipeline.
 

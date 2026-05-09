@@ -175,6 +175,25 @@ class TestStaticScan:
         assert r.passed
         assert r.static_security["status"] == "pass"
 
+    def test_eval_in_markdown_not_flagged(self, plugin_dir):
+        """#6 — documentation files (.md, .txt, .rst) skip static scan
+        so prose discussing 'eval' / 'exec' doesn't trip false positives.
+        Same string in a .py file MUST still flag (locked in
+        test_python_eval_flagged)."""
+        _write_skill_md(plugin_dir)
+        # README that legitimately discusses eval — must NOT flag.
+        (plugin_dir / "skills" / "test-skill" / "NOTES.md").write_text(
+            "# Notes\n\n"
+            "Avoid `eval(user_input)` in production code — see OWASP.\n"
+            "Same applies to `exec(arbitrary_text)`.\n"
+        )
+        r = run_inline_checks(plugin_dir, type_="skill", description="Doc-only skill")
+        cats = {f["category"] for f in r.static_security["findings"]}
+        assert "code_exec" not in cats, (
+            "static scan flagged 'eval' in a .md file — docs should skip"
+        )
+        assert r.passed
+
 
 # ---------------------------------------------------------------------------
 # Quality + templating

@@ -3517,6 +3517,8 @@ async def admin_list_store_submissions(
     type: Optional[str] = None,  # noqa: A002 — FastAPI query-param name
     name: Optional[str] = None,
     version: Optional[str] = None,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
     limit: int = 100,
     skip: int = 0,
     user: dict = Depends(require_admin),
@@ -3553,15 +3555,25 @@ async def admin_list_store_submissions(
         lifecycle = "deleted"
         statuses = None
 
-    items, total = StoreSubmissionsRepository(conn).list_for_admin(
-        status=statuses,
-        submitter_id=submitter or None,
-        type_=type or None,
-        name_substr=name or None,
-        version_substr=version or None,
-        lifecycle=lifecycle,
-        limit=limit, skip=skip,
-    )
+    try:
+        items, total = StoreSubmissionsRepository(conn).list_for_admin(
+            status=statuses,
+            submitter_id=submitter or None,
+            type_=type or None,
+            name_substr=name or None,
+            version_substr=version or None,
+            sort_by=sort or None,
+            sort_order=order or None,
+            lifecycle=lifecycle,
+            limit=limit, skip=skip,
+        )
+    except ValueError as e:
+        # Sort key whitelist rejection (#23) — surface as 400 so the UI
+        # can show the operator a meaningful message instead of 500.
+        msg = str(e)
+        if msg.startswith("invalid_sort_key"):
+            raise HTTPException(status_code=400, detail="invalid_sort_key")
+        raise
     return {"items": items, "total": total, "limit": limit, "skip": skip}
 
 
@@ -3941,6 +3953,36 @@ async def run_blocked_purge(
         action="run_blocked_purge",
         resource="job:store-blocked-purge",
         params={"ttl_days": ttl, "purged": result.get("purged", 0),
+                "skipped": result.get("skipped", False)},
+    )
+    return {"ok": True, "details": result}
+
+
+@router.post("/run-reap-stuck-reviews")
+async def run_reap_stuck_reviews(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Trigger the stuck-review reaper.
+
+    Wraps :func:`src.store_guardrails.reaper.reap_stuck_llm_reviews`.
+    The scheduler hits this every 15 minutes; admins can run it on
+    demand if a worker crash is suspected. Flips any
+    ``status='pending_llm'`` row older than the configured grace to
+    ``review_error`` so the queue stops growing indefinitely.
+    """
+    from app.instance_config import get_guardrails_stuck_review_grace_seconds
+    from src.store_guardrails.reaper import reap_stuck_llm_reviews
+
+    grace = get_guardrails_stuck_review_grace_seconds()
+    result = reap_stuck_llm_reviews(conn, grace_seconds=grace)
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="run_reap_stuck_reviews",
+        resource="job:store-reap-stuck-reviews",
+        params={"grace_seconds": grace,
+                "reaped": result.get("reaped", 0),
                 "skipped": result.get("skipped", False)},
     )
     return {"ok": True, "details": result}

@@ -112,17 +112,70 @@
       The security reviewer couldn't complete its check. The submission
       stays hidden until an admin retries. No action needed from you.
     </div>
+    {% if sub and sub.llm_findings and sub.llm_findings.error %}
+      <div style="margin-top: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-word;">
+        Error: {{ sub.llm_findings.error }}
+      </div>
+    {% endif %}
+    {# Surface any inline-check findings that were captured before the
+       LLM step errored — gives the submitter something concrete to
+       look at instead of a bare "errored" message. #}
+    {% if sub and sub.inline_checks %}
+      {% set ic = sub.inline_checks %}
+      {% if ic.static_security and ic.static_security.findings %}
+      <ul>
+        {% for f in ic.static_security.findings[:6] %}
+        <li>security: <code>{{ f.file }}:{{ f.line }}</code> — {{ f.reason }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    {% endif %}
 
   {% elif st == 'overridden' %}
     <h3>✓ Admin override applied</h3>
     <div>This submission was force-published by an admin.</div>
+    {% if sub and sub.override_reason %}
+      <div style="margin-top: 6px; font-size: 13px;">
+        <em>Override reason:</em> {{ sub.override_reason }}
+      </div>
+    {% endif %}
 
   {% else %}
+    {# Fallback for hidden / unexpected lifecycle states. Surface
+       whatever verdict context the submission row carries so an
+       admin doesn't see a bare "Hidden" with no actionable detail. #}
     <h3>Hidden</h3>
     <div>
       This entity is not visible in the public Store
       (<code>visibility_status = "{{ entity.visibility_status }}"</code>).
     </div>
+    {% if sub and sub.inline_checks %}
+      {% set ic = sub.inline_checks %}
+      {% if ic.manifest and ic.manifest.issues %}
+      <ul>
+        {% for issue in ic.manifest.issues %}<li>manifest: <code>{{ issue }}</code></li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if ic.static_security and ic.static_security.findings %}
+      <ul>
+        {% for f in ic.static_security.findings[:6] %}
+        <li>security: <code>{{ f.file }}:{{ f.line }}</code> — {{ f.reason }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    {% endif %}
+    {% if sub and sub.llm_findings %}
+      {% if sub.llm_findings.summary %}
+      <div style="margin-top: 6px;"><em>{{ sub.llm_findings.summary }}</em></div>
+      {% endif %}
+      {% if sub.llm_findings.findings %}
+      <ul>
+        {% for f in sub.llm_findings.findings[:6] %}
+        <li>[{{ f.severity }}] <code>{{ f.file }}</code> — {{ f.explanation }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    {% endif %}
   {% endif %}
 
   {% if is_admin and sub %}

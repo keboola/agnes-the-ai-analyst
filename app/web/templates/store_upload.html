@@ -216,11 +216,15 @@
   .banner[hidden] { display: none !important; }
   .banner {
     padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;
-    font-size: 13px; line-height: 1.5; display: flex; align-items: center; gap: 10px;
+    font-size: 13px; line-height: 1.5; display: flex; align-items: flex-start; gap: 10px;
   }
   .banner.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
   .banner.success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
-  .banner .ico { flex-shrink: 0; font-size: 16px; }
+  .banner .ico { flex-shrink: 0; font-size: 16px; line-height: 1.5; }
+  /* Preserve newlines in structured upload-error messages (multi-line
+     finding lists). textContent assignment wouldn't render them
+     otherwise. */
+  .banner > span { white-space: pre-wrap; }
 
   /* ── Step swap ─────────────────────────────────────────────────── */
   .step { display: none; }
@@ -437,6 +441,42 @@ const ERROR_MESSAGES = {
 
 function humanizeError(detail) {
   if (!detail) return 'Something went wrong. Please try again.';
+
+  // Structured detail (FastAPI wraps the dict at .detail). Two shapes:
+  //   {code: "submission_blocked", submission_id, checks: {...}}    — guardrails
+  //   {code: "quota_exceeded", limit, blocked_in_last_24h, hint}     — quota
+  // Drop the bare ``Upload failed: [object Object]`` fallback.
+  if (typeof detail === 'object') {
+    const code = detail.code || '';
+    if (code === 'submission_blocked') {
+      const lines = ['Upload blocked by automated checks.'];
+      const checks = detail.checks || {};
+      const inline = (checks.static_security && checks.static_security.findings) || [];
+      for (const f of inline.slice(0, 5)) {
+        const where = (f.file || '?') + ':' + (f.line || '?');
+        lines.push('• ' + where + ' — ' + (f.reason || f.category || 'security finding'));
+      }
+      if (inline.length > 5) lines.push('  …and ' + (inline.length - 5) + ' more.');
+      const manifestIssues = (checks.manifest && checks.manifest.issues) || [];
+      for (const m of manifestIssues.slice(0, 3)) {
+        lines.push('• manifest: ' + m);
+      }
+      lines.push('');
+      lines.push('Fix the issues above and re-upload, or open the admin queue if the rule was over-strict.');
+      return lines.join('\n');
+    }
+    if (code === 'quota_exceeded') {
+      return 'Upload blocked: too many rejected uploads in the last 24 hours '
+        + '(' + (detail.blocked_in_last_24h || '?') + '/' + (detail.limit || '?') + '). '
+        + (detail.hint || 'Wait for the window to reset.');
+    }
+    if (code) return 'Upload failed: ' + code;
+    // Unknown object shape — last resort, JSON-stringify so the user
+    // sees the raw payload instead of [object Object].
+    try { return 'Upload failed: ' + JSON.stringify(detail); }
+    catch (_) { return 'Upload failed.'; }
+  }
+
   const s = String(detail);
   if (ERROR_MESSAGES[s]) return ERROR_MESSAGES[s];
   // Codes with a parameter (e.g. "unknown_type:foo")
@@ -653,9 +693,20 @@ finishBtn.addEventListener('click', async () => {
       window.location = `/marketplace/flea/${encodeURIComponent(entity.id)}`;
       return;
     }
+    // Inline-blocked uploads (422 with submission_blocked) now persist
+    // the entity at visibility=hidden so admins can rescan/override and
+    // submitters can see the full quarantine banner. Redirect to the
+    // detail page when the response carries an entity_id — same UX as
+    // a successful upload, just landing on a banner instead of an
+    // approved card.
     let msg = 'Upload failed.';
     try {
       const j = await res.json();
+      const eid = j && j.detail && j.detail.entity_id;
+      if (eid && j.detail.code === 'submission_blocked') {
+        window.location = `/marketplace/flea/${encodeURIComponent(eid)}`;
+        return;
+      }
       if (j.detail) msg = humanizeError(j.detail);
     } catch(_) {}
     showError(msg);

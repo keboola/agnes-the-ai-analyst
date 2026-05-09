@@ -10,7 +10,91 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Security
+
+- **Prompt-injection hardening for store guardrails LLM review (#1).**
+  `SYSTEM_PROMPT` is now passed via the Anthropic SDK's dedicated
+  `system=` parameter instead of being concatenated into the user
+  message. Bundle file contents are wrapped in `<bundle>...</bundle>`
+  sentinels that the system prompt declares data-only; literal sentinel
+  strings appearing in user content are escaped (`<_bundle_>`) so an
+  adversarial README can't forge a closing tag and inject
+  instructions. The system prompt explicitly tells the reviewer to
+  flag injection attempts inside `<bundle>` rather than follow them.
+  See `tests/test_store_guardrails_prompt_injection.py` for the corpus.
+
+- **Static security scan documented as signal, not gate (#6 partial).**
+  Module docstring + admin-queue copy + `docs/STORE_GUARDRAILS.md`
+  call out that substring matches are suggestive only — the LLM
+  verdict carries the safety determination. Documentation files
+  (`.md`, `.txt`, `.rst`, `.html`, `.json`, `.yaml`, `.yml`, `.toml`)
+  now skip static scan to avoid false positives on prose that
+  legitimately discusses `eval`/`exec`. AST-mode for Python source is
+  tracked as a follow-up.
+
 ### Added
+
+- **Stuck-review reaper (schema v35 + new endpoint).**
+  `POST /api/admin/run-reap-stuck-reviews` flips submissions stuck at
+  `status='pending_llm'` past the configured grace
+  (`guardrails.stuck_review_grace_seconds`, default 1800s) to
+  `review_error`. Scheduler invokes every 15 min. Without this a
+  worker crash between status flip and verdict write left rows
+  pending forever. Set the knob to 0 to disable.
+
+- **PUT /api/store/entities/{id} atomic rename (#2).**
+  Bundle updates now bake into a sibling `plugin.staging-<rand>/`
+  dir, run inline checks against the staging copy, then atomic-
+  rename onto the live path on success. Failed checks leave the live
+  tree byte-for-byte intact. Pre-fix the bake wrote into the live
+  path BEFORE checks ran; concurrent GETs could see partial /
+  unverified content.
+
+- **Schema v35 → v36** re-applies `NOT NULL` + `DEFAULT 'pending'`
+  on `store_entities.visibility_status` (lost in the v34→v35 column
+  rebuild). Value-list invariant remains application-side enforced
+  via the repo whitelist (DuckDB `ADD CHECK` on existing columns is
+  not supported).
+
+### Changed
+
+- **BG-task verdict-vs-archive race fixed (#3).**
+  `StoreEntitiesRepository.set_visibility_if_pending` flips visibility
+  only when the row is still in the review window (`pending` /
+  `hidden`). When an admin archives an entity while the LLM review is
+  in flight, the BG verdict no longer clobbers the archive — admin's
+  decision wins. Skipped flips emit a
+  `store.submission.bg_verdict_skipped` audit row so admins can see
+  why an "approved" verdict didn't publish.
+
+- **Quota counter widened to all reject states (#9).**
+  `count_blocked_for_submitter_since` now counts `blocked_inline`,
+  `blocked_llm`, AND `review_error` against the per-submitter daily
+  cap. Pre-fix a bot triggering only LLM-blocked verdicts was
+  unbounded.
+
+- **Un-archive clears archive metadata (#11).**
+  `set_visibility` nulls `archived_at` + `archived_by` when
+  transitioning OUT of `'archived'` so a future read doesn't show
+  stale archive forensics on an approved row.
+
+- **Missing `risk_level` surfaces as `review_error` (#10).**
+  An LLM response that omits or empties `risk_level` no longer
+  defaults to `medium` (which looked like a model decision and
+  silently blocked); it persists as `review_error` with
+  `error='missing_risk_level'` so the admin gets a real Retry button.
+
+- **Sort-key whitelist for admin queue (#23).**
+  `/api/admin/store/submissions?sort=…` rejects unknown keys with
+  HTTP 400 `invalid_sort_key`. Pre-fix a substring-replace chain
+  could drop column references silently when one column name was a
+  substring of another.
+
+- **FSM doc comment in `_SYSTEM_SCHEMA` corrected (#12).**
+  Explicit insert/transition/lifecycle sections describe the actual
+  status machine instead of the misleading
+  `pending → pending_llm → ...` chain. `pending_inline` clarified as
+  reserved-but-unused.
 
 - **Soft delete (Archive) for store entities (schema v35).**
   `DELETE /api/store/entities/{id}` is now soft by default — flips

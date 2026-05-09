@@ -76,13 +76,88 @@ class StoreEntitiesRepository:
         the admin override path ('approved' after force-publish).
         Soft-delete uses 'archived' via :meth:`archive` instead of this
         helper so the actor + timestamp are recorded.
+
+        When transitioning OUT of 'archived' (admin override re-publishes
+        an archived row), the archive metadata is cleared in the same
+        UPDATE so a future read of the row doesn't show stale
+        archived_at / archived_by alongside the new status.
         """
         if status not in ("pending", "approved", "hidden", "archived"):
             raise ValueError(f"invalid visibility_status: {status!r}")
+        now = datetime.now(timezone.utc)
+        if status == "archived":
+            # Use :meth:`archive` instead — this branch shouldn't be hit
+            # but is left permissive so existing call sites work; the
+            # actor + timestamp won't be recorded though.
+            self.conn.execute(
+                "UPDATE store_entities SET visibility_status = ?, updated_at = ? WHERE id = ?",
+                [status, now, id],
+            )
+            return
+        # Transitioning to a non-archived state — null out the archive
+        # metadata so old archive forensics don't bleed into the new row
+        # state. Idempotent: NULL stays NULL on rows that were never
+        # archived.
         self.conn.execute(
-            "UPDATE store_entities SET visibility_status = ?, updated_at = ? WHERE id = ?",
-            [status, datetime.now(timezone.utc), id],
+            """UPDATE store_entities
+                  SET visibility_status = ?,
+                      archived_at = NULL,
+                      archived_by = NULL,
+                      updated_at = ?
+                WHERE id = ?""",
+            [status, now, id],
         )
+
+    def set_visibility_if_pending(self, id: str, status: str) -> bool:
+        """Background-task safe variant of :meth:`set_visibility`.
+
+        Only flips the row when its current ``visibility_status`` is one
+        of {'pending', 'hidden'} — i.e. the row is still in the review
+        window. Returns ``True`` if the update applied, ``False`` if
+        the row was in another state (admin already archived,
+        approved-and-installed, or hard-deleted between the BG task's
+        start and verdict-write).
+
+        Used by the LLM review runner so a verdict landing late doesn't
+        clobber an admin decision (e.g. archive while review was in
+        flight).
+        """
+        if status not in ("pending", "approved", "hidden", "archived"):
+            raise ValueError(f"invalid visibility_status: {status!r}")
+        # Read-then-update: DuckDB doesn't expose rowcount on the python
+        # API in a portable way across versions, so we check first. Both
+        # statements run on the same connection, serialized writer, so a
+        # concurrent admin archive between SELECT and UPDATE is a
+        # vanishingly thin window. The defensive guard in the WHERE
+        # clause closes the loop.
+        row = self.conn.execute(
+            "SELECT visibility_status FROM store_entities WHERE id = ?",
+            [id],
+        ).fetchone()
+        if row is None:
+            return False
+        current = row[0]
+        if current not in ("pending", "hidden"):
+            return False
+        now = datetime.now(timezone.utc)
+        # Re-check via WHERE so an admin archive that landed between the
+        # SELECT and the UPDATE doesn't get clobbered.
+        self.conn.execute(
+            """UPDATE store_entities
+                  SET visibility_status = ?,
+                      archived_at = NULL,
+                      archived_by = NULL,
+                      updated_at = ?
+                WHERE id = ?
+                  AND visibility_status IN ('pending', 'hidden')""",
+            [status, now, id],
+        )
+        # Re-read to confirm the flip applied (admin may have raced in).
+        confirm = self.conn.execute(
+            "SELECT visibility_status FROM store_entities WHERE id = ?",
+            [id],
+        ).fetchone()
+        return confirm is not None and confirm[0] == status
 
     def archive(self, id: str, *, by_user_id: str) -> None:
         """Soft-delete: flip visibility to 'archived' + record actor +
