@@ -637,6 +637,62 @@ def _write_synth_plugin_json(
     )
 
 
+def _swap_live_to_version(entity_id: str, version_no: int) -> bool:
+    """Replace the live ``plugin/`` dir with a copy of the named
+    version's contents. Used by the guardrails-disabled promote path
+    (no LLM review) and by the runner's approval branch.
+
+    Sequence (close the visible-gap window the naive
+    rename-then-copytree had):
+      1. copytree the source version into a sibling staging dir
+         ``plugin.staging-XXX/``. Live ``plugin/`` is NOT touched
+         while the multi-MB copy runs — concurrent readers see the
+         prior bundle the whole time.
+      2. rename live ``plugin/`` → ``plugin.backup-XXX/`` (atomic).
+      3. rename staging → ``plugin/`` (atomic).
+      4. rmtree backup.
+    On step-3 failure, rename backup back to ``plugin/``. Returns
+    ``True`` on success.
+    """
+    source = _entity_dir(entity_id) / "versions" / f"v{version_no}" / "plugin"
+    if not source.is_dir():
+        logger.error(
+            "_swap_live_to_version: source missing for entity %s v%d at %s",
+            entity_id, version_no, source,
+        )
+        return False
+    live = _plugin_dir(entity_id)
+    staging = live.with_name(f"plugin.staging-{os.urandom(4).hex()}")
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    # Step 1: copy into staging while live keeps serving the prior
+    # bundle. Multi-MB copy doesn't expose a missing-live window.
+    shutil.copytree(source, staging)
+
+    backup: Optional[Path] = None
+    try:
+        if live.exists():
+            backup = live.with_name(f"plugin.backup-{os.urandom(4).hex()}")
+            os.rename(live, backup)
+        # Step 3: atomic rename — same-FS, fast.
+        os.rename(staging, live)
+    except OSError:
+        # Restore backup if the rename mid-way failed.
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        if backup is not None and backup.exists():
+            try:
+                if live.exists():
+                    shutil.rmtree(live, ignore_errors=True)
+                os.rename(backup, live)
+            except OSError:
+                pass
+        raise
+    if backup is not None:
+        shutil.rmtree(backup, ignore_errors=True)
+    return True
+
+
 def _rename_baked_tree(
     *,
     type_: str,
@@ -1075,6 +1131,15 @@ async def create_entity(
         )
         version = compute_entity_version(plugin_dir)
 
+        # v37: also seed versions/v1/plugin/ so the restore endpoint
+        # can copy v1 bytes forward later. Same content as the live
+        # plugin/ dir; cheap copy.
+        v1_plugin = _entity_dir(entity_id) / "versions" / "v1" / "plugin"
+        v1_plugin.parent.mkdir(parents=True, exist_ok=True)
+        if v1_plugin.exists():
+            shutil.rmtree(v1_plugin, ignore_errors=True)
+        shutil.copytree(plugin_dir, v1_plugin)
+
         # ---- Guardrail pipeline ------------------------------------------
         #
         # Inline checks (manifest, static security, quality+templating)
@@ -1222,6 +1287,8 @@ async def update_entity(
     entity_id: str,
     background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None),
+    name: Optional[str] = Form(None),
+    type: Optional[str] = Form(None),  # noqa: A002
     description: Optional[str] = Form(None),
     category: Optional[str] = Form(None),
     video_url: Optional[str] = Form(None),
@@ -1229,6 +1296,29 @@ async def update_entity(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """Edit a flea-market entity. Owner or admin.
+
+    v37 edit feature semantics:
+
+    * **Type is locked** — passing ``type`` that differs from the
+      stored row returns 400 ``type_locked``. Replacing one form
+      factor with another is a fresh upload, not an edit.
+    * **Display-name change** is allowed — triggers a slug rename in
+      the live bundle (mirrors the rename-on-archive flow). Existing
+      installers see the plugin renamed on next sync.
+    * **Bundle change** creates a new version: bake into
+      ``versions/v<N+1>/plugin/``, run guardrails, on approval copy
+      to the live ``plugin/`` dir + bump ``version_no`` + append
+      ``version_history``. The prior version dir stays so rollback
+      can copy it forward.
+    * **Block-while-pending**: an in-flight LLM review (the entity's
+      ``visibility_status='pending'`` AND the latest submission has
+      ``status IN ('pending_inline','pending_llm')``) blocks any
+      further edit with 409 ``prior_version_pending``. Owner waits
+      for the verdict; the detail page auto-refreshes.
+    * **Metadata-only edit** (no ``file`` posted) skips the bundle
+      pipeline and the version bump.
+    """
     repo = StoreEntitiesRepository(conn)
     entity = repo.get(entity_id)
     if not entity:
@@ -1236,32 +1326,90 @@ async def update_entity(
     if entity["owner_user_id"] != user["id"] and not is_user_admin(user["id"], conn):
         raise HTTPException(status_code=403, detail="not_owner")
 
+    # Type is immutable — reject change attempts up front.
+    if type is not None and type != entity["type"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "type_locked",
+                "message": "Cannot change a flea entity's type. "
+                           "Upload a new entity instead.",
+            },
+        )
+
+    # Block-while-pending: an in-flight review must complete (or be
+    # reaped) before another version can be uploaded. Metadata-only
+    # edits are also blocked for UX consistency — one rule for the
+    # owner instead of "metadata yes / bundle no".
+    #
+    # Gate on the latest submission's status DIRECTLY, NOT on
+    # entity.visibility_status. With deferred promotion (v37), v2+
+    # edits keep the entity at 'approved' through the LLM review
+    # window, so a visibility-only check would never fire and
+    # concurrent PUTs could race-create overlapping version dirs
+    # (each baking its own versions/v<N+1>/plugin/ which the runner
+    # would then sequentially promote — violates the "single in-flight
+    # version per entity" invariant).
+    latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+    if latest_sub and latest_sub.get("status") in (
+        "pending_inline", "pending_llm",
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "prior_version_pending",
+                "message": "A previous edit is still under review. "
+                           "Wait for the verdict to finish before "
+                           "submitting another change.",
+                "submission_id": latest_sub.get("id"),
+            },
+        )
+
     if category and not is_valid_category(category):
         raise HTTPException(status_code=400, detail="invalid_category")
 
     video_url = _validate_video_url(video_url)
 
+    # Display-name change handled at the end (after bundle bake) so the
+    # rename can target the version-bumped or current bundle dir.
+    rename_to: Optional[str] = None
+    if name is not None and name.strip() and name.strip() != entity["name"]:
+        new_name = name.strip()
+        if not _NAME_RE.match(new_name):
+            raise HTTPException(status_code=400, detail="invalid_name_format")
+        # Same-owner conflict (skip archived which already freed slot).
+        if repo.get_by_owner_and_name(
+            entity["owner_user_id"], new_name, exclude_archived=True,
+        ):
+            raise HTTPException(status_code=409, detail="conflict_owner_name")
+        # Cross-owner suffix — must be globally unique post-rename.
+        new_suffixed = suffixed_name(new_name, entity["owner_username"])
+        if _suffixed_already_taken(
+            conn, new_suffixed, exclude_entity_id=entity_id,
+            exclude_archived=True,
+        ):
+            raise HTTPException(status_code=409, detail="conflict_global_suffix")
+        rename_to = new_name
+
     new_version: Optional[str] = None
     new_size: Optional[int] = None
     inline_after_update: Optional[InlineResult] = None
+    new_version_dir: Optional[Path] = None  # set when bundle uploaded
+    new_version_no: Optional[int] = None
     if file is not None:
-        # PUT atomicity: bake the new bundle into a staging dir alongside
-        # the live one, run checks against the staging copy, then atomic-
-        # rename onto the live path on success. Pre-fix, the bake wrote
-        # directly into the live `plugin/` dir BEFORE checks ran — a
-        # concurrent GET during the window saw partial / unverified
-        # content. Staging closes that window: failed checks leave the
-        # live tree byte-for-byte intact.
+        # PUT atomicity + version history: bake the new bundle into the
+        # versioned dir ``versions/v<N+1>/plugin/`` and run checks
+        # there. On approval the live ``plugin/`` dir is replaced with
+        # a copy of the new version's contents — prior versions stay on
+        # disk so rollback can copy them forward.
         tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
         tmp.close()
         scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
-        # Sibling of the live `plugin/` dir so the eventual rename is on
-        # the same filesystem (atomic on POSIX). Random suffix in case
-        # multiple PUTs land back-to-back.
         existing_plugin = _plugin_dir(entity_id)
-        staging_plugin = existing_plugin.with_name(
-            f"plugin.staging-{os.urandom(4).hex()}",
-        )
+        new_version_no = int(entity.get("version_no") or 1) + 1
+        version_root = _entity_dir(entity_id) / "versions" / f"v{new_version_no}"
+        staging_plugin = version_root / "plugin"
+        new_version_dir = version_root  # exposed to outer scope
         backup_plugin: Optional[Path] = None  # set if the swap starts
         try:
             try:
@@ -1330,41 +1478,36 @@ async def update_entity(
                     },
                 )
 
-            # Checks passed — swap staging onto live. Three steps:
-            # rename live → backup, rename staging → live, rmtree backup.
-            # If the second rename fails, restore by renaming backup
-            # back. Same-FS rename is atomic on POSIX.
-            if existing_plugin.exists():
-                backup_plugin = existing_plugin.with_name(
-                    f"plugin.backup-{os.urandom(4).hex()}",
-                )
-                os.rename(existing_plugin, backup_plugin)
-            try:
-                os.rename(staging_plugin, existing_plugin)
-            except OSError:
-                # Restore live from backup if the swap failed mid-way.
-                if backup_plugin is not None and backup_plugin.exists():
-                    try:
-                        os.rename(backup_plugin, existing_plugin)
-                    except OSError:
-                        pass
-                raise
-            # Live now points at the new bundle; drop the backup copy.
-            if backup_plugin is not None:
-                shutil.rmtree(backup_plugin, ignore_errors=True)
-                backup_plugin = None
+            # Checks passed — but DO NOT swap live yet. Live ``plugin/``
+            # keeps serving the prior approved version to existing
+            # installers via marketplace.zip / .git until the LLM
+            # verdict approves the new bundle. Promotion (copy version
+            # → live + bump entity.version_no/version/file_size)
+            # happens after approval — see runner.run_llm_review or the
+            # immediate promote when guardrails are disabled below.
+            #
+            # If guardrails are disabled (no API key), we promote
+            # synchronously after the submission row is created. The
+            # only contract installers care about is "live always
+            # serves an approved version"; with guardrails off every
+            # accepted submission is implicitly approved.
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
-            # If staging never made it through the swap (failed check or
-            # exception), remove it.
-            if staging_plugin.exists():
-                shutil.rmtree(staging_plugin, ignore_errors=True)
-            # If a swap failed leaving the backup orphaned without a
-            # restore, leave it on disk for the operator to recover —
-            # better to log and inspect than silently drop.
+            # The version dir IS the source of truth — don't remove it
+            # on failure paths. But if the bundle was rejected before
+            # the swap (failed inline check raised 422), the version
+            # dir is incomplete: the row hasn't been bumped yet, the
+            # bytes are blocked-only forensics. Decision: keep the
+            # version dir for the admin to download via the
+            # submission's bundle download endpoint, but mark the
+            # row's version_history WITHOUT this incomplete entry
+            # (we never called append_version on the failed path).
+            # The version dir at versions/v<N+1>/plugin/ stays orphan
+            # on disk linked from the submission row's hash — admin
+            # can still inspect.
             if backup_plugin is not None and backup_plugin.exists():
                 logger.error(
-                    "PUT atomic-swap left orphan backup at %s — "
+                    "PUT version-swap left orphan backup at %s — "
                     "operator should reconcile manually",
                     backup_plugin,
                 )
@@ -1380,34 +1523,105 @@ async def update_entity(
                 pass
         photo_rel = await _save_photo(photo, entity_id)
 
+    # Apply name change.
+    #
+    # Two cases:
+    #
+    # 1. Metadata-only edit (no new bundle): rename the LIVE plugin
+    #    dir immediately so consumers pick up the new slug on next
+    #    sync. No bundle bytes change; v_no stays at the current.
+    #
+    # 2. Bundle change (file is not None): the new bundle is staged
+    #    in versions/v<N+1>/plugin/ and live still serves the prior
+    #    approved version through the LLM review window. Renaming
+    #    live now would produce a slug-vs-content mismatch (live
+    #    holds prior bytes under the new slug + frontmatter).
+    #    Instead, rename ONLY the version dir; promotion copies the
+    #    renamed contents onto live atomically when the LLM approves.
+    #    On block, neither live nor the slug changed — installers
+    #    keep serving the prior bundle under the prior slug.
+    if rename_to is not None:
+        owner_username = entity["owner_username"]
+        old_suffix = suffixed_name(entity["name"], owner_username)
+        new_suffix = suffixed_name(rename_to, owner_username)
+
+        if file is None:
+            # Metadata-only rename — flip live now.
+            try:
+                _rename_baked_tree(
+                    type_=entity["type"],
+                    plugin_dir=_plugin_dir(entity_id),
+                    old_suffix=old_suffix,
+                    new_suffix=new_suffix,
+                    description=description if description is not None else entity.get("description"),
+                )
+            except Exception:
+                logger.exception(
+                    "rename_baked_tree failed during metadata-only "
+                    "edit for entity %s", entity_id,
+                )
+                raise HTTPException(status_code=500, detail="rename_failed")
+        elif new_version_dir is not None:
+            # Bundle change — defer live rename. Apply ONLY to the
+            # staged version dir; live + frontmatter inside it stay
+            # at the prior slug until promotion copies the renamed
+            # version dir over live.
+            try:
+                _rename_baked_tree(
+                    type_=entity["type"],
+                    plugin_dir=new_version_dir / "plugin",
+                    old_suffix=old_suffix,
+                    new_suffix=new_suffix,
+                    description=description if description is not None else entity.get("description"),
+                )
+            except Exception:
+                # Surface the failure rather than silently swallow —
+                # otherwise the version dir would carry stale slug
+                # and a future promotion would copy the wrong contents
+                # to live.
+                logger.exception(
+                    "rename_baked_tree failed for version dir %s",
+                    new_version_dir,
+                )
+                raise HTTPException(
+                    status_code=500, detail="version_rename_failed",
+                )
+
+    # Metadata-only column updates (name, description, category, photo,
+    # video) — never bundle-derived (version / file_size) because the
+    # new version isn't promoted to current until the LLM approves.
     repo.update(
         entity_id,
+        name=rename_to,
         description=description,
         category=category,
-        version=new_version,
         photo_path=photo_rel,
         video_url=video_url,
-        file_size=new_size,
     )
 
-    # Re-run the LLM review whenever the bundle bytes changed. New
-    # version = new submission row; visibility flips back to 'pending'
-    # until the review approves the new tree. Description-only / photo-
-    # only edits don't re-trigger.
-    if file is not None:
+    # Bundle change → record a new version + maybe promote.
+    #
+    # Critical invariant: existing installers keep getting the prior
+    # approved version through the LLM review window. We do this by
+    # NOT pre-swapping the live ``plugin/`` dir and NOT flipping
+    # ``visibility_status`` to 'pending'. The new bundle stays in its
+    # version dir; the LLM reads it from there. Promotion (live swap +
+    # version_no/version/file_size bump) happens only when the LLM
+    # approves — see runner.run_llm_review's approval branch. With
+    # guardrails disabled the path collapses: submission lands at
+    # 'approved' and we promote synchronously below.
+    if file is not None and new_version_no is not None and new_version_dir is not None:
         guardrails_on = get_guardrails_enabled()
-        if guardrails_on:
-            repo.set_visibility(entity_id, "pending")
         subs_repo = StoreSubmissionsRepository(conn)
-        # Compute sha256 for the accepted re-upload so the submission row
-        # carries forensics for retry-chain correlation.
         from src.store_guardrails.bundle_meta import compute_bundle_meta
-        accepted_meta = compute_bundle_meta(_plugin_dir(entity_id))
+        # Hash the NEW version dir, not live (which still holds the
+        # prior approved bytes during a guardrails-on edit).
+        accepted_meta = compute_bundle_meta(new_version_dir / "plugin")
         sub_id = subs_repo.create(
             submitter_id=user["id"],
             submitter_email=user.get("email"),
             type=entity["type"],
-            name=entity["name"],
+            name=rename_to or entity["name"],
             version=new_version,
             status="approved" if not guardrails_on else "pending_llm",
             entity_id=entity_id,
@@ -1416,22 +1630,235 @@ async def update_entity(
             file_size=accepted_meta.file_size,
             bundle_sha256=accepted_meta.sha256,
         )
+        # Record the new version in history (no promotion). Promotion
+        # depends on the LLM verdict — runner.run_llm_review does it.
+        appended_n = repo.append_version_history(
+            entity_id,
+            version_hash=new_version,
+            sha256=accepted_meta.sha256,
+            size=accepted_meta.file_size,
+            submission_id=sub_id,
+            created_by=user["id"],
+        )
         _audit(
             conn, user["id"],
             "store.submission.accepted" if guardrails_on else "store.submission.approved",
             sub_id, {"entity_id": entity_id, "on": "update",
+                     "version_no": appended_n,
                      "guardrails_enabled": guardrails_on},
         )
         if guardrails_on:
-            _schedule_llm_review(background_tasks, sub_id, _plugin_dir(entity_id))
+            # Live remains at prior approved bundle. LLM reviews the
+            # new version dir; runner promotes on approval.
+            _schedule_llm_review(
+                background_tasks, sub_id, new_version_dir / "plugin",
+            )
+        else:
+            # Guardrails off → implicit approval. Promote inline:
+            # update entity columns + swap live to new version.
+            repo.promote_version(entity_id, appended_n)
+            _swap_live_to_version(entity_id, appended_n)
 
+    # Use the freshly-appended version number when a bundle change
+    # produced one, falling back to the planned new_version_no for
+    # metadata-only edits. Pre-fix the entity audit referenced the
+    # planned `new_version_no = entity.version_no + 1` while the
+    # submission audit referenced `appended_n = max(history.n) + 1`;
+    # under any history skew between those two values the audits
+    # would diverge. Read the actually-appended n.
+    audit_version_no: Optional[int] = None
+    if file is not None and new_version_dir is not None:
+        # `appended_n` is in scope inside the branch that creates it,
+        # but we're outside that branch here — re-derive by reading
+        # the entity's latest history entry, which append_version_history
+        # just wrote.
+        latest_row = repo.get(entity_id) or {}
+        history = latest_row.get("version_history") or []
+        if history:
+            try:
+                audit_version_no = max(int(e.get("n") or 0) for e in history)
+            except (TypeError, ValueError):
+                audit_version_no = new_version_no
+        else:
+            audit_version_no = new_version_no
     _audit(
         conn,
         user["id"],
         "store.entity.update",
         entity_id,
-        {"version": new_version, "rebuilt": file is not None},
+        {"version": new_version, "version_no": audit_version_no,
+         "rebuilt": file is not None,
+         "renamed_to": rename_to},
     )
+    _invalidate_etag()
+    return _entity_to_response(conn, repo.get(entity_id))  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Restore — POST /api/store/entities/{id}/versions/{version_no}/restore
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/entities/{entity_id}/versions/{version_no}/restore",
+    response_model=StoreEntityResponse,
+)
+async def restore_version(
+    entity_id: str,
+    version_no: int,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Roll back to a prior version. Owner or admin.
+
+    Creates a NEW version (`v<max+1>`) by copying the bundle bytes
+    from `versions/v<N>/plugin/`, then runs the standard guardrails
+    pipeline so today's rules apply (rules tighten over time —
+    pre-approved bundles re-validate at restore time).
+
+    The original `version_no` row in ``version_history`` keeps its
+    own verdict; the new copy gets a fresh one. Forward-only history
+    — no deletes from version_history.
+
+    Refuses while a prior version is under review (same
+    ``prior_version_pending`` 409 as PUT).
+    """
+    repo = StoreEntitiesRepository(conn)
+    entity = repo.get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    if entity["owner_user_id"] != user["id"] and not is_user_admin(user["id"], conn):
+        raise HTTPException(status_code=403, detail="not_owner")
+
+    # Block while pending — same gate as PUT. Gate on submission
+    # status directly so v2+ deferred-promotion edits don't slip
+    # through the visibility check.
+    latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+    if latest_sub and latest_sub.get("status") in (
+        "pending_inline", "pending_llm",
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "prior_version_pending",
+                "message": "A previous edit is still under review. "
+                           "Wait for the verdict before restoring.",
+                "submission_id": latest_sub.get("id"),
+            },
+        )
+
+    # Locate the source version dir.
+    source_dir = (
+        _entity_dir(entity_id) / "versions" / f"v{version_no}" / "plugin"
+    )
+    if not source_dir.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "version_not_found",
+                "version_no": version_no,
+            },
+        )
+    if int(version_no) == int(entity.get("version_no") or 1):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "already_current",
+                "version_no": version_no,
+            },
+        )
+
+    # Copy source → new version dir, run guardrails, swap live.
+    new_version_no = int(entity.get("version_no") or 1) + 1
+    target_root = _entity_dir(entity_id) / "versions" / f"v{new_version_no}"
+    target_plugin = target_root / "plugin"
+    if target_plugin.exists():
+        shutil.rmtree(target_plugin, ignore_errors=True)
+    target_root.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_dir, target_plugin)
+
+    new_version = compute_entity_version(target_plugin)
+    inline = run_inline_checks(
+        target_plugin,
+        type_=entity["type"],
+        description=entity.get("description"),
+    )
+    if not inline.passed:
+        from src.store_guardrails.bundle_meta import compute_bundle_meta
+        rejected_meta = compute_bundle_meta(target_plugin)
+        subs_repo = StoreSubmissionsRepository(conn)
+        sub_id = subs_repo.create(
+            submitter_id=user["id"],
+            submitter_email=user.get("email"),
+            type=entity["type"],
+            name=entity["name"],
+            version=new_version,
+            status="blocked_inline",
+            entity_id=entity_id,
+            inline_checks=inline.to_response_dict(),
+            file_size=rejected_meta.file_size,
+            bundle_sha256=rejected_meta.sha256,
+        )
+        _audit(
+            conn, user["id"], "store.submission.blocked_inline",
+            sub_id,
+            {"entity_id": entity_id, "on": "restore",
+             "restored_from_version_no": version_no,
+             "sha256": rejected_meta.sha256,
+             "file_size": rejected_meta.file_size},
+        )
+        # Live tree untouched. Version dir kept for forensic download.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "submission_blocked",
+                "submission_id": sub_id,
+                "entity_id": entity_id,
+                "checks": inline.to_response_dict(),
+            },
+        )
+
+    # Inline checks passed. DO NOT swap live yet — same invariant as
+    # the PUT edit path: existing installers keep getting the prior
+    # approved version through the LLM review window. Promotion (live
+    # swap + version_no/version/file_size bump) waits on LLM approval.
+    guardrails_on = get_guardrails_enabled()
+    from src.store_guardrails.bundle_meta import compute_bundle_meta
+    accepted_meta = compute_bundle_meta(target_plugin)
+    subs_repo = StoreSubmissionsRepository(conn)
+    sub_id = subs_repo.create(
+        submitter_id=user["id"],
+        submitter_email=user.get("email"),
+        type=entity["type"],
+        name=entity["name"],
+        version=new_version,
+        status="approved" if not guardrails_on else "pending_llm",
+        entity_id=entity_id,
+        inline_checks=inline.to_response_dict(),
+        file_size=accepted_meta.file_size,
+        bundle_sha256=accepted_meta.sha256,
+    )
+    appended_n = repo.append_version_history(
+        entity_id,
+        version_hash=new_version,
+        sha256=accepted_meta.sha256,
+        size=accepted_meta.file_size,
+        submission_id=sub_id,
+        created_by=user["id"],
+    )
+    _audit(
+        conn, user["id"], "store.entity.restore", entity_id,
+        {"restored_from_version_no": version_no,
+         "new_version_no": appended_n,
+         "submission_id": sub_id},
+    )
+    if guardrails_on:
+        _schedule_llm_review(background_tasks, sub_id, target_plugin)
+    else:
+        repo.promote_version(entity_id, appended_n)
+        _swap_live_to_version(entity_id, appended_n)
+
     _invalidate_etag()
     return _entity_to_response(conn, repo.get(entity_id))  # type: ignore[arg-type]
 

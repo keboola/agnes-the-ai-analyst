@@ -1,0 +1,152 @@
+{# Versions card — owner + admin only.
+
+   Renders entity.version_history (oldest-first) reversed so newest
+   appears at top. Each row gets:
+     * version label (vN, "current" badge for the active one)
+     * short hash + size + created_at
+     * Restore button (owner + admin) for non-current versions
+     * Download button (admin only) — links to admin submission bundle
+
+   Required scope:
+     entity         — store_entities row carrying version_no + version_history
+     is_owner       — bool
+     is_admin       — bool
+
+   Self-guards on visibility (only renders for owner/admin) and on
+   history length (>= 1). Plain entities created post-v37 always have
+   at least a v1 entry.
+#}
+
+{% if (is_owner or is_admin) and entity and entity.version_history and entity.version_history|length >= 1 %}
+<style>
+  .versions-card {
+    margin: 16px 0; padding: 14px 18px; background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb); border-radius: 10px;
+    font-size: 13px;
+  }
+  .versions-card h3 {
+    margin: 0 0 10px 0; font-size: 14px; font-weight: 600;
+    color: var(--text, #111827);
+  }
+  .versions-card table { width: 100%; border-collapse: collapse; }
+  .versions-card th, .versions-card td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: middle;
+  }
+  .versions-card th {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280); font-weight: 500;
+  }
+  .versions-card .vn { font-weight: 600; }
+  .versions-card .current-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 999px;
+    background: #d1fae5; color: #065f46; font-size: 10px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+    margin-left: 6px;
+  }
+  .versions-card code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; background: rgba(0,0,0,0.04); padding: 1px 4px; border-radius: 3px;
+  }
+  .versions-card button.restore {
+    padding: 4px 10px; border-radius: 5px;
+    border: 1px solid var(--border, #d1d5db); background: var(--surface, #fff);
+    font-size: 12px; cursor: pointer;
+  }
+  .versions-card button.restore:hover { background: var(--surface-muted, #f9fafb); }
+  .versions-card button.restore:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>
+
+<div class="versions-card">
+  <h3>Versions ({{ entity.version_history|length }})</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Version</th>
+        <th>Hash</th>
+        <th>Size</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {# Render newest-first. Build a reversed list in Jinja. #}
+      {% set ordered = entity.version_history | sort(attribute='n', reverse=true) %}
+      {% for v in ordered %}
+      <tr>
+        <td class="vn">
+          v{{ v.n }}
+          {% if v.n == entity.version_no %}<span class="current-badge">current</span>{% endif %}
+        </td>
+        <td><code>{{ v.hash[:12] if v.hash else '—' }}</code></td>
+        <td>
+          {%- if v.size is not none -%}
+            {%- if v.size < 1024 -%}{{ v.size }} B
+            {%- elif v.size < 1048576 -%}{{ "%.1f"|format(v.size / 1024) }} KB
+            {%- else -%}{{ "%.1f"|format(v.size / 1048576) }} MB
+            {%- endif -%}
+          {%- else -%}—{%- endif -%}
+        </td>
+        <td style="white-space: nowrap; color: var(--text-secondary, #6b7280);">
+          {{ v.created_at[:10] if v.created_at else '' }}
+        </td>
+        <td>
+          {% if v.n != entity.version_no %}
+          <button class="restore" type="button"
+                  data-version-no="{{ v.n }}"
+                  onclick="restoreVersion({{ v.n }})">
+            Restore
+          </button>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+async function restoreVersion(versionNo) {
+  const currentVersionNo = {{ entity.version_no | tojson }};
+  const ok = confirm(
+    `Restore version ${versionNo}?\n\n` +
+    `This will create a new version (v${currentVersionNo + 1}) with v${versionNo}'s ` +
+    `bundle and re-run security checks. The current version stays in history.`
+  );
+  if (!ok) return;
+  const r = await fetch(
+    `/api/store/entities/{{ entity.id }}/versions/${versionNo}/restore`,
+    {method: 'POST', credentials: 'same-origin'}
+  );
+  if (r.ok) {
+    window.location.reload();
+    return;
+  }
+  let msg = 'Restore failed.';
+  try {
+    const j = await r.json();
+    if (j.detail) {
+      const code = j.detail.code || '';
+      if (code === 'submission_blocked') {
+        // Land on detail to see the blocked banner.
+        const eid = j.detail.entity_id || '{{ entity.id }}';
+        window.location = `/marketplace/flea/${eid}`;
+        return;
+      }
+      if (code === 'prior_version_pending') {
+        msg = 'A previous edit is still under review. Wait for the verdict before restoring.';
+      } else if (code === 'version_not_found') {
+        msg = 'That version is no longer on disk.';
+      } else if (code === 'already_current') {
+        msg = 'Already on that version.';
+      } else if (typeof j.detail === 'object') {
+        msg = `Restore failed: ${code || JSON.stringify(j.detail)}`;
+      } else {
+        msg = `Restore failed: ${j.detail}`;
+      }
+    }
+  } catch (_) {}
+  alert(msg);
+}
+</script>
+{% endif %}

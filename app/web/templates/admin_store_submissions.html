@@ -241,7 +241,8 @@
           <th>{{ sort_link("created_at", "When") }}</th>
           <th>Submitter</th>
           <th>Type / {{ sort_link("name", "name") }}</th>
-          <th>Version</th>
+          <th title="Human version index (v1, v2, …) derived from the entity's version_history. Hash shown below.">v#</th>
+          <th>Hash</th>
           <th>{{ sort_link("status", "Status") }}</th>
           <th>{{ sort_link("file_size", "Size") }}</th>
           <th>Findings</th>
@@ -260,7 +261,17 @@
             <span style="color: var(--text-secondary, #6b7280); font-size: 11px;">{{ s.type }}</span>
             <strong>{{ s.name | store_display_name }}</strong>
           </td>
-          <td>{{ s.version or "" }}</td>
+          <td style="white-space: nowrap; font-variant-numeric: tabular-nums;">
+            {%- if s.version_no -%}
+              <strong>v{{ s.version_no }}</strong>
+              {%- if s.entity_version_no and s.entity_version_no == s.version_no %}
+              <span style="display:inline-block;padding:1px 5px;margin-left:4px;border-radius:999px;background:#d1fae5;color:#065f46;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px;">current</span>
+              {%- endif %}
+            {%- else -%}
+              <span style="color: var(--text-secondary, #9ca3af);">—</span>
+            {%- endif -%}
+          </td>
+          <td><code style="font-size:11px;">{{ s.version[:12] if s.version else "" }}</code></td>
           <td><span class="badge {{ s.status }}">{{ s.status }}</span></td>
           <td style="white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text-secondary, #6b7280);">{{ fmt_size(s.file_size) }}</td>
           <td class="findings">
