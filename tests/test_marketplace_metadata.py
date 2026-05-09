@@ -59,6 +59,47 @@ def test_read_agnes_metadata_happy_path(tmp_path):
     assert read_agnes_metadata(tmp_path) == payload
 
 
+def test_read_agnes_metadata_oversized_file_returns_empty(tmp_path):
+    """Curator-controlled file > 1 MB cap is refused without reading the body.
+
+    Defends against a misbehaving (or hostile) curator committing a multi-GB
+    JSON that would OOM the sync worker (PR #234 review #9).
+    """
+    from src.marketplace_metadata import AGNES_METADATA_MAX_BYTES
+
+    target = tmp_path / ".claude-plugin" / "agnes-metadata.json"
+    target.parent.mkdir(parents=True)
+    # Write valid JSON padded with whitespace to exceed the cap. The test
+    # doesn't have to allocate a real GB — anything > AGNES_METADATA_MAX_BYTES
+    # demonstrates the size gate fires before json.loads.
+    padding = " " * (AGNES_METADATA_MAX_BYTES + 1024)
+    target.write_text("{" + padding + "}", encoding="utf-8")
+
+    assert read_agnes_metadata(tmp_path) == {}
+
+
+def test_read_agnes_metadata_deeply_nested_does_not_crash(tmp_path):
+    """A deeply-nested JSON that fits under the size cap must not crash sync.
+
+    Even if json.loads raises ``RecursionError`` instead of ``ValueError``
+    (cpython's recursive object/array parser hits this at ~1000 levels of
+    depth), the sync stays alive and the marketplace just gets empty
+    metadata. The previous code only caught ``ValueError`` so this would
+    have aborted the whole sync.
+    """
+    target = tmp_path / ".claude-plugin" / "agnes-metadata.json"
+    target.parent.mkdir(parents=True)
+    # 5000 nested arrays — comfortably past cpython's default recursion
+    # limit (~1000) but far below the 1 MB size cap (~10 KB).
+    depth = 5000
+    target.write_text("[" * depth + "]" * depth, encoding="utf-8")
+
+    # Function MUST return cleanly — either {} (parser blew up and we
+    # caught it) or whatever the parser produced. Either way, no crash.
+    result = read_agnes_metadata(tmp_path)
+    assert isinstance(result, dict)
+
+
 # --- get_plugin_section / get_inner_section -------------------------------
 
 

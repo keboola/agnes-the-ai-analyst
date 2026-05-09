@@ -44,6 +44,16 @@ AGNES_METADATA_REL = Path(".claude-plugin") / "agnes-metadata.json"
 Sibling to ``marketplace.json`` so curators have one well-known place to put
 both Claude Code and Agnes-side metadata."""
 
+AGNES_METADATA_MAX_BYTES = 1 * 1024 * 1024
+"""Hard cap on the size of an agnes-metadata.json file.
+
+The file is curator-controlled and read into memory in full before parsing.
+Without a cap, a curator could commit a multi-GB document and OOM the sync
+worker (or — more interestingly — slip past the size check and use deep
+nesting to blow the parser's recursion stack). 1 MB is generous: a maximal
+real-world metadata file with covers, docs, and categories for ~50 plugins
+sits well under 100 KB."""
+
 
 def read_agnes_metadata(marketplace_root: Path) -> Dict[str, Any]:
     """Load the agnes-metadata.json document from a cloned marketplace.
@@ -68,16 +78,32 @@ def read_agnes_metadata(marketplace_root: Path) -> Dict[str, Any]:
     if not path.is_file():
         return {}
     try:
+        size = path.stat().st_size
+    except OSError as e:
+        logger.warning("agnes-metadata: %s stat failed: %s", path, e)
+        return {}
+    if size > AGNES_METADATA_MAX_BYTES:
+        logger.warning(
+            "agnes-metadata: %s exceeds %d-byte cap (%d bytes), refusing to read",
+            path, AGNES_METADATA_MAX_BYTES, size,
+        )
+        return {}
+    try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
         logger.warning("agnes-metadata: %s unreadable: %s", path, e)
         return {}
     try:
         data = json.loads(text)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
+        # ValueError covers malformed-JSON; RecursionError covers a curator
+        # who tries to crash the sync via deeply-nested structure that fits
+        # under the size cap (e.g. ``{"a":{"a":{"a":...}}}``). Both reduce
+        # to the same outcome — degrade gracefully so one bad upstream
+        # doesn't abort the whole sync.
         logger.warning(
-            "agnes-metadata: %s malformed JSON, treating as empty: %s",
-            path, e,
+            "agnes-metadata: %s parse failed (%s), treating as empty: %s",
+            path, type(e).__name__, e,
         )
         return {}
     if not isinstance(data, dict):
