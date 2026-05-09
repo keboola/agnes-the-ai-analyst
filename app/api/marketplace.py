@@ -336,7 +336,14 @@ def _flea_to_item(
         f"/api/store/entities/{entity['id']}/photo"
         if entity.get("photo_path") else None
     )
-    invocation = suffixed_name(entity["name"], entity.get("owner_username") or "")
+    # The archive flow renames the row's `name` to free the slot; strip
+    # the suffix when rendering listings so owners don't see the ugly
+    # `__archived__<epoch>` in their own cards. The served catalog
+    # (Claude Code's `/plugin` resolution) uses the renamed slug — we
+    # don't strip there.
+    from src.store_naming import strip_archive_suffix
+    display_name = strip_archive_suffix(entity["name"])
+    invocation = suffixed_name(display_name, entity.get("owner_username") or "")
     is_viewer_owner = bool(viewer_id and entity.get("owner_user_id") == viewer_id)
     return MarketplaceItem(
         id=f"flea-{entity['id']}",
@@ -967,7 +974,11 @@ async def flea_detail(
     if entity.get("photo_path"):
         cover_url = f"/api/store/entities/{entity_id}/photo"
 
-    invocation = suffixed_name(entity["name"], entity.get("owner_username") or "")
+    # Strip archive-rename suffix for human display; manifest_name keeps
+    # the renamed-on-archive slug since that's what Claude Code resolves.
+    from src.store_naming import strip_archive_suffix
+    _flea_display_name = strip_archive_suffix(entity["name"])
+    invocation = suffixed_name(_flea_display_name, entity.get("owner_username") or "")
 
     # doc_paths is a JSON array of relative paths the uploader picked at upload
     # time; `app/api/store.py` serves them by basename via /api/store/.../docs/{filename}.
@@ -1005,7 +1016,7 @@ async def flea_detail(
     return PluginDetailResponse(
         source="flea",
         entity_id=entity_id,
-        plugin_name=entity["name"],
+        plugin_name=_flea_display_name,
         manifest_name=invocation,
         description=entity.get("description"),
         version=entity.get("version"),

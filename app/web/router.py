@@ -96,6 +96,18 @@ def _humanbytes(value) -> str:
 templates.env.filters["humanbytes"] = _humanbytes
 
 
+def _store_display_name(name: str | None) -> str:
+    """Strip the archive-rename suffix from a store entity's display
+    name so admin queue / my-stack / detail templates show the
+    original label instead of the internal `__archived__<epoch>`
+    marker. Safe on plain (non-archived) names — no-op."""
+    from src.store_naming import strip_archive_suffix
+    return strip_archive_suffix(name or "")
+
+
+templates.env.filters["store_display_name"] = _store_display_name
+
+
 # ---- PostHog template wiring ----
 # Two Jinja globals injected into every render so the `_posthog.html` partial
 # (included from `base.html` and `base_login.html`) can render the browser

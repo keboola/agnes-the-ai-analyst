@@ -106,6 +106,17 @@ class TestAdminListing:
             data={"type": "skill"}, cookies=user_cookies,
         )
         assert c.status_code == 422
+        # 422 detail must include both submission_id AND entity_id so
+        # the upload-page JS can redirect the submitter to the detail
+        # page (same UX as a successful upload — they land on the
+        # quarantine banner instead of staying stuck on /store/new).
+        detail = c.json()["detail"]
+        assert detail["code"] == "submission_blocked"
+        assert detail["submission_id"]
+        assert detail["entity_id"], (
+            "422 body must carry entity_id so the uploader can be "
+            "redirected to /marketplace/flea/{entity_id}"
+        )
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.get(
@@ -661,23 +672,36 @@ class TestAdminSortBySize:
         )
         conn.close()
 
+        # Admin endpoint passes sort/order through to the repo whitelist
+        # (#23). Confirm both directions via the API.
         _, admin_cookies = _create_admin(web_client)
         r = web_client.get(
             "/api/admin/store/submissions?sort=file_size&order=asc",
             cookies=admin_cookies,
         )
-        # Note: API admin endpoint doesn't expose sort yet — only the web
-        # page does. So skip this test when API doesn't pass through;
-        # verify via repo direct instead.
-        from src.repositories.store_submissions import StoreSubmissionsRepository as SSR
-        conn2 = get_system_db()
-        items, _ = SSR(conn2).list_for_admin(sort_by="file_size", sort_order="asc")
-        names = [i["name"] for i in items]
+        assert r.status_code == 200
+        names = [i["name"] for i in r.json()["items"]]
         assert names == ["tiny", "med", "big"], names
-        items, _ = SSR(conn2).list_for_admin(sort_by="file_size", sort_order="desc")
-        names = [i["name"] for i in items]
+
+        r = web_client.get(
+            "/api/admin/store/submissions?sort=file_size&order=desc",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200
+        names = [i["name"] for i in r.json()["items"]]
         assert names == ["big", "med", "tiny"], names
-        conn2.close()
+
+    def test_invalid_sort_key_400(self, web_client):
+        """#23 — sort whitelist rejects bogus keys at the API edge.
+        Pre-fix, an unknown key fell through to a substring-replace
+        chain that could surface 500s; now it's a clean 400."""
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.get(
+            "/api/admin/store/submissions?sort=injected__column",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 400, r.text
+        assert "invalid_sort_key" in r.text
 
 
 class TestQuota:
@@ -720,6 +744,34 @@ class TestQuota:
                 data={"type": "skill"}, cookies=user_cookies,
             )
             assert r.status_code == 422, f"upload {i}"
+
+    def test_quota_counter_includes_blocked_llm_and_review_error(self, web_client):
+        """#9 — pre-fix the counter only counted blocked_inline. A
+        submitter triggering ten blocked_llm verdicts was unbounded.
+        Post-fix: counter includes blocked_inline + blocked_llm +
+        review_error so all three reject states share the cap."""
+        from datetime import datetime, timezone, timedelta
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        # Seed three blocked submissions of different types directly via
+        # the repo so we don't depend on triggering each verdict path
+        # through the API (LLM mocking is involved).
+        _, user_cookies = _create_user(web_client, "spammer-9@x.com")
+        conn = get_system_db()
+        repo = StoreSubmissionsRepository(conn)
+        for i, status in enumerate(("blocked_inline", "blocked_llm", "review_error")):
+            repo.create(
+                submitter_id="spammer-9", submitter_email="spammer-9@x.com",
+                type="skill", name=f"q9-{i}", version="1.0.0",
+                status=status, entity_id=None,
+                inline_checks={"manifest": {"status": "fail"}},
+            )
+        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        count = repo.count_blocked_for_submitter_since("spammer-9", since)
+        conn.close()
+        assert count == 3, (
+            f"counter must include all three reject states; got {count}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -772,8 +824,10 @@ class TestQuarantineGates:
         assert r.status_code == 200, r.text
 
     def test_non_owner_non_admin_cannot_view_quarantined(self, web_client):
-        """Random user navigating to the entity URL gets 404 — same as
-        if the entity didn't exist (no leak via 403)."""
+        """Random user navigating to ANY per-entity asset endpoint gets
+        404 — same as if the entity didn't exist (no leak via 403).
+        Covers every ``_enforce_visibility`` caller in app/api/store.py
+        + the marketplace flea detail."""
         _, owner_cookies = _create_user(web_client, "owner@x.com")
         c = web_client.post(
             "/api/store/entities",
@@ -787,16 +841,62 @@ class TestQuarantineGates:
         conn.close()
 
         _, intruder_cookies = _create_user(web_client, "snoop@x.com")
-        # API
+        # Detail
         r = web_client.get(
             f"/api/store/entities/{entity_id}", cookies=intruder_cookies,
         )
-        assert r.status_code == 404
-        # Files
+        assert r.status_code == 404, "detail must 404 for non-owner"
+        # Files listing
         r = web_client.get(
             f"/api/store/entities/{entity_id}/files", cookies=intruder_cookies,
         )
-        assert r.status_code == 404
+        assert r.status_code == 404, "files must 404 for non-owner"
+        # Photo (404 even when no photo uploaded — we want no leak via
+        # status code differences anyway)
+        r = web_client.get(
+            f"/api/store/entities/{entity_id}/photo", cookies=intruder_cookies,
+        )
+        assert r.status_code == 404, "photo must 404 for non-owner"
+        # Docs sub-path
+        r = web_client.get(
+            f"/api/store/entities/{entity_id}/docs/anything.md",
+            cookies=intruder_cookies,
+        )
+        assert r.status_code == 404, "docs must 404 for non-owner"
+
+    def test_quarantined_entity_excluded_from_store_entities_list(self, web_client):
+        """Random non-owner non-admin hitting the public flea-listing
+        (`/api/store/entities`) must NOT see another user's quarantined
+        entry. Mirrors the marketplace-items coverage but on the
+        store-namespaced listing."""
+        _, owner_cookies = _create_user(web_client, "qowner@x.com")
+        c = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_eval_skill_zip("q-list"), "application/zip")},
+            data={"type": "skill"}, cookies=owner_cookies,
+        )
+        sid = c.json()["detail"]["submission_id"]
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        conn = get_system_db()
+        entity_id = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
+        conn.close()
+
+        _, intruder_cookies = _create_user(web_client, "qsnoop@x.com")
+        r = web_client.get("/api/store/entities", cookies=intruder_cookies)
+        assert r.status_code == 200
+        ids = {it["id"] for it in r.json().get("items", [])}
+        assert entity_id not in ids, (
+            "non-owner non-admin saw another user's quarantined entity "
+            "in /api/store/entities listing"
+        )
+
+        # Owner sees own entry on the same listing (auto-include via
+        # include_owner_id widening).
+        r = web_client.get("/api/store/entities", cookies=owner_cookies)
+        owner_ids = {it["id"] for it in r.json().get("items", [])}
+        assert entity_id in owner_ids, (
+            "owner should see own quarantined entity in their listing"
+        )
 
     def test_owner_can_view_their_quarantined_entity(self, web_client):
         _, owner_cookies = _create_user(web_client, "owner@x.com")
@@ -868,7 +968,8 @@ class TestMarketplaceFleaConsolidation:
 
     def test_marketplace_flea_detail_owner_sees_quarantine_banner(self, web_client):
         """Owner landing on /marketplace/flea/{id} sees the quarantine
-        banner with the failure summary."""
+        banner with the failure summary AND the actual finding details
+        — not just a generic "Quarantined" header."""
         _, owner_cookies = _create_user(web_client, "owner@x.com")
         c = web_client.post(
             "/api/store/entities",
@@ -884,9 +985,62 @@ class TestMarketplaceFleaConsolidation:
         r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
         assert r.status_code == 200
         body = r.text
-        # Banner indicators (any of these means the partial rendered)
+        # Banner partial rendered.
         assert "vis-banner" in body
-        assert "Quarantined" in body or "Under review" in body
+        assert "Quarantined" in body
+        # Concrete reason — the eval-shell rule was the offender; banner
+        # must surface the finding details so the submitter knows WHY.
+        assert "security:" in body, (
+            "banner missing static_security findings list — user sees "
+            "'Quarantined' label but no actionable reason"
+        )
+        assert "run.sh" in body, "banner missing path of offending file"
+
+    def test_review_error_banner_shows_error_detail(self, web_client):
+        """#review_error — banner must surface the underlying error
+        message + any inline_checks the runner captured before bailing.
+        Pre-fix the banner only said 'couldn't complete its check' with
+        no actionable detail."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        owner_id, owner_cookies = _create_user(web_client, "rev-err@x.com")
+        # Stage entity + submission directly so we can land in review_error.
+        conn = get_system_db()
+        StoreEntitiesRepository(conn).create(
+            id="ent-rev-err", owner_user_id=owner_id, owner_username="rev-err",
+            type="skill", name="rev-err", description="Test review_error banner",
+            category=None, version="1.0.0", file_size=10,
+            visibility_status="hidden",
+        )
+        StoreSubmissionsRepository(conn).create(
+            submitter_id=owner_id, submitter_email="rev-err@x.com",
+            type="skill", name="rev-err", version="1.0.0",
+            status="review_error", entity_id="ent-rev-err",
+            inline_checks={
+                "manifest": {"status": "pass", "issues": []},
+                "static_security": {"status": "pass", "findings": []},
+                "quality": {"status": "pass", "issues": [],
+                            "template_placeholders": 0},
+            },
+            llm_findings={
+                "risk_level": None, "summary": None, "findings": [],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": None,
+                "error": "LLMTimeoutError: Anthropic connection error",
+            },
+        )
+        conn.close()
+
+        r = web_client.get(
+            "/marketplace/flea/ent-rev-err", cookies=owner_cookies,
+        )
+        assert r.status_code == 200
+        assert "vis-banner" in r.text
+        assert "errored" in r.text or "Under review" in r.text
+        # The actionable error detail must surface.
+        assert "LLMTimeoutError" in r.text, (
+            "review_error banner must surface llm_findings.error"
+        )
 
     def test_legacy_store_detail_url_returns_404(self, web_client):
         """The /store/{id} route was deleted in v32+. Stale bookmarks 404."""
@@ -949,6 +1103,144 @@ class TestArchiveSoftDelete:
         )
         assert c.status_code == 201, c.text
         return c.json()["id"]
+
+    def test_archive_frees_name_for_reupload(self, web_client):
+        """v36 rename-on-archive: owner uploads `myskill`, archives,
+        re-uploads `myskill` → 201. Both rows exist; archived row's
+        name carries the `__archived__<epoch>` marker."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.store_naming import is_archived_name
+        _, owner_cookies = _create_user(web_client, "rename-archive@x.com")
+        eid_v1 = self._upload_clean(web_client, owner_cookies, name="myskill")
+        # Archive v1.
+        r = web_client.delete(
+            f"/api/store/entities/{eid_v1}", cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        # Re-upload under the original name — must succeed.
+        eid_v2 = self._upload_clean(web_client, owner_cookies, name="myskill")
+        assert eid_v2 != eid_v1, "re-upload should produce a new entity id"
+
+        conn = get_system_db()
+        repo = StoreEntitiesRepository(conn)
+        v1 = repo.get(eid_v1)
+        v2 = repo.get(eid_v2)
+        conn.close()
+        assert v1["visibility_status"] == "archived"
+        assert is_archived_name(v1["name"]), (
+            f"archived row name must carry the rename suffix; got {v1['name']!r}"
+        )
+        assert v2["visibility_status"] in ("approved", "pending")
+        assert v2["name"] == "myskill", (
+            f"new row should keep plain name; got {v2['name']!r}"
+        )
+
+    def test_archive_renames_baked_skill_dir_on_disk(self, web_client):
+        """The on-disk `skills/<old_suffix>/` directory is renamed to
+        `skills/<new_suffix>/` and SKILL.md frontmatter is rewritten
+        in lockstep so consumers' Claude Code resolves the new slug."""
+        from app.utils import get_store_dir
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.store_naming import suffixed_name
+        owner_id, owner_cookies = _create_user(web_client, "disk-rename@x.com")
+        eid = self._upload_clean(web_client, owner_cookies, name="diskskill")
+
+        old_suffix = suffixed_name("diskskill", "disk-rename")
+        old_dir = Path(get_store_dir()) / eid / "plugin" / "skills" / old_suffix
+        assert old_dir.is_dir(), f"pre-archive: missing {old_dir}"
+
+        web_client.delete(
+            f"/api/store/entities/{eid}", cookies=owner_cookies,
+        )
+
+        conn = get_system_db()
+        new_name = StoreEntitiesRepository(conn).get(eid)["name"]
+        conn.close()
+        new_suffix = suffixed_name(new_name, "disk-rename")
+        new_dir = Path(get_store_dir()) / eid / "plugin" / "skills" / new_suffix
+        assert new_dir.is_dir(), f"post-archive: missing {new_dir}"
+        assert not old_dir.exists(), (
+            f"old slug dir must be gone post-archive; still found {old_dir}"
+        )
+        # Frontmatter rewritten to new suffix.
+        skill_md = (new_dir / "SKILL.md").read_text(encoding="utf-8")
+        assert f"name: {new_suffix}" in skill_md, (
+            f"SKILL.md frontmatter not updated; got:\n{skill_md[:200]}"
+        )
+
+    def test_un_archive_strips_suffix_back_to_original(self, web_client):
+        """Admin un-archive (set_visibility('approved') from 'archived')
+        strips the `__archived__\\d+$` suffix and restores the original
+        name + clears archive metadata."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.store_naming import is_archived_name
+        owner_id, owner_cookies = _create_user(web_client, "unarch@x.com")
+        eid = self._upload_clean(web_client, owner_cookies, name="back")
+        web_client.delete(f"/api/store/entities/{eid}", cookies=owner_cookies)
+
+        conn = get_system_db()
+        repo = StoreEntitiesRepository(conn)
+        assert is_archived_name(repo.get(eid)["name"])
+        repo.set_visibility(eid, "approved")
+        row = repo.get(eid)
+        conn.close()
+        assert row["name"] == "back"
+        assert row["visibility_status"] == "approved"
+        assert row["archived_at"] is None
+        assert row["archived_by"] is None
+
+    def test_un_archive_when_name_taken_appends_restored_suffix(self, web_client):
+        """Owner archives `taken`, re-uploads `taken` (new entity), admin
+        un-archives the original. Original entity gets
+        `taken-restored-1` since the slot is occupied."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+        owner_id, owner_cookies = _create_user(web_client, "conflict-arch@x.com")
+        eid_v1 = self._upload_clean(web_client, owner_cookies, name="taken")
+        web_client.delete(f"/api/store/entities/{eid_v1}", cookies=owner_cookies)
+        # Re-upload takes the slot.
+        self._upload_clean(web_client, owner_cookies, name="taken")
+
+        conn = get_system_db()
+        repo = StoreEntitiesRepository(conn)
+        repo.set_visibility(eid_v1, "approved")
+        row = repo.get(eid_v1)
+        conn.close()
+        assert row["name"] == "taken-restored-1", (
+            f"un-archive into taken slot must append -restored-1; "
+            f"got {row['name']!r}"
+        )
+
+    def test_active_same_name_still_409(self, web_client):
+        """Regression: when the prior entity is NOT archived, the
+        same-name 409 still fires."""
+        _, owner_cookies = _create_user(web_client, "still409@x.com")
+        self._upload_clean(web_client, owner_cookies, name="active")
+        c = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("active"), "application/zip")},
+            data={"type": "skill"}, cookies=owner_cookies,
+        )
+        assert c.status_code == 409, c.text
+        assert c.json()["detail"] == "conflict_owner_name"
+
+    def test_admin_queue_strips_archive_suffix_for_display(self, web_client):
+        """Admin queue renders the original name (not the suffixed one)
+        in the row's name cell so admins don't see ugly markers."""
+        owner_id, owner_cookies = _create_user(web_client, "displaystrip@x.com")
+        eid = self._upload_clean(web_client, owner_cookies, name="displaytest")
+        web_client.delete(f"/api/store/entities/{eid}", cookies=owner_cookies)
+
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.get(
+            "/admin/store/submissions?status=archived", cookies=admin_cookies,
+        )
+        assert r.status_code == 200
+        body = r.text
+        assert "displaytest" in body
+        assert "__archived__" not in body, (
+            "admin queue must strip the archive-rename suffix for display"
+        )
 
     def test_owner_can_archive_approved_entity(self, web_client):
         """DELETE without ?hard=true on owner's approved entity = soft archive.
@@ -1111,6 +1403,49 @@ class TestArchiveSoftDelete:
         assert r.status_code == 200
         owner_ids = {o["user_id"] for o in r.json()}
         assert "spammer" not in owner_ids
+
+    def test_categories_endpoint_filters_quarantined_for_non_owner(self, web_client):
+        """`/api/marketplace/categories?tab=flea` aggregates per-category
+        counts. The visibility predicate is duplicated inline in
+        marketplace.py (drift risk against repo); this test locks the
+        parity with marketplace items so a future change to the repo
+        clause that misses the inline copy gets caught."""
+        # Owner uploads ONE bad skill (lands at visibility=hidden).
+        _, owner_cookies = _create_user(web_client, "qcat-owner@x.com")
+        web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_eval_skill_zip("qcat"), "application/zip")},
+            data={"type": "skill"}, cookies=owner_cookies,
+        )
+
+        # Different non-admin user. Categories listing must NOT count
+        # the quarantined entry in any bucket.
+        _, snoop_cookies = _create_user(web_client, "qcat-snoop@x.com")
+        r = web_client.get(
+            "/api/marketplace/categories?tab=flea", cookies=snoop_cookies,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Response shape is `{"items": [{name, count, icon_key}, …]}`.
+        # Non-owner non-admin must see 0 total since no approved entries
+        # exist for this fresh user.
+        total = sum(c.get("count", 0) for c in body.get("items", []))
+        assert total == 0, (
+            "non-owner saw quarantined entry counted in /categories: "
+            f"{body}"
+        )
+
+        # Owner sees own entry counted (predicate widens to include
+        # owner's non-archived non-approved entries).
+        r = web_client.get(
+            "/api/marketplace/categories?tab=flea", cookies=owner_cookies,
+        )
+        body = r.json()
+        owner_total = sum(c.get("count", 0) for c in body.get("items", []))
+        assert owner_total >= 1, (
+            "owner should count own quarantined entry in /categories: "
+            f"{body}"
+        )
 
 
 # ---------------------------------------------------------------------------

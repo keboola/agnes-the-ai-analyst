@@ -34,12 +34,6 @@ logger = logging.getLogger(__name__)
 # has 0–3 items — but allow headroom so the model doesn't truncate.
 MAX_RESPONSE_TOKENS = 2000
 
-# The prompt is single-shot user-content; we wrap SYSTEM_PROMPT into the
-# user message because StructuredExtractor's interface predates a separate
-# system-prompt slot. The corporate-memory service does the same.
-def _full_prompt(user_payload: str) -> str:
-    return f"{SYSTEM_PROMPT}\n\n---\n\n{user_payload}"
-
 
 def review_bundle(
     plugin_dir: Path,
@@ -72,8 +66,14 @@ def review_bundle(
 
     extractor = AnthropicExtractor(api_key=api_key, model=model)
     try:
+        # Pass SYSTEM_PROMPT via the SDK's separate ``system=`` parameter
+        # so a crafted README inside the uploaded bundle cannot override
+        # the reviewer rules. The user-content payload wraps the bundle
+        # files in <bundle>...</bundle> sentinels per the trust-boundary
+        # paragraph in SYSTEM_PROMPT.
         result = extractor.extract_json(
-            prompt=_full_prompt(user_payload),
+            prompt=user_payload,
+            system=SYSTEM_PROMPT,
             max_tokens=MAX_RESPONSE_TOKENS,
             json_schema=REVIEW_JSON_SCHEMA,
             schema_name="store_guardrails_review",
@@ -116,9 +116,23 @@ def review_bundle(
         }
 
     # Defensive: ensure the keys we rely on exist with sane defaults even
-    # if the model returns the optional ones empty.
+    # if the model returns the optional ones empty. ``risk_level`` is
+    # special-cased — defaulting it to "medium" would silently look like
+    # a model decision and trigger an implicit block. Surface as an error
+    # so the runner persists `status='review_error'` and the admin sees
+    # a retry button.
+    risk_level = result.get("risk_level")
+    if not risk_level:
+        return {
+            "risk_level": None,
+            "summary": result.get("summary") or "",
+            "findings": result.get("findings") or [],
+            "template_placeholders_found": int(result.get("template_placeholders_found") or 0),
+            "reviewed_by_model": model,
+            "error": "missing_risk_level",
+        }
     return {
-        "risk_level": result.get("risk_level") or "medium",
+        "risk_level": risk_level,
         "summary": result.get("summary") or "",
         "findings": result.get("findings") or [],
         "template_placeholders_found": int(result.get("template_placeholders_found") or 0),

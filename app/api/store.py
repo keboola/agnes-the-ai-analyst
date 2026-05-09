@@ -92,6 +92,7 @@ def _suffixed_already_taken(
     suffixed: str,
     *,
     exclude_entity_id: Optional[str] = None,
+    exclude_archived: bool = False,
 ) -> bool:
     """Whether any existing entity ships the same display+invocation name.
 
@@ -105,6 +106,12 @@ def _suffixed_already_taken(
     ``(owner_user_id, name)`` does NOT prevent the cross-owner collision.
     We enforce global uniqueness on ``name || '-by-' || owner_username``
     here, at upload time, with a clear 409.
+
+    ``exclude_archived=True`` skips rows whose
+    ``visibility_status='archived'`` — required by the upload conflict
+    check so the same owner can re-upload under the original name after
+    archive. The archive path renames the row to free the slug, so this
+    flag is belt-and-braces.
     """
     sql = (
         "SELECT id FROM store_entities "
@@ -114,6 +121,8 @@ def _suffixed_already_taken(
     if exclude_entity_id:
         sql += " AND id != ?"
         params.append(exclude_entity_id)
+    if exclude_archived:
+        sql += " AND visibility_status != 'archived'"
     return bool(conn.execute(sql, params).fetchone())
 
 
@@ -628,6 +637,71 @@ def _write_synth_plugin_json(
     )
 
 
+def _rename_baked_tree(
+    *,
+    type_: str,
+    plugin_dir: Path,
+    old_suffix: str,
+    new_suffix: str,
+    description: Optional[str],
+) -> None:
+    """Rename a baked entity's on-disk slug so a re-uploader can take
+    the original name.
+
+    Per-type layout (see :func:`_bake_plugin_tree`):
+      * ``skill``  — rename ``skills/<old>/`` → ``skills/<new>/`` and
+        rewrite ``SKILL.md`` frontmatter ``name``.
+      * ``agent``  — rename ``agents/<old>.md`` → ``agents/<new>.md``
+        and rewrite the file's frontmatter ``name``.
+      * ``plugin`` — tree paths don't carry the suffix; only the
+        synth ``.claude-plugin/plugin.json`` ``name`` field changes.
+
+    Always rewrites the synth ``plugin.json`` ``name`` to the new
+    suffix. Idempotent — old==new is a no-op.
+    """
+    if old_suffix == new_suffix or not plugin_dir.is_dir():
+        return
+
+    if type_ == "skill":
+        old_dir = plugin_dir / "skills" / old_suffix
+        new_dir = plugin_dir / "skills" / new_suffix
+        if old_dir.is_dir() and not new_dir.exists():
+            old_dir.rename(new_dir)
+        skill_md = new_dir / "SKILL.md"
+        if skill_md.is_file():
+            text = skill_md.read_text(encoding="utf-8", errors="replace")
+            skill_md.write_text(
+                _set_frontmatter_name(text, new_suffix), encoding="utf-8"
+            )
+    elif type_ == "agent":
+        old_md = plugin_dir / "agents" / f"{old_suffix}.md"
+        new_md = plugin_dir / "agents" / f"{new_suffix}.md"
+        if old_md.is_file() and not new_md.exists():
+            old_md.rename(new_md)
+        if new_md.is_file():
+            text = new_md.read_text(encoding="utf-8", errors="replace")
+            new_md.write_text(
+                _set_frontmatter_name(text, new_suffix), encoding="utf-8"
+            )
+    elif type_ == "plugin":
+        pj_path = plugin_dir / ".claude-plugin" / "plugin.json"
+        if pj_path.is_file():
+            try:
+                data = json.loads(pj_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    data["name"] = new_suffix
+                    pj_path.write_text(
+                        json.dumps(data, indent=2), encoding="utf-8"
+                    )
+            except (OSError, ValueError):
+                pass
+
+    # Always rewrite the synth plugin.json (skill + agent path) so the
+    # name aligns with the renamed slug.
+    if type_ in ("skill", "agent"):
+        _write_synth_plugin_json(plugin_dir, new_suffix, description)
+
+
 # ---------------------------------------------------------------------------
 # Listing + detail endpoints
 # ---------------------------------------------------------------------------
@@ -914,13 +988,24 @@ async def create_entity(
     # looping on malformed ZIPs would otherwise fill disk + the admin
     # queue with noise. Cap rejected uploads per submitter per 24h;
     # operator can disable by setting the knob to 0.
+    #
+    # #9 widening: counts blocked_inline + blocked_llm + review_error so
+    # a submitter triggering only LLM-blocked verdicts is bounded too.
+    #
+    # Race note (#5, deferred): two parallel uploads from the same
+    # submitter can both pass the SELECT before either INSERT — the cap
+    # may be exceeded by the number of in-flight requests. A
+    # threading.Lock would block the asyncio event loop; a proper fix
+    # needs an asyncio.Lock held across the entire pipeline (extract +
+    # check + insert) which is a larger restructure tracked separately.
+    # API-level rate limiting (slowapi) bounds the worst case until then.
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
     from app.instance_config import get_guardrails_blocked_quota_per_day
     quota = get_guardrails_blocked_quota_per_day()
     if quota > 0:
         since = _dt.now(_tz.utc) - _td(hours=24)
         recent_blocked = StoreSubmissionsRepository(conn) \
-            .count_blocked_inline_for_submitter_since(user["id"], since)
+            .count_blocked_for_submitter_since(user["id"], since)
         if recent_blocked >= quota:
             raise HTTPException(
                 status_code=429,
@@ -962,7 +1047,10 @@ async def create_entity(
         final_description = description or meta.get("description")
 
         repo = StoreEntitiesRepository(conn)
-        if repo.get_by_owner_and_name(user["id"], final_name):
+        # Skip archived rows: archive renames the row to free the slot,
+        # so a same-name re-upload after archive succeeds. Active rows
+        # (approved / pending / hidden) still 409 on collision.
+        if repo.get_by_owner_and_name(user["id"], final_name, exclude_archived=True):
             raise HTTPException(status_code=409, detail="conflict_owner_name")
 
         entity_id = uuid.uuid4().hex
@@ -972,8 +1060,9 @@ async def create_entity(
         # username and produce the same `<name>-by-<username>` suffix even
         # when the per-owner UNIQUE passes. The suffixed value drives both
         # the bundle on-disk dir and the served plugin.json `name`, so a
-        # collision silently last-write-wins. Refuse upfront.
-        if _suffixed_already_taken(conn, suffixed):
+        # collision silently last-write-wins. Refuse upfront — but skip
+        # archived rows since archive renames their slug.
+        if _suffixed_already_taken(conn, suffixed, exclude_archived=True):
             raise HTTPException(status_code=409, detail="conflict_global_suffix")
         plugin_dir = _plugin_dir(entity_id)
         file_size = _bake_plugin_tree(
@@ -1057,6 +1146,7 @@ async def create_entity(
                 detail={
                     "code": "submission_blocked",
                     "submission_id": sub_id,
+                    "entity_id": entity_id,
                     "checks": inline.to_response_dict(),
                 },
             )
@@ -1155,21 +1245,25 @@ async def update_entity(
     new_size: Optional[int] = None
     inline_after_update: Optional[InlineResult] = None
     if file is not None:
-        # Same single-try/finally invariant as create_entity — see the comment
-        # there. ZIP-validation HTTPExceptions raised inside _safe_zip_extract
-        # were leaking the scratch dir before this restructure.
+        # PUT atomicity: bake the new bundle into a staging dir alongside
+        # the live one, run checks against the staging copy, then atomic-
+        # rename onto the live path on success. Pre-fix, the bake wrote
+        # directly into the live `plugin/` dir BEFORE checks ran — a
+        # concurrent GET during the window saw partial / unverified
+        # content. Staging closes that window: failed checks leave the
+        # live tree byte-for-byte intact.
         tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
         tmp.close()
         scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
-        # Snapshot of the existing baked tree, so we can roll back the
-        # on-disk update if guardrails reject the new bundle. Without
-        # this, a failed re-upload leaves the entity pointing at a
-        # half-overwritten tree.
-        rollback_dir = Path(tempfile.mkdtemp(prefix="agnes_store_rollback_"))
+        # Sibling of the live `plugin/` dir so the eventual rename is on
+        # the same filesystem (atomic on POSIX). Random suffix in case
+        # multiple PUTs land back-to-back.
+        existing_plugin = _plugin_dir(entity_id)
+        staging_plugin = existing_plugin.with_name(
+            f"plugin.staging-{os.urandom(4).hex()}",
+        )
+        backup_plugin: Optional[Path] = None  # set if the swap starts
         try:
-            existing_plugin = _plugin_dir(entity_id)
-            if existing_plugin.exists():
-                shutil.copytree(existing_plugin, rollback_dir / "plugin")
             try:
                 with zipfile.ZipFile(tmp.name, "r") as zf:
                     _safe_zip_extract(zf, scratch)
@@ -1180,33 +1274,33 @@ async def update_entity(
 
             _validate_and_extract_metadata(entity["type"], scratch)
             suffixed = suffixed_name(entity["name"], entity["owner_username"])
+            # Bake into the staging dir — _bake_plugin_tree creates the
+            # target if missing and does its own rmtree on existing
+            # children, so the staging path being fresh is fine.
             new_size = _bake_plugin_tree(
                 type_=entity["type"],
                 extracted_root=scratch,
-                plugin_dir=existing_plugin,
+                plugin_dir=staging_plugin,
                 final_name=entity["name"],
                 suffixed=suffixed,
                 description=description if description is not None else entity.get("description"),
             )
-            new_version = compute_entity_version(existing_plugin)
+            new_version = compute_entity_version(staging_plugin)
 
             inline_after_update = run_inline_checks(
-                existing_plugin,
+                staging_plugin,
                 type_=entity["type"],
                 description=description if description is not None
                             else entity.get("description"),
             )
             if not inline_after_update.passed:
-                # Compute the rejected bundle's sha+size BEFORE rollback
-                # so the submission row carries forensics about what was
-                # tried, even though the bytes themselves get reverted.
+                # Compute the rejected bundle's sha+size BEFORE the
+                # staging dir is removed so the submission row carries
+                # forensics about what was tried.
                 from src.store_guardrails.bundle_meta import compute_bundle_meta
-                rejected_meta = compute_bundle_meta(existing_plugin)
-                # Restore prior bundle from rollback snapshot so the
-                # uploader's old (already-approved) entity stays usable.
-                shutil.rmtree(existing_plugin, ignore_errors=True)
-                if (rollback_dir / "plugin").exists():
-                    shutil.copytree(rollback_dir / "plugin", existing_plugin)
+                rejected_meta = compute_bundle_meta(staging_plugin)
+                # Live tree was never touched — no rollback work to do.
+                # The `finally` below cleans the staging dir.
                 subs_repo = StoreSubmissionsRepository(conn)
                 sub_id = subs_repo.create(
                     submitter_id=user["id"],
@@ -1231,12 +1325,49 @@ async def update_entity(
                     detail={
                         "code": "submission_blocked",
                         "submission_id": sub_id,
+                        "entity_id": entity_id,
                         "checks": inline_after_update.to_response_dict(),
                     },
                 )
+
+            # Checks passed — swap staging onto live. Three steps:
+            # rename live → backup, rename staging → live, rmtree backup.
+            # If the second rename fails, restore by renaming backup
+            # back. Same-FS rename is atomic on POSIX.
+            if existing_plugin.exists():
+                backup_plugin = existing_plugin.with_name(
+                    f"plugin.backup-{os.urandom(4).hex()}",
+                )
+                os.rename(existing_plugin, backup_plugin)
+            try:
+                os.rename(staging_plugin, existing_plugin)
+            except OSError:
+                # Restore live from backup if the swap failed mid-way.
+                if backup_plugin is not None and backup_plugin.exists():
+                    try:
+                        os.rename(backup_plugin, existing_plugin)
+                    except OSError:
+                        pass
+                raise
+            # Live now points at the new bundle; drop the backup copy.
+            if backup_plugin is not None:
+                shutil.rmtree(backup_plugin, ignore_errors=True)
+                backup_plugin = None
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
-            shutil.rmtree(rollback_dir, ignore_errors=True)
+            # If staging never made it through the swap (failed check or
+            # exception), remove it.
+            if staging_plugin.exists():
+                shutil.rmtree(staging_plugin, ignore_errors=True)
+            # If a swap failed leaving the backup orphaned without a
+            # restore, leave it on disk for the operator to recover —
+            # better to log and inspect than silently drop.
+            if backup_plugin is not None and backup_plugin.exists():
+                logger.error(
+                    "PUT atomic-swap left orphan backup at %s — "
+                    "operator should reconcile manually",
+                    backup_plugin,
+                )
 
     photo_rel: Optional[str] = None
     if photo is not None:
@@ -1390,19 +1521,58 @@ async def delete_entity(
         return OkResponse()
 
     # Soft archive — preserves disk + installs + audit chain.
-    # v36+: lifecycle lives only on the entity row; the admin queue
-    # surfaces archived submissions via LEFT JOIN at query time, so
-    # no denormalization back to store_submissions.status. Adversarial
-    # review locked this in: any future code path that flips
-    # entity.visibility_status (admin override, rescan, bulk ops)
-    # automatically reflects in the queue without a parallel write.
-    StoreEntitiesRepository(conn).archive(entity_id, by_user_id=user["id"])
+    # v36+: archive renames the entity row's `name` (appends
+    # `__archived__<epoch>`) so the (owner, name) UNIQUE slot AND
+    # the global `<name>-by-<owner_username>` slug slot free up for
+    # re-upload. The on-disk skill/agent/plugin subdir is renamed
+    # in lockstep + frontmatter rewritten so consumers see the
+    # plugin under the new slug on their next sync.
+    rename_info = StoreEntitiesRepository(conn).archive(
+        entity_id, by_user_id=user["id"],
+    )
+    original_name = rename_info["original_name"]
+    new_name = rename_info["new_name"]
+    if original_name and new_name and original_name != new_name:
+        owner_username = entity.get("owner_username") or ""
+        old_suffix = suffixed_name(original_name, owner_username)
+        new_suffix = suffixed_name(new_name, owner_username)
+        try:
+            _rename_baked_tree(
+                type_=entity["type"],
+                plugin_dir=_plugin_dir(entity_id),
+                old_suffix=old_suffix,
+                new_suffix=new_suffix,
+                description=entity.get("description"),
+            )
+        except Exception:
+            # On-disk rename failure leaves the row pointing at a
+            # stale slug. Revert the DB row so the system stays
+            # consistent (operator can retry archive).
+            logger.exception(
+                "archive on-disk rename failed for entity %s — "
+                "reverting DB",
+                entity_id,
+            )
+            conn.execute(
+                """UPDATE store_entities
+                      SET visibility_status = 'approved',
+                          name = ?,
+                          archived_at = NULL,
+                          archived_by = NULL,
+                          updated_at = ?
+                    WHERE id = ?""",
+                [original_name, datetime.now(timezone.utc), entity_id],
+            )
+            raise HTTPException(
+                status_code=500, detail="archive_rename_failed",
+            )
     _audit(
         conn,
         user["id"],
         "store.entity.archive",
         entity_id,
-        {"name": entity.get("name"),
+        {"name": new_name,
+         "original_name": original_name,
          "owner_user_id": entity.get("owner_user_id"),
          "by_admin": is_admin_caller and entity["owner_user_id"] != user["id"]},
     )

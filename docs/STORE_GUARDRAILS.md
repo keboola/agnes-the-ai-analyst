@@ -126,8 +126,20 @@ Failure here is a **hard block**: HTTP 422 with the failing rule names.
 
 ### 2. Static security scan (inline, deterministic)
 
-Regex + AST patterns aimed at high-confidence danger signals. False
-positives are rare; admin override exists when they happen.
+> **Static scan is signal, not gate.** Regex matches flag candidates
+> for the LLM reviewer; treat them as suggestive, not authoritative. Any
+> attacker willing to obfuscate (`getattr(__builtins__, "ev"+"al")`,
+> dynamic imports, base64-decoded eval) trivially bypasses substring
+> matching. The pipeline still inline-blocks on a finding because
+> shipping known-bad patterns to the LLM is wasteful — but operators
+> reading `inline_checks.static_security` should NOT assume "no
+> findings" means "safe". The LLM verdict carries that determination.
+
+Regex patterns aimed at high-confidence danger signals. False positives
+exist; admin override is the recovery path. Documentation files (`.md`,
+`.txt`, `.rst`, `.html`, `.json`, `.yaml`, `.yml`, `.toml`) are skipped
+to avoid flagging prose that legitimately discusses `eval`/`exec`. Code
+files (`.py`, `.js`, `.sh`, …) remain in scope.
 
 - **Code execution** — `eval(`, `exec(`, `os.system(`, bash `eval $X`,
   `subprocess.run(... shell=True ...)`, `pickle.loads(`, base64-decoded

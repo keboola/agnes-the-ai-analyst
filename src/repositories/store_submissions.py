@@ -137,21 +137,33 @@ class StoreSubmissionsRepository:
             [datetime.now(timezone.utc), datetime.now(timezone.utc), id],
         )
 
-    def count_blocked_inline_for_submitter_since(
+    def count_blocked_for_submitter_since(
         self, submitter_id: str, since,
     ) -> int:
-        """Spam-quota helper. Counts submissions by ``submitter_id`` with
-        ``status='blocked_inline'`` newer than ``since`` (a ``datetime`` —
-        typically now - 24h). Called from the POST entry point; refusal
-        bounds disk growth from a single bot looping on malformed ZIPs.
+        """Spam-quota helper. Counts submissions by ``submitter_id`` whose
+        verdict is one of the rejected/error states
+        (``blocked_inline | blocked_llm | review_error``) newer than
+        ``since`` (a ``datetime`` — typically now - 24h). Called from
+        the POST entry point; refusal bounds disk growth from a single
+        bot looping on malformed/risky ZIPs.
+
+        Pre-fix this counted ONLY ``blocked_inline``. A bad-actor
+        submitter who triggered ten ``blocked_llm`` verdicts was
+        unbounded. All three states represent rejected uploads — count
+        them together.
         """
         row = self.conn.execute(
             "SELECT COUNT(*) FROM store_submissions "
-            "WHERE submitter_id = ? AND status = 'blocked_inline' "
+            "WHERE submitter_id = ? "
+            "  AND status IN ('blocked_inline', 'blocked_llm', 'review_error') "
             "  AND created_at >= ?",
             [submitter_id, since],
         ).fetchone()
         return int(row[0]) if row else 0
+
+    # Backward-compat alias — still used in some operator scripts.
+    # Routes to the broader counter post-#9.
+    count_blocked_inline_for_submitter_since = count_blocked_for_submitter_since
 
     def update_status(
         self,
@@ -245,11 +257,18 @@ class StoreSubmissionsRepository:
     # ``name`` get NULL-safe wrapping so the sort is deterministic across
     # legacy rows; epoch() bypass on ``created_at`` mirrors the bug
     # workaround in the default-order branch below.
+    #
+    # Mapping is sort-key → fully qualified SQL expression (already
+    # disambiguated against the LEFT JOIN). Bad input raises 400 at the
+    # API edge — see ``list_for_admin`` below. Pre-fix the qualification
+    # used a chain of ``str.replace(...)`` calls that risked partial
+    # replacement when one column name was a substring of another;
+    # the explicit dict eliminates the footgun.
     _SORT_COLUMNS: Dict[str, str] = {
-        "created_at": "epoch(created_at)",
-        "file_size":  "COALESCE(file_size, 0)",
-        "status":     "status",
-        "name":       "LOWER(name)",
+        "created_at": "epoch(s.created_at)",
+        "file_size":  "COALESCE(s.file_size, 0)",
+        "status":     "s.status",
+        "name":       "LOWER(s.name)",
     }
 
     def list_for_admin(
@@ -347,15 +366,13 @@ class StoreSubmissionsRepository:
         ).fetchone()
         total = int(total_row[0]) if total_row else 0
 
-        col_expr = self._SORT_COLUMNS.get(sort_by or "created_at",
-                                          self._SORT_COLUMNS["created_at"])
-        # Sort columns reference s.* — qualify so the JOIN doesn't
-        # surface ambiguous column errors when entities also has a
-        # column with the same name.
-        col_expr = col_expr.replace("created_at", "s.created_at") \
-                          .replace("file_size", "s.file_size") \
-                          .replace("status", "s.status") \
-                          .replace("name", "s.name")
+        # Whitelist lookup — values are already JOIN-qualified in
+        # _SORT_COLUMNS. Unknown sort_by raises ValueError; the API
+        # caller maps that to a 400.
+        sort_key = sort_by or "created_at"
+        if sort_key not in self._SORT_COLUMNS:
+            raise ValueError(f"invalid_sort_key: {sort_key!r}")
+        col_expr = self._SORT_COLUMNS[sort_key]
         order = "ASC" if (sort_order or "desc").lower() == "asc" else "DESC"
 
         sql = (

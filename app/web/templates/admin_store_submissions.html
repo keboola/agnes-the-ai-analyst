@@ -258,7 +258,7 @@
           </td>
           <td>
             <span style="color: var(--text-secondary, #6b7280); font-size: 11px;">{{ s.type }}</span>
-            <strong>{{ s.name }}</strong>
+            <strong>{{ s.name | store_display_name }}</strong>
           </td>
           <td>{{ s.version or "" }}</td>
           <td><span class="badge {{ s.status }}">{{ s.status }}</span></td>

@@ -151,7 +151,7 @@
   {% endif %}
 
   <div class="det-header">
-    <h1>{{ sub.type }} · <strong>{{ sub.name }}</strong> {% if sub.version %}<span style="color: var(--text-secondary, #6b7280); font-weight: normal;">v{{ sub.version }}</span>{% endif %}</h1>
+    <h1>{{ sub.type }} · <strong>{{ sub.name | store_display_name }}</strong> {% if sub.version %}<span style="color: var(--text-secondary, #6b7280); font-weight: normal;">v{{ sub.version }}</span>{% endif %}</h1>
     <div class="id-line">{{ sub.id }}</div>
     <dl class="det-meta">
       <div>

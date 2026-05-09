@@ -238,6 +238,50 @@ class TestLlmReviewRunner:
         sub = StoreSubmissionsRepository(conn).get(sub_id)
         assert sub["status"] == "review_error"
 
+    def test_safe_verdict_skipped_when_admin_archived_during_review(self, conn, plugin_dir):
+        """#3 — BG-task race: admin archives entity while LLM review is
+        in flight. Pre-fix the verdict's set_visibility('approved')
+        clobbered the archive. Post-fix the guarded variant refuses
+        and audit-logs the skip."""
+        eid, sub_id = _seed_pending_submission(conn, plugin_dir)
+        # Admin archives BEFORE the LLM verdict lands.
+        StoreEntitiesRepository(conn).archive(eid, by_user_id="admin")
+
+        verdict = {
+            "risk_level": "safe", "summary": "OK", "findings": [],
+            "template_placeholders_found": 0,
+            "reviewed_by_model": "claude-haiku-4-5-20251001",
+            "error": None,
+        }
+        with patch(
+            "src.store_guardrails.runner.llm_review.review_bundle",
+            return_value=verdict,
+        ):
+            run_llm_review(
+                sub_id, plugin_dir=plugin_dir,
+                conn_factory=_conn_factory(conn),
+                api_key_loader=lambda: "sk-test",
+                model_loader=lambda: "claude-haiku-4-5-20251001",
+            )
+
+        ent = StoreEntitiesRepository(conn).get(eid)
+        assert ent["visibility_status"] == "archived", (
+            "BG verdict must NOT clobber an admin archive"
+        )
+        # Submission still flips to 'approved' (verdict is forensic
+        # record); the lifecycle stays archived because the admin won.
+        sub = StoreSubmissionsRepository(conn).get(sub_id)
+        assert sub["status"] == "approved"
+
+        # And we wrote an audit row explaining the skip.
+        audits = conn.execute(
+            "SELECT action, params FROM audit_log "
+            "WHERE resource = ? AND action = ?",
+            [f"store_submission:{sub_id}",
+             "store.submission.bg_verdict_skipped"],
+        ).fetchall()
+        assert audits, "missing skip audit row"
+
     def test_config_loader_failure_records_review_error(self, conn, plugin_dir):
         eid, sub_id = _seed_pending_submission(conn, plugin_dir)
 
@@ -277,3 +321,63 @@ class TestReviewBundleErrorTransport:
             assert result["error"]
             assert result["risk_level"] is None
             assert result["reviewed_by_model"] == "claude-haiku-4-5-20251001"
+
+    def test_missing_risk_level_surfaces_as_review_error(self, plugin_dir):
+        """#10 — model returns a structured response with no/empty
+        risk_level. Pre-fix this defaulted to 'medium' and looked like a
+        model-decided block. Post-fix it surfaces as
+        ``error='missing_risk_level'`` so the runner persists
+        ``status='review_error'`` (admin gets the retry button)."""
+        from src.store_guardrails import llm_review
+
+        with patch(
+            "src.store_guardrails.llm_review.AnthropicExtractor"
+        ) as MockEx:
+            inst = MockEx.return_value
+            inst.extract_json.return_value = {
+                "summary": "model didn't fill risk_level",
+                "findings": [],
+                "template_placeholders_found": 0,
+            }
+            result = llm_review.review_bundle(
+                plugin_dir, type_="skill", name="x", version="1.0.0",
+                description="x" * 30,
+                api_key="sk-test", model="claude-haiku-4-5-20251001",
+            )
+            assert result["risk_level"] is None
+            assert result["error"] == "missing_risk_level"
+
+    def test_system_prompt_passed_via_dedicated_parameter(self, plugin_dir):
+        """#1 — the system prompt MUST be passed via the SDK's separate
+        ``system=`` parameter, not concatenated into user content. This
+        is the trust boundary that keeps a crafted README inside the
+        bundle from overriding the reviewer rules."""
+        from src.store_guardrails import llm_review
+        from src.store_guardrails.prompts import SYSTEM_PROMPT
+
+        with patch(
+            "src.store_guardrails.llm_review.AnthropicExtractor"
+        ) as MockEx:
+            inst = MockEx.return_value
+            inst.extract_json.return_value = {
+                "risk_level": "safe", "summary": "ok", "findings": [],
+                "template_placeholders_found": 0,
+            }
+            llm_review.review_bundle(
+                plugin_dir, type_="skill", name="x", version="1.0.0",
+                description="x" * 30,
+                api_key="sk-test", model="claude-haiku-4-5-20251001",
+            )
+            call = inst.extract_json.call_args
+            assert call.kwargs.get("system") == SYSTEM_PROMPT, (
+                "SYSTEM_PROMPT must be passed via system= so it lands "
+                "in the SDK's system role — not in user content"
+            )
+            user_payload = call.kwargs.get("prompt") or ""
+            assert "<bundle>" in user_payload and "</bundle>" in user_payload, (
+                "user payload must wrap the bundle files in trust-boundary "
+                "sentinel tags"
+            )
+            assert SYSTEM_PROMPT not in user_payload, (
+                "SYSTEM_PROMPT must NOT be inlined into user content"
+            )
