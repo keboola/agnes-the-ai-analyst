@@ -1492,7 +1492,7 @@ async def _save_docs(docs: List[UploadFile], entity_id: str) -> List[str]:
     """Save user-uploaded auxiliary docs into ``assets/docs/``.
 
     v32: file types restricted to PDF / Markdown / plain text via the shared
-    allowlist in ``src.marketplace_assets``. Anything outside the allowlist
+    allowlist in ``src.marketplace_asset_validation``. Anything outside the allowlist
     (DOCX, HTML, images, archives, …) returns HTTP 415 so the wizard can
     surface a precise rejection message. Same allowlist is enforced on the
     Curated mirror side so the two surfaces stay aligned.
@@ -1504,7 +1504,7 @@ async def _save_docs(docs: List[UploadFile], entity_id: str) -> List[str]:
     """
     if not docs:
         return []
-    from src.marketplace_assets import validate_doc_file
+    from src.marketplace_asset_validation import validate_doc_file
 
     docs_dir = _assets_dir(entity_id) / "docs"
     docs_dir.mkdir(parents=True, exist_ok=True)
@@ -1568,9 +1568,9 @@ async def _save_photo(photo: UploadFile, entity_id: str) -> str:
 
     v32: extension allowlist (PNG / JPEG / WEBP) is now backed by a
     body-level magic-bytes check so a renamed ``payload.png`` carrying SVG
-    XML or arbitrary bytes can't smuggle through. Source: ``src.marketplace_assets``.
+    XML or arbitrary bytes can't smuggle through. Source: ``src.marketplace_asset_validation``.
     """
-    from src.marketplace_assets import validate_image_file
+    from src.marketplace_asset_validation import validate_image_file
 
     raw_name = photo.filename or "photo"
     ext = Path(raw_name).suffix.lower()
