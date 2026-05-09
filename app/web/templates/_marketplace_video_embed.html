@@ -1,0 +1,45 @@
+{# Shared YouTube/Vimeo/<video>/<a> embed builder for marketplace detail pages.
+
+   Included inside the IIFE of marketplace_plugin_detail.html and
+   marketplace_item_detail.html. Both pages need the identical detection
+   logic; co-locating it here keeps the YouTube nocookie / Vimeo / mp4
+   regex in ONE place so future tweaks (new host, new attribute, fixed
+   sandbox flag) don't have to be applied twice in lockstep.
+
+   Contract:
+   * `esc(s)` — HTML-escape function provided by the calling IIFE.
+   * Returns an HTML string for inclusion in `.video-embed` wrapper.
+     The wrapper provides the 16:9 aspect ratio (style-custom.css
+     `.video-embed` rule); children stretch via the descendant rules
+     `.video-embed iframe / video / a`. No inline positioning needed.
+   * Unknown hosts fall back to a plain link rather than iframe-loading
+     a third-party page (X-Frame-Options DENY, mixed-origin issues). #}
+function buildVideoEmbed(url, esc) {
+  let m;
+  // YouTube — privacy-enhanced nocookie domain. Same player but loads
+  // less tracking JS, which on some corporate / private-CA setups
+  // makes the difference between a blank black frame and a working
+  // player. The `allow` attribute is YouTube's recommended set for
+  // generic embeds.
+  if ((m = url.match(/youtube\.com\/watch\?.*v=([A-Za-z0-9_-]+)/))
+     || (m = url.match(/youtu\.be\/([A-Za-z0-9_-]+)/))
+     || (m = url.match(/youtube\.com\/embed\/([A-Za-z0-9_-]+)/))) {
+    return `<iframe
+      src="https://www.youtube-nocookie.com/embed/${m[1]}?rel=0"
+      title="YouTube video player"
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+      referrerpolicy="strict-origin-when-cross-origin"
+      allowfullscreen></iframe>`;
+  }
+  if ((m = url.match(/vimeo\.com\/(?:video\/)?(\d+)/))) {
+    return `<iframe
+      src="https://player.vimeo.com/video/${m[1]}"
+      title="Vimeo video player"
+      allow="autoplay; fullscreen; picture-in-picture"
+      allowfullscreen></iframe>`;
+  }
+  if (/\.(mp4|webm|ogg)(\?|$)/i.test(url)) {
+    return `<video controls preload="metadata" src="${esc(url)}"></video>`;
+  }
+  return `<a href="${esc(url)}" target="_blank" rel="noopener">Watch on external site &#x2197;</a>`;
+}
