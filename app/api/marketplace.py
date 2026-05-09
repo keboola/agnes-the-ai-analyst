@@ -505,31 +505,48 @@ async def list_items(
     granted = resolve_allowed_plugins(conn, user)
     subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
     marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
+
+    # Pull the enriched rows the Curated tab uses (cover_photo_url, video_url,
+    # category override, doc_links from agnes-metadata.json) so the My Stack
+    # cards look identical to the curated cards the user just clicked
+    # "+ Add to my stack" on. ``resolve_allowed_plugins`` reads only the
+    # upstream marketplace.json, which doesn't carry those columns; without
+    # this lookup the same plugin renders with its cover photo on
+    # ``?tab=curated`` and with a gradient placeholder on ``?tab=my``.
+    plugin_repo = MarketplacePluginsRepository(conn)
+    subscribed_mp_ids = {mp_id for (mp_id, _) in subs}
+    enriched_lookup: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for mp_id in subscribed_mp_ids:
+        for row in plugin_repo.list_for_marketplace(mp_id):
+            enriched_lookup[(mp_id, row["name"])] = row
+
     for p in granted:
-        if (p["marketplace_id"], p["original_name"]) not in subs:
+        key = (p["marketplace_id"], p["original_name"])
+        if key not in subs:
             continue
         mp_id = p["marketplace_id"]
         if mp_id not in marketplace_meta:
             marketplace_meta[mp_id] = _resolve_marketplace_meta(conn, mp_id)
-        # `resolve_allowed_plugins` reads the upstream marketplace.json, so it
-        # doesn't see our agnes-metadata enrichment columns. The /my-stack
-        # surface still works because the curated card shape only needs
-        # category + description + photo from this synthetic row — none of
-        # which depend on agnes-metadata in steady state. Cover photos here
-        # fall through to the gradient placeholder until the user re-visits
-        # the curated browse tab (which goes through MarketplacePluginsRepository
-        # and gets the enriched cover_photo_url).
-        author = p["raw"].get("author")
-        plugin_row = {
-            "marketplace_id": mp_id,
-            "name": p["original_name"],
-            "description": p["raw"].get("description"),
-            "version": p.get("version"),
-            "category": p["raw"].get("category"),
-            "author_name": author.get("name") if isinstance(author, dict) else None,
-            "cover_photo_url": None,
-            "created_at": None,
-        }
+
+        plugin_row = enriched_lookup.get(key)
+        if plugin_row is None:
+            # Fallback: plugin in RBAC + subscribed but not yet ingested into
+            # marketplace_plugins (rare race — granted before the first sync
+            # cycle runs). Build the bare shape from the on-disk manifest so
+            # the card still renders, just without agnes-metadata enrichment;
+            # cover falls through to the gradient placeholder until the next
+            # sync.
+            author = p["raw"].get("author")
+            plugin_row = {
+                "marketplace_id": mp_id,
+                "name": p["original_name"],
+                "description": p["raw"].get("description"),
+                "version": p.get("version"),
+                "category": p["raw"].get("category"),
+                "author_name": author.get("name") if isinstance(author, dict) else None,
+                "cover_photo_url": None,
+                "created_at": None,
+            }
         items.append(_curated_to_item(
             conn, plugin_row, subs=subs, marketplace_meta=marketplace_meta,
         ))
