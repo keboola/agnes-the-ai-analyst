@@ -39,6 +39,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   marker `agnes refresh-marketplace` matches both the old and new entry
   shapes, so the idempotent-replace path correctly rewrites them).
 
+- **Marketplace "Added to your stack" hint points at `/update-agnes-plugins`.**
+  The post-install green panel on plugin and skill/agent detail pages
+  used to suggest `agnes refresh-marketplace` in a shell prompt and
+  reference the SessionStart auto-install. With the hook now being
+  detect-only, that text was outdated. The hint is condensed to a
+  single instruction — open a new Claude Code session and run
+  `/update-agnes-plugins` — with the slash command in a copy chip.
+  Affects `marketplace_plugin_detail.html` and `marketplace_item_detail.html`.
+
 ### Removed
 
 - **BREAKING: `agnes refresh-marketplace --quiet` flag.** Replaced by
