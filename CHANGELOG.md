@@ -203,6 +203,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   detail page — every rescan / retry / review_error is a row there
   with timestamp + actor. Removed from schema, repo signatures, admin
   endpoints, and the detail-page metadata.
+### Fixed
+
+- **SSRF hardening of the curated-marketplace asset mirror** (PR #234 review). The pre-flight `_is_safe_url` check validated only the initial URL, but `urllib.request.urlopen` then followed redirects and re-resolved the hostname for the actual connection — both bypassable. An attacker-controlled origin could 302 to `http://169.254.169.254/...` and exfil cloud metadata; an attacker-controlled DNS server could return a public IP for the validation lookup and `127.0.0.1` for the connection lookup (DNS rebinding). The mirror now uses a single shared `OpenerDirector` with three custom handlers: `_SafeRedirectHandler` re-runs the SSRF allowlist on every redirect `Location` (max 5 hops, down from urllib's default of 10), and `_PinnedHTTPHandler` / `_PinnedHTTPSHandler` connect directly to the IP that passed validation rather than re-resolving the hostname. TLS SNI + cert verification still bind to the original hostname so a curator-supplied URL whose cert chain matches the hostname keeps working. `_resolve_safe` returns the validated IP (the existing `_is_safe_url` 2-tuple wrapper stays for backwards compatibility) and also rejects round-robin DNS that mixes a public + private record. Regression tests cover redirect blocking, redirect error unwrapping inside `URLError`, the pinned-IP connection target, and the end-to-end DNS-rebinding scenario.
 
 ### Added
 
