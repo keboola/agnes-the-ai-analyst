@@ -2,29 +2,40 @@
 
 Covers:
 * allowlist enforcement (Content-Type + URL extension fallback),
-* SSRF guards (private IPs, non-http schemes),
+* SSRF guards (private IPs, non-http schemes, redirect re-validation,
+  DNS-rebinding pinning),
 * size cap,
 * conditional GET (304 Not Modified vs 200 OK + new sha256),
 * b1 fallback (preserve last good copy on fetch failure),
 * manifest cleanup when an upstream URL disappears.
 
-The HTTP layer is mocked at ``urllib.request.urlopen`` so we don't depend
-on a network. Each test instantiates a small fake response object.
+The HTTP layer is mocked at ``_http_open`` (the single SSRF-aware call
+site) so we don't depend on a network. Each test instantiates a small
+fake response object.
 """
 
 from __future__ import annotations
 
 import io
 import json
+import socket
 import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from src.marketplace_asset_mirror import (
     HTTP_TIMEOUT_SEC,
     MAX_BODY_BYTES,
     MirrorEntry,
     _is_safe_url,
+    _PinnedHTTPSConnection,
+    _PinnedRequest,
+    _resolve_safe,
+    _SafeRedirectHandler,
+    _UnsafeRedirectError,
     sync_assets,
 )
 
@@ -67,20 +78,37 @@ class _FakeResponse:
 
 
 def _patch_urlopen(responses):
-    """Return a context manager patching urlopen to consume from the list."""
+    """Return a context manager patching the single HTTP call site.
+
+    The fake function may also be passed an exception, in which case it
+    is raised — mirrors the urllib stack's behaviour for HTTPError / etc.
+    """
     iterator = iter(responses)
 
-    def fake_urlopen(req, timeout=HTTP_TIMEOUT_SEC):
-        return next(iterator)
+    def fake_http_open(req, timeout):
+        nxt = next(iterator)
+        if isinstance(nxt, BaseException):
+            raise nxt
+        return nxt
 
-    return patch("src.marketplace_asset_mirror.urllib.request.urlopen", fake_urlopen)
+    return patch("src.marketplace_asset_mirror._http_open", fake_http_open)
 
 
-def _patch_safe_url(safe: bool = True, reason: str = ""):
-    """Bypass DNS-based SSRF detection so unit tests don't touch the network."""
+def _patch_safe_url(
+    safe: bool = True,
+    reason: str = "",
+    pinned_ip: str = "8.8.8.8",
+):
+    """Bypass DNS-based SSRF detection so unit tests don't touch the network.
+
+    The pinned IP defaults to a real public IP (Google DNS) — not a
+    TEST-NET / documentation prefix, since Python's ``ipaddress`` module
+    flags those as ``is_private=True`` per RFC 6890 and they would be
+    rejected by the SSRF guard itself.
+    """
     return patch(
-        "src.marketplace_asset_mirror._is_safe_url",
-        return_value=(safe, reason),
+        "src.marketplace_asset_mirror._resolve_safe",
+        return_value=(safe, reason, pinned_ip if safe else ""),
     )
 
 
@@ -110,6 +138,199 @@ def test_is_safe_url_rejects_link_local_metadata():
 def test_is_safe_url_rejects_missing_host():
     ok, reason = _is_safe_url("https:///")
     assert not ok and "missing_host" in reason
+
+
+# --- SSRF redirect re-validation (#1 fix) ---------------------------------
+
+
+def test_safe_redirect_handler_rejects_link_local_redirect():
+    """A 302 to 169.254.169.254 raises ``_UnsafeRedirectError``.
+
+    Direct unit test of the handler — no urllib pipeline plumbing — so the
+    test fails fast and pinpoints the regression if redirect re-validation
+    is ever turned off.
+    """
+    handler = _SafeRedirectHandler()
+    req = _PinnedRequest("https://attacker.example/x", pinned_ip="8.8.8.8")
+    fp = io.BytesIO(b"")
+
+    with pytest.raises(_UnsafeRedirectError) as excinfo:
+        handler.redirect_request(
+            req, fp, 302, "Found",
+            headers={"Location": "http://169.254.169.254/latest/meta-data/iam/x"},
+            newurl="http://169.254.169.254/latest/meta-data/iam/x",
+        )
+    assert "redirect_blocked" in str(excinfo.value)
+    assert "address_in_blocked_range" in str(excinfo.value)
+
+
+def test_safe_redirect_handler_rejects_loopback_redirect():
+    """Same shape as the link-local test — covers ``http://127.0.0.1`` too."""
+    handler = _SafeRedirectHandler()
+    req = _PinnedRequest("https://attacker.example/x", pinned_ip="8.8.8.8")
+    fp = io.BytesIO(b"")
+
+    with pytest.raises(_UnsafeRedirectError):
+        handler.redirect_request(
+            req, fp, 302, "Found",
+            headers={"Location": "http://127.0.0.1/internal-admin"},
+            newurl="http://127.0.0.1/internal-admin",
+        )
+
+
+def test_fetch_url_rejects_when_redirect_handler_raises(tmp_path):
+    """End-to-end: ``_fetch_url`` maps ``_UnsafeRedirectError`` raised inside
+    the urllib stack to ``status='rejected'`` (terminal) — not 'failed'."""
+    err = _UnsafeRedirectError("redirect_blocked: address_in_blocked_range: 169.254.169.254")
+
+    def fake_http_open(req, timeout):
+        # urllib's machinery would raise this from inside redirect_request;
+        # we simulate by raising directly from _http_open.
+        raise err
+
+    with _patch_safe_url(), patch(
+        "src.marketplace_asset_mirror._http_open", fake_http_open
+    ):
+        report = sync_assets(
+            cache_dir=tmp_path,
+            requests=[("p", "cover", "https://attacker.example/c.png")],
+        )
+
+    assert report.rejected == 1
+    assert report.failed == 0, "redirect block must be terminal, not transient"
+    entry = report.entries["https://attacker.example/c.png"]
+    assert entry.status == "rejected"
+    assert "redirect_blocked" in entry.error
+
+
+def test_fetch_url_unwraps_redirect_error_inside_urlerror(tmp_path):
+    """urllib sometimes wraps handler exceptions in ``URLError`` — the catch
+    path must unwrap so a redirect block stays classified as 'rejected'."""
+    inner = _UnsafeRedirectError("redirect_blocked: address_in_blocked_range: 127.0.0.1")
+    wrapper = urllib.error.URLError(inner)
+
+    def fake_http_open(req, timeout):
+        raise wrapper
+
+    with _patch_safe_url(), patch(
+        "src.marketplace_asset_mirror._http_open", fake_http_open
+    ):
+        report = sync_assets(
+            cache_dir=tmp_path,
+            requests=[("p", "cover", "https://attacker.example/c.png")],
+        )
+
+    assert report.rejected == 1
+    assert "redirect_blocked" in report.entries["https://attacker.example/c.png"].error
+
+
+# --- DNS rebinding pin (#2 fix) -------------------------------------------
+
+
+def test_pinned_https_connection_uses_pinned_ip(monkeypatch):
+    """``_PinnedHTTPSConnection.connect()`` MUST connect to the pinned IP.
+
+    If a future change accidentally re-introduces a hostname-based
+    ``socket.create_connection`` call, an attacker-controlled DNS could
+    return a different IP at connection time (rebinding). Asserting the
+    target tuple here is the regression guard.
+    """
+    captured = {}
+
+    def fake_create_connection(addr, *args, **kwargs):
+        captured["addr"] = addr
+        # Abort the actual TLS handshake — we only care about the address.
+        raise OSError("stub: only verifying connect target")
+
+    monkeypatch.setattr(
+        "src.marketplace_asset_mirror.socket.create_connection",
+        fake_create_connection,
+    )
+
+    conn = _PinnedHTTPSConnection("attacker.example", pinned_ip="8.8.8.8")
+    with pytest.raises(OSError):
+        conn.connect()
+
+    assert captured["addr"] == ("8.8.8.8", 443), (
+        "connect() must use the pinned IP, not re-resolve the hostname"
+    )
+
+
+def test_dns_rebinding_does_not_bypass_ssrf(monkeypatch, tmp_path):
+    """End-to-end DNS rebinding scenario.
+
+    Attacker DNS returns a public IP for ``getaddrinfo`` (validation step)
+    and would return ``127.0.0.1`` for the connection step. Because we
+    pin to the validated IP, ``getaddrinfo`` is never called a second
+    time — the rebind never happens.
+    """
+    addrinfo_calls = []
+
+    def fake_getaddrinfo(host, port=None, *args, **kwargs):
+        addrinfo_calls.append(host)
+        # Always return the public IP — if pinning is broken, urllib
+        # would call this a second time and we'd flip to loopback to
+        # demonstrate the attack. The assert below verifies single call.
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", port or 0))]
+
+    create_conn_targets = []
+
+    def fake_create_connection(addr, *args, **kwargs):
+        create_conn_targets.append(addr)
+        raise OSError("stub: only verifying connect target")
+
+    monkeypatch.setattr(
+        "src.marketplace_asset_mirror.socket.getaddrinfo", fake_getaddrinfo,
+    )
+    monkeypatch.setattr(
+        "src.marketplace_asset_mirror.socket.create_connection",
+        fake_create_connection,
+    )
+
+    sync_assets(
+        cache_dir=tmp_path,
+        requests=[("p", "cover", "https://attacker.example/c.png")],
+    )
+
+    assert addrinfo_calls == ["attacker.example"], (
+        "getaddrinfo must be called exactly once — the pinned IP makes "
+        "the connection-time rebind impossible"
+    )
+    assert create_conn_targets == [("8.8.8.8", 443)], (
+        "connection must target the pinned IP from the validation step"
+    )
+
+
+def test_resolve_safe_returns_pinned_ip_on_success(monkeypatch):
+    """Smoke test: the new 3-tuple API returns the IP we'll connect to."""
+    monkeypatch.setattr(
+        "src.marketplace_asset_mirror.socket.getaddrinfo",
+        lambda *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                            ("1.1.1.1", 0))],
+    )
+    ok, reason, ip = _resolve_safe("https://example.com/x")
+    assert ok and reason == "" and ip == "1.1.1.1"
+
+
+def test_resolve_safe_rejects_when_any_address_is_private(monkeypatch):
+    """Round-robin DNS that mixes a public + a private IP is rejected.
+
+    Defends against a slightly-different rebinding angle: a hostname
+    that legitimately resolves to multiple A records, one of which is
+    internal. We don't pick-and-choose; if any record is unsafe, the
+    hostname is unsafe.
+    """
+    monkeypatch.setattr(
+        "src.marketplace_asset_mirror.socket.getaddrinfo",
+        lambda *_a, **_k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("1.1.1.1", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.1", 0)),
+        ],
+    )
+    ok, reason, ip = _resolve_safe("https://example.com/x")
+    assert not ok
+    assert "address_in_blocked_range: 10.0.0.1" in reason
+    assert ip == ""
 
 
 # --- sync_assets: allowlist enforcement ----------------------------------
@@ -219,11 +440,11 @@ def test_sync_assets_304_keeps_cached_file(tmp_path):
         hdrs={}, fp=io.BytesIO(b""),
     )
 
-    def fake_urlopen(req, timeout=HTTP_TIMEOUT_SEC):
+    def fake_http_open(req, timeout):
         raise not_modified
 
     with _patch_safe_url(), patch(
-        "src.marketplace_asset_mirror.urllib.request.urlopen", fake_urlopen
+        "src.marketplace_asset_mirror._http_open", fake_http_open
     ):
         report2 = sync_assets(
             cache_dir=tmp_path,
@@ -256,11 +477,11 @@ def test_sync_assets_fetch_failure_keeps_prior_file(tmp_path):
         hdrs={}, fp=io.BytesIO(b""),
     )
 
-    def fake_urlopen(req, timeout=HTTP_TIMEOUT_SEC):
+    def fake_http_open(req, timeout):
         raise server_error
 
     with _patch_safe_url(), patch(
-        "src.marketplace_asset_mirror.urllib.request.urlopen", fake_urlopen
+        "src.marketplace_asset_mirror._http_open", fake_http_open
     ):
         report = sync_assets(
             cache_dir=tmp_path,
@@ -300,15 +521,15 @@ def test_sync_assets_drops_removed_url(tmp_path):
 
 
 def test_sync_assets_blocks_unsafe_url_without_calling_urlopen(tmp_path):
-    """SSRF check fires before the HTTP fetch — urlopen is never invoked."""
+    """SSRF check fires before the HTTP fetch — _http_open is never invoked."""
     called = {"hit": False}
 
-    def fake_urlopen(req, timeout=HTTP_TIMEOUT_SEC):
+    def fake_http_open(req, timeout):
         called["hit"] = True
-        raise AssertionError("urlopen must not be invoked for unsafe URLs")
+        raise AssertionError("_http_open must not be invoked for unsafe URLs")
 
     with _patch_safe_url(False, "address_in_blocked_range: 127.0.0.1"), patch(
-        "src.marketplace_asset_mirror.urllib.request.urlopen", fake_urlopen
+        "src.marketplace_asset_mirror._http_open", fake_http_open
     ):
         report = sync_assets(
             cache_dir=tmp_path,
