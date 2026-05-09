@@ -2494,9 +2494,29 @@ def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:
 
 
 def close_system_db() -> None:
-    """Close the shared system DB connection. Called on app shutdown."""
+    """Close the shared system DB connection. Called on app shutdown.
+
+    CHECKPOINT before close so the WAL flushes into ``system.duckdb`` and
+    the file is left in a clean state. If we skip this and the process
+    later gets SIGKILL'd (e.g. Docker's default 10s stop_grace_period
+    expires during ``docker compose up -d`` recreate), DuckDB leaves a
+    populated ``.wal`` that the next process must replay on open. When
+    the next process is a different DuckDB version (image upgrade
+    window), replay can hit internal assertions like
+    ``Failure while replaying WAL ... GetDefaultDatabase with no default
+    database set`` — observed on foundryai-dev-vrysanek 2026-05-05 —
+    and the app 500s on every authed request.
+
+    CHECKPOINT is best-effort: if it raises (locked, disk full, etc.)
+    we still proceed to close — the recovery path in ``_try_open_system_db``
+    plus the longer ``stop_grace_period`` in compose are the safety nets.
+    """
     global _system_db_conn, _system_db_path
     if _system_db_conn:
+        try:
+            _system_db_conn.execute("CHECKPOINT")
+        except Exception:
+            pass
         try:
             _system_db_conn.close()
         except Exception:
