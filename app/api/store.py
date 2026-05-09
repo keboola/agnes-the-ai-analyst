@@ -1303,19 +1303,24 @@ async def update_entity(
     * **Type is locked** — passing ``type`` that differs from the
       stored row returns 400 ``type_locked``. Replacing one form
       factor with another is a fresh upload, not an edit.
-    * **Display-name change** is allowed — triggers a slug rename in
-      the live bundle (mirrors the rename-on-archive flow). Existing
-      installers see the plugin renamed on next sync.
+    * **Display-name change** is allowed. Without a bundle change it
+      flips the live slug immediately (mirrors rename-on-archive).
+      Combined with a bundle change the rename is deferred — only the
+      staged version dir is renamed; live keeps the prior slug until
+      promotion, so existing installers never see a slug≠content pair
+      mid-review.
     * **Bundle change** creates a new version: bake into
       ``versions/v<N+1>/plugin/``, run guardrails, on approval copy
       to the live ``plugin/`` dir + bump ``version_no`` + append
       ``version_history``. The prior version dir stays so rollback
       can copy it forward.
-    * **Block-while-pending**: an in-flight LLM review (the entity's
-      ``visibility_status='pending'`` AND the latest submission has
-      ``status IN ('pending_inline','pending_llm')``) blocks any
-      further edit with 409 ``prior_version_pending``. Owner waits
-      for the verdict; the detail page auto-refreshes.
+    * **Block-while-pending**: gates on the latest submission's status
+      directly (``status IN ('pending_inline','pending_llm')``),
+      independent of ``visibility_status``. Under deferred promotion
+      v2+ edits leave the entity ``approved`` through the LLM review
+      window, so a visibility-only check would never fire. Returns 409
+      ``prior_version_pending``; owner waits for the verdict; the
+      detail page auto-refreshes.
     * **Metadata-only edit** (no ``file`` posted) skips the bundle
       pipeline and the version bump.
     """
