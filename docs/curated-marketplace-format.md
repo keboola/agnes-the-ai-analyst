@@ -1,0 +1,171 @@
+# How to add Agnes-side info to your Curated Marketplace
+
+> **This guide is for the Curated Marketplace channel only** — git-hosted
+> marketplaces an Agnes admin registers in `/admin/marketplaces`.
+
+You're maintaining a Claude Code marketplace registered as Curated in
+Agnes, and you'd like the plugins in it to show with cover photos, demo
+videos, and doc links inside the Agnes web UI. This guide is the whole
+story.
+
+## Quickstart
+
+Create a JSON file at this exact path in your repo:
+
+```
+.claude-plugin/agnes-metadata.json
+```
+
+Put the keys you want filled in. **Every key is optional.** Skip a
+field, skip a plugin, skip the entire file — Agnes will render whatever
+you provided and nothing else. Adding the file later (or expanding it)
+just shows more on the next sync.
+
+Minimal example — one plugin, one cover photo, nothing else:
+
+```json
+{
+  "plugins": {
+    "my-plugin": {
+      "cover_photo": ".agnes/my-plugin-cover.png"
+    }
+  }
+}
+```
+
+Done. After the next sync, the card for `my-plugin` in Agnes shows your
+cover photo. Other plugins (and other fields) keep their defaults.
+
+## The schema
+
+The same shape applies at three levels: plugin, skill, agent.
+
+```json
+{
+  "plugins": {
+    "<plugin-name>": {
+      "cover_photo": "...",
+      "video_url":   "...",
+      "category":    "...",
+      "doc_links":   [
+        { "name": "Setup",   "path": "docs/setup.md" },
+        { "name": "API ref", "url":  "https://example.com/api.pdf" }
+      ],
+
+      "skills": {
+        "<skill-name>": {
+          "cover_photo": "...",
+          "video_url":   "...",
+          "doc_links":   [...]
+        }
+      },
+
+      "agents": {
+        "<agent-name>": {
+          "cover_photo": "...",
+          "video_url":   "...",
+          "doc_links":   [...]
+        }
+      }
+    }
+  }
+}
+```
+
+**Fields, all optional:**
+
+| Field         | What it does |
+|---------------|--------------|
+| `cover_photo` | Image shown on the card and on the detail page hero. |
+| `video_url`   | Demo video shown on the detail page. External URL only. |
+| `category`    | Overrides the category in `marketplace.json` for this plugin. |
+| `doc_links[]` | Extra documentation links shown on the detail page. Each entry is `{name, path}` (a file in your repo) or `{name, url}` (an external URL). |
+| `skills`      | Map keyed by skill name (matching `name:` in the skill's `SKILL.md` frontmatter). |
+| `agents`      | Map keyed by agent name (the agent `.md` filename without extension). |
+
+`<plugin-name>` matches the `name` field of the plugin in your
+`marketplace.json`. Same for skill and agent names — they match what's
+in the corresponding files inside the plugin.
+
+## Where to put cover photos and docs
+
+You can either ship them in your repo or link to a public URL.
+
+**In your repo** — convention: drop them under `.agnes/` at the repo
+root, then reference by path:
+
+```json
+{ "cover_photo": ".agnes/my-plugin-cover.png" }
+{ "doc_links": [{ "name": "Setup", "path": "docs/setup.md" }] }
+```
+
+Files under `.agnes/` are stripped from the synthetic Claude Code
+marketplace Agnes serves to user instances, so you can put
+Agnes-only content there without bloating the plugin distribution.
+
+**Public URL** — Agnes detects any value starting with `https://` (or
+`http://`) and downloads it once at sync time, then serves the cached
+copy:
+
+```json
+{ "cover_photo": "https://cdn.example.com/cover.png" }
+{ "doc_links": [{ "name": "API ref", "url": "https://example.com/api.pdf" }] }
+```
+
+If the original URL goes 404 later, Agnes keeps showing the cached copy
+it already has — link rot doesn't break your plugin's UI.
+
+## Worked example
+
+Copy this and adjust:
+
+```json
+{
+  "plugins": {
+    "data-explorer": {
+      "cover_photo": ".agnes/data-explorer-cover.png",
+      "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "category": "Data analysis",
+      "doc_links": [
+        { "name": "Setup guide", "path": "docs/setup.md" },
+        { "name": "API reference (PDF)", "url": "https://example.com/data-explorer-api.pdf" }
+      ],
+      "skills": {
+        "explore-table": {
+          "cover_photo": ".agnes/skills/explore-table-cover.png",
+          "doc_links": [
+            { "name": "Cheatsheet", "path": "docs/skills/explore-table.md" }
+          ]
+        }
+      },
+      "agents": {
+        "query-planner": {
+          "cover_photo": "https://cdn.example.com/agents/query-planner.webp",
+          "doc_links": [
+            { "name": "Decision flow (PDF)", "url": "https://example.com/query-planner-flow.pdf" }
+          ]
+        }
+      }
+    },
+    "report-generator": {
+      "cover_photo": "https://cdn.example.com/report-generator-cover.png",
+      "category": "Reporting"
+    }
+  }
+}
+```
+
+The same example lives at
+[`docs/examples/agnes-metadata.json`](https://github.com/keboola/agnes-the-ai-analyst/blob/main/docs/examples/agnes-metadata.json)
+in the source repo.
+
+---
+
+## Allowed file types
+
+Agnes accepts a small set of formats — anything else is silently skipped.
+
+**Cover photos:** PNG (`.png`), JPEG (`.jpg` / `.jpeg`), WebP (`.webp`).
+
+**Documentation files:** PDF (`.pdf`), Markdown (`.md` / `.markdown`),
+plain text (`.txt`).

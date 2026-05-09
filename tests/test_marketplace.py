@@ -5,6 +5,7 @@ Uses a local bare git repo as a fake remote so no network is needed.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -331,6 +332,8 @@ def test_api_create_with_token_persists_to_overlay(seeded_app, fake_remote):
             "slug": "hello",
             "url": fake_remote["url"].replace("file://", "https://") if False else "https://example.com/hello.git",
             "token": pat,
+            "curator_name": "Test Curator",
+            "curator_email": "curator@example.com",
         },
     )
     # URL must start with https:// per our validator — the placeholder above
@@ -356,11 +359,13 @@ def test_api_rejects_bad_slug_and_non_https(seeded_app):
     client = seeded_app["client"]
     token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
 
+    curator = {"curator_name": "Curator", "curator_email": "c@example.com"}
+
     # Bad slug
     r = client.post(
         "/api/marketplaces",
         headers=token_headers,
-        json={"name": "X", "slug": "../etc", "url": "https://example.com/x.git"},
+        json={"name": "X", "slug": "../etc", "url": "https://example.com/x.git", **curator},
     )
     assert r.status_code == 400
 
@@ -368,9 +373,180 @@ def test_api_rejects_bad_slug_and_non_https(seeded_app):
     r = client.post(
         "/api/marketplaces",
         headers=token_headers,
-        json={"name": "X", "slug": "xy", "url": "http://example.com/x.git"},
+        json={"name": "X", "slug": "xy", "url": "http://example.com/x.git", **curator},
     )
     assert r.status_code == 400
+
+
+def test_api_create_requires_curator(seeded_app):
+    """v32: curator_name + curator_email are mandatory at create time.
+
+    Three failure shapes are checked: missing both, missing email, malformed
+    email. Each must surface a 400 with a curator-specific message so the
+    admin form can render a useful toast.
+    """
+    client = seeded_app["client"]
+    token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    # Both missing
+    r = client.post(
+        "/api/marketplaces",
+        headers=token_headers,
+        json={"name": "X", "slug": "cnone", "url": "https://example.com/x.git"},
+    )
+    assert r.status_code == 400
+    assert "curator_name" in r.text
+
+    # Email missing
+    r = client.post(
+        "/api/marketplaces",
+        headers=token_headers,
+        json={
+            "name": "X", "slug": "cmail", "url": "https://example.com/x.git",
+            "curator_name": "Test",
+        },
+    )
+    assert r.status_code == 400
+    assert "curator_email" in r.text
+
+    # Email malformed
+    r = client.post(
+        "/api/marketplaces",
+        headers=token_headers,
+        json={
+            "name": "X", "slug": "cbad", "url": "https://example.com/x.git",
+            "curator_name": "Test", "curator_email": "not-an-email",
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_api_curator_round_trip(seeded_app):
+    """Curator fields persist through create + GET list, and a PATCH edit
+    updates them. Empty-string curator inputs on PATCH leave the existing
+    values unchanged (per the help text on the edit modal)."""
+    client = seeded_app["client"]
+    token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    r = client.post(
+        "/api/marketplaces",
+        headers=token_headers,
+        json={
+            "name": "Curator Test", "slug": "curator-rt",
+            "url": "https://example.com/x.git",
+            "curator_name": "Alice Original",
+            "curator_email": "alice@example.com",
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["curator_name"] == "Alice Original"
+    assert body["curator_email"] == "alice@example.com"
+
+    # Update curator name only
+    r = client.patch(
+        "/api/marketplaces/curator-rt",
+        headers=token_headers,
+        json={"curator_name": "Bob New"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["curator_name"] == "Bob New"
+    assert body["curator_email"] == "alice@example.com"  # unchanged
+
+    # Empty-string PATCH leaves the value alone (not a clear)
+    r = client.patch(
+        "/api/marketplaces/curator-rt",
+        headers=token_headers,
+        json={"curator_name": "", "curator_email": "  "},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["curator_name"] == "Bob New"
+    assert body["curator_email"] == "alice@example.com"
+
+    # Malformed email rejected on PATCH too
+    r = client.patch(
+        "/api/marketplaces/curator-rt",
+        headers=token_headers,
+        json={"curator_email": "not-an-email"},
+    )
+    assert r.status_code == 400
+
+
+def test_patch_legacy_row_without_curator_is_rejected(seeded_app):
+    """Pre-v32 rows can survive in the DB with NULL curator (the column is
+    nullable so the migration doesn't break operator instances). But the
+    moment an admin opens the edit modal — touches URL, description, name,
+    anything — the API must reject the PATCH unless the curator gap is
+    closed in the same payload. Otherwise the OWNER_TODO_PLACEHOLDER lingers
+    on every /marketplace card forever (PR #234 review #5).
+    """
+    from src.db import get_system_db
+    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+    client = seeded_app["client"]
+    token_headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    # Seed a legacy row directly via the repository — bypasses the API
+    # validation, mimicking a row that pre-dates v32.
+    conn = get_system_db()
+    try:
+        MarketplaceRegistryRepository(conn).register(
+            id="legacy-mp",
+            name="Legacy",
+            url="https://example.com/legacy.git",
+            # curator_name + curator_email default to None here
+        )
+    finally:
+        conn.close()
+
+    # PATCH that only updates the URL — must 400 because the existing row
+    # has no curator and the payload doesn't fill it.
+    r = client.patch(
+        "/api/marketplaces/legacy-mp",
+        headers=token_headers,
+        json={"url": "https://example.com/legacy-renamed.git"},
+    )
+    assert r.status_code == 400, r.text
+    assert "curator_name is required" in r.text
+
+    # Same PATCH with curator_name only — still 400 because email is empty.
+    r = client.patch(
+        "/api/marketplaces/legacy-mp",
+        headers=token_headers,
+        json={
+            "url": "https://example.com/legacy-renamed.git",
+            "curator_name": "Late Curator",
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "curator_email is required" in r.text
+
+    # Now fill BOTH — PATCH succeeds, the row carries the new curator.
+    r = client.patch(
+        "/api/marketplaces/legacy-mp",
+        headers=token_headers,
+        json={
+            "url": "https://example.com/legacy-renamed.git",
+            "curator_name": "Late Curator",
+            "curator_email": "late@example.com",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["curator_name"] == "Late Curator"
+    assert body["curator_email"] == "late@example.com"
+
+    # Subsequent PATCH on the now-fully-formed row that doesn't mention
+    # curator at all keeps working (sanity: the gate fires only when the
+    # row would persist with empty curator).
+    r = client.patch(
+        "/api/marketplaces/legacy-mp",
+        headers=token_headers,
+        json={"description": "Now annotated"},
+    )
+    assert r.status_code == 200, r.text
 
 
 def test_api_delete_clears_overlay_binding(seeded_app):
@@ -384,6 +560,7 @@ def test_api_delete_clears_overlay_binding(seeded_app):
         json={
             "name": "Temp", "slug": "temp",
             "url": "https://example.com/temp.git", "token": pat,
+            "curator_name": "Curator", "curator_email": "c@example.com",
         },
     )
     assert os.environ.get("AGNES_MARKETPLACE_TEMP_TOKEN") == pat
@@ -391,6 +568,96 @@ def test_api_delete_clears_overlay_binding(seeded_app):
     r = client.delete("/api/marketplaces/temp?purge=false", headers=token_headers)
     assert r.status_code == 204
     assert os.environ.get("AGNES_MARKETPLACE_TEMP_TOKEN") in (None, "")
+
+
+def test_refresh_plugin_cache_drops_missing_internal_assets(clean_env, monkeypatch):
+    """v32 enrichment drop semantics — when agnes-metadata references files
+    that don't exist on disk (or external URLs that fail to mirror), those
+    entries are removed from the served metadata so the UI never shows a
+    broken link / image. We exercise the missing-internal-file branch
+    directly because it's deterministic without network.
+    """
+    from src.db import get_system_db
+    from src.marketplace import _refresh_plugin_cache, is_valid_slug
+    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+    slug = "drop-test"
+    assert is_valid_slug(slug)
+
+    # Stand up a minimal cloned marketplace tree by hand. No git involved —
+    # the helper reads from disk directly.
+    repo_root = clean_env / "marketplaces" / slug
+    (repo_root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (repo_root / "plugins" / "demo").mkdir(parents=True, exist_ok=True)
+
+    # Real marketplace.json — single plugin
+    (repo_root / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({
+            "name": "drop-test", "owner": {"name": "T"},
+            "plugins": [{
+                "name": "demo", "description": "test",
+                "version": "1.0", "source": "./plugins/demo",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    # agnes-metadata referencing a mix of valid + missing internal paths
+    (repo_root / ".claude-plugin" / "agnes-metadata.json").write_text(
+        json.dumps({
+            "version": 1,
+            "plugins": {
+                "demo": {
+                    # cover_photo points at a file that does NOT exist
+                    "cover_photo": ".agnes/missing-cover.png",
+                    "doc_links": [
+                        # Internal path that exists → should survive
+                        {"name": "ok-doc", "path": "docs/ok.md"},
+                        # Internal path that doesn't exist → dropped
+                        {"name": "missing-doc", "path": "docs/missing.md"},
+                    ],
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    # Create the file referenced by the surviving doc_link
+    (repo_root / "docs").mkdir(exist_ok=True)
+    (repo_root / "docs" / "ok.md").write_text("# ok\n", encoding="utf-8")
+
+    # Register the marketplace so the cache write has a parent row to point at.
+    conn = get_system_db()
+    try:
+        MarketplaceRegistryRepository(conn).register(
+            id=slug, name="drop test", url="https://example.com/x.git",
+            curator_name="C", curator_email="c@example.com",
+        )
+    finally:
+        conn.close()
+
+    written = _refresh_plugin_cache(slug)
+    assert written == 1
+
+    # Assert the DB row reflects the drops:
+    #   cover_photo_url is NULL (missing internal file)
+    #   doc_links carries only the surviving entry (ok-doc)
+    conn = get_system_db()
+    try:
+        row = conn.execute(
+            "SELECT cover_photo_url, doc_links "
+            "FROM marketplace_plugins "
+            "WHERE marketplace_id = ? AND name = ?",
+            [slug, "demo"],
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    cover_url, doc_links_json = row
+    assert cover_url is None, f"missing internal cover should be dropped, got {cover_url}"
+
+    import json as _json
+    doc_links = _json.loads(doc_links_json) if isinstance(doc_links_json, str) else doc_links_json
+    assert isinstance(doc_links, list) and len(doc_links) == 1
+    assert doc_links[0]["name"] == "ok-doc"
 
 
 def test_api_sync_endpoint(seeded_app, fake_remote):
@@ -405,6 +672,8 @@ def test_api_sync_endpoint(seeded_app, fake_remote):
             "name": "Hello",
             "slug": "sync-hello",
             "url": "https://example.com/placeholder.git",  # URL in DB (not dialed here)
+            "curator_name": "Curator",
+            "curator_email": "c@example.com",
         },
     )
     assert r.status_code == 201

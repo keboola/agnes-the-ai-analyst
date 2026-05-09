@@ -547,11 +547,14 @@
 
   <div class="section" id="docs-section" hidden>
     <div class="section-head">
-      <h2>Docs</h2>
+      <h2>Documentation</h2>
       <span class="count" id="docs-count">0</span>
     </div>
     <div class="section-body">
-      <div class="file-list" id="docs-list"></div>
+      {# v32: plain link list matching the plugin detail page. No file
+         icons, no kind chips — every entry is downloadable PDF / Markdown /
+         plain text by contract (sync drops anything else). #}
+      <ul class="doc-link-list" id="docs-list" style="list-style:none;padding:0;margin:0;display:grid;gap:8px;"></ul>
     </div>
   </div>
 
@@ -571,6 +574,7 @@
 <script>
 'use strict';
 (async function () {
+  {% include "_marketplace_video_embed.html" %}
   const root = document.getElementById('root');
   const source = root.dataset.source;          // 'curated' | 'flea'
   const kind = root.dataset.kind;              // 'skill' | 'agent'
@@ -673,9 +677,19 @@
   // ── Hero name ──────────────────────────────────────────────────────
   document.getElementById('hero-name').textContent = heroTitle;
 
-  // Cover photo — flea may have one; curated always falls back to initials.
-  if (source === 'flea' && d.cover_photo_url) {
-    document.getElementById('hero-photo').innerHTML = `<img src="${esc(d.cover_photo_url)}" alt="">`;
+  // Cover photo — flea may have one; curated v32 may also have one when
+  // agnes-metadata.json sub-tree references a skill/agent cover via either
+  // an internal path (resolved to /asset/) or an external URL.
+  if (d.cover_photo_url) {
+    const heroPhoto = document.getElementById('hero-photo');
+    // Initials fallback already lives inside #hero-photo (rendered by the
+    // server-side template as 'SK' / 'AG'). Capture before swapping so a
+    // 404 on the cover restores the original glyph.
+    const initials = heroPhoto.textContent || (kind === 'skill' ? 'SK' : 'AG');
+    heroPhoto.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
+        onerror="this.parentElement.classList.add('photo-failed');
+                 this.parentElement.textContent=this.dataset.fallback;"
+        data-fallback="${esc(initials)}">`;
   }
 
   // Badges — keep type + source (already server-rendered), append category.
@@ -850,12 +864,53 @@
       ${d.updated_at ? `<div class="row"><dt>Updated</dt><dd>${esc(fmtRelative(d.updated_at))}</dd></div>` : ''}`;
   }
 
-  // ── Docs section — flea only (curated docs hidden until per-skill YAML) ─
-  if (source === 'flea' && Array.isArray(d.docs) && d.docs.length) {
+  // ── Docs section ────────────────────────────────────────────────
+  // Flea has always populated `d.docs`. v32 added the same field for curated
+  // skill/agent inner detail, sourced from agnes-metadata.json's per-skill
+  // sub-tree. Both surface here through a single render path — file rows
+  // for internal-cached docs, link rows for external ones.
+  if (Array.isArray(d.docs) && d.docs.length) {
+    // Plain-link rendering — same shape as the plugin detail page. The
+    // server already filtered out anything that isn't a real downloadable
+    // PDF / Markdown / plain text, so every entry here is clickable +
+    // downloads on click (Content-Disposition: attachment from the API).
     document.getElementById('docs-section').hidden = false;
     document.getElementById('docs-count').textContent = String(d.docs.length);
-    document.getElementById('docs-list').innerHTML =
-      d.docs.map(doc => fileRow(doc.name, null, { href: doc.url })).join('');
+    document.getElementById('docs-list').innerHTML = d.docs.map(doc => `
+      <li style="padding:10px 12px;border-radius:8px;background:var(--surface-alt,#f9fafb);border:1px solid var(--border);">
+        <a href="${esc(doc.url || '#')}" download
+           style="color:var(--primary);text-decoration:none;font-weight:500;display:block;"
+           onmouseover="this.style.textDecoration='underline'"
+           onmouseout="this.style.textDecoration='none'">${esc(doc.name)}</a>
+      </li>`).join('');
+  }
+
+  // ── v32: demo video for skill / agent (from agnes-metadata sub-tree) ──
+  // Same auto-embed logic as the parent plugin detail page: YouTube /
+  // Vimeo are embedded; raw .mp4/.webm/.ogg are inlined as <video>; anything
+  // else falls back to a "Watch on external site" link.
+  if (source === 'curated' && d.video_url) {
+    let videoSection = document.getElementById('video-section');
+    if (!videoSection) {
+      videoSection = document.createElement('div');
+      videoSection.id = 'video-section';
+      videoSection.className = 'section';
+      // .video-embed wrapper lives INSIDE .section-body so it inherits
+      // the same 12px / 24px / 22px padding as the docs / files sections —
+      // without that, the iframe bleeds to the panel edge.
+      videoSection.innerHTML = `
+        <div class="section-head">
+          <h2>Demo video</h2>
+        </div>
+        <div class="section-body">
+          <div class="video-embed" id="video-wrap"></div>
+        </div>`;
+      // Insert above the docs section so video shows first when both exist.
+      const docs = document.getElementById('docs-section');
+      docs.parentElement.insertBefore(videoSection, docs);
+    }
+    document.getElementById('video-wrap').innerHTML =
+      buildVideoEmbed(d.video_url, esc);
   }
 
   // ── Files section — both sources, when non-empty ────────────────────

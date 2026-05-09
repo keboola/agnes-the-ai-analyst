@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -363,7 +363,14 @@ CREATE TABLE IF NOT EXISTS marketplace_registry (
     registered_at   TIMESTAMP DEFAULT current_timestamp,
     last_synced_at  TIMESTAMP,
     last_commit_sha VARCHAR,
-    last_error      TEXT
+    last_error      TEXT,
+    -- v37: curator accountability — full name + email captured at registration
+    -- and editable later. Surfaced on /marketplace cards and plugin detail in
+    -- place of the historic `owner_todo` placeholder. Nullable so existing
+    -- rows from pre-v37 instances survive migration; admin must fill via the
+    -- /admin/marketplaces edit modal before the placeholder disappears.
+    curator_name    VARCHAR,
+    curator_email   VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS marketplace_plugins (
@@ -379,6 +386,16 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     raw             JSON,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp,
+    -- v37: enrichment from upstream `.claude-plugin/agnes-metadata.json`.
+    -- `cover_photo_url` and `video_url` are stored as already-resolved served
+    -- URLs (internal asset endpoint, mirrored cache endpoint, or pass-through
+    -- external URL). `doc_links` is a JSON array of `{name, url, kind}` where
+    -- `kind ∈ {internal, mirrored, external}` so the frontend can pick the
+    -- right icon without re-resolving. NULL = upstream marketplace shipped no
+    -- agnes-metadata.json (or shipped one without an entry for this plugin).
+    cover_photo_url VARCHAR,
+    video_url       VARCHAR,
+    doc_links       JSON,
     PRIMARY KEY (marketplace_id, name)
 );
 
@@ -2451,6 +2468,26 @@ def _v30_to_v31_migrate(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("DROP TABLE session_extraction_state")
 
 
+# v37: curated marketplace enrichment from `.claude-plugin/agnes-metadata.json`
+# plus mandatory curator identity on `marketplace_registry`. See the file-level
+# `_SYSTEM_SCHEMA` block for the column-level commentary; the migration is
+# pure ADD COLUMN IF NOT EXISTS so it is idempotent against a fresh install
+# whose schema_version row was hand-rolled below 37 by test fixtures (the
+# IF NOT EXISTS guard then no-ops because `_SYSTEM_SCHEMA` already created
+# the columns at the new shape). Same idiom as `_V27_TO_V28_MIGRATIONS`'s
+# `marketplace_plugins.created_at` ALTER.
+#
+# Originally drafted as v32 but renumbered after rebase onto upstream's
+# v32→v36 sequence (flea-market upload guardrails + soft delete).
+_V36_TO_V37_MIGRATIONS = [
+    "ALTER TABLE marketplace_registry ADD COLUMN IF NOT EXISTS curator_name VARCHAR",
+    "ALTER TABLE marketplace_registry ADD COLUMN IF NOT EXISTS curator_email VARCHAR",
+    "ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS cover_photo_url VARCHAR",
+    "ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS video_url VARCHAR",
+    "ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS doc_links JSON",
+]
+
+
 # v24: rewrite materialized BQ source_query from DuckDB-flavor
 # (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
 # so the new connectors.bigquery.extractor.materialize_query wrapping
@@ -2736,6 +2773,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v34_to_v35_migrate(conn)
             if current < 36:
                 for sql in _V35_TO_V36_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 37:
+                for sql in _V36_TO_V37_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

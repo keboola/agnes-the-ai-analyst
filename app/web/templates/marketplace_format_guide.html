@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Marketplace Format Guide — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+{# Document chrome (typography, dark <pre>, table, blockquote) lives in
+   style-custom.css under the "Marketplace format guide page" section,
+   scoped to .format-guide so other pages aren't affected. #}
+<div class="format-guide">
+  {# Markdown is rendered server-side via the standard library so we don't
+     pull in a new dependency. The dark `<pre>` styling matches the JSON
+     snippets in the doc. #}
+  {{ rendered_html | safe }}
+</div>
+{% endblock %}

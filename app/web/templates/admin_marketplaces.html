@@ -54,10 +54,17 @@
   .mp-meta .slug { font-weight: 500; color: var(--text-primary, #111827); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
   .mp-meta .name { font-size: 11px; color: var(--text-secondary, #6b7280); }
 
+  /* Curator cell — full name on top, email muted below. Mirrors the
+     Marketplace cell two-line treatment so visually paired. */
+  .mp-curator-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; max-width: 220px; }
+  .mp-curator-cell .name { font-size: 12px; color: var(--text-primary, #111827); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-curator-cell .email { font-size: 11px; color: var(--text-secondary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
   .mp-url {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 12px; color: var(--text-secondary, #6b7280);
-    max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;
+    max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;
+    vertical-align: middle;
   }
   .mp-branch-pill {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
@@ -119,7 +126,7 @@
   .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
   .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
   .modal-card .help { font-size: 11px; color: var(--text-secondary, #9ca3af); margin-top: 4px; }
-  .modal-card input[type="text"], .modal-card input[type="url"], .modal-card input[type="password"], .modal-card textarea {
+  .modal-card input[type="text"], .modal-card input[type="url"], .modal-card input[type="email"], .modal-card input[type="password"], .modal-card textarea {
     width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
     border-radius: 8px; font-size: 13px; box-sizing: border-box;
     background: var(--surface, #fff); color: var(--text-primary, #111827);
@@ -213,6 +220,10 @@
   <div class="marketplaces-toolbar">
     <h2 class="marketplaces-title">Curated Marketplaces</h2>
     <input id="mp-search" type="search" class="marketplaces-search" placeholder="Filter by slug, name, or URL…" autocomplete="off">
+    <a class="icon-btn" href="/marketplace/format-guide" target="_blank" rel="noopener"
+       title="Open the agnes-metadata.json format guide in a new tab">
+      Format guide →
+    </a>
     <button class="modal-btn primary" id="open-create-btn">+ Add marketplace</button>
   </div>
 
@@ -221,8 +232,8 @@
       <thead>
         <tr>
           <th>Marketplace</th>
+          <th title="Person accountable for this marketplace's content">Curator</th>
           <th>URL</th>
-          <th>Branch</th>
           <th title="Plugins discovered in .claude-plugin/marketplace.json on last sync">Plugins</th>
           <th>Last sync</th>
           <th>Commit</th>
@@ -263,6 +274,13 @@
     <label for="new-description">Description (optional)</label>
     <textarea id="new-description" autocomplete="off"></textarea>
 
+    <label for="new-curator-name">Curator full name <span style="color:#b91c1c">*</span></label>
+    <input id="new-curator-name" type="text" placeholder="e.g. Jane Doe" required autocomplete="off">
+    <div class="help">The named person accountable for what's in this marketplace. Surfaced on plugin cards and detail pages.</div>
+
+    <label for="new-curator-email">Curator email <span style="color:#b91c1c">*</span></label>
+    <input id="new-curator-email" type="email" placeholder="e.g. jane.doe@example.com" required autocomplete="off">
+
     <label for="new-token">GitHub PAT (optional — private repos only)</label>
     <input id="new-token" type="password" placeholder="ghp_… or ghs_… (leave empty for public repos)" autocomplete="off">
     <div class="help">Stored in <code>$DATA_DIR/state/.env_overlay</code> (chmod 600) on the data volume. Never written to the database or committed to git.</div>
@@ -291,6 +309,13 @@
 
     <label for="edit-description">Description</label>
     <textarea id="edit-description" autocomplete="off"></textarea>
+
+    <label for="edit-curator-name">Curator full name</label>
+    <input id="edit-curator-name" type="text" placeholder="e.g. Jane Doe" autocomplete="off">
+    <div class="help">Leave unchanged to keep the current curator. Empty strings are ignored — to clear the curator, fill it in with the new owner instead.</div>
+
+    <label for="edit-curator-email">Curator email</label>
+    <input id="edit-curator-email" type="email" placeholder="e.g. jane.doe@example.com" autocomplete="off">
 
     <label for="edit-token">GitHub PAT</label>
     <input id="edit-token" type="password" placeholder="Leave empty to keep current. Type a new token to rotate." autocomplete="off">
@@ -437,8 +462,10 @@ function renderMarketplaces() {
           </div>
         </div>
       </td>
-      <td><span class="mp-url" title="${esc(m.url)}">${esc(m.url)}</span></td>
-      <td>${m.branch ? `<span class="mp-branch-pill">${esc(m.branch)}</span>` : `<span class="mp-muted">HEAD</span>`}</td>
+      <td>${m.curator_name
+            ? `<div class="mp-curator-cell"><span class="name">${esc(m.curator_name)}</span>${m.curator_email ? `<span class="email">${esc(m.curator_email)}</span>` : ""}</div>`
+            : `<span class="mp-muted" title="Open the Edit modal to fill in curator name + email">unset</span>`}</td>
+      <td><span class="mp-url" title="${esc(m.url)}${m.branch ? ` (branch: ${esc(m.branch)})` : ""}">${esc(m.url)}</span></td>
       <td>${m.plugin_count > 0
             ? `<span class="mp-plugin-count">${m.plugin_count}</span>`
             : `<span class="mp-muted">0</span>`}</td>
@@ -559,6 +586,8 @@ function openEdit(id) {
   document.getElementById("edit-url").value = m.url || "";
   document.getElementById("edit-branch").value = m.branch || "";
   document.getElementById("edit-description").value = m.description || "";
+  document.getElementById("edit-curator-name").value = m.curator_name || "";
+  document.getElementById("edit-curator-email").value = m.curator_email || "";
   document.getElementById("edit-token").value = "";
   document.getElementById("edit-clear-token").checked = false;
 
@@ -569,6 +598,8 @@ function openEdit(id) {
       url: document.getElementById("edit-url").value.trim() || null,
       branch: document.getElementById("edit-branch").value.trim(), // empty string cleared by API (None=untouched)
       description: document.getElementById("edit-description").value,
+      curator_name: document.getElementById("edit-curator-name").value.trim() || null,
+      curator_email: document.getElementById("edit-curator-email").value.trim() || null,
     };
     // branch: null means untouched; explicit "" clears to HEAD. Treat empty input as clear only if user typed then erased.
     // Simpler UX: always send current value (empty = HEAD).
@@ -616,20 +647,30 @@ document.getElementById("open-create-btn").addEventListener("click", () => {
   document.getElementById("new-url").value = "";
   document.getElementById("new-branch").value = "";
   document.getElementById("new-description").value = "";
+  document.getElementById("new-curator-name").value = "";
+  document.getElementById("new-curator-email").value = "";
   document.getElementById("new-token").value = "";
   openModal("create-modal");
 });
 document.getElementById("confirm-create-btn").addEventListener("click", async () => {
+  const curatorName = document.getElementById("new-curator-name").value.trim();
+  const curatorEmail = document.getElementById("new-curator-email").value.trim();
   const payload = {
     name: document.getElementById("new-name").value.trim(),
     slug: document.getElementById("new-slug").value.trim().toLowerCase(),
     url: document.getElementById("new-url").value.trim(),
     branch: document.getElementById("new-branch").value.trim() || null,
     description: document.getElementById("new-description").value.trim() || null,
+    curator_name: curatorName,
+    curator_email: curatorEmail,
     token: document.getElementById("new-token").value || null,
   };
   if (!payload.name || !payload.slug || !payload.url) {
     toast("Name, slug, and URL are required", "error");
+    return;
+  }
+  if (!curatorName || !curatorEmail) {
+    toast("Curator full name and email are required", "error");
     return;
   }
   const r = await fetch(API, {

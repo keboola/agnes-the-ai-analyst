@@ -158,6 +158,60 @@ class TestListItems:
         data = r.json()
         assert data["total"] == 0
 
+    def test_my_stack_carries_agnes_metadata_enrichment(self, web_client):
+        """Once a curated plugin is in the user's stack (subscribed), the
+        ``tab=my`` card MUST carry the same agnes-metadata enrichment
+        (cover_photo_url, video_url, category override) the ``tab=curated``
+        card shows. Previously the My Stack handler built rows from the
+        on-disk ``marketplace.json``, which doesn't carry those columns —
+        same plugin → cover photo on Curated, gradient placeholder on
+        My Stack.
+        """
+        from src.db import get_system_db
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+
+        user_id, cookies = _create_user(web_client, "alice@x.com")
+        _seed_curated_grant(user_id=user_id, marketplace="mkt-x", plugin="alpha")
+
+        # Backfill the agnes-metadata enrichment columns on the seeded
+        # plugin row — same shape `_refresh_plugin_cache` writes after a
+        # nightly sync that picked up a curator's agnes-metadata.json.
+        cover = "/api/marketplace/curated/mkt-x/alpha/asset/cover.png"
+        video = "https://www.youtube.com/watch?v=abc123"
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE marketplace_plugins SET cover_photo_url = ?, "
+                "video_url = ?, category = ? "
+                "WHERE marketplace_id = 'mkt-x' AND name = 'alpha'",
+                [cover, video, "Code & Engineering"],
+            )
+            UserCuratedSubscriptionsRepository(conn).subscribe(
+                user_id=user_id, marketplace_id="mkt-x", plugin_name="alpha",
+            )
+        finally:
+            conn.close()
+
+        r = web_client.get("/api/marketplace/items?tab=my", cookies=cookies)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["total"] == 1, data
+        item = data["items"][0]
+        assert item["source"] == "curated"
+        assert item["name"] == "alpha"
+        # The bug the test guards: ``photo_url`` (mapped from
+        # ``marketplace_plugins.cover_photo_url``) used to be hard-coded
+        # None on the My Stack path. Now the My Stack handler looks up the
+        # enriched marketplace_plugins row and surfaces it — matching the
+        # Curated tab. ``MarketplaceItem`` flattens the column name to
+        # ``photo_url``; see :func:`_curated_to_item`.
+        assert item["photo_url"] == cover, (
+            "My Stack must surface agnes-metadata cover_photo_url, not None"
+        )
+        assert item["category"] == "Code & Engineering"
+
 
 # ---------------------------------------------------------------------------
 # /api/marketplace/categories

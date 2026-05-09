@@ -21,10 +21,10 @@ import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
-from app.utils import get_marketplaces_dir
+from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,33 @@ def _refresh_plugin_cache(slug: str) -> int:
     Failures here are logged but never re-raised: the primary sync result
     (git commit) has already succeeded at this point and must still be
     reported.
+
+    Two-channel read:
+
+    * ``.claude-plugin/marketplace.json`` (the Claude Code spec) is the
+      authoritative source for plugin existence, source spec, and the bare
+      Claude Code-shaped metadata.
+    * ``.claude-plugin/agnes-metadata.json`` (Agnes-only) supplies cover
+      photo, video URL, doc links, and category overrides per plugin. Missing
+      file → no enrichment, plugins still cached at the bare shape.
+
+    External URLs referenced from agnes-metadata are fed through the asset
+    mirror (`src.marketplace_asset_mirror.sync_assets`) before the DB write
+    so the persisted ``cover_photo_url`` / ``doc_links`` already point at the
+    final served URL. Mirror failures degrade gracefully — failed external
+    URLs surface as plain external links in the served data, never as 404s.
     """
+    from src.marketplace_asset_mirror import sync_assets
+    from src.marketplace_metadata import (
+        collect_all_external_urls,
+        read_agnes_metadata,
+        resolve_plugin_metadata,
+    )
+    from src.marketplace_urls import (
+        internal_asset_url,
+        internal_doc_url,
+        mirrored_url,
+    )
     from src.repositories.marketplace_plugins import MarketplacePluginsRepository
 
     try:
@@ -172,9 +198,162 @@ def _refresh_plugin_cache(slug: str) -> int:
         logger.warning("marketplace %s: plugin read failed: %s", slug, e)
         return 0
 
+    repo_root = get_marketplaces_dir() / slug
+    metadata = read_agnes_metadata(repo_root)
+
+    # Resolve per-plugin enrichment + collect every external URL the mirror
+    # needs to fetch this round. Internal references skip the mirror.
+    resolved_per_plugin: Dict[str, Dict[str, Any]] = {}
+    fetch_requests: List[tuple] = []
+    for p in plugins:
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+        resolved = resolve_plugin_metadata(metadata, name)
+        resolved_per_plugin[name] = resolved
+        # collect_all_external_urls walks plugin + skills + agents so the
+        # mirror caches every external URL, not just plugin-level. Inner-
+        # level skill/agent detail enrichment then looks up entries in the
+        # same manifest at request time.
+        for kind, url in collect_all_external_urls(metadata, name):
+            fetch_requests.append((name, kind, url))
+
+    # Mirror external URLs (best-effort — see _refresh_asset_mirror docstring
+    # for the failure-mode contract). Keyed by ``(plugin_name, url)`` so two
+    # plugins referencing the same external URL each get their own served
+    # path under their own plugin subdir — RBAC-safe (a user with grant on
+    # plugin B never receives a URL pointing under plugin A's tree).
+    served_url_for: Dict[Tuple[str, str], Optional[str]] = {}
+    mirror_status: Dict[Tuple[str, str], str] = {}
+    if fetch_requests:
+        cache_dir = get_marketplace_cache_dir() / slug
+        try:
+            report = sync_assets(cache_dir=cache_dir, requests=fetch_requests)
+            for (plugin_name, url), entry in report.entries.items():
+                mirror_status[(plugin_name, url)] = entry.status
+                if entry.status == "ok" and entry.local:
+                    # /mirrored/{key} where key encodes plugin + kind + filename.
+                    # The local relpath is already in the right shape.
+                    served_url_for[(plugin_name, url)] = mirrored_url(
+                        slug, entry.plugin_name, entry.local.split("/", 1)[1],
+                    ) if "/" in entry.local else mirrored_url(
+                        slug, entry.plugin_name, entry.local,
+                    )
+                else:
+                    # Failed / rejected → fall back to the original URL so the
+                    # frontend can still link out (b1).
+                    served_url_for[(plugin_name, url)] = url
+            logger.info(
+                "marketplace %s: mirror summary fetched=%d not_modified=%d "
+                "failed=%d rejected=%d removed=%d",
+                slug, report.fetched, report.not_modified, report.failed,
+                report.rejected, report.removed,
+            )
+        except Exception as e:  # noqa: BLE001 — never abort the sync
+            logger.warning("marketplace %s: asset mirror crashed: %s", slug, e)
+            # On total mirror crash, every (plugin, url) pair falls back to
+            # the original URL so the strict-drop logic downstream marks it
+            # as un-served and removes it from the rendered metadata.
+            for plugin_name, _, url in fetch_requests:
+                served_url_for.setdefault((plugin_name, url), url)
+                mirror_status.setdefault((plugin_name, url), "failed_recent")
+
+    # Compose the enriched plugin dicts and write to DB.
+    enriched: List[Dict[str, Any]] = []
+    for p in plugins:
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+        merged = dict(p)
+        resolved = resolved_per_plugin.get(name) or {}
+
+        # Direct serialization to avoid mutating the frozen DocLinkRef.
+        # External docs that mirroring rejected (e.g. HTML page, oversized,
+        # SSRF-blocked) or failed to fetch (404, timeout, never seen before)
+        # are DROPPED from the served list entirely. Internal links whose
+        # path doesn't exist on disk at sync time are dropped too. This
+        # matches the operator contract: any doc_link Agnes can't deliver
+        # as a real downloadable PDF / Markdown / plain text is treated as
+        # if it weren't in agnes-metadata.json at all.
+        serialized_links: List[Dict[str, str]] = []
+        for link in resolved.get("doc_links") or []:
+            if not hasattr(link, "kind"):
+                continue
+            if link.kind == "internal":
+                local_path = repo_root / link.path
+                if not local_path.is_file():
+                    logger.info(
+                        "marketplace %s plugin=%s: dropping internal doc_link "
+                        "%r (file not found in working tree)",
+                        slug, name, link.path,
+                    )
+                    continue
+                serialized_links.append({
+                    "name": link.name,
+                    "url": internal_doc_url(slug, name, link.path),
+                })
+                continue
+            # external — keep ONLY when the mirror succeeded for THIS plugin.
+            status = mirror_status.get((name, link.url), "")
+            served = served_url_for.get((name, link.url))
+            if status != "ok" or not served or served == link.url:
+                logger.info(
+                    "marketplace %s plugin=%s: dropping external doc_link "
+                    "%r (mirror status=%s)",
+                    slug, name, link.url, status or "no_attempt",
+                )
+                continue
+            serialized_links.append({
+                "name": link.name,
+                "url": served,
+            })
+
+        # Build the column-shape payload inline — strict-drop semantics
+        # need access to mirror status + on-disk existence per reference,
+        # which is decided here rather than in a generic translator.
+        # Internal covers are dropped when the file doesn't exist on disk;
+        # external covers are dropped when mirroring rejected/failed (no
+        # successful mirror means the served URL is the original external
+        # URL, which we don't trust to render — better to fall through to
+        # the gradient placeholder).
+        if isinstance(resolved.get("cover_photo_ref"), tuple):
+            kind, target = resolved["cover_photo_ref"]
+            if kind == "internal":
+                local_path = repo_root / target
+                if local_path.is_file():
+                    merged["cover_photo_url"] = internal_asset_url(
+                        slug, name, target,
+                    )
+                else:
+                    logger.info(
+                        "marketplace %s plugin=%s: dropping internal "
+                        "cover_photo %r (file not found in working tree)",
+                        slug, name, target,
+                    )
+            elif kind == "external":
+                status = mirror_status.get((name, target), "")
+                served = served_url_for.get((name, target))
+                if status == "ok" and served and served != target:
+                    merged["cover_photo_url"] = served
+                else:
+                    logger.info(
+                        "marketplace %s plugin=%s: dropping external "
+                        "cover_photo %r (mirror status=%s)",
+                        slug, name, target, status or "no_attempt",
+                    )
+        if "video_url" in resolved:
+            merged["video_url"] = resolved["video_url"]
+        if "category" in resolved:
+            # Override marketplace.json category when agnes-metadata supplies one.
+            merged["category"] = resolved["category"]
+        if serialized_links:
+            merged["doc_links"] = serialized_links
+
+        enriched.append(merged)
+
     conn = _get_conn()
     try:
-        return MarketplacePluginsRepository(conn).replace_for_marketplace(slug, plugins)
+        return MarketplacePluginsRepository(conn).replace_for_marketplace(slug, enriched)
     except Exception as e:  # noqa: BLE001
         logger.warning("marketplace %s: plugin cache write failed: %s", slug, e)
         return 0
@@ -292,11 +471,24 @@ def sync_marketplaces() -> Dict[str, Any]:
 
 
 def delete_marketplace_dir(slug: str) -> bool:
-    """Remove the on-disk working copy for a marketplace slug. Returns True if removed."""
+    """Remove on-disk working copy + asset-mirror cache for a marketplace.
+
+    Two directories are scoped per marketplace slug:
+    * ``${DATA_DIR}/marketplaces/<slug>/``       — git working copy
+    * ``${DATA_DIR}/marketplace-cache/<slug>/``  — external-asset mirror
+
+    Removed together so a re-registered slug starts from a clean cache.
+    Returns True iff at least one of the directories existed and was removed.
+    """
     if not is_valid_slug(slug):
         raise ValueError(f"invalid slug: {slug!r}")
-    path = get_marketplaces_dir() / slug
-    if path.exists():
-        shutil.rmtree(path)
-        return True
-    return False
+    removed = False
+    work_path = get_marketplaces_dir() / slug
+    if work_path.exists():
+        shutil.rmtree(work_path)
+        removed = True
+    cache_path = get_marketplace_cache_dir() / slug
+    if cache_path.exists():
+        shutil.rmtree(cache_path, ignore_errors=True)
+        removed = True
+    return removed
