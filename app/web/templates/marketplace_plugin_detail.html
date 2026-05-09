@@ -419,10 +419,23 @@
     }
   </style>
   <div class="owner-actions">
-    <a href="#" id="owner-edit-btn" aria-disabled="true"
-       title="Edit flow lands in a follow-up — for now, re-upload to update.">
-      Edit (coming soon)
+    {# v37 edit feature: Edit lands a real page. Disabled while a
+       prior version is under review (server-side 409 also enforces).
+       edit_in_flight is set by the router whenever the latest
+       submission is pending_inline / pending_llm — even if the
+       entity stayed at visibility='approved' (deferred-promotion
+       path so existing installers keep receiving the prior bundle). #}
+    {% if edit_in_flight %}
+    <a href="#" aria-disabled="true"
+       title="Wait for the in-flight review to finish before editing.">
+      Edit (review in flight)
     </a>
+    {% else %}
+    <a href="/marketplace/flea/{{ entity.id }}/edit"
+       title="Edit metadata or upload a new version.">
+      Edit
+    </a>
+    {% endif %}
     {# v35 delete UX: Archive (soft) is the primary path. Owner sees
        Archive only when the entity is approved or already archived
        (re-archive is a no-op, but no point exposing). Admin gets
@@ -480,6 +493,8 @@
     {% endif %}
   </div>
   {% endif %}
+
+  {% include "_flea_versions.html" %}
 
   <div class="hero">
     <div class="crumbs">

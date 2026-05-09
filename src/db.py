@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -535,6 +535,15 @@ CREATE TABLE IF NOT EXISTS store_entities (
                       CHECK (visibility_status IN ('pending','approved','hidden','archived')),
     archived_at       TIMESTAMP,
     archived_by       VARCHAR,
+    -- v37: flea-market edit feature. version_no tracks the current
+    -- version index (1-based); version_history is an append-only JSON
+    -- array of past version metadata. Bundle bytes for each version
+    -- live on disk under ${DATA_DIR}/store/<id>/versions/v<N>/plugin/
+    -- so rollback can copy them forward; the live `plugin/` dir is
+    -- always a copy of the current version. See
+    -- StoreEntitiesRepository.append_version + restore endpoint.
+    version_no        INTEGER NOT NULL DEFAULT 1,
+    version_history   JSON DEFAULT '[]',
     created_at        TIMESTAMP DEFAULT current_timestamp,
     updated_at        TIMESTAMP DEFAULT current_timestamp,
     UNIQUE (owner_user_id, name)
@@ -2390,6 +2399,73 @@ _V35_TO_V36_MIGRATIONS = [
 ]
 
 
+# v37→v38: flea-market entity edit feature with version history.
+#
+# (Originally drafted as v37; renumbered after rebase onto main where
+# v37 is taken by the curated marketplace enrichment migration.)
+#
+# Adds two columns to store_entities so an owner editing their plugin
+# accumulates an append-only history rather than overwriting the prior
+# bundle:
+#
+#   * version_no INTEGER  — current version index (1-based). Bumps on
+#     every approved bundle update; metadata-only edits don't bump.
+#   * version_history JSON — array of past version metadata entries:
+#       [{"n", "hash", "sha256", "size", "submission_id",
+#         "created_at", "created_by"}, …]
+#     Each row's bundle bytes live on disk under
+#     ``${DATA_DIR}/store/<eid>/versions/v<N>/plugin/`` so rollback can
+#     copy them forward.
+#
+# Backfill: existing rows get version_no=1 and a single-entry
+# version_history populated from the row's current ``version`` (hash)
+# + ``file_size`` so post-migration entities surface as v1 in the UI.
+# created_at backfilled from the entity row; submission_id is best-
+# effort (we look up the most recent submission_id for the entity_id
+# if any exists, else NULL).
+_V37_TO_V38_MIGRATIONS = [
+    # Defensive: minimal partial-state DBs from earlier migrations may
+    # be missing columns the backfill UPDATE below references. Add
+    # them idempotently first. Real post-v29 DBs already have these;
+    # this is a no-op there. Keeps the recovery path through
+    # `tests/test_db_schema_version.py::test_v32_db_with_partial_v35_recovers_through_full_ladder`
+    # intact when walking from v32 fixture forward.
+    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version VARCHAR",
+    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS file_size BIGINT",
+    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
+    # DuckDB ALTER doesn't accept "NOT NULL DEFAULT" together — split:
+    # ADD nullable + DEFAULT, backfill nulls, then SET NOT NULL.
+    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_no INTEGER DEFAULT 1",
+    "UPDATE store_entities SET version_no = 1 WHERE version_no IS NULL",
+    "ALTER TABLE store_entities ALTER COLUMN version_no SET NOT NULL",
+    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_history JSON DEFAULT '[]'",
+    # Backfill: synthesize a v1 entry from existing columns when the
+    # history is empty. Idempotent — re-running on a populated row
+    # is a no-op because the WHERE filters on empty/NULL history.
+    """
+    UPDATE store_entities SET version_history = json_array(
+        json_object(
+            'n',  1,
+            'hash', version,
+            'sha256', NULL,
+            'size', file_size,
+            'submission_id', (
+                SELECT id FROM store_submissions
+                 WHERE entity_id = store_entities.id
+                 ORDER BY created_at DESC
+                 LIMIT 1
+            ),
+            'created_at', CAST(created_at AS VARCHAR),
+            'created_by', owner_user_id
+        )
+    )
+    WHERE version_history IS NULL
+       OR version_history = '[]'
+       OR json_array_length(version_history) = 0
+    """,
+]
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -2776,6 +2852,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 37:
                 for sql in _V36_TO_V37_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 38:
+                for sql in _V37_TO_V38_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

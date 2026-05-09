@@ -210,6 +210,39 @@ def run_llm_review(
                 applied = ents_repo.set_visibility_if_pending(
                     entity_id, "approved",
                 )
+                # v37 promote-on-approval: PUT edit + restore paths
+                # leave the entity row at the prior version_no during
+                # the LLM review window so existing installers keep
+                # receiving the previously approved bundle. After
+                # approval, promote the version this submission added
+                # to history (match by hash) — bumps version_no +
+                # entity.version + file_size + swaps live ``plugin/``
+                # to the new bundle bytes. For initial uploads (v1)
+                # this is a no-op since v1 is already current; the
+                # match-by-hash succeeds and promote_version sees no
+                # state change.
+                sub_row = subs_repo.get(submission_id) or {}
+                sub_hash = sub_row.get("version")
+                ent_row = ents_repo.get(entity_id) or {}
+                target_version_no = None
+                for entry in (ent_row.get("version_history") or []):
+                    if entry.get("hash") == sub_hash:
+                        try:
+                            target_version_no = int(entry.get("n"))
+                        except (TypeError, ValueError):
+                            target_version_no = None
+                        break
+                if (target_version_no is not None
+                        and target_version_no != int(ent_row.get("version_no") or 0)):
+                    if ents_repo.promote_version(entity_id, target_version_no):
+                        try:
+                            from app.api.store import _swap_live_to_version
+                            _swap_live_to_version(entity_id, target_version_no)
+                        except Exception:
+                            logger.exception(
+                                "promote_version live swap failed for entity %s v%d",
+                                entity_id, target_version_no,
+                            )
             if applied:
                 audit.log(
                     user_id=submitter_id,
