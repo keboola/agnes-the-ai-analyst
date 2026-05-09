@@ -50,7 +50,16 @@ def test_schema_version_is_36():
     #            in the visibility gates. Value-list invariant remains
     #            enforced application-side (DuckDB ADD CHECK on existing
     #            column not supported).
-    assert SCHEMA_VERSION == 36
+    # v36 → v37 (this PR): flea-market edit feature with version
+    #            history. Adds store_entities.version_no INTEGER and
+    #            version_history JSON. Each new bundle upload via
+    #            PUT bumps version_no and appends to version_history;
+    #            metadata-only edits don't bump. Existing rows backfill
+    #            to version_no=1 with a single-entry history seeded
+    #            from the row's current `version` (hash). Bundle bytes
+    #            for each version live on disk under
+    #            ${DATA_DIR}/store/<id>/versions/v<N>/plugin/.
+    assert SCHEMA_VERSION == 37
 
 
 def test_v20_adds_source_query(tmp_path):

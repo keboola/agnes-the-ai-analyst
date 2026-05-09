@@ -32,6 +32,15 @@ class StoreEntitiesRepository:
                     d[k] = []
             elif v is None:
                 d[k] = []
+        # v37: version_history is a JSON array of past version metadata.
+        v = d.get("version_history")
+        if isinstance(v, str):
+            try:
+                d["version_history"] = json.loads(v) if v else []
+            except (ValueError, TypeError):
+                d["version_history"] = []
+        elif v is None:
+            d["version_history"] = []
         return d
 
     def create(
@@ -52,21 +61,66 @@ class StoreEntitiesRepository:
         visibility_status: str = "pending",
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc)
+        # v37: seed version_history with the v1 entry on create so the
+        # edit feature's append_version always has a baseline to build
+        # on. submission_id is filled in by the API layer post-INSERT
+        # via update_history_submission_id when the submission row is
+        # created.
+        v1_entry = {
+            "n": 1,
+            "hash": version,
+            "sha256": None,
+            "size": int(file_size) if file_size else None,
+            "submission_id": None,
+            "created_at": now.isoformat(),
+            "created_by": owner_user_id,
+        }
         self.conn.execute(
             """INSERT INTO store_entities
                 (id, owner_user_id, owner_username, type, name, description,
                  category, version, photo_path, video_url, doc_paths,
                  file_size, install_count, visibility_status,
+                 version_no, version_history,
                  created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?)""",
             [
                 id, owner_user_id, owner_username, type, name, description,
                 category, version, photo_path, video_url,
                 json.dumps(doc_paths or []),
-                int(file_size), visibility_status, now, now,
+                int(file_size), visibility_status,
+                json.dumps([v1_entry]),
+                now, now,
             ],
         )
         return self.get(id)  # type: ignore[return-value]
+
+    def update_history_submission_id(
+        self, id: str, version_no: int, submission_id: str,
+    ) -> None:
+        """Backfill the ``submission_id`` field on a version_history
+        entry once the submission row has been written. Used by the
+        upload + edit endpoints to link version → submission verdict
+        without requiring a two-phase write that would race with the
+        v1 seed in ``create``.
+        """
+        row = self.get(id)
+        if row is None:
+            return
+        history = list(row.get("version_history") or [])
+        changed = False
+        for entry in history:
+            try:
+                if int(entry.get("n")) == int(version_no):
+                    entry["submission_id"] = submission_id
+                    changed = True
+                    break
+            except (TypeError, ValueError):
+                continue
+        if changed:
+            self.conn.execute(
+                "UPDATE store_entities SET version_history = ? WHERE id = ?",
+                [json.dumps(history), id],
+            )
 
     def set_visibility(self, id: str, status: str) -> None:
         """Flip visibility_status on a submission's resolution.
@@ -243,10 +297,141 @@ class StoreEntitiesRepository:
         )
         return {"original_name": original, "new_name": new_name}
 
+    def append_version_history(
+        self,
+        id: str,
+        *,
+        version_hash: str,
+        sha256: Optional[str],
+        size: Optional[int],
+        submission_id: Optional[str],
+        created_by: str,
+    ) -> int:
+        """Append a new version entry to ``version_history`` and return
+        its ``n`` value. **Does NOT promote** — entity row's
+        ``version_no`` / ``version`` / ``file_size`` stay at the
+        previous current.
+
+        Used by the PUT edit path + restore endpoint to record that a
+        new version exists in history (with its verdict) without
+        affecting what installers see. Promotion happens separately
+        once the LLM approves: see :meth:`promote_version`.
+        """
+        row = self.get(id)
+        if row is None:
+            raise ValueError(f"entity not found: {id!r}")
+        history = list(row.get("version_history") or [])
+        # Pick the next n above the largest existing entry. Defaults to
+        # 1 for empty history (shouldn't happen post-v37 since create()
+        # seeds v1, but defensive).
+        max_n = max((int(e.get("n") or 0) for e in history), default=0)
+        new_n = max_n + 1
+        now = datetime.now(timezone.utc)
+        history.append({
+            "n": new_n,
+            "hash": version_hash,
+            "sha256": sha256,
+            "size": int(size) if size is not None else None,
+            "submission_id": submission_id,
+            "created_at": now.isoformat(),
+            "created_by": created_by,
+        })
+        self.conn.execute(
+            "UPDATE store_entities SET version_history = ?, updated_at = ? WHERE id = ?",
+            [json.dumps(history), now, id],
+        )
+        return new_n
+
+    def promote_version(self, id: str, version_no: int) -> bool:
+        """Promote a version_history entry to current.
+
+        Looks up the ``n=version_no`` entry in the entity's
+        ``version_history`` and copies its ``hash``/``size`` onto the
+        entity row's ``version_no`` / ``version`` / ``file_size``.
+        Returns ``True`` on success, ``False`` when the entry is
+        missing.
+
+        Caller is responsible for swapping the on-disk live
+        ``plugin/`` dir from the matching version dir
+        (``versions/v<version_no>/plugin/``).
+        """
+        row = self.get(id)
+        if row is None:
+            return False
+        target = None
+        for entry in (row.get("version_history") or []):
+            try:
+                if int(entry.get("n")) == int(version_no):
+                    target = entry
+                    break
+            except (TypeError, ValueError):
+                continue
+        if target is None:
+            return False
+        size = target.get("size")
+        self.conn.execute(
+            """UPDATE store_entities
+                  SET version_no = ?,
+                      version = ?,
+                      file_size = ?,
+                      updated_at = ?
+                WHERE id = ?""",
+            [int(version_no), target.get("hash"),
+             int(size) if size is not None else row.get("file_size"),
+             datetime.now(timezone.utc), id],
+        )
+        return True
+
+    # Back-compat alias — old callers still call append_version.
+    # Kept as the PUT-equivalent shorthand: append + promote in one
+    # step. Used by code paths where we want immediate promotion
+    # (guardrails disabled, or test-only flows).
+    def append_version(
+        self,
+        id: str,
+        *,
+        version_hash: str,
+        sha256: Optional[str],
+        size: Optional[int],
+        submission_id: Optional[str],
+        created_by: str,
+    ) -> int:
+        """Append + promote in one shot. New code paths should call
+        :meth:`append_version_history` and :meth:`promote_version`
+        separately so they can defer promotion until an LLM verdict
+        approves the new version."""
+        n = self.append_version_history(
+            id,
+            version_hash=version_hash,
+            sha256=sha256,
+            size=size,
+            submission_id=submission_id,
+            created_by=created_by,
+        )
+        self.promote_version(id, n)
+        return n
+
+    def get_version(
+        self, id: str, version_no: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the version_history entry for the given version_no, or
+        ``None`` if the entity / version is unknown."""
+        row = self.get(id)
+        if row is None:
+            return None
+        for entry in (row.get("version_history") or []):
+            try:
+                if int(entry.get("n")) == int(version_no):
+                    return entry
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def update(
         self,
         id: str,
         *,
+        name: Optional[str] = None,
         description: Optional[str] = None,
         category: Optional[str] = None,
         version: Optional[str] = None,
@@ -257,9 +442,16 @@ class StoreEntitiesRepository:
     ) -> Optional[Dict[str, Any]]:
         """Partial update — only the supplied columns change. Returns the
         updated row, or None if no row matched.
+
+        ``name`` change is allowed (v37 edit feature). The caller is
+        responsible for collision checks BEFORE invoking this method
+        (per-owner UNIQUE + global suffix uniqueness) and for
+        renaming the on-disk skill/agent/plugin slug to match.
         """
         sets: List[str] = []
         params: List[Any] = []
+        if name is not None:
+            sets.append("name = ?"); params.append(name)
         if description is not None:
             sets.append("description = ?"); params.append(description)
         if category is not None:

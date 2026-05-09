@@ -10,6 +10,43 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Flea-market entity edit feature with version history (schema v37).**
+  Owner + admin can now edit a store entity from a real Edit page at
+  `/marketplace/flea/{id}/edit` (replaces the prior "coming soon"
+  placeholder). Editable fields: display name, description, category,
+  video URL, cover photo, and an optional new bundle. Type is locked
+  (400 `type_locked` on change attempt). Display-name change renames
+  the on-disk slug for both the live `plugin/` dir and the version
+  dir, mirroring the rename-on-archive flow.
+
+  Each bundle update creates a new version: bytes bake into
+  `${DATA_DIR}/store/<id>/versions/v<N+1>/plugin/`, run the standard
+  guardrails pipeline, and on approval the live `plugin/` dir is
+  copied from the new version dir. Prior versions stay on disk for
+  rollback. The entity row carries `version_no` (current index) and
+  `version_history` JSON (append-only per-version metadata: hash,
+  sha256, size, submission_id, created_at, created_by). Existing
+  entities backfill to v1 with a single-entry history seeded from
+  the row's current `version` hash.
+
+  **Block-while-pending:** an in-flight LLM review blocks any further
+  edit with 409 `prior_version_pending`. Owner waits ~5-30s; the
+  detail page banner auto-refreshes when the verdict lands. Edit
+  button on the detail page renders disabled in the same window.
+
+  **Rollback:** new endpoint `POST /api/store/entities/{id}/versions/{n}/restore`
+  (owner + admin) copies a prior version's bundle forward as
+  v<max+1> and re-runs guardrails. Forward-only history — the
+  original row keeps its verdict; the new copy gets a fresh one.
+  Detail page renders a Versions card with restore buttons for
+  owner/admin only.
+
+  **Banner copy** updated for the v<N+1> review window: "Version 4
+  under review — previously approved version (v3) keeps serving to
+  existing installers" instead of the generic "Under review" text.
+
 ### Security
 
 - **Prompt-injection hardening for store guardrails LLM review (#1).**

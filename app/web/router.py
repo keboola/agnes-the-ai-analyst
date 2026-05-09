@@ -1077,6 +1077,53 @@ async def store_new(
     return templates.TemplateResponse(request, "store_upload.html", ctx)
 
 
+@router.get("/marketplace/flea/{entity_id}/edit", response_class=HTMLResponse)
+async def store_edit(
+    entity_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Edit page for a flea-market entity (v37 edit feature).
+
+    Owner or admin only. Pre-fills metadata + lets the submitter
+    optionally upload a new bundle (creates v<N+1>). Skipping the
+    bundle field updates only metadata. Edit is blocked while a
+    prior version is under review — the form surfaces a banner and
+    disables Save in that case (the API gate also enforces 409
+    server-side).
+    """
+    from app.auth.access import is_user_admin
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+    from src.store_categories import STORE_CATEGORIES
+
+    entity = StoreEntitiesRepository(conn).get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    is_admin = is_user_admin(user["id"], conn)
+    if entity["owner_user_id"] != user["id"] and not is_admin:
+        # Same 404-no-leak as _enforce_visibility — strangers don't
+        # learn of the entity's existence.
+        raise HTTPException(status_code=404, detail="entity_not_found")
+
+    pending_sub = None
+    if entity.get("visibility_status") == "pending":
+        latest = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        if latest and latest.get("status") in ("pending_inline", "pending_llm"):
+            pending_sub = latest
+
+    ctx = _build_context(
+        request, user=user,
+        entity=entity,
+        is_admin=is_admin,
+        is_owner=entity["owner_user_id"] == user["id"],
+        categories=list(STORE_CATEGORIES),
+        pending_sub=pending_sub,
+    )
+    return templates.TemplateResponse(request, "store_edit.html", ctx)
+
+
 # Legacy /store/{id} detail surface removed in v32+. The unified
 # /marketplace/flea/{id} is the canonical detail page. All in-tree
 # callers (store_upload redirect, my_ai_stack card, store_listing
@@ -1152,6 +1199,22 @@ async def marketplace_flea_detail(
     if (is_owner or is_admin) and entity.get("visibility_status") != "approved":
         quarantine_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
 
+    # v37: even when entity is 'approved' (deferred promotion path —
+    # existing installers continue receiving the prior version),
+    # owner/admin needs to see if there's an edit-review in flight so
+    # the Edit button can lock + a small status surfaces. Look it up
+    # separately from quarantine_sub to keep the banner partial's
+    # gates intact.
+    edit_in_flight = False
+    if (is_owner or is_admin):
+        latest = (
+            StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        )
+        if latest and latest.get("status") in (
+            "pending_inline", "pending_llm",
+        ):
+            edit_in_flight = True
+
     common = dict(
         source="flea",
         entity=entity,
@@ -1159,6 +1222,7 @@ async def marketplace_flea_detail(
         is_owner=is_owner,
         is_admin=is_admin,
         quarantine_sub=quarantine_sub,
+        edit_in_flight=edit_in_flight,
     )
 
     if entity["type"] == "plugin":
@@ -1561,11 +1625,23 @@ async def admin_store_submission_detail_page(
     # Verdict (sub.status) is immutable forensic record; lifecycle
     # (entity.visibility_status) reflects current state — see plan
     # "Admin Submissions Filter: Use Entity Visibility, Not Denormalized Status".
+    # Also derive submission_version_no by matching sub.version (hash)
+    # against the entity's version_history (v37 edit feature).
     entity_visibility_status = None
+    entity_version_no = None
+    submission_version_no = None
     if sub.get("entity_id"):
         ent = StoreEntitiesRepository(conn).get(sub["entity_id"])
         if ent:
             entity_visibility_status = ent.get("visibility_status")
+            entity_version_no = ent.get("version_no")
+            for entry in (ent.get("version_history") or []):
+                try:
+                    if entry.get("hash") == sub.get("version"):
+                        submission_version_no = int(entry.get("n"))
+                        break
+                except (TypeError, ValueError):
+                    continue
 
     other_count = StoreSubmissionsRepository(conn).count_for_submitter(
         sub["submitter_id"], exclude_id=submission_id,
@@ -1597,31 +1673,56 @@ async def admin_store_submission_detail_page(
     #     (creation, hard delete). entity_id stays on submission
     #     rows even after hard delete (tombstone), so the linkage
     #     survives — see mark_deleted_for_entity.
-    resources = [
+    submission_resources = [
         f"store_submission:{submission_id}",
         f"store_entity:{submission_id}",
         submission_id,
     ]
+    submission_audit_rows = AuditRepository(conn).query_for_resources(
+        submission_resources, limit=100,
+    )
+    entity_audit_rows: list = []
     if sub.get("entity_id"):
-        resources.append(f"store_entity:{sub['entity_id']}")
-    audit_rows = AuditRepository(conn).query_for_resources(resources, limit=100)
+        entity_audit_rows = AuditRepository(conn).query_for_resources(
+            [f"store_entity:{sub['entity_id']}"], limit=100,
+        )
+        # Drop entity-scoped rows that are actually submission audits for
+        # OTHER versions of the same entity (the helper writes them at
+        # resource=store_entity:{sub_id} for ALL submissions). Keep only
+        # rows whose action is a true entity-scoped event so admins see
+        # entity lifecycle (archive / install / delete) here without
+        # other versions' verdict noise leaking in.
+        entity_audit_rows = [
+            r for r in entity_audit_rows
+            if not (r.get("action") or "").startswith("store.submission.")
+        ]
     actor_cache: dict = {}
-    for row in audit_rows:
-        uid = row.get("user_id")
-        if not uid:
-            row["actor_email"] = ""
-            continue
-        if uid not in actor_cache:
-            urow = user_repo.get_by_id(uid)
-            actor_cache[uid] = (urow or {}).get("email") or uid
-        row["actor_email"] = actor_cache[uid]
+
+    def _resolve_actor(rows):
+        for row in rows:
+            uid = row.get("user_id")
+            if not uid:
+                row["actor_email"] = ""
+                continue
+            if uid not in actor_cache:
+                urow = user_repo.get_by_id(uid)
+                actor_cache[uid] = (urow or {}).get("email") or uid
+            row["actor_email"] = actor_cache[uid]
+    _resolve_actor(submission_audit_rows)
+    _resolve_actor(entity_audit_rows)
+    # Combine for back-compat with the existing template var name.
+    audit_rows = submission_audit_rows
 
     ctx = _build_context(
         request, user=user,
         sub=sub, other_count=other_count,
         override_email=override_email,
         audit_rows=audit_rows,
+        submission_audit_rows=submission_audit_rows,
+        entity_audit_rows=entity_audit_rows,
         entity_visibility_status=entity_visibility_status,
+        entity_version_no=entity_version_no,
+        submission_version_no=submission_version_no,
     )
     return templates.TemplateResponse(request, "admin_store_submission_detail.html", ctx)
 

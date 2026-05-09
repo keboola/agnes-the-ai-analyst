@@ -49,6 +49,16 @@
 
 <div class="vis-banner {{ bcls }}">
   {% if st == 'pending_llm' or st == 'pending_inline' or st == 'pending' %}
+    {% set _is_edit_review = entity.version_no and entity.version_no > 1 %}
+    {% if _is_edit_review %}
+    <h3>⟳ Version {{ entity.version_no }} under review</h3>
+    <div>
+      Your edit is being checked. The previously approved version
+      (v{{ entity.version_no - 1 }}) keeps serving to existing
+      installers until v{{ entity.version_no }} passes review. The
+      page refreshes automatically when the verdict lands.
+    </div>
+    {% else %}
     <h3>⟳ Under review</h3>
     <div>
       Your submission is being checked. It is hidden from the public
@@ -56,6 +66,7 @@
       refreshes automatically when the verdict lands — usually a few
       seconds.
     </div>
+    {% endif %}
 
   {% elif st == 'blocked_inline' %}
     <h3>⚠ Quarantined — automated checks failed</h3>
