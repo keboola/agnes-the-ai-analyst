@@ -389,6 +389,21 @@ async def update_marketplace(
             updated["token_env"] = env_name
             changed["token"] = "rotated"
 
+    # Mandatory curator on UPDATE too — legacy rows that pre-date v32 have
+    # NULL curator and survive the migration, but the moment an admin opens
+    # the edit modal they must fill the gap. The previous PATCH flow let
+    # URL/description tweaks persist indefinitely with OWNER_TODO_PLACEHOLDER
+    # showing on every /marketplace card. The DB column itself stays nullable
+    # so untouched legacy rows are not broken.
+    if not (updated.get("curator_name") or "").strip():
+        raise HTTPException(
+            status_code=400, detail="curator_name is required",
+        )
+    if not (updated.get("curator_email") or "").strip():
+        raise HTTPException(
+            status_code=400, detail="curator_email is required",
+        )
+
     repo.register(
         id=updated["id"],
         name=updated["name"],
