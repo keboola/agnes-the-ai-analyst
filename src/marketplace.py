@@ -21,7 +21,7 @@ import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
@@ -219,19 +219,22 @@ def _refresh_plugin_cache(slug: str) -> int:
             fetch_requests.append((name, kind, url))
 
     # Mirror external URLs (best-effort — see _refresh_asset_mirror docstring
-    # for the failure-mode contract).
-    served_url_for: Dict[str, Optional[str]] = {}
-    mirror_status: Dict[str, str] = {}
+    # for the failure-mode contract). Keyed by ``(plugin_name, url)`` so two
+    # plugins referencing the same external URL each get their own served
+    # path under their own plugin subdir — RBAC-safe (a user with grant on
+    # plugin B never receives a URL pointing under plugin A's tree).
+    served_url_for: Dict[Tuple[str, str], Optional[str]] = {}
+    mirror_status: Dict[Tuple[str, str], str] = {}
     if fetch_requests:
         cache_dir = get_marketplace_cache_dir() / slug
         try:
             report = sync_assets(cache_dir=cache_dir, requests=fetch_requests)
-            for url, entry in report.entries.items():
-                mirror_status[url] = entry.status
+            for (plugin_name, url), entry in report.entries.items():
+                mirror_status[(plugin_name, url)] = entry.status
                 if entry.status == "ok" and entry.local:
                     # /mirrored/{key} where key encodes plugin + kind + filename.
                     # The local relpath is already in the right shape.
-                    served_url_for[url] = mirrored_url(
+                    served_url_for[(plugin_name, url)] = mirrored_url(
                         slug, entry.plugin_name, entry.local.split("/", 1)[1],
                     ) if "/" in entry.local else mirrored_url(
                         slug, entry.plugin_name, entry.local,
@@ -239,7 +242,7 @@ def _refresh_plugin_cache(slug: str) -> int:
                 else:
                     # Failed / rejected → fall back to the original URL so the
                     # frontend can still link out (b1).
-                    served_url_for[url] = url
+                    served_url_for[(plugin_name, url)] = url
             logger.info(
                 "marketplace %s: mirror summary fetched=%d not_modified=%d "
                 "failed=%d rejected=%d removed=%d",
@@ -248,10 +251,12 @@ def _refresh_plugin_cache(slug: str) -> int:
             )
         except Exception as e:  # noqa: BLE001 — never abort the sync
             logger.warning("marketplace %s: asset mirror crashed: %s", slug, e)
-            # On total mirror crash, every external URL falls back to itself.
-            for _, _, url in fetch_requests:
-                served_url_for.setdefault(url, url)
-                mirror_status.setdefault(url, "failed_recent")
+            # On total mirror crash, every (plugin, url) pair falls back to
+            # the original URL so the strict-drop logic downstream marks it
+            # as un-served and removes it from the rendered metadata.
+            for plugin_name, _, url in fetch_requests:
+                served_url_for.setdefault((plugin_name, url), url)
+                mirror_status.setdefault((plugin_name, url), "failed_recent")
 
     # Compose the enriched plugin dicts and write to DB.
     enriched: List[Dict[str, Any]] = []
@@ -288,9 +293,9 @@ def _refresh_plugin_cache(slug: str) -> int:
                     "url": internal_doc_url(slug, name, link.path),
                 })
                 continue
-            # external — keep ONLY when the mirror succeeded.
-            status = mirror_status.get(link.url, "")
-            served = served_url_for.get(link.url)
+            # external — keep ONLY when the mirror succeeded for THIS plugin.
+            status = mirror_status.get((name, link.url), "")
+            served = served_url_for.get((name, link.url))
             if status != "ok" or not served or served == link.url:
                 logger.info(
                     "marketplace %s plugin=%s: dropping external doc_link "
@@ -326,8 +331,8 @@ def _refresh_plugin_cache(slug: str) -> int:
                         slug, name, target,
                     )
             elif kind == "external":
-                status = mirror_status.get(target, "")
-                served = served_url_for.get(target)
+                status = mirror_status.get((name, target), "")
+                served = served_url_for.get((name, target))
                 if status == "ok" and served and served != target:
                     merged["cover_photo_url"] = served
                 else:

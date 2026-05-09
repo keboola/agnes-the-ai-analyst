@@ -198,7 +198,7 @@ def test_fetch_url_rejects_when_redirect_handler_raises(tmp_path):
 
     assert report.rejected == 1
     assert report.failed == 0, "redirect block must be terminal, not transient"
-    entry = report.entries["https://attacker.example/c.png"]
+    entry = report.entries[("p", "https://attacker.example/c.png")]
     assert entry.status == "rejected"
     assert "redirect_blocked" in entry.error
 
@@ -221,7 +221,7 @@ def test_fetch_url_unwraps_redirect_error_inside_urlerror(tmp_path):
         )
 
     assert report.rejected == 1
-    assert "redirect_blocked" in report.entries["https://attacker.example/c.png"].error
+    assert "redirect_blocked" in report.entries[("p", "https://attacker.example/c.png")].error
 
 
 # --- DNS rebinding pin (#2 fix) -------------------------------------------
@@ -347,7 +347,7 @@ def test_sync_assets_rejects_image_with_html_content_type(tmp_path):
         )
     assert report.rejected == 1
     assert report.fetched == 0
-    entry = report.entries["https://x.com/c.png"]
+    entry = report.entries[("plugin1", "https://x.com/c.png")]
     assert entry.status == "rejected"
 
 
@@ -376,7 +376,7 @@ def test_sync_assets_accepts_pdf_via_octet_stream_with_pdf_extension(tmp_path):
             requests=[("p", "doc", "https://x.com/setup.pdf")],
         )
     assert report.fetched == 1
-    entry = report.entries["https://x.com/setup.pdf"]
+    entry = report.entries[("p", "https://x.com/setup.pdf")]
     assert entry.status == "ok"
     assert entry.local
     assert (tmp_path / entry.local).exists()
@@ -410,7 +410,7 @@ def test_sync_assets_rejects_oversized_body(tmp_path):
             requests=[("p", "cover", "https://x.com/c.png")],
         )
     assert report.rejected == 1
-    assert "body_exceeds_cap" in report.entries["https://x.com/c.png"].error
+    assert "body_exceeds_cap" in report.entries[("p", "https://x.com/c.png")].error
 
 
 # --- sync_assets: conditional GET (304 / 200 sha256) ---------------------
@@ -428,9 +428,9 @@ def test_sync_assets_304_keeps_cached_file(tmp_path):
             cache_dir=tmp_path,
             requests=[("p", "cover", "https://x.com/c.png")],
         )
-    first_local = (tmp_path / report.entries["https://x.com/c.png"].local)
+    first_local = (tmp_path / report.entries[("p", "https://x.com/c.png")].local)
     assert first_local.exists()
-    first_sha = report.entries["https://x.com/c.png"].sha256
+    first_sha = report.entries[("p", "https://x.com/c.png")].sha256
 
     # Second sync: 304 response. The mocked _fetch_url should still receive
     # the conditional headers from the prior manifest entry; we don't assert
@@ -454,7 +454,7 @@ def test_sync_assets_304_keeps_cached_file(tmp_path):
     assert report2.fetched == 0
     # File still there + same hash (we never re-wrote it).
     assert first_local.exists()
-    assert report2.entries["https://x.com/c.png"].sha256 == first_sha
+    assert report2.entries[("p", "https://x.com/c.png")].sha256 == first_sha
 
 
 # --- sync_assets: failure preserves last good copy -----------------------
@@ -488,7 +488,7 @@ def test_sync_assets_fetch_failure_keeps_prior_file(tmp_path):
             requests=[("p", "cover", "https://x.com/c.png")],
         )
     assert report.failed == 1
-    entry = report.entries["https://x.com/c.png"]
+    entry = report.entries[("p", "https://x.com/c.png")]
     assert entry.status == "failed_recent"
     assert entry.local
     assert (tmp_path / entry.local).exists(), "last good copy must survive"
@@ -506,14 +506,14 @@ def test_sync_assets_drops_removed_url(tmp_path):
             cache_dir=tmp_path,
             requests=[("p", "doc", "https://x.com/d.pdf")],
         )
-    local_path = tmp_path / report1.entries["https://x.com/d.pdf"].local
+    local_path = tmp_path / report1.entries[("p", "https://x.com/d.pdf")].local
     assert local_path.exists()
 
     # Second sync — empty request list (curator removed the doc_link).
     with _patch_safe_url(), _patch_urlopen([]):
         report2 = sync_assets(cache_dir=tmp_path, requests=[])
     assert report2.removed == 1
-    assert "https://x.com/d.pdf" not in report2.entries
+    assert ("p", "https://x.com/d.pdf") not in report2.entries
     assert not local_path.exists()
 
 
@@ -608,7 +608,7 @@ def test_sync_assets_persists_manifest_before_unlinking_old_body(tmp_path):
             cache_dir=tmp_path,
             requests=[("p", "cover", "https://x.com/c.png")],
         )
-    v1_relpath = report1.entries["https://x.com/c.png"].local
+    v1_relpath = report1.entries[("p", "https://x.com/c.png")].local
     assert (tmp_path / v1_relpath).exists()
 
     # Second sync — return body v2. The relpath stays the same (filename is
@@ -648,8 +648,11 @@ def test_sync_assets_persists_manifest_before_unlinking_old_body(tmp_path):
     assert report2.fetched == 1
     # The on-disk manifest after the sync must reference the new sha.
     manifest = json.loads((tmp_path / MANIFEST_FILENAME).read_text(encoding="utf-8"))
-    new_sha = manifest["entries"]["https://x.com/c.png"]["sha256"]
-    assert new_sha == report2.entries["https://x.com/c.png"].sha256
+    # On-disk manifest is a list of self-describing entries (v2 format).
+    matching = [e for e in manifest["entries"] if e["url"] == "https://x.com/c.png"]
+    assert len(matching) == 1
+    new_sha = matching[0]["sha256"]
+    assert new_sha == report2.entries[("p", "https://x.com/c.png")].sha256
 
 
 def test_sync_assets_phase3_persists_before_unlinking_orphans(tmp_path):
@@ -669,7 +672,7 @@ def test_sync_assets_phase3_persists_before_unlinking_orphans(tmp_path):
             cache_dir=tmp_path,
             requests=[("p", "cover", "https://x.com/c.png")],
         )
-    seeded_local = tmp_path / report1.entries["https://x.com/c.png"].local
+    seeded_local = tmp_path / report1.entries[("p", "https://x.com/c.png")].local
     assert seeded_local.exists()
 
     # Spy on Path.unlink: at the moment unlink fires, read the on-disk
@@ -694,13 +697,125 @@ def test_sync_assets_phase3_persists_before_unlinking_orphans(tmp_path):
     assert manifest_at_unlink, "Path.unlink must have been invoked"
     # The manifest as observed from inside unlink must NOT contain the
     # removed URL — persist ran first.
-    assert "https://x.com/c.png" not in manifest_at_unlink[0].get("entries", {})
+    entries_at_unlink = manifest_at_unlink[0].get("entries", [])
+    matching = [e for e in entries_at_unlink if e.get("url") == "https://x.com/c.png"]
+    assert matching == [], "removed entry must already be absent at unlink time"
+
+
+# --- Composite key + fetch dedup (#234 review #4 + #8) -------------------
+
+
+def test_sync_assets_two_plugins_same_url_keeps_per_plugin_entries(tmp_path):
+    """When two plugins reference the SAME external URL, the manifest holds
+    one entry PER (plugin, url) — not just one entry that overwrites the other.
+
+    Previous bug (PR #234 review #4): manifest was keyed by url alone, so
+    plugin A and plugin B sharing an icon URL would last-writer-win on
+    ``entry.plugin_name``. The wrong-plugin path then leaked into the
+    served URL stored in DB and RBAC denied legitimate accesses.
+    """
+    # Two plugins, same URL. Phase 1 dedup means the response list only
+    # carries one entry — the dedup is at the URL level, not the request level.
+    resps = [_FakeResponse(content_type="image/png", body=PNG_BYTES)]
+    with _patch_safe_url(), _patch_urlopen(resps):
+        report = sync_assets(
+            cache_dir=tmp_path,
+            requests=[
+                ("plugin-A", "cover", "https://cdn.com/shared.png"),
+                ("plugin-B", "cover", "https://cdn.com/shared.png"),
+            ],
+        )
+
+    assert ("plugin-A", "https://cdn.com/shared.png") in report.entries
+    assert ("plugin-B", "https://cdn.com/shared.png") in report.entries
+    a = report.entries[("plugin-A", "https://cdn.com/shared.png")]
+    b = report.entries[("plugin-B", "https://cdn.com/shared.png")]
+    # Each plugin owns its own body file under its own subdir — RBAC isolation.
+    assert a.local.startswith("plugin-A/")
+    assert b.local.startswith("plugin-B/")
+    assert (tmp_path / a.local).exists()
+    assert (tmp_path / b.local).exists()
+
+
+def test_sync_assets_dedups_http_fetch_for_shared_url(tmp_path):
+    """Phase 1 fetches each unique URL once, even when N plugins reference it.
+
+    Saves bandwidth + avoids rate-limit pressure on slow CDNs (Wikipedia,
+    arXiv) the previous version would have caused (PR #234 review #8).
+    """
+    fetch_count = {"n": 0}
+    real_response = _FakeResponse(content_type="image/png", body=PNG_BYTES)
+
+    def fake_http_open(req, timeout):
+        fetch_count["n"] += 1
+        # Re-instantiate per call so each consumer gets a fresh body cursor.
+        return _FakeResponse(content_type="image/png", body=PNG_BYTES)
+
+    with _patch_safe_url(), patch(
+        "src.marketplace_asset_mirror._http_open", fake_http_open,
+    ):
+        report = sync_assets(
+            cache_dir=tmp_path,
+            requests=[
+                ("plugin-A", "cover", "https://cdn.com/shared.png"),
+                ("plugin-B", "cover", "https://cdn.com/shared.png"),
+                ("plugin-C", "cover", "https://cdn.com/shared.png"),
+            ],
+        )
+
+    # Three plugins, ONE HTTP fetch.
+    assert fetch_count["n"] == 1
+    # All three plugin entries persist with status ok (each got the body).
+    for plugin in ("plugin-A", "plugin-B", "plugin-C"):
+        entry = report.entries[(plugin, "https://cdn.com/shared.png")]
+        assert entry.status == "ok"
+        assert entry.local.startswith(f"{plugin}/")
+
+
+def test_sync_assets_phase3_drops_per_plugin_entry(tmp_path):
+    """When a curator drops a URL from ONE plugin's metadata but keeps it on
+    another, only that plugin's entry + body file is removed. The other
+    plugin's copy survives untouched.
+    """
+    # Seed: both plugins reference the URL.
+    resps = [_FakeResponse(content_type="image/png", body=PNG_BYTES)]
+    with _patch_safe_url(), _patch_urlopen(resps):
+        report1 = sync_assets(
+            cache_dir=tmp_path,
+            requests=[
+                ("plugin-A", "cover", "https://cdn.com/shared.png"),
+                ("plugin-B", "cover", "https://cdn.com/shared.png"),
+            ],
+        )
+    a_local = tmp_path / report1.entries[("plugin-A", "https://cdn.com/shared.png")].local
+    b_local = tmp_path / report1.entries[("plugin-B", "https://cdn.com/shared.png")].local
+    assert a_local.exists() and b_local.exists()
+
+    # Second sync: plugin-A drops the reference, plugin-B keeps it.
+    resps2 = [_FakeResponse(content_type="image/png", body=PNG_BYTES)]
+    with _patch_safe_url(), _patch_urlopen(resps2):
+        report2 = sync_assets(
+            cache_dir=tmp_path,
+            requests=[
+                ("plugin-B", "cover", "https://cdn.com/shared.png"),
+            ],
+        )
+
+    assert report2.removed == 1
+    assert ("plugin-A", "https://cdn.com/shared.png") not in report2.entries
+    assert ("plugin-B", "https://cdn.com/shared.png") in report2.entries
+    # plugin-A's body file is gone, plugin-B's survives.
+    assert not a_local.exists()
+    assert b_local.exists()
 
 
 # --- Manifest persistence (existing) -------------------------------------
 
 
 def test_sync_assets_writes_manifest_json(tmp_path):
+    """v2 disk format is a list of self-describing entries (each carries
+    ``plugin_name`` + ``url``). Composite-keyed in-memory map is flattened
+    on persist so JSON keys stay strings."""
     resps = [_FakeResponse(content_type="image/png", body=PNG_BYTES)]
     with _patch_safe_url(), _patch_urlopen(resps):
         sync_assets(
@@ -708,9 +823,11 @@ def test_sync_assets_writes_manifest_json(tmp_path):
             requests=[("p", "cover", "https://x.com/c.png")],
         )
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
-    assert "entries" in manifest
-    assert "https://x.com/c.png" in manifest["entries"]
-    entry = manifest["entries"]["https://x.com/c.png"]
-    assert entry["status"] == "ok"
+    assert manifest["version"] == 2
+    assert isinstance(manifest["entries"], list)
+    assert len(manifest["entries"]) == 1
+    entry = manifest["entries"][0]
+    assert entry["url"] == "https://x.com/c.png"
     assert entry["plugin_name"] == "p"
     assert entry["kind"] == "cover"
+    assert entry["status"] == "ok"
