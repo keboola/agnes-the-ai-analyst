@@ -157,25 +157,6 @@ def read_plugins(slug: str) -> List[Dict[str, Any]]:
     return [p for p in plugins if isinstance(p, dict) and p.get("name")]
 
 
-def _internal_asset_url(slug: str, plugin_name: str, path: str) -> str:
-    """Served URL for an internal asset path inside the cloned repo.
-
-    Mirrors the route handler in ``app/api/marketplace.py`` —
-    ``/api/marketplace/curated/<slug>/<plugin>/asset/<path>``.
-    """
-    return f"/api/marketplace/curated/{slug}/{plugin_name}/asset/{path}"
-
-
-def _internal_doc_url(slug: str, plugin_name: str, path: str) -> str:
-    """Served URL for an internal doc reference inside the cloned repo."""
-    return f"/api/marketplace/curated/{slug}/{plugin_name}/doc/{path}"
-
-
-def _mirrored_asset_url(slug: str, plugin_name: str, key: str) -> str:
-    """Served URL for an external asset that's been mirrored to the cache."""
-    return f"/api/marketplace/curated/{slug}/{plugin_name}/mirrored/{key}"
-
-
 def _refresh_plugin_cache(slug: str) -> int:
     """Reload plugins from disk into marketplace_plugins. Returns plugin count.
 
@@ -203,6 +184,11 @@ def _refresh_plugin_cache(slug: str) -> int:
         collect_all_external_urls,
         read_agnes_metadata,
         resolve_plugin_metadata,
+    )
+    from src.marketplace_urls import (
+        internal_asset_url,
+        internal_doc_url,
+        mirrored_url,
     )
     from src.repositories.marketplace_plugins import MarketplacePluginsRepository
 
@@ -245,9 +231,9 @@ def _refresh_plugin_cache(slug: str) -> int:
                 if entry.status == "ok" and entry.local:
                     # /mirrored/{key} where key encodes plugin + kind + filename.
                     # The local relpath is already in the right shape.
-                    served_url_for[url] = _mirrored_asset_url(
+                    served_url_for[url] = mirrored_url(
                         slug, entry.plugin_name, entry.local.split("/", 1)[1],
-                    ) if "/" in entry.local else _mirrored_asset_url(
+                    ) if "/" in entry.local else mirrored_url(
                         slug, entry.plugin_name, entry.local,
                     )
                 else:
@@ -299,7 +285,7 @@ def _refresh_plugin_cache(slug: str) -> int:
                     continue
                 serialized_links.append({
                     "name": link.name,
-                    "url": _internal_doc_url(slug, name, link.path),
+                    "url": internal_doc_url(slug, name, link.path),
                 })
                 continue
             # external — keep ONLY when the mirror succeeded.
@@ -330,7 +316,7 @@ def _refresh_plugin_cache(slug: str) -> int:
             if kind == "internal":
                 local_path = repo_root / target
                 if local_path.is_file():
-                    merged["cover_photo_url"] = _internal_asset_url(
+                    merged["cover_photo_url"] = internal_asset_url(
                         slug, name, target,
                     )
                 else:

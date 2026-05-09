@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from src.marketplace_assets import DocLinkRef, parse_doc_link
+from src.marketplace_asset_validation import DocLinkRef, parse_doc_link
 from src.marketplace_metadata import (
     collect_all_external_urls,
     collect_external_urls,

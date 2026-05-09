@@ -215,7 +215,7 @@ def test_curated_asset_endpoint_blocks_path_traversal(seeded_app, monkeypatch, t
     assert r.content == _PNG_1x1
 
     # Traversal attempt: `..` segments. FastAPI's path param accepts the
-    # value; our ``_path_under`` resolves it then checks containment, so the
+    # value; our ``_safe_join`` resolves it then checks containment, so the
     # result is 404 (not 200, not 500).
     r = client.get(
         "/api/marketplace/curated/test-mp/demo/asset/../escape.txt",

@@ -31,7 +31,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from src.marketplace_assets import (
+from src.marketplace_asset_validation import (
     DocLinkRef,
     parse_cover_photo_ref,
     parse_doc_link,
