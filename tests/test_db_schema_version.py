@@ -50,17 +50,27 @@ def test_schema_version_is_37():
     #            in the visibility gates. Value-list invariant remains
     #            enforced application-side (DuckDB ADD CHECK on existing
     #            column not supported).
-    # v36 → v37 (this PR): curated marketplace enrichment from
+    # v36 → v37: curated marketplace enrichment from
     #            `.claude-plugin/agnes-metadata.json` plus mandatory curator
     #            identity on marketplace_registry. Adds curator_name +
     #            curator_email to marketplace_registry, and
     #            cover_photo_url + video_url + doc_links to
     #            marketplace_plugins.
-    assert SCHEMA_VERSION == 37
+    # v37 → v38 (this PR): flea-market edit feature with version
+    #            history. Adds store_entities.version_no INTEGER and
+    #            version_history JSON. Each new bundle upload via
+    #            PUT bumps version_no and appends to version_history;
+    #            metadata-only edits don't bump. Existing rows backfill
+    #            to version_no=1 with a single-entry history seeded
+    #            from the row's current `version` (hash). Bundle bytes
+    #            for each version live on disk under
+    #            ${DATA_DIR}/store/<id>/versions/v<N>/plugin/.
+    assert SCHEMA_VERSION == 38
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
-    """Fresh install reaches v37 with the new marketplace columns present."""
+    """Fresh install reaches the current schema with the v37 marketplace
+    columns present."""
     db_path = tmp_path / "system.duckdb"
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
@@ -87,9 +97,10 @@ def test_v37_marketplace_curator_columns(tmp_path):
     conn.close()
 
 
-def test_v36_db_migrates_to_v37(tmp_path):
-    """Pre-existing v36 DB (with the v36 schema) upgrades cleanly to v37 without
-    losing existing marketplace_registry / marketplace_plugins rows."""
+def test_v36_db_migrates_to_current(tmp_path):
+    """Pre-existing v36 DB upgrades cleanly through v37 (curator
+    enrichment) and v38 (flea edit version history) without losing
+    existing rows."""
     db_path = tmp_path / "system.duckdb"
     conn = duckdb.connect(str(db_path))
 
@@ -128,7 +139,7 @@ def test_v36_db_migrates_to_v37(tmp_path):
     _ensure_schema(conn)
     assert get_schema_version(conn) == SCHEMA_VERSION
 
-    # New columns exist and existing rows preserved with NULL enrichment.
+    # v37 enrichment columns exist; existing rows preserved with NULL.
     row = conn.execute(
         "SELECT curator_name, curator_email FROM marketplace_registry "
         "WHERE id = 'legacy'"

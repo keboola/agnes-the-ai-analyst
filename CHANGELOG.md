@@ -27,6 +27,48 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `claude plugin marketplace update`, no plugin install/update side
   effects.
 
+- **Flea-market entity edit feature with version history (schema v38).**
+  Owner + admin can now edit a store entity from a real Edit page at
+  `/marketplace/flea/{id}/edit` (replaces the prior "coming soon"
+  placeholder). Editable fields: display name, description, category,
+  video URL, cover photo, and an optional new bundle. Type is locked
+  (400 `type_locked` on change attempt). Display-name change renames
+  the on-disk slug for both the live `plugin/` dir and the version
+  dir, mirroring the rename-on-archive flow.
+
+  Each bundle update creates a new version: bytes bake into
+  `${DATA_DIR}/store/<id>/versions/v<N+1>/plugin/`, run the standard
+  guardrails pipeline. **Deferred promotion:** the live `plugin/` dir
+  and `entity.version_no` stay at the prior approved version through
+  the LLM review window, so existing installers keep receiving the
+  previously approved bundle while the new version is being
+  validated. Promotion (live swap + version_no/version/file_size
+  bump) happens only on LLM approval; if the new version is blocked,
+  installers continue serving the prior approved version
+  indefinitely. The entity row carries `version_no` (current served
+  index) and `version_history` JSON (append-only per-version
+  metadata: hash, sha256, size, submission_id, created_at,
+  created_by). Existing entities backfill to v1 with a single-entry
+  history seeded from the row's current `version` hash.
+
+  **Block-while-pending:** an in-flight LLM review blocks any further
+  edit with 409 `prior_version_pending`. Owner waits ~5-30s; the
+  detail page Edit button renders disabled in the same window.
+
+  **Rollback:** new endpoint `POST /api/store/entities/{id}/versions/{n}/restore`
+  (owner + admin) copies a prior version's bundle forward as
+  v<max+1> and re-runs guardrails. Forward-only history — the
+  original row keeps its verdict; the new copy gets a fresh one.
+  Detail page renders a Versions card with restore buttons for
+  owner/admin only.
+
+  **Admin queue** gains a `v#` column (with "current" badge) and a
+  separate Hash column. Submission detail page surfaces Version +
+  Bundle hash rows. Activity timeline splits into per-submission +
+  entity-wide cards so admins can tell version-scoped events apart
+  from entity-wide ones; entity-wide rows render `vN` chips when the
+  audit row's params reference a version.
+
 ### Changed
 
 - **SessionStart marketplace hook is now read-only.** The hook installed

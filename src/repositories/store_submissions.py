@@ -376,7 +376,10 @@ class StoreSubmissionsRepository:
         order = "ASC" if (sort_order or "desc").lower() == "asc" else "DESC"
 
         sql = (
-            f"SELECT s.*, e.visibility_status AS entity_visibility_status "
+            f"SELECT s.*, "
+            f"  e.visibility_status AS entity_visibility_status, "
+            f"  e.version_history   AS entity_version_history, "
+            f"  e.version_no        AS entity_version_no "
             f"FROM store_submissions s "
             f"LEFT JOIN store_entities e ON e.id = s.entity_id "
             f"{where} "
@@ -388,4 +391,28 @@ class StoreSubmissionsRepository:
             return [], int(total)
         columns = [d[0] for d in self.conn.description]
         items = [self._row_to_dict(columns, r) for r in rows]
+        # Derive ``version_no`` for each row by matching the submission's
+        # version hash against the entity's version_history. Surfaces a
+        # human-friendly v1/v2/v3 label in the admin queue + detail page
+        # (the raw ``s.version`` is the hash). Falls back to None when
+        # the entity is gone (hard-deleted) or the hash isn't in history.
+        for item in items:
+            history = item.get("entity_version_history")
+            if isinstance(history, str):
+                try:
+                    history = json.loads(history) if history else []
+                except (ValueError, TypeError):
+                    history = []
+            elif history is None:
+                history = []
+            item["entity_version_history"] = history
+            item["version_no"] = None
+            sub_hash = item.get("version")
+            for entry in history:
+                try:
+                    if entry.get("hash") == sub_hash:
+                        item["version_no"] = int(entry.get("n"))
+                        break
+                except (TypeError, ValueError):
+                    continue
         return items, int(total)

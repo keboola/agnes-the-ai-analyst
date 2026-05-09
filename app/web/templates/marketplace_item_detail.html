@@ -415,10 +415,17 @@
     }
   </style>
   <div class="owner-actions">
+    {% if edit_in_flight %}
     <a href="#" aria-disabled="true"
-       title="Edit flow lands in a follow-up — for now, re-upload to update.">
-      Edit (coming soon)
+       title="Wait for the in-flight review to finish before editing.">
+      Edit (review in flight)
     </a>
+    {% else %}
+    <a href="/marketplace/flea/{{ entity.id }}/edit"
+       title="Edit metadata or upload a new version.">
+      Edit
+    </a>
+    {% endif %}
     {# Same v35 delete UX as the plugin detail page — see comment there. #}
     {% if is_admin %}
       {% if entity.visibility_status == 'approved' %}
@@ -464,6 +471,9 @@
       </button>
     {% endif %}
   </div>
+
+  {% include "_flea_versions.html" %}
+
   <script>
   (function(){
     const root = document.getElementById('root');

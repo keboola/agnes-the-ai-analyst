@@ -201,43 +201,95 @@ def run_llm_review(
                 llm_findings=verdict,
                 reviewed_by_model=model,
             )
-            applied = True
+            # Two outcomes are possible AND independent here:
+            #
+            # 1. Initial-upload (v1) approval flips visibility from
+            #    'pending' to 'approved'. set_visibility_if_pending
+            #    returns True. No promotion (v1 IS current).
+            #
+            # 2. v2+ edit/restore approval doesn't flip visibility
+            #    (entity already 'approved' under deferred-promotion).
+            #    set_visibility_if_pending returns False. We MUST
+            #    still promote — copy the new version dir to live +
+            #    bump entity.version_no/version/file_size.
+            #
+            # 3. Admin archived the row mid-flight: visibility =
+            #    'archived'. set_visibility_if_pending returns False
+            #    AND we must NOT promote. Detect via the row's
+            #    current visibility, not via the flip's return value.
+            #
+            # The flip's return value alone can't distinguish (2)
+            # from (3). Inspect the row's actual state to decide.
+            visibility_flipped = False
+            promoted_to: Optional[int] = None
+            superseded_reason: Optional[str] = None
             if entity_id:
-                # BG-task race guard: only flip when the entity is still
-                # in the review window (pending/hidden). If an admin
-                # archived the row while the LLM was thinking, leave it
-                # archived — the admin's decision wins.
-                applied = ents_repo.set_visibility_if_pending(
+                visibility_flipped = ents_repo.set_visibility_if_pending(
                     entity_id, "approved",
                 )
-            if applied:
-                audit.log(
-                    user_id=submitter_id,
-                    action="store.submission.approved",
-                    resource=f"store_submission:{submission_id}",
-                    params={"risk_level": verdict.get("risk_level"),
-                            "model": model},
-                    result="ok",
-                )
-            else:
-                # Surface the skipped flip so an operator triaging the
-                # admin queue understands why an "approved" verdict
-                # didn't publish the entity.
-                current = (ents_repo.get(entity_id) or {}).get(
-                    "visibility_status",
-                )
+                ent_row = ents_repo.get(entity_id) or {}
+                current_visibility = ent_row.get("visibility_status")
+                # Only promote when the entity is actually in a
+                # serve-able state. Archive / hidden-by-admin paths
+                # leave alone.
+                if current_visibility == "approved":
+                    sub_row = subs_repo.get(submission_id) or {}
+                    sub_hash = sub_row.get("version")
+                    target_version_no = None
+                    for entry in (ent_row.get("version_history") or []):
+                        if entry.get("hash") == sub_hash:
+                            try:
+                                target_version_no = int(entry.get("n"))
+                            except (TypeError, ValueError):
+                                target_version_no = None
+                            break
+                    if (target_version_no is not None
+                            and target_version_no != int(ent_row.get("version_no") or 0)):
+                        if ents_repo.promote_version(entity_id, target_version_no):
+                            try:
+                                from app.api.store import _swap_live_to_version
+                                _swap_live_to_version(entity_id, target_version_no)
+                                promoted_to = target_version_no
+                            except Exception:
+                                logger.exception(
+                                    "promote_version live swap failed for entity %s v%d",
+                                    entity_id, target_version_no,
+                                )
+                else:
+                    # Entity left the serve-able states between BG
+                    # task start + verdict-write. Record so admin
+                    # triaging the queue sees why an "approved"
+                    # verdict didn't change the live state.
+                    superseded_reason = (
+                        f"entity left review window before LLM verdict "
+                        f"landed (current visibility: {current_visibility})"
+                    )
+
+            # Audit the verdict + the action taken.
+            if superseded_reason:
                 audit.log(
                     user_id=submitter_id,
                     action="store.submission.bg_verdict_skipped",
                     resource=f"store_submission:{submission_id}",
                     params={
                         "attempted_verdict": "approved",
-                        "current_visibility": current,
-                        "reason": "entity left review window before "
-                                  "LLM verdict landed (admin action)",
+                        "reason": superseded_reason,
                         "model": model,
                     },
                     result="skipped",
+                )
+            else:
+                audit.log(
+                    user_id=submitter_id,
+                    action="store.submission.approved",
+                    resource=f"store_submission:{submission_id}",
+                    params={
+                        "risk_level": verdict.get("risk_level"),
+                        "model": model,
+                        "visibility_flipped": visibility_flipped,
+                        "promoted_to_version_no": promoted_to,
+                    },
+                    result="ok",
                 )
         else:
             subs_repo.update_status(
@@ -246,8 +298,17 @@ def run_llm_review(
                 llm_findings=verdict,
                 reviewed_by_model=model,
             )
-            # Entity stays at visibility_status='pending' — invisible in
-            # the flea browse for non-admins. Admin can override.
+            # On block, entity state depends on which path triggered
+            # this submission:
+            #
+            # - Initial v1 upload: visibility='pending' (invisible to
+            #   non-admins). Admin can override.
+            # - v2+ edit / restore (deferred promotion): entity stays
+            #   'approved' at the prior version. Existing installers
+            #   keep receiving the previously approved bundle; nothing
+            #   to roll back. The submission row carries the verdict
+            #   so admin can Override + publish if the block was a
+            #   false positive.
             audit.log(
                 user_id=submitter_id,
                 action="store.submission.blocked_llm",

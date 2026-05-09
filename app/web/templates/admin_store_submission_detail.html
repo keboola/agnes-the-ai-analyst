@@ -172,6 +172,25 @@
         </dd>
       </div>
       <div>
+        <dt>Version</dt>
+        <dd>
+          {%- if submission_version_no -%}
+            <strong>v{{ submission_version_no }}</strong>
+            {%- if entity_version_no and entity_version_no == submission_version_no %}
+            <span class="badge approved" style="margin-left: 6px;">current</span>
+            {%- elif entity_version_no %}
+            <span style="font-size: 11px; color: var(--text-secondary, #9ca3af); margin-left: 6px;">superseded — current is v{{ entity_version_no }}</span>
+            {%- endif %}
+          {%- else -%}
+            <span class="empty-msg">— (legacy or hash not in history)</span>
+          {%- endif -%}
+        </dd>
+      </div>
+      <div>
+        <dt>Bundle hash</dt>
+        <dd>{% if sub.version %}<code style="font-size:12px;">{{ sub.version }}</code>{% else %}<span class="empty-msg">—</span>{% endif %}</dd>
+      </div>
+      <div>
         <dt>Submitter</dt>
         <dd><a href="/admin/store/submissions?submitter={{ sub.submitter_id }}">{{ sub.submitter_email or sub.submitter_id }}</a></dd>
       </div>
@@ -191,7 +210,19 @@
       </div>
       <div>
         <dt>Reviewed by model</dt>
-        <dd>{{ sub.reviewed_by_model or "—" }}</dd>
+        <dd>
+          {%- if sub.reviewed_by_model -%}
+            <code style="font-size: 12px;">{{ sub.reviewed_by_model }}</code>
+          {%- elif sub.status in ['pending_llm', 'pending_inline'] -%}
+            <span class="empty-msg">⟳ in flight</span>
+          {%- elif sub.status == 'blocked_inline' -%}
+            <span class="empty-msg">— (inline-blocked, LLM skipped)</span>
+          {%- elif sub.status == 'approved' -%}
+            <span class="empty-msg">— (guardrails disabled or no API key)</span>
+          {%- else -%}
+            <span class="empty-msg">—</span>
+          {%- endif -%}
+        </dd>
       </div>
       <div>
         <dt>Entity ID</dt>
@@ -265,39 +296,73 @@
   {% endif %}
 
   {# ── Activity timeline ───────────────────────────────────────────────────── #}
-  {% if audit_rows %}
-  <div class="det-card">
-    <h2>Activity timeline</h2>
-    <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 0 0 8px 0;">
-      Every recorded action on this submission + linked entity, newest first.
-      Use this to confirm a verdict is fresh (e.g. the timestamp on the latest
-      <code>store.submission.rescan</code> row matches the time you clicked Rescan).
-    </p>
+  {# v37 split: per-submission events surface here. Entity-wide events
+     (archive / install / hard-delete) — which apply to ALL versions of
+     this entity — surface in the separate "Entity activity" card below
+     so admin can tell version-scoped from entity-scoped at a glance. #}
+  {% macro _render_timeline(rows) %}
     <ul class="timeline">
-      {% for row in audit_rows %}
+      {% for row in rows %}
       <li>
         <span class="ts">{{ row.timestamp.strftime("%Y-%m-%d %H:%M:%S") if row.timestamp else "" }}</span>
         <span>
           <span class="action">{{ row.action }}</span>
+          {# Inline `vN` chip when the audit's params reference a
+             specific version_no — makes it clear in the entity-wide
+             timeline which version each event applied to. #}
+          {% if row.params and row.params is mapping and row.params.version_no %}
+            <span class="badge approved" style="margin-left: 4px; font-size: 9px;">v{{ row.params.version_no }}</span>
+          {% endif %}
           {% if row.actor_email %}<span class="actor"> · {{ row.actor_email }}</span>{% endif %}
           {% if row.params and row.params is mapping %}
             {% if row.params.outcome %}<span class="actor"> · → {{ row.params.outcome }}</span>{% endif %}
             {% if row.params.risk_level %}<span class="actor"> · risk={{ row.params.risk_level }}</span>{% endif %}
             {% if row.params.reason %}<span class="actor"> · "{{ row.params.reason[:80] }}"</span>{% endif %}
+            {% if row.params.renamed_to %}<span class="actor"> · → {{ row.params.renamed_to }}</span>{% endif %}
+            {% if row.params.restored_from_version_no %}<span class="actor"> · from v{{ row.params.restored_from_version_no }}</span>{% endif %}
           {% endif %}
         </span>
         <span class="relative" data-rel-since="{{ row.timestamp.isoformat() if row.timestamp else '' }}">just now</span>
       </li>
       {% endfor %}
     </ul>
+  {% endmacro %}
+
+  {% if submission_audit_rows %}
+  <div class="det-card">
+    <h2>Activity timeline{% if submission_version_no %} <span class="badge approved" style="font-size:9px;">v{{ submission_version_no }}</span>{% endif %}</h2>
+    <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 0 0 8px 0;">
+      Recorded actions for THIS submission row only — accept / verdict /
+      rescan / override / retry / bundle download. Use this to confirm a
+      verdict is fresh (timestamp on the latest <code>store.submission.rescan</code>
+      row matches the time you clicked Rescan).
+    </p>
+    {{ _render_timeline(submission_audit_rows) }}
+  </div>
+  {% endif %}
+
+  {% if entity_audit_rows %}
+  <div class="det-card">
+    <h2>Entity activity (all versions)</h2>
+    <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 0 0 8px 0;">
+      Entity-wide events that apply to every version of this entity —
+      creation, archive, install / uninstall, hard delete. Same content
+      shows on every submission for this entity by design.
+    </p>
+    {{ _render_timeline(entity_audit_rows) }}
   </div>
   {% endif %}
 
   {# ── Inline checks ───────────────────────────────────────────────────────── #}
+  {# Each ``det-card`` below renders verdict data scoped to THIS
+     submission row (i.e. one specific version). Section headers get
+     a ``vN`` chip when ``submission_version_no`` is known so admin
+     never confuses one version's verdict for another's. #}
   {% set ic = sub.inline_checks or {} %}
+  {% macro _vchip() %}{% if submission_version_no %}<span class="badge approved" style="margin-left:6px;font-size:9px;">v{{ submission_version_no }}</span>{% endif %}{% endmacro %}
 
   <div class="det-card">
-    <h2>Manifest check {% if ic.manifest %}<span class="badge {{ ic.manifest.status or 'pass' }}">{{ ic.manifest.status or 'pass' }}</span>{% endif %}</h2>
+    <h2>Manifest check{{ _vchip() }} {% if ic.manifest %}<span class="badge {{ ic.manifest.status or 'pass' }}">{{ ic.manifest.status or 'pass' }}</span>{% endif %}</h2>
     {% if ic.manifest and ic.manifest.issues %}
       <ul class="issues">
         {% for issue in ic.manifest.issues %}<li><code>{{ issue }}</code></li>{% endfor %}
@@ -308,7 +373,7 @@
   </div>
 
   <div class="det-card">
-    <h2>Static security scan {% if ic.static_security %}<span class="badge {{ ic.static_security.status or 'pass' }}">{{ ic.static_security.status or 'pass' }}</span>{% endif %}</h2>
+    <h2>Static security scan{{ _vchip() }} {% if ic.static_security %}<span class="badge {{ ic.static_security.status or 'pass' }}">{{ ic.static_security.status or 'pass' }}</span>{% endif %}</h2>
     {% if ic.static_security and ic.static_security.findings %}
     <table class="sub-table">
       <thead>
@@ -332,7 +397,7 @@
   </div>
 
   <div class="det-card">
-    <h2>Quality + templating {% if ic.quality %}<span class="badge {{ ic.quality.status or 'pass' }}">{{ ic.quality.status or 'pass' }}</span>{% endif %}</h2>
+    <h2>Quality + templating{{ _vchip() }} {% if ic.quality %}<span class="badge {{ ic.quality.status or 'pass' }}">{{ ic.quality.status or 'pass' }}</span>{% endif %}</h2>
     {% if ic.quality %}
       <div style="font-size: 13px; color: var(--text-secondary, #6b7280); margin-bottom: 8px;">
         Template placeholders found: <strong>{{ ic.quality.template_placeholders or 0 }}</strong>
@@ -352,7 +417,7 @@
 
   {# ── LLM review ──────────────────────────────────────────────────────────── #}
   <div class="det-card">
-    <h2>LLM security review
+    <h2>LLM security review{{ _vchip() }}
       {% if sub.llm_findings and sub.llm_findings.risk_level %}
       <span class="badge {{ sub.llm_findings.risk_level }}">{{ sub.llm_findings.risk_level }}</span>
       {% endif %}
