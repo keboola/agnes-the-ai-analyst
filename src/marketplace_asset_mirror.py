@@ -699,13 +699,33 @@ def sync_assets(
                 last_checked_at=now_iso,
                 status="ok",
             )
+            manifest[url] = entry
+            # Persist the manifest BEFORE unlinking the old body. A kill -9
+            # between body-write and the end-of-batch persist would otherwise
+            # leave on-disk files the next sync's manifest never references —
+            # disk bloats over time as URLs come and go from the curator's
+            # agnes-metadata.json. Per-iteration persist narrows the crash
+            # window from "all of Phase 2" to "between persist and unlink"
+            # (microseconds). Cost: ~one tmp+rename per body write; manifest
+            # is a few KB so the overhead is negligible vs. the HTTP fetches.
+            try:
+                _write_manifest(cache_dir, manifest)
+            except OSError as e:
+                # Body is on disk but the manifest didn't commit. Don't
+                # unlink the old body — the on-disk manifest still
+                # references it, and serving a stale-but-existing file
+                # beats serving a 404.
+                logger.warning(
+                    "mirror manifest persist failed mid-batch url=%s: %s", url, e,
+                )
+                report.failed += 1
+                continue
             # If the previous local file lived at a different path, drop it.
             if prior and prior.local and prior.local != relpath:
                 try:
                     (cache_dir / prior.local).unlink(missing_ok=True)
                 except OSError:
                     pass
-            manifest[url] = entry
         else:
             prior.etag = outcome.etag or prior.etag
             prior.last_modified = outcome.last_modified or prior.last_modified
@@ -716,19 +736,30 @@ def sync_assets(
         report.fetched += 1
 
     # Phase 3 — drop manifest entries the curator removed upstream, plus
-    # their on-disk bodies. Walk a copy of the keys since we mutate the dict.
+    # their on-disk bodies. Same persist-before-unlink discipline as
+    # Phase 2: collect the relpaths to delete, persist the manifest with
+    # the entries already gone, *then* unlink. A crash mid-cleanup leaves
+    # at most a microsecond window where a file is still on disk despite
+    # the manifest no longer naming it — the next sync simply re-reads
+    # the (now-correct) manifest and the orphan stays orphaned, but the
+    # served state stays consistent.
+    removed_paths: List[str] = []
     for url in list(manifest.keys()):
         if url in requested_urls:
             continue
         entry = manifest.pop(url)
         if entry.local:
-            try:
-                (cache_dir / entry.local).unlink(missing_ok=True)
-            except OSError:
-                pass
+            removed_paths.append(entry.local)
         report.removed += 1
 
     _write_manifest(cache_dir, manifest)
+
+    for relpath in removed_paths:
+        try:
+            (cache_dir / relpath).unlink(missing_ok=True)
+        except OSError:
+            pass
+
     report.entries = manifest
     return report
 
