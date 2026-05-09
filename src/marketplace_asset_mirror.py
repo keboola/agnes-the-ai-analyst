@@ -142,7 +142,7 @@ class MirrorReport:
     failed: int = 0
     rejected: int = 0
     removed: int = 0
-    entries: Dict[str, MirrorEntry] = field(default_factory=dict)
+    entries: Dict[Tuple[str, str], MirrorEntry] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +398,20 @@ def _safe_filename(url: str, default_ext: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _load_manifest(cache_dir: Path) -> Dict[str, MirrorEntry]:
+def _load_manifest(cache_dir: Path) -> Dict[Tuple[str, str], MirrorEntry]:
+    """Read the on-disk manifest into an in-memory ``(plugin_name, url) → entry`` map.
+
+    The composite key is what makes the manifest RBAC-safe: two plugins in
+    the same marketplace can reference the same external URL (shared CDN
+    icon, common cover image) and each gets its own entry pointing under
+    its own plugin subdir, so an analyst with grant on plugin B never
+    receives a URL pointing under plugin A's tree.
+
+    On-disk format is a list of self-describing entries (each carries
+    ``plugin_name`` + ``url`` fields), not a JSON dict — JSON keys can't
+    be tuples and concatenating ``"plugin::url"`` would just shift the
+    parsing burden.
+    """
     path = cache_dir / MANIFEST_FILENAME
     if not path.is_file():
         return {}
@@ -408,21 +421,28 @@ def _load_manifest(cache_dir: Path) -> Dict[str, MirrorEntry]:
         logger.warning("mirror manifest %s unreadable, starting fresh: %s", path, e)
         return {}
     entries = data.get("entries") if isinstance(data, dict) else None
-    if not isinstance(entries, dict):
+    if not isinstance(entries, list):
         return {}
-    out: Dict[str, MirrorEntry] = {}
-    for url, raw in entries.items():
-        if isinstance(raw, dict):
-            out[url] = MirrorEntry.from_json(raw)
+    out: Dict[Tuple[str, str], MirrorEntry] = {}
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        entry = MirrorEntry.from_json(raw)
+        if not entry.url or not entry.plugin_name:
+            continue
+        out[(entry.plugin_name, entry.url)] = entry
     return out
 
 
-def _write_manifest(cache_dir: Path, entries: Dict[str, MirrorEntry]) -> None:
+def _write_manifest(
+    cache_dir: Path,
+    entries: Dict[Tuple[str, str], MirrorEntry],
+) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / MANIFEST_FILENAME
     body = {
-        "version": 1,
-        "entries": {url: e.to_json() for url, e in entries.items()},
+        "version": 2,
+        "entries": [e.to_json() for e in entries.values()],
     }
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
@@ -577,31 +597,44 @@ def sync_assets(
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest = _load_manifest(cache_dir)
     report = MirrorReport(requested=len(requests))
-    requested_urls = {url for _, _, url in requests}
+    requested_keys = {(plugin_name, url) for plugin_name, _, url in requests}
 
-    # Phase 1 — fetch every requested URL with bounded concurrency.
-    def _do_one(req: Tuple[str, str, str]) -> Tuple[Tuple[str, str, str], FetchOutcome]:
-        plugin_name, kind, url = req
-        prior = manifest.get(url)
-        outcome = _fetch_url(url, prior=prior, expect_kind=kind)
-        return req, outcome
+    # Phase 1 — dedup fetches by URL. Two plugins referencing the same
+    # external image share one HTTP fetch (saves bandwidth, avoids the
+    # rate-limit pressure on slow CDNs the previous version would have
+    # caused). We pick any owning plugin's prior MirrorEntry as the source
+    # of conditional-GET headers — if it has an etag, all owning plugins
+    # benefit from the 304; if their etags diverge (rare), worst case is
+    # one full re-download instead of an optimal mix.
+    fetch_inputs: Dict[str, Tuple[str, Optional[MirrorEntry]]] = {}
+    for plugin_name, kind, url in requests:
+        if url in fetch_inputs:
+            continue
+        fetch_inputs[url] = (kind, manifest.get((plugin_name, url)))
 
-    results: List[Tuple[Tuple[str, str, str], FetchOutcome]] = []
+    def _do_one(item: Tuple[str, Tuple[str, Optional[MirrorEntry]]]) -> Tuple[str, FetchOutcome]:
+        url, (kind, prior) = item
+        return url, _fetch_url(url, prior=prior, expect_kind=kind)
+
+    outcome_by_url: Dict[str, FetchOutcome] = {}
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=MAX_CONCURRENT_FETCHES
     ) as pool:
-        for result in pool.map(_do_one, requests):
-            results.append(result)
+        for url, outcome in pool.map(_do_one, list(fetch_inputs.items())):
+            outcome_by_url[url] = outcome
 
-    # Phase 2 — process outcomes serially so manifest writes are deterministic.
+    # Phase 2 — process outcomes per (plugin, url) pair so each owner gets
+    # its own manifest entry pointing under its own plugin subdir.
     now_iso = datetime.now(timezone.utc).isoformat()
-    for (plugin_name, kind, url), outcome in results:
-        prior = manifest.get(url)
+    for plugin_name, kind, url in requests:
+        outcome = outcome_by_url[url]
+        key = (plugin_name, url)
+        prior = manifest.get(key)
         if outcome.status == "not_modified" and prior:
             prior.last_checked_at = now_iso
             prior.error = ""
             prior.status = "ok"  # 304 means the cached file is still valid
-            manifest[url] = prior
+            manifest[key] = prior
             report.not_modified += 1
             continue
         if outcome.status == "rejected":
@@ -609,11 +642,11 @@ def sync_assets(
             entry.status = "rejected"
             entry.last_checked_at = now_iso
             entry.error = outcome.error
-            manifest[url] = entry
+            manifest[key] = entry
             report.rejected += 1
             logger.warning(
-                "mirror rejected url=%s kind=%s reason=%s",
-                url, kind, outcome.error,
+                "mirror rejected plugin=%s url=%s kind=%s reason=%s",
+                plugin_name, url, kind, outcome.error,
             )
             continue
         if outcome.status == "failed":
@@ -622,11 +655,11 @@ def sync_assets(
             entry.status = "failed_recent" if prior and prior.local else "failed_first"
             entry.last_checked_at = now_iso
             entry.error = outcome.error
-            manifest[url] = entry
+            manifest[key] = entry
             report.failed += 1
             logger.warning(
-                "mirror fetch failed url=%s kind=%s reason=%s (keep_prior=%s)",
-                url, kind, outcome.error, bool(prior and prior.local),
+                "mirror fetch failed plugin=%s url=%s kind=%s reason=%s (keep_prior=%s)",
+                plugin_name, url, kind, outcome.error, bool(prior and prior.local),
             )
             continue
         # outcome.status == "ok" — body present
@@ -669,11 +702,11 @@ def sync_assets(
             entry.status = "rejected"
             entry.last_checked_at = now_iso
             entry.error = f"body_validation: {validation.reason}"
-            manifest[url] = entry
+            manifest[key] = entry
             report.rejected += 1
             logger.warning(
-                "mirror body rejected url=%s reason=%s",
-                url, validation.reason,
+                "mirror body rejected plugin=%s url=%s reason=%s",
+                plugin_name, url, validation.reason,
             )
             continue
         new_sha = hashlib.sha256(outcome.body).hexdigest()
@@ -699,7 +732,7 @@ def sync_assets(
                 last_checked_at=now_iso,
                 status="ok",
             )
-            manifest[url] = entry
+            manifest[key] = entry
             # Persist the manifest BEFORE unlinking the old body. A kill -9
             # between body-write and the end-of-batch persist would otherwise
             # leave on-disk files the next sync's manifest never references —
@@ -732,7 +765,7 @@ def sync_assets(
             prior.last_checked_at = now_iso
             prior.status = "ok"
             prior.error = ""
-            manifest[url] = prior
+            manifest[key] = prior
         report.fetched += 1
 
     # Phase 3 — drop manifest entries the curator removed upstream, plus
@@ -744,10 +777,10 @@ def sync_assets(
     # the (now-correct) manifest and the orphan stays orphaned, but the
     # served state stays consistent.
     removed_paths: List[str] = []
-    for url in list(manifest.keys()):
-        if url in requested_urls:
+    for key in list(manifest.keys()):
+        if key in requested_keys:
             continue
-        entry = manifest.pop(url)
+        entry = manifest.pop(key)
         if entry.local:
             removed_paths.append(entry.local)
         report.removed += 1
