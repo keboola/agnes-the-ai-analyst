@@ -185,6 +185,14 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # job at 03:00. Endpoint reads guardrails.blocked_bundle_ttl_days
         # from instance.yaml and short-circuits when set to 0.
         ("store-blocked-purge",   "daily 04:00",                 "/api/admin/run-blocked-purge",         "POST", 600),
+        # Stuck-review reaper (#7). A submission stays at
+        # status='pending_llm' until the BackgroundTasks worker writes
+        # a verdict. If the worker crashes, the row sits forever. Run
+        # every 15 minutes; reap_stuck_llm_reviews flips rows older
+        # than guardrails.stuck_review_grace_seconds (default 1800)
+        # to review_error so admin can retry. Cheap (one indexed
+        # SELECT + N small UPDATEs); short timeout sufficient.
+        ("store-reap-stuck-reviews", "every 15m",                 "/api/admin/run-reap-stuck-reviews",   "POST", 60),
     ]
 
 _running = True

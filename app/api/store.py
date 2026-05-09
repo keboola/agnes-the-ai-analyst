@@ -914,13 +914,24 @@ async def create_entity(
     # looping on malformed ZIPs would otherwise fill disk + the admin
     # queue with noise. Cap rejected uploads per submitter per 24h;
     # operator can disable by setting the knob to 0.
+    #
+    # #9 widening: counts blocked_inline + blocked_llm + review_error so
+    # a submitter triggering only LLM-blocked verdicts is bounded too.
+    #
+    # Race note (#5, deferred): two parallel uploads from the same
+    # submitter can both pass the SELECT before either INSERT — the cap
+    # may be exceeded by the number of in-flight requests. A
+    # threading.Lock would block the asyncio event loop; a proper fix
+    # needs an asyncio.Lock held across the entire pipeline (extract +
+    # check + insert) which is a larger restructure tracked separately.
+    # API-level rate limiting (slowapi) bounds the worst case until then.
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
     from app.instance_config import get_guardrails_blocked_quota_per_day
     quota = get_guardrails_blocked_quota_per_day()
     if quota > 0:
         since = _dt.now(_tz.utc) - _td(hours=24)
         recent_blocked = StoreSubmissionsRepository(conn) \
-            .count_blocked_inline_for_submitter_since(user["id"], since)
+            .count_blocked_for_submitter_since(user["id"], since)
         if recent_blocked >= quota:
             raise HTTPException(
                 status_code=429,
@@ -1155,21 +1166,25 @@ async def update_entity(
     new_size: Optional[int] = None
     inline_after_update: Optional[InlineResult] = None
     if file is not None:
-        # Same single-try/finally invariant as create_entity — see the comment
-        # there. ZIP-validation HTTPExceptions raised inside _safe_zip_extract
-        # were leaking the scratch dir before this restructure.
+        # PUT atomicity: bake the new bundle into a staging dir alongside
+        # the live one, run checks against the staging copy, then atomic-
+        # rename onto the live path on success. Pre-fix, the bake wrote
+        # directly into the live `plugin/` dir BEFORE checks ran — a
+        # concurrent GET during the window saw partial / unverified
+        # content. Staging closes that window: failed checks leave the
+        # live tree byte-for-byte intact.
         tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
         tmp.close()
         scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
-        # Snapshot of the existing baked tree, so we can roll back the
-        # on-disk update if guardrails reject the new bundle. Without
-        # this, a failed re-upload leaves the entity pointing at a
-        # half-overwritten tree.
-        rollback_dir = Path(tempfile.mkdtemp(prefix="agnes_store_rollback_"))
+        # Sibling of the live `plugin/` dir so the eventual rename is on
+        # the same filesystem (atomic on POSIX). Random suffix in case
+        # multiple PUTs land back-to-back.
+        existing_plugin = _plugin_dir(entity_id)
+        staging_plugin = existing_plugin.with_name(
+            f"plugin.staging-{os.urandom(4).hex()}",
+        )
+        backup_plugin: Optional[Path] = None  # set if the swap starts
         try:
-            existing_plugin = _plugin_dir(entity_id)
-            if existing_plugin.exists():
-                shutil.copytree(existing_plugin, rollback_dir / "plugin")
             try:
                 with zipfile.ZipFile(tmp.name, "r") as zf:
                     _safe_zip_extract(zf, scratch)
@@ -1180,33 +1195,33 @@ async def update_entity(
 
             _validate_and_extract_metadata(entity["type"], scratch)
             suffixed = suffixed_name(entity["name"], entity["owner_username"])
+            # Bake into the staging dir — _bake_plugin_tree creates the
+            # target if missing and does its own rmtree on existing
+            # children, so the staging path being fresh is fine.
             new_size = _bake_plugin_tree(
                 type_=entity["type"],
                 extracted_root=scratch,
-                plugin_dir=existing_plugin,
+                plugin_dir=staging_plugin,
                 final_name=entity["name"],
                 suffixed=suffixed,
                 description=description if description is not None else entity.get("description"),
             )
-            new_version = compute_entity_version(existing_plugin)
+            new_version = compute_entity_version(staging_plugin)
 
             inline_after_update = run_inline_checks(
-                existing_plugin,
+                staging_plugin,
                 type_=entity["type"],
                 description=description if description is not None
                             else entity.get("description"),
             )
             if not inline_after_update.passed:
-                # Compute the rejected bundle's sha+size BEFORE rollback
-                # so the submission row carries forensics about what was
-                # tried, even though the bytes themselves get reverted.
+                # Compute the rejected bundle's sha+size BEFORE the
+                # staging dir is removed so the submission row carries
+                # forensics about what was tried.
                 from src.store_guardrails.bundle_meta import compute_bundle_meta
-                rejected_meta = compute_bundle_meta(existing_plugin)
-                # Restore prior bundle from rollback snapshot so the
-                # uploader's old (already-approved) entity stays usable.
-                shutil.rmtree(existing_plugin, ignore_errors=True)
-                if (rollback_dir / "plugin").exists():
-                    shutil.copytree(rollback_dir / "plugin", existing_plugin)
+                rejected_meta = compute_bundle_meta(staging_plugin)
+                # Live tree was never touched — no rollback work to do.
+                # The `finally` below cleans the staging dir.
                 subs_repo = StoreSubmissionsRepository(conn)
                 sub_id = subs_repo.create(
                     submitter_id=user["id"],
@@ -1234,9 +1249,45 @@ async def update_entity(
                         "checks": inline_after_update.to_response_dict(),
                     },
                 )
+
+            # Checks passed — swap staging onto live. Three steps:
+            # rename live → backup, rename staging → live, rmtree backup.
+            # If the second rename fails, restore by renaming backup
+            # back. Same-FS rename is atomic on POSIX.
+            if existing_plugin.exists():
+                backup_plugin = existing_plugin.with_name(
+                    f"plugin.backup-{os.urandom(4).hex()}",
+                )
+                os.rename(existing_plugin, backup_plugin)
+            try:
+                os.rename(staging_plugin, existing_plugin)
+            except OSError:
+                # Restore live from backup if the swap failed mid-way.
+                if backup_plugin is not None and backup_plugin.exists():
+                    try:
+                        os.rename(backup_plugin, existing_plugin)
+                    except OSError:
+                        pass
+                raise
+            # Live now points at the new bundle; drop the backup copy.
+            if backup_plugin is not None:
+                shutil.rmtree(backup_plugin, ignore_errors=True)
+                backup_plugin = None
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
-            shutil.rmtree(rollback_dir, ignore_errors=True)
+            # If staging never made it through the swap (failed check or
+            # exception), remove it.
+            if staging_plugin.exists():
+                shutil.rmtree(staging_plugin, ignore_errors=True)
+            # If a swap failed leaving the backup orphaned without a
+            # restore, leave it on disk for the operator to recover —
+            # better to log and inspect than silently drop.
+            if backup_plugin is not None and backup_plugin.exists():
+                logger.error(
+                    "PUT atomic-swap left orphan backup at %s — "
+                    "operator should reconcile manually",
+                    backup_plugin,
+                )
 
     photo_rel: Optional[str] = None
     if photo is not None:

@@ -661,23 +661,36 @@ class TestAdminSortBySize:
         )
         conn.close()
 
+        # Admin endpoint passes sort/order through to the repo whitelist
+        # (#23). Confirm both directions via the API.
         _, admin_cookies = _create_admin(web_client)
         r = web_client.get(
             "/api/admin/store/submissions?sort=file_size&order=asc",
             cookies=admin_cookies,
         )
-        # Note: API admin endpoint doesn't expose sort yet — only the web
-        # page does. So skip this test when API doesn't pass through;
-        # verify via repo direct instead.
-        from src.repositories.store_submissions import StoreSubmissionsRepository as SSR
-        conn2 = get_system_db()
-        items, _ = SSR(conn2).list_for_admin(sort_by="file_size", sort_order="asc")
-        names = [i["name"] for i in items]
+        assert r.status_code == 200
+        names = [i["name"] for i in r.json()["items"]]
         assert names == ["tiny", "med", "big"], names
-        items, _ = SSR(conn2).list_for_admin(sort_by="file_size", sort_order="desc")
-        names = [i["name"] for i in items]
+
+        r = web_client.get(
+            "/api/admin/store/submissions?sort=file_size&order=desc",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200
+        names = [i["name"] for i in r.json()["items"]]
         assert names == ["big", "med", "tiny"], names
-        conn2.close()
+
+    def test_invalid_sort_key_400(self, web_client):
+        """#23 — sort whitelist rejects bogus keys at the API edge.
+        Pre-fix, an unknown key fell through to a substring-replace
+        chain that could surface 500s; now it's a clean 400."""
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.get(
+            "/api/admin/store/submissions?sort=injected__column",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 400, r.text
+        assert "invalid_sort_key" in r.text
 
 
 class TestQuota:
@@ -720,6 +733,34 @@ class TestQuota:
                 data={"type": "skill"}, cookies=user_cookies,
             )
             assert r.status_code == 422, f"upload {i}"
+
+    def test_quota_counter_includes_blocked_llm_and_review_error(self, web_client):
+        """#9 — pre-fix the counter only counted blocked_inline. A
+        submitter triggering ten blocked_llm verdicts was unbounded.
+        Post-fix: counter includes blocked_inline + blocked_llm +
+        review_error so all three reject states share the cap."""
+        from datetime import datetime, timezone, timedelta
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        # Seed three blocked submissions of different types directly via
+        # the repo so we don't depend on triggering each verdict path
+        # through the API (LLM mocking is involved).
+        _, user_cookies = _create_user(web_client, "spammer-9@x.com")
+        conn = get_system_db()
+        repo = StoreSubmissionsRepository(conn)
+        for i, status in enumerate(("blocked_inline", "blocked_llm", "review_error")):
+            repo.create(
+                submitter_id="spammer-9", submitter_email="spammer-9@x.com",
+                type="skill", name=f"q9-{i}", version="1.0.0",
+                status=status, entity_id=None,
+                inline_checks={"manifest": {"status": "fail"}},
+            )
+        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        count = repo.count_blocked_for_submitter_since("spammer-9", since)
+        conn.close()
+        assert count == 3, (
+            f"counter must include all three reject states; got {count}"
+        )
 
 
 # ---------------------------------------------------------------------------

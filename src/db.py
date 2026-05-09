@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -541,16 +541,38 @@ CREATE TABLE IF NOT EXISTS user_plugin_optouts (
 -- v29: flea-market upload guardrails — every POST/PUT to /api/store/entities
 -- writes a submissions row capturing the inline check verdicts, the async
 -- LLM review outcome, and any admin override. Powers /admin/store/submissions.
--- Status values follow a small FSM:
---   pending_inline  → inline checks running (transient — rarely visible)
---   blocked_inline  → at least one inline check failed (manifest / static
---                     security / quality). entity_id is set but the
---                     store_entities row is NOT created (rolled back).
---   pending_llm     → inline checks passed; LLM review enqueued
---   approved        → review concluded safe; visibility_status flipped
---   blocked_llm     → review flagged risk ≥ high; entity stays hidden
---   review_error    → LLM call errored or timed out; admin can retry
---   overridden      → admin force-published a previously blocked submission
+--
+-- Insert states (chosen by /api/store/entities POST):
+--   pending_llm     → inline checks passed; LLM review enqueued; entity
+--                     row created with visibility_status='pending'.
+--   blocked_inline  → at least one inline check failed; entity row
+--                     created with visibility_status='hidden' so admin
+--                     can rescan / override / download. (Pre-v30 the
+--                     entity row was rolled back; persisted now for
+--                     forensics + the 30-day TTL bundle purge path.)
+--
+-- Background-task transitions (runner.py):
+--   pending_llm → approved        — review concluded safe; entity flips
+--                                   to visibility_status='approved'.
+--   pending_llm → blocked_llm     — review flagged risk ≥ high; entity
+--                                   stays at visibility_status='pending'.
+--   pending_llm → review_error    — LLM call errored / timed out / missing
+--                                   risk_level; admin Retry available.
+--                                   Reaper sweeps stuck pending_llm rows
+--                                   every 15 min into review_error.
+--
+-- Admin transitions:
+--   blocked_* | review_error → overridden — force-publish; entity flipped
+--                                   to visibility_status='approved'.
+--
+-- Lifecycle (terminal):
+--   any → deleted — set by mark_deleted_for_entity after admin DELETE
+--                   ?hard=true; entity row gone but tombstone entity_id
+--                   preserved for activity-timeline correlation.
+--
+-- The legacy 'pending_inline' value exists in VALID_STATUSES for
+-- forward-compat with future async-inline checks but is NOT written by
+-- any current code path on insert.
 CREATE TABLE IF NOT EXISTS store_submissions (
     id              VARCHAR PRIMARY KEY,
     entity_id       VARCHAR,
@@ -2244,16 +2266,30 @@ _V34_TO_V35_MIGRATIONS = [
     "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR",
     # Rebuild visibility_status to drop the legacy CHECK (which forbade
     # 'archived'). DuckDB lacks DROP CONSTRAINT for table-level CHECKs,
-    # so we copy → drop → rename. Defaults preserved; existing values
-    # survive verbatim.
+    # so we copy → drop → rename. NOT NULL + DEFAULT are re-applied in
+    # v36 (DuckDB ALTER COLUMN supports SET NOT NULL / SET DEFAULT but
+    # not ADD CHECK on existing columns). The repo always writes a
+    # value; value-list enforcement is application-side via the
+    # VALID_VISIBILITY whitelist in StoreEntitiesRepository.
     "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS _vis_v35 VARCHAR",
     "UPDATE store_entities SET _vis_v35 = visibility_status WHERE _vis_v35 IS NULL",
     "ALTER TABLE store_entities DROP COLUMN visibility_status",
     "ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status",
-    # Re-establish NOT NULL + default semantics at the application
-    # layer; DuckDB's ALTER ADD CONSTRAINT is limited. The repo always
-    # writes a value; the original column had DEFAULT 'pending' which
-    # only mattered on INSERT, and INSERT is always done via the repo.
+]
+
+
+# v35→v36: re-apply NOT NULL + DEFAULT 'pending' on
+# store_entities.visibility_status. Lost in v34→v35 because the column
+# rebuild via ADD/UPDATE/DROP/RENAME stripped both invariants. Without
+# them an INSERT that omits visibility_status lands NULL → repo
+# subsequently reads None → undefined behavior in the visibility gates.
+# Idempotent: SET NOT NULL is a no-op when already NOT NULL; SET DEFAULT
+# replaces whatever default was set. The defensive UPDATE handles the
+# theoretical case where a row got NULL between v35 and v36.
+_V35_TO_V36_MIGRATIONS = [
+    "UPDATE store_entities SET visibility_status = 'pending' WHERE visibility_status IS NULL",
+    "ALTER TABLE store_entities ALTER COLUMN visibility_status SET NOT NULL",
+    "ALTER TABLE store_entities ALTER COLUMN visibility_status SET DEFAULT 'pending'",
 ]
 
 
@@ -2618,6 +2654,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 35:
                 for sql in _V34_TO_V35_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 36:
+                for sql in _V35_TO_V36_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

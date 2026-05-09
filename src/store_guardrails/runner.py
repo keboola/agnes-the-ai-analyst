@@ -201,16 +201,44 @@ def run_llm_review(
                 llm_findings=verdict,
                 reviewed_by_model=model,
             )
+            applied = True
             if entity_id:
-                ents_repo.set_visibility(entity_id, "approved")
-            audit.log(
-                user_id=submitter_id,
-                action="store.submission.approved",
-                resource=f"store_submission:{submission_id}",
-                params={"risk_level": verdict.get("risk_level"),
-                        "model": model},
-                result="ok",
-            )
+                # BG-task race guard: only flip when the entity is still
+                # in the review window (pending/hidden). If an admin
+                # archived the row while the LLM was thinking, leave it
+                # archived — the admin's decision wins.
+                applied = ents_repo.set_visibility_if_pending(
+                    entity_id, "approved",
+                )
+            if applied:
+                audit.log(
+                    user_id=submitter_id,
+                    action="store.submission.approved",
+                    resource=f"store_submission:{submission_id}",
+                    params={"risk_level": verdict.get("risk_level"),
+                            "model": model},
+                    result="ok",
+                )
+            else:
+                # Surface the skipped flip so an operator triaging the
+                # admin queue understands why an "approved" verdict
+                # didn't publish the entity.
+                current = (ents_repo.get(entity_id) or {}).get(
+                    "visibility_status",
+                )
+                audit.log(
+                    user_id=submitter_id,
+                    action="store.submission.bg_verdict_skipped",
+                    resource=f"store_submission:{submission_id}",
+                    params={
+                        "attempted_verdict": "approved",
+                        "current_visibility": current,
+                        "reason": "entity left review window before "
+                                  "LLM verdict landed (admin action)",
+                        "model": model,
+                    },
+                    result="skipped",
+                )
         else:
             subs_repo.update_status(
                 submission_id,
