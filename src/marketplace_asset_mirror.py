@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from src.marketplace_assets import (
+from src.marketplace_asset_validation import (
     DOC_EXTENSIONS,
     IMAGE_EXTENSIONS,
     accept_doc_response,

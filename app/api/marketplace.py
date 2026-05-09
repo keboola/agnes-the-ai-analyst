@@ -40,6 +40,7 @@ from src.marketplace_filter import (
     resolve_allowed_plugins,
     resolve_manifest_name,
 )
+from src.marketplace_urls import mirrored_url
 from src.repositories.audit import AuditRepository
 from src.repositories.marketplace_plugins import MarketplacePluginsRepository
 from src.repositories.marketplace_registry import MarketplaceRegistryRepository
@@ -1278,17 +1279,6 @@ def _load_mirror_manifest(marketplace_id: str) -> Dict[str, Any]:
     return _load_manifest(cache_dir)
 
 
-def _mirrored_url(marketplace_id: str, plugin_name: str, key: str) -> str:
-    """Served URL for a mirrored external asset under cache.
-
-    Mirror endpoint route — kept here as a local helper so ``app/api/`` does
-    not need a sync-side import. Same shape as ``src/marketplace.py``'s
-    ``_mirrored_asset_url``; the two must stay aligned with the FastAPI
-    route definition in this module (``/curated/{mp}/{plugin}/mirrored/{key}``).
-    """
-    return f"/api/marketplace/curated/{marketplace_id}/{plugin_name}/mirrored/{key}"
-
-
 def _resolve_external_via_mirror(
     marketplace_id: str,
     plugin_name: str,
@@ -1310,7 +1300,7 @@ def _resolve_external_via_mirror(
     # expects just `<rest>` (the plugin segment is in the URL path). Same
     # transform as src/marketplace.py uses on the plugin-level path.
     rest = entry.local.split("/", 1)[1] if "/" in entry.local else entry.local
-    return _mirrored_url(marketplace_id, plugin_name, rest)
+    return mirrored_url(marketplace_id, plugin_name, rest)
 
 
 def _curated_inner_enrichment(
@@ -1547,25 +1537,6 @@ async def curated_agent_detail(
 #     fallback for anything we don't recognize).
 
 
-def _path_under(root: Path, *parts: str) -> Optional[Path]:
-    """Resolve ``root / *parts`` and confirm the result stays under ``root``.
-
-    Returns ``None`` if the file is missing, can't be resolved, or escapes
-    ``root`` (typical sources of escape: ``..`` segments, Windows backslashes
-    that survived path-param parsing, planted symlinks). Caller maps None to
-    a 404 — distinct from "found but rejected by allowlist" which the doc
-    endpoint surfaces as 415.
-    """
-    candidate = root.joinpath(*parts)
-    try:
-        resolved = candidate.resolve(strict=True)
-        anchor = root.resolve(strict=True)
-        resolved.relative_to(anchor)
-    except (OSError, ValueError):
-        return None
-    return resolved
-
-
 def _doc_disposition(filename: str) -> dict:
     """Force-download headers for the /doc and /mirrored doc paths.
 
@@ -1621,9 +1592,9 @@ async def curated_asset(
     same-origin XSS via this endpoint, since the response shares the
     cookie scope with ``/admin`` and ``/api/me/*``. Three layered checks:
 
-    1. Extension must be in :data:`src.marketplace_assets.IMAGE_EXTENSIONS`
+    1. Extension must be in :data:`src.marketplace_asset_validation.IMAGE_EXTENSIONS`
        (``.png``/``.jpg``/``.jpeg``/``.webp``); anything else → 415.
-    2. Body must pass :func:`src.marketplace_assets.validate_image_file`
+    2. Body must pass :func:`src.marketplace_asset_validation.validate_image_file`
        magic-bytes check; mismatch → 415 (defeats the rename-extension
        attack: ``evil.png`` carrying ``<script>`` bytes).
     3. ``Content-Type`` is pinned from the extension table above (not
@@ -1637,12 +1608,12 @@ async def curated_asset(
     Inline rendering (no ``Content-Disposition``) — covers display in
     ``<img>``, not as a download.
     """
-    from src.marketplace_assets import IMAGE_EXTENSIONS, validate_image_file
+    from src.marketplace_asset_validation import IMAGE_EXTENSIONS, validate_image_file
 
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
     if not repo_root.exists():
         raise HTTPException(status_code=404, detail="marketplace_not_synced")
-    safe = _path_under(repo_root, path)
+    safe = _safe_join(repo_root, path)
     if safe is None or not safe.is_file():
         raise HTTPException(status_code=404, detail="asset_not_found")
 
@@ -1692,12 +1663,12 @@ async def curated_doc(
     Force-download via Content-Disposition: attachment — clicking a doc
     link in the UI saves the file to disk rather than opening it in a tab.
     """
-    from src.marketplace_assets import DOC_EXTENSIONS
+    from src.marketplace_asset_validation import DOC_EXTENSIONS
 
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
     if not repo_root.exists():
         raise HTTPException(status_code=404, detail="marketplace_not_synced")
-    safe = _path_under(repo_root, path)
+    safe = _safe_join(repo_root, path)
     if safe is None or not safe.is_file():
         raise HTTPException(status_code=404, detail="doc_not_found")
     if safe.suffix.lower() not in DOC_EXTENSIONS:
@@ -1733,7 +1704,7 @@ async def curated_mirrored(
     cache_root = get_marketplace_cache_dir() / marketplace_id / plugin_name
     if not cache_root.exists():
         raise HTTPException(status_code=404, detail="mirror_cache_missing")
-    safe = _path_under(cache_root, key)
+    safe = _safe_join(cache_root, key)
     if safe is None or not safe.is_file():
         raise HTTPException(status_code=404, detail="mirrored_asset_not_found")
     if key.startswith("docs/"):
