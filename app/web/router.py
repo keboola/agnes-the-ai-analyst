@@ -400,16 +400,12 @@ def _build_context(
         _wheel = _find_wheel()
         _wheel_filename = _wheel.name if _wheel else "agnes.whl"
 
-        self_signed_tls = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
-            "1", "true", "yes",
-        )
         server_host = request.url.netloc
         ca_pem = _read_agnes_ca_pem()
 
         setup_instructions_lines = resolve_lines(
             _wheel_filename,
             plugin_install_names=[],
-            self_signed_tls=self_signed_tls,
             server_host=server_host,
             ca_pem=ca_pem,
         )

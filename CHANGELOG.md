@@ -10,6 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING: legacy `git config --global http.<host>.sslVerify=false`
+  downgrade in the install setup prompt.** The marketplace step (step 5)
+  used to emit this line on `AGNES_DEBUG_AUTH=1` instances when no
+  `ca_pem` was readable from `AGNES_TLS_FULLCHAIN_PATH` (default
+  `/data/state/certs/fullchain.pem`). It tripped Claude Code auto-mode
+  classifiers ("do not disable TLS verification" rule) and silently
+  masked operator misconfigurations — a debug-auth instance without a
+  fullchain on disk would fall through to a TLS-disabled clone instead
+  of surfacing the missing cert. With this change there is exactly one
+  trust-bootstrap path: the cross-platform step 0 trust block (gated
+  on `_read_agnes_ca_pem` returning a PEM). Operators serving a
+  self-signed or private-CA cert MUST place the fullchain at the
+  configured path so step 0 picks it up; publicly-trusted certs need
+  no trust block at all. The `self_signed_tls` parameter on
+  `app.web.setup_instructions.resolve_lines` and
+  `render_setup_instructions` is also dropped (was only consumed by
+  the deleted block).
+
 ### Fixed
 
 - **`v34→v35` migration is now idempotent under partial-rebuild recovery.** The original list-form `_V34_TO_V35_MIGRATIONS` ran four ALTER statements in sequence: `ADD _vis_v35` → `UPDATE _vis_v35 = visibility_status` → `DROP visibility_status` → `RENAME _vis_v35 TO visibility_status`. If the RENAME failed for any reason after the DROP succeeded (DuckDB lock contention at startup, scheduler-vs-app race opening `system.duckdb`, container kill mid-migration, …), the DB was stranded with `_vis_v35` populated and `visibility_status` missing — and `schema_version` never bumped because the UPDATE at the bottom of the migration ladder only runs when *every* step succeeds. Subsequent restarts then hit `DROP visibility_status` again with no `IF EXISTS` guard and looped on the same error; the only recovery was hand-editing the DB. The migration is rewritten as a Python function `_v34_to_v35_migrate` that inspects the table's columns up front and dispatches into one of three paths: clean v34 (run the full rebuild), partial v35 with `_vis_v35` only (finish the RENAME alone), or both columns present (drop the temp). The audit columns (`archived_at`, `archived_by`) ship first behind `IF NOT EXISTS` so they're safe in all states. Operators stranded by the original bug recover automatically on next startup. Tests cover the three direct paths plus an end-to-end scenario where `_ensure_schema` walks a `schema_version=32` DB with the half-applied state up through to v36.

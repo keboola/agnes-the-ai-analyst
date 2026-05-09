@@ -297,7 +297,7 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     skills_idx = joined.index("7) Skills")
     confirm_idx = joined.index("8) Confirm:")
     assert install_idx < init_idx < catalog_idx < git_idx < market_idx < diag_idx < skills_idx < confirm_idx
-    # No git-config sslVerify=false line unless self_signed_tls is set.
+    # Legacy `git config sslVerify=false` downgrade is gone — see CHANGELOG.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
     assert "{server_host}" not in joined
@@ -341,43 +341,6 @@ def test_preflight_checks_both_git_and_claude():
     assert claude_check_idx < market_idx
 
 
-def test_resolve_lines_self_signed_legacy_path_adds_git_config_line():
-    """Legacy fallback (no ca_pem on disk + self_signed_tls=True): the host-scoped
-    `git config sslVerify=false` downgrade is still emitted so existing
-    AGNES_DEBUG_AUTH instances keep working until they roll a fullchain.pem."""
-    from app.web.setup_instructions import resolve_lines
-
-    joined = "\n".join(
-        resolve_lines(
-            "agnes.whl",
-            plugin_install_names=["foo"],
-            self_signed_tls=True,
-            server_host="agnes.example.com",
-        )
-    )
-    assert 'git config --global http."{server_url}/".sslVerify false' in joined
-    # The git-config line must come BEFORE the marketplace add inside the
-    # marketplace step (regardless of which step number it lands on).
-    git_idx = joined.index('git config --global')
-    add_idx = joined.index('claude plugin marketplace add')
-    assert git_idx < add_idx
-
-
-def test_resolve_lines_self_signed_no_op_without_plugins():
-    """`self_signed_tls=True` is a no-op when there are no plugins (no marketplace step to attach to)."""
-    from app.web.setup_instructions import resolve_lines
-
-    joined = "\n".join(
-        resolve_lines("agnes.whl", plugin_install_names=[], self_signed_tls=True)
-    )
-    # Legacy downgrade line not present.
-    assert "git config --global" not in joined
-    assert "claude plugin" not in joined
-    # No pre-flight either when there's no marketplace step.
-    assert "Make sure git and claude are installed" not in joined
-    assert "6) Confirm:" in joined  # original layout intact
-
-
 def test_render_setup_instructions_with_plugins_substitutes_all_placeholders():
     from app.web.setup_instructions import render_setup_instructions
 
@@ -386,7 +349,6 @@ def test_render_setup_instructions_with_plugins_substitutes_all_placeholders():
         token="T-XYZ",
         wheel_filename="agnes-1.0-py3-none-any.whl",
         plugin_install_names=["foo", "bar"],
-        self_signed_tls=True,
         server_host="agnes.example.com",
     )
     # No raw placeholders remain in the final string.
@@ -399,8 +361,12 @@ def test_render_setup_instructions_with_plugins_substitutes_all_placeholders():
     # token from the agnes config that step 2 just wrote, so no token
     # in any URL inside step 5.
     assert "T-XYZ" in out
-    # Self-signed TLS line is host-scoped to server_url.
-    assert 'git config --global http."https://agnes.example.com/".sslVerify false' in out
+    # The legacy `git config --global ... sslVerify false` downgrade is gone
+    # (see CHANGELOG: it tripped Claude Code auto-mode classifiers and was
+    # only ever a safety net for AGNES_DEBUG_AUTH instances without a
+    # fullchain.pem on disk). Self-signed and private-CA cases are now
+    # exclusively handled by the step 0 trust block (gated on `ca_pem`).
+    assert "git config --global" not in out
     # Marketplace step is the one-liner; no per-plugin install lines.
     assert "agnes refresh-marketplace --bootstrap" in out
     assert "claude plugin install foo@agnes" not in out
@@ -615,46 +581,28 @@ def test_diagnose_step_documents_non_admin_role_state():
     assert "non-admin" in joined.lower() or "analyst" in joined.lower()
 
 
-def test_resolve_lines_with_ca_pem_suppresses_legacy_sslverify_line():
-    """When ca_pem is supplied, the legacy `git config sslVerify=false`
-    downgrade must NOT appear — the trust block subsumes it (full TLS
-    validation re-enabled, just against the inlined cert)."""
+def test_resolve_lines_no_sslverify_downgrade_anywhere():
+    """The legacy `git config sslVerify=false` downgrade is gone in every
+    rendering combination. Self-signed and private-CA servers must place
+    the fullchain at AGNES_TLS_FULLCHAIN_PATH (default
+    /data/state/certs/fullchain.pem) so step 0 picks it up via
+    _read_agnes_ca_pem; publicly-trusted certs need no trust block at
+    all. There is no third path."""
     from app.web.setup_instructions import resolve_lines
 
-    joined = "\n".join(
-        resolve_lines(
-            "agnes.whl",
-            plugin_install_names=["foo"],
-            self_signed_tls=True,  # legacy flag — should be ignored when ca_pem set
-            server_host="agnes.example.com",
-            ca_pem=_FAKE_CA_PEM,
+    for kwargs in (
+        {"plugin_install_names": ["foo"], "server_host": "agnes.example.com"},
+        {"plugin_install_names": ["foo"], "server_host": "agnes.example.com",
+         "ca_pem": _FAKE_CA_PEM},
+        {"plugin_install_names": [], "server_host": "agnes.example.com"},
+    ):
+        joined = "\n".join(resolve_lines("agnes.whl", **kwargs))
+        assert "git config --global" not in joined, (
+            f"sslVerify downgrade leaked through with kwargs={kwargs!r}"
         )
-    )
-    # Legacy git-config sslVerify=false downgrade is suppressed when ca_pem is set.
-    assert "git config --global" not in joined
-    # But the marketplace step itself still renders (as the one-liner).
-    assert "agnes refresh-marketplace --bootstrap" in joined
-    # And the trust block is present.
-    assert "0) Trust the Agnes TLS certificate" in joined
-
-
-def test_resolve_lines_without_ca_pem_keeps_legacy_self_signed_path():
-    """Legacy fallback: no ca_pem + self_signed_tls=True still emits the
-    sslVerify=false line (so existing AGNES_DEBUG_AUTH instances keep
-    working until they roll a fullchain.pem onto disk)."""
-    from app.web.setup_instructions import resolve_lines
-
-    joined = "\n".join(
-        resolve_lines(
-            "agnes.whl",
-            plugin_install_names=["foo"],
-            self_signed_tls=True,
-            server_host="agnes.example.com",
-            # no ca_pem
+        assert "sslVerify false" not in joined, (
+            f"sslVerify downgrade leaked through with kwargs={kwargs!r}"
         )
-    )
-    assert "0) Trust the Agnes TLS certificate" not in joined
-    assert 'sslVerify false' in joined
 
 
 def test_resolve_lines_ca_pem_empty_string_is_treated_as_absent():
@@ -690,13 +638,13 @@ def test_render_setup_instructions_propagates_ca_pem():
         token="T-CA",
         wheel_filename="agnes-1.0-py3-none-any.whl",
         plugin_install_names=["foo"],
-        self_signed_tls=True,
         server_host="agnes.example.com",
         ca_pem=_FAKE_CA_PEM,
     )
     assert "0) Trust the Agnes TLS certificate" in out
     assert "-----BEGIN CERTIFICATE-----" in out
-    # ca_pem masks legacy sslVerify=false.
+    # The legacy `git config sslVerify=false` downgrade was deleted; the
+    # ca_pem trust block is the sole TLS-bootstrap path now.
     assert "git config --global" not in out
     # Other placeholders still substituted.
     assert "{server_url}" not in out
