@@ -145,6 +145,17 @@ def test_flea_photo_upload_rejects_svg(seeded_app, _flea_zip_for_skill):
 # --- /api/marketplace/curated/.../asset path-traversal guard -------------
 
 
+_PNG_1x1 = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+    b"\x1f\x15\xc4\x89"
+    b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
+    b"\r\n-\xb4"
+    b"\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
 def test_curated_asset_endpoint_blocks_path_traversal(seeded_app, monkeypatch, tmp_path):
     """Hitting the asset endpoint with `../` segments must return 404 (not the
     file outside the marketplace dir). The route's ``Path.resolve(strict=True)
@@ -154,10 +165,13 @@ def test_curated_asset_endpoint_blocks_path_traversal(seeded_app, monkeypatch, t
     from src.repositories.resource_grants import ResourceGrantsRepository
 
     # Stand up a tiny on-disk marketplace at the configured marketplaces dir.
+    # The asset endpoint is image-only post-#234-review; the seeded fixture
+    # carries a real PNG (with magic bytes) so the sanity-200 case still
+    # works alongside the path-traversal regression check.
     data_dir = Path(seeded_app["env"]["data_dir"])
     repo_root = data_dir / "marketplaces" / "test-mp"
     repo_root.mkdir(parents=True, exist_ok=True)
-    (repo_root / "ok.txt").write_text("safe", encoding="utf-8")
+    (repo_root / "ok.png").write_bytes(_PNG_1x1)
 
     # Register the marketplace (with curator) + grant Admin access to its
     # synthetic plugin so the resource_grants check passes.
@@ -192,13 +206,13 @@ def test_curated_asset_endpoint_blocks_path_traversal(seeded_app, monkeypatch, t
     client = seeded_app["client"]
     headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
 
-    # Sanity: a normal in-tree fetch returns 200.
+    # Sanity: a normal in-tree image fetch returns 200.
     r = client.get(
-        "/api/marketplace/curated/test-mp/demo/asset/ok.txt",
+        "/api/marketplace/curated/test-mp/demo/asset/ok.png",
         headers=headers,
     )
     assert r.status_code == 200
-    assert r.text == "safe"
+    assert r.content == _PNG_1x1
 
     # Traversal attempt: `..` segments. FastAPI's path param accepts the
     # value; our ``_path_under`` resolves it then checks containment, so the
@@ -208,6 +222,129 @@ def test_curated_asset_endpoint_blocks_path_traversal(seeded_app, monkeypatch, t
         headers=headers,
     )
     assert r.status_code == 404
+
+
+# --- /asset/{path} XSS hardening (#234 review #3) -------------------------
+
+
+def _seed_asset_marketplace(seeded_app, *, slug="xss-mp", plugin="demo"):
+    """Helper: register marketplace + grant Admin RBAC. Returns repo_root."""
+    from src.db import get_system_db
+    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    data_dir = Path(seeded_app["env"]["data_dir"])
+    repo_root = data_dir / "marketplaces" / slug
+    repo_root.mkdir(parents=True, exist_ok=True)
+
+    conn = get_system_db()
+    try:
+        try:
+            MarketplaceRegistryRepository(conn).register(
+                id=slug, name=slug, url=f"https://example.com/{slug}.git",
+                curator_name="C", curator_email="c@example.com",
+            )
+        except Exception:
+            pass  # already registered
+        conn.execute(
+            "INSERT OR REPLACE INTO marketplace_plugins "
+            "(marketplace_id, name) VALUES (?, ?)", [slug, plugin],
+        )
+        admin_group = conn.execute(
+            "SELECT id FROM user_groups WHERE name = 'Admin'"
+        ).fetchone()
+        if admin_group:
+            try:
+                ResourceGrantsRepository(conn).create(
+                    group_id=admin_group[0],
+                    resource_type="marketplace_plugin",
+                    resource_id=f"{slug}/{plugin}",
+                    assigned_by="test",
+                )
+            except Exception:
+                pass
+    finally:
+        conn.close()
+    return repo_root
+
+
+def test_curated_asset_rejects_html_extension(seeded_app):
+    """A curator-planted ``.html`` in the cloned repo MUST NOT be served as
+    ``text/html`` — extension allowlist denies any non-image extension."""
+    repo_root = _seed_asset_marketplace(seeded_app, slug="xss-html")
+    (repo_root / "evil.html").write_text(
+        "<script>alert('xss')</script>", encoding="utf-8",
+    )
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    r = client.get(
+        "/api/marketplace/curated/xss-html/demo/asset/evil.html",
+        headers=headers,
+    )
+    assert r.status_code == 415
+    assert "unsupported_asset_extension" in r.text
+
+
+def test_curated_asset_rejects_renamed_html_as_png(seeded_app):
+    """A curator who renames ``evil.html`` to ``evil.png`` must still be
+    blocked — magic-bytes validation catches the missing PNG signature."""
+    repo_root = _seed_asset_marketplace(seeded_app, slug="xss-rename")
+    (repo_root / "evil.png").write_text(
+        "<script>alert('xss')</script>", encoding="utf-8",
+    )
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    r = client.get(
+        "/api/marketplace/curated/xss-rename/demo/asset/evil.png",
+        headers=headers,
+    )
+    assert r.status_code == 415
+    assert "asset_validation_failed" in r.text
+    assert "png_magic_bytes_mismatch" in r.text
+
+
+def test_curated_asset_rejects_svg_extension(seeded_app):
+    """SVG is intentionally OUT of the allowlist — ``<script>`` inside SVG
+    executes in the browser, so even valid SVG would carry XSS risk."""
+    repo_root = _seed_asset_marketplace(seeded_app, slug="xss-svg")
+    (repo_root / "logo.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<script>alert("xss")</script></svg>',
+        encoding="utf-8",
+    )
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    r = client.get(
+        "/api/marketplace/curated/xss-svg/demo/asset/logo.svg",
+        headers=headers,
+    )
+    assert r.status_code == 415
+
+
+def test_curated_asset_serves_valid_png_with_security_headers(seeded_app):
+    """Happy path: a real PNG returns 200, ``Content-Type: image/png``,
+    plus the defense-in-depth headers ``X-Content-Type-Options: nosniff``
+    and a strict ``Content-Security-Policy`` that blocks script execution
+    even if a future regression let HTML through.
+    """
+    repo_root = _seed_asset_marketplace(seeded_app, slug="xss-ok")
+    (repo_root / "cover.png").write_bytes(_PNG_1x1)
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+    r = client.get(
+        "/api/marketplace/curated/xss-ok/demo/asset/cover.png",
+        headers=headers,
+    )
+    assert r.status_code == 200
+    assert r.headers.get("content-type", "").startswith("image/png")
+    assert r.headers.get("x-content-type-options") == "nosniff"
+    csp = r.headers.get("content-security-policy", "")
+    assert "default-src 'none'" in csp
+    assert "script-src" not in csp or "'none'" in csp  # no script source allowed
 
 
 # --- Content-Disposition force-download on /doc and /mirrored/docs --------
