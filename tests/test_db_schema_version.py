@@ -145,6 +145,205 @@ def test_v19_db_migrates_to_v20(tmp_path):
     conn.close()
 
 
+def _make_v34_store_entities(conn):
+    """Build a minimal v34-shape store_entities table for v34→v35 path tests.
+
+    Only includes the columns the v34→v35 migration touches; the rest of
+    the schema isn't needed because the function operates only on
+    store_entities's column set.
+    """
+    conn.execute("""
+        CREATE TABLE store_entities (
+            id VARCHAR PRIMARY KEY,
+            visibility_status VARCHAR DEFAULT 'pending'
+        )
+    """)
+    conn.execute(
+        "INSERT INTO store_entities (id, visibility_status) VALUES "
+        "('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
+    )
+
+
+def test_v34_to_v35_clean_path_rebuilds_visibility_column(tmp_path):
+    """Standard v34 → v35 path: ``visibility_status`` is present, no temp
+    column. Migration rebuilds the column without the legacy CHECK so
+    'archived' becomes a valid value, preserves all row values, and adds
+    the audit columns.
+    """
+    from src.db import _v34_to_v35_migrate
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _make_v34_store_entities(conn)
+
+    _v34_to_v35_migrate(conn)
+
+    cols = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'store_entities'"
+        ).fetchall()
+    }
+    assert "visibility_status" in cols
+    assert "_vis_v35" not in cols, "temp column must be cleaned up"
+    assert "archived_at" in cols
+    assert "archived_by" in cols
+
+    rows = dict(conn.execute(
+        "SELECT id, visibility_status FROM store_entities ORDER BY id"
+    ).fetchall())
+    assert rows == {"a": "approved", "b": "pending", "c": "hidden"}, (
+        f"row values must survive the rebuild: {rows}"
+    )
+    conn.close()
+
+
+def test_v34_to_v35_recovers_from_partial_rebuild_missing_visibility(tmp_path):
+    """Partial-rebuild recovery: a previous migration attempt completed
+    steps 3-5 (added _vis_v35, copied values, dropped visibility_status)
+    but failed before step 6 (RENAME). Subsequent restarts hit
+    DROP visibility_status (no IF EXISTS guard) and looped on the same
+    error, leaving the DB stranded with schema_version stuck pre-v35.
+
+    The new code detects this state — _vis_v35 present, visibility_status
+    absent — and finishes the rebuild with the RENAME alone instead of
+    re-running the full destructive sequence.
+    """
+    from src.db import _v34_to_v35_migrate
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    # Hand-build the broken state: store_entities with _vis_v35 instead of
+    # visibility_status, populated with the canonical values.
+    conn.execute("""
+        CREATE TABLE store_entities (
+            id VARCHAR PRIMARY KEY,
+            _vis_v35 VARCHAR
+        )
+    """)
+    conn.execute(
+        "INSERT INTO store_entities (id, _vis_v35) VALUES "
+        "('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
+    )
+
+    _v34_to_v35_migrate(conn)
+
+    cols = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'store_entities'"
+        ).fetchall()
+    }
+    assert "visibility_status" in cols
+    assert "_vis_v35" not in cols
+    assert "archived_at" in cols
+    assert "archived_by" in cols
+
+    rows = dict(conn.execute(
+        "SELECT id, visibility_status FROM store_entities ORDER BY id"
+    ).fetchall())
+    assert rows == {"a": "approved", "b": "pending", "c": "hidden"}, (
+        f"row values must come back via RENAME, not be lost: {rows}"
+    )
+    conn.close()
+
+
+def test_v34_to_v35_recovers_from_partial_rebuild_both_columns(tmp_path):
+    """Edge state: a prior attempt aborted before the DROP, leaving both
+    visibility_status (canonical) and _vis_v35 (temp) on the table.
+    The recovery path drops _vis_v35 and keeps visibility_status — the
+    rest of the schema expects that name.
+    """
+    from src.db import _v34_to_v35_migrate
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE store_entities (
+            id VARCHAR PRIMARY KEY,
+            visibility_status VARCHAR,
+            _vis_v35 VARCHAR
+        )
+    """)
+    conn.execute(
+        "INSERT INTO store_entities (id, visibility_status, _vis_v35) VALUES "
+        "('a', 'approved', 'approved')"
+    )
+
+    _v34_to_v35_migrate(conn)
+
+    cols = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'store_entities'"
+        ).fetchall()
+    }
+    assert "visibility_status" in cols
+    assert "_vis_v35" not in cols, "temp column must be dropped"
+
+    row = conn.execute(
+        "SELECT id, visibility_status FROM store_entities WHERE id = 'a'"
+    ).fetchone()
+    assert row == ("a", "approved")
+    conn.close()
+
+
+def test_v32_db_with_partial_v35_recovers_through_full_ladder(tmp_path):
+    """End-to-end: a DB stranded at schema_version=32 with the half-applied
+    v34→v35 state (visibility_status dropped, _vis_v35 left behind) must
+    upgrade cleanly through the full ladder when ``_ensure_schema`` runs.
+
+    This is the production scenario observed in operator instances after
+    the original list-form ``_V34_TO_V35_MIGRATIONS`` failed mid-run on
+    a fresh restart.
+    """
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    # Stand up the broken state. We only need enough of the schema for the
+    # migration ladder to run — ``_ensure_schema`` will create the rest
+    # via ``_SYSTEM_SCHEMA``'s IF NOT EXISTS guards.
+    conn.execute(
+        "CREATE TABLE schema_version (version INTEGER, "
+        "applied_at TIMESTAMP DEFAULT current_timestamp)"
+    )
+    conn.execute("INSERT INTO schema_version (version) VALUES (32)")
+    conn.execute("""
+        CREATE TABLE store_entities (
+            id VARCHAR PRIMARY KEY,
+            owner_user_id VARCHAR,
+            owner_username VARCHAR,
+            type VARCHAR,
+            name VARCHAR,
+            archived_at TIMESTAMP,
+            archived_by VARCHAR,
+            _vis_v35 VARCHAR
+        )
+    """)
+    conn.execute(
+        "INSERT INTO store_entities (id, type, name, _vis_v35) "
+        "VALUES ('a', 'skill', 'alpha', 'approved')"
+    )
+
+    _ensure_schema(conn)
+
+    assert get_schema_version(conn) == SCHEMA_VERSION
+    cols = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'store_entities'"
+        ).fetchall()
+    }
+    assert "visibility_status" in cols
+    assert "_vis_v35" not in cols
+    # Existing row preserved, value carried over from _vis_v35.
+    row = conn.execute(
+        "SELECT id, visibility_status FROM store_entities WHERE id = 'a'"
+    ).fetchone()
+    assert row == ("a", "approved")
+    conn.close()
+
+
 def test_v35_to_v36_reapplies_visibility_constraints(tmp_path):
     """v34→v35 dropped NOT NULL + DEFAULT when rebuilding the column to
     drop the legacy CHECK; v35→v36 re-applies them. Verifies that on a

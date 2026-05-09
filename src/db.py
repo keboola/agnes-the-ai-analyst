@@ -2261,21 +2261,93 @@ _V32_TO_V33_MIGRATIONS = [
 # Two-step: first add the new audit columns (always safe); then
 # rebuild visibility_status without the CHECK so 'archived' becomes a
 # valid value.
-_V34_TO_V35_MIGRATIONS = [
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR",
-    # Rebuild visibility_status to drop the legacy CHECK (which forbade
-    # 'archived'). DuckDB lacks DROP CONSTRAINT for table-level CHECKs,
-    # so we copy → drop → rename. NOT NULL + DEFAULT are re-applied in
-    # v36 (DuckDB ALTER COLUMN supports SET NOT NULL / SET DEFAULT but
-    # not ADD CHECK on existing columns). The repo always writes a
-    # value; value-list enforcement is application-side via the
-    # VALID_VISIBILITY whitelist in StoreEntitiesRepository.
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS _vis_v35 VARCHAR",
-    "UPDATE store_entities SET _vis_v35 = visibility_status WHERE _vis_v35 IS NULL",
-    "ALTER TABLE store_entities DROP COLUMN visibility_status",
-    "ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status",
-]
+def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """Add the ``archived`` visibility state + audit columns to ``store_entities``.
+
+    Replaces the old list-form ``_V34_TO_V35_MIGRATIONS`` so the migration is
+    safe to re-run after a partial failure. The original sequence was
+
+        ADD _vis_v35 → UPDATE _vis_v35 = visibility_status →
+        DROP visibility_status → RENAME _vis_v35 TO visibility_status
+
+    which left a half-rebuilt DB stranded if step 4 (RENAME) failed after
+    step 3 (DROP) succeeded: ``visibility_status`` was gone, ``_vis_v35``
+    held the values, and ``schema_version`` never got bumped because the
+    UPDATE at the bottom of the migration ladder never ran. Restarting
+    the binary then hit step 3 again with no IF EXISTS guard and looped
+    on the same DROP error.
+
+    The new implementation inspects ``store_entities``'s columns up front
+    and picks the right recovery path:
+
+    * **clean v34 shape** (``visibility_status`` present, ``_vis_v35``
+      absent) — full rebuild via copy → drop → rename, as before
+    * **partial v35** (``_vis_v35`` present, ``visibility_status`` absent)
+      — rebuild aborted mid-way; finish the RENAME only
+    * **both columns present** (rare; aborted rebuild that didn't reach
+      the DROP) — drop the temp ``_vis_v35`` and keep ``visibility_status``
+
+    The audit columns (``archived_at``, ``archived_by``) ship first
+    behind ``IF NOT EXISTS`` so they're safe in all three states.
+    """
+    conn.execute(
+        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP"
+    )
+    conn.execute(
+        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR"
+    )
+
+    cols = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'store_entities' "
+            "  AND column_name IN ('visibility_status', '_vis_v35')"
+        ).fetchall()
+    }
+    has_vis = "visibility_status" in cols
+    has_temp = "_vis_v35" in cols
+
+    if has_vis and not has_temp:
+        # Clean v34 shape — full rebuild. NOT NULL + DEFAULT are re-applied
+        # in v36 (DuckDB ALTER COLUMN supports SET NOT NULL / SET DEFAULT
+        # but not ADD CHECK on an existing column). Value-list enforcement
+        # is application-side via VALID_VISIBILITY in StoreEntitiesRepository.
+        conn.execute(
+            "ALTER TABLE store_entities ADD COLUMN _vis_v35 VARCHAR"
+        )
+        conn.execute(
+            "UPDATE store_entities SET _vis_v35 = visibility_status"
+        )
+        conn.execute(
+            "ALTER TABLE store_entities DROP COLUMN visibility_status"
+        )
+        conn.execute(
+            "ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status"
+        )
+    elif has_temp and not has_vis:
+        # Partial-rebuild recovery — prior attempt dropped visibility_status
+        # but the RENAME never landed. Data is already in _vis_v35 from
+        # the prior UPDATE; finish the rename.
+        logger.warning(
+            "v34→v35 detected partial-rebuild state (visibility_status "
+            "missing, _vis_v35 present); recovering via RENAME"
+        )
+        conn.execute(
+            "ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status"
+        )
+    elif has_vis and has_temp:
+        # Both present — earlier rebuild aborted before the DROP.
+        # visibility_status holds the canonical values; drop the temp.
+        logger.warning(
+            "v34→v35 detected partial-rebuild state (both visibility_status "
+            "and _vis_v35 present); dropping the temp"
+        )
+        conn.execute(
+            "ALTER TABLE store_entities DROP COLUMN _vis_v35"
+        )
+    # else: neither column is present, which means store_entities itself
+    # is at a shape ahead of v34. _SYSTEM_SCHEMA above already created
+    # the post-v35 shape; nothing to do here.
 
 
 # v35→v36: re-apply NOT NULL + DEFAULT 'pending' on
@@ -2661,8 +2733,7 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 for sql in _V33_TO_V34_MIGRATIONS:
                     conn.execute(sql)
             if current < 35:
-                for sql in _V34_TO_V35_MIGRATIONS:
-                    conn.execute(sql)
+                _v34_to_v35_migrate(conn)
             if current < 36:
                 for sql in _V35_TO_V36_MIGRATIONS:
                     conn.execute(sql)
