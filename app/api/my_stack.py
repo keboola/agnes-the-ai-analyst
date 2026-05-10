@@ -5,9 +5,12 @@ Provides:
   * ``GET  /api/my-stack``                                 — combined view
   * ``PUT  /api/my-stack/curated/{marketplace_id}/{plugin}`` — toggle opt-out
 
-Backs the ``/my-ai-stack`` web page. Both endpoints touch the same caches as
-the Store endpoints (ETag invalidation) so any change here propagates to
-``/marketplace.zip`` + ``/marketplace.git/`` on the next request.
+Used by the ``agnes my-stack`` CLI subcommand. The web page that historically
+backed these endpoints (``/my-ai-stack``) was removed in favor of
+``/marketplace?tab=my``, but the API stays as the public CLI surface. Both
+endpoints touch the same caches as the Store endpoints (ETag invalidation) so
+any change here propagates to ``/marketplace.zip`` + ``/marketplace.git/`` on
+the next request.
 """
 
 from __future__ import annotations
@@ -116,7 +119,7 @@ async def get_my_stack(
     granted = resolve_allowed_plugins(conn, user)
     # Model B (v28+): explicit subscriptions decide what's enabled.
     # `enabled` mirrors the legacy "not opted_out" UX so the existing toggle
-    # remains semantically intuitive in /my-ai-stack.
+    # remains semantically intuitive in the my-stack view.
     subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
 
     # v39: surface is_system flag so the template can lock the toggle.

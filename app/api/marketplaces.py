@@ -704,7 +704,7 @@ def unmark_plugin_system(
     """Flip ``is_system`` to FALSE. Materialized grants/subscriptions
     survive — admin curates cleanup via the standard /admin/access UI
     (which immediately unlocks the checkboxes for this plugin) and
-    users can unsubscribe normally on /marketplace + /my-ai-stack.
+    users can unsubscribe normally on /marketplace?tab=my.
     """
     plugin_row = conn.execute(
         "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",

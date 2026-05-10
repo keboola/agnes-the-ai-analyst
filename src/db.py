@@ -1966,7 +1966,9 @@ _V22_TO_V23_MIGRATIONS = [
     "INSERT INTO claude_md_template (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING",
 ]
 
-# v25: store + opt-out tables backing the /store and /my-ai-stack pages.
+# v25: store + opt-out tables backing the flea-market and my-stack views
+# (now served at /marketplace?tab=flea + /marketplace?tab=my; the v25-era
+# standalone /store and /my-ai-stack page routes were dropped post-v25).
 _V24_TO_V25_MIGRATIONS = [
     # FK refs deliberately omitted — see the matching note in _SYSTEM_SCHEMA.
     """
@@ -2076,8 +2078,8 @@ _V26_TO_V27_MIGRATIONS = [
 #
 # Pre-v28 the served set was (rbac ∖ user_plugin_optouts) — a curated plugin
 # the admin granted appeared in the user's marketplace until the user opted
-# out via /my-ai-stack. From v28 the served set is (rbac ∩ subscriptions) —
-# users explicitly install each curated plugin from /marketplace.
+# out via the my-stack view. From v28 the served set is (rbac ∩ subscriptions)
+# — users explicitly install each curated plugin from /marketplace.
 #
 # We keep the table+column names (`user_plugin_optouts.opted_out_at`) to
 # avoid DDL churn on running operator instances. Row PRESENCE flips meaning

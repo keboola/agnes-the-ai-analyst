@@ -91,11 +91,16 @@
     /* Absolute, anchored to the hero — matches the skill/agent detail
        page so the install button sits at the same exact offset across
        both pages (top-right corner of the hero, not aligned to the
-       photo's top edge). */
+       photo's top edge). Row layout so the installed-state status
+       label reads inline before the Remove button on a single line. */
     position: absolute; top: 18px; right: 22px;
-    display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+    display: flex; flex-direction: row; align-items: center; gap: 12px;
     z-index: 1;
   }
+  /* Without this rule the [hidden] HTML attribute is overridden by the
+     explicit `display: inline-flex` on .status-pill, leaving the "✓ In
+     your stack" label visible on plugins the user has NOT installed. */
+  .plugin-detail .actions [hidden] { display: none !important; }
   .plugin-detail .btn-install {
     appearance: none; cursor: pointer;
     padding: 11px 22px; border-radius: 9px;
@@ -114,9 +119,45 @@
     border-color: rgba(255, 255, 255, 0.55);
     color: #fff;
   }
-  .plugin-detail .btn-install.installed {
-    background: rgba(16, 183, 127, 0.18); color: #d1fae5;
-    border: 1px solid rgba(16, 183, 127, 0.5);
+  /* Status label — inline text indicator, NOT a button. No border, no
+     fill, no padding-as-chrome: this is a label that says "currently
+     in stack" sitting before the Remove button. The check glyph + light
+     green color carry the meaning; visual weight stays below the
+     adjacent button so the user's eye lands on the action. The system
+     variant uses an amber tone for the same lock semantic the SYSTEM
+     pill uses elsewhere. */
+  .plugin-detail .status-pill {
+    display: inline-flex; align-items: center;
+    font-size: 13px; font-weight: 500;
+    color: #fff;
+    cursor: default; user-select: none;
+  }
+  .plugin-detail .status-pill.is-system {
+    color: #fef3c7;
+    cursor: not-allowed;
+  }
+  /* Remove from stack — outlined red border by default so the
+     destructive intent is announced even before hover; on hover the
+     full red fill commits to the message. The red-on-blue contrast is
+     intentional — same palette logic as the X close button on the
+     hero's quarantine banner. */
+  .plugin-detail .btn-remove {
+    appearance: none; cursor: pointer;
+    /* Padding + font-size mirror .btn-install so the off-state CTA and
+       the on-state Remove button are the same physical height — no
+       layout shift when the user toggles the install state. */
+    padding: 11px 22px; border-radius: 9px;
+    font-size: 13px; font-weight: 600; font-family: inherit;
+    background: transparent; color: #fecaca;
+    border: 1px solid rgba(248, 113, 113, 0.7);
+    transition: all 0.15s ease;
+  }
+  .plugin-detail .btn-remove:hover {
+    background: rgba(220, 38, 38, 0.85); color: #fff;
+    border-color: rgba(220, 38, 38, 0.95);
+  }
+  .plugin-detail .btn-remove:focus-visible {
+    outline: 2px solid rgba(254, 202, 202, 0.85); outline-offset: 2px;
   }
 
   /* ── Post-add hint panel ─────────────────────────────────────────────
@@ -513,7 +554,9 @@
         <div class="pills" id="hero-pills"></div>
       </div>
       <div class="actions">
-        <button class="btn-install" id="install-btn" type="button" data-installed="0" hidden>+ Add to my stack</button>
+        <button class="btn-install" id="install-btn" type="button" hidden>+ Add to my stack</button>
+        <span class="status-pill" id="status-pill" hidden>✓ In your stack</span>
+        <button class="btn-remove" id="remove-btn" type="button" hidden>✕ Remove from stack</button>
       </div>
     </div>
   </div>
@@ -524,7 +567,7 @@
       <div class="lead" id="lead-text">Loading…</div>
       <div class="stack-hint" id="stack-hint" hidden>
         <div class="head">
-          <span class="title">✓ Added to your stack</span>
+          <span class="title" id="stack-hint-title">✓ Added to your stack</span>
           <button class="dismiss" id="stack-hint-dismiss" type="button">Don’t show again</button>
         </div>
         <div>Open a new Claude Code session and run:</div>
@@ -676,15 +719,25 @@
     photoEl.textContent = 'PL';
   }
 
-  // Install button (only render the action when API returned a value)
-  const btn = document.getElementById('install-btn');
-  btn.hidden = false;
-  function renderInstallBtn(installed) {
-    btn.dataset.installed = installed ? '1' : '0';
-    btn.classList.toggle('installed', installed);
-    btn.textContent = installed ? '✓ In your stack' : '+ Add to my stack';
+  // Three-element install state: install button (off-state CTA), status
+  // pill (on-state label), remove button (on-state action). Only one of
+  // {installBtn} vs {statusPill + removeBtn} is visible at a time. The
+  // separation lets the on-state communicate BOTH facts simultaneously
+  // ("currently in stack" + "click here to remove") without the GitHub
+  // hover-morph trick — explicit affordance, desktop-first.
+  const installBtn = document.getElementById('install-btn');
+  const statusPill = document.getElementById('status-pill');
+  const removeBtn = document.getElementById('remove-btn');
+
+  function renderInstallState(installed) {
+    installBtn.hidden = installed;
+    statusPill.hidden = !installed;
+    statusPill.classList.remove('is-system');
+    statusPill.textContent = '✓ In your stack';
+    statusPill.removeAttribute('title');
+    removeBtn.hidden = !installed;
   }
-  renderInstallBtn(!!d.installed);
+  renderInstallState(!!d.installed);
 
   // v32+ quarantine: when the entity is non-approved (only owner +
   // admin land here in that state — gated server-side), disable the
@@ -692,26 +745,28 @@
   // refuses POST /install with `entity_not_approved` so a clever user
   // who toggles the disabled attribute in devtools still hits a 409.
   if (d.visibility_status && d.visibility_status !== 'approved') {
-    btn.disabled = true;
-    btn.title = 'This submission is not approved yet — install is disabled until checks pass.';
-    btn.textContent = '+ Add to my stack (unavailable while under review)';
-    btn.style.background = '#e5e7eb';
-    btn.style.color = '#6b7280';
-    btn.style.cursor = 'not-allowed';
+    installBtn.hidden = false;
+    statusPill.hidden = true;
+    removeBtn.hidden = true;
+    installBtn.disabled = true;
+    installBtn.title = 'This submission is not approved yet — install is disabled until checks pass.';
+    installBtn.textContent = '+ Add to my stack (unavailable while under review)';
+    installBtn.style.background = '#e5e7eb';
+    installBtn.style.color = '#6b7280';
+    installBtn.style.cursor = 'not-allowed';
   }
 
   // v39: system plugins are mandatory — already in the user's stack and
-  // cannot be removed. Lock the button into a "✓ Required" state with
-  // an amber palette so it's visually distinct from the regular
-  // "✓ In your stack" green. API also refuses uninstall with 409.
+  // cannot be removed. Render only the locked amber status pill; the
+  // install + remove controls stay hidden. API also refuses uninstall
+  // with 409 so a devtools-poke can't bypass the visual lock.
   if (d.is_system) {
-    btn.disabled = true;
-    btn.title = 'Required by your organization — managed by admin';
-    btn.textContent = '✓ Required by your org';
-    btn.style.background = '#fef3c7';
-    btn.style.color = '#92400e';
-    btn.style.borderColor = '#fde68a';
-    btn.style.cursor = 'not-allowed';
+    installBtn.hidden = true;
+    removeBtn.hidden = true;
+    statusPill.hidden = false;
+    statusPill.classList.add('is-system');
+    statusPill.textContent = '✓ Required by your org';
+    statusPill.title = 'Required by your organization — managed by admin';
   }
 
   // Post-add hint panel — fires only on the *transition* into 'installed'
@@ -740,14 +795,33 @@
     } catch { /* clipboard blocked — chip text remains selectable */ }
   });
 
-  btn.addEventListener('click', async () => {
-    const installed = btn.dataset.installed === '1';
-    const method = installed ? 'DELETE' : 'POST';
-    const r = await fetch(installURL, { method });
-    if (!r.ok) { alert('Action failed (' + r.status + ')'); return; }
-    renderInstallBtn(!installed);
-    if (!installed) showHint();   // newly added → reveal next-steps
-    else hintEl.hidden = true;    // removed → hide stale hint
+  // Two click handlers — one per element. Both surface the same
+  // /update-agnes-plugins recipe afterwards because the local Claude
+  // Code session needs the same refresh whether the user just added
+  // OR removed the plugin from the served set. Title swaps between
+  // "Added" / "Removed" so the reason for the recipe is unambiguous.
+  const hintTitle = document.getElementById('stack-hint-title');
+  function setHintTitle(kind) {
+    if (!hintTitle) return;
+    hintTitle.textContent = kind === 'removed'
+      ? '✓ Removed from your stack'
+      : '✓ Added to your stack';
+  }
+
+  installBtn.addEventListener('click', async () => {
+    const r = await fetch(installURL, { method: 'POST' });
+    if (!r.ok) { alert('Add failed (' + r.status + ')'); return; }
+    renderInstallState(true);
+    setHintTitle('added');
+    showHint();
+  });
+
+  removeBtn.addEventListener('click', async () => {
+    const r = await fetch(installURL, { method: 'DELETE' });
+    if (!r.ok) { alert('Remove failed (' + r.status + ')'); return; }
+    renderInstallState(false);
+    setHintTitle('removed');
+    showHint();
   });
 
   // v35 owner / admin delete handlers. Two paths:
