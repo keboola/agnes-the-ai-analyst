@@ -33,8 +33,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   real error from `add`, only the downstream "Marketplace not found"
   symptoms.
 
-  Source: 2026-05-10 init report from David's clean-machine bootstrap
-  against `agnes-vrysanek.groupondev.com`.
+  Source: 2026-05-10 init report from a clean-machine bootstrap
+  against a private-CA Agnes deployment.
 
 ### Added
 
@@ -126,12 +126,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   "Agnes Marketplace — plugins available to you"** and clarifies that
   Claude Code addresses every plugin as `<plugin>@agnes` regardless of
   upstream marketplace slug — the per-user aggregated marketplace name
-  is always `agnes`. Resolves the naming-drift confusion David flagged
-  in the 2026-05-10 init report (CLAUDE.md previously rendered upstream
-  marketplace registry names like "Groupon Marketplace" /
-  "groupon-marketplace" without explaining the typed name is `agnes`).
-  Upstream marketplace names still render as nested bullets so admins
-  see what's been folded in.
+  is always `agnes`. Resolves the naming-drift confusion flagged in the
+  2026-05-10 init report (CLAUDE.md previously rendered upstream
+  marketplace registry names like `<Org> Marketplace` / `<org>-marketplace`
+  without explaining the typed name is always `agnes`). Upstream
+  marketplace names still render as nested bullets so admins see
+  what's been folded in.
 
 - **SessionStart marketplace hook is now read-only.** The hook installed
   by `agnes init` was previously `agnes refresh-marketplace --quiet`,
