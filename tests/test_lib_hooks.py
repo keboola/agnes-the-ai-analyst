@@ -27,14 +27,26 @@ def test_install_creates_settings_file(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    # SessionStart has three entries: (1) chained self-upgrade ; pull —
-    # self-upgrade runs first so a wire-protocol bump lands before pull
-    # tries to use the new CLI; (2) refresh-marketplace as a separate
-    # entry so a failure (e.g. fresh workspace with no clone) doesn't
-    # suppress the data pull above; (3) push as a self-heal for orphan
-    # session JSONLs from `claude -p` headless mode (where Claude Code
-    # does NOT fire SessionEnd) or abnormal exits.
+    # SessionStart has three entries: (1) capture-session as the very first
+    # so the hook stdin (transcript_path) is appended to the queue before
+    # any other hook runs; (2) chained self-upgrade ; pull — self-upgrade
+    # runs first so a wire-protocol bump lands before pull tries to use
+    # the new CLI; (3) refresh-marketplace as a separate entry so a
+    # failure (e.g. fresh workspace with no clone) doesn't suppress the
+    # data pull above.
+    #
+    # `agnes push` is NOT in SessionStart — the queue mechanism handles
+    # orphans on the next SessionEnd, so the old self-heal entry was
+    # redundant + would re-upload the just-starting (empty) session.
     assert len(starts) == 3
+    capture = next((c for c in starts if "agnes capture-session" in c), None)
+    assert capture is not None, "Expected SessionStart capture-session entry"
+    assert capture.startswith("bash -c "), (
+        f"capture-session hook must be wrapped in bash -c for Windows; got: {capture!r}"
+    )
+    assert not any("agnes push" in c for c in starts), (
+        f"agnes push must NOT be in SessionStart; got: {starts!r}"
+    )
     chain = next(
         (c for c in starts if "agnes self-upgrade" in c and "agnes pull" in c),
         None,
@@ -62,14 +74,6 @@ def test_install_creates_settings_file(tmp_path):
     assert "--quiet" not in refresh, (
         f"refresh-marketplace hook must NOT use --quiet (removed flag); got: {refresh!r}"
     )
-    # The push self-heal entry is also bash-c-wrapped for Windows parity.
-    push_start = next((c for c in starts if "agnes push" in c), None)
-    assert push_start is not None, (
-        "Expected SessionStart self-heal `agnes push` entry for orphan JSONLs"
-    )
-    assert push_start.startswith("bash -c "), (
-        f"push self-heal hook must be wrapped in bash -c for Windows; got: {push_start!r}"
-    )
     ends = _commands_for(cfg, "SessionEnd")
     assert len(ends) == 1
     assert "agnes push --quiet" in ends[0]
@@ -79,8 +83,9 @@ def test_install_idempotent(tmp_path):
     install_claude_hooks(tmp_path)
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
-    # Three SessionStart entries (pull + refresh-marketplace + push self-heal),
-    # one SessionEnd entry (push). Re-install must NOT duplicate them.
+    # Three SessionStart entries (capture-session + chained self-upgrade/pull
+    # + refresh-marketplace), one SessionEnd entry (push). Re-install must
+    # NOT duplicate them.
     assert len(cfg["hooks"]["SessionStart"]) == 3
     assert len(cfg["hooks"]["SessionEnd"]) == 1
 
@@ -100,9 +105,11 @@ def test_install_replaces_old_da_sync_entries(tmp_path):
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
     assert len(starts) == 3
+    assert any("agnes capture-session" in c for c in starts)
     assert any("agnes pull" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
-    assert any("agnes push" in c for c in starts)
+    # `agnes push` lives only in SessionEnd now.
+    assert not any("agnes push" in c for c in starts)
     # Legacy command must be gone from BOTH starts.
     assert not any("da sync" in c for c in starts)
 
@@ -111,7 +118,7 @@ def test_install_replaces_prior_single_pull_entry(tmp_path):
     """Workspaces bootstrapped by a CLI version that only installed a
     single SessionStart entry (`agnes pull`, no refresh-marketplace) must
     upgrade to the three-entry layout on the next install — not end up
-    with four entries (one old + three new)."""
+    stacking the new entries on top of the old one."""
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(json.dumps({
@@ -125,9 +132,10 @@ def test_install_replaces_prior_single_pull_entry(tmp_path):
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
     assert len(starts) == 3
+    assert any("agnes capture-session" in c for c in starts)
     assert any("agnes pull" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
-    assert any("agnes push" in c for c in starts)
+    assert not any("agnes push" in c for c in starts)
 
 
 def test_install_replaces_v0_43_chained_self_upgrade_pull_entry(tmp_path):
@@ -163,8 +171,9 @@ def test_install_replaces_v0_43_chained_self_upgrade_pull_entry(tmp_path):
         None,
     )
     assert chain is not None
+    assert any("agnes capture-session" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
-    assert any("agnes push" in c for c in starts)
+    assert not any("agnes push" in c for c in starts)
     # SessionEnd untouched (single push entry).
     ends = _commands_for(cfg, "SessionEnd")
     assert len(ends) == 1
@@ -233,9 +242,10 @@ def test_install_preserves_third_party_hooks(tmp_path):
     # Third-party entry stays + all three agnes entries get added.
     assert len(starts) == 4
     assert any("echo hi from another tool" in c for c in starts)
+    assert any("agnes capture-session" in c for c in starts)
     assert any("agnes pull" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
-    assert any("agnes push" in c for c in starts)
+    assert not any("agnes push" in c for c in starts)
     # Other event types untouched.
     assert cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo pre"
 
@@ -279,9 +289,8 @@ def test_install_idempotent_chained_entry(tmp_path):
     install_claude_hooks(tmp_path)
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
-    # Three SessionStart entries (chained self-upgrade+pull, refresh-
-    # marketplace, and the push self-heal) — re-install must not
-    # duplicate any of them.
+    # Three SessionStart entries (capture-session, chained self-upgrade+pull,
+    # refresh-marketplace) — re-install must not duplicate any of them.
     assert len(cfg["hooks"]["SessionStart"]) == 3
     assert len(cfg["hooks"]["SessionEnd"]) == 1
 

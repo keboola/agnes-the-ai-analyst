@@ -25,6 +25,7 @@ if sys.platform == "win32":
         pass
 
 from cli.commands.auth import auth_app
+from cli.commands.capture_session import capture_session_app
 from cli.commands.init import init_app
 from cli.commands.onboarded import onboarded_app
 from cli.commands.pull import pull_app
@@ -114,6 +115,7 @@ app.add_typer(init_app, name="init")
 app.add_typer(onboarded_app, name="onboarded")
 app.add_typer(pull_app, name="pull")
 app.add_typer(push_app, name="push")
+app.add_typer(capture_session_app, name="capture-session")
 app.add_typer(refresh_marketplace_app, name="refresh-marketplace")
 app.command("query")(query_command)
 app.add_typer(status_app, name="status")

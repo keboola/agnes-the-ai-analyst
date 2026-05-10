@@ -14,11 +14,17 @@ Design notes:
 - Uses `|| true` in the hook command so the hook never blocks a session on
   a transient sync error.
 - SessionStart gets three entries:
-    1. Chained `agnes self-upgrade; agnes pull` — self-upgrade runs first
+    1. `agnes capture-session` — reads the SessionStart stdin JSON payload
+       (`transcript_path`) and appends the absolute path to the queue file
+       `<workspace>/.claude/agnes-sessions.txt`. This feeds `agnes push`
+       without reverse-engineering Claude Code's cwd-to-folder encoding.
+       Runs first so the path is captured before any subsequent hook can
+       fail and prevent later hooks from firing.
+    2. Chained `agnes self-upgrade; agnes pull` — self-upgrade runs first
        so any wire-protocol bump lands before pull tries to use the new
        CLI version. Both `|| true`-guarded so an upgrade failure doesn't
        block the pull.
-    2. `agnes refresh-marketplace --check` — independent entry. Detector-
+    3. `agnes refresh-marketplace --check` — independent entry. Detector-
        only (since the slash-command split): runs `git fetch` against the
        marketplace clone and emits a Claude Code hook JSON message
        hinting the user at `/update-agnes-plugins` when remote content
@@ -26,11 +32,13 @@ Design notes:
        command does that interactively, with full output visible in the
        Claude Code transcript and under user control. Failure (no clone,
        no token) silently no-ops via the surrounding `|| true`.
-    3. `agnes push` — uploads any session JSONLs that haven't reached the
-       server yet (orphans from `claude -p` headless mode where Claude Code
-       does NOT fire SessionEnd, or from abnormal session exits). Symmetric
-       with `agnes pull` so the workspace heals on the next interactive
-       session start.
+
+  The previous SessionStart `agnes push` self-heal entry was removed once
+  the capture-queue mechanism made it redundant: orphan session JSONLs from
+  headless / crashed sessions stay in the queue and get uploaded by the
+  next SessionEnd push (queue file persists across runs). Workspaces with
+  the old entry are migrated cleanly — `_replace_or_add` strips any
+  matching `agnes push` from SessionStart on the next `agnes init`.
 
 - SessionEnd gets one entry: `agnes push --quiet`, wrapped to detach into
   the background. Claude Code in `-p` (headless) mode terminates SessionEnd
@@ -61,6 +69,7 @@ _OUR_COMMAND_MARKERS = (
     "agnes pull",
     "agnes push",
     "agnes refresh-marketplace",
+    "agnes capture-session",
     "da sync",
 )
 
@@ -122,11 +131,24 @@ def install_claude_hooks(workspace: Path) -> None:
     # Workspaces still on the older `--quiet` form auto-upgrade here
     # because `_OUR_COMMAND_MARKERS` matches by substring on the
     # `agnes refresh-marketplace` prefix.
+    # `agnes capture-session` reads the SessionStart hook stdin (a JSON
+    # payload with `transcript_path`) and appends the path to
+    # `.claude/agnes-sessions.txt`. That queue file feeds `agnes push`,
+    # avoiding any reverse-engineering of Claude Code's cwd-to-folder
+    # encoding. Wrapped in `bash -c` for Windows compatibility (Claude
+    # Code on Windows runs hook commands directly, no shell).
+    #
+    # The previous SessionStart `agnes push` self-heal entry was dropped
+    # once the queue mechanism made it redundant — orphans from headless
+    # / crashed sessions remain in the queue and ship out with the next
+    # SessionEnd push. The marker substring "agnes push" stays in
+    # _OUR_COMMAND_MARKERS so the old entry is cleanly removed from any
+    # pre-existing settings.json on the next init.
     _replace_or_add("SessionStart", [
+        'bash -c "agnes capture-session 2>/dev/null || true"',
         "agnes self-upgrade --quiet 2>/dev/null || true; "
         "agnes pull --quiet 2>/dev/null || true",
         'bash -c "agnes refresh-marketplace --check 2>/dev/null || true"',
-        'bash -c "agnes push --quiet 2>/dev/null || true"',
     ])
     # SessionEnd push must run detached. Claude Code in `-p` (headless) mode
     # SIGTERMs hook subprocesses after ~1 second regardless of work in
