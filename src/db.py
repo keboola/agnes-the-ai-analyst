@@ -2935,11 +2935,16 @@ def close_system_db() -> None:
     if _system_db_conn:
         try:
             _system_db_conn.execute("CHECKPOINT")
-        except Exception:
-            pass
+            logger.debug("close_system_db: CHECKPOINT ok")
+        except Exception as exc:
+            # Log + proceed — CHECKPOINT failure is not fatal (recovery path
+            # in _try_open_system_db handles a dirty WAL on next open), but
+            # we want operators to see WHY the safety net was needed if a
+            # WAL-replay failure does surface later.
+            logger.warning("close_system_db: CHECKPOINT failed (%s); proceeding to close", exc)
         try:
             _system_db_conn.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("close_system_db: close raised (%s); ignoring", exc)
         _system_db_conn = None
         _system_db_path = None
