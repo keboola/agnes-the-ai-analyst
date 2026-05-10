@@ -542,6 +542,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - Schema bumped v28 → v29 → v30. New tests: news repository (14), sanitizer (20), API (8), web (5), CLI (14) — 61 total — plus updated home/auth/template tests for the shared-shell architecture. CLAUDE.md "Run tests before every push" section codifies `pytest tests/ -n auto -q` as non-negotiable before each push.
 
+### Fixed (system DB shutdown)
+
+- **`close_system_db()` now CHECKPOINTs before closing the system DB connection**, so the WAL flushes into `system.duckdb` and the file is left in a clean state across `docker compose up -d` recreate windows. Previously, a SIGKILL after the default 10s `stop_grace_period` could leave a populated `.wal` that the next process must replay on open; if the next image carried a different DuckDB version, replay could trip an internal assertion (`Failure while replaying WAL ... GetDefaultDatabase with no default database set`) and 500 every authed request until the WAL file was manually removed. CHECKPOINT is best-effort with operator-visible logging — `WARNING` on failure, `DEBUG` on success.
+
+### Changed (compose grace)
+
+- **`docker-compose.yml` `stop_grace_period: 60s`** on the `app` and `scheduler` services (was Docker's 10s default). Gives uvicorn time to drain in-flight requests + run the new shutdown CHECKPOINT before SIGKILL. Healthy `docker compose down` is unaffected (services still stop as soon as their lifespan exits).
+
 ## [0.47.4] — 2026-05-08
 
 ### Fixed

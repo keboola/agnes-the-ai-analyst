@@ -2924,8 +2924,7 @@ def close_system_db() -> None:
     the next process is a different DuckDB version (image upgrade
     window), replay can hit internal assertions like
     ``Failure while replaying WAL ... GetDefaultDatabase with no default
-    database set`` — observed on foundryai-dev-vrysanek 2026-05-05 —
-    and the app 500s on every authed request.
+    database set`` and the app 500s on every authed request.
 
     CHECKPOINT is best-effort: if it raises (locked, disk full, etc.)
     we still proceed to close — the recovery path in ``_try_open_system_db``
