@@ -78,6 +78,20 @@ def test_install_idempotent(tmp_path):
     install_claude_commands(tmp_path)
     second = _read_managed_command(tmp_path)
     assert first == second
-    # And no extra files appeared.
+    # Exactly the managed files, no strays.
     cmd_dir_files = sorted(p.name for p in (tmp_path / ".claude" / "commands").iterdir())
-    assert cmd_dir_files == ["update-agnes-plugins.md"]
+    assert cmd_dir_files == ["agnes-private.md", "update-agnes-plugins.md"]
+
+
+def test_install_writes_agnes_private_slash_command(tmp_path):
+    """The /agnes-private slash command is shipped alongside update-agnes-plugins
+    and triggers `agnes mark-private` deterministically (no AI in the loop).
+    Pin the marker so a template rewrite that drops the `!`-prefix line is caught."""
+    install_claude_commands(tmp_path)
+    body = (tmp_path / ".claude" / "commands" / "agnes-private.md").read_text(
+        encoding="utf-8"
+    )
+    assert body.startswith("---"), body[:120]
+    assert "description:" in body.split("---", 2)[1]
+    # `!`-prefix runs as bash directly — deterministic, no AI tokens.
+    assert "agnes mark-private" in body

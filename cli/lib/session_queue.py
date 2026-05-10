@@ -1,16 +1,24 @@
 """Session queue and uploaded-log management for `agnes push`.
 
-The push command operates on a queue file (`<workspace>/.claude/agnes-sessions.txt`)
-populated by the `agnes capture-session` SessionStart hook. Each line is the
-absolute path to a Claude Code session jsonl.
+The push command operates on a queue file
+(``<workspace>/.claude/agnes-sessions.txt``) populated by the
+``agnes capture-session`` SessionStart hook. Each line is a TSV pair:
+``<session_id>\\t<transcript_path>``. session_id is needed so the
+push and slash-command machinery can filter against the private
+list (``cli/lib/private_list.py``).
 
-Race protection: push atomically renames the queue to a snapshot file before
-processing. New SessionStart hooks write to a freshly-created queue file
-without their entries being clobbered by the eventual rewrite.
+Backward compatibility: legacy lines without a tab (just an absolute
+path) are accepted and treated as having an empty session_id. They
+still upload via push but cannot be marked private retroactively —
+which is fine, since by definition they pre-date the feature.
 
-Recovery: if push crashes mid-snapshot, the snapshot file persists. The next
-push picks it up via :func:`find_recovery_snapshots` and processes it before
-touching the live queue.
+Race protection: push atomically renames the queue to a snapshot file
+before processing. New SessionStart hooks write to a freshly-created
+queue without their entries being clobbered by the eventual rewrite.
+
+Recovery: if push crashes mid-snapshot, the snapshot file persists. The
+next push picks it up via :func:`find_recovery_snapshots` and processes
+it before touching the live queue.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from pathlib import Path
 
 _QUEUE_FILENAME = "agnes-sessions.txt"
 _UPLOADED_FILENAME = "agnes-sessions-uploaded.txt"
+_PRIVATE_SKIPPED_FILENAME = "agnes-sessions-private-skipped.txt"
 _SNAPSHOT_PREFIX = "agnes-sessions.snapshot."
 _SNAPSHOT_SUFFIX = ".txt"
 
@@ -41,15 +50,21 @@ def uploaded_log_path(workspace: Path) -> Path:
     return _claude_dir(workspace) / _UPLOADED_FILENAME
 
 
-def append_to_queue(workspace: Path, transcript_path: str) -> None:
-    """Append a transcript path to the queue.
+def private_skipped_log_path(workspace: Path) -> Path:
+    return _claude_dir(workspace) / _PRIVATE_SKIPPED_FILENAME
 
-    Single-line append in O_APPEND mode — atomic for sub-PIPE_BUF writes on
-    POSIX, atomic for sub-512-byte writes on NTFS. No deduplication here:
-    the queue may legitimately contain duplicates (e.g., resume scenario
-    re-writes the same path). Dedup happens at read time.
+
+def append_to_queue(workspace: Path, session_id: str, transcript_path: str) -> None:
+    """Append a ``<session_id>\\t<transcript_path>`` line to the queue.
+
+    Single-line append in O_APPEND mode — atomic for sub-PIPE_BUF writes
+    on POSIX, atomic for sub-512-byte writes on NTFS. No deduplication
+    here: the queue may legitimately contain duplicates (e.g., resume
+    scenario re-writes the same path). Dedup happens at read time.
     """
-    line = transcript_path.rstrip("\n") + "\n"
+    sid = (session_id or "").rstrip("\n").rstrip("\t")
+    tp = transcript_path.rstrip("\n")
+    line = f"{sid}\t{tp}\n"
     with open(queue_path(workspace), "a", encoding="utf-8") as f:
         f.write(line)
 
@@ -73,24 +88,58 @@ def snapshot_queue(workspace: Path) -> Path | None:
     return snapshot
 
 
-def read_paths_from_snapshot(snapshot: Path) -> list[Path]:
-    """Read paths from a snapshot, deduplicated, preserving first-seen order.
+def _parse_queue_line(raw: str) -> tuple[str, Path] | None:
+    """Parse one queue line into (session_id, path), or None if blank/invalid."""
+    s = raw.strip()
+    if not s:
+        return None
+    if "\t" in s:
+        sid, _, p = s.partition("\t")
+        sid = sid.strip()
+        p = p.strip()
+    else:
+        # Legacy format: bare path, no session_id known.
+        sid = ""
+        p = s
+    if not p:
+        return None
+    return sid, Path(p)
 
-    Empty/whitespace lines are skipped. Repeats from the resume scenario
-    collapse into a single entry — the server-side overwrite makes a
-    second upload of the same path redundant within one push run.
+
+def read_entries_from_snapshot(snapshot: Path) -> list[tuple[str, Path]]:
+    """Read (session_id, path) entries from a snapshot, deduplicated.
+
+    Deduplication is by the (session_id, path) pair — preserves first-seen
+    order. Blank lines and lines without a path are skipped. Mixed legacy
+    (1-column) and new (2-column) lines coexist.
+
+    Repeats from the resume scenario collapse into a single entry: the
+    server-side overwrite makes a second upload of the same path redundant
+    within one push run.
     """
     if not snapshot.exists():
         return []
-    seen: set[str] = set()
-    paths: list[Path] = []
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, Path]] = []
     for raw in snapshot.read_text(encoding="utf-8").splitlines():
-        s = raw.strip()
-        if not s or s in seen:
+        parsed = _parse_queue_line(raw)
+        if parsed is None:
             continue
-        seen.add(s)
-        paths.append(Path(s))
-    return paths
+        sid, path = parsed
+        key = (sid, str(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(parsed)
+    return out
+
+
+# Backward-compatible alias for code that only needs paths. Returns just
+# the paths (preserving the old ``list[Path]`` shape) for callers that
+# don't care about session_id. Internally used by the dry-run preview
+# path which only displays files.
+def read_paths_from_snapshot(snapshot: Path) -> list[Path]:
+    return [path for _sid, path in read_entries_from_snapshot(snapshot)]
 
 
 def find_recovery_snapshots(workspace: Path) -> list[Path]:
@@ -120,15 +169,40 @@ def mark_uploaded(
         f.write(line)
 
 
-def requeue_failed(workspace: Path, paths: list[Path]) -> None:
-    """Append failed paths back to the live queue so the next push retries.
+def mark_private_skipped(
+    workspace: Path,
+    session_id: str,
+    transcript_path: Path,
+    when: datetime | None = None,
+) -> None:
+    """Append `<iso_timestamp>\\t<session_id>\\t<path>` to the private-skipped audit log.
 
-    Failed paths land at the end of the queue alongside any fresh entries
-    that hooks wrote during this push run. Relative ordering vs. those
-    fresh entries is best-effort — order doesn't affect correctness.
+    Called by push when it filters out an entry whose session_id is on
+    the private list. The audit log is append-only — its purpose is to
+    surface (during incident review or user support) which sessions were
+    intentionally NOT uploaded.
     """
-    if not paths:
+    if when is None:
+        when = datetime.now(timezone.utc)
+    ts = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = f"{ts}\t{session_id}\t{transcript_path}\n"
+    with open(private_skipped_log_path(workspace), "a", encoding="utf-8") as f:
+        f.write(line)
+
+
+def requeue_failed(
+    workspace: Path,
+    entries: list[tuple[str, Path]],
+) -> None:
+    """Append failed (session_id, path) entries back to the live queue.
+
+    Failed entries land at the end of the queue alongside any fresh
+    appends that hooks wrote during this push run. Relative ordering
+    vs. those fresh entries is best-effort — order doesn't affect
+    correctness.
+    """
+    if not entries:
         return
     with open(queue_path(workspace), "a", encoding="utf-8") as f:
-        for p in paths:
-            f.write(f"{p}\n")
+        for sid, p in entries:
+            f.write(f"{sid}\t{p}\n")

@@ -70,6 +70,8 @@ _OUR_COMMAND_MARKERS = (
     "agnes push",
     "agnes refresh-marketplace",
     "agnes capture-session",
+    "agnes mark-private",
+    "agnes statusline",
     "da sync",
 )
 
@@ -164,4 +166,35 @@ def install_claude_hooks(workspace: Path) -> None:
         'bash -c "( nohup agnes push --quiet </dev/null >/dev/null 2>&1 & ) ; true"',
     ])
 
+    _install_statusline(cfg)
+
     settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+
+# Claude Code's `statusLine` setting tells the editor to invoke a command
+# on every status-bar refresh and display the first line of stdout. We
+# wire it to `agnes statusline`, which surfaces the `🔒 agnes-private`
+# indicator when the current session is marked private.
+#
+# Politeness: if the user (or another tool) has already set a `statusLine`
+# in the workspace `settings.json`, we leave it untouched and emit a
+# one-line stderr warning. Customizing the status bar is a personal
+# preference and Agnes shouldn't clobber it. Operators who want both
+# their custom output and the private indicator can compose `agnes
+# statusline` into their own status-line command manually.
+_STATUSLINE_MARKER = "agnes statusline"
+
+
+def _install_statusline(cfg: dict) -> None:
+    existing = cfg.get("statusLine")
+    if existing:
+        if isinstance(existing, dict) and _STATUSLINE_MARKER in str(existing.get("command", "")):
+            return  # already ours — idempotent re-init
+        print(
+            "Warning: existing statusLine in .claude/settings.json preserved. "
+            "To show the agnes-private indicator alongside your custom status, "
+            "add `agnes statusline` to your command.",
+            file=sys.stderr,
+        )
+        return
+    cfg["statusLine"] = {"type": "command", "command": "agnes statusline"}
