@@ -12,6 +12,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **System plugin tier (schema v39).** Admins can now mark a curated
+  marketplace plugin as a system plugin via a new toggle in the Details
+  modal on `/admin/marketplaces`. Marking materializes a
+  `resource_grants` row for every existing user_group and a
+  `user_plugin_optouts` (subscription) row for every existing user, so
+  the plugin lands in every user's stack from day one. Hooks on
+  user-create (Google OAuth, email magic-link, admin-create, scheduler
+  token) and group-create (admin POST + Google Workspace sync ensure)
+  fan out the same materialization to new principals. The resolver
+  itself is unchanged — system semantics emerge from the materialized
+  rows. UI locks the corresponding controls: `/admin/access` checkbox
+  is checked + disabled with a SYSTEM pill; `/marketplace` browse cards
+  show a "Required" badge and the detail-page install button reads
+  "✓ Required by your org"; `/my-ai-stack` toggle is disabled with a
+  System pill. Backend guards return 409 on the bypass paths
+  (`DELETE /api/admin/grants` for system grants,
+  `PUT /api/my-stack/curated/.../{enabled:false}`,
+  `DELETE /api/marketplace/curated/.../install`). Unmark flips the
+  flag only — materialized rows persist so admins curate cleanup at
+  their leisure via the now-unlocked `/admin/access` checkboxes.
+  Endpoints: `POST` / `DELETE /api/marketplaces/{id}/plugins/{name}/system`.
+
 - **`/update-agnes-plugins` slash command** — installed automatically by
   `agnes init` into `<workspace>/.claude/commands/`. Runs
   `agnes refresh-marketplace` (the chatty default mode) so the user sees

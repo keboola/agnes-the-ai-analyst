@@ -56,7 +56,7 @@ def test_schema_version_is_37():
     #            curator_email to marketplace_registry, and
     #            cover_photo_url + video_url + doc_links to
     #            marketplace_plugins.
-    # v37 → v38 (this PR): flea-market edit feature with version
+    # v37 → v38: flea-market edit feature with version
     #            history. Adds store_entities.version_no INTEGER and
     #            version_history JSON. Each new bundle upload via
     #            PUT bumps version_no and appends to version_history;
@@ -65,7 +65,16 @@ def test_schema_version_is_37():
     #            from the row's current `version` (hash). Bundle bytes
     #            for each version live on disk under
     #            ${DATA_DIR}/store/<id>/versions/v<N>/plugin/.
-    assert SCHEMA_VERSION == 38
+    # v38 → v39 (this PR): system plugin tier — admin-toggleable
+    #            mandatory plugin set. Adds marketplace_plugins.is_system
+    #            BOOLEAN DEFAULT FALSE. The flag drives a fanout that
+    #            materializes resource_grants + user_plugin_optouts rows
+    #            for every existing user_groups + users row, so the
+    #            resolver's existing (rbac ∩ subscriptions) computation
+    #            naturally pulls system plugins into every user's stack.
+    #            UI then locks the corresponding controls so users can't
+    #            unsubscribe and admins can't revoke per-group grants.
+    assert SCHEMA_VERSION == 39
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
@@ -151,6 +160,102 @@ def test_v36_db_migrates_to_current(tmp_path):
         "WHERE marketplace_id = 'legacy' AND name = 'foo'"
     ).fetchone()
     assert row == (None, None, None)
+    conn.close()
+
+
+def test_v39_adds_marketplace_plugins_is_system(tmp_path):
+    """Fresh install reaches the current schema with the v39 is_system
+    column on marketplace_plugins. Default value is FALSE (not NULL) so
+    the fanout helpers don't need to special-case absent rows."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    cols = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'marketplace_plugins'"
+        ).fetchall()
+    }
+    assert "is_system" in cols, f"is_system missing from {cols}"
+
+    # New rows default to FALSE — required so a freshly-synced plugin
+    # doesn't accidentally land in everyone's stack.
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url) "
+        "VALUES ('m', 'M', 'https://example.com/repo.git')"
+    )
+    conn.execute(
+        "INSERT INTO marketplace_plugins (marketplace_id, name) "
+        "VALUES ('m', 'p')"
+    )
+    row = conn.execute(
+        "SELECT is_system FROM marketplace_plugins "
+        "WHERE marketplace_id = 'm' AND name = 'p'"
+    ).fetchone()
+    assert row[0] is False, f"new plugin defaulted to {row[0]!r}, expected False"
+    conn.close()
+
+
+def test_v38_db_migrates_to_v39(tmp_path):
+    """Pre-existing v38 DB upgrades to v39 cleanly — adds is_system
+    column, existing rows backfill to FALSE, schema_version updates."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    # Stand up the v38 minimal shape: schema_version row + the two
+    # marketplace tables + a pre-existing plugin row that must survive
+    # the migration with is_system = FALSE.
+    conn.execute(
+        "CREATE TABLE schema_version (version INTEGER, "
+        "applied_at TIMESTAMP DEFAULT current_timestamp)"
+    )
+    conn.execute("INSERT INTO schema_version (version) VALUES (38)")
+    conn.execute("""CREATE TABLE marketplace_registry (
+        id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
+        url VARCHAR NOT NULL, branch VARCHAR, token_env VARCHAR,
+        description TEXT, registered_by VARCHAR,
+        registered_at TIMESTAMP DEFAULT current_timestamp,
+        last_synced_at TIMESTAMP, last_commit_sha VARCHAR, last_error TEXT,
+        curator_name VARCHAR, curator_email VARCHAR
+    )""")
+    conn.execute("""CREATE TABLE marketplace_plugins (
+        marketplace_id VARCHAR NOT NULL, name VARCHAR NOT NULL,
+        description TEXT, version VARCHAR, author_name VARCHAR,
+        homepage VARCHAR, category VARCHAR, source_type VARCHAR,
+        source_spec JSON, raw JSON,
+        created_at TIMESTAMP DEFAULT current_timestamp,
+        updated_at TIMESTAMP DEFAULT current_timestamp,
+        cover_photo_url VARCHAR, video_url VARCHAR, doc_links JSON,
+        PRIMARY KEY (marketplace_id, name)
+    )""")
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url) "
+        "VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
+    )
+    conn.execute(
+        "INSERT INTO marketplace_plugins (marketplace_id, name) "
+        "VALUES ('legacy', 'foo')"
+    )
+
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'marketplace_plugins'"
+        ).fetchall()
+    }
+    assert "is_system" in cols
+
+    # Existing pre-v39 row backfilled to FALSE — no plugin lands in
+    # everyone's stack just because we ran the migration.
+    row = conn.execute(
+        "SELECT is_system FROM marketplace_plugins "
+        "WHERE marketplace_id = 'legacy' AND name = 'foo'"
+    ).fetchone()
+    assert row[0] is False, f"pre-existing row backfilled to {row[0]!r}"
     conn.close()
 
 

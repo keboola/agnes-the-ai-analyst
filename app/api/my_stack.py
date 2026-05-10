@@ -43,6 +43,10 @@ class CuratedPlugin(BaseModel):
     description: Optional[str] = None
     version: Optional[str] = None
     enabled: bool
+    # v39: when TRUE, the user cannot unsubscribe (UI disables the
+    # toggle, API guard returns 409). Pre-subscribed by mark_system +
+    # creation hooks so ``enabled`` is always TRUE here.
+    is_system: bool = False
 
 
 class StoreInstallEntry(BaseModel):
@@ -115,9 +119,21 @@ async def get_my_stack(
     # remains semantically intuitive in /my-ai-stack.
     subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
 
+    # v39: surface is_system flag so the template can lock the toggle.
+    # One round trip — set membership intersection in Python is cheaper
+    # than joining marketplace_plugins per-row inside resolve_allowed_plugins
+    # (which is also called from the marketplace_filter / packager hot path).
+    sys_rows = conn.execute(
+        "SELECT marketplace_id, name FROM marketplace_plugins "
+        "WHERE is_system = TRUE",
+    ).fetchall()
+    system_plugins: set[tuple[str, str]] = {(r[0], r[1]) for r in sys_rows}
+
     curated: List[CuratedPlugin] = []
     for p in granted:
-        is_subscribed = (p["marketplace_id"], p["original_name"]) in subs
+        key = (p["marketplace_id"], p["original_name"])
+        is_subscribed = key in subs
+        is_system = key in system_plugins
         curated.append(
             CuratedPlugin(
                 marketplace_id=p["marketplace_id"],
@@ -127,6 +143,7 @@ async def get_my_stack(
                 description=p["raw"].get("description"),
                 version=p.get("version"),
                 enabled=is_subscribed,
+                is_system=is_system,
             )
         )
 
@@ -194,6 +211,21 @@ async def toggle_curated(
     )
     if not has_grant:
         raise HTTPException(status_code=404, detail="grant_not_found")
+
+    # v39: system plugins are pinned in every user's stack — refuse the
+    # unsubscribe path. Subscribe is still allowed (no-op on the
+    # already-materialized row).
+    if not body.enabled:
+        sys_row = conn.execute(
+            "SELECT is_system FROM marketplace_plugins "
+            "WHERE marketplace_id = ? AND name = ?",
+            [marketplace_id, plugin_name],
+        ).fetchone()
+        if sys_row and bool(sys_row[0]):
+            raise HTTPException(
+                status_code=409,
+                detail="cannot_unsubscribe_system_plugin",
+            )
 
     repo = UserCuratedSubscriptionsRepository(conn)
     if body.enabled:

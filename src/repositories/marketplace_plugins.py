@@ -125,7 +125,7 @@ class MarketplacePluginsRepository:
             f"SELECT DISTINCT mp.marketplace_id, mp.name, mp.description, mp.version, "
             f"       mp.author_name, mp.homepage, mp.category, mp.source_type, "
             f"       mp.source_spec, mp.raw, mp.cover_photo_url, mp.video_url, "
-            f"       mp.doc_links, mp.created_at, mp.updated_at "
+            f"       mp.doc_links, mp.created_at, mp.updated_at, mp.is_system "
             f"FROM marketplace_plugins mp "
             f"JOIN resource_grants rg ON 1=1 "
             f"WHERE {where_sql} "
@@ -240,6 +240,12 @@ class MarketplacePluginsRepository:
                 # Upsert: ON CONFLICT keeps the existing created_at and
                 # refreshes only the mutable fields. New rows get
                 # CURRENT_TIMESTAMP via the column's DEFAULT.
+                # ``is_system`` is INTENTIONALLY excluded from both INSERT
+                # and UPDATE SET — its only writer is the admin
+                # mark/unmark_system endpoint. New rows default to FALSE
+                # via the column DEFAULT; existing rows keep whatever the
+                # admin set. Re-syncing the upstream marketplace must
+                # never reset the system flag.
                 self.conn.execute(
                     """INSERT INTO marketplace_plugins
                         (marketplace_id, name, description, version, author_name,

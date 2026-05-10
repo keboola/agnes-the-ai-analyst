@@ -132,3 +132,27 @@ class UserCuratedSubscriptionsRepository:
             [marketplace_id],
         )
         return int(before)
+
+    def fanout_system_for_user(self, user_id: str) -> None:
+        """Subscribe ``user_id`` to every ``is_system=TRUE`` marketplace_plugin.
+
+        Idempotent — the table's PRIMARY KEY ``(user_id, marketplace_id,
+        plugin_name)`` plus ``ON CONFLICT … DO NOTHING`` keeps existing
+        subscriptions untouched.
+
+        Called from two places:
+        * the admin ``mark_system`` endpoint (one plugin × every existing
+          user, with the SELECT-side filter still walking all system
+          plugins — symmetric with ``fanout_system_for_group``)
+        * the user-create hooks (Google OAuth, magic-link, admin-create,
+          scheduler token) so a new user lands in the mandatory tier
+          without an admin reconcile.
+        """
+        self.conn.execute(
+            """INSERT INTO user_plugin_optouts
+               (user_id, marketplace_id, plugin_name)
+               SELECT ?, marketplace_id, name
+               FROM marketplace_plugins WHERE is_system = TRUE
+               ON CONFLICT (user_id, marketplace_id, plugin_name) DO NOTHING""",
+            [user_id],
+        )

@@ -168,3 +168,43 @@ class ResourceGrantsRepository:
             [group_id],
         ).fetchone()
         return int(row[0]) if row else 0
+
+    def fanout_system_for_group(
+        self, group_id: str, assigned_by: Optional[str] = None,
+    ) -> int:
+        """Grant every ``is_system=TRUE`` marketplace_plugin to ``group_id``.
+
+        Idempotent — pre-existing grants for the same plugin survive
+        unchanged (ON CONFLICT against the UNIQUE
+        ``(group_id, resource_type, resource_id)`` index). Returns the
+        number of grant rows newly inserted (diagnostic / audit only).
+
+        Called from two places:
+        * the admin ``mark_system`` endpoint (one plugin × every existing
+          group, but the SELECT-side filter still walks all system
+          plugins — harmless and keeps the helper symmetric)
+        * the group-create hooks (admin POST + Google sync) so a new
+          group inherits the mandatory tier without an admin reconcile.
+        """
+        rows = self.conn.execute(
+            "SELECT marketplace_id, name FROM marketplace_plugins "
+            "WHERE is_system = TRUE",
+        ).fetchall()
+        inserted = 0
+        for marketplace_id, plugin_name in rows:
+            resource_id = f"{marketplace_id}/{plugin_name}"
+            try:
+                self.conn.execute(
+                    """INSERT INTO resource_grants
+                       (id, group_id, resource_type, resource_id, assigned_by)
+                       VALUES (?, ?, 'marketplace_plugin', ?, ?)""",
+                    [str(uuid4()), group_id, resource_id, assigned_by],
+                )
+                inserted += 1
+            except duckdb.ConstraintException:
+                # Pre-existing grant for this (group, plugin) — fine, leave
+                # the original assigned_by/assigned_at in place. Mirrors the
+                # ON CONFLICT DO NOTHING semantic without DuckDB needing
+                # multi-target conflict resolution.
+                continue
+        return inserted

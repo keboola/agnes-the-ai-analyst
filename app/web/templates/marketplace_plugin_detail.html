@@ -700,6 +700,20 @@
     btn.style.cursor = 'not-allowed';
   }
 
+  // v39: system plugins are mandatory — already in the user's stack and
+  // cannot be removed. Lock the button into a "✓ Required" state with
+  // an amber palette so it's visually distinct from the regular
+  // "✓ In your stack" green. API also refuses uninstall with 409.
+  if (d.is_system) {
+    btn.disabled = true;
+    btn.title = 'Required by your organization — managed by admin';
+    btn.textContent = '✓ Required by your org';
+    btn.style.background = '#fef3c7';
+    btn.style.color = '#92400e';
+    btn.style.borderColor = '#fde68a';
+    btn.style.cursor = 'not-allowed';
+  }
+
   // Post-add hint panel — fires only on the *transition* into 'installed'
   // and only when the user hasn't permanently dismissed it. The dismiss
   // flag lives in localStorage so a returning user who already understands
