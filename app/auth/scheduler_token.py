@@ -99,6 +99,21 @@ def ensure_scheduler_user(conn: duckdb.DuckDBPyConnection) -> dict:
             # check ("any user has a password?") accurate.
             password_hash=None,
         )
+        # v39: scheduler service user gets the same mandatory tier as
+        # human users. The scheduler's plugin set is rarely consumed
+        # interactively, but keeping the fanout symmetric prevents
+        # surprising drift when an operator inspects this user's stack.
+        try:
+            from src.repositories.user_curated_subscriptions import (
+                UserCuratedSubscriptionsRepository,
+            )
+            UserCuratedSubscriptionsRepository(
+                conn
+            ).fanout_system_for_user(user_id)
+        except Exception:
+            logger.exception(
+                "system-plugin fanout failed for scheduler user",
+            )
         user = repo.get_by_email(SCHEDULER_USER_EMAIL)
         logger.info("Seeded scheduler service user: %s", SCHEDULER_USER_EMAIL)
 

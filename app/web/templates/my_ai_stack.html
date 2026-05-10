@@ -304,17 +304,28 @@ function renderCurated(items) {
     const row = document.createElement('div');
     row.className = 'stack-row';
     const versionBit = p.version ? `<span class="pill slug">v${escapeHtml(p.version)}</span>` : '';
+    // v39: system plugins are mandatory — render a SYSTEM pill and
+    // disable the toggle. API also refuses unsubscribe with 409, but
+    // disabling the input prevents the round-trip in the first place.
+    const sysPill = p.is_system
+      ? `<span class="pill" style="background:#fef3c7;color:#92400e;text-transform:uppercase;letter-spacing:0.4px;font-size:10px;font-weight:600;">System</span>`
+      : '';
+    const switchTitle = p.is_system
+      ? 'Required by your organization — cannot be removed'
+      : (p.enabled ? 'Enabled' : 'Opted out');
     row.innerHTML = `
       <div class="meta">
         <div class="name">
           <span class="pill slug">${escapeHtml(p.marketplace_slug)}</span>
           ${escapeHtml(p.plugin_name)}
           ${versionBit}
+          ${sysPill}
         </div>
         <div class="desc">${escapeHtml(p.description || '')}</div>
       </div>
-      <label class="switch" title="${p.enabled ? 'Enabled' : 'Opted out'}">
+      <label class="switch" title="${escapeAttr(switchTitle)}">
         <input type="checkbox" ${p.enabled ? 'checked' : ''}
+               ${p.is_system ? 'disabled' : ''}
                data-mp="${escapeAttr(p.marketplace_id)}"
                data-name="${escapeAttr(p.plugin_name)}">
         <span class="slider"></span>

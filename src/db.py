@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -396,6 +396,14 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     cover_photo_url VARCHAR,
     video_url       VARCHAR,
     doc_links       JSON,
+    -- v39: admin-managed mandatory tier. When TRUE, the plugin is
+    -- materialized into resource_grants (for every group) and
+    -- user_plugin_optouts (for every user) by the mark_system endpoint
+    -- + creation hooks; UI then locks the controls so users cannot
+    -- unsubscribe and admins cannot revoke per-group grants for it. The
+    -- resolver itself is unchanged — system semantics are emergent from
+    -- the materialized rows, not a new filter layer.
+    is_system       BOOLEAN DEFAULT FALSE,
     PRIMARY KEY (marketplace_id, name)
 );
 
@@ -2466,6 +2474,19 @@ _V37_TO_V38_MIGRATIONS = [
 ]
 
 
+# v39: marketplace_plugins.is_system flag backing the "system plugin"
+# admin tier. Plugins flipped TRUE are materialized into resource_grants
+# (per group) and user_plugin_optouts (per user) by the mark_system
+# endpoint; UI then locks the corresponding controls. NULL backfill
+# kept defensive — DEFAULT FALSE on the column already covers fresh rows
+# but the explicit UPDATE catches any pre-existing nullable column from
+# partial-state DBs.
+_V38_TO_V39_MIGRATIONS = [
+    "ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE",
+    "UPDATE marketplace_plugins SET is_system = FALSE WHERE is_system IS NULL",
+]
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -2855,6 +2876,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 38:
                 for sql in _V37_TO_V38_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 39:
+                for sql in _V38_TO_V39_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
