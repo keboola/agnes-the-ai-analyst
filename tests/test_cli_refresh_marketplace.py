@@ -917,6 +917,50 @@ def test_bootstrap_skips_register_when_cc_marketplace_already_present(
     )
 
 
+def test_bootstrap_does_not_false_positive_on_source_path_substring(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Regression: registry detector must not match the marketplace name
+    when it appears only inside a `Source: …` line of an UNRELATED
+    marketplace. Real-world trigger: an earlier `claude plugin marketplace
+    add ~/.agnes/some-other-clone` registers a different marketplace whose
+    Source line still mentions `.agnes`, which a naive `\\bagnes\\b` over
+    the full stdout would treat as `agnes` already registered. Recovery
+    path then skips the add and falls through to a guaranteed-broken
+    `marketplace update agnes`."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+
+    # `agnes` (our marketplace name) appears ONLY in the Source path,
+    # never as a registered marketplace header. Recovery must add it.
+    recorder.script(
+        ("claude", "plugin", "marketplace", "list"),
+        stdout=(
+            "Configured marketplaces:\n"
+            "\n"
+            "  ❯ third-party-fork\n"
+            "    Source: Local path (/Users/x/.agnes-related/marketplace)\n"
+            "  ❯ claude-plugins-official\n"
+            "    Source: GitHub (anthropics/claude-plugins-official)\n"
+        ),
+    )
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 0, result.output
+
+    add_calls = [
+        c for c in recorder.calls
+        if c.cmd[:4] == ["claude", "plugin", "marketplace", "add"]
+    ]
+    assert len(add_calls) == 1, (
+        f"--bootstrap must not be fooled by `agnes` substring inside an "
+        f"unrelated `Source:` line; expected one add call, got: "
+        f"{[c.cmd for c in recorder.calls]!r}"
+    )
+    assert add_calls[0].cmd[4] == str(with_clone)
+
+
 def test_bootstrap_marketplace_add_failure_is_fatal_on_fresh_clone(
     tmp_path, monkeypatch, with_token, claude_in_path, recorder,
 ):

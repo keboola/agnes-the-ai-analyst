@@ -295,8 +295,17 @@ def _claude_marketplace_is_registered() -> bool:
         return False
     if result.returncode != 0:
         return False
+    # Filter out `Source: …` lines before matching: the CLI prints the
+    # local clone path there (e.g. `Source: Local path (~/.agnes/marketplace)`),
+    # so a naive `\bagnes\b` over the full stdout false-positives whenever
+    # ANY registered marketplace happens to live under a path containing
+    # the marketplace name. We only care about the registry headers.
+    relevant = "\n".join(
+        line for line in (result.stdout or "").splitlines()
+        if not line.lstrip().startswith("Source:")
+    )
     pattern = re.compile(rf"\b{re.escape(MARKETPLACE_NAME)}\b")
-    return bool(pattern.search(result.stdout or ""))
+    return bool(pattern.search(relevant))
 
 
 def _ensure_marketplace_registered() -> bool:
