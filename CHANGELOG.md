@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-05-10
+
 ### Fixed
 
 - **`agnes refresh-marketplace --bootstrap` now recovers when the local
