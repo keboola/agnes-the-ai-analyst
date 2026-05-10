@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-05-10
+
 ### Fixed
 
 - **`agnes refresh-marketplace --bootstrap` now recovers when the local
@@ -62,6 +64,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   on /home** for Asana / Google Workspace / Atlassian PAT flows that
   the bash script can't automate. Surfaces the cards so analysts don't
   finish bootstrap thinking they're fully wired.
+
+- **System plugin tier (schema v39).** Admins can now mark a curated
+  marketplace plugin as a system plugin via a new toggle in the Details
+  modal on `/admin/marketplaces`. Marking materializes a
+  `resource_grants` row for every existing user_group and a
+  `user_plugin_optouts` (subscription) row for every existing user, so
+  the plugin lands in every user's stack from day one. Hooks on
+  user-create (Google OAuth, email magic-link, admin-create, scheduler
+  token) and group-create (admin POST + Google Workspace sync ensure)
+  fan out the same materialization to new principals. The resolver
+  itself is unchanged — system semantics emerge from the materialized
+  rows. UI locks the corresponding controls: `/admin/access` checkbox
+  is checked + disabled with a SYSTEM pill; `/marketplace` browse cards
+  show a "Required" badge and the detail-page install button reads
+  "✓ Required by your org"; `/my-ai-stack` toggle is disabled with a
+  System pill. Backend guards return 409 on the bypass paths
+  (`DELETE /api/admin/grants` for system grants,
+  `PUT /api/my-stack/curated/.../{enabled:false}`,
+  `DELETE /api/marketplace/curated/.../install`). Unmark flips the
+  flag only — materialized rows persist so admins curate cleanup at
+  their leisure via the now-unlocked `/admin/access` checkboxes.
+  Endpoints: `POST` / `DELETE /api/marketplaces/{id}/plugins/{name}/system`.
 
 - **`/update-agnes-plugins` slash command** — installed automatically by
   `agnes init` into `<workspace>/.claude/commands/`. Runs
@@ -152,7 +176,46 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `/update-agnes-plugins` — with the slash command in a copy chip.
   Affects `marketplace_plugin_detail.html` and `marketplace_item_detail.html`.
 
+- **Plugin / skill / agent detail page install button split into two
+  elements when in stack.** The single button that morphed between
+  `+ Add to my stack` and `✓ In your stack` did not communicate the
+  uninstall affordance — clicking the green "In your stack" button
+  silently removed the plugin with no visible signal that the click
+  meant "remove". The installed state now renders an inline white
+  status label `✓ In your stack` *before* a separate red-bordered
+  `✕ Remove from stack` button on the same row. Both buttons share
+  the install button's exact height to avoid layout shift on toggle.
+  System plugins still render the locked amber pill `✓ Required by
+  your org` with no Remove button (API refuses uninstall with 409).
+  The post-action hint panel now also fires on remove with the title
+  flipped to `✓ Removed from your stack` — Claude Code needs the same
+  `/update-agnes-plugins` refresh either way.
+
+- **`/admin/marketplaces` Details modal "Mark as system" toggle
+  redesigned.** The toggle button was previously near-invisible — same
+  border + neutral-gray text as surrounding row metadata. It now
+  renders as a balanced amber-toned chip with a shield icon: outlined
+  white when the plugin is off-system (calls attention without
+  shouting), tinted amber-50 when on-system (reads as "currently
+  active, click to revert"). The native `confirm()` dialog is replaced
+  with a structured modal that summarizes the fanout consequences
+  (RBAC grants for every group, subscriptions for every user, locked
+  in user-facing UI, new principals inherit it).
+
 ### Removed
+
+- **BREAKING: `/store` and `/my-ai-stack` page routes deleted.** Both
+  surfaces are fully replaced by `/marketplace?tab=flea` and
+  `/marketplace?tab=my` respectively, which already render the same
+  data via the unified marketplace tabs. Hard delete with no redirects
+  — stale bookmarks 404. The upload wizard at `/store/new`, the flea
+  detail/edit at `/marketplace/flea/{id}[/edit]`, the admin queue at
+  `/admin/store/submissions`, and all `/api/store/*` + `/api/my-stack`
+  endpoints stay untouched. The `agnes my-stack` CLI subcommand and
+  `agnes store` are unaffected. Internal hard-coded hrefs (advanced
+  setup page, store upload-wizard Cancel button, admin marketplaces
+  modal copy, navbar active-state guard) repointed to the new tab
+  URLs.
 
 - **BREAKING: `agnes refresh-marketplace --quiet` flag.** Replaced by
   `--check` (detect-only) and the new `/update-agnes-plugins` slash

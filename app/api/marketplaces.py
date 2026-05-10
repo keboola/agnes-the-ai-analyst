@@ -153,6 +153,19 @@ class PluginResponse(BaseModel):
     category: Optional[str] = None
     source_type: Optional[str] = None
     source_spec: Optional[Any] = None
+    # v39: surfaced so the admin Details modal renders the SYSTEM pill
+    # + flips the "Mark as system" / "Unmark system" toggle button.
+    is_system: bool = False
+
+
+class SystemFlagResponse(BaseModel):
+    """Return shape of the mark/unmark_system endpoints."""
+
+    marketplace_id: str
+    plugin_name: str
+    is_system: bool
+    affected_groups: int = 0
+    affected_users: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +261,7 @@ async def list_plugins(
             category=r.get("category"),
             source_type=r.get("source_type"),
             source_spec=r.get("source_spec"),
+            is_system=bool(r.get("is_system")),
         )
         for r in rows
     ]
@@ -545,3 +559,157 @@ def trigger_sync_all(
         },
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# v39: system plugin mark / unmark
+#
+# A plugin marked as "system" is materialized into:
+#   * resource_grants — one row per existing user_groups row
+#   * user_plugin_optouts — one row per existing users row
+# so the resolver's existing (rbac ∩ subscriptions) computation naturally
+# includes it for every user. The UI then locks the corresponding controls
+# (admin can't revoke per-group, user can't unsubscribe). Unmark flips the
+# flag only — materialized rows survive so unmark cannot accidentally rip
+# the plugin out of every user's stack mid-day; admin curates the cleanup
+# afterwards via the standard resource_grants UI.
+# ---------------------------------------------------------------------------
+
+
+def _invalidate_marketplace_etag() -> None:
+    """Drop the served-marketplace ETag cache so the next ZIP / git fetch
+    rehashes against the post-mark/post-unmark RBAC view. Best-effort —
+    the cache layer survives an import error during early startup."""
+    try:
+        from app.marketplace_server import packager
+        packager.invalidate_etag_cache()
+    except Exception:
+        logger.exception("failed to invalidate marketplace etag cache")
+
+
+@router.post(
+    "/{marketplace_id}/plugins/{plugin_name}/system",
+    response_model=SystemFlagResponse,
+)
+def mark_plugin_system(
+    marketplace_id: str,
+    plugin_name: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Mark a plugin as system (mandatory for every user).
+
+    Idempotent — re-running a mark on an already-system plugin still
+    runs the fanout (cheap; ON CONFLICT DO NOTHING) so any user/group
+    that slipped past the creation hooks gets caught up.
+    """
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_curated_subscriptions import (
+        UserCuratedSubscriptionsRepository,
+    )
+
+    plugin_row = conn.execute(
+        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
+        [marketplace_id, plugin_name],
+    ).fetchone()
+    if not plugin_row:
+        raise HTTPException(status_code=404, detail="plugin not found")
+
+    resource_id = f"{marketplace_id}/{plugin_name}"
+    affected_groups = 0
+    affected_users = 0
+
+    conn.execute(
+        "UPDATE marketplace_plugins SET is_system = TRUE "
+        "WHERE marketplace_id = ? AND name = ?",
+        [marketplace_id, plugin_name],
+    )
+
+    # Pivot fanout: this plugin × every group / every user. We
+    # intentionally do NOT wrap the loop in a single BEGIN/COMMIT —
+    # DuckDB aborts the whole transaction on a ConstraintException, so
+    # an idempotent re-run (where most rows are duplicates) would die
+    # on the very first existing grant. Each row stands alone here:
+    # duplicate grants raise ConstraintException which we swallow
+    # (mirrors ``ON CONFLICT DO NOTHING`` semantics without DuckDB
+    # multi-target conflict resolution); duplicate subscriptions go
+    # through DuckDB's ON CONFLICT on the PK, which is well-supported.
+    # Partial-application is safe: a re-run completes the remainder.
+    groups = conn.execute("SELECT id FROM user_groups").fetchall()
+    grants_repo = ResourceGrantsRepository(conn)
+    actor_email = user.get("email") or user.get("id")
+    for (group_id,) in groups:
+        try:
+            grants_repo.create(
+                group_id=group_id,
+                resource_type=ResourceType.MARKETPLACE_PLUGIN.value,
+                resource_id=resource_id,
+                assigned_by=actor_email,
+            )
+            affected_groups += 1
+        except duckdb.ConstraintException:
+            continue
+
+    affected_users = UserCuratedSubscriptionsRepository(
+        conn,
+    ).fanout_system_for_plugin(marketplace_id, plugin_name)
+
+    _audit(
+        conn,
+        user["id"],
+        "marketplace.plugin.mark_system",
+        f"{marketplace_id}/{plugin_name}",
+        {"affected_groups": affected_groups, "affected_users": affected_users},
+    )
+    _invalidate_marketplace_etag()
+
+    return SystemFlagResponse(
+        marketplace_id=marketplace_id,
+        plugin_name=plugin_name,
+        is_system=True,
+        affected_groups=affected_groups,
+        affected_users=affected_users,
+    )
+
+
+@router.delete(
+    "/{marketplace_id}/plugins/{plugin_name}/system",
+    response_model=SystemFlagResponse,
+)
+def unmark_plugin_system(
+    marketplace_id: str,
+    plugin_name: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Flip ``is_system`` to FALSE. Materialized grants/subscriptions
+    survive — admin curates cleanup via the standard /admin/access UI
+    (which immediately unlocks the checkboxes for this plugin) and
+    users can unsubscribe normally on /marketplace?tab=my.
+    """
+    plugin_row = conn.execute(
+        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
+        [marketplace_id, plugin_name],
+    ).fetchone()
+    if not plugin_row:
+        raise HTTPException(status_code=404, detail="plugin not found")
+
+    conn.execute(
+        "UPDATE marketplace_plugins SET is_system = FALSE "
+        "WHERE marketplace_id = ? AND name = ?",
+        [marketplace_id, plugin_name],
+    )
+    _audit(
+        conn,
+        user["id"],
+        "marketplace.plugin.unmark_system",
+        f"{marketplace_id}/{plugin_name}",
+        None,
+    )
+    _invalidate_marketplace_etag()
+
+    return SystemFlagResponse(
+        marketplace_id=marketplace_id,
+        plugin_name=plugin_name,
+        is_system=False,
+    )

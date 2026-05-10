@@ -122,6 +122,24 @@ async def google_callback(request: Request):
             if not user:
                 user_id = str(uuid.uuid4())
                 repo.create(id=user_id, email=email, name=name)
+                # v39: subscribe new user to every system plugin so the
+                # mandatory tier reaches them on their first session
+                # without an admin reconcile. Fail-soft — the import +
+                # fanout sit inside the same conn used for repo.create
+                # above, so a transient marketplace_plugins read failure
+                # doesn't block sign-in.
+                try:
+                    from src.repositories.user_curated_subscriptions import (
+                        UserCuratedSubscriptionsRepository,
+                    )
+                    UserCuratedSubscriptionsRepository(
+                        conn
+                    ).fanout_system_for_user(user_id)
+                except Exception:
+                    logger.exception(
+                        "system-plugin fanout failed for new user %s",
+                        email,
+                    )
                 user = repo.get_by_email(email)
             if not bool(user.get("active", True)):
                 return RedirectResponse(url="/login?error=deactivated")

@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -396,6 +396,14 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     cover_photo_url VARCHAR,
     video_url       VARCHAR,
     doc_links       JSON,
+    -- v39: admin-managed mandatory tier. When TRUE, the plugin is
+    -- materialized into resource_grants (for every group) and
+    -- user_plugin_optouts (for every user) by the mark_system endpoint
+    -- + creation hooks; UI then locks the controls so users cannot
+    -- unsubscribe and admins cannot revoke per-group grants for it. The
+    -- resolver itself is unchanged — system semantics are emergent from
+    -- the materialized rows, not a new filter layer.
+    is_system       BOOLEAN DEFAULT FALSE,
     PRIMARY KEY (marketplace_id, name)
 );
 
@@ -1958,7 +1966,9 @@ _V22_TO_V23_MIGRATIONS = [
     "INSERT INTO claude_md_template (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING",
 ]
 
-# v25: store + opt-out tables backing the /store and /my-ai-stack pages.
+# v25: store + opt-out tables backing the flea-market and my-stack views
+# (now served at /marketplace?tab=flea + /marketplace?tab=my; the v25-era
+# standalone /store and /my-ai-stack page routes were dropped post-v25).
 _V24_TO_V25_MIGRATIONS = [
     # FK refs deliberately omitted — see the matching note in _SYSTEM_SCHEMA.
     """
@@ -2068,8 +2078,8 @@ _V26_TO_V27_MIGRATIONS = [
 #
 # Pre-v28 the served set was (rbac ∖ user_plugin_optouts) — a curated plugin
 # the admin granted appeared in the user's marketplace until the user opted
-# out via /my-ai-stack. From v28 the served set is (rbac ∩ subscriptions) —
-# users explicitly install each curated plugin from /marketplace.
+# out via the my-stack view. From v28 the served set is (rbac ∩ subscriptions)
+# — users explicitly install each curated plugin from /marketplace.
 #
 # We keep the table+column names (`user_plugin_optouts.opted_out_at`) to
 # avoid DDL churn on running operator instances. Row PRESENCE flips meaning
@@ -2466,6 +2476,19 @@ _V37_TO_V38_MIGRATIONS = [
 ]
 
 
+# v39: marketplace_plugins.is_system flag backing the "system plugin"
+# admin tier. Plugins flipped TRUE are materialized into resource_grants
+# (per group) and user_plugin_optouts (per user) by the mark_system
+# endpoint; UI then locks the corresponding controls. NULL backfill
+# kept defensive — DEFAULT FALSE on the column already covers fresh rows
+# but the explicit UPDATE catches any pre-existing nullable column from
+# partial-state DBs.
+_V38_TO_V39_MIGRATIONS = [
+    "ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE",
+    "UPDATE marketplace_plugins SET is_system = FALSE WHERE is_system IS NULL",
+]
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -2855,6 +2878,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 38:
                 for sql in _V37_TO_V38_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 39:
+                for sql in _V38_TO_V39_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

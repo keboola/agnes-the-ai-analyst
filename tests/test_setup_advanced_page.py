@@ -96,7 +96,7 @@ def test_setup_advanced_includes_plugin_table(fresh_db):
     assert "playwright" in body
     assert "atlassian" in body
     # Operator-curated marketplace pointer
-    assert 'href="/store"' in body
+    assert 'href="/marketplace?tab=flea"' in body
 
 
 def test_setup_advanced_includes_multi_model_review(fresh_db):
