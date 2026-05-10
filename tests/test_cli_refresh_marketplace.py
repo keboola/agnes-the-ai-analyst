@@ -835,3 +835,163 @@ def test_check_and_bootstrap_are_mutually_exclusive(
     result = runner.invoke(refresh_marketplace_app, ["--check", "--bootstrap"])
     assert result.exit_code == 2
     assert recorder.calls == []
+
+
+# --- --bootstrap recovery: clone-exists-but-CC-not-registered -------------------
+
+
+def test_bootstrap_recovers_when_clone_exists_but_cc_marketplace_missing(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Clone survived but Claude Code's registry doesn't list `agnes`
+    (fresh Claude Code install on the same box, manual remove, etc.).
+    `--bootstrap` must re-register the clone with `claude plugin
+    marketplace add CLONE_DIR` BEFORE falling through to fetch+reset+
+    `marketplace update agnes` — otherwise the update fails with
+    "Marketplace 'agnes' not found", which is the bug from David's
+    2026-05-10 init report."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+
+    # `claude plugin marketplace list` returns ONLY the upstream Anthropic
+    # marketplace — no `agnes` entry. This is the state on a clean Claude
+    # Code install where the prior `agnes` registration got wiped.
+    recorder.script(
+        ("claude", "plugin", "marketplace", "list"),
+        stdout=(
+            "Configured marketplaces:\n"
+            "\n"
+            "  ❯ claude-plugins-official\n"
+            "    Source: GitHub (anthropics/claude-plugins-official)\n"
+        ),
+    )
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 0, result.output
+
+    add_calls = [
+        c for c in recorder.calls
+        if c.cmd[:4] == ["claude", "plugin", "marketplace", "add"]
+    ]
+    assert len(add_calls) == 1, (
+        f"--bootstrap with existing clone but missing CC registration must "
+        f"call `claude plugin marketplace add`; got: {[c.cmd for c in recorder.calls]!r}"
+    )
+    assert add_calls[0].cmd[4] == str(with_clone)
+
+
+def test_bootstrap_skips_register_when_cc_marketplace_already_present(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Clone exists AND Claude Code already has `agnes` registered →
+    `--bootstrap` must NOT re-add (idempotent). A redundant add would
+    surface the `Marketplace 'agnes' already exists` error and abort
+    the recovery path uselessly."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+
+    recorder.script(
+        ("claude", "plugin", "marketplace", "list"),
+        stdout=(
+            "Configured marketplaces:\n"
+            "\n"
+            "  ❯ agnes\n"
+            "    Source: Local path (/Users/x/.agnes/marketplace)\n"
+            "  ❯ claude-plugins-official\n"
+            "    Source: GitHub (anthropics/claude-plugins-official)\n"
+        ),
+    )
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 0, result.output
+
+    add_calls = [
+        c for c in recorder.calls
+        if c.cmd[:4] == ["claude", "plugin", "marketplace", "add"]
+    ]
+    assert add_calls == [], (
+        f"--bootstrap must not re-add when `agnes` is already registered; "
+        f"got: {[c.cmd for c in add_calls]!r}"
+    )
+
+
+def test_bootstrap_marketplace_add_failure_is_fatal_on_fresh_clone(
+    tmp_path, monkeypatch, with_token, claude_in_path, recorder,
+):
+    """`claude plugin marketplace add` failure during fresh-clone bootstrap
+    must be fatal — silent warn-and-continue is the bug that caused David's
+    init report to cascade into 4× `Marketplace 'agnes' not found` plugin
+    install errors. Returning non-zero with the actual `add` stderr is the
+    signal operators need to fix their machine state."""
+    cfg_dir = tmp_path / "_cfg"
+    (cfg_dir / "config.yaml").write_text(
+        "server: https://agnes.example.com\n", encoding="utf-8",
+    )
+
+    clone_target = tmp_path / "fresh_marketplace"
+    monkeypatch.setattr(rm_module, "CLONE_DIR", clone_target)
+
+    real_run = recorder.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["git", "clone"]:
+            (clone_target / ".git").mkdir(parents=True, exist_ok=True)
+            (clone_target / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+            (clone_target / ".claude-plugin" / "marketplace.json").write_text(
+                json.dumps({"name": "agnes", "plugins": []}),
+                encoding="utf-8",
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(rm_module.subprocess, "run", fake_run)
+
+    recorder.script(
+        ("claude", "plugin", "marketplace", "add"),
+        returncode=1,
+        stderr="error: filesystem path is not readable",
+    )
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 1, result.output
+    # Fetch+reset must NOT have run after the fatal add failure.
+    fetch_calls = [c for c in recorder.calls if "fetch" in c.cmd and "origin" in c.cmd]
+    assert fetch_calls == [], (
+        f"bootstrap must abort on `add` failure; fetch should not run, got: "
+        f"{[c.cmd for c in fetch_calls]!r}"
+    )
+
+
+def test_bootstrap_recovery_add_failure_is_fatal_on_existing_clone(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """When the recovery path (clone exists, CC registry empty) tries to
+    re-add and `claude plugin marketplace add` fails, exit non-zero
+    instead of pressing on to a guaranteed-broken `marketplace update`."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+
+    recorder.script(
+        ("claude", "plugin", "marketplace", "list"),
+        stdout="Configured marketplaces:\n\n  ❯ claude-plugins-official\n",
+    )
+    recorder.script(
+        ("claude", "plugin", "marketplace", "add"),
+        returncode=1,
+        stderr="error: not a directory",
+    )
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 1
+    # `marketplace update agnes` must NOT have run — that's the cascade we're
+    # cutting off.
+    update_calls = [
+        c for c in recorder.calls
+        if c.cmd[:4] == ["claude", "plugin", "marketplace", "update"]
+    ]
+    assert update_calls == [], (
+        f"recovery must abort before `marketplace update` when add fails; got: "
+        f"{[c.cmd for c in update_calls]!r}"
+    )

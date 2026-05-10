@@ -409,15 +409,15 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
     ]
 
 
-def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool) -> list[str]:
+def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
     """Final Confirm step. Bullets it asks the assistant to report on must
     only reference earlier steps that were actually emitted, otherwise the
     assistant either hallucinates an answer or asks the user about a
     non-existent step. The CA-bundle-source bullet only makes sense when
-    the trust block ran (`has_ca`); the marketplace bullet only makes
-    sense when the marketplace block ran (`has_marketplace`). Init +
-    catalog + diagnose + skills + version always render, so their bullets
-    are unconditional."""
+    the trust block ran (`has_ca`). The marketplace clone bullet is
+    unconditional now — preflight + marketplace are always emitted (Fix B
+    in the 2026-05-10 init-report response). Init + catalog + diagnose +
+    skills + version always render, so their bullets are unconditional."""
     bullets = [
         "   - `agnes --version` output",
         "   - First few lines of `agnes catalog` (tables you can see)",
@@ -425,16 +425,15 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool)
         "   - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks",
         "   - The `agnes diagnose` overall status",
         "   - Whether skills were copied or left on-demand",
+        "   - Confirmation that `~/.agnes/marketplace/.git/` exists "
+        "(the marketplace clone) and that any granted plugins installed",
+        "   - Reminder to scroll to the connector cards on /home and connect "
+        "Asana / Google Workspace / Atlassian (those run separately from this script)",
     ]
     if has_ca:
         bullets.append(
             "   - Which CA bundle source got picked in step 0(d) "
             "(system Python certifi / system curl bundle / uv-fetched)"
-        )
-    if has_marketplace:
-        bullets.append(
-            "   - Confirmation that `~/.agnes/marketplace/.git/` exists "
-            "(the marketplace clone) and that all requested plugins installed"
         )
     return [
         f"{confirm_step_num}) Confirm:",
@@ -494,7 +493,13 @@ def _marketplace_block(
 ) -> list[str]:
     """Build the marketplace + plugin-install block.
 
-    Pre-condition: `plugin_install_names` is non-empty (caller checks).
+    `plugin_install_names` may be empty: registering the per-user
+    marketplace clone with Claude Code is useful even when the operator
+    has zero plugin grants, because it pre-wires the SessionStart hook
+    and the grant flow — admin grants land on the next Claude Code
+    session without re-running setup. The block copy adapts for the
+    empty case so the comment-bullet doesn't promise plugin installs
+    that won't happen.
 
     `step_num` is parameterized because step ordering shifted between
     layouts (this block now runs before diagnose/skills, so it's step 5
@@ -548,16 +553,42 @@ def _marketplace_block(
     ``/data/state/certs/fullchain.pem``) so step 0 can read it via
     ``_read_agnes_ca_pem``.
     """
+    has_plugins = bool(plugin_install_names)
+    header = (
+        "Register the Agnes Claude Code marketplace and install plugins:"
+        if has_plugins
+        else "Register the Agnes Claude Code marketplace (no plugins granted yet):"
+    )
+    bullet_5 = (
+        "   #   5. install every plugin listed in the served manifest"
+        if has_plugins
+        else "   #   5. (no plugins to install — your account has zero grants)"
+    )
+    if has_plugins:
+        trailer = [
+            "   These run non-interactively. After they finish, tell the user to /exit",
+            "   and run `claude` again so the new plugins load. From then on, the",
+            "   SessionStart hook keeps the marketplace clone in sync via",
+            "   `agnes refresh-marketplace --quiet` on every Claude Code session.",
+        ]
+    else:
+        trailer = [
+            "   Your account has no plugin grants right now, but registering the",
+            "   marketplace anyway pre-wires the SessionStart hook. When an admin",
+            "   grants you a plugin later, `agnes refresh-marketplace` (run by the",
+            "   hook on every Claude Code session) will install it automatically —",
+            "   no need to re-run this setup script.",
+        ]
     return [
         "",
-        f"{step_num}) Register the Agnes Claude Code marketplace and install plugins:",
+        f"{step_num}) {header}",
         "   # `agnes refresh-marketplace --bootstrap` does:",
         "   #   1. clone the per-user marketplace bare repo to ~/.agnes/marketplace",
         "   #   2. strip the PAT from the cloned origin URL (refreshes use a",
         "   #      per-invocation git credential helper, not the URL)",
         "   #   3. best-effort chmod 700/600 on POSIX (no-op on Windows NTFS)",
         "   #   4. `claude plugin marketplace add ~/.agnes/marketplace`",
-        "   #   5. install every plugin listed in the served manifest",
+        bullet_5,
         "   # Idempotent — re-runs over an existing clone do fetch+reset+reconcile",
         "   # via the same path the SessionStart hook uses.",
         "   agnes refresh-marketplace --bootstrap || {",
@@ -565,10 +596,47 @@ def _marketplace_block(
         "     exit 1",
         "   }",
         "",
-        "   These run non-interactively. After they finish, tell the user to /exit",
-        "   and run `claude` again so the new plugins load. From then on, the",
-        "   SessionStart hook keeps the marketplace clone in sync via",
-        "   `agnes refresh-marketplace --quiet` on every Claude Code session.",
+        *trailer,
+    ]
+
+
+def _mcp_servers_block(step_num: str) -> list[str]:
+    """Register the Atlassian Remote MCP unattended.
+
+    Why only Atlassian here:
+      - Atlassian publishes a hosted SSE MCP at
+        https://mcp.atlassian.com/v1/sse with OAuth handled by Claude Code
+        automatically on first tool call. No PAT/keychain dance, no
+        per-user setup beyond clicking through OAuth once when an
+        operator first asks Claude to read a Jira ticket. Safe to
+        register unattended in the bootstrap script.
+      - Asana and Google Workspace need PAT/keychain flows that don't
+        survive non-interactive bootstrap, so those stay on the /home
+        connector cards (operator-driven).
+
+    Idempotent across re-runs: `claude mcp add` returns non-zero when the
+    server name already exists, so we soft-fail with `|| true` and a
+    one-line note rather than tripping the `set -e` style operators
+    sometimes wrap the prompt in. Subsequent runs of the prompt are
+    no-ops.
+
+    Reference: 2026-05-10 init-report — David's `claude mcp list` showed
+    only the pre-existing claude.ai Drive connector; Atlassian/Asana/GWS
+    weren't registered because the prompt had zero `claude mcp add`
+    lines. Fix C in the response plan.
+    """
+    return [
+        "",
+        f"{step_num}) Register the Atlassian MCP server (Jira + Confluence on demand):",
+        "   # Hosted Remote MCP — Claude Code handles OAuth automatically the",
+        "   # first time you ask it to read a Jira ticket or Confluence page.",
+        "   # Idempotent: re-runs are a no-op (the `|| true` swallows the",
+        "   # \"server already exists\" error from `claude mcp add`).",
+        "   claude mcp add --transport sse atlassian https://mcp.atlassian.com/v1/sse || true",
+        "",
+        "   Asana and Google Workspace use per-user PAT / CLI flows that don't",
+        "   fit an unattended bootstrap — connect those from the /home connector",
+        "   cards after this script finishes.",
     ]
 
 
@@ -602,30 +670,37 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
     return lines
 
 
-def _step_numbers(*, has_marketplace: bool, has_skills: bool = True) -> dict[str, str]:
-    """Compute the step numbers for the unified layout based on which optional
-    blocks are emitted.
+def _step_numbers(*, has_skills: bool = True) -> dict[str, str]:
+    """Compute the step numbers for the unified layout.
 
     Returns a dict keyed by logical step name; values are stringified
     1-based step numbers (preserving the existing string-based helper API
     so call sites stay diff-minimal).
 
     Mandatory steps (always emitted): install (1), init (2), catalog (3),
-    diagnose, confirm. Optional: preflight + marketplace (gated on
-    has_marketplace), skills (gated on has_skills — default True; the
-    Resolved-Question section in the plan settled on always-on, so the
-    parameter is here purely to keep the helper general for future use,
-    not to expose a real toggle).
+    preflight (4), marketplace (5), mcp_servers (6), diagnose (7), skills
+    (8), confirm (9). Preflight + marketplace + mcp_servers are all
+    always-on:
+      - Marketplace registration is useful even when the operator has
+        zero plugin grants (SessionStart hook reconciles future grants
+        automatically).
+      - Atlassian MCP registration is unattended-safe (hosted Remote MCP
+        with Claude Code-managed OAuth) and applies to every analyst
+        whose work touches Jira/Confluence — high enough hit rate to
+        justify default-on.
+
+    `has_skills` is kept as a parameter for future flexibility; default
+    True (the Resolved-Question section in the original plan settled on
+    always-on).
 
     Step-0 (TLS trust block) sits outside this numbering — it is gated by
     has_ca and has its own "0)" header rendered inside the trust block
     helper.
     """
     n = 4
-    preflight = marketplace = ""
-    if has_marketplace:
-        preflight = str(n); n += 1
-        marketplace = str(n); n += 1
+    preflight = str(n); n += 1
+    marketplace = str(n); n += 1
+    mcp_servers = str(n); n += 1
     diagnose = str(n); n += 1
     skills = str(n) if has_skills else ""
     if has_skills:
@@ -634,6 +709,7 @@ def _step_numbers(*, has_marketplace: bool, has_skills: bool = True) -> dict[str
     return {
         "preflight": preflight,
         "marketplace": marketplace,
+        "mcp_servers": mcp_servers,
         "diagnose": diagnose,
         "skills": skills,
         "confirm": confirm,
@@ -671,15 +747,16 @@ def resolve_lines(
     and diagnose the missing wheel on the server.
     """
     names = list(plugin_install_names or [])
-    has_marketplace = bool(names)
     has_ca = bool(ca_pem and ca_pem.strip())
 
-    # Step layout. Marketplace (when emitted) goes BEFORE diagnose/skills,
-    # so the human-loop skills question is the last step before Confirm.
-    # `_step_numbers` returns the renumbered step labels in one place — no
-    # branch on every helper — so the layout is unambiguous and trivially
-    # extendable when a future step is added.
-    steps = _step_numbers(has_marketplace=has_marketplace, has_skills=True)
+    # Step layout. Preflight + marketplace go BEFORE diagnose/skills so the
+    # human-loop skills question is the last step before Confirm. Both are
+    # always emitted: the marketplace registration is useful even with zero
+    # plugin grants (the SessionStart hook reconciles future admin grants
+    # automatically without re-running setup). `_step_numbers` returns the
+    # renumbered step labels in one place — no branch on every helper — so
+    # the layout is unambiguous and trivially extendable.
+    steps = _step_numbers(has_skills=True)
 
     lines: list[str] = []
     if has_ca:
@@ -687,11 +764,10 @@ def resolve_lines(
     lines.extend(_preamble_lines(has_ca=has_ca))
     lines.extend(_install_cli_lines(has_ca=has_ca))   # 1
     lines.extend(_init_lines())                        # 2, 3
-    if has_marketplace:
-        lines.extend(_preflight_block(steps["preflight"]))    # 4
-        lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))  # 5
-    # Diagnose + skills come AFTER the marketplace block (or right after
-    # the catalog smoke verify if there's no marketplace step at all).
+    lines.extend(_preflight_block(steps["preflight"]))                       # 4
+    lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))    # 5
+    lines.extend(_mcp_servers_block(steps["mcp_servers"]))                    # 6
+    # Diagnose + skills come AFTER marketplace + MCP wiring.
     lines.extend(_diagnose_skills_lines(
         diagnose_num=steps["diagnose"], skills_num=steps["skills"],
     ))
@@ -699,7 +775,6 @@ def resolve_lines(
     lines.extend(_finale_lines(
         confirm_step_num=steps["confirm"],
         has_ca=has_ca,
-        has_marketplace=has_marketplace,
     ))
 
     return [

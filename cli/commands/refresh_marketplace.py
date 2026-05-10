@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -112,6 +113,17 @@ def refresh_marketplace(
 
     if not clone_exists:
         if not _bootstrap_clone(token):
+            raise typer.Exit(1)
+    elif bootstrap:
+        # Clone survived but Claude Code's registry may not list `agnes`
+        # — fresh Claude Code install on the same box, manual
+        # `claude plugin marketplace remove`, or an earlier interrupted
+        # bootstrap that warn-and-continued past the add step. The
+        # `--bootstrap` contract is "after this returns, plugins work";
+        # ensure the registration is current before we fall through to
+        # `claude plugin marketplace update agnes`, which would otherwise
+        # fail with "Marketplace 'agnes' not found".
+        if not _ensure_marketplace_registered():
             raise typer.Exit(1)
 
     # --check: lightweight detector. Don't fetch+reset, don't reconcile
@@ -223,23 +235,93 @@ def _bootstrap_clone(token: str) -> bool:
         except OSError:
             pass
 
-    if shutil.which("claude") is not None:
-        add = subprocess.run(
-            ["claude", "plugin", "marketplace", "add", str(CLONE_DIR)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-        )
-        if add.returncode != 0:
-            typer.echo(
-                f"warn: `claude plugin marketplace add {CLONE_DIR}` exited {add.returncode}.",
-                err=True,
-            )
-            if add.stderr:
-                typer.echo(add.stderr.rstrip(), err=True)
-        elif add.stdout:
-            typer.echo(add.stdout.rstrip())
+    if not _register_clone_with_claude(CLONE_DIR):
+        return False
 
     typer.echo(f"Marketplace bootstrapped at {CLONE_DIR}.")
     return True
+
+
+def _register_clone_with_claude(clone_dir: Path) -> bool:
+    """Call `claude plugin marketplace add <clone_dir>` and treat failures as fatal.
+
+    Soft-passes when `claude` is not on PATH so workspaces without Claude
+    Code installed (CI, sandbox) still complete the clone step. When
+    `claude` IS available, a non-zero exit from `add` is fatal: continuing
+    silently is the bug captured in David's 2026-05-10 init report — the
+    subsequent `claude plugin marketplace update agnes` (and every plugin
+    install) blew up with "Marketplace 'agnes' not found" because the add
+    step had silently warned-and-continued. Returning False here lets the
+    caller exit non-zero with the actual `add` stderr, which is the signal
+    the operator needs to fix their machine state.
+    """
+    if shutil.which("claude") is None:
+        return True
+    add = subprocess.run(
+        ["claude", "plugin", "marketplace", "add", str(clone_dir)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    if add.returncode != 0:
+        typer.echo(
+            f"error: `claude plugin marketplace add {clone_dir}` exited {add.returncode}.",
+            err=True,
+        )
+        if add.stderr:
+            typer.echo(add.stderr.rstrip(), err=True)
+        return False
+    if add.stdout:
+        typer.echo(add.stdout.rstrip())
+    return True
+
+
+def _claude_marketplace_is_registered() -> bool:
+    """Return True iff Claude Code already has MARKETPLACE_NAME in its registry.
+
+    Parses `claude plugin marketplace list` text output. The CLI doesn't
+    expose a --json flag for that subcommand at time of writing, so we
+    match the marketplace name as a whole word in stdout. Returns False
+    when `claude` is missing or the command itself fails — callers treat
+    that as "not registered" and run the add path, which is the correct
+    fail-safe (worst case: a redundant add that itself errors out cleanly).
+    """
+    if shutil.which("claude") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["claude", "plugin", "marketplace", "list"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        )
+    except FileNotFoundError:
+        return False
+    if result.returncode != 0:
+        return False
+    pattern = re.compile(rf"\b{re.escape(MARKETPLACE_NAME)}\b")
+    return bool(pattern.search(result.stdout or ""))
+
+
+def _ensure_marketplace_registered() -> bool:
+    """Make sure Claude Code has the cloned marketplace registered.
+
+    Used by the `--bootstrap` recovery path when CLONE_DIR already exists
+    but the Claude Code marketplace registry doesn't list `agnes` (fresh
+    Claude Code install on the same machine, manual `claude plugin
+    marketplace remove agnes`, or any other state where the clone survived
+    but the registration didn't). Idempotent — re-registering an already-
+    registered marketplace short-circuits in `_claude_marketplace_is_registered`.
+
+    Returns False only when registration was needed and failed; True when
+    registration was already in place OR `claude` is not on PATH (the
+    latter matches `_register_clone_with_claude`'s soft-pass behavior).
+    """
+    if shutil.which("claude") is None:
+        return True
+    if _claude_marketplace_is_registered():
+        return True
+    typer.echo(
+        f"Claude Code does not have `{MARKETPLACE_NAME}` registered; "
+        f"running `claude plugin marketplace add {CLONE_DIR}`..."
+    )
+    return _register_clone_with_claude(CLONE_DIR)
 
 
 def _git_fetch_only(token: str) -> bool:

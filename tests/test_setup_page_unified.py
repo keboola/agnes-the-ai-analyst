@@ -37,8 +37,10 @@ def test_setup_page_renders_unified_layout(client):
 
       - `agnes init` is mandatory (subsumes the old admin-only
         `agnes auth import-token` + `agnes auth whoami` pair).
-      - Anonymous visitors with no plugin grants get the no-marketplace
-        layout (Confirm = step 6).
+      - Marketplace block is always emitted (Fix B in 2026-05-10
+        init-report response): anonymous visitors with no plugin grants
+        still get the marketplace registration step so the SessionStart
+        hook is pre-wired. Confirm = step 8.
     """
     resp = client.get("/setup", follow_redirects=True)
     assert resp.status_code == 200
@@ -47,8 +49,9 @@ def test_setup_page_renders_unified_layout(client):
     assert "agnes init" in text
     # Legacy admin-only login verbs are gone from the rendered prompt.
     assert "agnes auth import-token" not in text
-    # No-marketplace layout: Confirm = step 6.
-    assert "6) Confirm:" in text
+    # Always-on layout (preflight + marketplace + MCP block all unconditional):
+    # Confirm = step 9.
+    assert "9) Confirm:" in text
 
 
 def test_setup_page_ignores_role_query_param(client):
@@ -108,10 +111,13 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
     # header + the one-liner instead of `claude plugin install <name>@agnes`.
     assert "Register the Agnes Claude Code marketplace" in text
     assert "agnes refresh-marketplace --bootstrap" in text
-    # Layout shift: Confirm is now step 8 (was 6 without marketplace).
-    assert "8) Confirm:" in text
+    # Layout shift: Confirm is now step 9 (preflight + marketplace + MCP all
+    # always-on per Fix B + Fix C in 2026-05-10 init-report response).
+    assert "9) Confirm:" in text
     # Pre-flight is in the rendered prompt at step 4.
     assert "Make sure git and claude are installed" in text
+    # Atlassian MCP registration is at step 6.
+    assert "claude mcp add --transport sse atlassian" in text
 
 
 def test_install_legacy_path_redirects_to_setup(client):
