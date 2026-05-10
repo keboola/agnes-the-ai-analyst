@@ -163,8 +163,11 @@
 
   .item-detail .hero .actions {
     position: absolute; top: 18px; right: 22px;
-    display: flex; flex-direction: column; gap: 6px; align-items: flex-end;
-    max-width: 280px;
+    /* Row layout so the installed-state status label reads inline
+       BEFORE the Remove button on a single line, matching the
+       plugin-detail page. */
+    display: flex; flex-direction: row; align-items: center; gap: 12px;
+    max-width: 360px;
   }
   .item-detail .hero .actions .btn {
     appearance: none; cursor: pointer;
@@ -195,10 +198,35 @@
     border-color: rgba(255, 255, 255, 0.55);
     color: #fff;
   }
-  .item-detail .hero .actions .btn.installed {
-    background: rgba(16, 183, 127, 0.22);
-    color: #d1fae5;
-    border-color: rgba(16, 183, 127, 0.6);
+  /* Status label — inline text, NOT a button. Communicates "currently
+     in stack" sitting before the Remove button. No border, no fill —
+     visual weight intentionally below the adjacent action so the
+     user's eye lands on the button. */
+  .item-detail .hero .actions .status-pill {
+    display: inline-flex; align-items: center;
+    font-size: 13px; font-weight: 500;
+    color: #fff;
+    cursor: default; user-select: none;
+  }
+  /* Remove from stack — red border by default so the destructive
+     intent is announced before hover; full red fill on hover commits
+     to it. */
+  .item-detail .hero .actions .btn-remove {
+    appearance: none; cursor: pointer;
+    /* Padding + font-size match .btn.primary so the install / remove
+       buttons render at the same height across state transitions. */
+    padding: 9px 16px; border-radius: 8px;
+    font-size: 12px; font-weight: var(--font-semibold); font-family: inherit;
+    background: transparent; color: #fecaca;
+    border: 1px solid rgba(248, 113, 113, 0.7);
+    transition: all 0.15s ease;
+  }
+  .item-detail .hero .actions .btn-remove:hover {
+    background: rgba(220, 38, 38, 0.85); color: #fff;
+    border-color: rgba(220, 38, 38, 0.95);
+  }
+  .item-detail .hero .actions .btn-remove:focus-visible {
+    outline: 2px solid rgba(254, 202, 202, 0.85); outline-offset: 2px;
   }
   .item-detail .hero .actions .helper {
     font-size: 11px; color: rgba(255,255,255,0.78); line-height: 1.45;
@@ -530,7 +558,7 @@
       </div>
       <div class="stack-hint" id="stack-hint" hidden>
         <div class="head">
-          <span class="title">✓ Added to your stack</span>
+          <span class="title" id="stack-hint-title">✓ Added to your stack</span>
           <button class="dismiss" id="stack-hint-dismiss" type="button">Don’t show again</button>
         </div>
         <div>Open a new Claude Code session and run:</div>
@@ -768,6 +796,52 @@
     if (localStorage.getItem(HINT_DISMISS_KEY) === '1') return;
     hintEl.hidden = false;
   }
+  function setHintTitle(kind) {
+    const t = document.getElementById('stack-hint-title');
+    if (!t) return;
+    t.textContent = kind === 'removed'
+      ? '✓ Removed from your stack'
+      : '✓ Added to your stack';
+  }
+  function renderInstallActionsHtml(installed) {
+    if (installed) {
+      return `
+        <span class="status-pill" id="status-pill">✓ In your stack</span>
+        <button class="btn-remove" id="remove-btn" type="button">✕ Remove from stack</button>
+      `;
+    }
+    return `<button class="btn primary" id="install-btn" type="button">+ Add to my stack</button>`;
+  }
+  // Wires whichever of {install-btn, remove-btn} is currently in the
+  // actions area. Both handlers re-render + re-bind so a returning
+  // user can flip back and forth without a page reload. The hint
+  // recipe is identical on add and remove (Claude Code needs the same
+  // /update-agnes-plugins refresh either way) — only the title swaps.
+  function bindInstallActions() {
+    const installURL = `/api/store/entities/${encodeURIComponent(entityId)}/install`;
+    const installBtnEl = document.getElementById('install-btn');
+    if (installBtnEl) {
+      installBtnEl.addEventListener('click', async () => {
+        const r = await fetch(installURL, { method: 'POST' });
+        if (!r.ok) { alert('Add failed (' + r.status + ')'); return; }
+        actions.innerHTML = renderInstallActionsHtml(true);
+        bindInstallActions();
+        setHintTitle('added');
+        showHint();
+      });
+    }
+    const removeBtnEl = document.getElementById('remove-btn');
+    if (removeBtnEl) {
+      removeBtnEl.addEventListener('click', async () => {
+        const r = await fetch(installURL, { method: 'DELETE' });
+        if (!r.ok) { alert('Remove failed (' + r.status + ')'); return; }
+        actions.innerHTML = renderInstallActionsHtml(false);
+        bindInstallActions();
+        setHintTitle('removed');
+        showHint();
+      });
+    }
+  }
 
   if (source === 'curated') {
     actions.innerHTML = `
@@ -792,9 +866,12 @@
           + Add to my stack (unavailable while ${stateLabel})
         </button>`;
     } else {
-      const btnLabel = d.installed ? '✓ In your stack' : '+ Add to my stack';
-      const btnClass = d.installed ? 'btn primary installed' : 'btn primary';
-      actions.innerHTML = `<button class="${btnClass}" id="install-btn" type="button" data-installed="${d.installed ? '1' : '0'}">${btnLabel}</button>`;
+      // Two-element installed state — inline status label BEFORE the
+      // Remove button on the same row. Default state is the primary
+      // install CTA. Re-rendered after every click since the DOM
+      // elements differ between states; bindInstallActions() re-wires
+      // listeners on whichever id is now present.
+      actions.innerHTML = renderInstallActionsHtml(!!d.installed);
     }
     const dismissBtn = document.getElementById('stack-hint-dismiss');
     if (dismissBtn) {
@@ -816,24 +893,11 @@
         } catch { /* clipboard blocked — chip text remains selectable */ }
       });
     }
-    // install-btn id only exists in the non-quarantined branch above.
-    // Skip the click wiring entirely when the button is the inert
-    // disabled variant — addEventListener on null would 500.
-    const installBtnEl = document.getElementById('install-btn');
-    if (installBtnEl) {
-      installBtnEl.addEventListener('click', async (ev) => {
-        const btn = ev.currentTarget;
-        const installed = btn.dataset.installed === '1';
-        const method = installed ? 'DELETE' : 'POST';
-        const r = await fetch(`/api/store/entities/${encodeURIComponent(entityId)}/install`, { method });
-        if (!r.ok) { alert('Action failed (' + r.status + ')'); return; }
-        btn.dataset.installed = installed ? '0' : '1';
-        btn.classList.toggle('installed', !installed);
-        btn.textContent = installed ? '+ Add to my stack' : '✓ In your stack';
-        if (!installed) showHint();   // newly added → reveal next-steps
-        else hintEl.hidden = true;    // removed → hide stale hint
-      });
-    }
+    // install-btn / remove-btn ids only exist in the non-quarantined
+    // branch above. bindInstallActions wires whichever is currently
+    // rendered; the click handlers re-render the actions area + re-bind
+    // so the next click hits the freshly-attached listener.
+    bindInstallActions();
   }
 
   // ── Description (plain text — no markdown rendering, parity with flea) ─

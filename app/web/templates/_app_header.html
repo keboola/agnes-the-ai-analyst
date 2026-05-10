@@ -22,7 +22,7 @@
            Setup is reached from /home's install flow and My Stack
            lives inside /marketplace as a tab. #}
         <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Home</a>
-        <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') or _path.startswith('/my-ai-stack') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
+        <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
         <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog">Data Packages</a>
         <a class="app-nav-link {% if _path.startswith('/corporate-memory') %}is-active{% endif %}" href="/corporate-memory">Memory</a>
         {% if session.user.is_admin %}

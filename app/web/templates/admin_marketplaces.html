@@ -208,18 +208,37 @@
     text-transform: uppercase; letter-spacing: 0.4px;
   }
   .plugin-item-head .spacer { flex: 1; }
+  /* Toggle-style chip: same size/weight in both states, differentiated
+     only by tonal fill (outlined ↔ tinted). Off state reads as "click to
+     enable", on state reads as "currently on, click to revert". The
+     amber palette is shared with the SYSTEM pill + Required badge so
+     the org-policy semantic stays visually consistent across surfaces. */
   .plugin-system-btn {
-    background: transparent; border: 1px solid var(--border, #e5e7eb);
-    border-radius: 6px; padding: 4px 9px; font-size: 11px; cursor: pointer;
-    color: var(--text-secondary, #6b7280); white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 5px;
+    background: #fff; border: 1px solid #fbbf24;
+    border-radius: 6px; padding: 5px 11px; font-size: 11px;
+    font-weight: 600; cursor: pointer;
+    color: #92400e; white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
   }
+  .plugin-system-btn svg { display: block; flex-shrink: 0; }
   .plugin-system-btn:hover {
-    color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb;
+    background: #fffbeb; border-color: #f59e0b; color: #78350f;
   }
   .plugin-system-btn.is-system {
-    color: #92400e; border-color: #fde68a; background: #fffbeb;
+    background: #fef3c7; border-color: #fcd34d; color: #92400e;
+  }
+  .plugin-system-btn.is-system:hover {
+    background: #fde68a; border-color: #f59e0b; color: #78350f;
   }
   .plugin-system-btn[disabled] { opacity: 0.5; cursor: wait; }
+
+  /* Amber primary modal action — pairs with the system-confirm modal so
+     the OK button matches the trigger button's visual weight. */
+  .modal-btn.warning {
+    background: #f59e0b; color: #fff; border-color: #d97706;
+  }
+  .modal-btn.warning:hover { filter: brightness(1.06); }
 
   /* Toast */
   .toast-stack {
@@ -390,6 +409,23 @@
     <div class="modal-actions">
       <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
       <button class="modal-btn danger" id="confirm-ok-btn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- v39: confirm dialog for Mark/Unmark system. Replaces the native
+     confirm() because operators need a clear, scannable summary of
+     what fanout actually does to existing + future principals before
+     they hit OK. Title + body are populated dynamically so the same
+     modal handles both directions. -->
+<div class="modal-backdrop" id="system-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="system-confirm-title">
+  <div class="modal-card" style="max-width: 520px;">
+    <h3 id="system-confirm-title">Mark as system plugin?</h3>
+    <p class="sub" id="system-confirm-plugin" style="margin: 0 0 14px; font-size: 13px; color: var(--text-primary, #111827); font-weight: 500;"></p>
+    <div id="system-confirm-body" style="font-size: 13px; line-height: 1.55; color: var(--text-secondary, #374151);"></div>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="system-confirm-modal">Cancel</button>
+      <button class="modal-btn warning" id="system-confirm-ok-btn">Confirm</button>
     </div>
   </div>
 </div>
@@ -596,6 +632,14 @@ async function openDetails(id, name) {
       const sysBtnTitle = p.is_system
         ? "Remove the system mark. Existing per-group grants and per-user subscriptions remain — admin can clean them up via /admin/access."
         : "Make this plugin mandatory for every user. Adds RBAC grants for every group and subscriptions for every user.";
+      // Shield icon on both states — it's the semantic anchor for
+      // "org policy / system" and dropping it on unmark broke visual
+      // parity between the two toggle states.
+      const sysBtnIcon =
+        `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+           <path d="M12 2 4 6v6c0 5 3.4 9.5 8 10 4.6-.5 8-5 8-10V6l-8-4z"/>
+         </svg>`;
       return `<div class="plugin-item">
         <div class="plugin-item-head">
           <span class="plugin-name">${esc(p.name)}</span>${ver}${src}${sysPill}
@@ -605,7 +649,7 @@ async function openDetails(id, name) {
                   data-marketplace="${esc(id)}"
                   data-plugin="${esc(p.name)}"
                   data-is-system="${p.is_system ? "1" : "0"}"
-                  title="${esc(sysBtnTitle)}">${esc(sysBtnLabel)}</button>
+                  title="${esc(sysBtnTitle)}">${sysBtnIcon}${esc(sysBtnLabel)}</button>
         </div>${desc}${metaHtml}
       </div>`;
     }).join("");
@@ -616,20 +660,76 @@ async function openDetails(id, name) {
   }
 }
 
-async function toggleSystem(btn, marketplaceId, marketplaceName) {
+function toggleSystem(btn, marketplaceId, marketplaceName) {
+  // Two-step: render a populated confirm modal, then on OK perform the
+  // PUT/DELETE. The native confirm() lost the operator's eye in a tiny
+  // OS popup that didn't make the fanout consequences obvious.
   const pluginName = btn.dataset.plugin;
   const isSystem = btn.dataset.isSystem === "1";
-  const verb = isSystem ? "Unmark" : "Mark as";
-  if (!confirm(
-    `${verb} system plugin "${pluginName}"?\n\n` +
-    (isSystem
-      ? "This flips the flag off. Per-group grants and per-user subscriptions stay until you clean them up manually."
-      : "This grants the plugin to every existing group and subscribes every existing user. New users and groups inherit it automatically."))) {
-    return;
+  const titleEl = document.getElementById("system-confirm-title");
+  const pluginEl = document.getElementById("system-confirm-plugin");
+  const bodyEl = document.getElementById("system-confirm-body");
+  const okBtn = document.getElementById("system-confirm-ok-btn");
+
+  if (isSystem) {
+    titleEl.textContent = "Unmark system plugin?";
+    pluginEl.textContent = pluginName;
+    bodyEl.innerHTML = `
+      <p style="margin: 0 0 10px;">This removes the <strong>system</strong> flag.
+        The plugin is no longer required.</p>
+      <ul style="margin: 0; padding-left: 20px;">
+        <li>Existing per-group RBAC grants <strong>stay</strong>.</li>
+        <li>Existing per-user subscriptions <strong>stay</strong>.</li>
+        <li>Operators can revoke either via <a href="/admin/access" style="color: var(--primary, #6366f1);">/admin/access</a> or by uninstalling on each user's stack.</li>
+      </ul>`;
+    okBtn.textContent = "Unmark system";
+    okBtn.classList.remove("warning");
+    okBtn.classList.add("primary");
+  } else {
+    titleEl.textContent = "Mark as system plugin?";
+    pluginEl.textContent = pluginName;
+    bodyEl.innerHTML = `
+      <p style="margin: 0 0 10px;">After confirming, <strong>every Agnes user</strong> will
+        receive this plugin as <strong>required</strong>:</p>
+      <ul style="margin: 0 0 10px; padding-left: 20px;">
+        <li>RBAC grants are added for <strong>every existing group</strong>.</li>
+        <li>Subscriptions are created for <strong>every existing user</strong>.</li>
+        <li>Every <strong>new user</strong> and <strong>new group</strong> inherits it automatically.</li>
+        <li>Users see it as <strong>Required</strong> on /marketplace and cannot uninstall it from /marketplace?tab=my.</li>
+        <li>Admins cannot revoke it from /admin/access while the system flag is on.</li>
+      </ul>
+      <p style="margin: 0; font-size: 12px; color: var(--text-secondary, #6b7280);">
+        Unmarking later does not auto-clean the materialized grants — they stay until manually removed.
+      </p>`;
+    okBtn.textContent = "Mark as system";
+    okBtn.classList.remove("primary");
+    okBtn.classList.add("warning");
   }
+
+  // Single-shot handler — re-bind on every open so we don't leak across
+  // toggles and so the closure captures the current btn / ids.
+  const onConfirm = async () => {
+    okBtn.removeEventListener("click", onConfirm);
+    closeModal("system-confirm-modal");
+    await performToggleSystem(btn, marketplaceId, marketplaceName, isSystem);
+  };
+  okBtn.addEventListener("click", onConfirm);
+  // Cancel cleanup — strip the listener so the next open starts fresh.
+  const onCancel = (e) => {
+    if (e && e.target === okBtn) return;
+    okBtn.removeEventListener("click", onConfirm);
+  };
+  document.querySelectorAll('[data-close-modal="system-confirm-modal"]').forEach(el =>
+    el.addEventListener("click", onCancel, { once: true }));
+
+  openModal("system-confirm-modal");
+}
+
+async function performToggleSystem(btn, marketplaceId, marketplaceName, isSystem) {
+  const pluginName = btn.dataset.plugin;
   const method = isSystem ? "DELETE" : "POST";
   btn.disabled = true;
-  const prevLabel = btn.textContent;
+  const prevHtml = btn.innerHTML;
   btn.textContent = "Working…";
   try {
     const url = `${API}/${encodeURIComponent(marketplaceId)}/plugins/${encodeURIComponent(pluginName)}/system`;
@@ -638,7 +738,7 @@ async function toggleSystem(btn, marketplaceId, marketplaceName) {
       const err = await r.json().catch(() => ({}));
       toast(`Toggle failed: ${err.detail || r.status}`, "error");
       btn.disabled = false;
-      btn.textContent = prevLabel;
+      btn.innerHTML = prevHtml;
       return;
     }
     const result = await r.json();
@@ -652,7 +752,7 @@ async function toggleSystem(btn, marketplaceId, marketplaceName) {
   } catch (e) {
     toast(`Network error: ${e.message}`, "error");
     btn.disabled = false;
-    btn.textContent = prevLabel;
+    btn.innerHTML = prevHtml;
   }
 }
 
