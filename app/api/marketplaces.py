@@ -650,24 +650,9 @@ def mark_plugin_system(
         except duckdb.ConstraintException:
             continue
 
-    before_subs = conn.execute(
-        "SELECT COUNT(*) FROM user_plugin_optouts "
-        "WHERE marketplace_id = ? AND plugin_name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()[0]
-    conn.execute(
-        """INSERT INTO user_plugin_optouts
-           (user_id, marketplace_id, plugin_name)
-           SELECT id, ?, ? FROM users
-           ON CONFLICT (user_id, marketplace_id, plugin_name) DO NOTHING""",
-        [marketplace_id, plugin_name],
-    )
-    after_subs = conn.execute(
-        "SELECT COUNT(*) FROM user_plugin_optouts "
-        "WHERE marketplace_id = ? AND plugin_name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()[0]
-    affected_users = max(0, int(after_subs) - int(before_subs))
+    affected_users = UserCuratedSubscriptionsRepository(
+        conn,
+    ).fanout_system_for_plugin(marketplace_id, plugin_name)
 
     _audit(
         conn,
@@ -677,10 +662,6 @@ def mark_plugin_system(
         {"affected_groups": affected_groups, "affected_users": affected_users},
     )
     _invalidate_marketplace_etag()
-
-    # Discourage the unused-import warning for the helper repos: they're
-    # loaded lazily inside the function to keep top-of-file imports tight.
-    _ = UserCuratedSubscriptionsRepository  # noqa: F841
 
     return SystemFlagResponse(
         marketplace_id=marketplace_id,
