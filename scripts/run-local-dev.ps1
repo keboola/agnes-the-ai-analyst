@@ -24,6 +24,17 @@
     Force --build on `up`. Use after pulling changes that touch pyproject.toml or
     Dockerfile, or when you hit ModuleNotFoundError from a stale cached image.
 
+.PARAMETER DataPath
+    Optional Windows folder to use as the /data mount inside the container.
+    When omitted, Compose falls back to the named volume `agnes-the-ai-analyst_data`
+    which lives inside the Docker Desktop WSL VM (not directly visible on the
+    host). When set, /data is bind-mounted to this folder so system.duckdb,
+    extracts, marketplaces, store/, etc. are reachable from Windows Explorer.
+    The folder is created if it doesn't exist; relative paths resolve against
+    the operator's current shell directory. NOTE: switching DataPath between
+    runs swaps the entire /data mount — the old named volume is preserved but
+    not used; system.duckdb on the new path starts fresh on first boot.
+
 .NOTES
     Anything else on the command line (e.g. -d, --remove-orphans) lands in
     PowerShell's automatic $args variable and is forwarded to docker compose.
@@ -47,6 +58,10 @@
 .EXAMPLE
     .\scripts\run-local-dev.ps1 logs
     # tail logs from the running stack
+
+.EXAMPLE
+    .\scripts\run-local-dev.ps1 -Build -DataPath C:\Business\Groupon\Agnes\agnes-data
+    # bind /data to a Windows folder so DuckDB files are reachable from Explorer
 #>
 # Deliberately keep this a SIMPLE (non-advanced) script — no [CmdletBinding()]
 # and no [Parameter(...)] attributes. Both promote the script to an advanced
@@ -61,10 +76,30 @@ param(
     [ValidateSet('up', 'down', 'logs')]
     [string]$Action = 'up',
 
-    [switch]$Build
+    [switch]$Build,
+
+    [string]$DataPath
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Resolve $DataPath against the caller's PWD BEFORE the Push-Location below;
+# otherwise relative paths would resolve against the repo root rather than the
+# operator's shell. Folder is created if it doesn't exist. The path is
+# normalized to forward slashes — Compose's short-syntax bind mount parser
+# occasionally trips on backslashes on Windows.
+$dataPathHost = $null
+if ($DataPath) {
+    if ([System.IO.Path]::IsPathRooted($DataPath)) {
+        $dataPathHost = $DataPath
+    } else {
+        $dataPathHost = Join-Path (Get-Location).Path $DataPath
+    }
+    if (-not (Test-Path $dataPathHost)) {
+        New-Item -ItemType Directory -Path $dataPathHost -Force | Out-Null
+    }
+    $dataPathHost = (Resolve-Path $dataPathHost).Path -replace '\\', '/'
+}
 
 # PowerShell scripts execute in the caller's runspace (unlike bash, which forks
 # a child process), so Set-Location and $env:* assignments leak back into the
@@ -75,6 +110,7 @@ $ErrorActionPreference = 'Stop'
 Push-Location (Split-Path -Parent $PSScriptRoot)
 $localDevGroupsWasSet = Test-Path Env:LOCAL_DEV_GROUPS
 $localDevGroupsOriginal = if ($localDevGroupsWasSet) { $env:LOCAL_DEV_GROUPS } else { $null }
+$dataOverrideFile = $null
 try {
     # docker-compose.yml declares env_file: .env on several services. Compose
     # validates that path even for profiled services that never start, so make
@@ -99,6 +135,35 @@ try {
         '-f', 'docker-compose.local-dev.yml'
     )
 
+    # When -DataPath is supplied, generate a transient compose override that
+    # rebinds /data from the named volume to a Windows host folder so DuckDB
+    # files are reachable from Explorer. Compose merges service.volumes by
+    # container target, so listing the same /data target replaces the
+    # named-volume mount inherited from docker-compose.yml. Caddy's /srv:ro
+    # readonly mirror is rebound the same way so the file_server keeps working.
+    if ($dataPathHost) {
+        $dataOverrideFile = Join-Path $env:TEMP "agnes-data-override-$PID.yml"
+        $overrideYaml = @"
+services:
+  app:
+    volumes:
+      - ${dataPathHost}:/data
+  scheduler:
+    volumes:
+      - ${dataPathHost}:/data
+  extract:
+    volumes:
+      - ${dataPathHost}:/data
+  caddy:
+    volumes:
+      - ${dataPathHost}:/srv:ro
+"@
+        # Use .NET WriteAllText so the file is BOM-less UTF-8 across PS 5.1 / 7+.
+        [System.IO.File]::WriteAllText($dataOverrideFile, $overrideYaml)
+        $composeFiles += @('-f', $dataOverrideFile)
+        Write-Host "  /data is bind-mounted to host: $dataPathHost" -ForegroundColor Yellow
+    }
+
     switch ($Action) {
         'up' {
             $cmd = @('up')
@@ -122,6 +187,9 @@ try {
         $env:LOCAL_DEV_GROUPS = $localDevGroupsOriginal
     } else {
         Remove-Item Env:LOCAL_DEV_GROUPS -ErrorAction SilentlyContinue
+    }
+    if ($dataOverrideFile -and (Test-Path $dataOverrideFile)) {
+        Remove-Item $dataOverrideFile -Force -ErrorAction SilentlyContinue
     }
 }
 
