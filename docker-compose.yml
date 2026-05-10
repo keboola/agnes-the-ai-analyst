@@ -44,7 +44,9 @@ services:
     # system.duckdb.wal that the next image's DuckDB version cannot replay
     # ("Failure while replaying WAL ... GetDefaultDatabase with no default
     # database set"), 500-ing every authed request until WAL is removed.
-    # Observed on foundryai-dev-vrysanek 2026-05-05 during auto-upgrade.
+    # Hits hardest during a Docker image upgrade window where the new
+    # image's DuckDB version differs from the old container's, since
+    # WAL replay across versions trips on internal assertions.
     stop_grace_period: 60s
 
   # One-shot: run extractor then rebuild orchestrator views
