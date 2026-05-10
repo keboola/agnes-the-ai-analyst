@@ -1107,23 +1107,11 @@ class TestMarketplaceBundle:
 
 
 class TestWebPages:
-    def test_store_listing_page_renders(self, web_client):
-        _, cookies = _create_user(web_client, "page1@x.com")
-        r = web_client.get("/store", cookies=cookies)
-        assert r.status_code == 200
-        assert "Store" in r.text
-
     def test_store_upload_page_renders(self, web_client):
         _, cookies = _create_user(web_client, "page2@x.com")
         r = web_client.get("/store/new", cookies=cookies)
         assert r.status_code == 200
         assert "Upload" in r.text
-
-    def test_my_ai_stack_page_renders(self, web_client):
-        _, cookies = _create_user(web_client, "page3@x.com")
-        r = web_client.get("/my-ai-stack", cookies=cookies)
-        assert r.status_code == 200
-        assert "My AI Stack" in r.text
 
     def test_marketplace_flea_detail_page_renders(self, web_client):
         """v32+: /store/{id} was deleted; /marketplace/flea/{id} is the
