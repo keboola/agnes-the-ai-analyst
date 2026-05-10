@@ -88,6 +88,11 @@ dependencies = [
     # src/welcome_template.py was vulnerable to. Pre-built wheels published
     # for all supported (mac/linux/windows × arm64/x86_64) targets.
     "nh3>=0.2",
+    # Cross-platform advisory file locking for the `agnes push` single-instance
+    # guard. Wraps fcntl.flock on POSIX and msvcrt.locking on Windows behind
+    # a uniform API; OS releases the lock automatically on process exit (no
+    # stale-lock detection required). Used by cli/lib/push_lock.py.
+    "filelock>=3.13,<4",
 ]
 
 [project.optional-dependencies]
