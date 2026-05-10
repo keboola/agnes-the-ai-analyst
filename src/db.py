@@ -2914,12 +2914,36 @@ def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:
 
 
 def close_system_db() -> None:
-    """Close the shared system DB connection. Called on app shutdown."""
+    """Close the shared system DB connection. Called on app shutdown.
+
+    CHECKPOINT before close so the WAL flushes into ``system.duckdb`` and
+    the file is left in a clean state. If we skip this and the process
+    later gets SIGKILL'd (e.g. Docker's default 10s stop_grace_period
+    expires during ``docker compose up -d`` recreate), DuckDB leaves a
+    populated ``.wal`` that the next process must replay on open. When
+    the next process is a different DuckDB version (image upgrade
+    window), replay can hit internal assertions like
+    ``Failure while replaying WAL ... GetDefaultDatabase with no default
+    database set`` and the app 500s on every authed request.
+
+    CHECKPOINT is best-effort: if it raises (locked, disk full, etc.)
+    we still proceed to close — the recovery path in ``_try_open_system_db``
+    plus the longer ``stop_grace_period`` in compose are the safety nets.
+    """
     global _system_db_conn, _system_db_path
     if _system_db_conn:
         try:
+            _system_db_conn.execute("CHECKPOINT")
+            logger.debug("close_system_db: CHECKPOINT ok")
+        except Exception as exc:
+            # Log + proceed — CHECKPOINT failure is not fatal (recovery path
+            # in _try_open_system_db handles a dirty WAL on next open), but
+            # we want operators to see WHY the safety net was needed if a
+            # WAL-replay failure does surface later.
+            logger.warning("close_system_db: CHECKPOINT failed (%s); proceeding to close", exc)
+        try:
             _system_db_conn.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("close_system_db: close raised (%s); ignoring", exc)
         _system_db_conn = None
         _system_db_path = None
