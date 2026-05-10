@@ -60,7 +60,7 @@
     # tail logs from the running stack
 
 .EXAMPLE
-    .\scripts\run-local-dev.ps1 -Build -DataPath C:\Business\Groupon\Agnes\agnes-data
+    .\scripts\run-local-dev.ps1 -Build -DataPath C:\Users\<you>\agnes-data
     # bind /data to a Windows folder so DuckDB files are reachable from Explorer
 #>
 # Deliberately keep this a SIMPLE (non-advanced) script — no [CmdletBinding()]
