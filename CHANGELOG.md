@@ -10,7 +10,58 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes refresh-marketplace --bootstrap` now recovers when the local
+  marketplace clone exists but Claude Code's registry has lost the
+  `agnes` entry** (fresh Claude Code install on the same machine, manual
+  `claude plugin marketplace remove agnes`, or an earlier interrupted
+  bootstrap). The previous behaviour skipped `_bootstrap_clone` whenever
+  `~/.agnes/marketplace/.git` existed and fell straight through to
+  `claude plugin marketplace update agnes`, which failed with
+  `Marketplace 'agnes' not found. Available marketplaces: claude-plugins-official`
+  and cascaded into per-plugin install errors. The bootstrap path now
+  parses `claude plugin marketplace list`, calls
+  `claude plugin marketplace add ~/.agnes/marketplace` when `agnes`
+  isn't registered, and only then proceeds with fetch + reset +
+  reconcile. Idempotent: a second bootstrap run with `agnes` already
+  registered is a no-op.
+
+  In the same path, `claude plugin marketplace add` failures are now
+  fatal instead of `warn:`-and-continue. The previous warn-and-continue
+  was the root cause of the cascade above — the operator never saw the
+  real error from `add`, only the downstream "Marketplace not found"
+  symptoms.
+
+  Source: 2026-05-10 init report from a clean-machine bootstrap
+  against a private-CA Agnes deployment.
+
 ### Added
+
+- **Setup prompt always registers the `agnes` Claude Code marketplace**,
+  even when the operator has zero plugin grants. Registering the
+  per-user marketplace clone pre-wires the SessionStart hook so future
+  admin grants land automatically on the next Claude Code session
+  without re-running setup. The marketplace block's copy adapts: empty
+  plugin list shows "no plugins granted yet", populated list shows
+  "install plugins". Steps 4 (preflight) + 5 (marketplace) are now
+  always emitted; Confirm shifts from step 6 to step 9 across the
+  full layout.
+
+- **Setup prompt registers the Atlassian Remote MCP server unattended**
+  via `claude mcp add --transport sse atlassian https://mcp.atlassian.com/v1/sse`
+  (Fix C in the 2026-05-10 init-report response). Hosted Remote MCP, so
+  Claude Code handles OAuth automatically the first time the operator
+  asks it to read a Jira ticket or Confluence page — no PAT/keychain
+  dance. Idempotent across re-runs (`|| true` swallows the
+  "server already exists" exit). Asana and Google Workspace stay on the
+  /home connector cards because their PAT/CLI flows don't fit an
+  unattended bootstrap.
+
+- **Setup prompt's Confirm step nudges the user toward connector cards
+  on /home** for Asana / Google Workspace / Atlassian PAT flows that
+  the bash script can't automate. Surfaces the cards so analysts don't
+  finish bootstrap thinking they're fully wired.
 
 - **`/update-agnes-plugins` slash command** — installed automatically by
   `agnes init` into `<workspace>/.claude/commands/`. Runs
@@ -70,6 +121,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   audit row's params reference a version.
 
 ### Changed
+
+- **CLAUDE.md template renames the marketplace section to
+  "Agnes Marketplace — plugins available to you"** and clarifies that
+  Claude Code addresses every plugin as `<plugin>@agnes` regardless of
+  upstream marketplace slug — the per-user aggregated marketplace name
+  is always `agnes`. Resolves the naming-drift confusion flagged in the
+  2026-05-10 init report (CLAUDE.md previously rendered upstream
+  marketplace registry names like `<Org> Marketplace` / `<org>-marketplace`
+  without explaining the typed name is always `agnes`). Upstream
+  marketplace names still render as nested bullets so admins see
+  what's been folded in.
 
 - **SessionStart marketplace hook is now read-only.** The hook installed
   by `agnes init` was previously `agnes refresh-marketplace --quiet`,

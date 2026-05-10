@@ -47,9 +47,14 @@ def test_render_setup_instructions_wires_all_placeholders():
     assert "T-123" in out
 
 
-def test_resolve_lines_no_plugins_unified_six_step_layout():
-    """Unified no-plugin layout: 1 install, 2 init, 3 catalog, 4 diagnose,
-    5 skills, 6 confirm. No marketplace, no preflight."""
+def test_resolve_lines_no_plugins_unified_layout():
+    """Unified always-on layout (Fix B + Fix C in 2026-05-10 init-report
+    response): 1 install, 2 init, 3 catalog, 4 preflight, 5 marketplace,
+    6 mcp_servers, 7 diagnose, 8 skills, 9 confirm. Preflight +
+    marketplace + MCP block are emitted even when the operator has zero
+    plugin grants — registering the per-user marketplace clone pre-wires
+    the SessionStart hook, and the Atlassian Remote MCP applies to every
+    analyst whose work touches Jira/Confluence."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
@@ -57,28 +62,29 @@ def test_resolve_lines_no_plugins_unified_six_step_layout():
     assert "1) Install the CLI" in joined
     assert "2) Bootstrap your Agnes workspace" in joined
     assert "3) Verify the data is queryable:" in joined
-    assert "4) Run diagnostics:" in joined
-    assert "5) Skills" in joined
-    assert "6) Confirm:" in joined
+    assert "4) Make sure git and claude are installed" in joined
+    assert "5) Register the Agnes Claude Code marketplace" in joined
+    assert "6) Register the Atlassian MCP server" in joined
+    assert "7) Run diagnostics:" in joined
+    assert "8) Skills" in joined
+    assert "9) Confirm:" in joined
     # No stray Confirms at other positions.
-    assert "7) Confirm:" not in joined
-    assert "8) Confirm:" not in joined
-    assert "claude plugin marketplace add" not in joined
-    assert "claude plugin install" not in joined
-    # No preflight step when there's no marketplace block to gate.
-    assert "Make sure git and claude are installed" not in joined
+    assert "10) Confirm:" not in joined
+    assert "6) Confirm:" not in joined
+    # The marketplace step header adapts to "no plugins granted yet" copy
+    # rather than the plugin-installing variant.
+    assert "no plugins granted yet" in joined
+    assert "agnes refresh-marketplace --bootstrap" in joined
+    # MCP step uses SSE transport for Atlassian's hosted Remote MCP.
+    assert "claude mcp add --transport sse atlassian https://mcp.atlassian.com/v1/sse" in joined
     # Legacy `git config sslVerify=false` downgrade must NOT be emitted.
     # Match the specific config line, not the bare substring (which appears
     # in the preamble as a "don't do this" example).
     assert "git config --global" not in joined
     # Trust block isn't emitted without ca_pem either.
     assert "0) Trust the Agnes TLS certificate" not in joined
-    # Confirm step's CA bundle / marketplace bullets must NOT appear when
-    # those steps weren't emitted — otherwise the assistant is told to
-    # report on phantom steps.
     assert "step 0(d)" not in joined
     assert "Which CA bundle source got picked" not in joined
-    assert "~/.agnes/marketplace/.git/" not in joined
     # Legacy admin-only auth verbs are gone — `agnes init` subsumes them.
     assert "agnes auth import-token" not in joined
     assert "agnes auth whoami" not in joined
@@ -108,8 +114,10 @@ def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
 
 def test_finale_bullets_match_emitted_steps():
     """The Confirm step's bullets must reference only steps that were
-    actually emitted. CA bundle bullet only when has_ca=True; marketplace
-    clone bullet only when plugins are configured."""
+    actually emitted. CA bundle bullet is gated on `has_ca`. The
+    marketplace clone bullet is unconditional now (Fix B in 2026-05-10
+    init-report response: marketplace block is always emitted regardless
+    of plugin grants)."""
     from app.web.setup_instructions import resolve_lines
 
     fake_ca = (
@@ -118,15 +126,15 @@ def test_finale_bullets_match_emitted_steps():
         "-----END CERTIFICATE-----\n"
     )
 
-    # No ca, no plugins: neither bullet present.
+    # No ca, no plugins: marketplace bullet present, CA bullet absent.
     plain = "\n".join(resolve_lines("agnes.whl"))
     assert "Which CA bundle source got picked" not in plain
-    assert "~/.agnes/marketplace/.git/" not in plain
+    assert "~/.agnes/marketplace/.git/" in plain
 
-    # ca only: CA bullet yes, marketplace bullet no.
+    # ca only: both bullets present.
     ca_only = "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))
     assert "Which CA bundle source got picked" in ca_only
-    assert "~/.agnes/marketplace/.git/" not in ca_only
+    assert "~/.agnes/marketplace/.git/" in ca_only
 
     # plugins only: marketplace bullet yes, CA bullet no.
     pl_only = "\n".join(
@@ -279,13 +287,15 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "claude plugin marketplace add" not in executable
     assert "claude plugin install foo@agnes" not in executable
     assert "claude plugin install bar@agnes" not in executable
-    # Step 6 — diagnose now AFTER marketplace (used to be step 4 right after whoami).
-    assert "6) Run diagnostics:" in joined
-    # Step 7 — skills, the last interactive step before Confirm.
-    assert "7) Skills" in joined
-    # Step 8 — Confirm renumbered (no stray Confirms at other positions).
-    assert "8) Confirm:" in joined
-    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:"):
+    # Step 6 — Atlassian MCP registration (Fix C in 2026-05-10 init-report response).
+    assert "6) Register the Atlassian MCP server" in joined
+    # Step 7 — diagnose now AFTER marketplace + MCP wiring.
+    assert "7) Run diagnostics:" in joined
+    # Step 8 — skills, the last interactive step before Confirm.
+    assert "8) Skills" in joined
+    # Step 9 — Confirm renumbered (no stray Confirms at other positions).
+    assert "9) Confirm:" in joined
+    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "8) Confirm:"):
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
@@ -293,10 +303,11 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     catalog_idx = joined.index("3) Verify the data is queryable:")
     git_idx = joined.index("4) Make sure git and claude are installed")
     market_idx = joined.index("5) Register the Agnes Claude Code marketplace")
-    diag_idx = joined.index("6) Run diagnostics:")
-    skills_idx = joined.index("7) Skills")
-    confirm_idx = joined.index("8) Confirm:")
-    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < diag_idx < skills_idx < confirm_idx
+    mcp_idx = joined.index("6) Register the Atlassian MCP server")
+    diag_idx = joined.index("7) Run diagnostics:")
+    skills_idx = joined.index("8) Skills")
+    confirm_idx = joined.index("9) Confirm:")
+    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < mcp_idx < diag_idx < skills_idx < confirm_idx
     # Legacy `git config sslVerify=false` downgrade is gone — see CHANGELOG.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
@@ -619,15 +630,20 @@ def test_resolve_lines_ca_pem_empty_string_is_treated_as_absent():
 
 
 def test_resolve_lines_ca_pem_works_without_plugins():
-    """Trust block is independent of the marketplace block — emit step 0
-    even when plugin list is empty. Confirm step number stays at 6
-    (the original layout) since step 0 is preamble, not numbered."""
+    """Trust block is independent of the marketplace + MCP blocks — emit
+    step 0 even when plugin list is empty. Confirm step is at 9 in the
+    always-on layout (Fix B + Fix C in 2026-05-10 init-report response).
+    Step 0 is preamble, not numbered."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
     assert "0) Trust the Agnes TLS certificate" in joined
-    assert "6) Confirm:" in joined
-    assert "claude plugin marketplace add" not in joined
+    assert "9) Confirm:" in joined
+    # Marketplace block is now emitted unconditionally; the bootstrap
+    # one-liner does the `claude plugin marketplace add` internally so
+    # the literal string isn't in the prompt text — the user-facing
+    # invocation is `agnes refresh-marketplace --bootstrap`.
+    assert "agnes refresh-marketplace --bootstrap" in joined
 
 
 def test_render_setup_instructions_propagates_ca_pem():
@@ -697,19 +713,20 @@ def test_skills_step_is_last_blocking_step_before_confirm():
     assert market_idx < skills_idx
 
 
-def test_no_marketplace_layout_keeps_diagnose_before_skills():
-    """Without plugins, the layout collapses to: install → init → catalog →
-    diagnose → skills → confirm. (No preflight or marketplace steps to
-    interleave.) Step numbers: 4 diagnose, 5 skills, 6 confirm."""
+def test_no_plugins_layout_keeps_diagnose_before_skills():
+    """Always-on layout (Fix B + Fix C in 2026-05-10 init-report response):
+    install → init → catalog → preflight → marketplace → mcp_servers →
+    diagnose → skills → confirm, regardless of plugin grants. Step
+    numbers: 7 diagnose, 8 skills, 9 confirm."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "4) Run diagnostics:" in joined
-    assert "5) Skills" in joined
-    assert "6) Confirm:" in joined
-    diag_idx = joined.index("4) Run diagnostics:")
-    skills_idx = joined.index("5) Skills")
-    confirm_idx = joined.index("6) Confirm:")
+    assert "7) Run diagnostics:" in joined
+    assert "8) Skills" in joined
+    assert "9) Confirm:" in joined
+    diag_idx = joined.index("7) Run diagnostics:")
+    skills_idx = joined.index("8) Skills")
+    confirm_idx = joined.index("9) Confirm:")
     assert diag_idx < skills_idx < confirm_idx
 
 

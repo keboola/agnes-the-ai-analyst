@@ -65,7 +65,17 @@ and `agnes init` will overwrite local edits — put personal notes into
 and use `agnes snapshot create --estimate` to size-check before fetching.
 
 {% if marketplaces -%}
-## Plugins available to you
+## Agnes Marketplace — plugins available to you
+
+These plugins reach Claude Code through the per-user **`agnes`** marketplace
+served by this server (an aggregated, RBAC-filtered view of the upstream
+marketplaces below). When you install or invoke one of these plugins inside
+Claude Code, address it as `<plugin>@agnes` regardless of which upstream it
+came from — e.g. `claude plugin install <plugin>@agnes`. The
+`agnes refresh-marketplace` command (run by the SessionStart hook every
+session) keeps the local clone in sync.
+
+Upstream marketplaces folded into your `agnes` view:
 {% for mp in marketplaces -%}
 - **{{ mp.name }}** ({{ mp.slug }}): {{ mp.plugins | map(attribute="name") | join(", ") }}
 {% endfor %}

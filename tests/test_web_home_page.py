@@ -187,11 +187,16 @@ def test_home_no_auto_transition_after_post_until_reload(fresh_db):
     c = _client()
 
     pre = c.get("/home", cookies={"access_token": sess})
-    assert "install Claude Code" in pre.text  # setup view
+    # `class="install-block"` is the not-onboarded-only structural element
+    # holding the inline Step-1 install pane. Use it as the discriminator
+    # instead of a free-form string like "install Claude Code", which now
+    # also appears in the always-on SETUP_INSTRUCTIONS_TEMPLATE clipboard
+    # payload's preflight comment after the 2026-05-10 init-report fix.
+    assert 'class="install-block"' in pre.text  # setup view
 
     flip = c.post("/api/me/onboarded", cookies={"access_token": sess})
     assert flip.status_code == 200
 
     post = c.get("/home", cookies={"access_token": sess})
     assert "Welcome back" in post.text  # nav hub view
-    assert "install Claude Code" not in post.text
+    assert 'class="install-block"' not in post.text
