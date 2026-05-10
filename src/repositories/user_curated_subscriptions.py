@@ -133,6 +133,41 @@ class UserCuratedSubscriptionsRepository:
         )
         return int(before)
 
+    def fanout_system_for_plugin(
+        self, marketplace_id: str, plugin_name: str,
+    ) -> int:
+        """Subscribe every existing user to ``(marketplace_id, plugin_name)``.
+
+        Counterpart to ``fanout_system_for_user`` — this side picks one
+        plugin and walks every user, that side picks one user and walks
+        every system plugin. Both go through the same
+        ``user_plugin_optouts`` PK + ``ON CONFLICT DO NOTHING`` so they
+        compose freely with the user/group-create hooks.
+
+        Returns the count of NEW subscriptions written (delta of
+        before/after row counts) so the admin endpoint can report
+        ``affected_users`` honestly — re-running on an already-marked
+        plugin returns 0 instead of misleadingly reporting "every user".
+        """
+        before = self.conn.execute(
+            "SELECT COUNT(*) FROM user_plugin_optouts "
+            "WHERE marketplace_id = ? AND plugin_name = ?",
+            [marketplace_id, plugin_name],
+        ).fetchone()[0]
+        self.conn.execute(
+            """INSERT INTO user_plugin_optouts
+               (user_id, marketplace_id, plugin_name)
+               SELECT id, ?, ? FROM users
+               ON CONFLICT (user_id, marketplace_id, plugin_name) DO NOTHING""",
+            [marketplace_id, plugin_name],
+        )
+        after = self.conn.execute(
+            "SELECT COUNT(*) FROM user_plugin_optouts "
+            "WHERE marketplace_id = ? AND plugin_name = ?",
+            [marketplace_id, plugin_name],
+        ).fetchone()[0]
+        return max(0, int(after) - int(before))
+
     def fanout_system_for_user(self, user_id: str) -> None:
         """Subscribe ``user_id`` to every ``is_system=TRUE`` marketplace_plugin.
 
