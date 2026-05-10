@@ -709,6 +709,27 @@ async def delete_grant(
     existing = grants.get(grant_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Grant not found")
+
+    # v39: refuse to revoke a grant whose underlying plugin is system-marked.
+    # The mark_system endpoint materializes per-group rows precisely so the
+    # plugin reaches every user; allowing per-group revoke here would punch
+    # a hole in the mandatory tier silently. Admin must unmark on
+    # /admin/marketplaces first, then revoke individual groups.
+    if existing["resource_type"] == "marketplace_plugin":
+        rid = existing["resource_id"] or ""
+        if "/" in rid:
+            mp_id, plugin_name = rid.split("/", 1)
+            sys_row = conn.execute(
+                "SELECT is_system FROM marketplace_plugins "
+                "WHERE marketplace_id = ? AND name = ?",
+                [mp_id, plugin_name],
+            ).fetchone()
+            if sys_row and bool(sys_row[0]):
+                raise HTTPException(
+                    status_code=409,
+                    detail="cannot_revoke_system_grant",
+                )
+
     grants.delete(grant_id)
 
     # v24: re-grant of the same plugin must reset every user to the default

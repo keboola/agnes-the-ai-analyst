@@ -613,14 +613,31 @@ function renderGrid(items) {
                      this.parentElement.textContent=this.dataset.fallback;"
             data-fallback="${fallbackInitials}"></div>`
       : `<div class="photo">${fallbackInitials}</div>`;
-    const installedBadge = it.installed
-      ? `<div class="installed-badge" title="In your stack">
-           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-             <polyline points="20 6 9 17 4 12"/>
-           </svg>
-           In stack
-         </div>` : '';
+    // v39: when a plugin is system, the amber "Required" badge replaces
+    // the green "In stack" badge — system plugins are always installed
+    // (force-installed via mark_system materialization), so "in stack"
+    // is implied and stacking both pills wastes vertical space. The
+    // shield icon makes the org-policy semantic visually distinct from
+    // the user-action "✓ in stack" semantic.
+    let installedBadge = '';
+    if (it.is_system) {
+      installedBadge = `<div class="installed-badge" title="Required by your organization — managed by admin"
+            style="background:#fef3c7;color:#92400e;border-color:#fde68a;">
+         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+           <path d="M12 2 4 6v6c0 5 3.4 9.5 8 10 4.6-.5 8-5 8-10V6l-8-4z"/>
+         </svg>
+         Required
+       </div>`;
+    } else if (it.installed) {
+      installedBadge = `<div class="installed-badge" title="In your stack">
+         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+           <polyline points="20 6 9 17 4 12"/>
+         </svg>
+         In stack
+       </div>`;
+    }
 
     // v32+ quarantine: subtle corner badge on the submitter's own
     // non-approved cards. Approved cards + non-owner views omit it.

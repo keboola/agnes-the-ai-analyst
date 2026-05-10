@@ -157,6 +157,22 @@ async def bootstrap(
             name=body.name or body.email.split("@")[0],
             password_hash=password_hash,
         )
+        # v39: bootstrap user is the very first user; on first install
+        # there are no system plugins yet so the fanout is a noop. Wire
+        # it anyway so the later bootstrap-of-rebuilt-instance path (rare
+        # but supported) inherits the existing mandatory tier.
+        try:
+            from src.repositories.user_curated_subscriptions import (
+                UserCuratedSubscriptionsRepository,
+            )
+            UserCuratedSubscriptionsRepository(
+                conn
+            ).fanout_system_for_user(user_id)
+        except Exception:
+            logger.exception(
+                "system-plugin fanout failed for bootstrap user %s",
+                body.email,
+            )
         _audit(user_id, "bootstrap_completed")
 
     # Promote the bootstrap user to the Admin system group — replaces the v9

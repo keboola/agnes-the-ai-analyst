@@ -198,6 +198,29 @@
   .plugin-meta a { color: var(--primary, #6366f1); text-decoration: none; }
   .plugin-meta a:hover { text-decoration: underline; }
 
+  /* v39: SYSTEM pill + per-plugin toggle button. Pill uses the same
+     amber palette as the .origin-system chip on /admin/groups so the
+     "system" semantic reads consistently across the admin surface. */
+  .plugin-system-pill {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    background: #fef3c7; color: #92400e;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .plugin-item-head .spacer { flex: 1; }
+  .plugin-system-btn {
+    background: transparent; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 6px; padding: 4px 9px; font-size: 11px; cursor: pointer;
+    color: var(--text-secondary, #6b7280); white-space: nowrap;
+  }
+  .plugin-system-btn:hover {
+    color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb;
+  }
+  .plugin-system-btn.is-system {
+    color: #92400e; border-color: #fde68a; background: #fffbeb;
+  }
+  .plugin-system-btn[disabled] { opacity: 0.5; cursor: wait; }
+
   /* Toast */
   .toast-stack {
     position: fixed; bottom: 24px; right: 24px; z-index: 2000;
@@ -566,14 +589,70 @@ async function openDetails(id, name) {
       if (p.category) meta.push(`category: ${esc(p.category)}`);
       if (p.homepage) meta.push(`<a href="${esc(p.homepage)}" target="_blank" rel="noopener">homepage ↗</a>`);
       const metaHtml = meta.length ? `<div class="plugin-meta">${meta.join(" · ")}</div>` : "";
+      const sysPill = p.is_system
+        ? `<span class="plugin-system-pill" title="Mandatory for every user — managed below">SYSTEM</span>`
+        : "";
+      const sysBtnLabel = p.is_system ? "Unmark system" : "Mark as system";
+      const sysBtnTitle = p.is_system
+        ? "Remove the system mark. Existing per-group grants and per-user subscriptions remain — admin can clean them up via /admin/access."
+        : "Make this plugin mandatory for every user. Adds RBAC grants for every group and subscriptions for every user.";
       return `<div class="plugin-item">
         <div class="plugin-item-head">
-          <span class="plugin-name">${esc(p.name)}</span>${ver}${src}
+          <span class="plugin-name">${esc(p.name)}</span>${ver}${src}${sysPill}
+          <span class="spacer"></span>
+          <button class="plugin-system-btn ${p.is_system ? "is-system" : ""}"
+                  data-action="toggle-system"
+                  data-marketplace="${esc(id)}"
+                  data-plugin="${esc(p.name)}"
+                  data-is-system="${p.is_system ? "1" : "0"}"
+                  title="${esc(sysBtnTitle)}">${esc(sysBtnLabel)}</button>
         </div>${desc}${metaHtml}
       </div>`;
     }).join("");
+    body.querySelectorAll('[data-action="toggle-system"]').forEach(btn =>
+      btn.addEventListener("click", () => toggleSystem(btn, id, name)));
   } catch (e) {
     body.innerHTML = `<div class="empty" style="color:#b91c1c;">Failed to load plugins: ${esc(e.message)}</div>`;
+  }
+}
+
+async function toggleSystem(btn, marketplaceId, marketplaceName) {
+  const pluginName = btn.dataset.plugin;
+  const isSystem = btn.dataset.isSystem === "1";
+  const verb = isSystem ? "Unmark" : "Mark as";
+  if (!confirm(
+    `${verb} system plugin "${pluginName}"?\n\n` +
+    (isSystem
+      ? "This flips the flag off. Per-group grants and per-user subscriptions stay until you clean them up manually."
+      : "This grants the plugin to every existing group and subscribes every existing user. New users and groups inherit it automatically."))) {
+    return;
+  }
+  const method = isSystem ? "DELETE" : "POST";
+  btn.disabled = true;
+  const prevLabel = btn.textContent;
+  btn.textContent = "Working…";
+  try {
+    const url = `${API}/${encodeURIComponent(marketplaceId)}/plugins/${encodeURIComponent(pluginName)}/system`;
+    const r = await fetch(url, { method, credentials: "include" });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      toast(`Toggle failed: ${err.detail || r.status}`, "error");
+      btn.disabled = false;
+      btn.textContent = prevLabel;
+      return;
+    }
+    const result = await r.json();
+    if (!isSystem) {
+      toast(`Marked ${pluginName} as system (${result.affected_groups} groups, ${result.affected_users} users)`, "success");
+    } else {
+      toast(`Unmarked ${pluginName} from system`, "success");
+    }
+    // Reload the modal so the pill + button label refresh from a fresh fetch.
+    openDetails(marketplaceId, marketplaceName);
+  } catch (e) {
+    toast(`Network error: ${e.message}`, "error");
+    btn.disabled = false;
+    btn.textContent = prevLabel;
   }
 }
 

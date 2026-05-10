@@ -99,13 +99,13 @@ def _marketplace_plugin_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]
     rows = conn.execute(
         """SELECT mr.id, mr.name, mr.registered_at,
                   mp.name AS plugin_name, mp.version, mp.category,
-                  mp.description, mp.source_type
+                  mp.description, mp.source_type, mp.is_system
            FROM marketplace_registry mr
            LEFT JOIN marketplace_plugins mp ON mp.marketplace_id = mr.id
            ORDER BY mr.registered_at, mr.id, mp.name"""
     ).fetchall()
     blocks: dict[str, Block] = {}
-    for mr_id, mr_name, _, p_name, p_ver, p_cat, p_desc, p_src in rows:
+    for mr_id, mr_name, _, p_name, p_ver, p_cat, p_desc, p_src, p_sys in rows:
         block = blocks.setdefault(mr_id, {
             "id": mr_id,
             "name": mr_name,
@@ -119,6 +119,12 @@ def _marketplace_plugin_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]
                 "category": p_cat,
                 "description": p_desc,
                 "source_type": p_src,
+                # v39: drives the SYSTEM pill + disabled checkbox in
+                # /admin/access. The grant row exists for every group on a
+                # system plugin (materialized by mark_system) — we just
+                # prevent admins from revoking it via the UI to keep the
+                # mandatory-tier semantic honest.
+                "is_system": bool(p_sys),
             })
     return list(blocks.values())
 
