@@ -2,9 +2,10 @@
 
 The push command consumes a workspace-local queue file
 (``<workspace>/.claude/agnes-sessions.txt``) populated by the
-``agnes capture-session`` SessionStart hook. Each line is the absolute
-path to a session jsonl. This avoids reverse-engineering Claude Code's
-internal cwd-to-folder encoding (which varies by version).
+``agnes capture-session`` SessionStart hook. Each line is a TSV pair:
+``<session_id>\\t<transcript_path>``. The session_id lets push consult
+the private list (``cli/lib/private_list.py``) and skip uploads that
+the user explicitly marked via ``/agnes-private``.
 
 Concurrency: a single-instance lock (``filelock`` via ``cli/lib/push_lock.py``)
 ensures only one push runs at a time. When the user closes several Claude
@@ -17,6 +18,11 @@ a freshly-created queue, so their entries aren't lost.
 
 Recovery: if a previous push crashed mid-run, its snapshot file persists.
 The next push picks it up before processing the current queue.
+
+Private filter: even if a marked-private session_id slipped into the
+queue before ``/agnes-private`` was run, push re-checks the private list
+per entry. Skipped entries are audit-logged to
+``<workspace>/.claude/agnes-sessions-private-skipped.txt``.
 
 Legacy fallback: the encoding-based ``list_session_files`` path remains
 available behind ``--legacy-scan`` for one-off backfills of sessions that
@@ -35,13 +41,15 @@ import typer
 from cli.client import api_post
 from cli.config import get_server_url, get_token
 from cli.error_render import render_error
+from cli.lib.private_list import read_all_private
 from cli.lib.push_lock import acquire_or_skip
 from cli.lib.session_queue import (
     discard_snapshot,
     find_recovery_snapshots,
+    mark_private_skipped,
     mark_uploaded,
     queue_path,
-    read_paths_from_snapshot,
+    read_entries_from_snapshot,
     requeue_failed,
     snapshot_queue,
     uploaded_log_path,
@@ -63,33 +71,31 @@ def _collect_snapshots(workspace: Path) -> list[Path]:
     return snapshots
 
 
-def _gather_paths_for_dry_run(workspace: Path) -> list[Path]:
-    """Read paths that *would* be uploaded without consuming the queue.
-
-    Combines existing recovery snapshots + the current live queue. Does NOT
-    rename the live queue (dry-run is read-only).
+def _gather_entries_for_dry_run(workspace: Path) -> list[tuple[str, Path]]:
+    """Read (session_id, path) entries that *would* be uploaded without
+    consuming the queue. Combines existing recovery snapshots + the
+    current live queue. Does NOT rename the live queue (dry-run is
+    read-only).
     """
-    paths: list[Path] = []
-    seen: set[str] = set()
+    out: list[tuple[str, Path]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(entries: list[tuple[str, Path]]) -> None:
+        for sid, p in entries:
+            key = (sid, str(p))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((sid, p))
 
     for snap in find_recovery_snapshots(workspace):
-        for p in read_paths_from_snapshot(snap):
-            s = str(p)
-            if s in seen:
-                continue
-            seen.add(s)
-            paths.append(p)
+        _add(read_entries_from_snapshot(snap))
 
     live = queue_path(workspace)
     if live.exists():
-        for p in read_paths_from_snapshot(live):
-            s = str(p)
-            if s in seen:
-                continue
-            seen.add(s)
-            paths.append(p)
+        _add(read_entries_from_snapshot(live))
 
-    return paths
+    return out
 
 
 def _upload_one(transcript: Path) -> tuple[bool, dict]:
@@ -160,23 +166,31 @@ def push(
 
     # ---- DRY RUN ----------------------------------------------------------
     if dry_run:
-        candidates = _gather_paths_for_dry_run(workspace)
+        candidates = _gather_entries_for_dry_run(workspace)
+        private_ids = read_all_private(workspace)
+        non_private = [(sid, p) for sid, p in candidates if not (sid and sid in private_ids)]
+        private_skipped = [(sid, p) for sid, p in candidates if sid and sid in private_ids]
+
         if legacy_scan:
             from cli.lib.claude_sessions import list_session_files
-            seen = {str(p) for p in candidates}
+            seen = {str(p) for _sid, p in non_private}
             for p in list_session_files(workspace):
                 if str(p) not in seen:
-                    candidates.append(p)
+                    non_private.append(("", p))
                     seen.add(str(p))
 
         plan = {
             "dry_run": True,
             "would_upload": {
-                "sessions": [str(p) for p in candidates],
+                "sessions": [str(p) for _sid, p in non_private],
                 "local_md": str(local_md) if has_local_md else None,
             },
+            "would_skip_private": [
+                {"session_id": sid, "path": str(p)} for sid, p in private_skipped
+            ],
             "summary": {
-                "sessions_count": len(candidates),
+                "sessions_count": len(non_private),
+                "private_skipped_count": len(private_skipped),
                 "local_md_present": has_local_md,
                 "uploaded_log": str(uploaded_log_path(workspace)),
             },
@@ -186,9 +200,13 @@ def push(
             return
         if quiet:
             return
-        typer.echo(f"Dry run - would upload {len(candidates)} session file(s)")
-        for p in candidates:
+        typer.echo(f"Dry run - would upload {len(non_private)} session file(s)")
+        for _sid, p in non_private:
             typer.echo(f"  {p}")
+        if private_skipped:
+            typer.echo(f"Would skip {len(private_skipped)} private session(s):")
+            for sid, p in private_skipped:
+                typer.echo(f"  [{sid}] {p}")
         if has_local_md:
             typer.echo(f"Would upload CLAUDE.local.md  ({local_md})")
         else:
@@ -202,20 +220,39 @@ def push(
         if lock is None:
             return  # another push has the lock; this one no-ops
 
-        results = {"sessions": 0, "local_md": False, "errors": [], "skipped": 0}
+        results = {
+            "sessions": 0,
+            "local_md": False,
+            "errors": [],
+            "skipped": 0,
+            "private_skipped": 0,
+        }
+
+        # Snapshot the private list once at the start of the run. Adding
+        # a new private ID between snapshot and the per-entry check is
+        # benign (worst case: one more upload of a session the user just
+        # marked, which next push will skip).
+        private_ids = read_all_private(workspace)
 
         # Process snapshots: recovery (from prior crash) first, then fresh.
         snapshots = _collect_snapshots(workspace)
-        all_failed_paths: list[Path] = []
+        all_failed_entries: list[tuple[str, Path]] = []
 
         for snapshot in snapshots:
-            paths = read_paths_from_snapshot(snapshot)
-            failed_in_snapshot: list[Path] = []
-            for transcript in paths:
+            entries = read_entries_from_snapshot(snapshot)
+            failed_in_snapshot: list[tuple[str, Path]] = []
+            now = datetime.now(timezone.utc)
+            for session_id, transcript in entries:
+                if session_id and session_id in private_ids:
+                    # Skip private; audit-log and move on. Do not requeue —
+                    # this is the user's explicit "do not upload" intent.
+                    mark_private_skipped(workspace, session_id, transcript, now)
+                    results["private_skipped"] += 1
+                    continue
                 ok, info = _upload_one(transcript)
                 if ok:
                     results["sessions"] += 1
-                    mark_uploaded(workspace, transcript, datetime.now(timezone.utc))
+                    mark_uploaded(workspace, transcript, now)
                 else:
                     if info.get("error") == "file not found on disk":
                         # Stale queue entry (Claude Code auto-cleanup deleted
@@ -225,13 +262,13 @@ def push(
                         results["errors"].append(info)
                     else:
                         results["errors"].append(info)
-                        failed_in_snapshot.append(transcript)
-            # Failed paths from this snapshot get re-queued on the live file.
-            all_failed_paths.extend(failed_in_snapshot)
+                        failed_in_snapshot.append((session_id, transcript))
+            # Failed entries from this snapshot get re-queued on the live file.
+            all_failed_entries.extend(failed_in_snapshot)
             discard_snapshot(snapshot)
 
-        if all_failed_paths:
-            requeue_failed(workspace, all_failed_paths)
+        if all_failed_entries:
+            requeue_failed(workspace, all_failed_entries)
 
         # Optional: legacy scan to backfill sessions outside the queue.
         if legacy_scan:
@@ -270,6 +307,11 @@ def push(
         return
 
     typer.echo(f"Uploaded {results['sessions']} sessions")
+    if results["private_skipped"]:
+        typer.echo(
+            f"Skipped {results['private_skipped']} private session(s) "
+            f"(see .claude/agnes-sessions-private-skipped.txt)"
+        )
     if results["skipped"]:
         typer.echo(f"Skipped {results['skipped']} stale queue entries (file missing)")
     if results["local_md"]:

@@ -337,6 +337,43 @@ def test_session_end_push_is_detached(tmp_path):
     )
 
 
+def test_install_writes_statusline_when_absent(tmp_path):
+    """Greenfield install: no prior statusLine → we write ours."""
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    assert "statusLine" in cfg
+    assert cfg["statusLine"]["type"] == "command"
+    assert "agnes statusline" in cfg["statusLine"]["command"]
+
+
+def test_install_preserves_existing_user_statusline(tmp_path, capsys):
+    """User has their own statusLine — we leave it alone and warn on stderr.
+    Customizing the status bar is a personal preference; agnes shouldn't
+    clobber it. Operators who want the private indicator alongside their
+    own content can compose `agnes statusline` into their command."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    user_statusline = {"type": "command", "command": "my-custom-status"}
+    settings_path.write_text(json.dumps({"statusLine": user_statusline}))
+
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    # User's statusLine intact.
+    assert cfg["statusLine"] == user_statusline
+    # Warning surfaced.
+    captured = capsys.readouterr()
+    assert "statusLine" in captured.err
+
+
+def test_install_idempotent_when_statusline_already_ours(tmp_path):
+    """Re-running install when our statusLine is already in place is a no-op,
+    NOT a warning (idempotent re-init shouldn't spam the user)."""
+    install_claude_hooks(tmp_path)
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    assert "agnes statusline" in cfg["statusLine"]["command"]
+
+
 def test_install_replaces_old_synchronous_session_end_push(tmp_path):
     """A workspace bootstrapped before the detachment fix has the old
     synchronous `agnes push --quiet 2>/dev/null || true` SessionEnd entry.
