@@ -74,7 +74,10 @@ jobs:
         continue-on-error: true  # Don't block on mypy initially, can tighten later
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        # `-n auto` parallelises across runner CPU cores; matches ci.yml.
+        # Single-threaded was taking 15-20 min and frequently tripping
+        # branch-protection waits on the parallel CI workflow.
+        run: pytest tests/ -v --tb=short -n auto
         env:
           TESTING: "1"
 

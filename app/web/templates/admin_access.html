@@ -174,6 +174,17 @@
     background: #f3f4f6; color: #374151; font-size: 10px; font-weight: 500;
     text-transform: uppercase; letter-spacing: 0.3px; margin-left: 4px;
   }
+  /* v39: SYSTEM pill — same amber palette as the .origin-system chip on
+     /admin/groups so the "system" semantic reads consistently across the
+     admin surface. */
+  .ic-system-pill {
+    display: inline-block; padding: 1px 6px; border-radius: 999px;
+    background: #fef3c7; color: #92400e; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px; margin-left: 4px;
+  }
+  .item-cell.is-system { background: #fffbeb; }
+  .item-cell.is-system:hover { background: #fef3c7; }
+  .item-cell input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.7; }
   .ic-desc {
     font-size: 11px; color: var(--text-secondary, #6b7280);
     margin-top: 2px; line-height: 1.35;
@@ -650,14 +661,27 @@ function renderResources() {
       } else {
         for (const it of items) {
           const granted = isGranted(state.activeGroupId, rt.type_key, it.resource_id);
+          // v39: system plugins are pre-granted to every group by mark_system
+          // and the checkbox is locked here so admins can't revoke it via
+          // the UI. Backend (DELETE /api/admin/grants) also refuses, but the
+          // visual lock prevents the round-trip.
+          const isSystem = !!it.is_system;
+          const cellClasses = "item-cell"
+            + (granted ? " is-granted" : "")
+            + (isSystem ? " is-system" : "");
+          const sysPill = isSystem
+            ? `<span class="ic-system-pill" title="Mandatory plugin — managed via /admin/marketplaces">SYSTEM</span>`
+            : "";
           const cell = document.createElement("label");
-          cell.className = "item-cell" + (granted ? " is-granted" : "");
+          cell.className = cellClasses;
           cell.innerHTML = `
-            <input type="checkbox" ${granted ? "checked" : ""}>
+            <input type="checkbox" ${granted || isSystem ? "checked" : ""} ${isSystem ? "disabled" : ""}
+                   ${isSystem ? `title="System plugin — managed via /admin/marketplaces"` : ""}>
             <div class="ic-text">
               <div>
                 <span class="ic-name">${esc(it.name)}</span>
                 ${it.source_type ? `<span class="ic-src">${esc(it.source_type)}</span>` : ""}
+                ${sysPill}
               </div>
               ${(it.version || it.category) ? `<div class="ic-meta">
                 ${it.version ? `v${esc(it.version)}` : ""}${it.version && it.category ? " · " : ""}${it.category ? esc(it.category) : ""}
@@ -666,7 +690,9 @@ function renderResources() {
             </div>
           `;
           const cb = cell.querySelector("input");
-          cb.addEventListener("change", () => toggleGrant(cb, cell, rt.type_key, it.resource_id));
+          if (!isSystem) {
+            cb.addEventListener("change", () => toggleGrant(cb, cell, rt.type_key, it.resource_id));
+          }
           grid.appendChild(cell);
         }
       }
@@ -738,6 +764,11 @@ async function toggleGrant(checkbox, cell, resource_type, resource_id) {
 async function bulkSet(resource_type, items, grant) {
   if (!state.activeGroupId) return;
   for (const it of items) {
+    // v39: skip system plugins — the API refuses to revoke them and a
+    // bulk grant on a checkbox that was already auto-granted by
+    // mark_system is a noop. Lets "Grant all" / "Revoke all" finish
+    // cleanly without 409s littering the toast log.
+    if (it.is_system) continue;
     const has = isGranted(state.activeGroupId, resource_type, it.resource_id);
     if (grant === has) continue;
     try {

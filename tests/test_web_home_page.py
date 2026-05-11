@@ -94,20 +94,32 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
     assert resp.status_code == 200
     body = resp.text
     assert "Welcome back" in body
-    assert "Step 1 &amp; Step 2 done" in body  # completion badge
+    # Banner copy updated when auto-mode moved into install-hero as a real
+    # Step 2 (between Claude install and Agnes install). The completion
+    # badge now names all three.
+    assert "Step 1, 2 &amp; 3 done" in body  # completion badge
     assert "Mark me as offboarded" in body  # offboard control visible
-    # Inline Step 1 / Step 2 install-blocks are hidden post-onboarding —
-    # the labels rendered inside the install-block divs go away.
+    # All three inline install-blocks are hidden post-onboarding — the
+    # labels rendered inside the install-block divs go away.
     assert "Step 1 — install Claude Code" not in body
-    assert "Step 2 — install Agnes from inside Claude Code" not in body
+    assert "Step 2 — turn on auto-mode" not in body
+    assert "Step 3 — install Agnes from inside Claude Code" not in body
 
 
-def test_step3_and_connectors_render_flat_when_onboarded_by_default(fresh_db):
-    """Step 3 + Connect-your-tools sections must NOT auto-collapse on the
-    server-side `users.onboarded=TRUE` flip. They render flat (in <details
+def test_connectors_render_flat_when_onboarded_by_default(fresh_db):
+    """Connect-your-tools section must NOT auto-collapse on the
+    server-side `users.onboarded=TRUE` flip. It renders flat (in <details
     open>) by default; only an explicit user click on the in-hero
     "Minimize setup view" toggle (persisted in localStorage, not server)
-    activates the collapsed bar layout."""
+    activates the collapsed bar layout.
+
+    Auto-mode used to be a peer `setup-collapsible` section
+    (`data-section="step3"`) outside the install-hero. It moved into the
+    install-hero as Step 2 of the install flow (so users enable it
+    BEFORE Step 3's ~20-command install runs), and the standalone
+    outside-hero copy was dropped to avoid duplicating reference
+    content. Onboarded users no longer see the auto-mode block at all —
+    consistent with Step 1 + Step 3 also hiding post-onboarding."""
     from src.db import get_system_db, close_system_db
 
     conn = get_system_db()
@@ -121,13 +133,14 @@ def test_step3_and_connectors_render_flat_when_onboarded_by_default(fresh_db):
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
     body = resp.text
-    # The full Step 3 + Connect-your-tools content is in the body.
-    assert 'class="automode-card"' in body
+    # Auto-mode no longer renders for onboarded users — both the
+    # in-hero install-block and the legacy outside-hero `<details>`
+    # reference card are gated `{% if not onboarded %}` / removed.
+    assert 'class="automode-card"' not in body
+    assert 'data-section="step3"' not in body
+    assert "Step 2 — turn on auto-mode" not in body
+    # Connect-your-tools section is still flat-open by default.
     assert 'class="connector-tiles"' in body
-    # Each section is wrapped in <details open> so the body is visible
-    # without a click. The summary is rendered but CSS-hidden until
-    # the page-level data-setup-minimized="1" attribute is set.
-    assert 'class="setup-collapsible" data-section="step3" open' in body
     assert 'class="setup-collapsible" data-section="connectors" open' in body
     # Server-rendered HTML never carries the data-setup-minimized
     # attribute on the .home-mock root — that's a client-side
@@ -187,11 +200,16 @@ def test_home_no_auto_transition_after_post_until_reload(fresh_db):
     c = _client()
 
     pre = c.get("/home", cookies={"access_token": sess})
-    assert "install Claude Code" in pre.text  # setup view
+    # `class="install-block"` is the not-onboarded-only structural element
+    # holding the inline Step-1 install pane. Use it as the discriminator
+    # instead of a free-form string like "install Claude Code", which now
+    # also appears in the always-on SETUP_INSTRUCTIONS_TEMPLATE clipboard
+    # payload's preflight comment after the 2026-05-10 init-report fix.
+    assert 'class="install-block"' in pre.text  # setup view
 
     flip = c.post("/api/me/onboarded", cookies={"access_token": sess})
     assert flip.status_code == 200
 
     post = c.get("/home", cookies={"access_token": sess})
     assert "Welcome back" in post.text  # nav hub view
-    assert "install Claude Code" not in post.text
+    assert 'class="install-block"' not in post.text

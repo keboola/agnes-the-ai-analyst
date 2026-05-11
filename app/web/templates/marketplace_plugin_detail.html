@@ -36,9 +36,12 @@
 
   .plugin-detail .hero-head {
     display: grid;
-    grid-template-columns: 160px 1fr;
+    grid-template-columns: 160px minmax(0, 1fr) 300px;
     gap: 22px;
     align-items: start;
+  }
+  @media (max-width: 1100px) {
+    .plugin-detail .hero-head { grid-template-columns: 160px minmax(0, 1fr); }
   }
   @media (max-width: 720px) {
     .plugin-detail .hero-head {
@@ -88,14 +91,30 @@
   .plugin-detail .pill.muted   { background: transparent; color: rgba(255,255,255,0.72); padding-left: 0; }
 
   .plugin-detail .actions {
-    /* Absolute, anchored to the hero — matches the skill/agent detail
-       page so the install button sits at the same exact offset across
-       both pages (top-right corner of the hero, not aligned to the
-       photo's top edge). */
-    position: absolute; top: 18px; right: 22px;
-    display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+    /* Absolute on .hero — anchored at the top-right corner with equal
+       22px offsets from top and right. Hint card stacks below the
+       button row inside this absolute container, so it stays inside
+       the hero gradient and toggling it doesn't shift body content. */
+    position: absolute; top: 22px; right: 22px;
+    width: 300px;
+    display: flex; flex-direction: column; gap: 10px;
+    align-items: stretch;
     z-index: 1;
   }
+  @media (max-width: 1100px) {
+    .plugin-detail .actions {
+      position: static; width: auto; margin-top: 18px;
+      align-items: flex-end;
+    }
+  }
+  .plugin-detail .actions-row {
+    display: flex; flex-direction: row; align-items: center;
+    justify-content: flex-end; gap: 12px;
+  }
+  /* Without this rule the [hidden] HTML attribute is overridden by the
+     explicit `display: inline-flex` on .status-pill, leaving the "✓ In
+     your stack" label visible on plugins the user has NOT installed. */
+  .plugin-detail .actions [hidden] { display: none !important; }
   .plugin-detail .btn-install {
     appearance: none; cursor: pointer;
     padding: 11px 22px; border-radius: 9px;
@@ -114,9 +133,45 @@
     border-color: rgba(255, 255, 255, 0.55);
     color: #fff;
   }
-  .plugin-detail .btn-install.installed {
-    background: rgba(16, 183, 127, 0.18); color: #d1fae5;
-    border: 1px solid rgba(16, 183, 127, 0.5);
+  /* Status label — inline text indicator, NOT a button. No border, no
+     fill, no padding-as-chrome: this is a label that says "currently
+     in stack" sitting before the Remove button. The check glyph + light
+     green color carry the meaning; visual weight stays below the
+     adjacent button so the user's eye lands on the action. The system
+     variant uses an amber tone for the same lock semantic the SYSTEM
+     pill uses elsewhere. */
+  .plugin-detail .status-pill {
+    display: inline-flex; align-items: center;
+    font-size: 13px; font-weight: 500;
+    color: #fff;
+    cursor: default; user-select: none;
+  }
+  .plugin-detail .status-pill.is-system {
+    color: #fef3c7;
+    cursor: not-allowed;
+  }
+  /* Remove from stack — outlined red border by default so the
+     destructive intent is announced even before hover; on hover the
+     full red fill commits to the message. The red-on-blue contrast is
+     intentional — same palette logic as the X close button on the
+     hero's quarantine banner. */
+  .plugin-detail .btn-remove {
+    appearance: none; cursor: pointer;
+    /* Padding + font-size mirror .btn-install so the off-state CTA and
+       the on-state Remove button are the same physical height — no
+       layout shift when the user toggles the install state. */
+    padding: 11px 22px; border-radius: 9px;
+    font-size: 13px; font-weight: 600; font-family: inherit;
+    background: transparent; color: #fecaca;
+    border: 1px solid rgba(248, 113, 113, 0.7);
+    transition: all 0.15s ease;
+  }
+  .plugin-detail .btn-remove:hover {
+    background: rgba(220, 38, 38, 0.85); color: #fff;
+    border-color: rgba(220, 38, 38, 0.95);
+  }
+  .plugin-detail .btn-remove:focus-visible {
+    outline: 2px solid rgba(254, 202, 202, 0.85); outline-offset: 2px;
   }
 
   /* ── Post-add hint panel ─────────────────────────────────────────────
@@ -126,33 +181,44 @@
      code chip mirrors the marketplace_item_detail invocation chip + the
      /setup terminal blocks, so a familiar visual cue means "this is a
      command you run in your terminal". */
+  /* Glass-on-gradient: lives inside the hero, sitting under the action
+     row in the third grid column. Translucent white over the blue
+     gradient reads as "elevated tile of the same hero" — no white-on-
+     white card insertion, no layout-shift below the hero (the photo
+     column is 160px and the action+hint stack stays under that, so
+     toggling the hint visibility doesn't grow the hero in practice). */
   .plugin-detail .stack-hint {
-    margin-top: 18px;
-    padding: 14px 18px;
-    background: rgba(16, 183, 127, 0.08);
-    border: 1px solid rgba(16, 183, 127, 0.35);
-    border-left: 3px solid #10b77f;
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.28);
     border-radius: 10px;
-    font-size: 13px;
-    color: var(--text-primary);
-    line-height: 1.55;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.96);
+    line-height: 1.5;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
   }
   .plugin-detail .stack-hint .head {
     display: flex; align-items: center; justify-content: space-between;
-    gap: 12px; margin-bottom: 8px;
+    gap: 8px; margin-bottom: 4px;
   }
   .plugin-detail .stack-hint .title {
     font-weight: var(--font-semibold);
-    color: #0e9b6a;
-    font-size: 13px;
+    color: #fff;
+    font-size: 12px;
   }
   .plugin-detail .stack-hint .dismiss {
-    appearance: none; background: transparent; border: none;
-    color: var(--text-secondary); font-size: 11px; cursor: pointer;
-    padding: 2px 6px; border-radius: 4px;
+    appearance: none; background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.30);
+    color: rgba(255, 255, 255, 0.82); font-size: 10px; cursor: pointer;
+    padding: 2px 7px; border-radius: 5px;
     font-family: inherit;
+    white-space: nowrap;
   }
-  .plugin-detail .stack-hint .dismiss:hover { color: var(--text-primary); background: rgba(0,0,0,0.04); }
+  .plugin-detail .stack-hint .dismiss:hover {
+    color: #fff; background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.50);
+  }
   .plugin-detail .stack-hint ol {
     margin: 6px 0 0; padding-left: 20px;
     color: var(--text-secondary);
@@ -512,8 +578,28 @@
         <div class="curator" id="hero-curator"></div>
         <div class="pills" id="hero-pills"></div>
       </div>
-      <div class="actions">
-        <button class="btn-install" id="install-btn" type="button" data-installed="0" hidden>+ Add to my stack</button>
+    </div>
+    <!-- Actions absolutely anchored at the hero's top-right corner with
+         the post-action hint card stacked below them. Both stay inside
+         the hero gradient — the hero's natural height (160px photo)
+         contains them without overflow. -->
+    <div class="actions">
+      <div class="actions-row">
+        <button class="btn-install" id="install-btn" type="button" hidden>+ Add to my stack</button>
+        <span class="status-pill" id="status-pill" hidden>✓ In your stack</span>
+        <button class="btn-remove" id="remove-btn" type="button" hidden>✕ Remove from stack</button>
+      </div>
+      <div class="stack-hint" id="stack-hint" hidden>
+        <div class="head">
+          <span class="title" id="stack-hint-title">✓ Added to your stack</span>
+          <button class="dismiss" id="stack-hint-dismiss" type="button">Don’t show again</button>
+        </div>
+        <div>Run in Claude Code:</div>
+        <div class="cmd-chip">
+          <span class="prompt">/</span>
+          <span class="cmd">update-agnes-plugins</span>
+          <button class="btn-copy" id="stack-hint-copy" type="button">Copy</button>
+        </div>
       </div>
     </div>
   </div>
@@ -522,18 +608,6 @@
     <div class="panel" id="panel-what">
       <h2>What it does</h2>
       <div class="lead" id="lead-text">Loading…</div>
-      <div class="stack-hint" id="stack-hint" hidden>
-        <div class="head">
-          <span class="title">✓ Added to your stack</span>
-          <button class="dismiss" id="stack-hint-dismiss" type="button">Don’t show again</button>
-        </div>
-        <div>Open a new Claude Code session and run:</div>
-        <div class="cmd-chip">
-          <span class="prompt">/</span>
-          <span class="cmd">update-agnes-plugins</span>
-          <button class="btn-copy" id="stack-hint-copy" type="button">Copy</button>
-        </div>
-      </div>
     </div>
     <div class="panel details" id="panel-details">
       <h2>Details</h2>
@@ -676,15 +750,25 @@
     photoEl.textContent = 'PL';
   }
 
-  // Install button (only render the action when API returned a value)
-  const btn = document.getElementById('install-btn');
-  btn.hidden = false;
-  function renderInstallBtn(installed) {
-    btn.dataset.installed = installed ? '1' : '0';
-    btn.classList.toggle('installed', installed);
-    btn.textContent = installed ? '✓ In your stack' : '+ Add to my stack';
+  // Three-element install state: install button (off-state CTA), status
+  // pill (on-state label), remove button (on-state action). Only one of
+  // {installBtn} vs {statusPill + removeBtn} is visible at a time. The
+  // separation lets the on-state communicate BOTH facts simultaneously
+  // ("currently in stack" + "click here to remove") without the GitHub
+  // hover-morph trick — explicit affordance, desktop-first.
+  const installBtn = document.getElementById('install-btn');
+  const statusPill = document.getElementById('status-pill');
+  const removeBtn = document.getElementById('remove-btn');
+
+  function renderInstallState(installed) {
+    installBtn.hidden = installed;
+    statusPill.hidden = !installed;
+    statusPill.classList.remove('is-system');
+    statusPill.textContent = '✓ In your stack';
+    statusPill.removeAttribute('title');
+    removeBtn.hidden = !installed;
   }
-  renderInstallBtn(!!d.installed);
+  renderInstallState(!!d.installed);
 
   // v32+ quarantine: when the entity is non-approved (only owner +
   // admin land here in that state — gated server-side), disable the
@@ -692,12 +776,28 @@
   // refuses POST /install with `entity_not_approved` so a clever user
   // who toggles the disabled attribute in devtools still hits a 409.
   if (d.visibility_status && d.visibility_status !== 'approved') {
-    btn.disabled = true;
-    btn.title = 'This submission is not approved yet — install is disabled until checks pass.';
-    btn.textContent = '+ Add to my stack (unavailable while under review)';
-    btn.style.background = '#e5e7eb';
-    btn.style.color = '#6b7280';
-    btn.style.cursor = 'not-allowed';
+    installBtn.hidden = false;
+    statusPill.hidden = true;
+    removeBtn.hidden = true;
+    installBtn.disabled = true;
+    installBtn.title = 'This submission is not approved yet — install is disabled until checks pass.';
+    installBtn.textContent = '+ Add to my stack (unavailable while under review)';
+    installBtn.style.background = '#e5e7eb';
+    installBtn.style.color = '#6b7280';
+    installBtn.style.cursor = 'not-allowed';
+  }
+
+  // v39: system plugins are mandatory — already in the user's stack and
+  // cannot be removed. Render only the locked amber status pill; the
+  // install + remove controls stay hidden. API also refuses uninstall
+  // with 409 so a devtools-poke can't bypass the visual lock.
+  if (d.is_system) {
+    installBtn.hidden = true;
+    removeBtn.hidden = true;
+    statusPill.hidden = false;
+    statusPill.classList.add('is-system');
+    statusPill.textContent = '✓ Required by your org';
+    statusPill.title = 'Required by your organization — managed by admin';
   }
 
   // Post-add hint panel — fires only on the *transition* into 'installed'
@@ -726,14 +826,33 @@
     } catch { /* clipboard blocked — chip text remains selectable */ }
   });
 
-  btn.addEventListener('click', async () => {
-    const installed = btn.dataset.installed === '1';
-    const method = installed ? 'DELETE' : 'POST';
-    const r = await fetch(installURL, { method });
-    if (!r.ok) { alert('Action failed (' + r.status + ')'); return; }
-    renderInstallBtn(!installed);
-    if (!installed) showHint();   // newly added → reveal next-steps
-    else hintEl.hidden = true;    // removed → hide stale hint
+  // Two click handlers — one per element. Both surface the same
+  // /update-agnes-plugins recipe afterwards because the local Claude
+  // Code session needs the same refresh whether the user just added
+  // OR removed the plugin from the served set. Title swaps between
+  // "Added" / "Removed" so the reason for the recipe is unambiguous.
+  const hintTitle = document.getElementById('stack-hint-title');
+  function setHintTitle(kind) {
+    if (!hintTitle) return;
+    hintTitle.textContent = kind === 'removed'
+      ? '✓ Removed from your stack'
+      : '✓ Added to your stack';
+  }
+
+  installBtn.addEventListener('click', async () => {
+    const r = await fetch(installURL, { method: 'POST' });
+    if (!r.ok) { alert('Add failed (' + r.status + ')'); return; }
+    renderInstallState(true);
+    setHintTitle('added');
+    showHint();
+  });
+
+  removeBtn.addEventListener('click', async () => {
+    const r = await fetch(installURL, { method: 'DELETE' });
+    if (!r.ok) { alert('Remove failed (' + r.status + ')'); return; }
+    renderInstallState(false);
+    setHintTitle('removed');
+    showHint();
   });
 
   // v35 owner / admin delete handlers. Two paths:

@@ -1,5 +1,6 @@
 """User management endpoints (#11)."""
 
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from src.repositories.users import UserRepository
 from src.repositories.user_group_members import UserGroupMembersRepository
 from src.repositories.audit import AuditRepository
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
@@ -263,6 +265,19 @@ async def create_user(
     # New users start with no group memberships — admin promotion is an
     # explicit follow-up step (POST /api/admin/users/{id}/memberships with
     # the Admin group_id, or POST /api/admin/groups/{admin_id}/members).
+    # v39: subscribe to every system plugin so the mandatory tier
+    # reaches the new user on first sign-in without admin reconcile.
+    try:
+        from src.repositories.user_curated_subscriptions import (
+            UserCuratedSubscriptionsRepository,
+        )
+        UserCuratedSubscriptionsRepository(
+            conn
+        ).fanout_system_for_user(user_id)
+    except Exception:
+        logger.exception(
+            "system-plugin fanout failed for new user %s", payload.email,
+        )
     _audit(conn, user["id"], "user.create", user_id, {"email": payload.email})
 
     invite_url: Optional[str] = None

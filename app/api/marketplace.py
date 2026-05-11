@@ -88,6 +88,9 @@ class MarketplaceItem(BaseModel):
     # own non-approved cards. Approved cards omit both fields.
     visibility_status: Optional[str] = None
     is_viewer_owner: bool = False
+    # v39: drives the "Required" pill on the curated browse cards. Only
+    # set on curated items (flea/store entities are never system).
+    is_system: bool = False
 
 
 class ItemListResponse(BaseModel):
@@ -197,6 +200,10 @@ class PluginDetailResponse(BaseModel):
     # insufficient because `blocked_llm` keeps the entity at
     # `visibility_status='pending'`.
     submission_status: Optional[str] = None
+    # v39: drives the disabled install button on the curated plugin
+    # detail page. The same flag travels via /api/marketplace/items so
+    # the browse cards can show a "Required" pill.
+    is_system: bool = False
 
 
 # Legacy alias kept so any unmigrated import continues to resolve. The new
@@ -372,6 +379,7 @@ def _curated_to_item(
         marketplace_slug=marketplace_id,
         marketplace_name=meta["name"],
         detail_url=_curated_detail_url(marketplace_id, plugin_name),
+        is_system=bool(plugin_row.get("is_system")),
     )
 
 
@@ -1016,6 +1024,7 @@ async def curated_detail(
         mcps=mcps,
         files=_walk_files(plugin_root),
         docs=doc_link_entries,
+        is_system=bool(plugin_row.get("is_system")),
     )
 
 
@@ -1193,6 +1202,18 @@ async def curated_uninstall(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    # v39: system plugins are mandatory for every user — refuse uninstall.
+    sys_row = conn.execute(
+        "SELECT is_system FROM marketplace_plugins "
+        "WHERE marketplace_id = ? AND name = ?",
+        [marketplace_id, plugin_name],
+    ).fetchone()
+    if sys_row and bool(sys_row[0]):
+        raise HTTPException(
+            status_code=409,
+            detail="cannot_uninstall_system_plugin",
+        )
+
     deleted = UserCuratedSubscriptionsRepository(conn).unsubscribe(
         user["id"], marketplace_id, plugin_name,
     )

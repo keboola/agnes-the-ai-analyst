@@ -1053,15 +1053,6 @@ async def install_redirect(request: Request):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/store", response_class=HTMLResponse)
-async def store_listing(
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "store_listing.html", ctx)
-
-
 @router.get("/store/new", response_class=HTMLResponse)
 async def store_new(
     request: Request,
@@ -1120,21 +1111,12 @@ async def store_edit(
     return templates.TemplateResponse(request, "store_edit.html", ctx)
 
 
-# Legacy /store/{id} detail surface removed in v32+. The unified
-# /marketplace/flea/{id} is the canonical detail page. All in-tree
-# callers (store_upload redirect, my_ai_stack card, store_listing
-# card) point straight at the new URL — there is no in-app
-# navigation that lands on /store/{id}. Stale external bookmarks 404,
-# accepted per design discussion.
-
-
-@router.get("/my-ai-stack", response_class=HTMLResponse)
-async def my_ai_stack_page(
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "my_ai_stack.html", ctx)
+# Legacy /store/{id}, /store, and /my-ai-stack page surfaces all
+# removed. The unified /marketplace?tab=flea + /marketplace?tab=my views
+# replaced the listing pages, /marketplace/flea/{id} is the canonical
+# detail surface, and /store/new (the upload wizard) survives as the
+# only /store/* page route. Stale external bookmarks to the deleted
+# pages 404 — accepted in dev-mode cleanup.
 
 
 # ---------------------------------------------------------------------------

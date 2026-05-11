@@ -235,6 +235,22 @@
     font-family: var(--hp-font-mono);
     font-size: 11.5px;
 }
+/* Links inside the blue install-hero need a non-blue color — the default
+   `<a>` style elsewhere on /home renders as `var(--hp-primary)` blue,
+   which is invisible against the hero's blue background. Use the same
+   high-contrast white-with-underline pattern the lead paragraph uses,
+   and bump hover to full white so the affordance stays obvious. */
+.home-mock .install-hero a {
+    color: #ffffff;
+    text-decoration: underline;
+    text-decoration-color: rgba(255, 255, 255, 0.6);
+    text-underline-offset: 2px;
+}
+.home-mock .install-hero a:hover,
+.home-mock .install-hero a:focus {
+    color: #ffffff;
+    text-decoration-color: #ffffff;
+}
 
 .home-mock .automode-card {
     margin: 22px 0;
@@ -897,7 +913,7 @@
         {% if onboarded %}
         <div class="install-done" role="status" aria-live="polite">
             <span class="check" aria-hidden="true">&#x2705;</span>
-            <span><strong>Step 1 &amp; Step 2 done</strong> — Claude Code is installed and Agnes finished setting up <code>~/Agnes</code>. The full install steps stay one click away under the offboard control below.</span>
+            <span><strong>Step 1, 2 &amp; 3 done</strong> — Claude Code installed, auto-mode set, Agnes ready in <code>~/Agnes</code>. The full install steps stay one click away under the offboard control below.</span>
         </div>
         {% endif %}
 
@@ -920,11 +936,23 @@
             </div>
             <div class="install-note">
                 Verify with <code>claude --version</code>. Sign in once with <code>claude</code> and complete the OAuth flow.
+                Don't have a Claude license yet? See <a href="/setup-advanced#claude-plan">plan options on /setup-advanced</a> (Pro / Max 5× / Max 20×).
             </div>
         </div>
 
+        {% if home_automode.show %}
         <div class="install-block">
-            <div class="label">Step 2 — install Agnes from inside Claude Code</div>
+            <div class="label">Step 2 — turn on auto-mode (recommended before Step 3)</div>
+            <div class="install-note">
+                In the Claude Code session you just signed into, press <strong>Shift + Tab</strong>. Claude cycles modes: default → <strong>auto-accept edits</strong> → plan mode → default; the footer shows <code>⏵⏵</code> when auto-accept is on. On the first cycle to auto-accept, Claude asks whether to make it the default — say <strong>yes</strong>. Closed the session already? Run <code>claude</code> again, then press <strong>Shift + Tab</strong>.
+                <br><br>
+                Want full auto-approve including Bash? See <a href="/setup-advanced#yolo">YOLO mode</a> on /setup-advanced — pairs <code>--dangerously-skip-permissions</code> with a reviewed <code>~/.claude/settings.local.json</code> allowlist. Skip if you're not sure.
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="install-block">
+            <div class="label">Step 3 — install Agnes from inside Claude Code</div>
             <p class="setup-cta-lead">
                 Click the button — Agnes mints a 90-day personal access token, copies a ready-to-paste setup script to your clipboard, and the script bootstraps everything in <code>~/Agnes</code> when you paste it into Claude Code.
             </p>
@@ -976,11 +1004,13 @@
         </div>
 
         {% if onboarded %}
-        {# User-controlled minimize toggle for Step 3 + Connect-your-tools.
-           Default OFF (sections render flat). State persists in
+        {# User-controlled minimize toggle for Connect-your-tools.
+           Default OFF (section renders flat). State persists in
            localStorage so the choice is per-device. The agnes-init
            auto-flip of users.onboarded never triggers a collapse on
-           its own — only an explicit click here does. #}
+           its own — only an explicit click here does. The auto-mode
+           block used to be a peer collapsible (`step3`); it now lives
+           inside the install-hero as Step 2 and is not collapsible. #}
         <div class="setup-minimize">
             <button id="setupMinimizeToggle" type="button" aria-pressed="false">
                 Minimize setup view
@@ -989,49 +1019,10 @@
         {% endif %}
     </div>
 
-    {% if home_automode.show %}
-    <details class="setup-collapsible" data-section="step3" open>
-        <summary>
-            <span class="ico" aria-hidden="true">&#x26A1;&#xFE0F;</span>
-            <span class="ttl">Step 3 — auto-accept mode <small>(reference)</small></span>
-            <span class="chev" aria-hidden="true">&rsaquo;</span>
-        </summary>
-    <div class="automode-card">
-        <div class="automode-head">
-            <span class="ico">&#x26A1;&#xFE0F;</span>
-            <div>
-                <h3>Step 3 — turn on auto-accept mode (recommended)</h3>
-                <p>By default, Claude asks permission before every action. Auto-accept mode auto-approves file edits while keeping shell commands and other side-effect tools gated — fast for daily work, still safe.</p>
-            </div>
-        </div>
-        <div class="automode-grid">
-            <div class="automode-step">
-                <div class="num">1</div>
-                <div class="step-text">
-                    <strong>One session</strong>
-                    Inside any active Claude Code session, press <kbd>Shift</kbd> + <kbd>Tab</kbd> to cycle modes:<br>
-                    default → <strong>auto-accept edits</strong> → plan mode → default. The footer shows <code>⏵⏵</code> when auto-accept is on.
-                </div>
-            </div>
-            <div class="automode-step">
-                <div class="num">2</div>
-                <div class="step-text">
-                    <strong>Persist across sessions</strong>
-                    Add to <code>~/.claude/settings.json</code>:
-                    <pre class="automode-code">{
-  "permissions": {
-    "defaultMode": "acceptEdits"
-  }
-}</pre>
-                </div>
-            </div>
-        </div>
-        <p class="automode-foot">
-            Want full auto-approve including Bash? See <a href="/setup-advanced#yolo">YOLO mode</a> on /setup-advanced — pairs <code>--dangerously-skip-permissions</code> with a reviewed <code>~/.claude/settings.local.json</code> allowlist. Skip if you're not sure.
-        </p>
-    </div>
-    </details>
-    {% endif %}
+    {# Auto-mode card used to live here as a `<details>` reference block;
+       moved into the install-hero as the new Step 2 so users enable it
+       BEFORE Step 3's install runs ~20 commands. Gated by the same
+       `home_automode.show` flag at the call site. #}
 
     <details class="setup-collapsible" data-section="connectors" open>
         <summary>
@@ -1050,7 +1041,10 @@
                 <button class="connector-copy" data-copy-target="asana-prompt">Copy prompt</button>
                 <details class="connector-preview">
                     <summary>Show prompt</summary>
-                    <div class="card-mini-cmd"><code id="asana-prompt">Set up an Asana personal access token for Claude Code. Walk me through it step by step:
+                    <div class="card-mini-cmd"><code id="asana-prompt">Set up an Asana personal access token for Claude Code. Walk me through it step by step.
+
+Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when Asana is already wired up. If any step fails with an unfamiliar error, paste the exact error back and stop. Do NOT improvise around TLS errors by disabling verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `git -c http.sslVerify=false`, etc.) — those hide the real problem.
+
 0. Precheck — skip the rest if Asana is already connected. Detect my OS, then look up an existing keychain entry under the service name `agnes-asana-pat` and verify it against Asana's API. macOS: `t=$(security find-generic-password -s 'agnes-asana-pat' -w 2&gt;/dev/null) &amp;&amp; curl -fsS -H "Authorization: Bearer $t" https://app.asana.com/api/1.0/users/me | jq -r '.data | "Already connected as \(.name) (\(.workspaces | length) workspace(s)). Skipping setup."' &amp;&amp; exit 0`. Linux: `t=$(secret-tool lookup service agnes-asana-pat username "$USER" 2&gt;/dev/null) &amp;&amp; ...same curl...`. Windows PowerShell: `$cred = cmdkey /list:agnes-asana-pat 2&gt;$null; if ($LASTEXITCODE -eq 0) { Write-Host "Asana cred entry found — verify in your terminal before re-running setup." }` (Windows can't read the password back without a CredentialManager module — print a hint and let me confirm). If the verify call returns 200, print the one-line "Already connected" message and STOP. Only continue to step 1 when no cred exists OR the cached token returns 401.
 1. Open the Asana developer tokens page in my default browser — use your Bash tool: `open https://app.asana.com/0/developer-console/tokens` on macOS, `xdg-open https://app.asana.com/0/developer-console/tokens` on Linux/WSL, or `Start-Process https://app.asana.com/0/developer-console/tokens` on Windows. Detect OS first. If that URL doesn't render the tokens UI (rare), tell me to click my avatar (top right) → Settings → "Apps" tab → "Manage Developer Apps" → Personal access tokens.
 2. Tell me to click "+ New access token", name it "Claude Code — Agnes", and click "Create token". Warn me the token is shown ONCE and Asana PATs do not expire — I'd need to revoke it from the same page if it leaks.
@@ -1080,6 +1074,8 @@
                 <details class="connector-preview">
                     <summary>Show prompt</summary>
                     <div class="card-mini-cmd"><code id="gws-prompt">Set up Google Workspace access for Claude Code using the official `gws` CLI from https://github.com/googleworkspace/cli (install steps: README → Installation). The npm path is what we'll use because (a) it's the README's documented convenience path, (b) it works the same on macOS / Linux / WSL / Windows, and (c) it can run with zero admin rights when Node is managed by `nvm` (Unix) or `fnm` (Windows).
+
+Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when `gws` is already installed and authed. If any step fails with an unfamiliar error, paste the exact error back and stop — don't half-finish. Do NOT improvise around TLS errors by disabling verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, npm `strict-ssl=false`, etc.) — those mask the real problem.
 
 YOU run every command via your Bash tool. Do NOT print install commands and ask me to type them. Only stop and ask me when I have to (a) approve an OAuth consent screen in a browser, (b) make a product decision (Cloud project name), or (c) paste OAuth client credentials Google shows me.
 
@@ -1124,7 +1120,7 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
        "token_uri": "https://oauth2.googleapis.com/token",
        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
        "client_secret": "{{ gws_oauth.client_secret }}",
-       "redirect_uris": ["http://127.0.0.1"]
+       "redirect_uris": ["http://localhost"]
      }
    }
 
@@ -1132,10 +1128,10 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
 {% else %}5. Run `gws auth setup` for me. This is a one-time Google Cloud project config; gcloud is NOT required (when gcloud is absent, `gws auth setup` walks through the manual OAuth flow). Open the URL it prints in my default browser, then walk me through each click because I am NOT a GCP admin:
    a. Pick or create a Google Cloud project (free tier is fine).
    b. Enable the APIs the connector needs: Google Drive API, Google Calendar API, Gmail API. Tell me each menu click.
-   c. Create an OAuth 2.0 client of type "Desktop app".
+   c. Create an OAuth 2.0 client. Either "Desktop app" or "Web application" works. For Web application: add `http://localhost` (exact value — no port, no path, no trailing slash) to Authorized redirect URIs. Google's loopback exemption then matches the `http://localhost:<ephemeral-port>` redirect that `gws auth login` actually uses. Desktop app needs no URI registration.
    d. Copy the resulting client_id and client_secret. Paste them back into the terminal where `gws auth setup` is waiting. These identify the OAuth app — not the user — but still don't echo them back to me in chat.{% endif %}
 
-6. Run `gws auth login --full` (no `--readonly` flag — Agnes uses full read + write access across Drive / Calendar / Gmail / Sheets / Docs / Chat so the agent can actually create, edit, and send on my behalf). The `--full` flag widens the default scope picker; without it Chat / People / Tasks scopes are silently dropped. One env var the loopback redirect needs is OAUTHLIB_INSECURE_TRANSPORT — set it in the SAME Bash invocation that runs login: `OAUTHLIB_INSECURE_TRANSPORT={{ gws_oauth.oauthlib_insecure_transport if gws_oauth.configured else "1" }} gws auth login --full`. The CLI binds a local loopback server at http://127.0.0.1:8080 and prints an OAuth URL.
+6. Run `gws auth login --full` (no `--readonly` flag — Agnes uses full read + write access across Drive / Calendar / Gmail / Sheets / Docs / Chat so the agent can actually create, edit, and send on my behalf). The `--full` flag widens the default scope picker; without it Chat / People / Tasks scopes are silently dropped. One env var the loopback redirect needs is OAUTHLIB_INSECURE_TRANSPORT — set it in the SAME Bash invocation that runs login: `OAUTHLIB_INSECURE_TRANSPORT={{ gws_oauth.oauthlib_insecure_transport if gws_oauth.configured else "1" }} gws auth login --full`. The CLI binds a local loopback server at `http://localhost:<random-port>` — an OS-assigned ephemeral port, NOT a fixed 8080 — and prints an OAuth URL. If this errors with `redirect_uri_mismatch`, the Cloud Console OAuth client is a Web application type that's missing the `http://localhost` entry in Authorized redirect URIs (no port, no path) — add that exact value and retry.
 
    Capture the URL from gws's stdout. Before opening the browser, append the Chat write scopes (`https://www.googleapis.com/auth/chat.spaces` and `https://www.googleapis.com/auth/chat.messages`) to the URL's `scope=` query parameter — `--full` includes the readonly Chat scopes but NOT the read+write ones, and `gws chat ... send` calls fail without them. Decode the existing scope list, append the two URLs space-separated, re-encode, then open. Python one-liner via Bash tool:
 
@@ -1164,17 +1160,20 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
                 <button class="connector-copy" data-copy-target="jira-prompt">Copy prompt</button>
                 <details class="connector-preview">
                     <summary>Show prompt</summary>
-                    <div class="card-mini-cmd"><code id="jira-prompt">Set up Atlassian (Jira + Confluence) API access for Claude Code. Walk me through it step by step:
-0. Precheck — skip the rest if Atlassian is already connected. The setup script stores email + base URL in `~/.claude/agnes/secrets.env` and the API token in the OS keychain under `agnes-atlassian-api-token`. Verify all three exist + auth works before reinstalling. macOS: `[ -r ~/.claude/agnes/secrets.env ] &amp;&amp; . ~/.claude/agnes/secrets.env &amp;&amp; t=$(security find-generic-password -s 'agnes-atlassian-api-token' -a "$ATLASSIAN_EMAIL" -w 2&gt;/dev/null) &amp;&amp; curl -fsS -u "$ATLASSIAN_EMAIL:$t" "$ATLASSIAN_BASE_URL/rest/api/3/myself" | jq -r '"Already connected as \(.displayName) (\(.emailAddress)) on '"$ATLASSIAN_BASE_URL"'. Skipping setup."' &amp;&amp; exit 0`. Linux: same shape but `t=$(secret-tool lookup service agnes-atlassian-api-token username "$ATLASSIAN_EMAIL")`. Windows: read `secrets.env`, then `cmdkey /list:agnes-atlassian-api-token` — if entry exists, print "Atlassian cred entry found — verify in your real terminal before re-running setup." and let me confirm rather than auto-skipping. If the verify call returns 200, STOP with the "Already connected" line. Continue to step 1 only when secrets.env is missing OR keychain lookup fails OR `myself` returns 401.
+                    <div class="card-mini-cmd"><code id="jira-prompt">Set up Atlassian (Jira + Confluence) API access for Claude Code. Walk me through it step by step.
+
+Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when Atlassian is already wired up. If any step fails with an unfamiliar error, paste the exact error back and stop. Do NOT improvise around TLS errors by disabling verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `git -c http.sslVerify=false`, etc.) — those hide the real problem.
+
+0. Precheck — skip the rest if Atlassian is already connected. The setup script stores email + the *normalized* site root URL (no trailing slash, no `/wiki` suffix) in `~/.claude/agnes/secrets.env` and the API token in the OS keychain under `agnes-atlassian-api-token`. Verify all three exist + auth works against the LIVE Atlassian API before reinstalling, and probe BOTH Jira and Confluence — sites can have either product enabled, so Jira's `/rest/api/3/myself` returns 404 on Confluence-only sites and vice-versa. macOS: `[ -r ~/.claude/agnes/secrets.env ] &amp;&amp; . ~/.claude/agnes/secrets.env &amp;&amp; t=$(security find-generic-password -s 'agnes-atlassian-api-token' -a "$ATLASSIAN_EMAIL" -w 2&gt;/dev/null) &amp;&amp; B="${ATLASSIAN_BASE_URL%/}" &amp;&amp; B="${B%/wiki}" &amp;&amp; tmp=$(mktemp) &amp;&amp; code=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$ATLASSIAN_EMAIL:$t" "$B/rest/api/3/myself") &amp;&amp; { [ "$code" = "404" ] &amp;&amp; code=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$ATLASSIAN_EMAIL:$t" "$B/wiki/rest/api/user/current"); :; } &amp;&amp; [ "$code" = "200" ] &amp;&amp; jq -r '"Already connected as \(.displayName) (\(.emailAddress // "no email scope")) on '"$B"'. Skipping setup."' &lt; "$tmp" &amp;&amp; rm -f "$tmp" &amp;&amp; exit 0`. Linux: same shape but `t=$(secret-tool lookup service agnes-atlassian-api-token username "$ATLASSIAN_EMAIL")`. Windows: read `secrets.env`, then `cmdkey /list:agnes-atlassian-api-token` — if entry exists, print "Atlassian cred entry found — verify in your real terminal before re-running setup." and let me confirm rather than auto-skipping. If the verify call (either probe) returns 200, STOP with the "Already connected" line. Continue to step 1 only when secrets.env is missing OR keychain lookup fails OR BOTH probes return non-200. Treat 401 from either probe as "real auth failure — token is bad" and skip the second probe.
 1. Ask me for my Atlassian Cloud site URL (looks like https://&lt;myorg&gt;.atlassian.net) and the email I sign in with. Site URL and email are NOT secrets — fine to type into chat. Don't proceed until I've given you both.
 2. Open the Atlassian API tokens page in my default browser — use your Bash tool: `open https://id.atlassian.com/manage-profile/security/api-tokens` on macOS, `xdg-open ...` on Linux/WSL, or `Start-Process ...` on Windows. Detect OS first. If I land on a generic profile page, tell me: avatar (top right) → Manage account → Security → "Create and manage API tokens".
 3. Tell me to click "Create API token" (NOT "Create API token with scopes" unless I specifically need fine-grained — one-line trade-off: scoped tokens are limited per project but expire and need rotation; unscoped is simplest for personal use). Label it "Claude Code — Agnes", click Create, copy the token. Warn me it is shown ONCE.
 4. Important: do NOT ask me to paste the token into the chat. Prepare a helper script for me to run in my real terminal, with my email and site URL baked in as literals (so they're not re-prompted at runtime):
-   a. Use the Write tool to create ~/.claude/agnes/bin/store-atlassian.sh on macOS/Linux (or .ps1 on Windows). chmod 700. The script must (i) reject obviously-truncated tokens via a length floor and (ii) verify the credentials against the Atlassian API BEFORE writing anything to the keychain. Both guards exist because Atlassian's "shown ONCE" copy panel commonly truncates if the user click-copies instead of using the panel's Copy button — silently storing a 43-char fragment then discovering it later is the failure mode we're avoiding. Body for macOS:
+   a. Use the Write tool to create ~/.claude/agnes/bin/store-atlassian.sh on macOS/Linux (or .ps1 on Windows). chmod 700. The script must (i) reject obviously-truncated tokens via a length floor, (ii) NORMALIZE the base URL so the verify call hits a real endpoint, and (iii) verify the credentials against the live Atlassian API — trying Jira first, then Confluence on 404 — BEFORE writing anything to the keychain. The length guard exists because Atlassian's "shown ONCE" copy panel commonly truncates if the user click-copies instead of using the panel's Copy button — silently storing a 43-char fragment then discovering it later is the failure mode we're avoiding. The URL-normalization + product-fallback exists because `/rest/api/3/myself` only lives under Jira and returns 404 on Confluence-only sites (and vice-versa for `/wiki/rest/api/user/current`); previously a perfectly valid token paired with a Confluence-only URL or a URL the user pasted with a `/wiki` or trailing slash would 404 here and the prompt would falsely report the token as broken. Body for macOS:
       #!/usr/bin/env bash
       set -e
       EMAIL='&lt;the email I gave you&gt;'
-      BASE_URL='&lt;the site URL I gave you, no trailing slash&gt;'
+      BASE_URL='&lt;the site URL I gave you&gt;'
       read -srp 'Paste Atlassian API token (hidden): ' t; echo
 
       # Guard 1 — Atlassian Cloud tokens are typically 192+ chars; sub-100
@@ -1186,12 +1185,32 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
         exit 1
       fi
 
-      # Guard 2 — verify against the live API before storing. If auth fails
-      # the keychain stays untouched and we know immediately why.
+      # Guard 2 — normalize the site root: strip a trailing slash, then a
+      # trailing /wiki if present, so $BASE_URL is the bare site root.
+      # `$BASE_URL/rest/api/3/myself` (Jira) and `$BASE_URL/wiki/rest/api/user/current`
+      # (Confluence) both resolve correctly from the same normalized value.
+      BASE_URL="${BASE_URL%/}"
+      BASE_URL="${BASE_URL%/wiki}"
+
+      # Guard 3 — verify against the live API before storing. Try Jira first
+      # (most sites have it), fall back to Confluence on 404 only. On 401
+      # we stop immediately: the token itself is bad, no point probing the
+      # other product. Anything else (5xx, network) also aborts.
       tmp=$(mktemp)
+      product=jira
       status=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$EMAIL:$t" "$BASE_URL/rest/api/3/myself" || true)
-      if [[ "$status" != "200" ]]; then
-        echo "API verification failed (HTTP $status). Aborting without storing." >&amp;2
+      if [ "$status" = "404" ]; then
+        product=confluence
+        status=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$EMAIL:$t" "$BASE_URL/wiki/rest/api/user/current" || true)
+      fi
+      if [ "$status" != "200" ]; then
+        if [ "$status" = "401" ]; then
+          echo "API verification failed (HTTP 401 — token rejected by Atlassian). The token is either wrong, revoked, or paired with the wrong email. Aborting without storing." >&amp;2
+        elif [ "$status" = "404" ]; then
+          echo "API verification failed (HTTP 404 on both Jira and Confluence probes). The site URL '$BASE_URL' is reachable but exposes neither product to this token — double-check the URL (it should be your Atlassian Cloud site root, e.g. https://yourorg.atlassian.net) or that your account has access to Jira or Confluence on this site. Aborting without storing." >&amp;2
+        else
+          echo "API verification failed (HTTP $status). Aborting without storing." >&amp;2
+        fi
         cat "$tmp" >&amp;2 2&gt;/dev/null || true
         rm -f "$tmp"; unset t
         exit 1
@@ -1205,13 +1224,13 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
       printf 'ATLASSIAN_EMAIL=%s\nATLASSIAN_BASE_URL=%s\n' "$EMAIL" "$BASE_URL" &gt; ~/.claude/agnes/secrets.env
       chmod 600 ~/.claude/agnes/secrets.env
       unset t
-      echo "Stored. Verified as $display."
+      echo "Stored ($product). Verified as $display."
 
-      Linux variant: replace `security add-generic-password ...` with `printf %s "$t" | secret-tool store --label='Agnes Atlassian token' service agnes-atlassian-api-token username "$EMAIL"`. Both guards (length floor, API verification) stay identical — they run before the storage call. Windows .ps1: same control flow using `Read-Host -AsSecureString`, convert to plain via `Marshal::PtrToStringAuto`, check `$t.Length -lt 100`, run `Invoke-RestMethod -Uri "$BASE_URL/rest/api/3/myself" -Authentication Basic -Credential (New-Object PSCredential($EMAIL, $secureToken))` wrapped in try/catch (writes to `cmdkey` only on success), then write secrets.env via Set-Content.
+      Linux variant: replace `security add-generic-password ...` with `printf %s "$t" | secret-tool store --label='Agnes Atlassian token' service agnes-atlassian-api-token username "$EMAIL"`. All three guards (length floor, URL normalization, Jira-then-Confluence verification) stay identical — they run before the storage call. Windows .ps1: same control flow — `Read-Host -AsSecureString`, convert via `Marshal::PtrToStringAuto`, check `$t.Length -lt 100`, then `$BASE_URL = $BASE_URL.TrimEnd('/').TrimEnd('/wiki')` (or `if ($BASE_URL.EndsWith('/wiki')) { $BASE_URL = $BASE_URL.Substring(0, $BASE_URL.Length - 5) }`), `try { Invoke-RestMethod -Uri "$BASE_URL/rest/api/3/myself" -Authentication Basic -Credential (New-Object PSCredential($EMAIL, $secureToken)) } catch { if ($_.Exception.Response.StatusCode.value__ -eq 404) { Invoke-RestMethod -Uri "$BASE_URL/wiki/rest/api/user/current" -Authentication Basic -Credential ... } else { throw } }` — write to `cmdkey` + `secrets.env` only after a 200 lands from either probe.
    b. Tell me to open a real terminal (not Claude Code's `!`) and run `bash ~/.claude/agnes/bin/store-atlassian.sh` (or `pwsh ~/.claude/agnes/bin/store-atlassian.ps1` on Windows). The script will wait silently at the hidden prompt.
    c. Walk me through clipboard order: copy the launcher first, paste in terminal, Enter (terminal waiting). Switch to the Atlassian tab, copy the token from step 3 — use the panel's "Copy" button, NOT click-and-drag (which often truncates). Switch back to terminal, paste at the silent prompt, Enter. The script will print "Stored. Verified as &lt;your name&gt;." on success, or fail loudly with the exact reason (too short / HTTP 401 / etc.) without writing anything.
 5. Register the on-demand Atlassian MCP under .claude/mcp/atlassian referencing the stored credentials (read token from keychain via `security find-generic-password -s 'agnes-atlassian-api-token' -w` at MCP startup).
-6. The store script already verified the token end-to-end. If I want a second redacted readback later, you can hit `GET $BASE_URL/rest/api/3/myself` again and print just displayName + accountId — never the token.
+6. The store script already verified the token end-to-end. If I want a second redacted readback later, hit `GET $BASE_URL/rest/api/3/myself` (Jira) or `GET $BASE_URL/wiki/rest/api/user/current` (Confluence) — try Jira first, fall back to Confluence on 404, same shape as the store script's verify. Print just displayName + accountId — never the token.
 7. Remind me how to revoke: same API tokens page on Atlassian, plus `security delete-generic-password -s 'agnes-atlassian-api-token'` locally (macOS) / `secret-tool clear service agnes-atlassian-api-token` (Linux) / `cmdkey /delete:agnes-atlassian-api-token` (Windows).</code></div>
                 </details>
             </div>

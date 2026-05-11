@@ -231,9 +231,12 @@ class TestClaudeSetupPreview:
         # because it validates the PEP 427 filename in the URL before fetch).
         assert "/cli/wheel/" in body
         assert "/cli/agnes.whl" not in body
-        # Unified layout: numbered headers + diagnose step
+        # Unified always-on layout (Fix B + Fix C in 2026-05-10 init-report
+        # response): preflight + marketplace + Atlassian MCP all unconditional.
+        # Step 1 install, step 4 preflight, step 5 marketplace, step 6 MCP,
+        # step 7 diagnose.
         assert "1) Install the CLI" in body
-        assert "4) Run diagnostics" in body
+        assert "7) Run diagnostics" in body
         assert "agnes diagnose" in body
         # `agnes init` is now the mandatory bootstrap step.
         assert "agnes init" in body
@@ -247,9 +250,12 @@ class TestClaudeSetupPreview:
     def test_install_preview_unified_layout(self, web_client, admin_cookie):
         """The clipboard payload (SETUP_INSTRUCTIONS_TEMPLATE JS array)
         carries the unified layout for every caller — admin-vs-analyst
-        is no longer a layout branch. Without plugin grants, the
-        marketplace block is omitted (no `claude plugin marketplace
-        add` line)."""
+        is no longer a layout branch. Marketplace + Atlassian MCP blocks
+        are always emitted (Fix B + Fix C in 2026-05-10 init-report
+        response): the user-facing one-liner is `agnes refresh-marketplace
+        --bootstrap` (the literal `claude plugin marketplace add` shows up
+        only as a documentation comment listing what the binary does
+        internally, never as an instruction to run by hand)."""
         import re
         resp = web_client.get("/setup", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -261,7 +267,12 @@ class TestClaudeSetupPreview:
         assert match, "SETUP_INSTRUCTIONS_TEMPLATE array missing"
         clipboard = match.group(1)
         assert "agnes init" in clipboard
-        assert "claude plugin marketplace add" not in clipboard
+        # User runs the bootstrap one-liner, not raw `claude plugin
+        # marketplace add` — the latter is an internal step described in a
+        # comment block, never an action line to run.
+        assert "agnes refresh-marketplace --bootstrap" in clipboard
+        # Atlassian MCP registration is always-on now.
+        assert "claude mcp add --transport sse atlassian" in clipboard
         # Legacy admin-only auth verbs are gone from the generated prompt.
         assert "agnes auth import-token" not in clipboard
         # `agnes auth whoami` was the old admin step 3; subsumed by
@@ -283,13 +294,15 @@ class TestClaudeSetupPreview:
 
     def test_install_mcp_card_removed(self, web_client):
         """The stale 'Use with Claude Code / MCP' card on /setup has been
-        removed — there is no Agnes MCP server today.
+        removed — there is no Agnes-as-MCP-server today. The Atlassian
+        MCP server registration step (Fix C in the 2026-05-10 init-report
+        response) is registered FROM the setup script, not as a /setup-
+        page card; that's an unrelated wiring direction.
         """
         resp = web_client.get("/setup")
         assert resp.status_code == 200
         body = resp.text
         assert "Use with Claude Code / MCP" not in body
-        assert "MCP" not in body
 
 
 class TestAdminRoleGuards:
