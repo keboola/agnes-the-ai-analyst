@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.49.0] — 2026-05-11
+
 ### Fixed (PR #242 follow-ups)
 
 - **`/agnes-private` legacy-scan gap closed (David #8 from PR review).**
