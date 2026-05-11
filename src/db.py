@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -233,8 +233,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
     resource VARCHAR,
     params JSON,
     result VARCHAR,
-    duration_ms INTEGER
+    duration_ms INTEGER,
+    params_before JSON,
+    client_ip VARCHAR,
+    client_kind VARCHAR,
+    correlation_id VARCHAR
 );
+
+-- v40: indices for Activity Center timeline queries
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp_desc ON audit_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_user_time ON audit_log(user_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_action_time ON audit_log(action, timestamp);
 
 CREATE TABLE IF NOT EXISTS telegram_links (
     user_id VARCHAR PRIMARY KEY,
@@ -2568,6 +2577,27 @@ _V39_TO_V40_MIGRATIONS = [
 ]
 
 
+def _v40_to_v41(conn: duckdb.DuckDBPyConnection) -> None:
+    """v41 (was v40 pre-rebase): audit_log gains params_before (JSON), client_ip
+    (VARCHAR), client_kind (VARCHAR, 'cli'|'web'|'agent'|'scheduler'|'external'),
+    and correlation_id (VARCHAR, groups multi-step operations).
+
+    Three indices added on (timestamp), (user_id, timestamp), (action, timestamp)
+    to keep Activity Center timeline queries under 100ms even at 100k+ rows.
+
+    NOTE: DuckDB does not honor DESC in CREATE INDEX; the planner is free to
+    scan either direction. On a populated audit_log (~100k+ rows), each
+    CREATE INDEX is single-threaded and may take 10–30s.
+    """
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS params_before JSON")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS client_ip VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS client_kind VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS correlation_id VARCHAR")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp_desc ON audit_log(timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_user_time ON audit_log(user_id, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action_time ON audit_log(action, timestamp)")
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -2964,6 +2994,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 40:
                 for sql in _V39_TO_V40_MIGRATIONS:
                     conn.execute(sql)
+            if current < 41:
+                _v40_to_v41(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
