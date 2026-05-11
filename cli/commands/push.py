@@ -45,7 +45,9 @@ from cli.lib.private_list import read_all_private
 from cli.lib.push_lock import acquire_or_skip
 from cli.lib.session_queue import (
     discard_snapshot,
+    failed_log_path,
     find_recovery_snapshots,
+    mark_failed_permanent,
     mark_private_skipped,
     mark_uploaded,
     queue_path,
@@ -96,6 +98,28 @@ def _gather_entries_for_dry_run(workspace: Path) -> list[tuple[str, Path]]:
         _add(read_entries_from_snapshot(live))
 
     return out
+
+
+def _is_permanent_failure(info: dict) -> bool:
+    """True iff the server's response indicates a deterministic failure
+    that retrying won't help. We treat 4xx (except 408 / 429) as
+    permanent — 401 (token expired), 403 (RBAC denial), 413 (payload
+    too large), 400 (validation error) all have the same property:
+    re-uploading the same file produces the same answer, so a
+    requeue-loop only wastes bytes and grows the queue forever. 5xx
+    and network exceptions stay transient — those reflect server or
+    transport state that can change between push runs.
+
+    408 Request Timeout and 429 Too Many Requests are flagged transient
+    by the HTTP spec (RFC 7231 / RFC 6585); the server is telling us
+    to back off and try again later, not that the request is invalid.
+    """
+    status = info.get("status")
+    if not isinstance(status, int):
+        return False  # network error / exception — transient
+    if status in (408, 429):
+        return False
+    return 400 <= status < 500
 
 
 def _upload_one(transcript: Path) -> tuple[bool, dict]:
@@ -226,6 +250,7 @@ def push(
             "errors": [],
             "skipped": 0,
             "private_skipped": 0,
+            "dropped_permanent": 0,
         }
 
         # Snapshot the private list once at the start of the run. Adding
@@ -260,7 +285,22 @@ def push(
                         # loop forever.
                         results["skipped"] += 1
                         results["errors"].append(info)
+                    elif _is_permanent_failure(info):
+                        # 4xx (except 408 / 429): server says this request
+                        # will never succeed. Drop + audit-log instead of
+                        # requeueing forever. Closes the prior loop bug
+                        # where 401 (token expired), 413 (file too large),
+                        # 400 (validation), etc. cycled through every
+                        # push run, growing the queue without bound.
+                        mark_failed_permanent(
+                            workspace, session_id, transcript,
+                            info["status"], now,
+                        )
+                        results["dropped_permanent"] += 1
+                        results["errors"].append(info)
                     else:
+                        # 5xx, 408, 429, network errors — genuinely
+                        # transient. Requeue for the next push.
                         results["errors"].append(info)
                         failed_in_snapshot.append((session_id, transcript))
             # Failed entries from this snapshot get re-queued on the live file.
@@ -314,6 +354,11 @@ def push(
         )
     if results["skipped"]:
         typer.echo(f"Skipped {results['skipped']} stale queue entries (file missing)")
+    if results["dropped_permanent"]:
+        typer.echo(
+            f"Dropped {results['dropped_permanent']} session(s) with permanent failure "
+            f"(see .claude/agnes-sessions-failed.txt)"
+        )
     if results["local_md"]:
         typer.echo("Uploaded CLAUDE.local.md")
     if results["errors"]:

@@ -118,6 +118,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **`agnes push` no longer infinite-loops on permanent 4xx failures.**
+  Previously any non-200 response except the literal `file not found
+  on disk` was re-queued, so 401 (token expired), 403 (RBAC denial),
+  413 (payload too large), 400 (server-side validation error) cycled
+  through every push run forever — the queue grew without bound and
+  each run re-bombarded the server with the same failing upload.
+  4xx (except 408 Request Timeout + 429 Too Many Requests, which the
+  HTTP spec marks as transient) is now dropped + audit-logged to
+  `<workspace>/.claude/agnes-sessions-failed.txt` instead (TSV:
+  `<iso_ts>\t<session_id>\t<status>\t<transcript_path>`). 5xx and
+  network errors continue to re-queue (genuinely transient — server
+  or transport state can change between runs). `agnes push --json`
+  surfaces a new `dropped_permanent` counter; non-quiet stdout
+  mentions the audit-log path so operators tailing the output have a
+  pointer to the forensic trail.
+
 - **Session capture queue: concurrent SessionStart hooks no longer
   corrupt the queue file on Windows.** `append_to_queue`,
   `requeue_failed`, and `snapshot_queue` in `cli/lib/session_queue.py`

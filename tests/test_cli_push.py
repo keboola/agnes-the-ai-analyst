@@ -10,6 +10,7 @@ from cli.commands.push import push_app
 from cli.lib.private_list import add_private
 from cli.lib.session_queue import (
     append_to_queue,
+    failed_log_path,
     private_skipped_log_path,
     queue_path,
     uploaded_log_path,
@@ -329,3 +330,154 @@ def test_push_dry_run_shows_private_skip(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "1 private session" in result.output
     assert "sid-priv" in result.output
+
+
+# ---------- 4xx permanent-failure handling -----------------------------------
+
+
+def _stub_api_post_status(monkeypatch, status: int) -> None:
+    """Patch api_post to always return the given status code."""
+    def _fixed(*a, **kw):
+        return _FakeResp(status)
+    monkeypatch.setattr("cli.commands.push.api_post", _fixed)
+
+
+def test_push_drops_4xx_to_audit_log_not_requeue(tmp_path, monkeypatch):
+    """4xx (here: 401 token expired) → drop + audit, no requeue.
+    Closes the prior infinite-loop bug where every non-200 except
+    `file not found on disk` was requeued forever."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+    _stub_api_post_status(monkeypatch, 401)
+
+    transcript = tmp_path / "x.jsonl"
+    transcript.write_text("{}\n")
+    append_to_queue(tmp_path, "sid-1", str(transcript))
+
+    result = runner.invoke(push_app, [])
+    assert result.exit_code == 0
+    # Entry must NOT be in the live queue any more.
+    assert not queue_path(tmp_path).exists() or \
+        queue_path(tmp_path).read_text(encoding="utf-8") == ""
+    # Audit log must record the drop with status + session_id + path.
+    log = failed_log_path(tmp_path).read_text(encoding="utf-8")
+    assert "\t401\t" in log
+    assert "sid-1" in log
+    assert str(transcript) in log
+
+
+def test_push_drops_each_4xx_status(tmp_path, monkeypatch):
+    """403, 413, 400 → all drop (not just 401)."""
+    for status in (400, 403, 413):
+        ws = tmp_path / f"ws-{status}"
+        ws.mkdir()
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(ws))
+        _stub_config(monkeypatch)
+        _stub_api_post_status(monkeypatch, status)
+        transcript = ws / "x.jsonl"
+        transcript.write_text("{}\n")
+        append_to_queue(ws, f"sid-{status}", str(transcript))
+
+        result = runner.invoke(push_app, [])
+        assert result.exit_code == 0, (status, result.output)
+        log = failed_log_path(ws).read_text(encoding="utf-8")
+        assert f"\t{status}\t" in log, (status, log)
+
+
+def test_push_requeues_408_and_429(tmp_path, monkeypatch):
+    """408 Request Timeout + 429 Too Many Requests are transient per
+    HTTP spec — server is asking us to retry, not telling us the
+    request is invalid. Must requeue, not drop."""
+    for status in (408, 429):
+        ws = tmp_path / f"ws-{status}"
+        ws.mkdir()
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(ws))
+        _stub_config(monkeypatch)
+        _stub_api_post_status(monkeypatch, status)
+        transcript = ws / "x.jsonl"
+        transcript.write_text("{}\n")
+        append_to_queue(ws, f"sid-{status}", str(transcript))
+
+        result = runner.invoke(push_app, [])
+        assert result.exit_code == 0
+        # Requeued → entry back in live queue.
+        live = queue_path(ws).read_text(encoding="utf-8")
+        assert f"sid-{status}\t{transcript}\n" == live
+        # NOT in the failed audit log.
+        assert not failed_log_path(ws).exists()
+
+
+def test_push_requeues_5xx(tmp_path, monkeypatch):
+    """5xx is genuine server-side failure: request was valid but server
+    couldn't honor it right now. Requeue for the next push."""
+    for status in (500, 502, 503):
+        ws = tmp_path / f"ws-{status}"
+        ws.mkdir()
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(ws))
+        _stub_config(monkeypatch)
+        _stub_api_post_status(monkeypatch, status)
+        transcript = ws / "x.jsonl"
+        transcript.write_text("{}\n")
+        append_to_queue(ws, f"sid-{status}", str(transcript))
+
+        result = runner.invoke(push_app, [])
+        assert result.exit_code == 0
+        live = queue_path(ws).read_text(encoding="utf-8")
+        assert f"sid-{status}\t{transcript}\n" == live
+        assert not failed_log_path(ws).exists()
+
+
+def test_push_requeues_network_exception(tmp_path, monkeypatch):
+    """Connection error / DNS / timeout — no status code from server.
+    Treat as transient: requeue rather than drop."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+
+    def _raise(*a, **kw):
+        raise ConnectionError("server unreachable")
+    monkeypatch.setattr("cli.commands.push.api_post", _raise)
+
+    transcript = tmp_path / "x.jsonl"
+    transcript.write_text("{}\n")
+    append_to_queue(tmp_path, "sid-net", str(transcript))
+
+    result = runner.invoke(push_app, [])
+    assert result.exit_code == 0
+    live = queue_path(tmp_path).read_text(encoding="utf-8")
+    assert f"sid-net\t{transcript}\n" == live
+    assert not failed_log_path(tmp_path).exists()
+
+
+def test_push_4xx_drop_count_in_json_output(tmp_path, monkeypatch):
+    """--json surfaces the new `dropped_permanent` counter so operators
+    can pipe it into monitoring / scripts."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+    _stub_api_post_status(monkeypatch, 401)
+
+    transcript = tmp_path / "x.jsonl"
+    transcript.write_text("{}\n")
+    append_to_queue(tmp_path, "sid-1", str(transcript))
+
+    result = runner.invoke(push_app, ["--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["dropped_permanent"] == 1
+    assert payload["sessions"] == 0
+
+
+def test_push_4xx_drop_visible_in_quiet_stdout(tmp_path, monkeypatch):
+    """Non-quiet stdout mentions the audit-log path so operators tailing
+    `agnes push` output get a pointer to the forensic trail."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+    _stub_api_post_status(monkeypatch, 413)
+
+    transcript = tmp_path / "huge.jsonl"
+    transcript.write_text("{}\n")
+    append_to_queue(tmp_path, "sid-big", str(transcript))
+
+    result = runner.invoke(push_app, [])
+    assert result.exit_code == 0
+    assert "agnes-sessions-failed.txt" in result.output
+    assert "permanent failure" in result.output

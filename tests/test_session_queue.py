@@ -6,7 +6,9 @@ from pathlib import Path
 from cli.lib.session_queue import (
     append_to_queue,
     discard_snapshot,
+    failed_log_path,
     find_recovery_snapshots,
+    mark_failed_permanent,
     mark_private_skipped,
     mark_uploaded,
     private_skipped_log_path,
@@ -165,6 +167,22 @@ def test_mark_private_skipped_appends_audit_log(tmp_path):
     mark_private_skipped(tmp_path, "sid-1", p, when=when)
     log = private_skipped_log_path(tmp_path)
     assert log.read_text(encoding="utf-8") == f"2026-05-10T14:32:18Z\tsid-1\t{p}\n"
+
+
+def test_mark_failed_permanent_appends_tsv(tmp_path):
+    when = datetime(2026, 5, 10, 14, 32, 18, tzinfo=timezone.utc)
+    p = tmp_path / "abc.jsonl"
+    mark_failed_permanent(tmp_path, "sid-1", p, 401, when=when)
+    log = failed_log_path(tmp_path)
+    assert log.read_text(encoding="utf-8") == f"2026-05-10T14:32:18Z\tsid-1\t401\t{p}\n"
+
+    when2 = datetime(2026, 5, 10, 14, 32, 19, tzinfo=timezone.utc)
+    p2 = tmp_path / "def.jsonl"
+    mark_failed_permanent(tmp_path, "sid-2", p2, 413, when=when2)
+    assert log.read_text(encoding="utf-8") == (
+        f"2026-05-10T14:32:18Z\tsid-1\t401\t{p}\n"
+        f"2026-05-10T14:32:19Z\tsid-2\t413\t{p2}\n"
+    )
 
 
 def test_requeue_failed_appends_to_live_queue(tmp_path):

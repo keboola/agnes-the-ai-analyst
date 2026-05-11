@@ -39,6 +39,7 @@ from filelock import FileLock
 _QUEUE_FILENAME = "agnes-sessions.txt"
 _UPLOADED_FILENAME = "agnes-sessions-uploaded.txt"
 _PRIVATE_SKIPPED_FILENAME = "agnes-sessions-private-skipped.txt"
+_FAILED_FILENAME = "agnes-sessions-failed.txt"
 _SNAPSHOT_PREFIX = "agnes-sessions.snapshot."
 _SNAPSHOT_SUFFIX = ".txt"
 _QUEUE_LOCK_FILENAME = "agnes-queue.lock"
@@ -61,6 +62,10 @@ def uploaded_log_path(workspace: Path) -> Path:
 
 def private_skipped_log_path(workspace: Path) -> Path:
     return _claude_dir(workspace) / _PRIVATE_SKIPPED_FILENAME
+
+
+def failed_log_path(workspace: Path) -> Path:
+    return _claude_dir(workspace) / _FAILED_FILENAME
 
 
 def _queue_lock_path(workspace: Path) -> Path:
@@ -228,6 +233,36 @@ def mark_private_skipped(
     ts = when.strftime("%Y-%m-%dT%H:%M:%SZ")
     line = f"{ts}\t{session_id}\t{transcript_path}\n"
     with open(private_skipped_log_path(workspace), "a", encoding="utf-8") as f:
+        f.write(line)
+
+
+def mark_failed_permanent(
+    workspace: Path,
+    session_id: str,
+    transcript_path: Path,
+    status_code: int,
+    when: datetime | None = None,
+) -> None:
+    """Append `<iso_timestamp>\\t<session_id>\\t<status>\\t<path>` to the
+    permanent-failure audit log.
+
+    Called by push when the server returns a 4xx (other than 408 / 429)
+    — deterministic failures where retrying never succeeds (401 token
+    expired, 403 RBAC denial, 413 payload too large, 400 server
+    validation, etc.). The transcript path is logged here instead of
+    silently dropped so operators have a forensic trail; the entry is
+    NOT re-queued, breaking the prior infinite-loop bug where every
+    push run would re-bombard the server with the same failing upload.
+
+    No separate lock: piggybacks on `agnes-push.lock` (the
+    single-instance push lock), same as `mark_uploaded` and
+    `mark_private_skipped`. Push is the only writer to this file.
+    """
+    if when is None:
+        when = datetime.now(timezone.utc)
+    ts = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = f"{ts}\t{session_id}\t{status_code}\t{transcript_path}\n"
+    with open(failed_log_path(workspace), "a", encoding="utf-8") as f:
         f.write(line)
 
 
