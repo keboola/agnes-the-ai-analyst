@@ -66,14 +66,18 @@ def test_resolve_lines_no_plugins_unified_layout():
     assert "3) Verify the data is queryable:" in joined
     assert "4) Make sure git and claude are installed" in joined
     assert "5) Register the Agnes Claude Code marketplace" in joined
-    assert "6) Register the Atlassian MCP server" in joined
-    assert "7) Run diagnostics:" in joined
-    assert "8) Skills" in joined
-    assert "9) Connect the user's tools" in joined
-    assert "10) Confirm:" in joined
-    # No stray Confirms at other positions.
-    assert "9) Confirm:" not in joined
+    assert "6) Run diagnostics:" in joined
+    assert "7) Skills" in joined
+    assert "8) Connect the user's tools" in joined
+    assert "9) Confirm:" in joined
+    # No stray Confirms at the wrong positions.
+    assert "8) Confirm:" not in joined
     assert "6) Confirm:" not in joined
+    # Standalone Atlassian MCP step was retired 2026-05-11 — the
+    # `claude mcp add` line moved INTO the Atlassian connector's prompt
+    # body (step 8 sub-block), so the top-level "Register the Atlassian
+    # MCP server" step header is gone.
+    assert "Register the Atlassian MCP server" not in joined
     # The marketplace step header adapts to "no plugins granted yet" copy
     # rather than the plugin-installing variant.
     assert "no plugins granted yet" in joined
@@ -291,15 +295,14 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "claude plugin install foo@agnes" not in executable
     assert "claude plugin install bar@agnes" not in executable
     # Step 6 — Atlassian MCP registration (Fix C in 2026-05-10 init-report response).
-    assert "6) Register the Atlassian MCP server" in joined
     # Step 7 — diagnose now AFTER marketplace + MCP wiring.
-    assert "7) Run diagnostics:" in joined
+    assert "6) Run diagnostics:" in joined
     # Step 8 — skills, the last interactive step before Confirm.
-    assert "8) Skills" in joined
-    assert "9) Connect the user's tools" in joined
-    # Step 10 — Confirm renumbered (no stray Confirms at other positions).
-    assert "10) Confirm:" in joined
-    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "8) Confirm:", "9) Confirm:"):
+    assert "7) Skills" in joined
+    assert "8) Connect the user's tools" in joined
+    # Step 9 — Confirm (no stray Confirms at the wrong positions).
+    assert "9) Confirm:" in joined
+    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "8) Confirm:"):
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
@@ -307,12 +310,11 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     catalog_idx = joined.index("3) Verify the data is queryable:")
     git_idx = joined.index("4) Make sure git and claude are installed")
     market_idx = joined.index("5) Register the Agnes Claude Code marketplace")
-    mcp_idx = joined.index("6) Register the Atlassian MCP server")
-    diag_idx = joined.index("7) Run diagnostics:")
-    skills_idx = joined.index("8) Skills")
-    conn_idx = joined.index("9) Connect the user's tools")
-    confirm_idx = joined.index("10) Confirm:")
-    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < mcp_idx < diag_idx < skills_idx < conn_idx < confirm_idx
+    diag_idx = joined.index("6) Run diagnostics:")
+    skills_idx = joined.index("7) Skills")
+    conn_idx = joined.index("8) Connect the user's tools")
+    confirm_idx = joined.index("9) Confirm:")
+    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < diag_idx < skills_idx < conn_idx < confirm_idx
     # Legacy `git config sslVerify=false` downgrade is gone — see CHANGELOG.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
@@ -643,7 +645,7 @@ def test_resolve_lines_ca_pem_works_without_plugins():
 
     joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
     assert "0) Trust the Agnes TLS certificate" in joined
-    assert "10) Confirm:" in joined
+    assert "9) Confirm:" in joined
     # Marketplace block is now emitted unconditionally; the bootstrap
     # one-liner does the `claude plugin marketplace add` internally so
     # the literal string isn't in the prompt text — the user-facing
@@ -726,14 +728,14 @@ def test_no_plugins_layout_keeps_diagnose_before_skills():
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "7) Run diagnostics:" in joined
-    assert "8) Skills" in joined
-    assert "9) Connect the user's tools" in joined
-    assert "10) Confirm:" in joined
-    diag_idx = joined.index("7) Run diagnostics:")
-    skills_idx = joined.index("8) Skills")
-    conn_idx = joined.index("9) Connect the user's tools")
-    confirm_idx = joined.index("10) Confirm:")
+    assert "6) Run diagnostics:" in joined
+    assert "7) Skills" in joined
+    assert "8) Connect the user's tools" in joined
+    assert "9) Confirm:" in joined
+    diag_idx = joined.index("6) Run diagnostics:")
+    skills_idx = joined.index("7) Skills")
+    conn_idx = joined.index("8) Connect the user's tools")
+    confirm_idx = joined.index("9) Confirm:")
     assert diag_idx < skills_idx < conn_idx < confirm_idx
 
 
@@ -870,19 +872,22 @@ def test_connectors_block_uses_gws_manual_branch_when_oauth_unset():
 
 
 def test_step_numbering_with_connectors_step():
-    """_step_numbers must return diagnose=7, skills=8, connectors=9,
-    confirm=10. Anchors the numeric expectations the rest of the test
-    suite assumes."""
+    """_step_numbers must return diagnose=6, skills=7, connectors=8,
+    confirm=9. Anchors the numeric expectations the rest of the test
+    suite assumes. (The standalone `mcp_servers` step was retired
+    2026-05-11 — the Atlassian MCP `claude mcp add` line moved inside
+    the Atlassian connector's prompt body, so everything Atlassian-
+    related lives in one group at step 8.)"""
     from app.web.setup_instructions import _step_numbers
 
     steps = _step_numbers()
     assert steps["preflight"] == "4"
     assert steps["marketplace"] == "5"
-    assert steps["mcp_servers"] == "6"
-    assert steps["diagnose"] == "7"
-    assert steps["skills"] == "8"
-    assert steps["connectors"] == "9"
-    assert steps["confirm"] == "10"
+    assert "mcp_servers" not in steps
+    assert steps["diagnose"] == "6"
+    assert steps["skills"] == "7"
+    assert steps["connectors"] == "8"
+    assert steps["confirm"] == "9"
 
 
 def test_finale_bullets_mention_connector_outcomes():

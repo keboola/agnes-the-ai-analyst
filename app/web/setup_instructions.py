@@ -665,46 +665,6 @@ def _marketplace_block(
     ]
 
 
-def _mcp_servers_block(step_num: str) -> list[str]:
-    """Register the Atlassian Remote MCP unattended.
-
-    Why only Atlassian here:
-      - Atlassian publishes a hosted SSE MCP at
-        https://mcp.atlassian.com/v1/sse with OAuth handled by Claude Code
-        automatically on first tool call. No PAT/keychain dance, no
-        per-user setup beyond clicking through OAuth once when an
-        operator first asks Claude to read a Jira ticket. Safe to
-        register unattended in the bootstrap script.
-      - Asana and Google Workspace need PAT/keychain flows that don't
-        survive non-interactive bootstrap, so those stay on the /home
-        connector cards (operator-driven).
-
-    Idempotent across re-runs: `claude mcp add` returns non-zero when the
-    server name already exists, so we soft-fail with `|| true` and a
-    one-line note rather than tripping the `set -e` style operators
-    sometimes wrap the prompt in. Subsequent runs of the prompt are
-    no-ops.
-
-    Reference: 2026-05-10 init-report — David's `claude mcp list` showed
-    only the pre-existing claude.ai Drive connector; Atlassian/Asana/GWS
-    weren't registered because the prompt had zero `claude mcp add`
-    lines. Fix C in the response plan.
-    """
-    return [
-        "",
-        f"{step_num}) Register the Atlassian MCP server (Jira + Confluence on demand):",
-        "   # Hosted Remote MCP — Claude Code handles OAuth automatically the",
-        "   # first time you ask it to read a Jira ticket or Confluence page.",
-        "   # Idempotent: re-runs are a no-op (the `|| true` swallows the",
-        "   # \"server already exists\" error from `claude mcp add`).",
-        "   claude mcp add --transport sse atlassian https://mcp.atlassian.com/v1/sse || true",
-        "",
-        "   Asana and Google Workspace use per-user PAT / CLI flows that don't",
-        "   fit an unattended bootstrap — connect those from the /home connector",
-        "   cards after this script finishes.",
-    ]
-
-
 def _preamble_lines(*, has_ca: bool) -> list[str]:
     """Header that opens the prompt before the numbered steps. The
     `step 0(d) fallback chain` reference is only emitted when the trust
@@ -747,19 +707,22 @@ def _step_numbers(
     so call sites stay diff-minimal).
 
     Mandatory steps (always emitted): install (1), init (2), catalog (3),
-    preflight (4), marketplace (5), mcp_servers (6), diagnose (7), skills
-    (8), connectors (9), confirm (10). Preflight + marketplace +
-    mcp_servers + connectors are all always-on:
+    preflight (4), marketplace (5), diagnose (6), skills (7), connectors
+    (8), confirm (9). Preflight + marketplace + connectors are
+    always-on:
       - Marketplace registration is useful even when the operator has
         zero plugin grants (SessionStart hook reconciles future grants
         automatically).
-      - Atlassian MCP registration is unattended-safe (hosted Remote MCP
-        with Claude Code-managed OAuth) and applies to every analyst
-        whose work touches Jira/Confluence — high enough hit rate to
-        justify default-on.
       - Connectors (Asana / GWS / Atlassian) are per-connector default-yes
         asks — the user can decline each individually, so always-emitting
-        the block costs nothing for users who skip everything.
+        the block costs nothing for users who skip everything. The
+        Atlassian Remote MCP registration (`claude mcp add ...`) used to
+        be its own step 6 but moved INTO the Atlassian connector's
+        prompt body (atlassian_prompt() in app.web.connector_prompts) so
+        everything Atlassian-related lives in one group — both /home
+        Atlassian tile + the inlined setup-script Atlassian sub-block
+        emit the same `claude mcp add` line as part of the standard
+        connector setup.
 
     `has_skills` + `has_connectors` are kept as parameters for future
     flexibility; both default True. The Resolved-Question section in the
@@ -775,7 +738,6 @@ def _step_numbers(
     n = 4
     preflight = str(n); n += 1
     marketplace = str(n); n += 1
-    mcp_servers = str(n); n += 1
     diagnose = str(n); n += 1
     skills = str(n) if has_skills else ""
     if has_skills:
@@ -787,7 +749,6 @@ def _step_numbers(
     return {
         "preflight": preflight,
         "marketplace": marketplace,
-        "mcp_servers": mcp_servers,
         "diagnose": diagnose,
         "skills": skills,
         "connectors": connectors,
@@ -855,8 +816,9 @@ def resolve_lines(
     lines.extend(_init_lines())                        # 2, 3
     lines.extend(_preflight_block(steps["preflight"]))                       # 4
     lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))    # 5
-    lines.extend(_mcp_servers_block(steps["mcp_servers"]))                    # 6
-    # Diagnose + skills come AFTER marketplace + MCP wiring.
+    # Diagnose + skills come AFTER marketplace. (Standalone MCP step
+    # used to live here — moved INTO the Atlassian connector's prompt
+    # body in step 8 so all Atlassian setup is grouped together.)
     lines.extend(_diagnose_skills_lines(
         diagnose_num=steps["diagnose"], skills_num=steps["skills"],
     ))

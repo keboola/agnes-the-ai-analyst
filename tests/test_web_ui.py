@@ -232,11 +232,14 @@ class TestClaudeSetupPreview:
         assert "/cli/wheel/" in body
         assert "/cli/agnes.whl" not in body
         # Unified always-on layout (Fix B + Fix C in 2026-05-10 init-report
-        # response): preflight + marketplace + Atlassian MCP all unconditional.
-        # Step 1 install, step 4 preflight, step 5 marketplace, step 6 MCP,
-        # step 7 diagnose.
+        # response, then 2026-05-11 MCP-move): preflight + marketplace
+        # unconditional; the Atlassian MCP `claude mcp add` line moved INTO
+        # the connector block (step 8) as part of the Atlassian sub-prompt,
+        # so diagnose is now step 6 not 7.
+        # Step 1 install, step 4 preflight, step 5 marketplace, step 6
+        # diagnose, step 7 skills, step 8 connectors, step 9 confirm.
         assert "1) Install the CLI" in body
-        assert "7) Run diagnostics" in body
+        assert "6) Run diagnostics" in body
         assert "agnes diagnose" in body
         # `agnes init` is now the mandatory bootstrap step.
         assert "agnes init" in body
