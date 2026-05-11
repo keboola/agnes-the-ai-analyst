@@ -33,6 +33,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - Schema v40 migration `_V39_TO_V40_MIGRATIONS` adds the new table; existing instances pick it up on next start. Empty cache is treated as `never_fetched` by the catalog, never as an error.
+- **DuckDB lower bound bumped from `>=0.9.0` to `>=1.5.2`.** 1.5.1 had a regression where `ALTER TABLE … ADD COLUMN IF NOT EXISTS` was rejected with `Cannot alter entry … because there are entries that depend on it` when the target table was FK-referenced from another table; the migration ladder hit this on `internal_roles` (v8→v9) and `user_groups` (v11→v12) when replayed from old schema_version. 1.5.2 restores the previous behavior. CI was already on 1.5.2; this just pins the same floor for local devs.
+- `tests/test_cli_binary_rename.py::test_agnes_command_exists` now skips with an actionable message instead of failing when the local venv has no `agnes` on PATH or the binary is a stale shim from a prior editable install. CI installs the package fresh and still asserts the real contract.
 
 ## [0.49.1] — 2026-05-11
 
