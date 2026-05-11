@@ -10,6 +10,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed (PR #242 follow-ups)
+
+- **`/agnes-private` legacy-scan gap closed (David #8 from PR review).**
+  `agnes push --legacy-scan` now consults the private list using the
+  jsonl file stem as the session id (Claude Code names them
+  `<session-id>.jsonl`). Previously legacy-scan entries carried an
+  empty session_id, so `--legacy-scan` would upload every transcript
+  on disk regardless of whether the user later marked it private.
+- **`statusline`/`is_private` no longer mkdir-pollutes arbitrary
+  workdirs (S2.7 from PR review).** Read paths now use a side-effect-
+  free helper that returns the `.claude/` path WITHOUT creating it;
+  only `add_private` materializes the dir. Adds a process-local
+  mtime-keyed cache around `read_all_private` so in-process callers
+  (push doing one stat per upload candidate, `agnes diagnose`
+  scanning workspaces) don't re-parse the file every time.
+- **`agnes capture-session` writes an operability breadcrumb log
+  (David #11 from PR review).** Every invocation appends one TSV
+  line to `<workspace>/.claude/agnes-capture-session.log` with the
+  outcome (`ok`, `private_skip`, `bad_json`, `no_transcript_path`,
+  …). Gives operators a signal to detect "hook fires but queue stays
+  empty" — without it, an upstream Claude Code stdin-contract change
+  is invisible because the hook always exits 0. Log rolls at 256 KiB.
+  Best-effort: a breadcrumb-write failure is swallowed so the hook
+  contract stays "exit 0 always". Skipped in non-Agnes workdirs (no
+  `.claude/`) so opening Claude Code in `~/` doesn't pollute it.
+
 ### Added
 
 - **Session capture queue + new `agnes capture-session` SessionStart

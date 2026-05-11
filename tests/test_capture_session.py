@@ -121,3 +121,77 @@ def test_capture_writes_when_unrelated_session_is_private(tmp_path, monkeypatch)
     result = runner.invoke(capture_session_app, [], input=payload)
     assert result.exit_code == 0
     assert queue_path(tmp_path).read_text(encoding="utf-8") == "abc-123\t/abc.jsonl\n"
+
+
+# ---------- Breadcrumb tests (David #11 from PR review) ---------------------
+#
+# capture-session is a SessionStart hook that always exits 0 (it must NOT
+# fail loudly inside Claude Code's startup chain). Without an external
+# observability signal, an upstream contract change (Claude Code's stdin
+# JSON shape shifts; the queue mysteriously stays empty) is invisible to
+# operators. The breadcrumb log gives `agnes diagnose` something to
+# inspect.
+
+from cli.commands.capture_session import _BREADCRUMB_FILENAME
+
+
+def _breadcrumb_lines(workspace) -> list[str]:
+    """Read all breadcrumb lines, dropping trailing newline."""
+    path = workspace / ".claude" / _BREADCRUMB_FILENAME
+    if not path.exists():
+        return []
+    return [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln]
+
+
+def test_capture_writes_ok_breadcrumb_on_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    payload = json.dumps({"session_id": "abc-123", "transcript_path": "/abc.jsonl"})
+    runner.invoke(capture_session_app, [], input=payload)
+    lines = _breadcrumb_lines(tmp_path)
+    assert len(lines) == 1
+    parts = lines[0].split("\t")
+    assert parts[1] == "ok"
+    assert parts[2] == "abc-123"
+
+
+def test_capture_writes_bad_json_breadcrumb_on_invalid_input(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    # Pre-create .claude/ so breadcrumb has somewhere to land (the breadcrumb
+    # is read-only re: dir creation — see _record_breadcrumb).
+    (tmp_path / ".claude").mkdir()
+    runner.invoke(capture_session_app, [], input="not json at all")
+    lines = _breadcrumb_lines(tmp_path)
+    assert len(lines) == 1
+    assert lines[0].split("\t")[1] == "bad_json"
+
+
+def test_capture_writes_no_transcript_breadcrumb_when_field_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    (tmp_path / ".claude").mkdir()
+    runner.invoke(capture_session_app, [], input=json.dumps({"session_id": "x"}))
+    lines = _breadcrumb_lines(tmp_path)
+    assert len(lines) == 1
+    assert lines[0].split("\t")[1] == "no_transcript_path"
+
+
+def test_capture_writes_private_skip_breadcrumb_on_marked_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    add_private(tmp_path, "private-sid")
+    runner.invoke(
+        capture_session_app, [],
+        input=json.dumps({"session_id": "private-sid", "transcript_path": "/x"}),
+    )
+    lines = _breadcrumb_lines(tmp_path)
+    assert lines[-1].split("\t")[1] == "private_skip"
+    assert lines[-1].split("\t")[2] == "private-sid"
+
+
+def test_breadcrumb_does_not_create_claude_dir_in_arbitrary_workspaces(tmp_path, monkeypatch):
+    """If the workspace has no .claude/ directory, capture-session
+    never materializes one — same rationale as the read-only path in
+    private_list.py. Hooks fire in directories the user just opened
+    Claude Code in; the breadcrumb log shouldn't pollute those."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    runner.invoke(capture_session_app, [], input="malformed")
+    # No .claude/ created, no breadcrumb written.
+    assert not (tmp_path / ".claude").exists()

@@ -527,3 +527,73 @@ def test_push_4xx_drop_visible_in_quiet_stdout(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "agnes-sessions-failed.txt" in result.output
     assert "permanent failure" in result.output
+
+
+# ---------- David #8: legacy-scan honors the private list -------------------
+#
+# `--legacy-scan` walks ~/.claude/projects/<encoded-cwd>/*.jsonl. Claude Code
+# names jsonls `<session-id>.jsonl`, so the file stem IS the session id —
+# the same private filter that protects queue uploads must apply. Without
+# this, an operator running `agnes push --legacy-scan` to backfill old
+# sessions would silently upload everything on disk.
+
+
+def test_push_legacy_scan_skips_private_session(tmp_path, monkeypatch):
+    """Legacy-scan picks up `<sid>.jsonl` from the projects dir; if the
+    sid is on the private list, it must be skipped + audit-logged."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+    calls = _record_uploads(monkeypatch)
+
+    projects_dir = tmp_path / "projects-fake"
+    projects_dir.mkdir()
+    pub = projects_dir / "sid-public.jsonl"
+    pub.write_text("{}\n")
+    priv = projects_dir / "sid-private.jsonl"
+    priv.write_text("{}\n")
+
+    monkeypatch.setattr(
+        "cli.lib.claude_sessions.list_session_files",
+        lambda _w: [pub, priv],
+    )
+    add_private(tmp_path, "sid-private")
+
+    result = runner.invoke(push_app, ["--legacy-scan", "--quiet"])
+    assert result.exit_code == 0
+
+    sessions_calls = [c for c in calls if c[0] == "/api/upload/sessions"]
+    assert len(sessions_calls) == 1
+    uploaded_path = sessions_calls[0][1]["files"]["file"][0]
+    assert uploaded_path == "sid-public.jsonl"
+
+    audit = private_skipped_log_path(tmp_path).read_text(encoding="utf-8")
+    assert "sid-private" in audit
+    assert str(priv) in audit
+
+
+def test_push_legacy_scan_dry_run_segregates_private(tmp_path, monkeypatch):
+    """Dry-run JSON shape: legacy-scan candidates surface in
+    would_upload OR would_skip_private depending on private membership."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+
+    projects_dir = tmp_path / "projects-fake"
+    projects_dir.mkdir()
+    public_jsonl = projects_dir / "sid-pub.jsonl"
+    public_jsonl.write_text("{}\n")
+    private_jsonl = projects_dir / "sid-priv.jsonl"
+    private_jsonl.write_text("{}\n")
+
+    monkeypatch.setattr(
+        "cli.lib.claude_sessions.list_session_files",
+        lambda _w: [public_jsonl, private_jsonl],
+    )
+    add_private(tmp_path, "sid-priv")
+
+    result = runner.invoke(push_app, ["--legacy-scan", "--dry-run", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert str(public_jsonl) in payload["would_upload"]["sessions"]
+    assert str(private_jsonl) not in payload["would_upload"]["sessions"]
+    skipped_paths = [e["path"] for e in payload["would_skip_private"]]
+    assert str(private_jsonl) in skipped_paths

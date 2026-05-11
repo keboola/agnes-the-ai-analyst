@@ -157,13 +157,9 @@ def push(
         help=(
             "Fallback: also include sessions found by the encoding-based scan "
             "of ~/.claude/projects/. Use for one-off backfill of sessions "
-            "predating the queue mechanism. NOTE: legacy-scan entries carry "
-            "an empty session_id, so the /agnes-private list is NOT consulted "
-            "— every matching jsonl is uploaded. The practical impact is "
-            "bounded: pre-queue sessions cannot have been marked private "
-            "(the private list is a queue-era feature). Only run this if "
-            "you are sure no pre-queue session contains content you would "
-            "have marked private had the feature existed."
+            "predating the queue mechanism. The /agnes-private list IS "
+            "consulted — Claude Code names jsonls ``<session-id>.jsonl`` so "
+            "the file stem provides the session id even for legacy entries."
         ),
     ),
 ):
@@ -205,9 +201,21 @@ def push(
             from cli.lib.claude_sessions import list_session_files
             seen = {str(p) for _sid, p in non_private}
             for p in list_session_files(workspace):
-                if str(p) not in seen:
-                    non_private.append(("", p))
-                    seen.add(str(p))
+                if str(p) in seen:
+                    continue
+                # Apply the private filter to legacy-scan candidates too.
+                # Claude Code names jsonls ``<session-id>.jsonl``, so the
+                # file stem IS the session id and we can apply the same
+                # filter the queue path uses. Closes the gap David #8
+                # raised: legacy-scan would otherwise upload everything
+                # on disk, including sessions the user later marked
+                # private.
+                sid_from_path = p.stem
+                if sid_from_path and sid_from_path in private_ids:
+                    private_skipped.append((sid_from_path, p))
+                else:
+                    non_private.append((sid_from_path, p))
+                seen.add(str(p))
 
         plan = {
             "dry_run": True,
@@ -317,9 +325,22 @@ def push(
             requeue_failed(workspace, all_failed_entries)
 
         # Optional: legacy scan to backfill sessions outside the queue.
+        # Honors the private list — Claude Code names jsonls
+        # ``<session-id>.jsonl``, so the file stem IS the session id and
+        # we can apply the same filter the queue path uses. Without this
+        # filter, an operator running ``--legacy-scan`` to backfill old
+        # sessions would silently upload every transcript on disk,
+        # including ones the user later marked private (David's #8 from
+        # the PR review).
         if legacy_scan:
             from cli.lib.claude_sessions import list_session_files
+            private_ids = read_all_private(workspace)
             for transcript in list_session_files(workspace):
+                sid_from_path = transcript.stem
+                if sid_from_path and sid_from_path in private_ids:
+                    mark_private_skipped(workspace, sid_from_path, str(transcript))
+                    results["private_skipped"] = results.get("private_skipped", 0) + 1
+                    continue
                 ok, info = _upload_one(transcript)
                 if ok:
                     results["sessions"] += 1
