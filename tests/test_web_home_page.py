@@ -213,3 +213,58 @@ def test_home_no_auto_transition_after_post_until_reload(fresh_db):
     post = c.get("/home", cookies={"access_token": sess})
     assert "Welcome back" in post.text  # nav hub view
     assert 'class="install-block"' not in post.text
+
+
+def test_home_renders_connector_prompts_from_shared_module(fresh_db):
+    """Single source of truth check: the prompt text the /home tiles
+    paste must equal the strings ``app/web/connector_prompts.py`` returns.
+    The same strings are also inlined into the setup script's step 9, so
+    if they ever drift the two surfaces would tell users to do different
+    things — this test catches that early."""
+    import html as _html
+    import re
+
+    from src.db import get_system_db, close_system_db
+    from app.web.connector_prompts import (
+        asana_prompt, gws_prompt, atlassian_prompt,
+    )
+    from app.instance_config import (
+        get_gws_oauth_credentials, get_instance_admin_email,
+    )
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    body = c.get("/home", cookies={"access_token": sess}).text
+
+    # Resolve the same gws_oauth dict the route uses so the parity check
+    # exercises whichever branch (configured / manual) is active in the
+    # current test environment.
+    gws = get_gws_oauth_credentials()
+    expected_gws = gws_prompt(
+        gws_oauth_configured=bool(gws.get("configured")),
+        gws_client_id=str(gws.get("client_id") or ""),
+        gws_client_secret=str(gws.get("client_secret") or ""),
+        gws_project_id=str(gws.get("project_id") or ""),
+        oauthlib_insecure_transport=str(gws.get("oauthlib_insecure_transport") or "1"),
+        instance_admin_email=get_instance_admin_email(),
+    )
+
+    for slug, expected in (
+        ("asana", asana_prompt()),
+        ("gws", expected_gws),
+        ("jira", atlassian_prompt()),
+    ):
+        m = re.search(rf'<code id="{slug}-prompt">(.*?)</code>', body, re.DOTALL)
+        assert m, f"{slug}-prompt block missing from /home"
+        actual = _html.unescape(m.group(1))
+        assert actual == expected, (
+            f"{slug}-prompt body diverged from connector_prompts module — "
+            f"the home tile and setup script will paste different text. "
+            f"len(home)={len(actual)} len(module)={len(expected)}"
+        )

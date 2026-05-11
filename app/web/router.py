@@ -25,6 +25,7 @@ from app.instance_config import (
     get_gws_oauth_credentials, get_home_automode_visibility,
     get_instance_admin_email,
 )
+from app.web.connector_prompts import all_connector_prompts
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.knowledge import KnowledgeRepository
@@ -404,11 +405,21 @@ def _build_context(
         server_host = request.url.netloc
         ca_pem = _read_agnes_ca_pem()
 
+        # Connector prompts wired through so step 9 inlines the same text
+        # the /home tiles render. all_connector_prompts() reads operator
+        # GWS OAuth config so the GCP-frictionless branch fires when the
+        # admin has provisioned a shared client_id+secret.
+        _connector_prompts = all_connector_prompts(
+            gws_oauth=get_gws_oauth_credentials(),
+            instance_admin_email=get_instance_admin_email(),
+        )
+
         setup_instructions_lines = resolve_lines(
             _wheel_filename,
             plugin_install_names=[],
             server_host=server_host,
             ca_pem=ca_pem,
+            connector_prompts=_connector_prompts,
         )
 
     ctx = {
@@ -436,6 +447,16 @@ def _build_context(
         # tile's "Email admin" mailto button. Empty string hides the
         # button — template guards with `{% if instance_admin_email %}`.
         "instance_admin_email": get_instance_admin_email(),
+        # Resolved connector setup prompts — single source of truth for
+        # both the /home "Copy prompt" tiles and the main setup script
+        # (app/web/setup_instructions.py inlines them in step 9). The
+        # gws prompt branches on `gws_oauth.configured` so both surfaces
+        # render the operator-provisioned shortcut when credentials are
+        # set, and the manual GCP walkthrough when they're not.
+        "connector_prompts": all_connector_prompts(
+            gws_oauth=get_gws_oauth_credentials(),
+            instance_admin_email=get_instance_admin_email(),
+        ),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.

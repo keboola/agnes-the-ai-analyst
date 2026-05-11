@@ -150,7 +150,16 @@ def test_home_renders_configured_gws_branch(fresh_db, monkeypatch):
     """Configured branch writes ~/.config/gws/client_secret.json directly
     instead of exporting env vars. Claude Code's security layer redacts
     env vars whose name contains 'SECRET', so the file-write path is the
-    only reliable way to seed the OAuth app credentials."""
+    only reliable way to seed the OAuth app credentials.
+
+    The gws prompt body now flows through Jinja's autoescape (the template
+    moved from inline `<code>` text to a `{{ connector_prompts.gws }}`
+    expression after the connector-prompts extraction). That means `"`
+    characters render as `&quot;` in the served HTML — the browser
+    un-escapes them on read, but the raw response body has the entity-
+    encoded form. So the test un-escapes before substring-matching."""
+    import html as _html
+
     monkeypatch.setenv(
         "AGNES_GWS_CLIENT_ID", "123456789012-abcd5678efgh.apps.googleusercontent.com"
     )
@@ -168,7 +177,7 @@ def test_home_renders_configured_gws_branch(fresh_db, monkeypatch):
     c = _client()
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
-    body = resp.text
+    body = _html.unescape(resp.text)
     # Configured branch — JSON file path
     assert "~/.config/gws/client_secret.json" in body
     assert '"client_id": "123456789012-abcd5678efgh.apps.googleusercontent.com"' in body

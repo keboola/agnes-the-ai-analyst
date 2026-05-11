@@ -193,11 +193,32 @@ def compute_default_agent_prompt(
         except Exception:
             pass
 
+        # Resolve connector prompts via the shared module so the bash
+        # script's step-9 connector block uses the same operator-side
+        # config (GWS OAuth credentials, admin email) as the /home tile
+        # cards. Failure here falls back to the module's default empty
+        # config — the unconfigured GCP-walkthrough branch renders, which
+        # is the same behaviour as today on an instance with no
+        # AGNES_GWS_CLIENT_ID / AGNES_GWS_CLIENT_SECRET set.
+        connector_prompts: dict[str, str] | None = None
+        try:
+            from app.web.connector_prompts import all_connector_prompts
+            from app.instance_config import (
+                get_gws_oauth_credentials, get_instance_admin_email,
+            )
+            connector_prompts = all_connector_prompts(
+                gws_oauth=get_gws_oauth_credentials(),
+                instance_admin_email=get_instance_admin_email(),
+            )
+        except Exception:
+            logger.exception("compute_default_agent_prompt: connector prompt resolution failed; using module defaults")
+
         lines = resolve_lines(
             _wheel_filename,
             plugin_install_names=plugin_install_names,
             server_host=server_host,
             ca_pem=ca_pem,
+            connector_prompts=connector_prompts,
         )
         return "\n".join(lines)
     except Exception:

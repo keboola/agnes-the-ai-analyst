@@ -388,7 +388,7 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
         "       the system schema even on populated instances.",
         "   Only flag actual yellow/red checks (api / duckdb_state / users).",
         "",
-        f"{skills_num}) Skills (ask the user — this is the last interactive step before Confirm):",
+        f"{skills_num}) Skills (ask the user — this is the second-to-last interactive step before connectors + Confirm):",
         "   The CLI ships with reusable markdown skills (setup, connectors,",
         "   corporate-memory, deploy, notifications, security, troubleshoot),",
         "   listable via `agnes skills list` and readable via `agnes skills show <name>`.",
@@ -409,6 +409,69 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
     ]
 
 
+def _connectors_block(
+    step_num: str,
+    connector_prompts: dict[str, str],
+    *,
+    confirm_step_num: str,
+) -> list[str]:
+    """Per-connector interactive ask + inline prompt. Last interactive
+    step before Confirm.
+
+    Defaults to install (Y) — the user has to actively type "no" to skip.
+    Rationale: when the operator provisions a shared GWS OAuth app
+    (AGNES_GWS_CLIENT_ID + AGNES_GWS_CLIENT_SECRET), the GWS path runs
+    in ~2 minutes with zero GCP clickops; Asana + Atlassian only need
+    the user's own API token from their respective developer consoles —
+    which they need either way to use the tool. Default-install matches
+    "wire everything up" — the common path.
+
+    Each connector's prompt body comes verbatim from
+    ``app/web/connector_prompts.py`` — same source the /home tile cards
+    render, so editing one place updates both surfaces. The prompts
+    themselves are idempotent (each has its own step-0 precheck) so
+    re-runs short-circuit cleanly.
+
+    Connectors are presented in the order they appear in the
+    ``connector_prompts`` dict — the caller controls ordering by how
+    they build the dict. Today that's asana → gws → atlassian, matching
+    the /home tile order.
+    """
+    lines = [
+        "",
+        f"{step_num}) Connect the user's tools (last interactive ask before Confirm):",
+        "",
+        "   For each tool below, ask the user verbatim: \"Set up <NAME> now? (Y/n)\".",
+        "   Treat empty/Enter as YES — the default is install. Only skip when the",
+        "   user types an explicit \"no\" / \"n\" / \"skip\". Wait for each answer",
+        "   before moving to the next. The prompts below are idempotent and",
+        "   safe to re-run if anything goes sideways.",
+        "",
+    ]
+    # Stable ordering — let the dict iteration order win (Python 3.7+ insertion-ordered).
+    # Caller controls which connectors are present; we just iterate.
+    sub_letters = "abcdefghij"
+    for i, (slug, body) in enumerate(connector_prompts.items()):
+        # Display name is sourced from the registry so the ask phrasing stays
+        # in lockstep with what /home renders.
+        from app.web.connector_prompts import CONNECTORS  # local import — avoids module-load cycles
+        display = next((c.display_name for c in CONNECTORS if c.slug == slug), slug)
+        desc = next((c.description for c in CONNECTORS if c.slug == slug), "")
+        lines.append(f"   {sub_letters[i]}) {display} — {desc}")
+        lines.append(f"      Ask: \"Set up {display} now? (Y/n)\"")
+        lines.append("      If yes (default) — follow this inline prompt verbatim:")
+        lines.append("")
+        # Indent the prompt body two spaces so it visually nests under the
+        # ask. Empty lines stay empty (no trailing whitespace).
+        for body_line in body.split("\n"):
+            lines.append(f"      {body_line}" if body_line else "")
+        lines.append("")
+    lines.extend([
+        f"   After all asks (regardless of answers) continue to step {confirm_step_num}.",
+    ])
+    return lines
+
+
 def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
     """Final Confirm step. Bullets it asks the assistant to report on must
     only reference earlier steps that were actually emitted, otherwise the
@@ -417,7 +480,8 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
     the trust block ran (`has_ca`). The marketplace clone bullet is
     unconditional now — preflight + marketplace are always emitted (Fix B
     in the 2026-05-10 init-report response). Init + catalog + diagnose +
-    skills + version always render, so their bullets are unconditional."""
+    skills + connectors + version always render, so their bullets are
+    unconditional."""
     bullets = [
         "   - `agnes --version` output",
         "   - First few lines of `agnes catalog` (tables you can see)",
@@ -427,8 +491,9 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
         "   - Whether skills were copied or left on-demand",
         "   - Confirmation that `~/.agnes/marketplace/.git/` exists "
         "(the marketplace clone) and that any granted plugins installed",
-        "   - Reminder to scroll to the connector cards on /home and connect "
-        "Asana / Google Workspace / Atlassian (those run separately from this script)",
+        "   - Which connectors got set up: Asana, Google Workspace, and "
+        "Atlassian — installed or declined for each (the per-connector ask "
+        "in the previous step drives this)",
     ]
     if has_ca:
         bullets.append(
@@ -670,7 +735,11 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
     return lines
 
 
-def _step_numbers(*, has_skills: bool = True) -> dict[str, str]:
+def _step_numbers(
+    *,
+    has_skills: bool = True,
+    has_connectors: bool = True,
+) -> dict[str, str]:
     """Compute the step numbers for the unified layout.
 
     Returns a dict keyed by logical step name; values are stringified
@@ -679,8 +748,8 @@ def _step_numbers(*, has_skills: bool = True) -> dict[str, str]:
 
     Mandatory steps (always emitted): install (1), init (2), catalog (3),
     preflight (4), marketplace (5), mcp_servers (6), diagnose (7), skills
-    (8), confirm (9). Preflight + marketplace + mcp_servers are all
-    always-on:
+    (8), connectors (9), confirm (10). Preflight + marketplace +
+    mcp_servers + connectors are all always-on:
       - Marketplace registration is useful even when the operator has
         zero plugin grants (SessionStart hook reconciles future grants
         automatically).
@@ -688,10 +757,16 @@ def _step_numbers(*, has_skills: bool = True) -> dict[str, str]:
         with Claude Code-managed OAuth) and applies to every analyst
         whose work touches Jira/Confluence — high enough hit rate to
         justify default-on.
+      - Connectors (Asana / GWS / Atlassian) are per-connector default-yes
+        asks — the user can decline each individually, so always-emitting
+        the block costs nothing for users who skip everything.
 
-    `has_skills` is kept as a parameter for future flexibility; default
-    True (the Resolved-Question section in the original plan settled on
-    always-on).
+    `has_skills` + `has_connectors` are kept as parameters for future
+    flexibility; both default True. The Resolved-Question section in the
+    original plan settled on always-on for skills, and the connectors
+    step inherits the same default after the 2026-05-09 onboarding test
+    (Petr+Klára) showed users get stuck on the "where do I paste?" jump
+    from the home tiles into Claude Code.
 
     Step-0 (TLS trust block) sits outside this numbering — it is gated by
     has_ca and has its own "0)" header rendered inside the trust block
@@ -705,6 +780,9 @@ def _step_numbers(*, has_skills: bool = True) -> dict[str, str]:
     skills = str(n) if has_skills else ""
     if has_skills:
         n += 1
+    connectors = str(n) if has_connectors else ""
+    if has_connectors:
+        n += 1
     confirm = str(n)
     return {
         "preflight": preflight,
@@ -712,6 +790,7 @@ def _step_numbers(*, has_skills: bool = True) -> dict[str, str]:
         "mcp_servers": mcp_servers,
         "diagnose": diagnose,
         "skills": skills,
+        "connectors": connectors,
         "confirm": confirm,
     }
 
@@ -722,6 +801,7 @@ def resolve_lines(
     plugin_install_names: list[str] | None = None,
     server_host: str = "",
     ca_pem: str | None = None,
+    connector_prompts: dict[str, str] | None = None,
 ) -> list[str]:
     """Return the template lines with server-side placeholders substituted.
 
@@ -729,17 +809,19 @@ def resolve_lines(
     `{server_url}` and `{token}` as placeholders for click-time JS
     substitution (or for `render_setup_instructions()` below).
 
-    When `plugin_install_names` is empty/None, the output matches the
-    six-step no-marketplace layout (Confirm = step 6). When non-empty, a
-    step-4 pre-flight + step-5 marketplace block are inserted and Confirm
-    becomes step 8.
-
     `ca_pem` (PEM-encoded fullchain of the Agnes server's TLS cert) gates
     the cross-platform step-0 trust-bootstrap block AND switches step 1 to
     the curl-then-local-install pattern AND switches step 5 to the
     platform-aware marketplace strategy. Caller decides whether the cert
     needs the bootstrap (typically: skip for publicly-trusted certs like
     Let's Encrypt, emit for self-signed or private corp CA).
+
+    `connector_prompts` is a dict {slug: prompt_text} sourced from
+    :func:`app.web.connector_prompts.all_connector_prompts`. When empty
+    or None we fall back to the module's defaults (no operator GWS OAuth
+    credentials baked in — the unconfigured GCP-walkthrough branch
+    renders). Both the /home tiles and this setup script consume the
+    same dict so the prompt text stays in lockstep across surfaces.
 
     Fallback: callers pass `"agnes.whl"` when no wheel is present on disk.
     The resulting URL (`/cli/wheel/agnes.whl`) will 404 at download time, but
@@ -749,14 +831,21 @@ def resolve_lines(
     names = list(plugin_install_names or [])
     has_ca = bool(ca_pem and ca_pem.strip())
 
-    # Step layout. Preflight + marketplace go BEFORE diagnose/skills so the
-    # human-loop skills question is the last step before Confirm. Both are
-    # always emitted: the marketplace registration is useful even with zero
-    # plugin grants (the SessionStart hook reconciles future admin grants
-    # automatically without re-running setup). `_step_numbers` returns the
-    # renumbered step labels in one place — no branch on every helper — so
-    # the layout is unambiguous and trivially extendable.
-    steps = _step_numbers(has_skills=True)
+    # Lazy default for connector_prompts. Imported inline so the
+    # setup_instructions module stays import-light when callers don't
+    # actually emit the connectors block (tests that hit a single helper
+    # don't pay the cost of loading the prompt strings).
+    if not connector_prompts:
+        from app.web.connector_prompts import all_connector_prompts
+        connector_prompts = all_connector_prompts()
+
+    # Step layout. Preflight + marketplace + MCP go BEFORE diagnose; skills
+    # + connectors are the two human-loop asks at the end (connectors is
+    # LAST — once a user has plugins + skills wired, the only remaining
+    # work is plugging in their tools). `_step_numbers` returns the
+    # renumbered step labels in one place — no branch on every helper —
+    # so the layout is unambiguous and trivially extendable.
+    steps = _step_numbers(has_skills=True, has_connectors=True)
 
     lines: list[str] = []
     if has_ca:
@@ -770,6 +859,12 @@ def resolve_lines(
     # Diagnose + skills come AFTER marketplace + MCP wiring.
     lines.extend(_diagnose_skills_lines(
         diagnose_num=steps["diagnose"], skills_num=steps["skills"],
+    ))
+    # Connectors are the LAST interactive ask before Confirm. Per-connector
+    # default-yes — empty/Enter is install, explicit "no" skips.
+    lines.extend(_connectors_block(
+        steps["connectors"], connector_prompts,
+        confirm_step_num=steps["confirm"],
     ))
     lines.append("")
     lines.extend(_finale_lines(
@@ -791,19 +886,21 @@ def render_setup_instructions(
     plugin_install_names: list[str] | None = None,
     server_host: str = "",
     ca_pem: str | None = None,
+    connector_prompts: dict[str, str] | None = None,
 ) -> str:
     """Render the setup instructions as a single string.
 
     Used server-side for tests and any non-JS rendering path. The browser
     clipboard flow uses the JS renderer embedded in the Jinja partial; both
     must produce byte-identical output for a given (server_url, token,
-    wheel, plugins, host, ca_pem) tuple.
+    wheel, plugins, host, ca_pem, connector_prompts) tuple.
     """
     lines = resolve_lines(
         wheel_filename,
         plugin_install_names=plugin_install_names,
         server_host=server_host,
         ca_pem=ca_pem,
+        connector_prompts=connector_prompts,
     )
     text = "\n".join(lines)
     return text.replace("{server_url}", server_url).replace("{token}", token)

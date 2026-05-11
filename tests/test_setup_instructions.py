@@ -49,12 +49,14 @@ def test_render_setup_instructions_wires_all_placeholders():
 
 def test_resolve_lines_no_plugins_unified_layout():
     """Unified always-on layout (Fix B + Fix C in 2026-05-10 init-report
-    response): 1 install, 2 init, 3 catalog, 4 preflight, 5 marketplace,
-    6 mcp_servers, 7 diagnose, 8 skills, 9 confirm. Preflight +
-    marketplace + MCP block are emitted even when the operator has zero
-    plugin grants — registering the per-user marketplace clone pre-wires
-    the SessionStart hook, and the Atlassian Remote MCP applies to every
-    analyst whose work touches Jira/Confluence."""
+    response, then connectors added 2026-05-11): 1 install, 2 init,
+    3 catalog, 4 preflight, 5 marketplace, 6 mcp_servers, 7 diagnose,
+    8 skills, 9 connectors, 10 confirm. Preflight + marketplace + MCP +
+    connectors block are emitted even when the operator has zero plugin
+    grants — registering the per-user marketplace clone pre-wires the
+    SessionStart hook, the Atlassian Remote MCP applies to every analyst
+    whose work touches Jira/Confluence, and the connectors block is
+    per-connector default-yes (the user can decline each individually)."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
@@ -67,9 +69,10 @@ def test_resolve_lines_no_plugins_unified_layout():
     assert "6) Register the Atlassian MCP server" in joined
     assert "7) Run diagnostics:" in joined
     assert "8) Skills" in joined
-    assert "9) Confirm:" in joined
+    assert "9) Connect the user's tools" in joined
+    assert "10) Confirm:" in joined
     # No stray Confirms at other positions.
-    assert "10) Confirm:" not in joined
+    assert "9) Confirm:" not in joined
     assert "6) Confirm:" not in joined
     # The marketplace step header adapts to "no plugins granted yet" copy
     # rather than the plugin-installing variant.
@@ -293,9 +296,10 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "7) Run diagnostics:" in joined
     # Step 8 — skills, the last interactive step before Confirm.
     assert "8) Skills" in joined
-    # Step 9 — Confirm renumbered (no stray Confirms at other positions).
-    assert "9) Confirm:" in joined
-    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "8) Confirm:"):
+    assert "9) Connect the user's tools" in joined
+    # Step 10 — Confirm renumbered (no stray Confirms at other positions).
+    assert "10) Confirm:" in joined
+    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "8) Confirm:", "9) Confirm:"):
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
@@ -306,8 +310,9 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     mcp_idx = joined.index("6) Register the Atlassian MCP server")
     diag_idx = joined.index("7) Run diagnostics:")
     skills_idx = joined.index("8) Skills")
-    confirm_idx = joined.index("9) Confirm:")
-    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < mcp_idx < diag_idx < skills_idx < confirm_idx
+    conn_idx = joined.index("9) Connect the user's tools")
+    confirm_idx = joined.index("10) Confirm:")
+    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < mcp_idx < diag_idx < skills_idx < conn_idx < confirm_idx
     # Legacy `git config sslVerify=false` downgrade is gone — see CHANGELOG.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
@@ -638,7 +643,7 @@ def test_resolve_lines_ca_pem_works_without_plugins():
 
     joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
     assert "0) Trust the Agnes TLS certificate" in joined
-    assert "9) Confirm:" in joined
+    assert "10) Confirm:" in joined
     # Marketplace block is now emitted unconditionally; the bootstrap
     # one-liner does the `claude plugin marketplace add` internally so
     # the literal string isn't in the prompt text — the user-facing
@@ -717,17 +722,19 @@ def test_no_plugins_layout_keeps_diagnose_before_skills():
     """Always-on layout (Fix B + Fix C in 2026-05-10 init-report response):
     install → init → catalog → preflight → marketplace → mcp_servers →
     diagnose → skills → confirm, regardless of plugin grants. Step
-    numbers: 7 diagnose, 8 skills, 9 confirm."""
+    numbers: 7 diagnose, 8 skills, 9 connectors, 10 confirm."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
     assert "7) Run diagnostics:" in joined
     assert "8) Skills" in joined
-    assert "9) Confirm:" in joined
+    assert "9) Connect the user's tools" in joined
+    assert "10) Confirm:" in joined
     diag_idx = joined.index("7) Run diagnostics:")
     skills_idx = joined.index("8) Skills")
-    confirm_idx = joined.index("9) Confirm:")
-    assert diag_idx < skills_idx < confirm_idx
+    conn_idx = joined.index("9) Connect the user's tools")
+    confirm_idx = joined.index("10) Confirm:")
+    assert diag_idx < skills_idx < conn_idx < confirm_idx
 
 
 def test_unified_flow_uses_only_agnes_verbs():
@@ -794,3 +801,99 @@ def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
     assert "/cli/wheel/agnes_the_ai_analyst-2.0.0-py3-none-any.whl" in resp.text
     # The bare alias must no longer appear in the rendered snippet.
     assert "/cli/agnes.whl" not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Connector block (step 9) — per-connector default-yes interactive asks
+# wired to verbatim prompts from app/web/connector_prompts.py.
+# ---------------------------------------------------------------------------
+
+def test_connectors_block_renders_all_three_asks():
+    """Step 9 must contain a default-yes ask for Asana, Google Workspace,
+    and Atlassian — in that order — and inline each connector's full
+    prompt body verbatim. Catches drift between the registry order and
+    what the script emits."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    # All three asks with the verbatim default-yes phrasing.
+    assert 'Ask: "Set up Asana now? (Y/n)"' in joined
+    assert 'Ask: "Set up Google Workspace now? (Y/n)"' in joined
+    assert 'Ask: "Set up Atlassian (Jira / Confluence) now? (Y/n)"' in joined
+    # The default-install copy is rendered once for the whole block.
+    assert "Treat empty/Enter as YES — the default is install" in joined
+    # Ordering: Asana → GWS → Atlassian (matches the CONNECTORS registry).
+    asana_idx = joined.index('Set up Asana now? (Y/n)')
+    gws_idx = joined.index('Set up Google Workspace now? (Y/n)')
+    atl_idx = joined.index('Set up Atlassian (Jira / Confluence) now? (Y/n)')
+    assert asana_idx < gws_idx < atl_idx
+
+
+def test_connectors_block_uses_gws_configured_branch_when_oauth_set():
+    """When the operator has provisioned a shared OAuth app (client_id +
+    secret), the inlined GWS prompt body skips the manual `gws auth
+    setup` walkthrough and writes client_secret.json directly. That's
+    the GCP-frictionless path that takes ~2 min instead of ~20."""
+    from app.web.setup_instructions import resolve_lines
+    from app.web.connector_prompts import all_connector_prompts
+
+    prompts = all_connector_prompts(gws_oauth={
+        "configured": True,
+        "client_id": "1234-abc.apps.googleusercontent.com",
+        "client_secret": "FAKE-SECRET",
+        "project_id": "1234",
+        "oauthlib_insecure_transport": "1",
+    })
+    joined = "\n".join(resolve_lines("agnes.whl", connector_prompts=prompts))
+    # Configured branch signature: the operator's literal client_id is
+    # baked into the inlined client_secret.json snippet.
+    assert "1234-abc.apps.googleusercontent.com" in joined
+    assert "FAKE-SECRET" in joined
+    # The manual `gws auth setup` walkthrough must NOT appear when the
+    # configured branch is active.
+    assert "Run `gws auth setup` for me" not in joined
+
+
+def test_connectors_block_uses_gws_manual_branch_when_oauth_unset():
+    """Inverse: when no operator OAuth credentials are provisioned, the
+    inlined GWS prompt walks the user through the manual `gws auth
+    setup` flow (the ~20-min GCP clickops path)."""
+    from app.web.setup_instructions import resolve_lines
+    from app.web.connector_prompts import all_connector_prompts
+
+    prompts = all_connector_prompts(gws_oauth={"configured": False})
+    joined = "\n".join(resolve_lines("agnes.whl", connector_prompts=prompts))
+    assert "Run `gws auth setup` for me" in joined
+    # The configured-branch landmark string ("Skip `gws auth setup` entirely")
+    # must NOT appear in the unconfigured branch.
+    assert "Skip `gws auth setup` entirely" not in joined
+
+
+def test_step_numbering_with_connectors_step():
+    """_step_numbers must return diagnose=7, skills=8, connectors=9,
+    confirm=10. Anchors the numeric expectations the rest of the test
+    suite assumes."""
+    from app.web.setup_instructions import _step_numbers
+
+    steps = _step_numbers()
+    assert steps["preflight"] == "4"
+    assert steps["marketplace"] == "5"
+    assert steps["mcp_servers"] == "6"
+    assert steps["diagnose"] == "7"
+    assert steps["skills"] == "8"
+    assert steps["connectors"] == "9"
+    assert steps["confirm"] == "10"
+
+
+def test_finale_bullets_mention_connector_outcomes():
+    """The Confirm step's summary bullets must include "Which connectors
+    got set up: Asana, Google Workspace, and Atlassian — installed or
+    declined for each". Without this the assistant has no reason to
+    summarise the per-connector ask answers in the final Confirm
+    message."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "Which connectors got set up" in joined
+    assert "Asana, Google Workspace, and Atlassian" in joined
+    assert "installed or declined for each" in joined
