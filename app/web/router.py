@@ -228,6 +228,7 @@ _URL_MAP = {
     "corporate_memory": "/corporate-memory",
     "corporate_memory_admin": "/corporate-memory/admin",
     "activity_center": "/activity-center",
+    "admin_activity": "/admin/activity",
     "index": "/",
     "auth.login": "/login",
     "auth.logout": "/login",  # No logout route — redirect to login
