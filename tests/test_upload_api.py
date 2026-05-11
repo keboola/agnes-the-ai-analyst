@@ -34,7 +34,7 @@ class TestUploadSessions:
         assert resp.status_code == 401
 
     def test_upload_session_directory_traversal_rejected(self, seeded_app):
-        """Filenames with ../ should be sanitized — only the basename is kept."""
+        """Filenames with ../ are rejected outright by the strict filename regex."""
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         content = b'{"type": "message"}\n'
@@ -43,12 +43,9 @@ class TestUploadSessions:
             files={"file": ("../../etc/passwd", io.BytesIO(content), "application/jsonl")},
             headers=_auth(token),
         )
-        # The upload should succeed, but the path traversal should be stripped
-        assert resp.status_code == 200
-        data = resp.json()
-        # filename must be just the basename — no slashes, no traversal
-        assert "/" not in data["filename"]
-        assert data["filename"] in ("passwd", "etc")
+        # Strict regex rejects any filename containing characters outside [A-Za-z0-9._-]
+        assert resp.status_code == 400
+        assert "filename" in resp.text.lower()
 
     def test_upload_session_empty_content(self, seeded_app):
         c = seeded_app["client"]
