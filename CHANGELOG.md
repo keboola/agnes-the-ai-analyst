@@ -10,6 +10,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Session capture queue: concurrent SessionStart hooks no longer
+  corrupt the queue file on Windows.** `append_to_queue`,
+  `requeue_failed`, and `snapshot_queue` in `cli/lib/session_queue.py`
+  now hold a short-lived `agnes-queue.lock` (filelock) while writing.
+  Previously the code assumed Python's `open(path, "a")` is atomic on
+  NTFS for small writes; it isn't — the Windows CRT does not pass
+  `FILE_APPEND_DATA` to `CreateFile`, so concurrent appenders (e.g.
+  user opens several Claude Code windows simultaneously) could
+  interleave bytes mid-line and the parser would silently drop the
+  malformed entries. The lock is separate from `agnes-push.lock` —
+  capture-session hooks don't block on the push command.
+- **Session capture queue: snapshot filenames now include a uuid8 tail
+  so a recycled OS PID cannot silently overwrite a recovery snapshot
+  left behind by a crashed push.** `snapshot_queue` previously named
+  files `agnes-sessions.snapshot.<PID>.txt`; after a crash + PID reuse
+  (Linux default `kernel.pid_max=32768`), `os.rename` atomically
+  replaces the recovery file with the new snapshot, losing every entry
+  in it. New format: `agnes-sessions.snapshot.<PID>.<uuid8>.txt`;
+  `find_recovery_snapshots` already uses a glob so the change is
+  backward-compatible with snapshots written by older CLI versions.
+
 ### Changed
 
 - **Setup prompt + CLAUDE.md template: marketplace copy now reflects the

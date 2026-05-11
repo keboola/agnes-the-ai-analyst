@@ -67,6 +67,21 @@ def test_snapshot_filename_carries_pid(tmp_path):
     assert str(os.getpid()) in snap.name
 
 
+def test_snapshot_filename_is_unique_per_call(tmp_path):
+    """Two consecutive snapshots under the same PID must not collide.
+    Guards against the data-loss scenario where a crashed push left a
+    snapshot on disk and the OS later reused its PID for a new push:
+    without the uuid suffix, os.rename would atomically overwrite the
+    recovery snapshot, silently losing its entries."""
+    append_to_queue(tmp_path, "sid-1", "/a.jsonl")
+    snap1 = snapshot_queue(tmp_path)
+    append_to_queue(tmp_path, "sid-2", "/b.jsonl")
+    snap2 = snapshot_queue(tmp_path)
+    assert snap1 is not None and snap2 is not None
+    assert snap1 != snap2
+    assert snap1.exists() and snap2.exists()
+
+
 def test_read_entries_dedups_and_preserves_order(tmp_path):
     append_to_queue(tmp_path, "sid-1", "/abc.jsonl")
     append_to_queue(tmp_path, "sid-2", "/def.jsonl")
@@ -189,3 +204,37 @@ def test_discard_snapshot_idempotent(tmp_path):
     discard_snapshot(snap)
     assert not snap.exists()
     discard_snapshot(snap)  # second call must not raise
+
+
+def test_append_concurrent_threads_no_corruption(tmp_path):
+    """Concurrent appends from multiple threads must not interleave bytes
+    mid-line. Guards against the Windows non-atomic open(path, 'a')
+    regression that the queue lock was added to prevent."""
+    import threading
+
+    per_worker = 50
+    n_workers = 4
+
+    def worker(start: int) -> None:
+        for i in range(per_worker):
+            append_to_queue(tmp_path, f"sid-{start}-{i}", f"/p/{start}-{i}.jsonl")
+
+    threads = [threading.Thread(target=worker, args=(s,)) for s in range(n_workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    text = queue_path(tmp_path).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    assert len(lines) == n_workers * per_worker
+    # Every line must be well-formed: exactly one tab separator, non-empty
+    # sid + non-empty path. Interleaved bytes would produce malformed lines.
+    seen: set[str] = set()
+    for line in lines:
+        assert line.count("\t") == 1, f"corrupted line: {line!r}"
+        sid, _, path = line.partition("\t")
+        assert sid.startswith("sid-")
+        assert path.startswith("/p/")
+        seen.add(line)
+    assert len(seen) == n_workers * per_worker  # no dropped writes

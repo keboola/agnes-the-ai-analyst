@@ -15,6 +15,11 @@ which is fine, since by definition they pre-date the feature.
 Race protection: push atomically renames the queue to a snapshot file
 before processing. New SessionStart hooks write to a freshly-created
 queue without their entries being clobbered by the eventual rewrite.
+A short-lived ``agnes-queue.lock`` (filelock) serializes the rename
+against in-flight appends so the queue file is never written to and
+renamed concurrently — required on Windows, where ``os.rename`` fails
+if another handle has the file open, and where ``open(path, "a")`` is
+not atomic across writers.
 
 Recovery: if push crashes mid-snapshot, the snapshot file persists. The
 next push picks it up via :func:`find_recovery_snapshots` and processes
@@ -24,8 +29,11 @@ it before touching the live queue.
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from filelock import FileLock
 
 
 _QUEUE_FILENAME = "agnes-sessions.txt"
@@ -33,6 +41,7 @@ _UPLOADED_FILENAME = "agnes-sessions-uploaded.txt"
 _PRIVATE_SKIPPED_FILENAME = "agnes-sessions-private-skipped.txt"
 _SNAPSHOT_PREFIX = "agnes-sessions.snapshot."
 _SNAPSHOT_SUFFIX = ".txt"
+_QUEUE_LOCK_FILENAME = "agnes-queue.lock"
 
 
 def _claude_dir(workspace: Path) -> Path:
@@ -54,37 +63,69 @@ def private_skipped_log_path(workspace: Path) -> Path:
     return _claude_dir(workspace) / _PRIVATE_SKIPPED_FILENAME
 
 
+def _queue_lock_path(workspace: Path) -> Path:
+    """Lock file serializing concurrent writers to the queue file.
+
+    Separate from ``agnes-push.lock`` — that one serializes the push
+    command end-to-end; this one is short-lived (held only for the
+    duration of a single append or rename).
+    """
+    return _claude_dir(workspace) / _QUEUE_LOCK_FILENAME
+
+
 def append_to_queue(workspace: Path, session_id: str, transcript_path: str) -> None:
     """Append a ``<session_id>\\t<transcript_path>`` line to the queue.
 
-    Single-line append in O_APPEND mode — atomic for sub-PIPE_BUF writes
-    on POSIX, atomic for sub-512-byte writes on NTFS. No deduplication
-    here: the queue may legitimately contain duplicates (e.g., resume
+    Held under ``agnes-queue.lock`` to serialize concurrent SessionStart
+    hooks. Python's ``open(path, "a")`` is NOT atomic on Windows — the
+    CRT does not pass ``FILE_APPEND_DATA`` to ``CreateFile``, so it's a
+    plain seek-to-end + write that can interleave bytes mid-line under
+    concurrent writers (e.g. user opens several Claude Code windows
+    simultaneously). The lock makes the append safe on every platform.
+
+    No deduplication here: duplicates may legitimately appear (resume
     scenario re-writes the same path). Dedup happens at read time.
     """
     sid = (session_id or "").rstrip("\n").rstrip("\t")
     tp = transcript_path.rstrip("\n")
     line = f"{sid}\t{tp}\n"
-    with open(queue_path(workspace), "a", encoding="utf-8") as f:
-        f.write(line)
+    with FileLock(str(_queue_lock_path(workspace))):
+        with open(queue_path(workspace), "a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def snapshot_queue(workspace: Path) -> Path | None:
     """Atomically rename the live queue to a snapshot for processing.
 
     Returns the snapshot path, or None if the queue doesn't exist (no work
-    to do). The snapshot filename embeds the current PID so concurrent push
-    runs — which the lock already prevents, but defense-in-depth — wouldn't
-    collide on the rename.
+    to do). The snapshot filename embeds the current PID *and* a random
+    uuid8 hex tail: PID alone is not unique after the OS recycles it
+    (Linux wraps at ~32768 by default), so a crashed push leaving a
+    snapshot on disk could be silently overwritten by a future push with
+    the same PID — ``os.rename`` atomically replaces the destination on
+    POSIX and Windows alike, so data loss would be silent. The uuid tail
+    makes every snapshot filename unique regardless of PID reuse.
+
+    Held under ``agnes-queue.lock`` to serialize against in-flight
+    ``append_to_queue`` calls: on Windows, ``os.rename`` would fail with
+    ``PermissionError`` if another handle has the queue open for write,
+    so the lock prevents that race. The lock is short-lived (single
+    rename), so it doesn't meaningfully delay concurrent capture-session
+    hooks.
     """
     queue = queue_path(workspace)
     if not queue.exists():
         return None
-    snapshot = _claude_dir(workspace) / f"{_SNAPSHOT_PREFIX}{os.getpid()}{_SNAPSHOT_SUFFIX}"
-    try:
-        os.rename(queue, snapshot)
-    except FileNotFoundError:
-        return None  # race: queue removed between exists() and rename()
+    unique = uuid.uuid4().hex[:8]
+    snapshot = (
+        _claude_dir(workspace)
+        / f"{_SNAPSHOT_PREFIX}{os.getpid()}.{unique}{_SNAPSHOT_SUFFIX}"
+    )
+    with FileLock(str(_queue_lock_path(workspace))):
+        try:
+            os.rename(queue, snapshot)
+        except FileNotFoundError:
+            return None  # race: queue removed between exists() and rename()
     return snapshot
 
 
@@ -200,9 +241,14 @@ def requeue_failed(
     appends that hooks wrote during this push run. Relative ordering
     vs. those fresh entries is best-effort — order doesn't affect
     correctness.
+
+    Held under ``agnes-queue.lock`` because concurrent ``capture-session``
+    hooks (which don't hold the push lock) may be appending at the same
+    time — same Windows non-atomicity concern as ``append_to_queue``.
     """
     if not entries:
         return
-    with open(queue_path(workspace), "a", encoding="utf-8") as f:
-        for sid, p in entries:
-            f.write(f"{sid}\t{p}\n")
+    with FileLock(str(_queue_lock_path(workspace))):
+        with open(queue_path(workspace), "a", encoding="utf-8") as f:
+            for sid, p in entries:
+                f.write(f"{sid}\t{p}\n")
