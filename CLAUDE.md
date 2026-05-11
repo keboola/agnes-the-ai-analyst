@@ -524,6 +524,26 @@ Customer-specific automation, hostnames, and identities live in private infra re
 
 **If you find yourself opening a PR without a CHANGELOG entry, stop and add one before requesting review.** Reviewers should bounce PRs that touch user-visible behavior without a changelog update — same way they'd bounce a PR with no test changes for new logic.
 
+## Release-cut belongs to the PR — non-negotiable
+
+**The version bump + CHANGELOG rename + new empty `[Unreleased]` are the LAST commit on the PR that earned the version. Never a standalone follow-up PR.**
+
+When a PR lands the only `[Unreleased]` content (or is the last in a queue of in-flight feature PRs), the release-cut MUST ship as part of the same merge. Standalone release-cut PRs add review-overhead PRs to history with no behavior change of their own and pollute `git log` with the worst kind of churn — bookkeeping commits separated from the work that earned them.
+
+**Mandatory checklist before approving / enabling auto-merge on ANY PR:**
+
+1. **Stop.** Will this PR land alone in `[Unreleased]` (no other in-flight PRs queued behind it)?
+2. **If yes**, the release-cut is REQUIRED in the same PR before merge. BEFORE pushing the final commit:
+   - Bump `pyproject.toml` to `X.Y.Z`
+   - Rename `## [Unreleased]` → `## [X.Y.Z] — YYYY-MM-DD`, add a new empty `## [Unreleased]` on top
+   - Either squash these into the consolidation commit OR add as a separate `release: X.Y.Z` commit on the same branch
+3. **THEN** push, approve, enable auto-merge.
+4. After auto-merge fires: tag `vX.Y.Z` against the merge commit + create a GitHub Release. Done — one PR, one merge, one release.
+
+**Failure mode to avoid:** enabling auto-merge on the feature PR thinking "I'll add the release-cut after." Auto-merge fires faster than the second commit lands. The window closes; the only fix is a standalone release-cut PR — exactly what this rule prohibits.
+
+**Acceptable standalone release-cut** (rare): only when `[Unreleased]` accumulated bullets from MULTIPLE already-merged PRs AND no further behavior-change PR is queued — i.e. the cut is the only outstanding work and there's no PR to attach it to.
+
 ## Run tests before every push — non-negotiable
 
 **Before `git push`, run the full pytest suite locally.** CI runs the same command (`.github/workflows/ci.yml:29` → `pytest tests/ -v --tb=short -n auto`); a failure that surfaces in CI was discoverable in 90 seconds locally. Pushing first and watching CI fail wastes operator time, slows the PR, and trains everyone to ignore CI badges.
