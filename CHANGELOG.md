@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.49.1] — 2026-05-11
+
 ### Added
 
 - **`instance.admin_email` operator config knob** (env `AGNES_INSTANCE_ADMIN_EMAIL` > YAML `instance.admin_email` > unset). When set, the `/home` Google Workspace connector tile renders an "Email admin" mailto button so analysts whose operator hasn't pre-provisioned a shared OAuth app can request one without leaving the workspace. Empty default cleanly hides the button.
