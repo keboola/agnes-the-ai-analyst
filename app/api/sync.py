@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,9 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
+from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
 from app.utils import get_data_dir as _get_data_dir
+from src.repositories.audit import AuditRepository
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.table_registry import TableRegistryRepository
@@ -844,11 +847,47 @@ async def trigger_sync(
         )
 
     if _sync_lock.locked():
+        try:
+            from src.db import get_system_db
+            _audit_conn = get_system_db()
+            AuditRepository(_audit_conn).log(
+                user_id=user.get("id"),
+                action="sync.trigger",
+                resource=(
+                    (tables[0] if len(tables) == 1 else f"{len(tables)} tables")
+                    if tables else "all_tables"
+                )[:256],
+                params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables},
+                result="error.in_progress",
+                client_kind="scheduler" if user.get("email") == SCHEDULER_USER_EMAIL else "web",
+            )
+            _audit_conn.close()
+        except Exception:
+            logger.exception("audit_log write failed for sync.trigger (in_progress); continuing")
         raise HTTPException(
             status_code=409,
             detail="sync_already_in_progress",
         )
+    _t0 = time.monotonic()
     background_tasks.add_task(_run_sync, tables)
+    try:
+        from src.db import get_system_db
+        _audit_conn = get_system_db()
+        AuditRepository(_audit_conn).log(
+            user_id=user.get("id"),
+            action="sync.trigger",
+            resource=(
+                (tables[0] if len(tables) == 1 else f"{len(tables)} tables")
+                if tables else "all_tables"
+            )[:256],
+            params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables},
+            result="success",
+            duration_ms=int((time.monotonic() - _t0) * 1000),
+            client_kind="scheduler" if user.get("email") == SCHEDULER_USER_EMAIL else "web",
+        )
+        _audit_conn.close()
+    except Exception:
+        logger.exception("audit_log write failed for sync.trigger; continuing")
     return {
         "status": "triggered",
         "tables": tables or "all",
