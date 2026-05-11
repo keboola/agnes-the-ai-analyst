@@ -68,3 +68,16 @@ def test_activity_sync_returns_recent(seeded_app, admin_user):
     data = resp.json()
     assert "rows" in data
     assert any(r["table_id"] == "t_test" for r in data["rows"])
+
+
+def test_admin_activity_page_renders(seeded_app, admin_user):
+    resp = seeded_app["client"].get("/admin/activity", headers=admin_user)
+    assert resp.status_code == 200
+    assert "Timeline" in resp.text
+    assert "Sync" in resp.text
+
+
+def test_activity_center_redirects_to_admin_activity(seeded_app, admin_user):
+    resp = seeded_app["client"].get("/activity-center", headers=admin_user, follow_redirects=False)
+    assert resp.status_code == 308
+    assert resp.headers["location"] == "/admin/activity"
