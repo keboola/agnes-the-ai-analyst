@@ -23,6 +23,7 @@ from app.instance_config import (
     get_instance_name, get_instance_subtitle, get_datasets,
     get_theme, get_corporate_memory_config, get_home_route,
     get_gws_oauth_credentials, get_home_automode_visibility,
+    get_instance_admin_email,
 )
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
@@ -431,6 +432,10 @@ def _build_context(
         # /home connector prompt. {} when unset → template falls back
         # to manual `gws auth setup`. See app.instance_config docstring.
         "gws_oauth": get_gws_oauth_credentials(),
+        # Operator-facing contact email used by the /home GWS connector
+        # tile's "Email admin" mailto button. Empty string hides the
+        # button — template guards with `{% if instance_admin_email %}`.
+        "instance_admin_email": get_instance_admin_email(),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.
