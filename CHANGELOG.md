@@ -10,6 +10,36 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **All Agnes-managed Claude Code hooks are now wrapped in `bash -c
+  "..."`.** Previously the chained SessionStart entry
+  (`agnes self-upgrade ... ; agnes pull ...`) shipped unwrapped, relying
+  on a shell being invoked. Claude Code on Windows runs hook commands
+  directly without a shell, so the `;` chain, `2>/dev/null` redirection,
+  and `|| true` short-circuit never got interpreted — the chain
+  effectively no-op'd on native Windows installs without Git Bash on
+  PATH. The other entries (capture-session, refresh-marketplace,
+  SessionEnd push) were already bash-wrapped; this aligns the chain
+  with the same contract. Workspaces still on the old unwrapped form
+  auto-upgrade via `maybe_refresh_claude_hooks` (see entry below).
+
+- **`agnes self-upgrade` now auto-refreshes the workspace Claude Code
+  hooks** so an existing Agnes workspace picks up the new SessionStart /
+  SessionEnd layout the moment its CLI is upgraded — no need to re-run
+  `agnes init` after a release. Without this, an existing v0.48
+  workspace would auto-upgrade the CLI via its own SessionStart
+  self-upgrade entry, but the new `agnes capture-session` hook (added
+  in this release) would never get installed, the queue would stay
+  empty, and `agnes push` would silently stop uploading sessions. The
+  refresh fires on both the "info is None" fast path (CLI already
+  current — handles the second SessionStart after a prior upgrade) and
+  after a successful install. Guarded by
+  `cli.lib.hooks.workspace_has_agnes_hooks` so it never writes
+  `.claude/settings.json` into directories that aren't Agnes workspaces
+  (e.g. `agnes self-upgrade` from `~/`). Failures are best-effort —
+  they're surfaced on stderr but never flip the upgrade exit code.
+
 ### Fixed
 
 - **Session capture queue: concurrent SessionStart hooks no longer

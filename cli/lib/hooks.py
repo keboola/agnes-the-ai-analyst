@@ -119,13 +119,15 @@ def install_claude_hooks(workspace: Path) -> None:
         for cmd in commands:
             existing.append({"hooks": [{"type": "command", "command": cmd}]})
 
-    # `refresh-marketplace` is wrapped in `bash -c` because Claude Code on
-    # Windows runs hook commands directly (no shell), so the `2>/dev/null
-    # || true` redirection + short-circuit syntax never gets interpreted.
-    # The self-upgrade+pull chained entry pre-dates the Windows fix and
-    # isn't churned for parity (the same redirection fluff applies but
-    # changing the existing wire would force every workspace to re-write
-    # its settings.json on the next `agnes init` for no behaviour gain).
+    # All entries are wrapped in `bash -c "..."` for Windows compatibility:
+    # Claude Code on Windows runs hook commands directly (no shell), so
+    # the `; ` chain operator, `2>/dev/null` redirection, and `|| true`
+    # short-circuit never get interpreted unless we explicitly invoke
+    # bash. (Git Bash on PATH or WSL satisfies this.) The self-upgrade +
+    # pull chain previously shipped unwrapped — that pre-dates the
+    # Windows fix; ship it wrapped now so every entry uses the same
+    # contract. Workspaces still on the older unwrapped form auto-upgrade
+    # via `maybe_refresh_claude_hooks` on the next `agnes self-upgrade`.
     #
     # `--check` makes the marketplace entry a detector only: the actual
     # plugin install/update happens in the `/update-agnes-plugins` slash
@@ -137,8 +139,7 @@ def install_claude_hooks(workspace: Path) -> None:
     # payload with `transcript_path`) and appends the path to
     # `.claude/agnes-sessions.txt`. That queue file feeds `agnes push`,
     # avoiding any reverse-engineering of Claude Code's cwd-to-folder
-    # encoding. Wrapped in `bash -c` for Windows compatibility (Claude
-    # Code on Windows runs hook commands directly, no shell).
+    # encoding.
     #
     # The previous SessionStart `agnes push` self-heal entry was dropped
     # once the queue mechanism made it redundant — orphans from headless
@@ -148,8 +149,8 @@ def install_claude_hooks(workspace: Path) -> None:
     # pre-existing settings.json on the next init.
     _replace_or_add("SessionStart", [
         'bash -c "agnes capture-session 2>/dev/null || true"',
-        "agnes self-upgrade --quiet 2>/dev/null || true; "
-        "agnes pull --quiet 2>/dev/null || true",
+        'bash -c "agnes self-upgrade --quiet 2>/dev/null || true; '
+        'agnes pull --quiet 2>/dev/null || true"',
         'bash -c "agnes refresh-marketplace --check 2>/dev/null || true"',
     ])
     # SessionEnd push must run detached. Claude Code in `-p` (headless) mode
@@ -198,3 +199,71 @@ def _install_statusline(cfg: dict) -> None:
         )
         return
     cfg["statusLine"] = {"type": "command", "command": "agnes statusline"}
+
+
+def workspace_has_agnes_hooks(workspace: Path) -> bool:
+    """True iff ``workspace/.claude/settings.json`` already shows signs of a
+    prior ``agnes init``: at least one Agnes-managed hook entry, or our
+    statusLine command.
+
+    Used as a guard by :func:`maybe_refresh_claude_hooks` so that
+    ``agnes self-upgrade`` (which fires from a SessionStart hook in every
+    Agnes workspace) does not accidentally install hooks into a directory
+    that is not an Agnes workspace — e.g. the user's home dir, if they
+    invoke ``agnes self-upgrade`` manually from there.
+
+    Returns False on missing / malformed settings.json — the caller treats
+    that as "not an Agnes workspace", so the refresh skips.
+    """
+    settings_path = workspace / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return False
+    try:
+        cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    sl = cfg.get("statusLine")
+    if isinstance(sl, dict) and _STATUSLINE_MARKER in str(sl.get("command", "")):
+        return True
+    hooks = cfg.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return False
+    for entries in hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for h in entry.get("hooks", []) or []:
+                cmd = h.get("command", "") if isinstance(h, dict) else ""
+                if any(marker in cmd for marker in _OUR_COMMAND_MARKERS):
+                    return True
+    return False
+
+
+def maybe_refresh_claude_hooks(workspace: Path) -> bool:
+    """Idempotently re-install Agnes hooks if ``workspace`` already looks like
+    an Agnes workspace, otherwise no-op.
+
+    Called from ``agnes self-upgrade`` so that operators on workspaces
+    initialized with an older CLI version pick up new hook layout (e.g.
+    the v0.49 SessionStart ``agnes capture-session`` entry) on the next
+    session-start, without needing to re-run ``agnes init`` manually.
+    Without this, an existing v0.48 workspace would auto-upgrade the CLI
+    via its own SessionStart self-upgrade entry, but the new
+    capture-session hook would never get installed — the queue would stay
+    empty and ``agnes push`` would silently stop uploading sessions.
+
+    The guard (``workspace_has_agnes_hooks``) makes this safe to call from
+    any working directory: ``agnes self-upgrade`` invoked from ``~/`` will
+    not create ``~/.claude/`` or write hooks there.
+
+    Returns True if hooks were refreshed; False if the workspace looked
+    non-Agnes and we skipped.
+    """
+    if not workspace_has_agnes_hooks(workspace):
+        return False
+    install_claude_hooks(workspace)
+    return True

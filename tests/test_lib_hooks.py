@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 
-from cli.lib.hooks import install_claude_hooks
+from cli.lib.hooks import (
+    install_claude_hooks,
+    maybe_refresh_claude_hooks,
+    workspace_has_agnes_hooks,
+)
 
 
 def _read_settings(workspace: Path) -> dict:
@@ -77,6 +81,24 @@ def test_install_creates_settings_file(tmp_path):
     ends = _commands_for(cfg, "SessionEnd")
     assert len(ends) == 1
     assert "agnes push --quiet" in ends[0]
+
+
+def test_all_installed_hooks_are_bash_wrapped(tmp_path):
+    """Pin the invariant: every Agnes-managed SessionStart / SessionEnd
+    entry must be wrapped in `bash -c "..."`. Claude Code on Windows
+    runs hook commands directly (no shell), so any unwrapped entry that
+    relies on shell syntax (`;` chains, `2>/dev/null` redirection,
+    `|| true` short-circuit) fails silently on Windows. The previous
+    self-upgrade+pull chain shipped unwrapped — this test catches a
+    regression to that state."""
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    starts = _commands_for(cfg, "SessionStart")
+    ends = _commands_for(cfg, "SessionEnd")
+    for cmd in starts + ends:
+        assert cmd.startswith("bash -c "), (
+            f"Hook must be wrapped in bash -c for Windows; got: {cmd!r}"
+        )
 
 
 def test_install_idempotent(tmp_path):
@@ -395,4 +417,136 @@ def test_install_replaces_old_synchronous_session_end_push(tmp_path):
     assert len(ends) == 1, ends
     assert "nohup" in ends[0], (
         f"Old synchronous push entry must have been replaced with the detached form; got: {ends!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# workspace_has_agnes_hooks / maybe_refresh_claude_hooks
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_has_agnes_hooks_false_for_missing_settings(tmp_path):
+    """Fresh dir without `.claude/settings.json` is not an Agnes workspace."""
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_workspace_has_agnes_hooks_false_for_empty_settings(tmp_path):
+    """`.claude/settings.json` exists but is empty `{}` — not an Agnes workspace."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({}), encoding="utf-8")
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_workspace_has_agnes_hooks_false_for_invalid_json(tmp_path):
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text("not json", encoding="utf-8")
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_workspace_has_agnes_hooks_false_for_third_party_only_hook(tmp_path):
+    """A settings.json with only third-party hooks (no agnes marker) is
+    NOT an Agnes workspace — important so `agnes self-upgrade` from such
+    a dir doesn't auto-install Agnes hooks behind the user's back."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "echo hello"}]},
+            ],
+        }
+    }), encoding="utf-8")
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_workspace_has_agnes_hooks_true_for_agnes_hook(tmp_path):
+    install_claude_hooks(tmp_path)
+    assert workspace_has_agnes_hooks(tmp_path) is True
+
+
+def test_workspace_has_agnes_hooks_true_for_just_statusline(tmp_path):
+    """statusLine alone (no hook entries) still signals an Agnes workspace."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "statusLine": {"type": "command", "command": "agnes statusline"},
+    }), encoding="utf-8")
+    assert workspace_has_agnes_hooks(tmp_path) is True
+
+
+def test_maybe_refresh_noop_in_non_agnes_directory(tmp_path):
+    """Critical safety: `agnes self-upgrade` invoked from a non-Agnes dir
+    (e.g. ~/) must NOT create `.claude/settings.json` there."""
+    refreshed = maybe_refresh_claude_hooks(tmp_path)
+    assert refreshed is False
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_maybe_refresh_writes_new_layout_into_v048_workspace(tmp_path):
+    """Simulate a v0.48 workspace (pre-PR-242 hook layout — chained
+    self-upgrade+pull and old refresh-marketplace --quiet, no
+    capture-session, no statusLine) and assert that
+    maybe_refresh_claude_hooks brings it up to the current layout."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command",
+                            "command": "agnes self-upgrade --quiet 2>/dev/null || true; "
+                                       "agnes pull --quiet 2>/dev/null || true"}]},
+                {"hooks": [{"type": "command",
+                            "command": 'bash -c "agnes refresh-marketplace --quiet 2>/dev/null || true"'}]},
+            ],
+            "SessionEnd": [
+                {"hooks": [{"type": "command",
+                            "command": "agnes push --quiet 2>/dev/null || true"}]},
+            ],
+        }
+    }), encoding="utf-8")
+
+    refreshed = maybe_refresh_claude_hooks(tmp_path)
+    assert refreshed is True
+
+    cfg = _read_settings(tmp_path)
+    starts = _commands_for(cfg, "SessionStart")
+    # New layout: capture-session is now the very first SessionStart entry.
+    assert any("agnes capture-session" in c for c in starts), (
+        f"v0.48→v0.49 migration must install capture-session; got: {starts!r}"
+    )
+    # And refresh-marketplace must be on --check, not --quiet.
+    refresh = next((c for c in starts if "agnes refresh-marketplace" in c), None)
+    assert refresh is not None and "--check" in refresh, refresh
+
+    ends = _commands_for(cfg, "SessionEnd")
+    # SessionEnd push is now detached via nohup (replaces the old
+    # synchronous form).
+    assert any("nohup" in c for c in ends), (
+        f"v0.48→v0.49 migration must detach SessionEnd push; got: {ends!r}"
+    )
+    # statusLine for the agnes-private indicator must also be installed.
+    assert cfg.get("statusLine", {}).get("command", "").startswith("agnes statusline")
+
+
+def test_maybe_refresh_preserves_third_party_hooks(tmp_path):
+    """Refresh must keep third-party hooks intact (same guarantee as
+    install_claude_hooks — the migration path uses the same machinery)."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "agnes self-upgrade --quiet || true"}]},
+                {"hooks": [{"type": "command", "command": "echo hi from another tool"}]},
+            ],
+        }
+    }), encoding="utf-8")
+    refreshed = maybe_refresh_claude_hooks(tmp_path)
+    assert refreshed is True
+    cfg = _read_settings(tmp_path)
+    starts = _commands_for(cfg, "SessionStart")
+    assert "echo hi from another tool" in starts, (
+        f"Third-party hook must survive refresh; got: {starts!r}"
     )

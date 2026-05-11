@@ -369,3 +369,83 @@ def test_smoke_test_passes_with_pep440_local_version():
         ok, detail = su._smoke_test_new_binary("uv", expected_version="0.40.0")
         assert ok is False
         assert "version mismatch" in detail
+
+
+# ---------------------------------------------------------------------------
+# Workspace hook auto-refresh (PR #242 — ZdenekSrotyr #2 silent-stop fix)
+# ---------------------------------------------------------------------------
+
+
+def test_hook_refresh_fires_when_cli_already_current(monkeypatch):
+    """The info-is-None fast path must still refresh hooks. Covers the
+    v0.48→v0.49 migration moment when the operator already self-upgraded
+    the CLI (so the second self-upgrade call from a SessionStart hook
+    finds nothing to install), but their workspace settings.json was
+    written by the older CLI version and lacks the new capture-session
+    hook entry."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", "/fake/workspace")
+    with patch("cli.commands.self_upgrade.check", return_value=_current_info()), \
+         patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks") as mock_refresh:
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+        mock_refresh.assert_called_once()
+
+
+def test_hook_refresh_fires_after_successful_install(monkeypatch):
+    """The install-success path must refresh hooks AFTER the new wheel is
+    in place — so any wire-format change in the new release lands on the
+    next session-start without re-running `agnes init`."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", "/fake/workspace")
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_pass()), \
+         patch("cli.commands.self_upgrade._read_last_known_good", return_value=None), \
+         patch("cli.commands.self_upgrade._record_last_known_good"), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"), \
+         patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks") as mock_refresh:
+        mock_run.return_value = MagicMock(returncode=0)
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+        mock_refresh.assert_called_once()
+
+
+def test_hook_refresh_skipped_on_install_failure(monkeypatch):
+    """Failed install: do NOT refresh hooks — the rollback has already
+    run and the workspace is in a known-prior state; rewriting hooks now
+    could pin a layout that doesn't match the rolled-back binary."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", "/fake/workspace")
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_fail()), \
+         patch("cli.commands.self_upgrade._read_last_known_good", return_value=_PRIOR_URL), \
+         patch("cli.commands.self_upgrade._record_last_known_good"), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"), \
+         patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks") as mock_refresh:
+        mock_run.return_value = MagicMock(returncode=0)  # install rc=0 but smoke failed
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 1
+        mock_refresh.assert_not_called()
+
+
+def test_hook_refresh_skipped_when_check_only(monkeypatch):
+    """--check-only is read-only intent; never touch the workspace."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", "/fake/workspace")
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks") as mock_refresh:
+        result = runner.invoke(app, ["self-upgrade", "--check-only"])
+        # exit 1 because outdated — see test_check_only_when_outdated_exits_1
+        assert result.exit_code == 1
+        mock_refresh.assert_not_called()
+
+
+def test_hook_refresh_failure_does_not_flip_exit_code(monkeypatch):
+    """An exception inside maybe_refresh_claude_hooks must NOT turn a
+    successful upgrade into rc=1. The refresh is best-effort."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", "/fake/workspace")
+    with patch("cli.commands.self_upgrade.check", return_value=_current_info()), \
+         patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks",
+               side_effect=PermissionError("settings.json read-only")):
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
