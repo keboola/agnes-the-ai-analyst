@@ -532,7 +532,8 @@ class TestRegistryAuditLog:
 
     def _list_audit(self, conn, action):
         from src.repositories.audit import AuditRepository
-        return AuditRepository(conn).query(action=action, limit=10)
+        rows, _ = AuditRepository(conn).query(action=action, limit=10)
+        return rows
 
     def test_register_keboola_writes_audit_entry(self, seeded_app, keboola_instance):
         c = seeded_app["client"]

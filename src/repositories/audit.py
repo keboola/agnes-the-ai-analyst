@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, List, Dict
 
 import duckdb
@@ -52,25 +52,82 @@ class AuditRepository:
 
     def query(
         self,
+        *,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
         user_id: Optional[str] = None,
-        action: Optional[str] = None,
-        limit: int = 50,
-    ) -> List[Dict[str, Any]]:
-        sql = "SELECT * FROM audit_log WHERE 1=1"
+        action: Optional[str] = None,         # legacy single-action filter
+        action_prefix: Optional[str] = None,
+        action_in: Optional[List[str]] = None,
+        resource: Optional[str] = None,
+        result_pattern: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        q: Optional[str] = None,
+        cursor: Optional[tuple] = None,        # keyset (timestamp, id)
+        limit: int = 100,
+    ) -> tuple[List[Dict[str, Any]], Optional[tuple]]:
+        """Query audit_log with rich filters; returns (rows, next_cursor).
+
+        Cursor encodes (timestamp, id) so pagination is stable under
+        same-second writes. Pass the returned cursor back as `cursor=` for
+        the next page. `None` cursor on input = newest page; `None` cursor
+        in return = last page reached.
+        """
+        where = []
         params: List[Any] = []
-        if user_id:
-            sql += " AND user_id = ?"
-            params.append(user_id)
-        if action:
-            sql += " AND action = ?"
-            params.append(action)
-        sql += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
-        results = self.conn.execute(sql, params).fetchall()
-        if not results:
-            return []
+        if since is not None:
+            where.append("timestamp >= ?"); params.append(since)
+        if until is not None:
+            where.append("timestamp < ?"); params.append(until)
+        if user_id is not None:
+            where.append("user_id = ?"); params.append(user_id)
+        if action is not None:
+            where.append("action = ?"); params.append(action)
+        if action_prefix is not None:
+            where.append("action LIKE ?"); params.append(action_prefix + "%")
+        if action_in:
+            placeholders = ",".join("?" for _ in action_in)
+            where.append(f"action IN ({placeholders})")
+            params.extend(action_in)
+        if resource is not None:
+            where.append("resource = ?"); params.append(resource)
+        if result_pattern is not None:
+            where.append("result LIKE ?"); params.append(result_pattern)
+        if correlation_id is not None:
+            where.append("correlation_id = ?"); params.append(correlation_id)
+        if q:
+            # Full-text search is a table scan on `params` JSON cast to text.
+            # Safeguard: if caller passes `q` without a `since` filter, force a
+            # 7-day cap so we don't scan the entire audit_log. Proper FTS lands
+            # in Phase B/C (see parent spec §5.5).
+            if since is None:
+                since = datetime.now(timezone.utc) - timedelta(days=7)
+                where.append("timestamp >= ?"); params.append(since)
+            where.append("CAST(params AS VARCHAR) LIKE ?"); params.append(f"%{q}%")
+        if cursor is not None:
+            ts, cid = cursor
+            # Keyset: rows strictly older than the cursor, breaking ties by id desc
+            where.append("(timestamp, id) < (?, ?)")
+            params.extend([ts, cid])
+
+        sql = "SELECT * FROM audit_log"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        # Fetch limit+1 to determine whether there's a next page
+        sql += " ORDER BY timestamp DESC, id DESC LIMIT ?"
+        params.append(limit + 1)
+        rows = self.conn.execute(sql, params).fetchall()
+        if not rows:
+            return [], None
         columns = [desc[0] for desc in self.conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        out = [dict(zip(columns, r)) for r in rows]
+
+        next_cursor: Optional[tuple] = None
+        if len(out) > limit:
+            last_shown = out[limit - 1]
+            next_cursor = (last_shown["timestamp"], last_shown["id"])
+            out = out[:limit]
+        return out, next_cursor
 
     def query_actions(
         self,
