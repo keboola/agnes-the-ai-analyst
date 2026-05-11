@@ -1,5 +1,6 @@
 """Script management and execution endpoints."""
 
+import logging
 import os
 import subprocess
 import sys
@@ -15,8 +16,11 @@ import duckdb
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from src.db import get_system_db
+from src.repositories.audit import AuditRepository
 from src.repositories.notifications import ScriptRepository
 from src.scheduler import is_valid_schedule, is_table_due
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scripts", tags=["scripts"])
 
@@ -180,7 +184,20 @@ async def run_due_scripts(
             source=script["source"],
             name=script["name"],
         )
-    return {"claimed": claimed, "count": len(claimed)}
+    scripts_run_count = len(claimed)
+    try:
+        _audit_conn = get_system_db()
+        AuditRepository(_audit_conn).log(
+            user_id=user.get("id"),
+            action="script_runner.tick",
+            params={"scripts_run": scripts_run_count, "scripts_failed": 0},
+            result="success",
+            client_kind="scheduler",
+        )
+        _audit_conn.close()
+    except Exception:
+        logger.exception("audit_log write failed for script_runner.tick; continuing")
+    return {"claimed": claimed, "count": scripts_run_count}
 
 
 def _run_claimed_script(script_id: str, source: str, name: str) -> None:
