@@ -258,6 +258,23 @@ def get_instance_subtitle() -> str:
     return get_value("instance", "subtitle", default="")
 
 
+def get_instance_admin_email() -> str:
+    """Operator-facing contact address shown in user-side prompts that
+    suggest the user reach out to their Agnes admin (e.g. the /home GWS
+    connector tile renders an "Email admin" mailto button when no shared
+    OAuth app is provisioned). Empty string when unset — the template
+    branches on the value being truthy, so an empty value hides the
+    button rather than rendering a broken `mailto:` link.
+
+    Resolution: ``AGNES_INSTANCE_ADMIN_EMAIL`` env > ``instance.admin_email`` YAML > "".
+    Mirrors :func:`get_home_route` shape so Terraform overrides work.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_ADMIN_EMAIL")
+    if raw is None:
+        raw = get_value("instance", "admin_email", default="")
+    return (raw or "").strip()
+
+
 def get_sync_interval() -> str:
     """Human-readable refresh cadence shown in the analyst welcome prompt."""
     return get_value("instance", "sync_interval", default="1 hour")

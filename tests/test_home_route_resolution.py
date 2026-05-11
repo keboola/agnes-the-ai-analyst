@@ -91,6 +91,36 @@ def test_root_redirect_unauthed_goes_to_login(fresh_db):
     assert resp.headers["location"] == "/login"
 
 
+def test_instance_admin_email_default_empty(fresh_db, monkeypatch):
+    """Unset env + unset YAML → empty string. Template branches on
+    truthiness so empty hides the GWS Email-admin button cleanly."""
+    monkeypatch.delenv("AGNES_INSTANCE_ADMIN_EMAIL", raising=False)
+    from app.instance_config import get_instance_admin_email
+    assert get_instance_admin_email() == ""
+
+
+def test_instance_admin_email_env_overrides(fresh_db, monkeypatch):
+    """env var takes precedence over YAML / default."""
+    monkeypatch.setenv("AGNES_INSTANCE_ADMIN_EMAIL", "ops@example.com")
+    from app.instance_config import get_instance_admin_email
+    assert get_instance_admin_email() == "ops@example.com"
+
+
+def test_instance_admin_email_strips_whitespace(fresh_db, monkeypatch):
+    """Operator quoting habits ("` ops@example.com `") shouldn't break the
+    mailto link — strip surrounding whitespace at the resolver."""
+    monkeypatch.setenv("AGNES_INSTANCE_ADMIN_EMAIL", "  ops@example.com  ")
+    from app.instance_config import get_instance_admin_email
+    assert get_instance_admin_email() == "ops@example.com"
+
+
+def test_instance_admin_email_empty_env_treated_as_unset(fresh_db, monkeypatch):
+    """Empty-string env var is intentional opt-out, not garbage."""
+    monkeypatch.setenv("AGNES_INSTANCE_ADMIN_EMAIL", "")
+    from app.instance_config import get_instance_admin_email
+    assert get_instance_admin_email() == ""
+
+
 def test_gws_oauth_default_unset(fresh_db, monkeypatch):
     monkeypatch.delenv("AGNES_GWS_CLIENT_ID", raising=False)
     monkeypatch.delenv("AGNES_GWS_CLIENT_SECRET", raising=False)
@@ -150,7 +180,16 @@ def test_home_renders_configured_gws_branch(fresh_db, monkeypatch):
     """Configured branch writes ~/.config/gws/client_secret.json directly
     instead of exporting env vars. Claude Code's security layer redacts
     env vars whose name contains 'SECRET', so the file-write path is the
-    only reliable way to seed the OAuth app credentials."""
+    only reliable way to seed the OAuth app credentials.
+
+    The gws prompt body now flows through Jinja's autoescape (the template
+    moved from inline `<code>` text to a `{{ connector_prompts.gws }}`
+    expression after the connector-prompts extraction). That means `"`
+    characters render as `&quot;` in the served HTML — the browser
+    un-escapes them on read, but the raw response body has the entity-
+    encoded form. So the test un-escapes before substring-matching."""
+    import html as _html
+
     monkeypatch.setenv(
         "AGNES_GWS_CLIENT_ID", "123456789012-abcd5678efgh.apps.googleusercontent.com"
     )
@@ -168,7 +207,7 @@ def test_home_renders_configured_gws_branch(fresh_db, monkeypatch):
     c = _client()
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
-    body = resp.text
+    body = _html.unescape(resp.text)
     # Configured branch — JSON file path
     assert "~/.config/gws/client_secret.json" in body
     assert '"client_id": "123456789012-abcd5678efgh.apps.googleusercontent.com"' in body
@@ -221,8 +260,10 @@ def test_home_automode_env_can_hide(fresh_db, monkeypatch):
 
 
 def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
-    """Step 3 — turn on auto-accept mode renders by default for the
-    not-onboarded /home view."""
+    """The auto-mode step renders by default for the not-onboarded /home
+    view. The block is now Step 2 (the install-flow reorder put auto-mode
+    BEFORE the Agnes install so users have auto-accept on for Step 3's
+    ~20 commands), so its label is "Step 2 — turn on auto-mode"."""
     monkeypatch.delenv("AGNES_HOME_SHOW_AUTOMODE", raising=False)
 
     from src.db import get_system_db, close_system_db
@@ -236,9 +277,11 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    assert "Step 3 — turn on auto-accept mode" in body
-    assert '<div class="automode-card">' in body  # rendered element, not CSS selector
-    assert "acceptEdits" in body  # ~/.claude/settings.json snippet
+    assert "Step 2 — turn on auto-mode" in body
+    # The auto-mode step now lives inside the install-hero as an
+    # install-block (peer with Step 1 + Step 3), not as a separate
+    # automode-card. Look for the label + the keystroke prompt.
+    assert "Shift + Tab" in body
 
 
 def test_home_hides_automode_block_when_env_off(fresh_db, monkeypatch):
@@ -255,9 +298,7 @@ def test_home_hides_automode_block_when_env_off(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    assert "Step 3 — turn on auto-accept mode" not in body
-    # HTML element absent (CSS selector with same name still in <style>, that's fine)
-    assert '<div class="automode-card">' not in body
+    assert "Step 2 — turn on auto-mode" not in body
 
 
 def test_navbar_home_link_uses_home_route(fresh_db, monkeypatch):

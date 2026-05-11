@@ -23,7 +23,9 @@ from app.instance_config import (
     get_instance_name, get_instance_subtitle, get_datasets,
     get_theme, get_corporate_memory_config, get_home_route,
     get_gws_oauth_credentials, get_home_automode_visibility,
+    get_instance_admin_email,
 )
+from app.web.connector_prompts import all_connector_prompts
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.knowledge import KnowledgeRepository
@@ -403,11 +405,21 @@ def _build_context(
         server_host = request.url.netloc
         ca_pem = _read_agnes_ca_pem()
 
+        # Connector prompts wired through so step 9 inlines the same text
+        # the /home tiles render. all_connector_prompts() reads operator
+        # GWS OAuth config so the GCP-frictionless branch fires when the
+        # admin has provisioned a shared client_id+secret.
+        _connector_prompts = all_connector_prompts(
+            gws_oauth=get_gws_oauth_credentials(),
+            instance_admin_email=get_instance_admin_email(),
+        )
+
         setup_instructions_lines = resolve_lines(
             _wheel_filename,
             plugin_install_names=[],
             server_host=server_host,
             ca_pem=ca_pem,
+            connector_prompts=_connector_prompts,
         )
 
     ctx = {
@@ -431,6 +443,20 @@ def _build_context(
         # /home connector prompt. {} when unset → template falls back
         # to manual `gws auth setup`. See app.instance_config docstring.
         "gws_oauth": get_gws_oauth_credentials(),
+        # Operator-facing contact email used by the /home GWS connector
+        # tile's "Email admin" mailto button. Empty string hides the
+        # button — template guards with `{% if instance_admin_email %}`.
+        "instance_admin_email": get_instance_admin_email(),
+        # Resolved connector setup prompts — single source of truth for
+        # both the /home "Copy prompt" tiles and the main setup script
+        # (app/web/setup_instructions.py inlines them in step 9). The
+        # gws prompt branches on `gws_oauth.configured` so both surfaces
+        # render the operator-provisioned shortcut when credentials are
+        # set, and the manual GCP walkthrough when they're not.
+        "connector_prompts": all_connector_prompts(
+            gws_oauth=get_gws_oauth_credentials(),
+            instance_admin_email=get_instance_admin_email(),
+        ),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.
@@ -826,9 +852,27 @@ async def catalog(
 @router.get("/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory(
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """Corporate Memory web view — admin-only.
+
+    The page route gates on ``require_admin``; non-admin users see 403.
+    The Memory nav link in `_app_header.html` and the corporate-memory
+    widget on `/dashboard` are correspondingly hidden behind
+    ``{% if session.user.is_admin %}`` guards (defence in depth — the
+    backend is the authoritative gate).
+
+    **Asymmetry**: the underlying ``/api/memory/*`` endpoints stay on
+    ``get_current_user`` (not ``require_admin``). CLI / agent flows that
+    POST a knowledge item or read ``/api/memory`` keep working for any
+    authenticated user. The gating here is web-UI-only — the API is the
+    surface the agent rails care about (`agnes` CLI, knowledge-extract
+    pipeline), and locking it down would break the corporate-memory
+    feature outright. Operators who want to relax the web-UI gate can
+    either grant Admin to those users or revert this route to
+    ``get_current_user`` in their fork.
+    """
     repo = KnowledgeRepository(conn)
     items = repo.list_items(statuses=["approved", "mandatory"], limit=100)
 

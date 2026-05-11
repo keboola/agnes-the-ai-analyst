@@ -2129,6 +2129,9 @@
             <!-- ── Right Column ── -->
             <div class="right-column">
 
+                {# Memory is admin-only. Widget hidden for non-admin; route
+                   /corporate-memory + nav link are likewise admin-gated. #}
+                {% if session.user.is_admin %}
                 <!-- Corporate Memory Widget -->
                 <div class="card memory-card">
                     <div class="card-header">
@@ -2178,6 +2181,7 @@
                         </a>
                     </div>
                 </div>
+                {% endif %}
 
                 <!-- Activity Center Widget -->
                 <div class="card activity-card">
@@ -2444,8 +2448,10 @@
         }
     }
 
-    // Load memory stats on page load (only for existing users)
-    {% if user_info.exists %}
+    // Load memory stats on page load. Memory is admin-only, so non-admin
+    // visitors never see the widget — skip the fetch to avoid pointless
+    // 401s in their console.
+    {% if user_info.exists and session.user.is_admin %}
     document.addEventListener('DOMContentLoaded', loadMemoryStats);
     {% endif %}
 
