@@ -6,10 +6,10 @@ Three endpoints under /api/admin/activity, all gated by require_admin:
     GET /api/admin/activity/health     health pulse (cached 30s server-side)
     GET /api/admin/activity/sync       per-table recent sync feed
 
-Each endpoint emits one audit_log entry per call (action='activity.read.*')
+Each endpoint emits one audit_log entry per call (action='activity.read')
 unless the same actor + same filter combination was logged in the last 60s
-(see _suppress_recursive_audit) — but the suppression hook lands in Task 12,
-NOT this task. This module ships without recursive auditing initially.
+(see _should_audit / _audit_read). The dedup cache is per uvicorn worker
+(see _RECENT_AUDITS for the multi-worker caveat).
 """
 
 from __future__ import annotations
