@@ -188,17 +188,21 @@ _STATUSLINE_MARKER = "agnes statusline"
 
 def _install_statusline(cfg: dict) -> None:
     existing = cfg.get("statusLine")
-    if existing:
-        if isinstance(existing, dict) and _STATUSLINE_MARKER in str(existing.get("command", "")):
-            return  # already ours — idempotent re-init
-        print(
-            "Warning: existing statusLine in .claude/settings.json preserved. "
-            "To show the agnes-private indicator alongside your custom status, "
-            "add `agnes statusline` to your command.",
-            file=sys.stderr,
-        )
+    # Distinguish "key absent" / "key=null" / "key=empty string" from any
+    # real value. A `None` or `""` value is legal JSON but conveys "no
+    # statusLine wanted" rather than "default" — overwriting it would
+    # silently undo the user's explicit opt-out.
+    if existing is None or existing == "":
+        cfg["statusLine"] = {"type": "command", "command": "agnes statusline"}
         return
-    cfg["statusLine"] = {"type": "command", "command": "agnes statusline"}
+    if isinstance(existing, dict) and _STATUSLINE_MARKER in str(existing.get("command", "")):
+        return  # already ours — idempotent re-init
+    print(
+        "Warning: existing statusLine in .claude/settings.json preserved. "
+        "To show the agnes-private indicator alongside your custom status, "
+        "add `agnes statusline` to your command.",
+        file=sys.stderr,
+    )
 
 
 def workspace_has_agnes_hooks(workspace: Path) -> bool:

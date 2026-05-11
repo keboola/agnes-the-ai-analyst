@@ -354,6 +354,11 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "",
         "   This should list the tables your account has grants for. Empty list",
         "   means your admin hasn't granted you access yet — contact them.",
+        "",
+        "   Tip: type `/agnes-private` inside any Claude Code session to mark it",
+        "   private — its transcript is skipped by `agnes push` (audit-logged to",
+        "   `.claude/agnes-sessions-private-skipped.txt`). The statusbar shows",
+        "   `🔒 agnes-private` while you're in a private session.",
     ]
 
 

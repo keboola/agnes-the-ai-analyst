@@ -157,7 +157,13 @@ def push(
         help=(
             "Fallback: also include sessions found by the encoding-based scan "
             "of ~/.claude/projects/. Use for one-off backfill of sessions "
-            "predating the queue mechanism."
+            "predating the queue mechanism. NOTE: legacy-scan entries carry "
+            "an empty session_id, so the /agnes-private list is NOT consulted "
+            "— every matching jsonl is uploaded. The practical impact is "
+            "bounded: pre-queue sessions cannot have been marked private "
+            "(the private list is a queue-era feature). Only run this if "
+            "you are sure no pre-queue session contains content you would "
+            "have marked private had the feature existed."
         ),
     ),
 ):

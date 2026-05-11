@@ -396,6 +396,43 @@ def test_install_idempotent_when_statusline_already_ours(tmp_path):
     assert "agnes statusline" in cfg["statusLine"]["command"]
 
 
+def test_install_treats_explicit_null_statusline_as_unconfigured(tmp_path, capsys):
+    """`"statusLine": null` (legal JSON, unusual) is treated as
+    "no statusLine configured" rather than "user explicitly opted out".
+    The previous truthy check (`if existing:`) silently took this path
+    without distinguishing it from absent-key; the new check makes
+    the behavior explicit and tested. No warning — the user didn't
+    configure anything actionable."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"statusLine": None}))
+
+    install_claude_hooks(tmp_path)
+
+    cfg = _read_settings(tmp_path)
+    assert isinstance(cfg["statusLine"], dict)
+    assert "agnes statusline" in cfg["statusLine"]["command"]
+    captured = capsys.readouterr()
+    assert "preserved" not in captured.err  # no spurious warning
+
+
+def test_install_treats_empty_statusline_as_unconfigured(tmp_path, capsys):
+    """Empty string is the falsy sibling of None — same treatment.
+    Documents the boundary so future changes can't accidentally treat
+    `""` as a non-empty truthy command."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"statusLine": ""}))
+
+    install_claude_hooks(tmp_path)
+
+    cfg = _read_settings(tmp_path)
+    assert isinstance(cfg["statusLine"], dict)
+    assert "agnes statusline" in cfg["statusLine"]["command"]
+    captured = capsys.readouterr()
+    assert "preserved" not in captured.err
+
+
 def test_install_replaces_old_synchronous_session_end_push(tmp_path):
     """A workspace bootstrapped before the detachment fix has the old
     synchronous `agnes push --quiet 2>/dev/null || true` SessionEnd entry.

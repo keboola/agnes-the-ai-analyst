@@ -116,7 +116,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (e.g. `agnes self-upgrade` from `~/`). Failures are best-effort —
   they're surfaced on stderr but never flip the upgrade exit code.
 
+### Added
+
+- **Onboarding docs for the `/agnes-private` privacy feature.**
+  `config/claude_md_template.txt` gains a short "Private sessions"
+  subsection (next to "Data Sync") covering the slash command,
+  statusbar indicator, and audit-log location. The web-served setup
+  prompt (`app/web/setup_instructions.py`) gets a one-line mention so
+  analysts learn the feature exists at onboarding instead of by
+  accident.
+
+### Changed
+
+- **`_install_statusline` distinguishes explicit `null` / empty-string
+  `statusLine` from absent key.** Previously the `if existing:` truthy
+  check silently took the same path for all three cases. The new
+  `existing is None or existing == ""` branch documents and tests the
+  behavior (install ours — treated as "not configured" rather than
+  "explicit user opt-out"). Two new tests pin both edge cases.
+
 ### Fixed
+
+- **`agnes push --legacy-scan` help text documents the private-list
+  gap.** Legacy-scan entries carry an empty `session_id`, so the
+  `/agnes-private` filter is not consulted. The practical impact is
+  bounded — pre-queue sessions cannot have been marked private (the
+  private list is a queue-era feature) — but the help text now spells
+  out the gap so an operator running a backfill is not surprised.
 
 - **`agnes push` no longer crashes on filesystem errors when acquiring
   the single-instance lock.** `acquire_or_skip` in
