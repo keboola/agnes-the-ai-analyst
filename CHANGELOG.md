@@ -10,19 +10,95 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Session capture queue + new `agnes capture-session` SessionStart
+  subcommand.** Replaces the previous encoding-based scan of
+  `~/.claude/projects/` for session jsonls (which depended on Claude
+  Code's cwd-to-folder encoding — a moving target across versions).
+  The hook reads Claude Code's documented stdin JSON
+  (`transcript_path`) and appends `<session_id>\t<transcript_path>` to
+  `<workspace>/.claude/agnes-sessions.txt`. `agnes push` then atomically
+  renames that queue to a snapshot, processes it, and re-queues failed
+  uploads. Recovery snapshots from a crashed push are picked up on the
+  next run. Concurrent SessionStart hooks (multiple Claude Code windows
+  opening at once) are serialized by a short-lived `agnes-queue.lock`
+  so the queue is race-free on every OS.
+
+- **`/agnes-private` slash command + `agnes mark-private` subcommand.**
+  Mark the current Claude Code session as private — its transcript is
+  skipped by `agnes push` and audit-logged to
+  `<workspace>/.claude/agnes-sessions-private-skipped.txt` instead.
+  The slash command runs deterministically via `!`-prefix bash (no AI
+  in the loop). State lives in
+  `<workspace>/.claude/agnes-sessions-private.txt` (one session_id per
+  line) and is the authoritative source — both `capture-session` and
+  `push` consult it, so the slash-command-before-capture and
+  capture-before-slash-command races both resolve safely without an
+  ordering dependency. Requires the `CLAUDE_CODE_SESSION_ID`
+  environment variable that Claude Code sets in every bash subprocess
+  it spawns; `agnes mark-private` exits 1 if missing (defends against
+  accidental invocations from a regular terminal).
+
+- **`agnes statusline` subcommand + statusLine wiring.** Renders
+  `🔒 agnes-private` in the Claude Code status bar when the current
+  session is marked private; empty string otherwise. `agnes init` wires
+  it to Claude Code's `statusLine` setting. Polite to existing
+  customizations — if the workspace `settings.json` already has a
+  `statusLine`, the install preserves it untouched and emits a
+  one-line stderr warning instructing the operator how to compose
+  `agnes statusline` into their own command.
+
+- **`agnes push --legacy-scan` opt-in fallback** scans
+  `~/.claude/projects/` via the pre-queue encoding-based path. Use
+  for one-off backfill of session jsonls that pre-date the queue
+  mechanism on workspaces upgrading from < v0.49. Note: legacy-scanned
+  entries have empty `session_id`, so the `/agnes-private` list filter
+  never matches — backfill uploads bypass the private list. Document
+  this gap before running a backfill on a workspace that has
+  previously-marked-private sessions in the encoding-based location.
+
+- **Single-instance lock for `agnes push`** (cross-platform via
+  `filelock`: `fcntl.flock` on POSIX, `msvcrt.locking` on Windows).
+  When the user closes several Claude Code sessions simultaneously,
+  every SessionEnd hook fires its own `agnes push` — exactly one
+  acquires `<workspace>/.claude/agnes-push.lock` and runs, the rest
+  silent-exit. Prevents concurrent uploads from each other's queues
+  and matches the existing `bash -c "( nohup ... & ) ; true"`
+  SessionEnd wrapping (push must survive Claude Code's ~1s SIGTERM
+  in `-p` headless mode).
+
+- **New `filelock>=3.13,<4` runtime dependency.** Backs both the
+  push single-instance lock and the queue-write serialization above.
+
 ### Changed
 
-- **All Agnes-managed Claude Code hooks are now wrapped in `bash -c
-  "..."`.** Previously the chained SessionStart entry
-  (`agnes self-upgrade ... ; agnes pull ...`) shipped unwrapped, relying
-  on a shell being invoked. Claude Code on Windows runs hook commands
-  directly without a shell, so the `;` chain, `2>/dev/null` redirection,
-  and `|| true` short-circuit never got interpreted — the chain
-  effectively no-op'd on native Windows installs without Git Bash on
-  PATH. The other entries (capture-session, refresh-marketplace,
-  SessionEnd push) were already bash-wrapped; this aligns the chain
-  with the same contract. Workspaces still on the old unwrapped form
-  auto-upgrade via `maybe_refresh_claude_hooks` (see entry below).
+- **BREAKING: SessionStart / SessionEnd hook wire format.**
+  `agnes init` (and the new `agnes self-upgrade` auto-refresh path)
+  write a different hook layout than v0.48:
+  - SessionStart gains `agnes capture-session` as the very first
+    entry — feeds the new session-capture queue that powers
+    `agnes push`. Must run before any other SessionStart hook so the
+    `transcript_path` is captured even if a later hook fails.
+  - SessionStart's previous `agnes push` self-heal entry is removed
+    — the queue persists across runs so orphan jsonls from headless /
+    crashed sessions ship out on the next SessionEnd push naturally.
+    Workspaces upgrading from < v0.49 with sessions that pre-date the
+    queue mechanism need a one-off `agnes push --legacy-scan` to
+    backfill them; see `--legacy-scan` entry above.
+  - SessionEnd `agnes push` is wrapped in a `nohup` subshell so the
+    upload survives Claude Code's `-p` headless SIGTERM (~1s after
+    hook fires) and completes the full upload cycle. The synchronous
+    form would lose 5-30s of uploads to the kill.
+  - All entries are wrapped in `bash -c "..."` for Windows
+    compatibility — Claude Code on Windows runs hook commands directly
+    without a shell, so any `;` chain / `2>/dev/null` redirection /
+    `|| true` short-circuit silently no-op'd previously.
+
+  Existing workspaces auto-migrate to the new layout on the next
+  session-start via `maybe_refresh_claude_hooks` invoked from
+  `agnes self-upgrade` (see separate Changed entry). No operator
+  action required.
 
 - **`agnes self-upgrade` now auto-refreshes the workspace Claude Code
   hooks** so an existing Agnes workspace picks up the new SessionStart /
