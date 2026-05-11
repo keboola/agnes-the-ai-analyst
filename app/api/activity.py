@@ -26,6 +26,7 @@ from app.auth.access import require_admin
 from app.auth.dependencies import _get_db   # NOTE: lives in app.auth.dependencies, not app.dependencies
 from src.repositories.audit import AuditRepository
 from src.repositories.sync_state import SyncStateRepository
+from src.observability.posthog_client import get_posthog
 
 router = APIRouter(prefix="/api/admin/activity", tags=["activity"])
 
@@ -67,6 +68,14 @@ def _audit_read(conn, user: dict, endpoint: str, filter_payload: dict) -> None:
         result="success",
         client_kind="web",
     )
+    try:
+        get_posthog().capture(
+            event=f"activity_{endpoint}_viewed",
+            distinct_id=actor_id,
+            properties={k: v for k, v in filter_payload.items() if v is not None},
+        )
+    except Exception:
+        pass  # never break the request
 
 
 @router.get("")
