@@ -20,14 +20,33 @@ class AuditRepository:
         params: Optional[dict] = None,
         result: Optional[str] = None,
         duration_ms: Optional[int] = None,
+        *,
+        params_before: Optional[dict] = None,
+        client_ip: Optional[str] = None,
+        client_kind: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> str:
+        """Insert one audit_log row. Returns the new row id.
+
+        The four kwargs after `*` are v40 additions; legacy callers using
+        positional args or the original kwargs are unaffected. `params_before`
+        is only used for mutating actions where rollback / diff is meaningful;
+        leave None for reads, ticks, queries.
+        """
         entry_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         self.conn.execute(
-            """INSERT INTO audit_log (id, timestamp, user_id, action, resource, params, result, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            [entry_id, now, user_id, action, resource,
-             json.dumps(params) if params else None, result, duration_ms],
+            """INSERT INTO audit_log
+               (id, timestamp, user_id, action, resource, params, result, duration_ms,
+                params_before, client_ip, client_kind, correlation_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                entry_id, now, user_id, action, resource,
+                json.dumps(params) if params else None,
+                result, duration_ms,
+                json.dumps(params_before) if params_before else None,
+                client_ip, client_kind, correlation_id,
+            ],
         )
         return entry_id
 
