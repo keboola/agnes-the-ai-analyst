@@ -10,6 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Activity Center rebuild** (`/admin/activity`): health pulse (cached 30s) + chronological audit_log timeline + sync_history grid. Replaces the empty-stub `/activity-center` page. Old URL 308-redirects.
+- Three new read endpoints: `GET /api/admin/activity`, `GET /api/admin/activity/health`, `GET /api/admin/activity/sync`. All admin-only.
+- `audit_log` now writes from `POST /api/sync/trigger`, `POST /api/scripts/run-due`, `POST /api/upload/sessions`, and `GET /api/data/{id}/download` — closing four longstanding coverage gaps.
+- Filename sanitization on `POST /api/upload/sessions` — only `[A-Za-z0-9._-]{1,200}` accepted. Replaces the older strip-to-basename approach with a stricter regex.
+- Schema v41: `audit_log` gains `params_before`, `client_ip`, `client_kind`, `correlation_id` columns + three indices for timeline query performance. (Was v40 pre-rebase; renumbered to v41 because main's v40 ships `bq_metadata_cache`.)
+- `AuditRepository.query()` rewritten with filters (`since`, `until`, `action_prefix`, `action_in`, `resource`, `result_pattern`, `q`, `correlation_id`) and keyset cursor pagination.
+- `SyncStateRepository.list_recent()` for cross-table chronological feeds.
+- Optional PostHog events `activity_*_viewed` (no-op when `POSTHOG_API_KEY` unset).
+- Recursive-audit suppression on `/api/admin/activity/*` reads — same actor + same filter within 60s deduped to one row. Per-uvicorn-worker (single-worker assumption for v41).
+
+### Changed
+- Admin dropdown menu now includes **Activity** link. Dashboard widget points to `/admin/activity`.
+
+### Removed
+- **BREAKING (UI):** demo content removed from `activity_center.html` — the "Executive Pulse / Maturity Roadmap / Business Processes / Teams / Opportunities" sections never had a real data source and are gone. The page now reflects `audit_log` + `sync_history` only. Operators relying on the old layout: it never rendered any real data; this is a no-op fix.
+
+### Operations
+- First boot on v41 against an existing instance with >100k `audit_log` rows: index creation runs synchronously and may take 30–120s. Plan an upgrade window. Subsequent restarts are unaffected.
+
 ## [0.51.0] — 2026-05-12
 
 ### Fixed
