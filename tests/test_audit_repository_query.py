@@ -1,5 +1,7 @@
 """AuditRepository v40 — new kwargs (params_before, client_ip, client_kind,
 correlation_id) round-trip; legacy callers compile-time-unbroken."""
+import json
+
 import duckdb
 import pytest
 from src.db import _ensure_schema as init_database
@@ -28,7 +30,7 @@ def test_log_accepts_new_kwargs(conn):
         correlation_id="corr-123",
     )
     row = conn.execute("SELECT params_before, client_ip, client_kind, correlation_id FROM audit_log WHERE id=?", [entry_id]).fetchone()
-    assert row[0] is not None  # JSON
+    assert json.loads(row[0]) == {"cron": "0 */1 * * *"}  # JSON content round-trip
     assert row[1] == "10.0.0.42"
     assert row[2] == "web"
     assert row[3] == "corr-123"
