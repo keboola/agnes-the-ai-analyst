@@ -886,6 +886,322 @@
     font-size: 12px;
     color: #FBBF24;
 }
+
+/* ─────────────────────────────────────────────────────────────────
+   Onboarding polish — friction fixes from the Petr+Klára usability
+   test on 2026-05-09 (docs/onboarding_test_petr_a_klara.md).
+   Class names mirror the prototype in home_improved.html so the two
+   stay diffable; only the bits that landed in this template live
+   here. Each block is tagged with its priority (P0/P1/P2).
+   ───────────────────────────────────────────────────────────────── */
+
+/* P0-1 — "Don't have a terminal open?" disclosure inside Step 1's
+   blue install-block. Yellow accent matches Claude footer mode dots
+   so it reads as a hint, not an error. */
+.home-mock details.terminal-howto {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    border-radius: 8px;
+}
+.home-mock details.terminal-howto > summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #FBBF24;
+    user-select: none;
+}
+.home-mock details.terminal-howto > summary::-webkit-details-marker { display: none; }
+.home-mock details.terminal-howto > summary::before { content: "▸ "; margin-right: 4px; }
+.home-mock details.terminal-howto[open] > summary::before { content: "▾ "; }
+.home-mock .terminal-howto-body {
+    margin-top: 10px;
+    font-size: 12.5px;
+    color: rgba(255, 255, 255, 0.92);
+    line-height: 1.6;
+}
+.home-mock .terminal-howto-body p { margin: 0 0 6px; }
+.home-mock .terminal-howto-body kbd {
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.30);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-family: var(--hp-font-mono);
+    color: white;
+}
+
+/* P0-4 — Preview-first banner. Duplicates the Look-Around grid near
+   the top so the user can browse *before* committing to install. The
+   existing bottom Look-Around section stays for users who scroll
+   straight there. */
+.home-mock .preview-first {
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 16px 22px;
+    margin: 0 0 22px;
+}
+.home-mock .preview-first-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+    margin-bottom: 10px;
+}
+.home-mock .preview-first-head h3 {
+    font-size: 14px; font-weight: 600; margin: 0; color: var(--hp-text-primary);
+}
+.home-mock .preview-first-head .hint {
+    font-size: 12.5px; color: var(--hp-text-secondary);
+}
+.home-mock .preview-first-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+}
+.home-mock .preview-first-tile {
+    background: var(--hp-border-light);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 10px 12px;
+    text-decoration: none;
+    color: inherit;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.home-mock .preview-first-tile:hover {
+    border-color: var(--hp-primary);
+    background: var(--hp-primary-light);
+    text-decoration: none;
+}
+.home-mock .preview-first-tile .ico { font-size: 18px; flex-shrink: 0; }
+.home-mock .preview-first-tile .lbl {
+    font-size: 13px; font-weight: 600; color: var(--hp-text-primary);
+    line-height: 1.3;
+}
+.home-mock .preview-first-tile .sub {
+    font-size: 11.5px; color: var(--hp-text-secondary); margin-top: 1px;
+}
+
+/* P0-3 — connector card time badge ("~5 min · self-serve") and the
+   post-copy "now paste into Step 2" hint with arrow back. */
+.home-mock .connector-tile .ttl-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin-bottom: 6px;
+}
+.home-mock .time-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--hp-primary-light);
+    color: var(--hp-primary-dark);
+    flex-shrink: 0;
+}
+.home-mock .time-badge.is-warn {
+    background: #FEF3C7;
+    color: #92400E;
+}
+.home-mock .copy-next-hint {
+    font-size: 12px;
+    color: var(--hp-primary-dark);
+    background: var(--hp-primary-light);
+    padding: 6px 10px;
+    border-radius: 6px;
+    margin-top: 6px;
+    display: none;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.45;
+}
+.home-mock .copy-next-hint.is-visible { display: inline-flex; }
+.home-mock .copy-next-hint code {
+    background: rgba(0, 0, 0, 0.06);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: var(--hp-font-mono);
+    font-size: 11px;
+}
+
+/* P1-8 — GWS gating note + Email-admin button. Yellow background
+   matches the same friction-level used by other "admin help likely"
+   surfaces (advanced setup warnings). */
+.home-mock .gating-note {
+    font-size: 12px;
+    color: #92400E;
+    background: #FEF3C7;
+    border: 1px solid #FCD34D;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+}
+.home-mock .email-admin {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: white;
+    border: 1px solid var(--hp-border);
+    color: var(--hp-text-primary);
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    text-decoration: none;
+    cursor: pointer;
+    align-self: flex-start;
+    margin-top: 6px;
+}
+.home-mock .email-admin:hover {
+    text-decoration: none;
+    border-color: var(--hp-primary);
+    color: var(--hp-primary-dark);
+}
+
+/* P1-6 — Auto-detect badge replaces the "Mark me as onboarded"
+   button as the primary affordance. Pulse dot signals it's actively
+   listening; the manual self-mark button stays as a fallback. */
+.home-mock .auto-detect-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    color: rgba(255, 255, 255, 0.92);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 12.5px;
+}
+.home-mock .auto-detect-badge .pulse {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #FBBF24;
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.7);
+    animation: agnes-pulse 1.6s infinite;
+}
+.home-mock .auto-detect-badge code {
+    background: rgba(0, 0, 0, 0.18);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: var(--hp-font-mono);
+    font-size: 11.5px;
+}
+@keyframes agnes-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.65); }
+    70% { box-shadow: 0 0 0 8px rgba(251, 191, 36, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+}
+
+/* P0-2 — Post-CTA modal with "where to paste" 3-step guide. Modal
+   markup lives at body level; this styles the backdrop + card. The
+   .home-mock prefix is intentionally NOT used so the modal is
+   render-isolated from the home page's CSS variables. */
+.cta-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 20px;
+}
+.cta-modal-backdrop.is-open { display: flex; }
+.cta-modal {
+    background: white;
+    border-radius: 14px;
+    padding: 28px 32px;
+    max-width: 520px;
+    width: 100%;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+    color: #111827;
+    font-family: inherit;
+}
+.cta-modal h2 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    color: #047857;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.cta-modal .lead {
+    font-size: 13px;
+    color: #6B7280;
+    margin: 0 0 18px;
+    line-height: 1.55;
+}
+.cta-modal ol {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 18px;
+    counter-reset: step;
+}
+.cta-modal ol li {
+    counter-increment: step;
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    padding: 12px;
+    background: #F9FAFB;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    font-size: 13.5px;
+    line-height: 1.5;
+}
+.cta-modal ol li::before {
+    content: counter(step);
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: #0073D1;
+    color: white;
+    font-weight: 700;
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.cta-modal ol li code,
+.cta-modal ol li kbd {
+    background: #fff;
+    border: 1px solid #E5E7EB;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--hp-font-mono, ui-monospace, monospace);
+    font-size: 12px;
+}
+.cta-modal ol li kbd { border-bottom-width: 2px; }
+.cta-modal ol li strong { display: block; margin-bottom: 4px; color: #111827; }
+.cta-modal-foot {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #F3F4F6;
+}
+.cta-modal-foot .meta { font-size: 12px; color: #6B7280; }
+.cta-modal-foot button {
+    background: #0073D1;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+}
+.cta-modal-foot button:hover { background: #0056A3; }
 </style>
 
 <div class="home-mock">
@@ -901,12 +1217,9 @@
         </p>
         {% else %}
         <div class="eyebrow">Welcome, {{ display_name }} — let's get you set up</div>
-        <h1>{{ instance_name or "Agnes" }} is your team's AI workspace</h1>
+        <h1>Connect Claude Code on your machine to your team's data</h1>
         <p class="lead">
-            <strong>{{ instance_name or "Agnes" }} is terminal-driven</strong> — you live in your terminal alongside Claude Code, not in a web app. This site is just where you set things up, browse plugins, and check what data is available; the work itself happens in Claude Code on your machine. Two things live here:
-            <strong>a plugin marketplace</strong> with curated and community-built tools for Claude Code,
-            and <strong>access to your team's curated data</strong>.
-            To use any of it from your machine, you install Claude Code and Agnes once. Everything Agnes touches goes in a single folder: <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/Agnes</code>.
+            {{ instance_name or "Agnes" }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>. Everything it installs lives in your home folder (<code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/Agnes</code>) and can be removed in one command.
         </p>
         {% endif %}
 
@@ -934,8 +1247,25 @@
                 <span class="multiline" id="install-cmd-claude-windows">irm https://claude.ai/install.ps1 | iex</span>
                 <button class="copy-btn" data-copy-target="install-cmd-claude-windows">Copy</button>
             </div>
+
+            {# P0-1 — terminal-howto disclosure. Two panels (unix / windows)
+               that flip in lockstep with the install-cmd OS tabs above. #}
+            <details class="terminal-howto">
+                <summary>Don't have a terminal open? — show how</summary>
+                <div class="terminal-howto-body" data-howto-panel="unix">
+                    <p><strong>macOS:</strong> press <kbd>⌘</kbd> + <kbd>Space</kbd>, type <kbd>Terminal</kbd>, press <kbd>Enter</kbd>.</p>
+                    <p><strong>Linux:</strong> press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>T</kbd> (most distros), or open the apps menu and search "Terminal".</p>
+                    <p><strong>WSL:</strong> open the Windows Start menu, search "Ubuntu" (or your installed distro), press <kbd>Enter</kbd>.</p>
+                    <p>Paste the command above with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd> (Linux/WSL) or <kbd>⌘</kbd> + <kbd>V</kbd> (macOS), then press <kbd>Enter</kbd>.</p>
+                </div>
+                <div class="terminal-howto-body" data-howto-panel="windows" hidden>
+                    <p><strong>Windows:</strong> press <kbd>Win</kbd> + <kbd>R</kbd>, type <kbd>powershell</kbd>, press <kbd>Enter</kbd>. (Or: open Start menu, type "PowerShell".)</p>
+                    <p>Paste the command above with <kbd>Ctrl</kbd> + <kbd>V</kbd> and press <kbd>Enter</kbd>.</p>
+                </div>
+            </details>
+
             <div class="install-note">
-                Verify with <code>claude --version</code>. Sign in once with <code>claude</code> and complete the OAuth flow.
+                Verify with <code>claude --version</code>. Then run <code>claude</code> and sign in with your Claude account when the browser opens.
                 Don't have a Claude license yet? See <a href="/setup-advanced#claude-plan">plan options on /setup-advanced</a> (Pro / Max 5× / Max 20×).
             </div>
         </div>
@@ -954,7 +1284,7 @@
         <div class="install-block">
             <div class="label">Step 3 — install Agnes from inside Claude Code</div>
             <p class="setup-cta-lead">
-                Click the button — Agnes mints a 90-day personal access token, copies a ready-to-paste setup script to your clipboard, and the script bootstraps everything in <code>~/Agnes</code> when you paste it into Claude Code.
+                Click the button — {{ instance_name or "Agnes" }} <strong>creates a 90-day login token</strong>, copies a ready-to-paste setup script to your clipboard, and a follow-up popup tells you exactly where to paste it. The script bootstraps everything in <code>~/Agnes</code> once Claude Code receives it.
             </p>
             <div class="setup-cta-row">
                 <button type="button" id="setupClaudeBtn" class="btn-setup-primary" onclick="setupNewClaude(this)">
@@ -982,6 +1312,18 @@
                 </div>
             </details>
 
+        </div>
+        {% endif %}
+
+        {# P1-6 — auto-detect badge is the PRIMARY affordance after the
+           install-script copy: agnes-init's first POST to
+           /api/me/onboarded flips state automatically and the page
+           reloads. The manual "Mark me as onboarded" button below it
+           stays as a fallback when auto-flip never lands. #}
+        {% if not onboarded %}
+        <div class="auto-detect-badge" role="status" aria-live="polite">
+            <span class="pulse" aria-hidden="true"></span>
+            <span>Waiting for your first <code>agnes pull</code> — auto-detects within ~30 s of the setup script finishing.</span>
         </div>
         {% endif %}
 
@@ -1024,6 +1366,44 @@
        BEFORE Step 3's install runs ~20 commands. Gated by the same
        `home_automode.show` flag at the call site. #}
 
+    {# P0-4 — Preview-first banner. The bottom Look-Around grid stays
+       (users who scroll past setup find it there); this duplicate
+       surfaces the same three destinations near the TOP, addressing
+       Petr's "I'd want to see what's inside before configuring" gap.
+       Only relevant in the not-onboarded view — once installed, users
+       reach these via top nav. #}
+    {% if not onboarded %}
+    <div class="preview-first">
+        <div class="preview-first-head">
+            <h3>Not ready to install? Browse what's inside first →</h3>
+            <span class="hint">No setup needed for these</span>
+        </div>
+        <div class="preview-first-grid">
+            <a class="preview-first-tile" href="/marketplace">
+                <span class="ico">&#x1F9E9;</span>
+                <div>
+                    <div class="lbl">Plugin marketplace</div>
+                    <div class="sub">What plugins your team curates</div>
+                </div>
+            </a>
+            <a class="preview-first-tile" href="/catalog">
+                <span class="ico">&#x1F4E6;</span>
+                <div>
+                    <div class="lbl">Data packages</div>
+                    <div class="sub">Tables &amp; metric definitions</div>
+                </div>
+            </a>
+            <a class="preview-first-tile" href="/corporate-memory">
+                <span class="ico">&#x1F9E0;</span>
+                <div>
+                    <div class="lbl">Corporate memory</div>
+                    <div class="sub">Shared analyst knowledge</div>
+                </div>
+            </a>
+        </div>
+    </div>
+    {% endif %}
+
     <details class="setup-collapsible" data-section="connectors" open>
         <summary>
             <span class="ico" aria-hidden="true">&#x1F517;</span>
@@ -1035,10 +1415,19 @@
     <div class="connector-tiles">
         <div class="connector-tile">
             <span class="ico">&#x2705;</span>
-            <div class="ttl">Asana</div>
+            {# P0-3 — title row + time-badge + post-copy hint. The hint
+               container is rendered hidden; the JS reveals it after the
+               copy succeeds, then auto-hides after 8 s. #}
+            <div class="ttl-row">
+                <span class="ttl">Asana</span>
+                <span class="time-badge">~5 min · self-serve</span>
+            </div>
             <div class="desc">Read tasks and projects, comment, create updates — Claude works alongside your project boards without leaving the terminal.</div>
             <div class="connector-actions">
-                <button class="connector-copy" data-copy-target="asana-prompt">Copy prompt</button>
+                <button class="connector-copy" data-copy-target="asana-prompt" data-connector="Asana">Copy prompt</button>
+                <div class="copy-next-hint" data-hint-for="Asana">
+                    <span>&#x2705; Copied. Now paste into Claude Code — run <code>claude</code> in your terminal, then paste &amp; press Enter.</span>
+                </div>
                 <details class="connector-preview">
                     <summary>Show prompt</summary>
                     <div class="card-mini-cmd"><code id="asana-prompt">Set up an Asana personal access token for Claude Code. Walk me through it step by step.
@@ -1067,10 +1456,36 @@ Ground rules: this is idempotent — safe to re-run, the precheck below short-ci
 
         <div class="connector-tile">
             <span class="ico">&#x1F4DA;</span>
-            <div class="ttl">Google Workspace</div>
+            {# P0-3 + P1-8 — Google Workspace tile. Time badge warns when
+               the operator hasn't provisioned a shared OAuth app (forces
+               the user to set up GCP themselves, which is a ~20-min
+               clickops detour). The gating-note + email-admin button
+               appear in that same un-configured branch so the user has
+               a way out before copying. #}
+            <div class="ttl-row">
+                <span class="ttl">Google Workspace</span>
+                {% if gws_oauth.configured %}
+                <span class="time-badge">~5 min · self-serve</span>
+                {% else %}
+                <span class="time-badge is-warn">~20 min · admin help likely</span>
+                {% endif %}
+            </div>
             <div class="desc">Drive, Calendar, Gmail, Docs, Sheets, Chat — Claude reads and acts across your work account via the official <code>gws</code> CLI.</div>
+            {% if not gws_oauth.configured %}
+            <div class="gating-note">
+                <strong>Heads up:</strong> your Agnes admin hasn't provisioned a shared Google Cloud OAuth app yet, so this connector needs GCP project setup (creating an OAuth client, enabling APIs). It's fastest to ask your admin first — the button below pre-fills the email.
+            </div>
+            {% endif %}
             <div class="connector-actions">
-                <button class="connector-copy" data-copy-target="gws-prompt">Copy prompt</button>
+                <button class="connector-copy" data-copy-target="gws-prompt" data-connector="Google Workspace">Copy prompt</button>
+                {% if not gws_oauth.configured and instance_admin_email %}
+                <a class="email-admin" href="mailto:{{ instance_admin_email }}?subject=Agnes%20%E2%80%94%20Google%20Workspace%20OAuth%20setup&amp;body=Hi%20%E2%80%94%20I'd%20like%20to%20connect%20Google%20Workspace%20in%20Agnes%20but%20it%20looks%20like%20a%20shared%20OAuth%20app%20isn't%20provisioned%20yet.%20Could%20you%20set%20it%20up%20for%20our%20instance%3F%20Thanks!">
+                    &#x2709;&#xFE0F; Email admin
+                </a>
+                {% endif %}
+                <div class="copy-next-hint" data-hint-for="Google Workspace">
+                    <span>&#x2705; Copied. Now paste into Claude Code — run <code>claude</code> in your terminal, then paste &amp; press Enter.</span>
+                </div>
                 <details class="connector-preview">
                     <summary>Show prompt</summary>
                     <div class="card-mini-cmd"><code id="gws-prompt">Set up Google Workspace access for Claude Code using the official `gws` CLI from https://github.com/googleworkspace/cli (install steps: README → Installation). The npm path is what we'll use because (a) it's the README's documented convenience path, (b) it works the same on macOS / Linux / WSL / Windows, and (c) it can run with zero admin rights when Node is managed by `nvm` (Unix) or `fnm` (Windows).
@@ -1154,10 +1569,16 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
 
         <div class="connector-tile">
             <span class="ico">&#x1F39F;&#xFE0F;</span>
-            <div class="ttl">Atlassian (Jira / Confluence)</div>
+            <div class="ttl-row">
+                <span class="ttl">Atlassian (Jira / Confluence)</span>
+                <span class="time-badge">~7 min · self-serve</span>
+            </div>
             <div class="desc">Read and write Jira issues, search Confluence pages — Claude pulls ticket context and posts updates without leaving the workspace.</div>
             <div class="connector-actions">
-                <button class="connector-copy" data-copy-target="jira-prompt">Copy prompt</button>
+                <button class="connector-copy" data-copy-target="jira-prompt" data-connector="Atlassian">Copy prompt</button>
+                <div class="copy-next-hint" data-hint-for="Atlassian">
+                    <span>&#x2705; Copied. Now paste into Claude Code — run <code>claude</code> in your terminal, then paste &amp; press Enter.</span>
+                </div>
                 <details class="connector-preview">
                     <summary>Show prompt</summary>
                     <div class="card-mini-cmd"><code id="jira-prompt">Set up Atlassian (Jira + Confluence) API access for Claude Code. Walk me through it step by step.
@@ -1287,6 +1708,44 @@ Ground rules: this is idempotent — safe to re-run, the precheck below short-ci
 
 </div>
 
+{# P0-2 — Post-CTA modal. Opens after the shared CTA include below has
+   created the token + copied the script. _claude_setup_cta.jinja still
+   owns the token request + clipboard write; this modal layers on top
+   with a 3-step "where to paste" guide. Lives at body level so the
+   home-mock styles don't bleed into it. #}
+{% if not onboarded %}
+<div class="cta-modal-backdrop" id="cta-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="cta-modal-title" hidden>
+    <div class="cta-modal">
+        <h2 id="cta-modal-title"><span aria-hidden="true">&#x2705;</span> Setup script copied to clipboard</h2>
+        <p class="lead">Now paste it into Claude Code on your machine — three steps:</p>
+        <ol>
+            <li>
+                <div>
+                    <strong>Open a terminal</strong>
+                    macOS: <kbd>⌘</kbd>+<kbd>Space</kbd>, type "Terminal". Windows: <kbd>Win</kbd>+<kbd>R</kbd>, type <code>powershell</code>. Linux: <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd>.
+                </div>
+            </li>
+            <li>
+                <div>
+                    <strong>Start Claude Code</strong>
+                    Type <code>claude</code> and press <kbd>Enter</kbd>. You'll see a prompt waiting for input.
+                </div>
+            </li>
+            <li>
+                <div>
+                    <strong>Paste &amp; press Enter</strong>
+                    macOS: <kbd>⌘</kbd>+<kbd>V</kbd>. Windows/Linux: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd>. Claude runs the setup and tells you when it's done.
+                </div>
+            </li>
+        </ol>
+        <div class="cta-modal-foot">
+            <span class="meta">Token is in clipboard only — never displayed here.</span>
+            <button type="button" id="cta-modal-close">Got it</button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {# Shared "Setup a new Claude Code" CTA behaviour — provides the JS that
    POSTs /auth/tokens, copies the rendered instructions to the clipboard,
    and falls back to a modal when the clipboard API is blocked. The button
@@ -1311,9 +1770,41 @@ Ground rules: this is idempotent — safe to re-run, the precheck below short-ci
             }).catch(function () { btn.textContent = 'Copy failed'; });
         });
     }
-    document.querySelectorAll('.copy-btn[data-copy-target], .connector-copy[data-copy-target]').forEach(wireCopy);
+    document.querySelectorAll('.copy-btn[data-copy-target]').forEach(wireCopy);
 
-    // OS tab switching for Step 1.
+    // P0-3 + P2-12 — Connector copy buttons. Three things on click:
+    //   1) copy the prompt (same textContent trick so closed <details>
+    //      still copies);
+    //   2) flip the button to "✓ Copied" + disabled for 8 s so the user
+    //      stops mashing it while figuring out where to paste;
+    //   3) reveal a paste hint pointing the user at Claude Code.
+    document.querySelectorAll('.connector-copy[data-copy-target]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var src = document.getElementById(btn.getAttribute('data-copy-target'));
+            if (!src) return;
+            var raw = src.textContent || '';
+            var connector = btn.getAttribute('data-connector') || '';
+            var hint = connector
+                ? document.querySelector('.copy-next-hint[data-hint-for="' + connector + '"]')
+                : null;
+            navigator.clipboard.writeText(raw).then(function () {
+                var orig = btn.textContent;
+                btn.classList.add('copied');
+                btn.textContent = '✓ Copied';
+                btn.disabled = true;
+                if (hint) hint.classList.add('is-visible');
+                setTimeout(function () {
+                    btn.classList.remove('copied');
+                    btn.textContent = orig;
+                    btn.disabled = false;
+                    if (hint) hint.classList.remove('is-visible');
+                }, 8000);
+            }).catch(function () { btn.textContent = 'Copy failed'; });
+        });
+    });
+
+    // OS tab switching for Step 1. Flips both the command panel AND the
+    // P0-1 terminal-howto body so the howto matches the active OS.
     document.querySelectorAll('.os-tab[data-os-tab]').forEach(function (tab) {
         tab.addEventListener('click', function () {
             var target = tab.getAttribute('data-os-tab');
@@ -1330,8 +1821,48 @@ Ground rules: this is idempotent — safe to re-run, the precheck below short-ci
                     p.setAttribute('hidden', '');
                 }
             });
+            // P0-1 — flip the howto bodies in lockstep.
+            scope.querySelectorAll('[data-howto-panel]').forEach(function (p) {
+                if (p.getAttribute('data-howto-panel') === target) {
+                    p.removeAttribute('hidden');
+                } else {
+                    p.setAttribute('hidden', '');
+                }
+            });
         });
     });
+
+    // P0-2 — Post-CTA modal. _claude_setup_cta.jinja owns the click
+    // handler that POSTs /auth/tokens + copies the script; we wait for
+    // its success signal (agnes:setup-script-copied custom event) and
+    // then open the "where to paste" guide. Without the event the modal
+    // simply never opens — the include's own fallback paths handle
+    // older browsers / blocked clipboard.
+    var ctaModal = document.getElementById('cta-modal-backdrop');
+    var ctaModalClose = document.getElementById('cta-modal-close');
+    function openCtaModal() {
+        if (!ctaModal) return;
+        ctaModal.removeAttribute('hidden');
+        ctaModal.classList.add('is-open');
+        if (ctaModalClose) ctaModalClose.focus();
+    }
+    function closeCtaModal() {
+        if (!ctaModal) return;
+        ctaModal.classList.remove('is-open');
+        ctaModal.setAttribute('hidden', '');
+        var setupBtn = document.getElementById('setupClaudeBtn');
+        if (setupBtn) setupBtn.focus();
+    }
+    if (ctaModal) {
+        document.addEventListener('agnes:setup-script-copied', openCtaModal);
+        if (ctaModalClose) ctaModalClose.addEventListener('click', closeCtaModal);
+        ctaModal.addEventListener('click', function (ev) {
+            if (ev.target === ctaModal) closeCtaModal();
+        });
+        document.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape' && ctaModal.classList.contains('is-open')) closeCtaModal();
+        });
+    }
 
     var btn = document.getElementById('self-mark-btn');
     var status = document.getElementById('self-mark-status');

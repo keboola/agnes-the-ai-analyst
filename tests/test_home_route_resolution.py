@@ -221,8 +221,10 @@ def test_home_automode_env_can_hide(fresh_db, monkeypatch):
 
 
 def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
-    """Step 3 — turn on auto-accept mode renders by default for the
-    not-onboarded /home view."""
+    """The auto-mode step renders by default for the not-onboarded /home
+    view. The block is now Step 2 (the install-flow reorder put auto-mode
+    BEFORE the Agnes install so users have auto-accept on for Step 3's
+    ~20 commands), so its label is "Step 2 — turn on auto-mode"."""
     monkeypatch.delenv("AGNES_HOME_SHOW_AUTOMODE", raising=False)
 
     from src.db import get_system_db, close_system_db
@@ -236,9 +238,11 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    assert "Step 3 — turn on auto-accept mode" in body
-    assert '<div class="automode-card">' in body  # rendered element, not CSS selector
-    assert "acceptEdits" in body  # ~/.claude/settings.json snippet
+    assert "Step 2 — turn on auto-mode" in body
+    # The auto-mode step now lives inside the install-hero as an
+    # install-block (peer with Step 1 + Step 3), not as a separate
+    # automode-card. Look for the label + the keystroke prompt.
+    assert "Shift + Tab" in body
 
 
 def test_home_hides_automode_block_when_env_off(fresh_db, monkeypatch):
@@ -255,9 +259,7 @@ def test_home_hides_automode_block_when_env_off(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    assert "Step 3 — turn on auto-accept mode" not in body
-    # HTML element absent (CSS selector with same name still in <style>, that's fine)
-    assert '<div class="automode-card">' not in body
+    assert "Step 2 — turn on auto-mode" not in body
 
 
 def test_navbar_home_link_uses_home_route(fresh_db, monkeypatch):
