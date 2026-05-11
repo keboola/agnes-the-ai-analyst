@@ -1,5 +1,7 @@
 """Data download endpoint — streaming parquet files."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 import duckdb
@@ -8,6 +10,9 @@ from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
 from src.identifier_validation import _SAFE_QUOTED_IDENTIFIER
 from src.rbac import can_access_table
+from src.repositories.audit import AuditRepository
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -93,6 +98,18 @@ async def download_table(
     if_none_match = request.headers.get("if-none-match")
     if if_none_match == etag:
         return Response(status_code=304)
+
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("id"),
+            action="data.download",
+            resource=f"table:{table_id}"[:256],
+            params={"bytes": stat.st_size, "format": "parquet"},
+            result="success",
+            client_kind="cli",
+        )
+    except Exception:
+        logger.exception("audit_log write failed for data.download; continuing")
 
     return FileResponse(
         path=file_path,
