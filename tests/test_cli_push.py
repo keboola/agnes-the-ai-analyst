@@ -157,6 +157,52 @@ def test_push_silent_exit_when_lock_held(tmp_path, monkeypatch):
     assert queue_path(tmp_path).read_text(encoding="utf-8") == f"sid-1\t{transcript}\n"
 
 
+def test_push_silent_exit_when_filelock_raises_oserror(tmp_path, monkeypatch):
+    """OSError from filelock (read-only FS, permission denied, disk full)
+    must not crash push with an unhandled traceback. Exercises the real
+    acquire_or_skip by replacing it with a context manager that raises
+    OSError on entry — simulates what filelock.FileLock.acquire raises
+    on a read-only mount."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+
+    # Queue setup must happen BEFORE we install the failing lock — the
+    # `append_to_queue` path holds its own `agnes-queue.lock` and a
+    # blanket `FileLock.acquire` patch would break that one too.
+    transcript = tmp_path / "x.jsonl"
+    transcript.write_text("{}\n")
+    append_to_queue(tmp_path, "sid-1", str(transcript))
+
+    # Wrap the real acquire_or_skip with one that raises OSError before
+    # yielding. We can't just patch `cli.commands.push.acquire_or_skip`
+    # because the new behaviour lives inside `acquire_or_skip` itself —
+    # we have to exercise its except handler. So we patch `FileLock`
+    # used inside push_lock: subclass with overridden `acquire` that
+    # raises OSError.
+    from cli.lib import push_lock as pl
+
+    class _BrokenLock:
+        def __init__(self, path: str) -> None:
+            self._path = path
+
+        def acquire(self, timeout: float = -1):
+            raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(pl, "FileLock", _BrokenLock)
+
+    def _api_should_not_be_called(*a, **kw):
+        raise AssertionError("api_post called when lock acquisition raised OSError")
+
+    monkeypatch.setattr("cli.commands.push.api_post", _api_should_not_be_called)
+
+    result = runner.invoke(push_app, ["--quiet"])
+    assert result.exit_code == 0, f"push must exit 0 on OSError, got: {result.output}"
+    # No traceback in output
+    assert "Traceback" not in result.output
+    # Queue preserved for next push attempt
+    assert queue_path(tmp_path).read_text(encoding="utf-8") == f"sid-1\t{transcript}\n"
+
+
 def test_push_processes_recovery_snapshot_first(tmp_path, monkeypatch):
     """Pre-existing snapshot from a crashed push gets picked up."""
     monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))

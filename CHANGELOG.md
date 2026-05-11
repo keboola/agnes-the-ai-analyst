@@ -118,6 +118,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **`agnes push` no longer crashes on filesystem errors when acquiring
+  the single-instance lock.** `acquire_or_skip` in
+  `cli/lib/push_lock.py` now treats `OSError` (read-only filesystem,
+  permission denied on `.claude/`, disk full, hardware I/O failure) the
+  same as `filelock.Timeout` — yields `None`, push exits cleanly.
+  Previously the `OSError` propagated as an unhandled traceback;
+  invisible in the SessionEnd hook context (the `|| true` wrapper
+  swallowed it), but ugly in a manual `agnes push` invocation.
+
 - **`agnes push` no longer infinite-loops on permanent 4xx failures.**
   Previously any non-200 response except the literal `file not found
   on disk` was re-queued, so 401 (token expired), 403 (RBAC denial),

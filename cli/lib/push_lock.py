@@ -38,17 +38,27 @@ def lock_path(workspace: Path) -> Path:
 
 @contextmanager
 def acquire_or_skip(workspace: Path) -> Iterator[FileLock | None]:
-    """Yield the held lock, or ``None`` if another process holds it.
+    """Yield the held lock, or ``None`` if the lock can't be acquired.
 
-    Non-blocking (``timeout=0``): if the lock can't be acquired immediately,
-    yields ``None`` so the caller can ``return`` / ``sys.exit(0)`` quietly.
-    The expected concurrency pattern is multiple SessionEnd hooks firing
-    simultaneously when the user closes several Claude Code sessions at
-    once — exactly one runs the push, the rest no-op.
+    Non-blocking (``timeout=0``). Two ways acquisition can fail, both
+    treated the same way (yield ``None`` so the caller can ``return`` /
+    ``sys.exit(0)`` quietly):
+
+    - ``filelock.Timeout`` — another push is already running. Expected
+      when multiple SessionEnd hooks fire simultaneously after the user
+      closes several Claude Code sessions at once: exactly one acquires
+      the lock and runs, the rest no-op.
+    - ``OSError`` — the lock file can't be created or opened (read-only
+      filesystem, ``.claude/`` not writable, disk full, hardware I/O
+      error). Rare; when it happens the operator's environment has
+      bigger problems than missing session uploads. We swallow it so
+      ``agnes push`` exits cleanly instead of dumping an opaque
+      traceback to stderr or, in the SessionEnd hook context, crashing
+      silently under ``|| true``.
     """
     lock = FileLock(str(lock_path(workspace)))
     try:
         with lock.acquire(timeout=0):
             yield lock
-    except Timeout:
+    except (Timeout, OSError):
         yield None
