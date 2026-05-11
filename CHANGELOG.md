@@ -10,6 +10,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`instance.admin_email` operator config knob** (env `AGNES_INSTANCE_ADMIN_EMAIL` > YAML `instance.admin_email` > unset). When set, the `/home` Google Workspace connector tile renders an "Email admin" mailto button so analysts whose operator hasn't pre-provisioned a shared OAuth app can request one without leaving the workspace. Empty default cleanly hides the button.
+
+- **Connector setup folded into the main install script (step 8).** New `app/web/connector_prompts.py` is the single source of truth for the Asana / Google Workspace / Atlassian per-tool prompts; `_connectors_block` in `setup_instructions.py` inlines them under per-connector default-yes asks (empty/Enter installs; only "no" skips). Same prompts power the `/home` tile cards via `{{ connector_prompts.<slug> }}` so editing one place updates both surfaces. Resolves the "extra paste step" friction surfaced by the 2026-05-09 onboarding test — fresh install becomes one paste end-to-end (Agnes + skills + connectors). Note: see #246 for the planned move of the connector prompt set into the operator-side overlay (so non-Atlassian/Asana/GWS shops aren't bound to this opinion).
+
+### Changed
+
+- **`/home` install hero polish** — license-options link contrast against the blue gradient (white + underline; matches lead-paragraph pattern), step reorder so auto-mode (Shift+Tab) becomes step 2 and Agnes install shifts to step 3 (auto-mode must be on BEFORE the ~20-command bash bootstrap so each Bash/edit doesn't need a manual approve click), step-2 simplification (Shift+Tab-only — Claude Code prompts to persist as default; no `~/.claude/settings.json` snippet to maintain). Onboarded users no longer see the auto-mode block. Completion banner reads "Step 1, 2 & 3 done — Claude Code installed, auto-mode set, Agnes ready".
+
+- **`/home` onboarding friction fixes from internal usability testing** — improved hero copy clarity, connector tile gating notes (so users understand why some tiles are disabled), Asana / GWS / Atlassian prompt-correctness fixes (Atlassian three-guard structure: length floor → URL normalization → Jira-then-Confluence verify with 401 short-circuit; GWS `127.0.0.1` → `localhost` correction grounded in `strings` analysis of the `gws` binary), step layout clarification, and post-OAuth-session fallback line for users who closed the OAuth window before saving.
+
+- **Setup script step layout: connectors becomes step 8, Confirm shifts to step 9.** Skills step deleted in #242 (on-demand `agnes skills show <name>` is the default; bulk-copying skills was an opinion question). Layout now: install (1), init (2), catalog (3), preflight (4), marketplace (5), mcp_servers (6), diagnose (7), connectors (8), confirm (9).
+
+### Removed
+
+- **BREAKING: `/corporate-memory` page + dashboard widget + nav link restricted to admins.** The `/corporate-memory` route now requires `require_admin` (was `get_current_user`); non-admin users hitting it see 403 (was 200). The Memory link in the top nav and the corporate-memory widget on `/dashboard` are hidden via `{% if session.user.is_admin %}` guards. **Asymmetry:** the underlying `/api/memory/*` endpoints stay on `get_current_user` so CLI / agent flows that POST a knowledge item or fetch `/api/memory` keep working; the gating is web-UI-only. Operators who relied on non-admin web access need to either grant Admin to those users or use the API.
+
 ## [0.49.0] — 2026-05-11
 
 ### Fixed (PR #242 follow-ups)

@@ -220,6 +220,13 @@
                     btn.classList.remove('copied');
                     btn.disabled = false;
                 }, 3000);
+                // Notify any host page that wants to chain a follow-up UI
+                // (e.g. /home's P0-2 "where to paste" 3-step modal). The
+                // include itself does nothing with the event — listeners
+                // that don't exist are no-ops.
+                try {
+                    document.dispatchEvent(new CustomEvent('agnes:setup-script-copied'));
+                } catch (_e) { /* CustomEvent ctor missing — IE-era, ignore */ }
             } catch (clipErr) {
                 btn.textContent = origText;
                 btn.disabled = false;

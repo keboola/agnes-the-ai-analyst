@@ -37,10 +37,10 @@ def test_setup_page_renders_unified_layout(client):
 
       - `agnes init` is mandatory (subsumes the old admin-only
         `agnes auth import-token` + `agnes auth whoami` pair).
-      - Marketplace block is always emitted: anonymous visitors with no
-        plugin grants still get the marketplace registration step so
-        future stack changes land cleanly. Confirm = step 8 in the
-        post-skills-removal layout.
+      - Marketplace block is always emitted (Fix B in 2026-05-10
+        init-report response): anonymous visitors with no plugin grants
+        still get the marketplace registration step so the SessionStart
+        hook is pre-wired. Confirm = step 8.
     """
     resp = client.get("/setup", follow_redirects=True)
     assert resp.status_code == 200
@@ -49,9 +49,9 @@ def test_setup_page_renders_unified_layout(client):
     assert "agnes init" in text
     # Legacy admin-only login verbs are gone from the rendered prompt.
     assert "agnes auth import-token" not in text
-    # Always-on layout (preflight + marketplace + MCP all unconditional,
-    # skills removed): Confirm = step 8.
-    assert "8) Confirm:" in text
+    # Always-on layout (preflight + marketplace + MCP + connectors block all
+    # unconditional; skills step deleted in #242): Confirm = step 9.
+    assert "9) Confirm:" in text
 
 
 def test_setup_page_ignores_role_query_param(client):
@@ -110,11 +110,12 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
     # Marketplace block marker. The per-plugin install lines moved inside
     # `agnes refresh-marketplace --bootstrap`, so we check the section
     # header + the one-liner instead of `claude plugin install <name>@agnes`.
-    # Non-empty stack → "install your current stack" header variant.
-    assert "Register the Agnes Claude Code marketplace and install your current stack" in text
+    # Non-empty stack → "install plugins" header variant.
+    assert "Register the Agnes Claude Code marketplace and install plugins" in text
     assert "agnes refresh-marketplace --bootstrap" in text
-    # Post-skills-removal layout: Confirm is step 8.
-    assert "8) Confirm:" in text
+    # Layout shift: Confirm is now step 9 (preflight + marketplace + MCP +
+    # connectors all always-on; skills step deleted in #242).
+    assert "9) Confirm:" in text
     # Pre-flight is in the rendered prompt at step 4.
     assert "Make sure git and claude are installed" in text
     # Atlassian MCP registration is at step 6.
