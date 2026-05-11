@@ -117,9 +117,21 @@ def all_connector_prompts(
 # ---------------------------------------------------------------------------
 
 def asana_prompt() -> str:
-    """Asana PAT setup. Stores token in OS keychain under
-    ``agnes-asana-pat``. Idempotent — re-running short-circuits when the
-    cached token still passes the Asana ``users/me`` probe."""
+    """Asana MCP setup — registers Asana's hosted Remote MCP (V2
+    streamable HTTP at https://mcp.asana.com/mcp) so Claude Code can
+    read tasks, comment, and create updates on demand.
+
+    No PAT storage. The hosted Asana MCP handles auth via OAuth (Claude
+    Code opens a browser tab on first tool use; the user signs in once
+    with their Asana account; subsequent calls reuse the grant).
+    Earlier versions of this prompt walked the user through creating +
+    keychain-storing an Asana Personal Access Token, but the MCP path
+    has its own OAuth grant — the PAT had no consumer once the MCP
+    became the actual integration surface, so it's gone.
+
+    Precheck short-circuits when `claude mcp list` already shows the
+    `asana` server registered — re-running setup on a connected machine
+    is a no-op."""
     return _ASANA_PROMPT
 
 
@@ -199,32 +211,17 @@ def atlassian_prompt(*, base_url: str = "") -> str:
 # any per-call allocation cost and trivially diffable.
 # ---------------------------------------------------------------------------
 
-_ASANA_PROMPT = """Set up an Asana personal access token for Claude Code. Walk me through it step by step.
+_ASANA_PROMPT = """Set up Asana access for Claude Code via Asana's hosted Remote MCP. Walk me through it step by step.
 
-Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when Asana is already wired up. If any step fails with an unfamiliar error, paste the exact error back and stop. Do NOT improvise around TLS errors by disabling verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `git -c http.sslVerify=false`, etc.) — those hide the real problem.
+Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when the `asana` MCP server is already registered. No Personal Access Token is created or stored; Asana's hosted MCP handles auth via OAuth, with Claude Code holding the grant. If any step fails with an unfamiliar error, paste the exact error back and stop. Do NOT improvise around TLS errors by disabling verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `git -c http.sslVerify=false`, etc.) — those hide the real problem.
 
-0. Precheck — skip the rest if Asana is already connected. Detect my OS, then look up an existing keychain entry under the service name `agnes-asana-pat` and verify it against Asana's API. macOS: `t=$(security find-generic-password -s 'agnes-asana-pat' -w 2>/dev/null) && curl -fsS -H "Authorization: Bearer $t" https://app.asana.com/api/1.0/users/me | jq -r '.data | "Already connected as \\(.name) (\\(.workspaces | length) workspace(s)). Skipping setup."' && exit 0`. Linux: `t=$(secret-tool lookup service agnes-asana-pat username "$USER" 2>/dev/null) && ...same curl...`. Windows PowerShell: `$cred = cmdkey /list:agnes-asana-pat 2>$null; if ($LASTEXITCODE -eq 0) { Write-Host "Asana cred entry found — verify in your terminal before re-running setup." }` (Windows can't read the password back without a CredentialManager module — print a hint and let me confirm). If the verify call returns 200, print the one-line "Already connected" message and STOP. Only continue to step 1 when no cred exists OR the cached token returns 401.
-1. Open the Asana developer tokens page in my default browser — use your Bash tool: `open https://app.asana.com/0/developer-console/tokens` on macOS, `xdg-open https://app.asana.com/0/developer-console/tokens` on Linux/WSL, or `Start-Process https://app.asana.com/0/developer-console/tokens` on Windows. Detect OS first. If that URL doesn't render the tokens UI (rare), tell me to click my avatar (top right) → Settings → "Apps" tab → "Manage Developer Apps" → Personal access tokens.
-2. Tell me to click "+ New access token", name it "Claude Code — Agnes", and click "Create token". Warn me the token is shown ONCE and Asana PATs do not expire — I'd need to revoke it from the same page if it leaks.
-3. Important: do NOT ask me to paste the token into the chat. Chat input is saved to ~/.claude/projects/.../*.jsonl. Instead, prepare a tiny helper script for me to run in my real terminal:
-   a. Detect my OS. Use the Write/Edit tool (NOT a shell here-doc that prints the body) to create ~/.claude/agnes/bin/store-asana.sh on macOS/Linux, or ~/.claude/agnes/bin/store-asana.ps1 on Windows. chmod 700 the file. Body for macOS:
-      #!/usr/bin/env bash
-      set -e
-      read -srp 'Paste Asana token (hidden): ' t; echo
-      security add-generic-password -U -s 'agnes-asana-pat' -a "$USER" -w "$t"
-      unset t
-      echo 'Stored in macOS Keychain.'
-      Linux variant: same shape but `printf %s "$t" | secret-tool store --label='Agnes Asana PAT' service agnes-asana-pat username "$USER"`. Windows .ps1: `$t = Read-Host 'Paste Asana token' -AsSecureString; $p = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($t)); cmdkey /generic:agnes-asana-pat /user:$env:USERNAME /pass:$p > $null; Remove-Variable p,t; 'Stored.'`
-   b. Tell me to open a real terminal (Terminal.app / iTerm / WSL / PowerShell — NOT Claude Code's `!` prefix, which has no TTY) and run `bash ~/.claude/agnes/bin/store-asana.sh` (or `pwsh ~/.claude/agnes/bin/store-asana.ps1` on Windows). The script will wait silently at the hidden prompt.
-   c. Walk me through the clipboard order: copy the launcher first, paste it in my terminal, press Enter (terminal now waiting). Switch to the Asana tab, copy the token from step 2. Switch back to terminal, paste at the silent prompt, press Enter. Token enters via stdin only — not shown on screen, not in shell history, not in clipboard at the moment Claude is involved.
-4. After I report "Stored", verify by calling `curl -sS -H "Authorization: Bearer $(security find-generic-password -s 'agnes-asana-pat' -w)" https://app.asana.com/api/1.0/users/me | jq -r '.data | "\\(.name) — \\(.workspaces | length) workspace(s)"'` (macOS; Linux uses `secret-tool lookup` instead). Print only the one-line result. Never echo the token.
-5. Register the hosted Asana Remote MCP so Claude Code can read tasks, comment, and create updates on demand: `claude mcp add --transport http asana https://mcp.asana.com/mcp || true`. Idempotent — the `|| true` swallows the "server already exists" error from re-runs. This is Asana's V2 MCP (streamable HTTP); the V1 SSE endpoint at `https://mcp.asana.com/sse` was deprecated 2026-05-11 and must not be used. The PAT stored in step 3 stays for direct `curl` calls (e.g. the precheck and ad-hoc scripts) — the MCP path uses its own OAuth grant, not the PAT.
-6. Log the user in through the Asana MCP, then validate end-to-end before declaring success. Claude Code's MCP OAuth opens a browser tab the FIRST time any tool from the `asana` MCP is invoked, not when the server is added — so the registration in step 5 alone proves nothing. Drive a real verification:
-   a. Tell the user verbatim: "I'm going to make a low-impact read through the Asana MCP. Your browser will open an Asana sign-in page — sign in with the same account whose PAT you stored in step 3 and approve the consent screen. The approval is one-time; subsequent MCP calls reuse the grant."
+0. Precheck — skip the rest if Asana is already wired up. Run `claude mcp list` and grep for a line starting with `asana` (the server name we register in step 1). If it's there, the MCP is registered AND Claude Code is holding its OAuth grant (otherwise the server would have been removed by a previous failure). Print "Asana MCP already registered — skipping setup. To force re-register: `claude mcp remove asana && claude logout asana`, then re-run." and STOP. Continue to step 1 only when `claude mcp list` shows NO `asana` row.
+1. Register Asana's hosted Remote MCP: `claude mcp add --transport http asana https://mcp.asana.com/mcp`. This is Asana's V2 MCP (streamable HTTP, launched February 2026); the V1 SSE endpoint at `https://mcp.asana.com/sse` was deprecated 2026-05-11 and must not be used. If `claude mcp add` errors with "server already exists", the precheck in step 0 missed it — abort cleanly with `claude mcp remove asana && claude mcp add --transport http asana https://mcp.asana.com/mcp` to force a clean state. No PAT is required: Asana's hosted MCP authenticates via OAuth on first tool use.
+2. Log the user in through the Asana MCP, then validate end-to-end before declaring success. Claude Code's MCP OAuth opens a browser tab the FIRST time any tool from the `asana` MCP is invoked, not when the server is added — so the registration in step 1 alone proves nothing. Drive a real verification:
+   a. Tell the user verbatim: "I'm going to make a low-impact read through the Asana MCP. Your browser will open an Asana sign-in page — sign in with your Asana account and approve the consent screen. The approval is one-time; subsequent MCP calls reuse the grant."
    b. Invoke the lightest read the Asana MCP exposes (typically a "list workspaces" / "users me" tool — call whatever shows up under the `mcp__asana__*` prefix in your tool list; pick the one that returns the caller's profile or a small list). Wait for the OAuth tab to come back. If Claude Code times out waiting for tool use, run `claude mcp list` to confirm the server registered, then retry the same MCP call.
-   c. On success, print ONE line that proves both the wiring AND the auth work: "Asana MCP connected as &lt;display name from the MCP response&gt; — &lt;workspace count&gt; workspace(s) visible." Never echo the OAuth token, PAT, or any task / comment content. On failure, surface the exact error Claude Code returned (NotAuthenticated, NotFound, network) and stop — do not silently move on.
-   d. Sanity-check that the MCP response and the PAT-side `users/me` from step 4 reference the same accountId / email. Mismatch means the user signed into the MCP OAuth flow with a different Asana account than the one their PAT belongs to; tell them and offer to redo step 5 after `claude mcp remove asana && claude logout asana`. Same-account is the expected case; only flag a mismatch, don't ask about it when they match.
-7. Remind me where the token is stored and how to revoke: in macOS Keychain Access search "agnes-asana-pat" or run `security delete-generic-password -s 'agnes-asana-pat'`; on Asana, revoke from the same developer-console page. To remove the MCP wiring + drop its OAuth grant: `claude mcp remove asana && claude logout asana`."""
+   c. On success, print ONE line that proves both the wiring AND the auth work: "Asana MCP connected as &lt;display name from the MCP response&gt; — &lt;workspace count&gt; workspace(s) visible." Never echo the OAuth token or any task / comment content. On failure, surface the exact error Claude Code returned (NotAuthenticated, NotFound, network) and stop — do not silently move on.
+3. Remind me how to disconnect later: `claude mcp remove asana` removes the server from Claude Code's config; `claude logout asana` drops the OAuth grant. To revoke the grant on Asana's side, sign in at https://app.asana.com and revoke the "Claude Code" entry from Settings → Apps."""
 
 
 _GWS_PROMPT_HEAD = """Set up Google Workspace access for Claude Code using the official `gws` CLI from https://github.com/googleworkspace/cli (install steps: README → Installation). The npm path is what we'll use because (a) it's the README's documented convenience path, (b) it works the same on macOS / Linux / WSL / Windows, and (c) it can run with zero admin rights when Node is managed by `nvm` (Unix) or `fnm` (Windows).
