@@ -74,7 +74,14 @@ def test_schema_version_is_37():
     #            naturally pulls system plugins into every user's stack.
     #            UI then locks the corresponding controls so users can't
     #            unsubscribe and admins can't revoke per-group grants.
-    assert SCHEMA_VERSION == 39
+    # v39 → v40: Activity Center schema — audit_log gains params_before
+    #            (JSON, prior state for diff/rollback), client_ip (VARCHAR),
+    #            client_kind (VARCHAR, 'cli'|'web'|'agent'|'scheduler'|
+    #            'external'), and correlation_id (VARCHAR). Three indices
+    #            on (timestamp), (user_id, timestamp), (action, timestamp)
+    #            added to keep Activity Center timeline queries under 100ms
+    #            at 100k+ rows.
+    assert SCHEMA_VERSION == 40
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
