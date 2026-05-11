@@ -229,7 +229,7 @@ def accept_image_response(url: str, content_type: str) -> ValidationResult:
 
 
 # ---------------------------------------------------------------------------
-# Convenience helpers used by the agnes-metadata.json parser
+# Convenience helpers used by the marketplace-metadata.json parser
 # ---------------------------------------------------------------------------
 
 
@@ -242,7 +242,7 @@ class DocLinkRef:
       mirror is replaced with ``mirrored_key`` by the asset-mirror layer, or
       when mirroring failed and we link out).
     * ``kind="mirrored"`` → ``url`` is the original; ``mirrored_key`` is set
-      to the cache lookup key. The agnes-metadata parser only produces
+      to the cache lookup key. The marketplace-metadata parser only produces
       ``internal`` and ``external`` — the mirror layer flips ``external`` to
       ``mirrored`` after a successful fetch.
     """
@@ -254,7 +254,7 @@ class DocLinkRef:
 
 
 def parse_doc_link(entry: dict) -> Tuple[bool, DocLinkRef | str]:
-    """Validate one ``doc_links[]`` dict from agnes-metadata.json.
+    """Validate one ``doc_links[]`` dict from marketplace-metadata.json.
 
     Returns ``(True, DocLinkRef)`` on accept, ``(False, reason)`` on reject.
     Rejection reasons surface to the sync log so the curator can fix them.

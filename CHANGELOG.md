@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING** Curated marketplace enrichment file renamed from `.claude-plugin/agnes-metadata.json` to `.claude-plugin/marketplace-metadata.json`. Curators of upstream marketplace repos must rename the file in their repo — Agnes no longer reads the old filename (clean cut, no fallback). The Python API also renames: `read_agnes_metadata` → `read_marketplace_metadata`, `AGNES_METADATA_REL` → `MARKETPLACE_METADATA_REL`, `AGNES_METADATA_MAX_BYTES` → `MARKETPLACE_METADATA_MAX_BYTES`. The synth Claude Code marketplace's strip rule (`.agnes/**` + the metadata file) follows the new filename. See `docs/curated-marketplace-format.md`.
+
 ## [0.49.1] — 2026-05-11
 
 ### Added

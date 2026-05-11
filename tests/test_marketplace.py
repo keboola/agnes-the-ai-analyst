@@ -571,7 +571,7 @@ def test_api_delete_clears_overlay_binding(seeded_app):
 
 
 def test_refresh_plugin_cache_drops_missing_internal_assets(clean_env, monkeypatch):
-    """v32 enrichment drop semantics — when agnes-metadata references files
+    """v32 enrichment drop semantics — when marketplace-metadata references files
     that don't exist on disk (or external URLs that fail to mirror), those
     entries are removed from the served metadata so the UI never shows a
     broken link / image. We exercise the missing-internal-file branch
@@ -601,8 +601,8 @@ def test_refresh_plugin_cache_drops_missing_internal_assets(clean_env, monkeypat
         }),
         encoding="utf-8",
     )
-    # agnes-metadata referencing a mix of valid + missing internal paths
-    (repo_root / ".claude-plugin" / "agnes-metadata.json").write_text(
+    # marketplace-metadata referencing a mix of valid + missing internal paths
+    (repo_root / ".claude-plugin" / "marketplace-metadata.json").write_text(
         json.dumps({
             "version": 1,
             "plugins": {

@@ -600,7 +600,7 @@ function renderGrid(items) {
     card.className = 'mp-card' + (it.installed ? ' is-installed' : '');
     card.href = it.detail_url;
     // Cover photo with broken-image fallback. When the <img> 404s (e.g. an
-    // agnes-metadata.json `cover_photo` references a file the curator forgot
+    // marketplace-metadata.json `cover_photo` references a file the curator forgot
     // to commit, or an external mirror failed), browsers paint their default
     // broken-image icon — which looks worse than the gradient placeholder we
     // render when no cover_photo_url is set at all. The `onerror` swaps the

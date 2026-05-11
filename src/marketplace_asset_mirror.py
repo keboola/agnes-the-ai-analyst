@@ -1,6 +1,6 @@
 """External-asset mirror cache for curated marketplaces.
 
-The curator's ``.claude-plugin/agnes-metadata.json`` may reference cover
+The curator's ``.claude-plugin/marketplace-metadata.json`` may reference cover
 photos and doc files by external HTTP(S) URL. Linkrot would then mean the
 Agnes web UI starts showing broken images / dead links the moment the
 upstream CDN serves a 404. This module mirrors those URLs to disk at sync
@@ -23,7 +23,7 @@ time and serves the local copy thereafter.
    - 304 Not Modified → keep cached file, refresh ``fetched_at`` only.
    - 200 OK with same sha256 → keep file, refresh validators.
    - 200 OK with new sha256 → overwrite local file.
-3. URL removed from agnes-metadata.json → ``cleanup_unused`` removes the
+3. URL removed from marketplace-metadata.json → ``cleanup_unused`` removes the
    manifest entry and the local file.
 
 **Failure modes** (b1 fallback per the design discussion):
@@ -682,7 +682,7 @@ def sync_assets(
             # between body-write and the end-of-batch persist would otherwise
             # leave on-disk files the next sync's manifest never references —
             # disk bloats over time as URLs come and go from the curator's
-            # agnes-metadata.json. Per-iteration persist narrows the crash
+            # marketplace-metadata.json. Per-iteration persist narrows the crash
             # window from "all of Phase 2" to "between persist and unlink"
             # (microseconds). Cost: ~one tmp+rename per body write; manifest
             # is a few KB so the overhead is negligible vs. the HTTP fetches.

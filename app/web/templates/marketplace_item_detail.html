@@ -740,7 +740,7 @@
   document.getElementById('hero-name').textContent = heroTitle;
 
   // Cover photo — flea may have one; curated v32 may also have one when
-  // agnes-metadata.json sub-tree references a skill/agent cover via either
+  // marketplace-metadata.json sub-tree references a skill/agent cover via either
   // an internal path (resolved to /asset/) or an external URL.
   if (d.cover_photo_url) {
     const heroPhoto = document.getElementById('hero-photo');
@@ -964,7 +964,7 @@
 
   // ── Docs section ────────────────────────────────────────────────
   // Flea has always populated `d.docs`. v32 added the same field for curated
-  // skill/agent inner detail, sourced from agnes-metadata.json's per-skill
+  // skill/agent inner detail, sourced from marketplace-metadata.json's per-skill
   // sub-tree. Both surface here through a single render path — file rows
   // for internal-cached docs, link rows for external ones.
   if (Array.isArray(d.docs) && d.docs.length) {
@@ -983,7 +983,7 @@
       </li>`).join('');
   }
 
-  // ── v32: demo video for skill / agent (from agnes-metadata sub-tree) ──
+  // ── v32: demo video for skill / agent (from marketplace-metadata sub-tree) ──
   // Same auto-embed logic as the parent plugin detail page: YouTube /
   // Vimeo are embedded; raw .mp4/.webm/.ogg are inlined as <video>; anything
   // else falls back to a "Watch on external site" link.

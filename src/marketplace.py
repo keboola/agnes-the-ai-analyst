@@ -169,11 +169,11 @@ def _refresh_plugin_cache(slug: str) -> int:
     * ``.claude-plugin/marketplace.json`` (the Claude Code spec) is the
       authoritative source for plugin existence, source spec, and the bare
       Claude Code-shaped metadata.
-    * ``.claude-plugin/agnes-metadata.json`` (Agnes-only) supplies cover
+    * ``.claude-plugin/marketplace-metadata.json`` (Agnes-only) supplies cover
       photo, video URL, doc links, and category overrides per plugin. Missing
       file → no enrichment, plugins still cached at the bare shape.
 
-    External URLs referenced from agnes-metadata are fed through the asset
+    External URLs referenced from marketplace-metadata are fed through the asset
     mirror (`src.marketplace_asset_mirror.sync_assets`) before the DB write
     so the persisted ``cover_photo_url`` / ``doc_links`` already point at the
     final served URL. Mirror failures degrade gracefully — failed external
@@ -182,7 +182,7 @@ def _refresh_plugin_cache(slug: str) -> int:
     from src.marketplace_asset_mirror import sync_assets
     from src.marketplace_metadata import (
         collect_all_external_urls,
-        read_agnes_metadata,
+        read_marketplace_metadata,
         resolve_plugin_metadata,
     )
     from src.marketplace_urls import (
@@ -199,7 +199,7 @@ def _refresh_plugin_cache(slug: str) -> int:
         return 0
 
     repo_root = get_marketplaces_dir() / slug
-    metadata = read_agnes_metadata(repo_root)
+    metadata = read_marketplace_metadata(repo_root)
 
     # Resolve per-plugin enrichment + collect every external URL the mirror
     # needs to fetch this round. Internal references skip the mirror.
@@ -274,7 +274,7 @@ def _refresh_plugin_cache(slug: str) -> int:
         # path doesn't exist on disk at sync time are dropped too. This
         # matches the operator contract: any doc_link Agnes can't deliver
         # as a real downloadable PDF / Markdown / plain text is treated as
-        # if it weren't in agnes-metadata.json at all.
+        # if it weren't in marketplace-metadata.json at all.
         serialized_links: List[Dict[str, str]] = []
         for link in resolved.get("doc_links") or []:
             if not hasattr(link, "kind"):
@@ -344,7 +344,7 @@ def _refresh_plugin_cache(slug: str) -> int:
         if "video_url" in resolved:
             merged["video_url"] = resolved["video_url"]
         if "category" in resolved:
-            # Override marketplace.json category when agnes-metadata supplies one.
+            # Override marketplace.json category when marketplace-metadata supplies one.
             merged["category"] = resolved["category"]
         if serialized_links:
             merged["doc_links"] = serialized_links

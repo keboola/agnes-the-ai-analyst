@@ -177,7 +177,7 @@ class MarketplacePluginsRepository:
 
         Each ``plugins`` entry is the full marketplace.json plugin dict
         optionally augmented with v32 enrichment keys produced by the
-        agnes-metadata.json reader:
+        marketplace-metadata.json reader:
 
         * ``cover_photo_url`` (str | None)  — already-resolved served URL
         * ``video_url`` (str | None)
@@ -186,7 +186,7 @@ class MarketplacePluginsRepository:
           ``internal`` / ``mirrored`` / ``external``.
 
         Absent keys are persisted as NULL — that's the steady state when the
-        upstream marketplace ships no agnes-metadata.json at all.
+        upstream marketplace ships no marketplace-metadata.json at all.
 
         Returns the number of plugins written.
         """
@@ -226,7 +226,7 @@ class MarketplacePluginsRepository:
                     json.dumps(source_spec) if source_spec is not None else None
                 )
                 # `raw` continues to carry the unmerged upstream marketplace.json
-                # plugin entry — agnes-metadata enrichment is held in dedicated
+                # plugin entry — marketplace-metadata enrichment is held in dedicated
                 # columns, never folded into `raw`. Keeps the contract clean for
                 # the synth marketplace flow that re-emits `raw` to Claude Code.
                 raw_payload = {k: v for k, v in p.items() if k not in (

@@ -1,4 +1,4 @@
-"""Unit tests for the agnes-metadata.json parser.
+"""Unit tests for the marketplace-metadata.json parser.
 
 Covers the lenient-parse contract (missing file / malformed JSON / wrong-type
 top level all degrade to empty) plus the per-plugin / per-skill resolution
@@ -15,70 +15,70 @@ from src.marketplace_metadata import (
     collect_external_urls,
     get_inner_section,
     get_plugin_section,
-    read_agnes_metadata,
+    read_marketplace_metadata,
     resolve_inner_metadata,
     resolve_plugin_metadata,
 )
 
 
 def _write_metadata(repo_root, payload):
-    """Write payload as `.claude-plugin/agnes-metadata.json` under repo_root."""
-    target = repo_root / ".claude-plugin" / "agnes-metadata.json"
+    """Write payload as `.claude-plugin/marketplace-metadata.json` under repo_root."""
+    target = repo_root / ".claude-plugin" / "marketplace-metadata.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload), encoding="utf-8")
     return target
 
 
-# --- read_agnes_metadata --------------------------------------------------
+# --- read_marketplace_metadata --------------------------------------------------
 
 
-def test_read_agnes_metadata_missing_file_returns_empty(tmp_path):
+def test_read_marketplace_metadata_missing_file_returns_empty(tmp_path):
     """No metadata file → empty dict, no warning crash."""
-    assert read_agnes_metadata(tmp_path) == {}
+    assert read_marketplace_metadata(tmp_path) == {}
 
 
-def test_read_agnes_metadata_malformed_json(tmp_path):
+def test_read_marketplace_metadata_malformed_json(tmp_path):
     """Malformed JSON degrades to empty dict (sync should not abort)."""
-    target = tmp_path / ".claude-plugin" / "agnes-metadata.json"
+    target = tmp_path / ".claude-plugin" / "marketplace-metadata.json"
     target.parent.mkdir(parents=True)
     target.write_text("{not json at all", encoding="utf-8")
-    assert read_agnes_metadata(tmp_path) == {}
+    assert read_marketplace_metadata(tmp_path) == {}
 
 
-def test_read_agnes_metadata_top_level_array_rejected(tmp_path):
+def test_read_marketplace_metadata_top_level_array_rejected(tmp_path):
     """Top-level must be a JSON object — array is logged + ignored."""
-    target = tmp_path / ".claude-plugin" / "agnes-metadata.json"
+    target = tmp_path / ".claude-plugin" / "marketplace-metadata.json"
     target.parent.mkdir(parents=True)
     target.write_text("[1, 2, 3]", encoding="utf-8")
-    assert read_agnes_metadata(tmp_path) == {}
+    assert read_marketplace_metadata(tmp_path) == {}
 
 
-def test_read_agnes_metadata_happy_path(tmp_path):
+def test_read_marketplace_metadata_happy_path(tmp_path):
     payload = {"version": 1, "plugins": {"x": {"category": "Tools"}}}
     _write_metadata(tmp_path, payload)
-    assert read_agnes_metadata(tmp_path) == payload
+    assert read_marketplace_metadata(tmp_path) == payload
 
 
-def test_read_agnes_metadata_oversized_file_returns_empty(tmp_path):
+def test_read_marketplace_metadata_oversized_file_returns_empty(tmp_path):
     """Curator-controlled file > 1 MB cap is refused without reading the body.
 
     Defends against a misbehaving (or hostile) curator committing a multi-GB
     JSON that would OOM the sync worker (PR #234 review #9).
     """
-    from src.marketplace_metadata import AGNES_METADATA_MAX_BYTES
+    from src.marketplace_metadata import MARKETPLACE_METADATA_MAX_BYTES
 
-    target = tmp_path / ".claude-plugin" / "agnes-metadata.json"
+    target = tmp_path / ".claude-plugin" / "marketplace-metadata.json"
     target.parent.mkdir(parents=True)
     # Write valid JSON padded with whitespace to exceed the cap. The test
-    # doesn't have to allocate a real GB — anything > AGNES_METADATA_MAX_BYTES
+    # doesn't have to allocate a real GB — anything > MARKETPLACE_METADATA_MAX_BYTES
     # demonstrates the size gate fires before json.loads.
-    padding = " " * (AGNES_METADATA_MAX_BYTES + 1024)
+    padding = " " * (MARKETPLACE_METADATA_MAX_BYTES + 1024)
     target.write_text("{" + padding + "}", encoding="utf-8")
 
-    assert read_agnes_metadata(tmp_path) == {}
+    assert read_marketplace_metadata(tmp_path) == {}
 
 
-def test_read_agnes_metadata_deeply_nested_does_not_crash(tmp_path):
+def test_read_marketplace_metadata_deeply_nested_does_not_crash(tmp_path):
     """A deeply-nested JSON that fits under the size cap must not crash sync.
 
     Even if json.loads raises ``RecursionError`` instead of ``ValueError``
@@ -87,7 +87,7 @@ def test_read_agnes_metadata_deeply_nested_does_not_crash(tmp_path):
     metadata. The previous code only caught ``ValueError`` so this would
     have aborted the whole sync.
     """
-    target = tmp_path / ".claude-plugin" / "agnes-metadata.json"
+    target = tmp_path / ".claude-plugin" / "marketplace-metadata.json"
     target.parent.mkdir(parents=True)
     # 5000 nested arrays — comfortably past cpython's default recursion
     # limit (~1000) but far below the 1 MB size cap (~10 KB).
@@ -96,7 +96,7 @@ def test_read_agnes_metadata_deeply_nested_does_not_crash(tmp_path):
 
     # Function MUST return cleanly — either {} (parser blew up and we
     # caught it) or whatever the parser produced. Either way, no crash.
-    result = read_agnes_metadata(tmp_path)
+    result = read_marketplace_metadata(tmp_path)
     assert isinstance(result, dict)
 
 
