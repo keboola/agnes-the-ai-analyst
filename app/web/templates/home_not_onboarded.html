@@ -235,6 +235,22 @@
     font-family: var(--hp-font-mono);
     font-size: 11.5px;
 }
+/* Links inside the blue install-hero need a non-blue color — the default
+   `<a>` style elsewhere on /home renders as `var(--hp-primary)` blue,
+   which is invisible against the hero's blue background. Use the same
+   high-contrast white-with-underline pattern the lead paragraph uses,
+   and bump hover to full white so the affordance stays obvious. */
+.home-mock .install-hero a {
+    color: #ffffff;
+    text-decoration: underline;
+    text-decoration-color: rgba(255, 255, 255, 0.6);
+    text-underline-offset: 2px;
+}
+.home-mock .install-hero a:hover,
+.home-mock .install-hero a:focus {
+    color: #ffffff;
+    text-decoration-color: #ffffff;
+}
 
 .home-mock .automode-card {
     margin: 22px 0;
