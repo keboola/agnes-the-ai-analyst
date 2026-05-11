@@ -468,7 +468,7 @@
   <!-- Filter row: categories -->
   <div class="mp-filter-row" id="mp-cat-row"></div>
 
-  <!-- Type filter (Flea-only) -->
+  <!-- Type filter (Flea + My — both surface skill/agent/plugin items) -->
   <div class="mp-type-row" id="mp-type-row" hidden>
     <button class="pill is-active" data-type="">All</button>
     <button class="pill" data-type="skill">Skills</button>
@@ -807,7 +807,10 @@ async function fetchOne(tab) {
   });
   if (state.q) params.set('q', state.q);
   if (state.category) params.set('category', state.category);
-  if (tab === 'flea' && state.type) params.set('type', state.type);
+  // My stack also surfaces skill/agent/plugin entries (curated subscriptions +
+  // flea installs), so the type filter is meaningful there too. Curated
+  // browse only lists plugins, so we still skip the param for that tab.
+  if ((tab === 'flea' || tab === 'my') && state.type) params.set('type', state.type);
   try {
     const res = await fetch('/api/marketplace/items?' + params);
     if (!res.ok) return { items: [], total: 0 };
@@ -835,8 +838,11 @@ function setTab(tab) {
   document.querySelectorAll('[data-show-on]').forEach(el => {
     el.hidden = el.dataset.showOn !== tab;
   });
-  document.getElementById('mp-type-row').hidden = (tab !== 'flea');
-  document.getElementById('mp-cat-row').hidden = (tab === 'my');
+  // Category + type filters now show on both flea and my tabs (my surfaces
+  // a mix of plugin/skill/agent entries the user has installed). Curated
+  // browse only lists plugins, so type filter stays hidden there.
+  document.getElementById('mp-type-row').hidden = (tab === 'curated');
+  document.getElementById('mp-cat-row').hidden = false;
   // Type filter pills always reset to 'All' on tab switch.
   document.querySelectorAll('#mp-type-row .pill').forEach(p => {
     p.classList.toggle('is-active', !p.dataset.type);
@@ -911,8 +917,9 @@ document.getElementById('mp-scope-flea').addEventListener('change', () => {
   document.querySelectorAll('[data-show-on]').forEach(el => {
     el.hidden = el.dataset.showOn !== state.tab;
   });
-  document.getElementById('mp-type-row').hidden = (state.tab !== 'flea');
-  document.getElementById('mp-cat-row').hidden = (state.tab === 'my');
+  // Same visibility rule as setTab() — see comment there.
+  document.getElementById('mp-type-row').hidden = (state.tab === 'curated');
+  document.getElementById('mp-cat-row').hidden = false;
   document.querySelectorAll('#mp-type-row .pill').forEach(p => {
     p.classList.toggle('is-active', (p.dataset.type || null) === state.type);
   });
