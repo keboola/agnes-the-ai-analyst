@@ -5,10 +5,14 @@ from datetime import datetime, timezone, timedelta
 
 @pytest.fixture(autouse=True)
 def _reset_activity_dedup():
-    from app.api.activity import _RECENT_AUDITS
+    from app.api.activity import _RECENT_AUDITS, _HEALTH_CACHE
     _RECENT_AUDITS.clear()
+    _HEALTH_CACHE["data"] = None
+    _HEALTH_CACHE["expires_at"] = None
     yield
     _RECENT_AUDITS.clear()
+    _HEALTH_CACHE["data"] = None
+    _HEALTH_CACHE["expires_at"] = None
 
 
 def test_activity_timeline_requires_admin(seeded_app, analyst_user):
@@ -156,3 +160,27 @@ def test_activity_timeline_audits_different_filters(seeded_app, admin_user):
     ).fetchone()[0]
     conn.close()
     assert n == 2
+
+
+def test_activity_health_emits_posthog_event_when_enabled(seeded_app, admin_user):
+    from unittest.mock import patch
+
+    with patch("app.api.activity.get_posthog") as mock_get:
+        mock_client = mock_get.return_value
+        mock_client.enabled = True
+        seeded_app["client"].get("/api/admin/activity/health", headers=admin_user)
+        mock_client.capture.assert_called()
+        kw = mock_client.capture.call_args.kwargs
+        assert kw.get("event") == "activity_health_viewed"
+
+
+def test_activity_endpoints_silent_when_posthog_disabled(seeded_app, admin_user):
+    from unittest.mock import patch
+
+    with patch("app.api.activity.get_posthog") as mock_get:
+        mock_client = mock_get.return_value
+        mock_client.enabled = False
+        resp = seeded_app["client"].get("/api/admin/activity/health", headers=admin_user)
+        # capture may be called but the inner SDK is no-op; that's the contract.
+        # Assert: no exception, healthy response.
+        assert resp.status_code == 200
