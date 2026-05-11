@@ -67,12 +67,14 @@ def all_connector_prompts(
     *,
     gws_oauth: dict | None = None,
     instance_admin_email: str = "",
+    atlassian_base_url: str = "",
 ) -> dict[str, str]:
     """Resolve every connector's prompt text with the operator's runtime
     config baked in. Caller (router._build_context, setup_instructions
     consumers) passes the already-resolved ``gws_oauth`` dict from
-    :func:`app.instance_config.get_gws_oauth_credentials` and the admin
-    email from :func:`get_instance_admin_email`. Returns a dict keyed by
+    :func:`app.instance_config.get_gws_oauth_credentials`, the admin
+    email from :func:`get_instance_admin_email`, and the Atlassian site
+    URL from :func:`get_atlassian_base_url`. Returns a dict keyed by
     connector slug so both the template (``{{ connector_prompts.asana
     }}``) and the setup script (``connector_prompts['asana']``) read the
     same shape.
@@ -82,6 +84,11 @@ def all_connector_prompts(
     but is plumbed through anyway so a future GWS prompt branch that
     references the admin contact can add the string without changing the
     call sites.
+
+    ``atlassian_base_url`` (when non-empty) bakes the operator-provisioned
+    Atlassian Cloud site root into the Atlassian connector prompt — the
+    user no longer has to guess / paste their org's URL. Empty value
+    falls back to the existing "ask the user" flow.
     """
     gws_oauth = gws_oauth or {}
     return {
@@ -96,7 +103,7 @@ def all_connector_prompts(
             ),
             instance_admin_email=instance_admin_email,
         ),
-        "atlassian": atlassian_prompt(),
+        "atlassian": atlassian_prompt(base_url=atlassian_base_url),
     }
 
 
@@ -156,11 +163,34 @@ def gws_prompt(
     )
 
 
-def atlassian_prompt() -> str:
+def atlassian_prompt(*, base_url: str = "") -> str:
     """Atlassian (Jira + Confluence) API token setup. Stores token in OS
     keychain under ``agnes-atlassian-api-token``, plus email + normalized
     base URL in ``~/.claude/agnes/secrets.env``. Jira-first / Confluence-
-    fallback verify so Confluence-only sites still onboard."""
+    fallback verify so Confluence-only sites still onboard.
+
+    ``base_url`` (when non-empty) is the operator-provisioned Atlassian
+    Cloud site root — typically ``https://<myorg>.atlassian.net``. When
+    set, step 1's "ask me for the site URL" prompt is replaced by a
+    one-line note that the URL is already baked in, and step 4's
+    ``BASE_URL='<the site URL I gave you>'`` literal becomes
+    ``BASE_URL='<base_url>'`` directly. Empty value (default) keeps the
+    existing flow — Claude asks the user.
+
+    Caller is expected to normalize: strip trailing slash + ``/wiki``
+    (handled by :func:`app.instance_config.get_atlassian_base_url`)."""
+    if base_url:
+        # The {{ }} pair in the f-string escapes a literal `{` — the
+        # `${ATLASSIAN_BASE_URL%/}` shell parameter expansion in step 0
+        # precheck uses `${...}` which f-strings DON'T touch, so no
+        # additional escaping is needed there. Replace only the two
+        # explicit placeholder strings.
+        return _ATLASSIAN_PROMPT \
+            .replace("<the site URL I gave you>", base_url) \
+            .replace(
+                "1. Ask me for my Atlassian Cloud site URL (looks like https://<myorg>.atlassian.net) and the email I sign in with. Site URL and email are NOT secrets — fine to type into chat. Don't proceed until I've given you both.",
+                f"1. Ask me only for the email I sign in with — the Atlassian Cloud site URL is already provisioned by the Agnes operator (``{base_url}``) and baked into the helper script. Email is not a secret — fine to type into chat. Don't proceed until I've given you the email.",
+            )
     return _ATLASSIAN_PROMPT
 
 

@@ -275,6 +275,34 @@ def get_instance_admin_email() -> str:
     return (raw or "").strip()
 
 
+def get_atlassian_base_url() -> str:
+    """Operator-provisioned Atlassian Cloud site URL — baked into the
+    Atlassian connector prompt so end users don't have to guess /
+    paste their org's `https://<myorg>.atlassian.net`.
+
+    When set, the connector prompt's "ask me for the site URL" step
+    is replaced by a literal value the helper script substitutes
+    directly. When unset (empty string), the prompt falls back to
+    asking the user — same flow as today.
+
+    Normalized: trailing slashes and a trailing ``/wiki`` are stripped
+    so the value is always the bare site root. Matches the
+    normalization the per-user helper script already does at storage
+    time (see atlassian_prompt step 4 guard 2).
+
+    Resolution: ``AGNES_ATLASSIAN_BASE_URL`` env > ``instance.atlassian.base_url`` YAML > "".
+    Mirrors :func:`get_instance_admin_email` so Terraform overrides
+    work the same way.
+    """
+    raw = os.environ.get("AGNES_ATLASSIAN_BASE_URL")
+    if raw is None:
+        raw = get_value("instance", "atlassian", "base_url", default="")
+    value = (raw or "").strip().rstrip("/")
+    if value.endswith("/wiki"):
+        value = value[: -len("/wiki")]
+    return value
+
+
 def get_sync_interval() -> str:
     """Human-readable refresh cadence shown in the analyst welcome prompt."""
     return get_value("instance", "sync_interval", default="1 hour")

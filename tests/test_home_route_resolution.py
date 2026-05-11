@@ -324,3 +324,86 @@ def test_navbar_home_link_uses_home_route(fresh_db, monkeypatch):
     # Navbar link href reflects the resolved home_route, not hard-coded /dashboard.
     # Label is "Home" (was "Dashboard" before the nav reorg).
     assert 'href="/home">Home' in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Atlassian base URL — operator-provisioned site root, Terraform-overrideable
+# via AGNES_ATLASSIAN_BASE_URL.
+# ---------------------------------------------------------------------------
+
+def test_atlassian_base_url_default_empty(fresh_db, monkeypatch):
+    """Unset env + unset YAML → empty string. Connector prompt falls
+    back to asking the user for the site URL (the existing flow)."""
+    monkeypatch.delenv("AGNES_ATLASSIAN_BASE_URL", raising=False)
+    from app.instance_config import get_atlassian_base_url
+    assert get_atlassian_base_url() == ""
+
+
+def test_atlassian_base_url_env_overrides(fresh_db, monkeypatch):
+    """Env var takes precedence over YAML / default."""
+    monkeypatch.setenv("AGNES_ATLASSIAN_BASE_URL", "https://acme.atlassian.net")
+    from app.instance_config import get_atlassian_base_url
+    assert get_atlassian_base_url() == "https://acme.atlassian.net"
+
+
+def test_atlassian_base_url_strips_trailing_slash(fresh_db, monkeypatch):
+    """`https://acme.atlassian.net/` → `https://acme.atlassian.net`.
+    Matches the per-user helper script's normalization at storage time
+    (atlassian_prompt step 4 guard 2). Without this, $BASE_URL/rest/...
+    becomes $BASE_URL//rest/... which some CDN paths reject."""
+    monkeypatch.setenv("AGNES_ATLASSIAN_BASE_URL", "https://acme.atlassian.net/")
+    from app.instance_config import get_atlassian_base_url
+    assert get_atlassian_base_url() == "https://acme.atlassian.net"
+
+
+def test_atlassian_base_url_strips_trailing_wiki(fresh_db, monkeypatch):
+    """`https://acme.atlassian.net/wiki` (the Confluence path) →
+    `https://acme.atlassian.net` (bare site root). The connector
+    prompt's verify step probes both Jira (root) and Confluence
+    (root + /wiki), so the canonical stored value is the root."""
+    monkeypatch.setenv("AGNES_ATLASSIAN_BASE_URL", "https://acme.atlassian.net/wiki")
+    from app.instance_config import get_atlassian_base_url
+    assert get_atlassian_base_url() == "https://acme.atlassian.net"
+
+    monkeypatch.setenv("AGNES_ATLASSIAN_BASE_URL", "https://acme.atlassian.net/wiki/")
+    assert get_atlassian_base_url() == "https://acme.atlassian.net"
+
+
+def test_atlassian_prompt_uses_base_url_when_set():
+    """The atlassian connector prompt bakes the operator's base URL into
+    the helper script instead of asking the user. Saves a chat round-
+    trip and avoids the "guess your org's Atlassian URL" footgun."""
+    from app.web.connector_prompts import atlassian_prompt
+
+    p = atlassian_prompt(base_url="https://acme.atlassian.net")
+    # The literal URL is baked into the prompt body.
+    assert "https://acme.atlassian.net" in p
+    # The "ask me for the site URL" step disappears.
+    assert "Ask me for my Atlassian Cloud site URL" not in p
+    # The placeholder in step 4's helper-script body is replaced with the literal.
+    assert "<the site URL I gave you>" not in p
+    # The new "operator baked it in" wording appears in step 1.
+    assert "already provisioned by the Agnes operator" in p
+
+
+def test_atlassian_prompt_asks_user_when_base_url_empty():
+    """When no operator override is set, prompt falls back to the
+    existing "ask me for the site URL" flow — no regression for OSS
+    instances that don't set the env var."""
+    from app.web.connector_prompts import atlassian_prompt
+
+    p = atlassian_prompt(base_url="")
+    assert "Ask me for my Atlassian Cloud site URL" in p
+    assert "<the site URL I gave you>" in p
+    assert "already provisioned by the Agnes operator" not in p
+
+
+def test_all_connector_prompts_threads_atlassian_base_url():
+    """all_connector_prompts() must forward the atlassian_base_url
+    kwarg to atlassian_prompt — otherwise the operator's Terraform
+    override never reaches the rendered text."""
+    from app.web.connector_prompts import all_connector_prompts
+
+    out = all_connector_prompts(atlassian_base_url="https://acme.atlassian.net")
+    assert "https://acme.atlassian.net" in out["atlassian"]
+    assert "Ask me for my Atlassian Cloud site URL" not in out["atlassian"]
