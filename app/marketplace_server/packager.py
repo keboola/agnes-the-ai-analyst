@@ -171,7 +171,7 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
             continue
         for f in sorted(p for p in plugin_dir.rglob("*") if p.is_file()):
             rel_parts = f.relative_to(plugin_dir).parts
-            # v32: strip Agnes-only files (`.agnes/**` and `agnes-metadata.json`)
+            # v32: strip Agnes-only files (`.agnes/**` and `marketplace-metadata.json`)
             # from the synth Claude Code marketplace so user instances never
             # see enrichment metadata they don't need. ETag is computed from
             # the same filtered set (compute_etag in marketplace_filter), so

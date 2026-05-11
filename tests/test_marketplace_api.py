@@ -158,9 +158,9 @@ class TestListItems:
         data = r.json()
         assert data["total"] == 0
 
-    def test_my_stack_carries_agnes_metadata_enrichment(self, web_client):
+    def test_my_stack_carries_marketplace_metadata_enrichment(self, web_client):
         """Once a curated plugin is in the user's stack (subscribed), the
-        ``tab=my`` card MUST carry the same agnes-metadata enrichment
+        ``tab=my`` card MUST carry the same marketplace-metadata enrichment
         (cover_photo_url, video_url, category override) the ``tab=curated``
         card shows. Previously the My Stack handler built rows from the
         on-disk ``marketplace.json``, which doesn't carry those columns —
@@ -175,9 +175,9 @@ class TestListItems:
         user_id, cookies = _create_user(web_client, "alice@x.com")
         _seed_curated_grant(user_id=user_id, marketplace="mkt-x", plugin="alpha")
 
-        # Backfill the agnes-metadata enrichment columns on the seeded
+        # Backfill the marketplace-metadata enrichment columns on the seeded
         # plugin row — same shape `_refresh_plugin_cache` writes after a
-        # nightly sync that picked up a curator's agnes-metadata.json.
+        # nightly sync that picked up a curator's marketplace-metadata.json.
         cover = "/api/marketplace/curated/mkt-x/alpha/asset/cover.png"
         video = "https://www.youtube.com/watch?v=abc123"
         conn = get_system_db()
@@ -208,7 +208,7 @@ class TestListItems:
         # Curated tab. ``MarketplaceItem`` flattens the column name to
         # ``photo_url``; see :func:`_curated_to_item`.
         assert item["photo_url"] == cover, (
-            "My Stack must surface agnes-metadata cover_photo_url, not None"
+            "My Stack must surface marketplace-metadata cover_photo_url, not None"
         )
         assert item["category"] == "Code & Engineering"
 

@@ -114,7 +114,7 @@ class InnerItemSummary(BaseModel):
     name: str
     description: Optional[str] = None
     detail_url: Optional[str] = None  # nested detail for skill/agent only
-    # v32: agnes-metadata-driven cover photo for the skill/agent card on the
+    # v32: marketplace-metadata-driven cover photo for the skill/agent card on the
     # parent plugin detail page. Already in served-URL form (internal /asset/
     # endpoint, mirrored /mirrored/ endpoint, or pass-through external URL).
     # None → frontend renders initials placeholder ("SK" / "AG").
@@ -173,7 +173,7 @@ class PluginDetailResponse(BaseModel):
     curator_email: Optional[str] = None         # curated only — surfaced for "contact curator"
     owner_display: Optional[str] = None         # flea: users.name → email → owner_username
     homepage: Optional[str] = None
-    cover_photo_url: Optional[str] = None       # /api/store/.../photo for flea, agnes-metadata for curated
+    cover_photo_url: Optional[str] = None       # /api/store/.../photo for flea, marketplace-metadata for curated
     video_url: Optional[str] = None             # v32: external (YouTube/Vimeo/Loom) embed URL
     bundle_size: Optional[int] = None           # bytes; None when unknown
     install_count: int = 0                      # flea only; curated leaves at 0
@@ -232,7 +232,7 @@ class InnerDetailResponse(BaseModel):
     manifest_name: str = ""
     bundle_size: Optional[int] = None
     files: List[FileEntry] = []
-    # v32: per-skill / per-agent enrichment from agnes-metadata.json sub-tree.
+    # v32: per-skill / per-agent enrichment from marketplace-metadata.json sub-tree.
     # Read at request time from the cloned working tree (not cached in DB) so
     # curators can update one inner asset without paying the cost of a full
     # plugin-cache rewrite. Three-typed cover URL layout matches plugin
@@ -515,7 +515,7 @@ async def list_items(
     marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
 
     # Pull the enriched rows the Curated tab uses (cover_photo_url, video_url,
-    # category override, doc_links from agnes-metadata.json) so the My Stack
+    # category override, doc_links from marketplace-metadata.json) so the My Stack
     # cards look identical to the curated cards the user just clicked
     # "+ Add to my stack" on. ``resolve_allowed_plugins`` reads only the
     # upstream marketplace.json, which doesn't carry those columns; without
@@ -541,7 +541,7 @@ async def list_items(
             # Fallback: plugin in RBAC + subscribed but not yet ingested into
             # marketplace_plugins (rare race — granted before the first sync
             # cycle runs). Build the bare shape from the on-disk manifest so
-            # the card still renders, just without agnes-metadata enrichment;
+            # the card still renders, just without marketplace-metadata enrichment;
             # cover falls through to the gradient placeholder until the next
             # sync.
             author = p["raw"].get("author")
@@ -943,11 +943,11 @@ async def curated_detail(
     skills = _list_inner_skills(plugin_root)
     agents = _list_inner_agents(plugin_root)
 
-    # v32: enrich each skill/agent card with its agnes-metadata cover photo
+    # v32: enrich each skill/agent card with its marketplace-metadata cover photo
     # so the inner cards on the plugin detail page render the real image
-    # instead of just initials. Read agnes-metadata + mirror manifest once
+    # instead of just initials. Read marketplace-metadata + mirror manifest once
     # (cached by the helpers) and reuse for all inner items in the plugin.
-    from src.marketplace_metadata import read_agnes_metadata as _read_md
+    from src.marketplace_metadata import read_marketplace_metadata as _read_md
     inner_metadata = _read_md(
         Path(get_marketplaces_dir()) / marketplace_id,
     )
@@ -982,7 +982,7 @@ async def curated_detail(
         except (ValueError, TypeError):
             raw = {}
 
-    # v32: cover, video, and doc_links come from `agnes-metadata.json` via the
+    # v32: cover, video, and doc_links come from `marketplace-metadata.json` via the
     # sync pipeline (`src/marketplace.py::_refresh_plugin_cache`) — already in
     # served-URL form when written to the DB. We pass them through the
     # response model unchanged. Curator name + email come from the marketplace
@@ -1348,12 +1348,12 @@ def _curated_inner_enrichment(
     kind: str,
     inner_name: str,
 ) -> Dict[str, Any]:
-    """Load agnes-metadata.json sub-tree for a single skill/agent.
+    """Load marketplace-metadata.json sub-tree for a single skill/agent.
 
-    Lives here (not in the sync pipeline) so curators can update agnes-metadata
+    Lives here (not in the sync pipeline) so curators can update marketplace-metadata
     on a working tree and see the change at the next page refresh, without
     waiting for a full plugin-cache rewrite. Read on every inner-detail
-    request — agnes-metadata.json is small enough that disk hit cost is
+    request — marketplace-metadata.json is small enough that disk hit cost is
     negligible compared to the SKILL.md / agent.md frontmatter parse the
     endpoint already does.
 
@@ -1370,12 +1370,12 @@ def _curated_inner_enrichment(
     ``video_url`` (str or None), ``docs`` (list of DocEntry).
     """
     from src.marketplace_metadata import (
-        read_agnes_metadata,
+        read_marketplace_metadata,
         resolve_inner_metadata,
     )
 
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
-    metadata = read_agnes_metadata(repo_root)
+    metadata = read_marketplace_metadata(repo_root)
     section_kind = "skills" if kind == "skill" else "agents"
     resolved = resolve_inner_metadata(metadata, plugin_name, section_kind, inner_name)
     if not resolved:
@@ -1447,9 +1447,9 @@ def _curated_inner_cover(
     from src.marketplace_metadata import resolve_inner_metadata
 
     if metadata is None:
-        from src.marketplace_metadata import read_agnes_metadata
+        from src.marketplace_metadata import read_marketplace_metadata
         repo_root = Path(get_marketplaces_dir()) / marketplace_id
-        metadata = read_agnes_metadata(repo_root)
+        metadata = read_marketplace_metadata(repo_root)
     if manifest is None:
         manifest = _load_mirror_manifest(marketplace_id)
 
@@ -1564,7 +1564,7 @@ async def curated_agent_detail(
 # ---------------------------------------------------------------------------
 #
 # Three sibling endpoints that serve the binary content referenced from
-# `agnes-metadata.json`. All three:
+# `marketplace-metadata.json`. All three:
 #
 #   * are gated by `require_resource_access(MARKETPLACE_PLUGIN, "{mp}/{plugin}")`
 #     so a user without RBAC can't side-load assets even with a direct URL,
@@ -1625,7 +1625,7 @@ async def curated_asset(
     ``.agnes/cover.png`` or ``plugins/foo/icon.png``.
 
     **Image-only by contract.** The endpoint is the source of cover photos
-    referenced from ``agnes-metadata.json`` and from inner skill / agent
+    referenced from ``marketplace-metadata.json`` and from inner skill / agent
     cards. A curator who could land an arbitrary file in the cloned repo
     (HTML, JS, SVG with inline ``<script>``) would otherwise have a
     same-origin XSS via this endpoint, since the response shares the
@@ -1693,7 +1693,7 @@ async def curated_doc(
     Same path-traversal guard as ``/asset/``. Adds an allowlist check — the
     doc endpoint refuses to serve a file whose extension isn't in the
     documented PDF / Markdown / plain text set (HTTP 415). Defense-in-depth
-    even though the agnes-metadata parser already rejects out-of-allowlist
+    even though the marketplace-metadata parser already rejects out-of-allowlist
     extensions during the doc_link parse — a curator who edits the working
     tree directly (or whose JSON survived parsing because of a generic
     extension match elsewhere) shouldn't be able to land a .docx through

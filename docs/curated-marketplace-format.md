@@ -13,7 +13,7 @@ story.
 Create a JSON file at this exact path in your repo:
 
 ```
-.claude-plugin/agnes-metadata.json
+.claude-plugin/marketplace-metadata.json
 ```
 
 Put the keys you want filled in. **Every key is optional.** Skip a
@@ -156,7 +156,7 @@ Copy this and adjust:
 ```
 
 The same example lives at
-[`docs/examples/agnes-metadata.json`](https://github.com/keboola/agnes-the-ai-analyst/blob/main/docs/examples/agnes-metadata.json)
+[`docs/examples/marketplace-metadata.json`](https://github.com/keboola/agnes-the-ai-analyst/blob/main/docs/examples/marketplace-metadata.json)
 in the source repo.
 
 ---

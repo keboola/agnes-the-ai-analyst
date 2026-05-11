@@ -1,4 +1,4 @@
-"""Parser + resolver for upstream ``.claude-plugin/agnes-metadata.json``.
+"""Parser + resolver for upstream ``.claude-plugin/marketplace-metadata.json``.
 
 Each curated marketplace repo can ship a sibling file next to ``marketplace.json``
 that adds Agnes-only enrichment (cover photos, video URLs, doc links, category
@@ -9,7 +9,7 @@ the synth Claude Code marketplace clean of Agnes-only files.
 
 Two read paths exist:
 
-* :func:`read_agnes_metadata` — invoked from the sync pipeline
+* :func:`read_marketplace_metadata` — invoked from the sync pipeline
   (``src/marketplace.py``). Lenient: missing file, malformed JSON, and partial
   schemas all fall back to ``{}`` rather than aborting the sync.
 * :func:`resolve_plugin_metadata` — given a parsed metadata blob and a plugin
@@ -39,13 +39,13 @@ from src.marketplace_asset_validation import (
 
 logger = logging.getLogger(__name__)
 
-AGNES_METADATA_REL = Path(".claude-plugin") / "agnes-metadata.json"
+MARKETPLACE_METADATA_REL = Path(".claude-plugin") / "marketplace-metadata.json"
 """Path inside the cloned marketplace working tree where the file is expected.
 Sibling to ``marketplace.json`` so curators have one well-known place to put
 both Claude Code and Agnes-side metadata."""
 
-AGNES_METADATA_MAX_BYTES = 1 * 1024 * 1024
-"""Hard cap on the size of an agnes-metadata.json file.
+MARKETPLACE_METADATA_MAX_BYTES = 1 * 1024 * 1024
+"""Hard cap on the size of an marketplace-metadata.json file.
 
 The file is curator-controlled and read into memory in full before parsing.
 Without a cap, a curator could commit a multi-GB document and OOM the sync
@@ -55,8 +55,8 @@ real-world metadata file with covers, docs, and categories for ~50 plugins
 sits well under 100 KB."""
 
 
-def read_agnes_metadata(marketplace_root: Path) -> Dict[str, Any]:
-    """Load the agnes-metadata.json document from a cloned marketplace.
+def read_marketplace_metadata(marketplace_root: Path) -> Dict[str, Any]:
+    """Load the marketplace-metadata.json document from a cloned marketplace.
 
     Returns the parsed dict on success, or ``{}`` when the file is missing,
     unreadable, or contains malformed JSON. A malformed file logs a warning
@@ -74,24 +74,24 @@ def read_agnes_metadata(marketplace_root: Path) -> Dict[str, Any]:
           }
         }
     """
-    path = marketplace_root / AGNES_METADATA_REL
+    path = marketplace_root / MARKETPLACE_METADATA_REL
     if not path.is_file():
         return {}
     try:
         size = path.stat().st_size
     except OSError as e:
-        logger.warning("agnes-metadata: %s stat failed: %s", path, e)
+        logger.warning("marketplace-metadata: %s stat failed: %s", path, e)
         return {}
-    if size > AGNES_METADATA_MAX_BYTES:
+    if size > MARKETPLACE_METADATA_MAX_BYTES:
         logger.warning(
-            "agnes-metadata: %s exceeds %d-byte cap (%d bytes), refusing to read",
-            path, AGNES_METADATA_MAX_BYTES, size,
+            "marketplace-metadata: %s exceeds %d-byte cap (%d bytes), refusing to read",
+            path, MARKETPLACE_METADATA_MAX_BYTES, size,
         )
         return {}
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
-        logger.warning("agnes-metadata: %s unreadable: %s", path, e)
+        logger.warning("marketplace-metadata: %s unreadable: %s", path, e)
         return {}
     try:
         data = json.loads(text)
@@ -102,13 +102,13 @@ def read_agnes_metadata(marketplace_root: Path) -> Dict[str, Any]:
         # to the same outcome — degrade gracefully so one bad upstream
         # doesn't abort the whole sync.
         logger.warning(
-            "agnes-metadata: %s parse failed (%s), treating as empty: %s",
+            "marketplace-metadata: %s parse failed (%s), treating as empty: %s",
             path, type(e).__name__, e,
         )
         return {}
     if not isinstance(data, dict):
         logger.warning(
-            "agnes-metadata: %s top-level must be an object, got %s",
+            "marketplace-metadata: %s top-level must be an object, got %s",
             path, type(data).__name__,
         )
         return {}
@@ -191,7 +191,7 @@ def resolve_plugin_metadata(
     if not section:
         return {}
 
-    log_prefix = f"agnes-metadata plugin={plugin_name}:"
+    log_prefix = f"marketplace-metadata plugin={plugin_name}:"
     out: Dict[str, Any] = {"raw_section": section}
 
     cover = section.get("cover_photo")
@@ -235,7 +235,7 @@ def resolve_inner_metadata(
         return {}
 
     log_prefix = (
-        f"agnes-metadata plugin={plugin_name} {kind[:-1]}={inner_name}:"
+        f"marketplace-metadata plugin={plugin_name} {kind[:-1]}={inner_name}:"
     )
     out: Dict[str, Any] = {"raw_section": section}
 

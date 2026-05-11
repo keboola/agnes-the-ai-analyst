@@ -617,7 +617,7 @@
 
   <!-- v32: video + doc_links section. Both blocks stay hidden until populated
        so the layout collapses gracefully when an upstream marketplace ships
-       no agnes-metadata.json. Doc icons differentiate internal-cached files
+       no marketplace-metadata.json. Doc icons differentiate internal-cached files
        (📄) from external links (🔗) so the user knows what's a click away. -->
   <div class="panel" id="panel-video" hidden>
     <h2>Demo video</h2>
@@ -895,7 +895,7 @@
     document.getElementById('panel-what').hidden = true;
   }
 
-  // ── v32: demo video (agnes-metadata.json :: video_url) ─────────
+  // ── v32: demo video (marketplace-metadata.json :: video_url) ─────────
   // Detection logic lives in the shared partial so item_detail.html and
   // this page stay in lockstep on YouTube nocookie / Vimeo / mp4 / link
   // fallback handling.
@@ -905,7 +905,7 @@
     document.getElementById('panel-video').hidden = false;
   }
 
-  // ── v32: doc_links (agnes-metadata.json :: doc_links[]) ────────
+  // ── v32: doc_links (marketplace-metadata.json :: doc_links[]) ────────
   // The user contract: every entry in this list is a real downloadable
   // document Agnes can serve (PDF / Markdown / plain text). Sync pipeline
   // already dropped HTML pages, 404s, SSRF-blocked URLs, and any internal
@@ -962,7 +962,7 @@
   // ── Internal structure ─────────────────────────────────────────
   function buildCardSection(title, items, type) {
     if (!items || !items.length) return '';
-    // Inner cards render the agnes-metadata cover photo when present
+    // Inner cards render the marketplace-metadata cover photo when present
     // (mirrored OK for external, file exists for internal); otherwise the
     // initials fall through ("SK" / "AG") on the colored gradient. Same
     // onerror fallback as the top-level cards so a missing file doesn't

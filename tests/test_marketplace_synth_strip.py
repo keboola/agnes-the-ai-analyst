@@ -7,7 +7,7 @@ Two surfaces are covered:
 
 Both must strip:
 
-* ``.claude-plugin/agnes-metadata.json`` (anywhere in the plugin tree),
+* ``.claude-plugin/marketplace-metadata.json`` (anywhere in the plugin tree),
 * anything under ``.agnes/`` (anywhere in the plugin tree).
 
 Test fixtures stand up a fake plugin dir on disk + a fake `plugins` list
@@ -41,7 +41,7 @@ def _build_plugin_dir(tmp_path: Path) -> Path:
     )
 
     # Agnes-only files that MUST be stripped
-    (plugin / ".claude-plugin" / "agnes-metadata.json").write_text(
+    (plugin / ".claude-plugin" / "marketplace-metadata.json").write_text(
         '{"version":1}', encoding="utf-8",
     )
     (plugin / ".agnes").mkdir()
@@ -82,9 +82,9 @@ def test_is_agnes_only_path_strips_dot_agnes_anywhere():
     assert is_agnes_only_path(("plugins", "foo", ".agnes", "x.png"))
 
 
-def test_is_agnes_only_path_strips_agnes_metadata_json():
-    assert is_agnes_only_path((".claude-plugin", "agnes-metadata.json"))
-    assert is_agnes_only_path(("nested", "agnes-metadata.json"))
+def test_is_agnes_only_path_strips_marketplace_metadata_json():
+    assert is_agnes_only_path((".claude-plugin", "marketplace-metadata.json"))
+    assert is_agnes_only_path(("nested", "marketplace-metadata.json"))
 
 
 def test_is_agnes_only_path_keeps_normal_files():
@@ -100,7 +100,7 @@ def test_is_agnes_only_path_does_not_match_lookalikes():
     """Naming collisions: a directory named ``.agneswriter`` (single segment
     starting with `.agnes` but not equal) is NOT stripped."""
     assert not is_agnes_only_path((".agneswriter", "x.md"))
-    assert not is_agnes_only_path(("not-agnes-metadata.json",))
+    assert not is_agnes_only_path(("not-marketplace-metadata.json",))
 
 
 # --- ZIP path -------------------------------------------------------------
@@ -121,7 +121,7 @@ def test_zip_strips_agnes_only_files(tmp_path, monkeypatch):
     assert any(a.endswith("skills/foo/SKILL.md") for a in arcnames)
     assert any(a.endswith(".claude-plugin/marketplace.json") for a in arcnames)
     # Agnes-only files DID NOT
-    assert not any("agnes-metadata.json" in a for a in arcnames), arcnames
+    assert not any("marketplace-metadata.json" in a for a in arcnames), arcnames
     assert not any(".agnes/" in a for a in arcnames), arcnames
 
 
@@ -137,7 +137,7 @@ def test_zip_etag_independent_of_agnes_files(tmp_path):
     # Drop the `.agnes/` content and re-compute. ETag must match.
     import shutil
     shutil.rmtree(plugin_dir / ".agnes")
-    (plugin_dir / ".claude-plugin" / "agnes-metadata.json").unlink()
+    (plugin_dir / ".claude-plugin" / "marketplace-metadata.json").unlink()
     etag_without_agnes = marketplace_filter.compute_etag(plugins)
     assert etag_with_agnes == etag_without_agnes
 
@@ -163,5 +163,5 @@ def test_git_tree_strips_agnes_only_files(tmp_path):
 
     assert any(p.endswith("/SKILL.md") for p in files)
     assert any(p.endswith("/.claude-plugin/plugin.json") for p in files)
-    assert not any("agnes-metadata.json" in p for p in files)
+    assert not any("marketplace-metadata.json" in p for p in files)
     assert not any(".agnes/" in p for p in files)
