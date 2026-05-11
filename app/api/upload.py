@@ -1,6 +1,8 @@
 """Upload endpoints — sessions, artifacts, CLAUDE.local.md."""
 
 import hashlib
+import logging
+import re
 import shutil
 import tempfile
 import uuid
@@ -12,6 +14,12 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
 from app.utils import get_data_dir as _get_data_dir
+from src.db import get_system_db
+from src.repositories.audit import AuditRepository
+
+logger = logging.getLogger(__name__)
+
+_FILENAME_RE = re.compile(r"^[A-Za-z0-9._\-]{1,200}$")
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
 
@@ -59,13 +67,17 @@ async def upload_session(
 ):
     """Upload a Claude session transcript (JSONL)."""
     user_id = user["id"]
+
+    if not _FILENAME_RE.match(file.filename or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="filename must match [A-Za-z0-9._-]{1,200}",
+        )
+
     sessions_dir = _get_data_dir() / "user_sessions" / user_id
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    raw_name = file.filename or f"session_{uuid.uuid4().hex[:8]}.jsonl"
-    filename = Path(raw_name).name  # Strips directory traversal components
-    if not filename or filename.startswith("."):
-        filename = f"upload_{uuid.uuid4().hex[:8]}"
+    filename = file.filename  # already validated by regex above
     target = sessions_dir / filename
 
     tmp, size = await _stream_to_temp(file)
@@ -75,6 +87,21 @@ async def upload_session(
     except Exception:
         Path(tmp.name).unlink(missing_ok=True)
         raise
+
+    conn = get_system_db()
+    try:
+        AuditRepository(conn).log(
+            user_id=user_id,
+            action="session.upload",
+            params={"filename": filename[:256], "bytes": size},
+            result="success",
+            client_kind="cli",
+        )
+    except Exception:
+        logger.exception("audit_log write failed for session.upload; continuing")
+    finally:
+        conn.close()
+
     return {"status": "ok", "filename": filename, "size": size}
 
 
