@@ -240,11 +240,6 @@ CREATE TABLE IF NOT EXISTS audit_log (
     correlation_id VARCHAR
 );
 
--- v40: indices for Activity Center timeline queries
-CREATE INDEX IF NOT EXISTS idx_audit_timestamp_desc ON audit_log(timestamp);
-CREATE INDEX IF NOT EXISTS idx_audit_user_time ON audit_log(user_id, timestamp);
-CREATE INDEX IF NOT EXISTS idx_audit_action_time ON audit_log(action, timestamp);
-
 CREATE TABLE IF NOT EXISTS telegram_links (
     user_id VARCHAR PRIMARY KEY,
     chat_id BIGINT NOT NULL,
@@ -2589,6 +2584,12 @@ def _v40_to_v41(conn: duckdb.DuckDBPyConnection) -> None:
     scan either direction. On a populated audit_log (~100k+ rows), each
     CREATE INDEX is single-threaded and may take 10–30s.
     """
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS timestamp TIMESTAMP DEFAULT current_timestamp")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS user_id VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS resource VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS params JSON")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS result VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS duration_ms INTEGER")
     conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS params_before JSON")
     conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS client_ip VARCHAR")
     conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS client_kind VARCHAR")
@@ -2859,6 +2860,11 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     "ON CONFLICT (key) DO NOTHING",
                     [key],
                 )
+            # v40 indices: _SYSTEM_SCHEMA omits CREATE INDEX to avoid
+            # failures when pre-existing audit_log lacks timestamp (migration
+            # tests). Create them here explicitly for fresh installs; the
+            # upgrade path uses _v39_to_v40 below.
+            _v39_to_v40(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
