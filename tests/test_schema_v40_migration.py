@@ -1,7 +1,6 @@
 """v39 → v40 migration: add params_before, client_ip, client_kind,
 correlation_id columns to audit_log + three indices."""
 import duckdb
-import pytest
 from src.db import _ensure_schema as init_database, SCHEMA_VERSION
 
 
