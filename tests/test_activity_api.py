@@ -1,5 +1,14 @@
 """Activity Center read API."""
+import pytest
 from datetime import datetime, timezone, timedelta
+
+
+@pytest.fixture(autouse=True)
+def _reset_activity_dedup():
+    from app.api.activity import _RECENT_AUDITS
+    _RECENT_AUDITS.clear()
+    yield
+    _RECENT_AUDITS.clear()
 
 
 def test_activity_timeline_requires_admin(seeded_app, analyst_user):
@@ -94,3 +103,56 @@ def test_admin_header_includes_activity_link(seeded_app, admin_user):
     resp = seeded_app["client"].get("/admin/activity", headers=admin_user)
     assert resp.status_code == 200
     assert 'href="/admin/activity"' in resp.text
+
+
+def test_activity_health_does_not_audit_polling(seeded_app, admin_user):
+    """Polling /health every 30s shouldn't blow up audit_log."""
+    from src.db import get_system_db
+    c = seeded_app["client"]
+    conn = get_system_db()
+    before = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='activity.read'"
+    ).fetchone()[0]
+    conn.close()
+    for _ in range(5):
+        c.get("/api/admin/activity/health", headers=admin_user)
+    conn = get_system_db()
+    after = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='activity.read'"
+    ).fetchone()[0]
+    conn.close()
+    assert after - before <= 1  # at most one row from the burst
+
+
+def test_activity_timeline_audits_first_call_only(seeded_app, admin_user):
+    """Two identical filter calls within 60s produce one audit row."""
+    from src.db import get_system_db
+    c = seeded_app["client"]
+    conn = get_system_db()
+    conn.execute("DELETE FROM audit_log WHERE action='activity.read'")
+    conn.close()
+    c.get("/api/admin/activity?action_prefix=sync.", headers=admin_user)
+    c.get("/api/admin/activity?action_prefix=sync.", headers=admin_user)
+    conn = get_system_db()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='activity.read'"
+    ).fetchone()[0]
+    conn.close()
+    assert n == 1
+
+
+def test_activity_timeline_audits_different_filters(seeded_app, admin_user):
+    """Different filter combinations each get their own audit row."""
+    from src.db import get_system_db
+    c = seeded_app["client"]
+    conn = get_system_db()
+    conn.execute("DELETE FROM audit_log WHERE action='activity.read'")
+    conn.close()
+    c.get("/api/admin/activity?action_prefix=sync.", headers=admin_user)
+    c.get("/api/admin/activity?action_prefix=auth.", headers=admin_user)
+    conn = get_system_db()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='activity.read'"
+    ).fetchone()[0]
+    conn.close()
+    assert n == 2
