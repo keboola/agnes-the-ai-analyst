@@ -1011,21 +1011,42 @@ async def corporate_memory_admin(
     return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
 
 
-@router.get("/activity-center", response_class=HTMLResponse)
-async def activity_center(
+@router.get("/activity-center")
+async def activity_center_redirect():
+    """Legacy URL — redirect to /admin/activity."""
+    return RedirectResponse(url="/admin/activity", status_code=308)
+
+
+@router.get("/admin/activity", response_class=HTMLResponse)
+async def admin_activity(
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = KnowledgeRepository(conn)
-    stats = {
-        "total_items": len(repo.list_items(limit=10000)),
-    }
+    """Activity Center — health pulse + audit_log timeline + sync history."""
+    from datetime import datetime, timezone, timedelta
+    from src.repositories.audit import AuditRepository
+    from src.repositories.sync_state import SyncStateRepository
+    from app.api.activity import _compute_health
+
+    now = datetime.now(timezone.utc)
+    audit_repo = AuditRepository(conn)
+    sync_repo = SyncStateRepository(conn)
+
+    timeline, next_cursor = audit_repo.query(
+        since=now - timedelta(hours=24),
+        limit=50,
+    )
+    sync_rows = sync_repo.list_recent(since=now - timedelta(hours=24), limit=100)
+    health = _compute_health(conn, now)
+
     ctx = _build_context(
-        request, user=user,
-        stats=stats,
-        activity={"recent_sessions": [], "recent_reports": [], "insights": []},
-        knowledge_stats={"total": 0, "approved": 0, "mandatory": 0},
+        request,
+        user=user,
+        health=health,
+        timeline=timeline,
+        next_cursor=next_cursor,
+        sync_rows=sync_rows,
     )
     return templates.TemplateResponse(request, "activity_center.html", ctx)
 
