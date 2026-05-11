@@ -103,22 +103,54 @@
 
     {% include "_claude_setup_instructions.jinja" %}
 
-    function copyToClipboard(text) {
-        if (navigator.clipboard && window.isSecureContext) {
-            return navigator.clipboard.writeText(text);
-        }
-        var ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        ta.style.top = '-9999px';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
+    // Synchronous textarea + execCommand('copy'). The fallback path the
+    // Clipboard API replaced — still functional in all major browsers and,
+    // critically, NOT subject to the Clipboard API's transient-activation
+    // window. We use it whenever (a) the modern Clipboard API is
+    // unavailable / non-secure context, OR (b) it rejected at write time
+    // (NotAllowedError — Safari/Firefox enforce this when user-gesture is
+    // consumed across an `await fetch()`, which is exactly what
+    // setupNewClaude does between the button click and the copy call).
+    function copyViaTextarea(text) {
         return new Promise(function (resolve, reject) {
-            document.execCommand('copy') ? resolve() : reject();
-            document.body.removeChild(ta);
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            ta.style.top = '-9999px';
+            // readOnly + tabindex=-1 stops the keyboard focus stealing and
+            // virtual-keyboard popups on mobile.
+            ta.setAttribute('readonly', '');
+            ta.setAttribute('tabindex', '-1');
+            document.body.appendChild(ta);
+            try {
+                ta.focus();
+                ta.select();
+                ta.setSelectionRange(0, text.length);
+                var ok = false;
+                try { ok = document.execCommand('copy'); } catch (_e) { ok = false; }
+                if (ok) { resolve(); } else { reject(new Error('execCommand copy returned false')); }
+            } finally {
+                document.body.removeChild(ta);
+            }
         });
+    }
+
+    function copyToClipboard(text) {
+        // Prefer the modern Clipboard API but fall back to the textarea
+        // path on rejection — NOT just when the API is missing. Recent
+        // browsers reject `writeText` with NotAllowedError when transient
+        // user activation has been consumed by an intervening `await`
+        // (the /auth/tokens fetch in setupNewClaude does exactly that).
+        // Without this fallback the catch in setupNewClaude pops the
+        // manual-paste modal, which users perceive as "browser blocked
+        // the copy" — when actually the textarea path would have worked.
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text).catch(function (_err) {
+                return copyViaTextarea(text);
+            });
+        }
+        return copyViaTextarea(text);
     }
 
     function defaultTokenName() {
