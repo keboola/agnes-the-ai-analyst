@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 
-from cli.lib.hooks import install_claude_hooks
+from cli.lib.hooks import (
+    install_claude_hooks,
+    maybe_refresh_claude_hooks,
+    workspace_has_agnes_hooks,
+)
 
 
 def _read_settings(workspace: Path) -> dict:
@@ -27,14 +31,26 @@ def test_install_creates_settings_file(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    # SessionStart has three entries: (1) chained self-upgrade ; pull —
-    # self-upgrade runs first so a wire-protocol bump lands before pull
-    # tries to use the new CLI; (2) refresh-marketplace as a separate
-    # entry so a failure (e.g. fresh workspace with no clone) doesn't
-    # suppress the data pull above; (3) push as a self-heal for orphan
-    # session JSONLs from `claude -p` headless mode (where Claude Code
-    # does NOT fire SessionEnd) or abnormal exits.
+    # SessionStart has three entries: (1) capture-session as the very first
+    # so the hook stdin (transcript_path) is appended to the queue before
+    # any other hook runs; (2) chained self-upgrade ; pull — self-upgrade
+    # runs first so a wire-protocol bump lands before pull tries to use
+    # the new CLI; (3) refresh-marketplace as a separate entry so a
+    # failure (e.g. fresh workspace with no clone) doesn't suppress the
+    # data pull above.
+    #
+    # `agnes push` is NOT in SessionStart — the queue mechanism handles
+    # orphans on the next SessionEnd, so the old self-heal entry was
+    # redundant + would re-upload the just-starting (empty) session.
     assert len(starts) == 3
+    capture = next((c for c in starts if "agnes capture-session" in c), None)
+    assert capture is not None, "Expected SessionStart capture-session entry"
+    assert capture.startswith("bash -c "), (
+        f"capture-session hook must be wrapped in bash -c for Windows; got: {capture!r}"
+    )
+    assert not any("agnes push" in c for c in starts), (
+        f"agnes push must NOT be in SessionStart; got: {starts!r}"
+    )
     chain = next(
         (c for c in starts if "agnes self-upgrade" in c and "agnes pull" in c),
         None,
@@ -62,25 +78,36 @@ def test_install_creates_settings_file(tmp_path):
     assert "--quiet" not in refresh, (
         f"refresh-marketplace hook must NOT use --quiet (removed flag); got: {refresh!r}"
     )
-    # The push self-heal entry is also bash-c-wrapped for Windows parity.
-    push_start = next((c for c in starts if "agnes push" in c), None)
-    assert push_start is not None, (
-        "Expected SessionStart self-heal `agnes push` entry for orphan JSONLs"
-    )
-    assert push_start.startswith("bash -c "), (
-        f"push self-heal hook must be wrapped in bash -c for Windows; got: {push_start!r}"
-    )
     ends = _commands_for(cfg, "SessionEnd")
     assert len(ends) == 1
     assert "agnes push --quiet" in ends[0]
+
+
+def test_all_installed_hooks_are_bash_wrapped(tmp_path):
+    """Pin the invariant: every Agnes-managed SessionStart / SessionEnd
+    entry must be wrapped in `bash -c "..."`. Claude Code on Windows
+    runs hook commands directly (no shell), so any unwrapped entry that
+    relies on shell syntax (`;` chains, `2>/dev/null` redirection,
+    `|| true` short-circuit) fails silently on Windows. The previous
+    self-upgrade+pull chain shipped unwrapped — this test catches a
+    regression to that state."""
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    starts = _commands_for(cfg, "SessionStart")
+    ends = _commands_for(cfg, "SessionEnd")
+    for cmd in starts + ends:
+        assert cmd.startswith("bash -c "), (
+            f"Hook must be wrapped in bash -c for Windows; got: {cmd!r}"
+        )
 
 
 def test_install_idempotent(tmp_path):
     install_claude_hooks(tmp_path)
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
-    # Three SessionStart entries (pull + refresh-marketplace + push self-heal),
-    # one SessionEnd entry (push). Re-install must NOT duplicate them.
+    # Three SessionStart entries (capture-session + chained self-upgrade/pull
+    # + refresh-marketplace), one SessionEnd entry (push). Re-install must
+    # NOT duplicate them.
     assert len(cfg["hooks"]["SessionStart"]) == 3
     assert len(cfg["hooks"]["SessionEnd"]) == 1
 
@@ -100,9 +127,11 @@ def test_install_replaces_old_da_sync_entries(tmp_path):
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
     assert len(starts) == 3
+    assert any("agnes capture-session" in c for c in starts)
     assert any("agnes pull" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
-    assert any("agnes push" in c for c in starts)
+    # `agnes push` lives only in SessionEnd now.
+    assert not any("agnes push" in c for c in starts)
     # Legacy command must be gone from BOTH starts.
     assert not any("da sync" in c for c in starts)
 
@@ -111,7 +140,7 @@ def test_install_replaces_prior_single_pull_entry(tmp_path):
     """Workspaces bootstrapped by a CLI version that only installed a
     single SessionStart entry (`agnes pull`, no refresh-marketplace) must
     upgrade to the three-entry layout on the next install — not end up
-    with four entries (one old + three new)."""
+    stacking the new entries on top of the old one."""
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(json.dumps({
@@ -125,9 +154,10 @@ def test_install_replaces_prior_single_pull_entry(tmp_path):
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
     assert len(starts) == 3
+    assert any("agnes capture-session" in c for c in starts)
     assert any("agnes pull" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
-    assert any("agnes push" in c for c in starts)
+    assert not any("agnes push" in c for c in starts)
 
 
 def test_install_replaces_v0_43_chained_self_upgrade_pull_entry(tmp_path):
@@ -163,8 +193,9 @@ def test_install_replaces_v0_43_chained_self_upgrade_pull_entry(tmp_path):
         None,
     )
     assert chain is not None
+    assert any("agnes capture-session" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
-    assert any("agnes push" in c for c in starts)
+    assert not any("agnes push" in c for c in starts)
     # SessionEnd untouched (single push entry).
     ends = _commands_for(cfg, "SessionEnd")
     assert len(ends) == 1
@@ -233,9 +264,10 @@ def test_install_preserves_third_party_hooks(tmp_path):
     # Third-party entry stays + all three agnes entries get added.
     assert len(starts) == 4
     assert any("echo hi from another tool" in c for c in starts)
+    assert any("agnes capture-session" in c for c in starts)
     assert any("agnes pull" in c for c in starts)
     assert any("agnes refresh-marketplace" in c for c in starts)
-    assert any("agnes push" in c for c in starts)
+    assert not any("agnes push" in c for c in starts)
     # Other event types untouched.
     assert cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo pre"
 
@@ -279,9 +311,8 @@ def test_install_idempotent_chained_entry(tmp_path):
     install_claude_hooks(tmp_path)
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
-    # Three SessionStart entries (chained self-upgrade+pull, refresh-
-    # marketplace, and the push self-heal) — re-install must not
-    # duplicate any of them.
+    # Three SessionStart entries (capture-session, chained self-upgrade+pull,
+    # refresh-marketplace) — re-install must not duplicate any of them.
     assert len(cfg["hooks"]["SessionStart"]) == 3
     assert len(cfg["hooks"]["SessionEnd"]) == 1
 
@@ -328,6 +359,80 @@ def test_session_end_push_is_detached(tmp_path):
     )
 
 
+def test_install_writes_statusline_when_absent(tmp_path):
+    """Greenfield install: no prior statusLine → we write ours."""
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    assert "statusLine" in cfg
+    assert cfg["statusLine"]["type"] == "command"
+    assert "agnes statusline" in cfg["statusLine"]["command"]
+
+
+def test_install_preserves_existing_user_statusline(tmp_path, capsys):
+    """User has their own statusLine — we leave it alone and warn on stderr.
+    Customizing the status bar is a personal preference; agnes shouldn't
+    clobber it. Operators who want the private indicator alongside their
+    own content can compose `agnes statusline` into their command."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    user_statusline = {"type": "command", "command": "my-custom-status"}
+    settings_path.write_text(json.dumps({"statusLine": user_statusline}))
+
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    # User's statusLine intact.
+    assert cfg["statusLine"] == user_statusline
+    # Warning surfaced.
+    captured = capsys.readouterr()
+    assert "statusLine" in captured.err
+
+
+def test_install_idempotent_when_statusline_already_ours(tmp_path):
+    """Re-running install when our statusLine is already in place is a no-op,
+    NOT a warning (idempotent re-init shouldn't spam the user)."""
+    install_claude_hooks(tmp_path)
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    assert "agnes statusline" in cfg["statusLine"]["command"]
+
+
+def test_install_treats_explicit_null_statusline_as_unconfigured(tmp_path, capsys):
+    """`"statusLine": null` (legal JSON, unusual) is treated as
+    "no statusLine configured" rather than "user explicitly opted out".
+    The previous truthy check (`if existing:`) silently took this path
+    without distinguishing it from absent-key; the new check makes
+    the behavior explicit and tested. No warning — the user didn't
+    configure anything actionable."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"statusLine": None}))
+
+    install_claude_hooks(tmp_path)
+
+    cfg = _read_settings(tmp_path)
+    assert isinstance(cfg["statusLine"], dict)
+    assert "agnes statusline" in cfg["statusLine"]["command"]
+    captured = capsys.readouterr()
+    assert "preserved" not in captured.err  # no spurious warning
+
+
+def test_install_treats_empty_statusline_as_unconfigured(tmp_path, capsys):
+    """Empty string is the falsy sibling of None — same treatment.
+    Documents the boundary so future changes can't accidentally treat
+    `""` as a non-empty truthy command."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"statusLine": ""}))
+
+    install_claude_hooks(tmp_path)
+
+    cfg = _read_settings(tmp_path)
+    assert isinstance(cfg["statusLine"], dict)
+    assert "agnes statusline" in cfg["statusLine"]["command"]
+    captured = capsys.readouterr()
+    assert "preserved" not in captured.err
+
+
 def test_install_replaces_old_synchronous_session_end_push(tmp_path):
     """A workspace bootstrapped before the detachment fix has the old
     synchronous `agnes push --quiet 2>/dev/null || true` SessionEnd entry.
@@ -349,4 +454,136 @@ def test_install_replaces_old_synchronous_session_end_push(tmp_path):
     assert len(ends) == 1, ends
     assert "nohup" in ends[0], (
         f"Old synchronous push entry must have been replaced with the detached form; got: {ends!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# workspace_has_agnes_hooks / maybe_refresh_claude_hooks
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_has_agnes_hooks_false_for_missing_settings(tmp_path):
+    """Fresh dir without `.claude/settings.json` is not an Agnes workspace."""
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_workspace_has_agnes_hooks_false_for_empty_settings(tmp_path):
+    """`.claude/settings.json` exists but is empty `{}` — not an Agnes workspace."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({}), encoding="utf-8")
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_workspace_has_agnes_hooks_false_for_invalid_json(tmp_path):
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text("not json", encoding="utf-8")
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_workspace_has_agnes_hooks_false_for_third_party_only_hook(tmp_path):
+    """A settings.json with only third-party hooks (no agnes marker) is
+    NOT an Agnes workspace — important so `agnes self-upgrade` from such
+    a dir doesn't auto-install Agnes hooks behind the user's back."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "echo hello"}]},
+            ],
+        }
+    }), encoding="utf-8")
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_workspace_has_agnes_hooks_true_for_agnes_hook(tmp_path):
+    install_claude_hooks(tmp_path)
+    assert workspace_has_agnes_hooks(tmp_path) is True
+
+
+def test_workspace_has_agnes_hooks_true_for_just_statusline(tmp_path):
+    """statusLine alone (no hook entries) still signals an Agnes workspace."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "statusLine": {"type": "command", "command": "agnes statusline"},
+    }), encoding="utf-8")
+    assert workspace_has_agnes_hooks(tmp_path) is True
+
+
+def test_maybe_refresh_noop_in_non_agnes_directory(tmp_path):
+    """Critical safety: `agnes self-upgrade` invoked from a non-Agnes dir
+    (e.g. ~/) must NOT create `.claude/settings.json` there."""
+    refreshed = maybe_refresh_claude_hooks(tmp_path)
+    assert refreshed is False
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_maybe_refresh_writes_new_layout_into_v048_workspace(tmp_path):
+    """Simulate a v0.48 workspace (pre-PR-242 hook layout — chained
+    self-upgrade+pull and old refresh-marketplace --quiet, no
+    capture-session, no statusLine) and assert that
+    maybe_refresh_claude_hooks brings it up to the current layout."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command",
+                            "command": "agnes self-upgrade --quiet 2>/dev/null || true; "
+                                       "agnes pull --quiet 2>/dev/null || true"}]},
+                {"hooks": [{"type": "command",
+                            "command": 'bash -c "agnes refresh-marketplace --quiet 2>/dev/null || true"'}]},
+            ],
+            "SessionEnd": [
+                {"hooks": [{"type": "command",
+                            "command": "agnes push --quiet 2>/dev/null || true"}]},
+            ],
+        }
+    }), encoding="utf-8")
+
+    refreshed = maybe_refresh_claude_hooks(tmp_path)
+    assert refreshed is True
+
+    cfg = _read_settings(tmp_path)
+    starts = _commands_for(cfg, "SessionStart")
+    # New layout: capture-session is now the very first SessionStart entry.
+    assert any("agnes capture-session" in c for c in starts), (
+        f"v0.48→v0.49 migration must install capture-session; got: {starts!r}"
+    )
+    # And refresh-marketplace must be on --check, not --quiet.
+    refresh = next((c for c in starts if "agnes refresh-marketplace" in c), None)
+    assert refresh is not None and "--check" in refresh, refresh
+
+    ends = _commands_for(cfg, "SessionEnd")
+    # SessionEnd push is now detached via nohup (replaces the old
+    # synchronous form).
+    assert any("nohup" in c for c in ends), (
+        f"v0.48→v0.49 migration must detach SessionEnd push; got: {ends!r}"
+    )
+    # statusLine for the agnes-private indicator must also be installed.
+    assert cfg.get("statusLine", {}).get("command", "").startswith("agnes statusline")
+
+
+def test_maybe_refresh_preserves_third_party_hooks(tmp_path):
+    """Refresh must keep third-party hooks intact (same guarantee as
+    install_claude_hooks — the migration path uses the same machinery)."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "agnes self-upgrade --quiet || true"}]},
+                {"hooks": [{"type": "command", "command": "echo hi from another tool"}]},
+            ],
+        }
+    }), encoding="utf-8")
+    refreshed = maybe_refresh_claude_hooks(tmp_path)
+    assert refreshed is True
+    cfg = _read_settings(tmp_path)
+    starts = _commands_for(cfg, "SessionStart")
+    assert "echo hi from another tool" in starts, (
+        f"Third-party hook must survive refresh; got: {starts!r}"
     )

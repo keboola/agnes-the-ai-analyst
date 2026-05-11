@@ -48,13 +48,15 @@ def test_render_setup_instructions_wires_all_placeholders():
 
 
 def test_resolve_lines_no_plugins_unified_layout():
-    """Unified always-on layout (Fix B + Fix C in 2026-05-10 init-report
-    response): 1 install, 2 init, 3 catalog, 4 preflight, 5 marketplace,
-    6 mcp_servers, 7 diagnose, 8 skills, 9 confirm. Preflight +
-    marketplace + MCP block are emitted even when the operator has zero
-    plugin grants — registering the per-user marketplace clone pre-wires
-    the SessionStart hook, and the Atlassian Remote MCP applies to every
-    analyst whose work touches Jira/Confluence."""
+    """Unified always-on layout: 1 install, 2 init, 3 catalog, 4 preflight,
+    5 marketplace, 6 mcp_servers, 7 diagnose, 8 confirm. Preflight +
+    marketplace + MCP block are emitted even when the operator's served
+    stack is empty — registering the per-user marketplace clone pre-wires
+    Claude Code for future stack changes (admin grants, system pins,
+    Flea installs), and the Atlassian Remote MCP applies to every analyst
+    whose work touches Jira/Confluence. Skills step deleted — the
+    interactive copy-or-on-demand question was confusing and the
+    on-demand path is the one-size-fits-all default."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
@@ -66,14 +68,19 @@ def test_resolve_lines_no_plugins_unified_layout():
     assert "5) Register the Agnes Claude Code marketplace" in joined
     assert "6) Register the Atlassian MCP server" in joined
     assert "7) Run diagnostics:" in joined
-    assert "8) Skills" in joined
-    assert "9) Confirm:" in joined
+    assert "8) Confirm:" in joined
     # No stray Confirms at other positions.
+    assert "9) Confirm:" not in joined
     assert "10) Confirm:" not in joined
     assert "6) Confirm:" not in joined
-    # The marketplace step header adapts to "no plugins granted yet" copy
+    # No skills step in any form.
+    assert "Skills (ask the user" not in joined
+    assert "Skills" not in joined or "agnes skills" in joined  # comment refs still OK
+    assert "8) Skills" not in joined
+    assert "~/.claude/skills/agnes/" not in joined
+    # The marketplace step header adapts to the empty-stack copy
     # rather than the plugin-installing variant.
-    assert "no plugins granted yet" in joined
+    assert "your stack is empty for now" in joined
     assert "agnes refresh-marketplace --bootstrap" in joined
     # MCP step uses SSE transport for Atlassian's hosted Remote MCP.
     assert "claude mcp add --transport sse atlassian https://mcp.atlassian.com/v1/sse" in joined
@@ -250,9 +257,10 @@ def test_trust_block_step_0c_does_not_reference_stale_step_number():
 
 def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     """Marketplace layout puts install/init/catalog/preflight/marketplace
-    BEFORE diagnose and skills, so the human-loop skills question is the
-    final blocking step before Confirm. Step numbers: 4 preflight,
-    5 marketplace, 6 diagnose, 7 skills, 8 confirm."""
+    BEFORE diagnose, so diagnose is the final smoke test before Confirm.
+    Step numbers: 4 preflight, 5 marketplace, 6 mcp, 7 diagnose,
+    8 confirm. No skills step — interactive copy-or-on-demand question
+    was confusing; on-demand `agnes skills show` is the default."""
     from app.web.setup_instructions import resolve_lines
 
     lines = resolve_lines(
@@ -268,13 +276,13 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "brew install git" in joined
     assert "winget install --id Git.Git -e --source winget --silent" in joined
     assert "sudo apt-get install git" in joined or "sudo dnf install git" in joined
-    # Step 5 — marketplace + plugins. Collapsed to a single CLI call:
+    # Step 5 — marketplace + stack install. Collapsed to a single CLI call:
     # `agnes refresh-marketplace --bootstrap` does clone + PAT-strip +
     # chmod + register-with-Claude + auto-install-from-manifest internally.
     # Pulling that out of the inline shell script avoided Claude Code's
     # agent-driven `rm -rf` permission gate that the old multi-line
     # sequence tripped on.
-    assert "5) Register the Agnes Claude Code marketplace and install plugins" in joined
+    assert "5) Register the Agnes Claude Code marketplace and install your current stack" in joined
     assert "agnes refresh-marketplace --bootstrap" in joined
     # The destructive prep + per-plugin install commands are now inside
     # the CLI; the prompt must not emit the inline shell forms in
@@ -287,15 +295,17 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "claude plugin marketplace add" not in executable
     assert "claude plugin install foo@agnes" not in executable
     assert "claude plugin install bar@agnes" not in executable
-    # Step 6 — Atlassian MCP registration (Fix C in 2026-05-10 init-report response).
+    # Step 6 — Atlassian MCP registration.
     assert "6) Register the Atlassian MCP server" in joined
     # Step 7 — diagnose now AFTER marketplace + MCP wiring.
     assert "7) Run diagnostics:" in joined
-    # Step 8 — skills, the last interactive step before Confirm.
-    assert "8) Skills" in joined
-    # Step 9 — Confirm renumbered (no stray Confirms at other positions).
-    assert "9) Confirm:" in joined
-    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "8) Confirm:"):
+    # Step 8 — Confirm.
+    assert "8) Confirm:" in joined
+    # No skills step in any form.
+    assert "Skills (ask the user" not in joined
+    assert "8) Skills" not in joined
+    assert "~/.claude/skills/agnes/" not in joined
+    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "9) Confirm:"):
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
@@ -305,9 +315,8 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     market_idx = joined.index("5) Register the Agnes Claude Code marketplace")
     mcp_idx = joined.index("6) Register the Atlassian MCP server")
     diag_idx = joined.index("7) Run diagnostics:")
-    skills_idx = joined.index("8) Skills")
-    confirm_idx = joined.index("9) Confirm:")
-    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < mcp_idx < diag_idx < skills_idx < confirm_idx
+    confirm_idx = joined.index("8) Confirm:")
+    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < mcp_idx < diag_idx < confirm_idx
     # Legacy `git config sslVerify=false` downgrade is gone — see CHANGELOG.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
@@ -631,14 +640,13 @@ def test_resolve_lines_ca_pem_empty_string_is_treated_as_absent():
 
 def test_resolve_lines_ca_pem_works_without_plugins():
     """Trust block is independent of the marketplace + MCP blocks — emit
-    step 0 even when plugin list is empty. Confirm step is at 9 in the
-    always-on layout (Fix B + Fix C in 2026-05-10 init-report response).
-    Step 0 is preamble, not numbered."""
+    step 0 even when plugin list is empty. Confirm step is at 8 in the
+    post-skills-removal layout. Step 0 is preamble, not numbered."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
     assert "0) Trust the Agnes TLS certificate" in joined
-    assert "9) Confirm:" in joined
+    assert "8) Confirm:" in joined
     # Marketplace block is now emitted unconditionally; the bootstrap
     # one-liner does the `claude plugin marketplace add` internally so
     # the literal string isn't in the prompt text — the user-facing
@@ -683,51 +691,43 @@ def test_diagnose_step_documents_normal_states():
     assert "NORMAL" in joined or "normal" in joined
 
 
-def test_skills_step_is_last_blocking_step_before_confirm():
-    """In the new layout, skills is the LAST interactive step before Confirm
-    (it used to come right after diagnose and before git/marketplace, which
-    invited the assistant to "do the rest in parallel"). We've moved the
-    install work earlier, so the skills question is now a single clear gate
-    — there's nothing left to do in parallel and the assistant must wait
-    for the user's answer.
+def test_no_skills_step_emitted():
+    """Skills step was removed: the interactive copy-or-on-demand question
+    was confusing for new users (named opinion call with no obvious right
+    answer after a wall of technical steps). On-demand lookup via
+    `agnes skills show <name>` is the one-size-fits-all default; CLAUDE.md
+    references specific skills (e.g. agnes-data-querying) when relevant.
 
-    Assert two things:
-      (a) The prompt explicitly tells the assistant to wait for the answer.
-      (b) The skills step appears AFTER the marketplace step in the rendered
-          line order — i.e., the legacy "skills before marketplace" flow
-          isn't accidentally back."""
+    Regression guard: the rendered prompt must not contain a numbered
+    Skills step or the bulk-copy shell loop into ~/.claude/skills/agnes/.
+    """
     from app.web.setup_instructions import resolve_lines
 
-    joined = "\n".join(resolve_lines("agnes.whl", plugin_install_names=["foo"], server_host="h"))
-    flattened = " ".join(joined.split())
-
-    # (a) The prompt must instruct the assistant to wait — and must NOT
-    # contain the obsolete "you can continue in parallel" hint.
-    assert "Wait for the user's answer" in joined
-    assert "don't depend on the answer" not in flattened
-    assert "do not depend on the answer" not in flattened
-
-    # (b) Skills comes after marketplace in the rendered line order.
-    market_idx = joined.index("Register the Agnes Claude Code marketplace")
-    skills_idx = joined.index("Skills (ask the user")
-    assert market_idx < skills_idx
+    for kwargs in (
+        {},
+        {"plugin_install_names": ["foo"], "server_host": "h"},
+    ):
+        joined = "\n".join(resolve_lines("agnes.whl", **kwargs))
+        assert "Skills (ask the user" not in joined
+        assert "8) Skills" not in joined
+        assert "9) Skills" not in joined
+        assert "~/.claude/skills/agnes/" not in joined
+        assert "for s in $(agnes skills list" not in joined
+        assert "Wait for the user's answer" not in joined
 
 
-def test_no_plugins_layout_keeps_diagnose_before_skills():
-    """Always-on layout (Fix B + Fix C in 2026-05-10 init-report response):
+def test_no_plugins_layout_diagnose_before_confirm():
+    """Always-on layout (post-skills-removal):
     install → init → catalog → preflight → marketplace → mcp_servers →
-    diagnose → skills → confirm, regardless of plugin grants. Step
-    numbers: 7 diagnose, 8 skills, 9 confirm."""
+    diagnose → confirm. Step numbers: 7 diagnose, 8 confirm."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
     assert "7) Run diagnostics:" in joined
-    assert "8) Skills" in joined
-    assert "9) Confirm:" in joined
+    assert "8) Confirm:" in joined
     diag_idx = joined.index("7) Run diagnostics:")
-    skills_idx = joined.index("8) Skills")
-    confirm_idx = joined.index("9) Confirm:")
-    assert diag_idx < skills_idx < confirm_idx
+    confirm_idx = joined.index("8) Confirm:")
+    assert diag_idx < confirm_idx
 
 
 def test_unified_flow_uses_only_agnes_verbs():

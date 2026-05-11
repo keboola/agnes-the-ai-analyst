@@ -33,20 +33,30 @@ from pathlib import Path
 # `/<command>` slug exposed to Claude Code).
 _MANAGED_COMMANDS: tuple[tuple[str, str], ...] = (
     ("update-agnes-plugins.md", "update-agnes-plugins.md"),
+    ("agnes-private.md", "agnes-private.md"),
 )
 
 
-# Defensive fallback used when the bundled template is missing on disk
-# (broken install, stripped-down test environment). Mirrors the
-# `agnes_workspace_template.txt` fallback in `cli/commands/init.py` —
-# better to write a usable stub than to crash `agnes init`.
-_FALLBACK_BODY = (
-    "---\n"
-    "description: Update Agnes marketplace plugins to latest versions\n"
-    "---\n"
-    "\n"
-    "Run `agnes refresh-marketplace` and report the output.\n"
-)
+# Defensive fallbacks used when the bundled template is missing on disk
+# (broken install, stripped-down test environment). Keyed by source
+# template filename so a missing `agnes-private.md` doesn't get
+# clobbered with `update-agnes-plugins` content.
+_FALLBACK_BODIES: dict[str, str] = {
+    "update-agnes-plugins.md": (
+        "---\n"
+        "description: Update Agnes marketplace plugins to latest versions\n"
+        "---\n"
+        "\n"
+        "Run `agnes refresh-marketplace` and report the output.\n"
+    ),
+    "agnes-private.md": (
+        "---\n"
+        "description: Mark the current Claude Code session as private\n"
+        "---\n"
+        "\n"
+        "!`agnes mark-private`\n"
+    ),
+}
 
 
 def _templates_dir() -> Path:
@@ -78,5 +88,5 @@ def install_claude_commands(workspace: Path) -> None:
                 f"{source_path} missing; writing defensive fallback.",
                 file=sys.stderr,
             )
-            body = _FALLBACK_BODY
+            body = _FALLBACK_BODIES.get(source_name, "")
         (commands_dir / dest_name).write_text(body, encoding="utf-8")

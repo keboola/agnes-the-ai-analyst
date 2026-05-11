@@ -15,6 +15,7 @@ from typing import Optional, Union
 import typer
 
 from cli.config import _config_dir, get_server_url
+from cli.lib.hooks import maybe_refresh_claude_hooks
 from cli.update_check import UpdateInfo, check, format_outdated_notice
 
 self_upgrade_app = typer.Typer(
@@ -169,6 +170,28 @@ def _smoke_test_new_binary(install_method: str, expected_version: str) -> tuple[
         return False, f"{type(e).__name__}: {e}"
 
 
+def _try_refresh_hooks(*, quiet: bool) -> None:
+    """Best-effort idempotent refresh of the workspace's Claude Code hooks.
+
+    Resolves the workspace via ``AGNES_LOCAL_DIR`` (set by Claude Code's
+    hook subprocess to the workspace root) or the current working directory.
+    Delegates the actual decision to :func:`maybe_refresh_claude_hooks`,
+    which guards against writing into non-Agnes directories.
+
+    Swallows any exception — a partially-broken settings.json or a
+    permissions issue must not flip the exit code of a successful
+    upgrade. When ``quiet`` is False the failure is surfaced to stderr
+    so an operator running ``agnes self-upgrade`` interactively still sees
+    it; under ``--quiet`` (the SessionStart case) it stays silent.
+    """
+    workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    try:
+        maybe_refresh_claude_hooks(workspace)
+    except Exception as exc:  # pragma: no cover — defensive
+        if not quiet:
+            sys.stderr.write(f"agnes self-upgrade: hook refresh failed: {exc}\n")
+
+
 def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, None]:
     """Returns:
       UpdateInfo  — install this wheel
@@ -282,9 +305,24 @@ def self_upgrade(
             raise typer.Exit(1)
 
         if info is None:
-            raise typer.Exit(0)  # nothing to do, silent
+            # CLI already current — still attempt hook refresh in case the
+            # workspace was initialized on an older CLI whose hook layout
+            # has since changed (e.g. v0.48 → v0.49 introduced the
+            # capture-session SessionStart entry). The refresh is a no-op
+            # for directories that don't look like Agnes workspaces, so
+            # an `agnes self-upgrade` invoked from ~/  won't write there.
+            _try_refresh_hooks(quiet=quiet)
+            raise typer.Exit(0)
 
         rc = _do_install_with_smoke_and_rollback(info, quiet=quiet)
+        if rc == 0:
+            # After a successful install of the new wheel, refresh the
+            # workspace hooks so any wire-format change in the new release
+            # lands on the next session-start without re-running
+            # `agnes init`. Failure here must not turn a successful
+            # upgrade into a non-zero exit — the rollback path has already
+            # finished. Errors are surfaced on stderr only.
+            _try_refresh_hooks(quiet=quiet)
         raise typer.Exit(rc)
     finally:
         if prior_sentinel is None:

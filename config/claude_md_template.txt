@@ -37,6 +37,24 @@ This workspace is connected to {{ server.url }}.
 - `agnes push` — upload sessions and local notes to server
 - Data on the server refreshes every {{ sync_interval }}
 
+## Private sessions
+
+If a Claude Code session covers something you do **not** want uploaded
+to the Agnes server (sensitive PII walk-through, exploratory work that
+shouldn't shape org-wide context, etc.), mark it private:
+
+- Run `/agnes-private` from inside the session — the deterministic
+  `!`-prefix bash adds the current `CLAUDE_CODE_SESSION_ID` to
+  `<workspace>/.claude/agnes-sessions-private.txt`. Subsequent
+  `agnes push` runs skip its transcript and audit-log the skip to
+  `<workspace>/.claude/agnes-sessions-private-skipped.txt`.
+- The Claude Code statusbar shows `🔒 agnes-private` while you are
+  in a private session, so the marking is visible at a glance.
+- Marking before `capture-session` fires (the SessionStart hook that
+  queues the transcript) means the session never enters the upload
+  queue at all; marking after it fires is also safe — the push-side
+  re-check on the private list is the authoritative filter.
+
 ## Discovering tables — never enumerate from memory
 
 Tables, columns, sizes, descriptions, and `query_mode` change as admins
@@ -67,15 +85,28 @@ and use `agnes snapshot create --estimate` to size-check before fetching.
 {% if marketplaces -%}
 ## Agnes Marketplace — plugins available to you
 
-These plugins reach Claude Code through the per-user **`agnes`** marketplace
-served by this server (an aggregated, RBAC-filtered view of the upstream
-marketplaces below). When you install or invoke one of these plugins inside
-Claude Code, address it as `<plugin>@agnes` regardless of which upstream it
-came from — e.g. `claude plugin install <plugin>@agnes`. The
-`agnes refresh-marketplace` command (run by the SessionStart hook every
-session) keeps the local clone in sync.
+The Agnes server publishes a per-user **`agnes`** Claude Code marketplace,
+aggregated from upstream marketplaces and RBAC-filtered. The list below is
+your **eligibility set** — plugins your account is allowed to add to its
+stack on the `/marketplace` page. Eligibility ≠ installed.
 
-Upstream marketplaces folded into your `agnes` view:
+What actually reaches Claude Code is your **served stack**, which is:
+- plugins you opted in to on `/marketplace` (from the eligibility set above),
+- plus any plugin your admin pinned as system-mandatory (auto-applied to every user),
+- plus skills / agents / plugins you installed from the **Flea market** tab on `/marketplace`.
+
+When you install or invoke a stack plugin inside Claude Code, address it
+as `<plugin>@agnes` regardless of which upstream marketplace it came from
+— e.g. `claude plugin install <plugin>@agnes`.
+
+Updates: the SessionStart hook runs `agnes refresh-marketplace --check`
+on every Claude Code session — it only **detects** server-side changes
+(new admin grants, new system plugins, your own `/marketplace` picks) and
+prompts you to run `/update-agnes-plugins` inside Claude Code to install
+the diff. The slash command does the full reconcile with output visible
+in the transcript; no silent auto-install at session start.
+
+Upstream marketplaces folded into your `agnes` view (eligibility):
 {% for mp in marketplaces -%}
 - **{{ mp.name }}** ({{ mp.slug }}): {{ mp.plugins | map(attribute="name") | join(", ") }}
 {% endfor %}

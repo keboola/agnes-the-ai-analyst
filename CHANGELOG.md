@@ -10,6 +10,246 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed (PR #242 follow-ups)
+
+- **`/agnes-private` legacy-scan gap closed (David #8 from PR review).**
+  `agnes push --legacy-scan` now consults the private list using the
+  jsonl file stem as the session id (Claude Code names them
+  `<session-id>.jsonl`). Previously legacy-scan entries carried an
+  empty session_id, so `--legacy-scan` would upload every transcript
+  on disk regardless of whether the user later marked it private.
+- **`statusline`/`is_private` no longer mkdir-pollutes arbitrary
+  workdirs (S2.7 from PR review).** Read paths now use a side-effect-
+  free helper that returns the `.claude/` path WITHOUT creating it;
+  only `add_private` materializes the dir. Adds a process-local
+  mtime-keyed cache around `read_all_private` so in-process callers
+  (push doing one stat per upload candidate, `agnes diagnose`
+  scanning workspaces) don't re-parse the file every time.
+- **`agnes capture-session` writes an operability breadcrumb log
+  (David #11 from PR review).** Every invocation appends one TSV
+  line to `<workspace>/.claude/agnes-capture-session.log` with the
+  outcome (`ok`, `private_skip`, `bad_json`, `no_transcript_path`,
+  …). Gives operators a signal to detect "hook fires but queue stays
+  empty" — without it, an upstream Claude Code stdin-contract change
+  is invisible because the hook always exits 0. Log rolls at 256 KiB.
+  Best-effort: a breadcrumb-write failure is swallowed so the hook
+  contract stays "exit 0 always". Skipped in non-Agnes workdirs (no
+  `.claude/`) so opening Claude Code in `~/` doesn't pollute it.
+
+### Added
+
+- **Session capture queue + new `agnes capture-session` SessionStart
+  subcommand.** Replaces the previous encoding-based scan of
+  `~/.claude/projects/` for session jsonls (which depended on Claude
+  Code's cwd-to-folder encoding — a moving target across versions).
+  The hook reads Claude Code's documented stdin JSON
+  (`transcript_path`) and appends `<session_id>\t<transcript_path>` to
+  `<workspace>/.claude/agnes-sessions.txt`. `agnes push` then atomically
+  renames that queue to a snapshot, processes it, and re-queues failed
+  uploads. Recovery snapshots from a crashed push are picked up on the
+  next run. Concurrent SessionStart hooks (multiple Claude Code windows
+  opening at once) are serialized by a short-lived `agnes-queue.lock`
+  so the queue is race-free on every OS.
+
+- **`/agnes-private` slash command + `agnes mark-private` subcommand.**
+  Mark the current Claude Code session as private — its transcript is
+  skipped by `agnes push` and audit-logged to
+  `<workspace>/.claude/agnes-sessions-private-skipped.txt` instead.
+  The slash command runs deterministically via `!`-prefix bash (no AI
+  in the loop). State lives in
+  `<workspace>/.claude/agnes-sessions-private.txt` (one session_id per
+  line) and is the authoritative source — both `capture-session` and
+  `push` consult it, so the slash-command-before-capture and
+  capture-before-slash-command races both resolve safely without an
+  ordering dependency. Requires the `CLAUDE_CODE_SESSION_ID`
+  environment variable that Claude Code sets in every bash subprocess
+  it spawns; `agnes mark-private` exits 1 if missing (defends against
+  accidental invocations from a regular terminal).
+
+- **`agnes statusline` subcommand + statusLine wiring.** Renders
+  `🔒 agnes-private` in the Claude Code status bar when the current
+  session is marked private; empty string otherwise. `agnes init` wires
+  it to Claude Code's `statusLine` setting. Polite to existing
+  customizations — if the workspace `settings.json` already has a
+  `statusLine`, the install preserves it untouched and emits a
+  one-line stderr warning instructing the operator how to compose
+  `agnes statusline` into their own command.
+
+- **`agnes push --legacy-scan` opt-in fallback** scans
+  `~/.claude/projects/` via the pre-queue encoding-based path. Use
+  for one-off backfill of session jsonls that pre-date the queue
+  mechanism on workspaces upgrading from < v0.49. Note: legacy-scanned
+  entries have empty `session_id`, so the `/agnes-private` list filter
+  never matches — backfill uploads bypass the private list. Document
+  this gap before running a backfill on a workspace that has
+  previously-marked-private sessions in the encoding-based location.
+
+- **Single-instance lock for `agnes push`** (cross-platform via
+  `filelock`: `fcntl.flock` on POSIX, `msvcrt.locking` on Windows).
+  When the user closes several Claude Code sessions simultaneously,
+  every SessionEnd hook fires its own `agnes push` — exactly one
+  acquires `<workspace>/.claude/agnes-push.lock` and runs, the rest
+  silent-exit. Prevents concurrent uploads from each other's queues
+  and matches the existing `bash -c "( nohup ... & ) ; true"`
+  SessionEnd wrapping (push must survive Claude Code's ~1s SIGTERM
+  in `-p` headless mode).
+
+- **New `filelock>=3.13,<4` runtime dependency.** Backs both the
+  push single-instance lock and the queue-write serialization above.
+
+### Changed
+
+- **BREAKING: SessionStart / SessionEnd hook wire format.**
+  `agnes init` (and the new `agnes self-upgrade` auto-refresh path)
+  write a different hook layout than v0.48:
+  - SessionStart gains `agnes capture-session` as the very first
+    entry — feeds the new session-capture queue that powers
+    `agnes push`. Must run before any other SessionStart hook so the
+    `transcript_path` is captured even if a later hook fails.
+  - SessionStart's previous `agnes push` self-heal entry is removed
+    — the queue persists across runs so orphan jsonls from headless /
+    crashed sessions ship out on the next SessionEnd push naturally.
+    Workspaces upgrading from < v0.49 with sessions that pre-date the
+    queue mechanism need a one-off `agnes push --legacy-scan` to
+    backfill them; see `--legacy-scan` entry above.
+  - SessionEnd `agnes push` is wrapped in a `nohup` subshell so the
+    upload survives Claude Code's `-p` headless SIGTERM (~1s after
+    hook fires) and completes the full upload cycle. The synchronous
+    form would lose 5-30s of uploads to the kill.
+  - All entries are wrapped in `bash -c "..."` for Windows
+    compatibility — Claude Code on Windows runs hook commands directly
+    without a shell, so any `;` chain / `2>/dev/null` redirection /
+    `|| true` short-circuit silently no-op'd previously.
+
+  Existing workspaces auto-migrate to the new layout on the next
+  session-start via `maybe_refresh_claude_hooks` invoked from
+  `agnes self-upgrade` (see separate Changed entry). No operator
+  action required.
+
+- **`agnes self-upgrade` now auto-refreshes the workspace Claude Code
+  hooks** so an existing Agnes workspace picks up the new SessionStart /
+  SessionEnd layout the moment its CLI is upgraded — no need to re-run
+  `agnes init` after a release. Without this, an existing v0.48
+  workspace would auto-upgrade the CLI via its own SessionStart
+  self-upgrade entry, but the new `agnes capture-session` hook (added
+  in this release) would never get installed, the queue would stay
+  empty, and `agnes push` would silently stop uploading sessions. The
+  refresh fires on both the "info is None" fast path (CLI already
+  current — handles the second SessionStart after a prior upgrade) and
+  after a successful install. Guarded by
+  `cli.lib.hooks.workspace_has_agnes_hooks` so it never writes
+  `.claude/settings.json` into directories that aren't Agnes workspaces
+  (e.g. `agnes self-upgrade` from `~/`). Failures are best-effort —
+  they're surfaced on stderr but never flip the upgrade exit code.
+
+### Added
+
+- **Onboarding docs for the `/agnes-private` privacy feature.**
+  `config/claude_md_template.txt` gains a short "Private sessions"
+  subsection (next to "Data Sync") covering the slash command,
+  statusbar indicator, and audit-log location. The web-served setup
+  prompt (`app/web/setup_instructions.py`) gets a one-line mention so
+  analysts learn the feature exists at onboarding instead of by
+  accident.
+
+### Changed
+
+- **`_install_statusline` distinguishes explicit `null` / empty-string
+  `statusLine` from absent key.** Previously the `if existing:` truthy
+  check silently took the same path for all three cases. The new
+  `existing is None or existing == ""` branch documents and tests the
+  behavior (install ours — treated as "not configured" rather than
+  "explicit user opt-out"). Two new tests pin both edge cases.
+
+### Fixed
+
+- **`agnes push --legacy-scan` help text documents the private-list
+  gap.** Legacy-scan entries carry an empty `session_id`, so the
+  `/agnes-private` filter is not consulted. The practical impact is
+  bounded — pre-queue sessions cannot have been marked private (the
+  private list is a queue-era feature) — but the help text now spells
+  out the gap so an operator running a backfill is not surprised.
+
+- **`agnes push` no longer crashes on filesystem errors when acquiring
+  the single-instance lock.** `acquire_or_skip` in
+  `cli/lib/push_lock.py` now treats `OSError` (read-only filesystem,
+  permission denied on `.claude/`, disk full, hardware I/O failure) the
+  same as `filelock.Timeout` — yields `None`, push exits cleanly.
+  Previously the `OSError` propagated as an unhandled traceback;
+  invisible in the SessionEnd hook context (the `|| true` wrapper
+  swallowed it), but ugly in a manual `agnes push` invocation.
+
+- **`agnes push` no longer infinite-loops on permanent 4xx failures.**
+  Previously any non-200 response except the literal `file not found
+  on disk` was re-queued, so 401 (token expired), 403 (RBAC denial),
+  413 (payload too large), 400 (server-side validation error) cycled
+  through every push run forever — the queue grew without bound and
+  each run re-bombarded the server with the same failing upload.
+  4xx (except 408 Request Timeout + 429 Too Many Requests, which the
+  HTTP spec marks as transient) is now dropped + audit-logged to
+  `<workspace>/.claude/agnes-sessions-failed.txt` instead (TSV:
+  `<iso_ts>\t<session_id>\t<status>\t<transcript_path>`). 5xx and
+  network errors continue to re-queue (genuinely transient — server
+  or transport state can change between runs). `agnes push --json`
+  surfaces a new `dropped_permanent` counter; non-quiet stdout
+  mentions the audit-log path so operators tailing the output have a
+  pointer to the forensic trail.
+
+- **Session capture queue: concurrent SessionStart hooks no longer
+  corrupt the queue file on Windows.** `append_to_queue`,
+  `requeue_failed`, and `snapshot_queue` in `cli/lib/session_queue.py`
+  now hold a short-lived `agnes-queue.lock` (filelock) while writing.
+  Previously the code assumed Python's `open(path, "a")` is atomic on
+  NTFS for small writes; it isn't — the Windows CRT does not pass
+  `FILE_APPEND_DATA` to `CreateFile`, so concurrent appenders (e.g.
+  user opens several Claude Code windows simultaneously) could
+  interleave bytes mid-line and the parser would silently drop the
+  malformed entries. The lock is separate from `agnes-push.lock` —
+  capture-session hooks don't block on the push command.
+- **Session capture queue: snapshot filenames now include a uuid8 tail
+  so a recycled OS PID cannot silently overwrite a recovery snapshot
+  left behind by a crashed push.** `snapshot_queue` previously named
+  files `agnes-sessions.snapshot.<PID>.txt`; after a crash + PID reuse
+  (Linux default `kernel.pid_max=32768`), `os.rename` atomically
+  replaces the recovery file with the new snapshot, losing every entry
+  in it. New format: `agnes-sessions.snapshot.<PID>.<uuid8>.txt`;
+  `find_recovery_snapshots` already uses a glob so the change is
+  backward-compatible with snapshots written by older CLI versions.
+
+### Changed
+
+- **Setup prompt + CLAUDE.md template: marketplace copy now reflects the
+  actual three-source served stack composition + `--check`-only
+  SessionStart hook.** Previous text (shipped in 0.48.0 / PR #240) said
+  the SessionStart hook keeps the marketplace clone in sync via
+  `agnes refresh-marketplace --quiet` on every session, and that admin
+  grants land automatically without re-running setup — both false since
+  PR #237 (0.47.x) moved the install/update path out of the hook into
+  the `/update-agnes-plugins` slash command. The hook is `--check`-only:
+  it detects server-side changes and prompts the user to run the slash
+  command, which does the full reconcile interactively with output
+  visible in the transcript. Updated copy spells out the real
+  composition of the served stack — `(admin RBAC ∩ /marketplace
+  subscriptions) ∪ system-mandatory plugins ∪ Flea market installs` —
+  rather than the admin-grants-only framing the previous copy implied.
+  Affects: `app/web/setup_instructions.py:_marketplace_block` (both
+  trailer variants) and `config/claude_md_template.txt` (Agnes
+  Marketplace section).
+
+### Removed
+
+- **Setup prompt's interactive Skills step deleted.** The final step
+  before Confirm used to ask the user verbatim whether to bulk-copy
+  every `agnes skills` markdown file into `~/.claude/skills/agnes/` or
+  pull them on-demand via `agnes skills show <name>`. The named-opinion
+  question with no obvious right answer was confusing for new users at
+  the tail end of a wall of technical steps. On-demand lookup via
+  `agnes skills show <name>` is the one-size-fits-all default — the
+  CLI knowledge base remains discoverable through `agnes skills list`
+  and the CLAUDE.md template references specific skills (e.g.
+  `agnes-data-querying`) inline where they're relevant. Layout: Confirm
+  shifts from step 9 to step 8 across all variants.
+
 ## [0.48.0] — 2026-05-10
 
 ### Fixed

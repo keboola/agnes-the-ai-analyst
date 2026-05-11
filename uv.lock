@@ -21,7 +21,7 @@ wheels = [
 
 [[package]]
 name = "agnes-the-ai-analyst"
-version = "0.47.4"
+version = "0.48.0"
 source = { editable = "." }
 dependencies = [
     { name = "a2wsgi" },
@@ -32,6 +32,7 @@ dependencies = [
     { name = "duckdb" },
     { name = "dulwich" },
     { name = "fastapi" },
+    { name = "filelock" },
     { name = "google-api-python-client" },
     { name = "google-cloud-bigquery" },
     { name = "google-cloud-bigquery-storage" },
@@ -97,6 +98,7 @@ requires-dist = [
     { name = "faker", marker = "extra == 'dev'", specifier = ">=24.0.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-debug-toolbar", marker = "extra == 'dev'", specifier = ">=0.6.3" },
+    { name = "filelock", specifier = ">=3.13,<4" },
     { name = "google-api-python-client", specifier = ">=2.0.0" },
     { name = "google-cloud-bigquery", specifier = ">=3.0.0" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.0.0" },
@@ -710,6 +712,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ac/e6/c228493e929eeb2b9e61806a63e78c3c0bec4e22ddee99f321ffba4fa64a/fastapi_debug_toolbar-0.6.3.tar.gz", hash = "sha256:15ff6828f9432c786af39f23a2d814ef2af516964b5a9a856444de135a78b2af", size = 26929, upload-time = "2024-05-04T17:03:13.095Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/09/b01c8c60d608e93faa257a9a3fc9a9739c70c9ac926edfbbe92baebbf33b/fastapi_debug_toolbar-0.6.3-py3-none-any.whl", hash = "sha256:077b5ffeb10426c49387ef090cf307a316d5c71c69bbffe270d9898d2554429e", size = 42904, upload-time = "2024-05-04T17:03:11.585Z" },
+]
+
+[[package]]
+name = "filelock"
+version = "3.29.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/fe/997687a931ab51049acce6fa1f23e8f01216374ea81374ddee763c493db5/filelock-3.29.0.tar.gz", hash = "sha256:69974355e960702e789734cb4871f884ea6fe50bd8404051a3530bc07809cf90", size = 57571, upload-time = "2026-04-19T15:39:10.068Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/47/dd9a212ef6e343a6857485ffe25bba537304f1913bdbed446a23f7f592e1/filelock-3.29.0-py3-none-any.whl", hash = "sha256:96f5f6344709aa1572bbf631c640e4ebeeb519e08da902c39a001882f30ac258", size = 39812, upload-time = "2026-04-19T15:39:08.752Z" },
 ]
 
 [[package]]
