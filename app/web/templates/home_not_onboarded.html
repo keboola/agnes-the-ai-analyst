@@ -934,58 +934,6 @@
     color: white;
 }
 
-/* P0-4 — Preview-first banner. Duplicates the Look-Around grid near
-   the top so the user can browse *before* committing to install. The
-   existing bottom Look-Around section stays for users who scroll
-   straight there. */
-.home-mock .preview-first {
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-radius: 12px;
-    padding: 16px 22px;
-    margin: 0 0 22px;
-}
-.home-mock .preview-first-head {
-    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
-    margin-bottom: 10px;
-}
-.home-mock .preview-first-head h3 {
-    font-size: 14px; font-weight: 600; margin: 0; color: var(--hp-text-primary);
-}
-.home-mock .preview-first-head .hint {
-    font-size: 12.5px; color: var(--hp-text-secondary);
-}
-.home-mock .preview-first-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 10px;
-}
-.home-mock .preview-first-tile {
-    background: var(--hp-border-light);
-    border: 1px solid transparent;
-    border-radius: 8px;
-    padding: 10px 12px;
-    text-decoration: none;
-    color: inherit;
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    transition: border-color 0.15s ease, background 0.15s ease;
-}
-.home-mock .preview-first-tile:hover {
-    border-color: var(--hp-primary);
-    background: var(--hp-primary-light);
-    text-decoration: none;
-}
-.home-mock .preview-first-tile .ico { font-size: 18px; flex-shrink: 0; }
-.home-mock .preview-first-tile .lbl {
-    font-size: 13px; font-weight: 600; color: var(--hp-text-primary);
-    line-height: 1.3;
-}
-.home-mock .preview-first-tile .sub {
-    font-size: 11.5px; color: var(--hp-text-secondary); margin-top: 1px;
-}
-
 /* P0-3 — connector card time badge ("~5 min · self-serve") and the
    post-copy "now paste into Step 2" hint with arrow back. */
 .home-mock .connector-tile .ttl-row {
@@ -1365,44 +1313,6 @@
        moved into the install-hero as the new Step 2 so users enable it
        BEFORE Step 3's install runs ~20 commands. Gated by the same
        `home_automode.show` flag at the call site. #}
-
-    {# P0-4 — Preview-first banner. The bottom Look-Around grid stays
-       (users who scroll past setup find it there); this duplicate
-       surfaces the same three destinations near the TOP, addressing
-       Petr's "I'd want to see what's inside before configuring" gap.
-       Only relevant in the not-onboarded view — once installed, users
-       reach these via top nav. #}
-    {% if not onboarded %}
-    <div class="preview-first">
-        <div class="preview-first-head">
-            <h3>Not ready to install? Browse what's inside first →</h3>
-            <span class="hint">No setup needed for these</span>
-        </div>
-        <div class="preview-first-grid">
-            <a class="preview-first-tile" href="/marketplace">
-                <span class="ico">&#x1F9E9;</span>
-                <div>
-                    <div class="lbl">Plugin marketplace</div>
-                    <div class="sub">What plugins your team curates</div>
-                </div>
-            </a>
-            <a class="preview-first-tile" href="/catalog">
-                <span class="ico">&#x1F4E6;</span>
-                <div>
-                    <div class="lbl">Data packages</div>
-                    <div class="sub">Tables &amp; metric definitions</div>
-                </div>
-            </a>
-            <a class="preview-first-tile" href="/corporate-memory">
-                <span class="ico">&#x1F9E0;</span>
-                <div>
-                    <div class="lbl">Corporate memory</div>
-                    <div class="sub">Shared analyst knowledge</div>
-                </div>
-            </a>
-        </div>
-    </div>
-    {% endif %}
 
     <details class="setup-collapsible" data-section="connectors" open>
         <summary>

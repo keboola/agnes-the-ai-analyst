@@ -59,13 +59,14 @@ class TestPendingBannerForAdmins:
         assert "awaiting review" not in body.lower()
 
 
-class TestNonAdminNeverSeesPendingBanner:
-    def test_analyst_does_not_see_banner_even_with_pending_items(self, seeded_app):
+class TestNonAdminBlocked:
+    def test_analyst_gets_403_on_corporate_memory(self, seeded_app):
+        """Corporate Memory is admin-only — both the nav link and the
+        widget are hidden for non-admin in the templates, and the route
+        itself rejects with 403. Banner-leakage to non-admin is moot
+        because the whole page is gated."""
         _seed_pending_item("p_no_admin_1")
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
         resp = c.get("/corporate-memory", headers=_auth(token))
-        assert resp.status_code == 200
-        body = resp.text
-        # Non-admin must not see the admin-only banner copy.
-        assert "awaiting review" not in body.lower()
+        assert resp.status_code == 403

@@ -826,7 +826,7 @@ async def catalog(
 @router.get("/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory(
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)

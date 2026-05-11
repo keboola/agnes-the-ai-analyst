@@ -24,7 +24,14 @@
         <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Home</a>
         <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
         <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog">Data Packages</a>
+        {# Memory: admin-only nav link. Backend gates the routes
+           themselves via require_admin (see app/web/router.py for
+           /corporate-memory + /corporate-memory/admin), so hiding the
+           link is purely a visibility tidy-up — non-admins who deep-link
+           still get a 403 from the route handler. #}
+        {% if session.user.is_admin %}
         <a class="app-nav-link {% if _path.startswith('/corporate-memory') %}is-active{% endif %}" href="/corporate-memory">Memory</a>
+        {% endif %}
         {% if session.user.is_admin %}
         {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/activity') %}
         <div class="app-nav-menu" id="adminNavMenu">
