@@ -66,10 +66,9 @@ def test_resolve_lines_no_plugins_unified_layout():
     assert "3) Verify the data is queryable:" in joined
     assert "4) Make sure git and claude are installed" in joined
     assert "5) Register the Agnes Claude Code marketplace" in joined
-    assert "6) Register the Atlassian MCP server" in joined
-    assert "7) Run diagnostics:" in joined
-    assert "8) Connect the user's tools" in joined
-    assert "9) Confirm:" in joined
+    assert "6) Run diagnostics:" in joined
+    assert "7) Connect the user's tools" in joined
+    assert "8) Confirm:" in joined
     # No stray Confirms at other positions.
     assert "10) Confirm:" not in joined
     assert "6) Confirm:" not in joined
@@ -287,14 +286,13 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "claude plugin install foo@agnes" not in executable
     assert "claude plugin install bar@agnes" not in executable
     # Step 6 — Atlassian MCP registration (Fix C in 2026-05-10 init-report response).
-    assert "6) Register the Atlassian MCP server" in joined
     # Step 7 — diagnose now AFTER marketplace + MCP wiring.
-    assert "7) Run diagnostics:" in joined
+    assert "6) Run diagnostics:" in joined
     # Step 8 — connectors, the LAST interactive step before Confirm
     # (skills step deleted in #242).
-    assert "8) Connect the user's tools" in joined
-    assert "9) Confirm:" in joined
-    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "8) Confirm:", "10) Confirm:"):
+    assert "7) Connect the user's tools" in joined
+    assert "8) Confirm:" in joined
+    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "9) Confirm:", "10) Confirm:"):
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
@@ -302,11 +300,10 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     catalog_idx = joined.index("3) Verify the data is queryable:")
     git_idx = joined.index("4) Make sure git and claude are installed")
     market_idx = joined.index("5) Register the Agnes Claude Code marketplace")
-    mcp_idx = joined.index("6) Register the Atlassian MCP server")
-    diag_idx = joined.index("7) Run diagnostics:")
-    conn_idx = joined.index("8) Connect the user's tools")
-    confirm_idx = joined.index("9) Confirm:")
-    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < mcp_idx < diag_idx < conn_idx < confirm_idx
+    diag_idx = joined.index("6) Run diagnostics:")
+    conn_idx = joined.index("7) Connect the user's tools")
+    confirm_idx = joined.index("8) Confirm:")
+    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < diag_idx < conn_idx < confirm_idx
     # Legacy `git config sslVerify=false` downgrade is gone — see CHANGELOG.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
@@ -637,7 +634,7 @@ def test_resolve_lines_ca_pem_works_without_plugins():
 
     joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
     assert "0) Trust the Agnes TLS certificate" in joined
-    assert "9) Confirm:" in joined
+    assert "8) Confirm:" in joined
     # Marketplace block is now emitted unconditionally; the bootstrap
     # one-liner does the `claude plugin marketplace add` internally so
     # the literal string isn't in the prompt text — the user-facing
@@ -715,12 +712,12 @@ def test_no_plugins_layout_keeps_diagnose_before_connectors():
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "7) Run diagnostics:" in joined
-    assert "8) Connect the user's tools" in joined
-    assert "9) Confirm:" in joined
-    diag_idx = joined.index("7) Run diagnostics:")
-    conn_idx = joined.index("8) Connect the user's tools")
-    confirm_idx = joined.index("9) Confirm:")
+    assert "6) Run diagnostics:" in joined
+    assert "7) Connect the user's tools" in joined
+    assert "8) Confirm:" in joined
+    diag_idx = joined.index("6) Run diagnostics:")
+    conn_idx = joined.index("7) Connect the user's tools")
+    confirm_idx = joined.index("8) Confirm:")
     assert diag_idx < conn_idx < confirm_idx
 
 
@@ -857,18 +854,20 @@ def test_connectors_block_uses_gws_manual_branch_when_oauth_unset():
 
 
 def test_step_numbering_with_connectors_step():
-    """_step_numbers must return diagnose=7, connectors=8, confirm=9.
-    Anchors the numeric expectations the rest of the test suite assumes
-    (skills step deleted in #242, connectors added in #243)."""
+    """_step_numbers must return diagnose=6, connectors=7, confirm=8.
+    Anchors the numeric expectations the rest of the test suite assumes.
+    (Skills step deleted in #242; connectors added in #243; standalone
+    `mcp_servers` step retired and folded into the Atlassian connector's
+    prompt body, so the layout drops by one.)"""
     from app.web.setup_instructions import _step_numbers
 
     steps = _step_numbers()
     assert steps["preflight"] == "4"
     assert steps["marketplace"] == "5"
-    assert steps["mcp_servers"] == "6"
-    assert steps["diagnose"] == "7"
-    assert steps["connectors"] == "8"
-    assert steps["confirm"] == "9"
+    assert "mcp_servers" not in steps
+    assert steps["diagnose"] == "6"
+    assert steps["connectors"] == "7"
+    assert steps["confirm"] == "8"
     assert "skills" not in steps  # deleted in #242
 
 

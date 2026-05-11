@@ -236,7 +236,7 @@ class TestClaudeSetupPreview:
         # Step 1 install, step 4 preflight, step 5 marketplace, step 6 MCP,
         # step 7 diagnose.
         assert "1) Install the CLI" in body
-        assert "7) Run diagnostics" in body
+        assert "6) Run diagnostics" in body
         assert "agnes diagnose" in body
         # `agnes init` is now the mandatory bootstrap step.
         assert "agnes init" in body

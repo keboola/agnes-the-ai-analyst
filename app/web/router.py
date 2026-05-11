@@ -23,7 +23,7 @@ from app.instance_config import (
     get_instance_name, get_instance_subtitle, get_datasets,
     get_theme, get_corporate_memory_config, get_home_route,
     get_gws_oauth_credentials, get_home_automode_visibility,
-    get_instance_admin_email,
+    get_instance_admin_email, get_atlassian_base_url,
 )
 from app.web.connector_prompts import all_connector_prompts
 from src.repositories.sync_state import SyncStateRepository
@@ -412,6 +412,7 @@ def _build_context(
         _connector_prompts = all_connector_prompts(
             gws_oauth=get_gws_oauth_credentials(),
             instance_admin_email=get_instance_admin_email(),
+            atlassian_base_url=get_atlassian_base_url(),
         )
 
         setup_instructions_lines = resolve_lines(
@@ -456,6 +457,7 @@ def _build_context(
         "connector_prompts": all_connector_prompts(
             gws_oauth=get_gws_oauth_credentials(),
             instance_admin_email=get_instance_admin_email(),
+            atlassian_base_url=get_atlassian_base_url(),
         ),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0

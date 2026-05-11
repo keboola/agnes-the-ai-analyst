@@ -37,6 +37,9 @@ Task 18 will register `init_app` on the root Typer app.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -56,6 +59,109 @@ from cli.lib.pull import PullResult, _override_server_env, run_pull
 # appears in every server-rendered CLAUDE.md. Operators who use a custom admin
 # template can override this via the `--force` flag.
 _INIT_MARKER = "AI Data Analyst"
+
+
+# Env vars that, when set to a non-existent path, cause every TLS handshake
+# on the host to fail before Agnes itself runs. Past versions of the Agnes
+# setup script's TLS trust block (and older bootstrap helpers) wrote
+# pointers to ``~/.agnes/ca-bundle.pem`` into the user's persistent env
+# (Windows User scope; shell rc files on POSIX). When the file goes away
+# (re-init on a new VM, manual cleanup, machine swap) the pointers go
+# stale — gws auth login, claude plugin marketplace add, even pip/uv,
+# all fail with UnknownIssuer / FileNotFoundError. Reported by the
+# Windows test user 2026-05-11. SSL_CERT_FILE in particular REPLACES
+# (not appends to) the trust store, so a stale pointer is silently
+# catastrophic.
+_CA_ENV_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO")
+
+
+def _is_windows_host() -> bool:
+    """True when the Python interpreter sees Windows underneath.
+
+    Covers native Python on Windows (``sys.platform == 'win32'``) and
+    Git Bash / MSYS launchers (interpreter still reports win32; the
+    bash shell wrapper is irrelevant for User-scope env-var management).
+    POSIX-only edge cases (WSL with `windows` in /proc/version) stay on
+    the POSIX path — User-scope env vars don't exist there in the
+    Windows-registry sense, so the cleanup is a no-op.
+    """
+    return sys.platform == "win32"
+
+
+def _cleanup_stale_ca_env_vars() -> None:
+    """Clear stale SSL_CERT_FILE / REQUESTS_CA_BUNDLE / GIT_SSL_CAINFO
+    pointers from the current process AND (on Windows) from User scope.
+
+    Two layers because the failure mode hits both:
+    1. Current-process env — what the upcoming `api_get` call to
+       /api/catalog/tables actually reads. Without clearing it here, the
+       httpx call falls over with a FileNotFoundError before init can
+       finish step 2.
+    2. Windows User-scope env — what every future shell + every native
+       Windows tool (gws, claude.exe, pip, uv) inherits. Without
+       clearing it there, the user re-hits the same wall the next time
+       they open PowerShell — exactly what the 2026-05-11 Windows test
+       user reported ("the init was supposed to clear these but they
+       persisted; fixed by removing both vars from User scope").
+
+    Best-effort. We only delete a var when it points at a path that does
+    NOT exist on disk — intentional operator config (e.g. SSL_CERT_FILE
+    pointing at a corporate certifi bundle) is preserved. PowerShell
+    invocation failures are swallowed silently because the init shouldn't
+    abort on a defensive cleanup helper.
+    """
+    cleared_process: list[tuple[str, str]] = []
+    for var in _CA_ENV_VARS:
+        cur = os.environ.get(var)
+        if cur and not Path(cur).exists():
+            del os.environ[var]
+            cleared_process.append((var, cur))
+    for name, path in cleared_process:
+        typer.echo(
+            f"agnes init: cleared stale process env {name}={path} "
+            f"(file does not exist)"
+        )
+
+    if not _is_windows_host():
+        return
+
+    # Build a single PowerShell invocation that checks + clears all three
+    # User-scope vars in one shot. Quoting strategy: pass the script via
+    # -Command with single-quoted strings inside so Python's f-string
+    # composition stays simple. We use [Environment]::SetEnvironmentVariable
+    # with $null (the documented way to delete a User-scope env var on
+    # Windows; setx has no delete verb).
+    statements = []
+    for var in _CA_ENV_VARS:
+        statements.append(
+            "$cur = [Environment]::GetEnvironmentVariable('" + var + "', 'User'); "
+            "if ($cur -and -not (Test-Path -LiteralPath $cur)) { "
+            "[Environment]::SetEnvironmentVariable('" + var + "', $null, 'User'); "
+            "Write-Host ('agnes init: cleared stale User-scope " + var + "=' + $cur + ' (file does not exist)') "
+            "}"
+        )
+    ps_script = "; ".join(statements)
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # PowerShell missing (cygwin-only environments), or hung. Skip —
+        # the current-process cleanup above already covers the immediate
+        # `api_get` failure; persistent state cleanup is best-effort.
+        return
+    if result.stdout:
+        # Forward PowerShell's confirmation lines to the user so the
+        # cleanup is auditable. stderr from PowerShell (rare here) is
+        # swallowed — the worst it'd add is "execution policy" noise on
+        # restricted hosts, which isn't actionable.
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line:
+                typer.echo(line)
 
 
 init_app = typer.Typer(help="Bootstrap an analyst workspace in this directory")
@@ -81,6 +187,15 @@ def init(
     """Bootstrap workspace: auth, CLAUDE.md, hooks, first pull, AGNES_WORKSPACE.md."""
     workspace = Path(workspace_str).resolve() if workspace_str else Path.cwd()
     server_url = server_url.rstrip("/")
+
+    # Best-effort cleanup before ANY TLS handshake fires below — stale
+    # SSL_CERT_FILE / REQUESTS_CA_BUNDLE / GIT_SSL_CAINFO pointers from a
+    # previous Agnes install on this host (or its Windows User-scope
+    # registry entries) would otherwise blow up step 2's `api_get` with
+    # an opaque "UnknownIssuer" / "FileNotFoundError" before the user
+    # has any way to see what's wrong. Reported by the 2026-05-11
+    # Windows test pass.
+    _cleanup_stale_ca_env_vars()
 
     # ------------------------------------------------------------------
     # Step 1: detect an existing workspace.
