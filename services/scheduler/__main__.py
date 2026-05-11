@@ -90,6 +90,14 @@ _DEFAULTS = {
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL": 15 * 60,
     "SCHEDULER_USAGE_PROCESSOR_INTERVAL":       10 * 60,
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL":      17 * 60,
+    # BigQuery metadata refresh: walks remote registry rows and updates the
+    # persistent ``bq_metadata_cache``. Default 4 h — long enough that the
+    # cumulative BQ jobs API cost stays negligible on a typical 10–50-table
+    # registry, short enough that operator-edited tables show real numbers
+    # within an analyst's working day. Hot reads of ``/api/v2/catalog`` go
+    # to DuckDB, never to BQ, so this can be tuned freely without touching
+    # request-path latency.
+    "SCHEDULER_BQ_METADATA_REFRESH_INTERVAL":   4 * 60 * 60,
 }
 
 
@@ -149,8 +157,9 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     verify  = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
     usage   = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
     corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
+    bqmeta  = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
     tick    = _read_positive_int("SCHEDULER_TICK_SECONDS")
-    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem)
+    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem, bqmeta)
     if tick > smallest:
         raise ValueError(
             f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
@@ -193,6 +202,14 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # to review_error so admin can retry. Cheap (one indexed
         # SELECT + N small UPDATEs); short timeout sufficient.
         ("store-reap-stuck-reviews", "every 15m",                 "/api/admin/run-reap-stuck-reviews",   "POST", 60),
+        # BigQuery metadata refresh — keeps ``bq_metadata_cache`` warm so
+        # ``GET /api/v2/catalog`` never has to call BQ at request time.
+        # 30-min timeout is generous; on a 10-table dev registry the
+        # observed full refresh ran in ~7 min when two view-backed rows
+        # took 7 min each. Bounded concurrency
+        # (``AGNES_BQ_METADATA_REFRESH_CONCURRENCY``, default 4) caps the
+        # tail.
+        ("bq-metadata-refresh",   _seconds_to_schedule(bqmeta),  "/api/admin/run-bq-metadata-refresh",   "POST", 1800),
     ]
 
 _running = True

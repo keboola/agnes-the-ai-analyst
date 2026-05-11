@@ -18,7 +18,15 @@ def test_build_jobs_uses_documented_defaults(monkeypatch):
     assert jobs["health-check"]    == "every 5m"
     assert jobs["script-runner"]   == "every 1m"
     assert jobs["marketplaces"]    == "daily 03:00"
+    assert jobs["bq-metadata-refresh"] == "every 4h"
     assert resolved_tick_seconds() == 30
+
+
+def test_build_jobs_honors_bq_metadata_env_override(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL", "7200")  # 2h
+    from services.scheduler.__main__ import build_jobs
+    jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+    assert jobs["bq-metadata-refresh"] == "every 2h"
 
 
 def test_build_jobs_honors_env_overrides(monkeypatch):

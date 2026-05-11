@@ -10,6 +10,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.50.0] — 2026-05-11
+
+### Fixed
+
+- **`GET /api/v2/catalog` no longer hangs on cold cache.** Since 0.47.0 the catalog endpoint enriched each remote BigQuery row by fetching `INFORMATION_SCHEMA.TABLE_STORAGE` + `COLUMNS` through the DuckDB BigQuery extension inside the request. On cold caches that fanned out to O(N) sequential BQ jobs-API roundtrips — easily 90 s+ on partitioned / view-backed tables — and reliably exceeded the CLI's 30 s `httpx.ReadTimeout`. Enrichment now reads exclusively from a persistent `bq_metadata_cache` DuckDB table, populated by a scheduler-driven refresh job. First call after a fresh container start returns in tens of milliseconds with `metadata_freshness: never_fetched` for rows the scheduler hasn't reached yet; subsequent ticks fill the cache. Closes the cold-start outage class entirely.
+
+### Added
+
+- **Persistent BigQuery metadata cache (`bq_metadata_cache`, schema v40).** Holds `rows`, `size_bytes`, `partition_by`, `clustered_by`, `refreshed_at`, plus a `error_at` / `error_msg` pair that preserves the last successful row across transient provider failures so analyst tooling keeps seeing last-known-good numbers.
+- **`POST /api/admin/run-bq-metadata-refresh`** — scheduler-driven full refresh of every remote BigQuery row in the registry. Bounded concurrency via `AGNES_BQ_METADATA_REFRESH_CONCURRENCY` (default 4).
+- **`POST /api/v2/metadata-cache/refresh?table=<id>`** — operator on-demand single-row refresh (admin-gated), for use right after a registry edit when waiting for the next scheduled tick is too long.
+- **`GET /api/v2/metadata-cache/status`** — non-admin endpoint surfacing per-row `refreshed_at`, `error_at`, `error_msg`, and `freshness` (`fresh` / `stale` / `never_fetched` / `error`) so CLI / Claude Code can decide whether to trust the catalog's `rows` and `size_bytes`.
+- **`metadata_freshness` field** in every `/api/v2/catalog` row. `not_applicable` for `local` / `materialized` rows where the BQ cache concept doesn't apply.
+- **Scheduler job `bq-metadata-refresh`** running at `SCHEDULER_BQ_METADATA_REFRESH_INTERVAL` (default `4 * 60 * 60` seconds = 4 h). Tunable per deployment; the catalog request path is independent of the value.
+
+### Changed
+
+- **BREAKING (internal API):** removed `app.api.v2_catalog._size_hint_for_row`, `_resolve_remote_metadata`, `_metadata_provider_for`, `_build_metadata_request`, `_materialized_size_hint`, and the in-memory `_metadata_cache` (`TTLCache`). Catalog responses still expose the same enrichment fields (`rows`, `size_bytes`, `partition_by`, `clustered_by`); the new `metadata_freshness` field is additive. External consumers that read the response shape are unaffected.
+- `app.api.cache_warmup._warm_metadata_sync` now refreshes the persistent cache via `bq_metadata_refresh.refresh_one` instead of priming an in-memory TTL cache. The existing `/api/admin/cache-warmup/*` endpoints and admin-tables SSE wiring continue to work.
+
+### Internal
+
+- Schema v40 migration `_V39_TO_V40_MIGRATIONS` adds the new table; existing instances pick it up on next start. Empty cache is treated as `never_fetched` by the catalog, never as an error.
+
 ## [0.49.1] — 2026-05-11
 
 ### Added

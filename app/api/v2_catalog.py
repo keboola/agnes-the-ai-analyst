@@ -1,18 +1,32 @@
-"""GET /api/v2/catalog — list tables visible to caller (spec §3.1)."""
+"""GET /api/v2/catalog — list tables visible to caller (spec §3.1).
+
+History note
+------------
+0.47.0 enriched remote rows with BigQuery metadata (rows / size_bytes /
+partition_by / clustered_by) by fetching from BQ *inside the request*
+through a per-table TTL cache. On a cold cache that fanned out to O(N)
+sequential BQ jobs API roundtrips and reliably exceeded the CLI's 30 s
+``httpx.ReadTimeout`` against partitioned tables. This module now reads
+those fields exclusively from the persistent ``bq_metadata_cache`` table
+(populated by ``app/api/bq_metadata_refresh.py`` on a scheduler tick).
+The request path never calls BQ.
+"""
 
 from __future__ import annotations
+
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import APIRouter, Depends
-import duckdb
+from typing import Any
 
-from app.auth.dependencies import get_current_user, _get_db
+import duckdb
+from fastapi import APIRouter, Depends
+
+from app.api.v2_cache import TTLCache
+from app.auth.dependencies import _get_db, get_current_user
 from app.utils import get_data_dir as _get_data_dir
 from src.rbac import can_access_table
+from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
 from src.repositories.table_registry import TableRegistryRepository
-from app.api.v2_cache import TTLCache
-from app.api._metadata_models import MetadataRequest, TableMetadata
-from src.identifier_validation import validate_quoted_identifier
 
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
@@ -26,51 +40,6 @@ router = APIRouter(prefix="/api/v2", tags=["v2"])
 # a no-op — tracked separately.
 _table_rows_cache = TTLCache(maxsize=1, ttl_seconds=300)
 _TABLE_ROWS_KEY = "all"
-
-# Per-table cached TableMetadata. 15-min TTL — long enough to amortise
-# across an analyst session, short enough that a freshly-registered
-# remote table shows real numbers within a coffee break (the cache-bust
-# path in `invalidate_for_table` accelerates this for the common admin-
-# verifies-registration flow).
-_metadata_cache = TTLCache(maxsize=512, ttl_seconds=900)
-
-
-def _metadata_provider_for(source_type: str):
-    """Lazy-import dispatch for source-specific metadata providers.
-
-    Lazy because connector modules are heavy (BQ extension, google-cloud
-    client, etc.) and a Keboola-only deployment shouldn't pay the BQ
-    import cost. Returns ``None`` for unknown source types — the caller
-    treats that as "no metadata enrichment available" and falls through.
-    """
-    if source_type == "bigquery":
-        from connectors.bigquery import metadata as m
-        return m.fetch
-    if source_type == "keboola":
-        from connectors.keboola import metadata as m
-        return m.fetch
-    return None
-
-
-def _build_metadata_request(row: dict) -> MetadataRequest | None:
-    """Construct a validated MetadataRequest from a registry row.
-
-    Pre-validates the identifiers via `validate_quoted_identifier` before
-    constructing the request — providers can then interpolate
-    `req.bucket` / `req.source_table` into SQL/URL paths without
-    re-checking. Returns ``None`` when validation fails; provider is not
-    dispatched for that row.
-    """
-    bucket = row.get("bucket") or ""
-    source_table = row.get("source_table") or row.get("id") or ""
-    if not bucket or not source_table:
-        return None
-    if not (validate_quoted_identifier(bucket, "bucket")
-            and validate_quoted_identifier(source_table, "source_table")):
-        return None
-    return MetadataRequest(
-        table_id=row["id"], bucket=bucket, source_table=source_table,
-    )
 
 
 def _flavor_for(source_type: str) -> str:
@@ -112,56 +81,11 @@ def _bucket_size(byte_count: int) -> str:
     return "very_large"
 
 
-def _size_hint_for_row(row: dict) -> dict:
-    """Resolve the per-row metadata bundle the catalog response surfaces.
-
-    Renamed from `_materialized_size_hint` (which always also handled
-    `local` rows; the old name was misleading). Returns a dict with up
-    to four keys: `rough_size_hint`, `rows`, `size_bytes`, `partition_by`,
-    `clustered_by`. Missing keys are reported as `null` in the response.
-
-    Branches:
-      - `local` / `materialized` → existing on-disk parquet stat (cheap).
-      - `remote` → dispatch to the per-source-type provider; cache the
-        TableMetadata for 15 min.
-    """
-    table_id = row["id"]
-    source_type = row.get("source_type") or ""
-    query_mode = row.get("query_mode") or "local"
-
-    if query_mode in ("local", "materialized"):
-        return {"rough_size_hint": _materialized_parquet_size_bucket(
-            table_id, source_type, query_mode,
-        )}
-
-    if query_mode != "remote":
-        return {"rough_size_hint": None}
-
-    # Cache lookup (per-row TableMetadata).
-    cached = _metadata_cache.get(table_id)
-    if cached is None:
-        cached = _resolve_remote_metadata(row)
-        if cached is not None:
-            _metadata_cache.set(table_id, cached)
-
-    if cached is None:
-        return {"rough_size_hint": None}
-
-    return {
-        "rough_size_hint": _bucket_size(cached.size_bytes) if cached.size_bytes is not None else None,
-        "rows": cached.rows,
-        "size_bytes": cached.size_bytes,
-        "partition_by": cached.partition_by,
-        "clustered_by": cached.clustered_by,
-    }
-
-
 def _materialized_parquet_size_bucket(
     table_id: str, source_type: str, query_mode: str,
 ) -> str | None:
     """Size hint for rows whose data is on the server filesystem
-    (the old `_materialized_size_hint` body). Renamed for clarity now
-    that the new dispatcher is the entry point.
+    (``local`` or ``materialized``). Cheap ``Path.stat()``; never blocks.
 
     Layout matches the v2 extract.duckdb contract:
       ${DATA_DIR}/extracts/<source_type>/data/<table_id>.parquet
@@ -182,21 +106,64 @@ def _materialized_parquet_size_bucket(
         return None
 
 
-def _resolve_remote_metadata(row: dict) -> "TableMetadata | None":
-    """Provider dispatch for a remote row. Returns None on any failure."""
+def _hint_for_row(
+    row: dict[str, Any],
+    bq_cache_index: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve the per-row metadata bundle the catalog response surfaces.
+
+    Branches:
+      - ``local`` / ``materialized`` → on-disk parquet ``stat()`` (cheap).
+      - ``remote`` (BigQuery) → pre-computed row from ``bq_metadata_cache``,
+        populated by the scheduler-driven refresh. Never touches BQ here.
+
+    Always returns ``metadata_freshness`` (``fresh`` / ``stale`` /
+    ``never_fetched`` / ``error`` / ``not_applicable``) so AI consumers can
+    decide whether to trust ``rows`` / ``size_bytes`` or treat them as
+    advisory.
+    """
+    table_id = row["id"]
     source_type = row.get("source_type") or ""
-    provider = _metadata_provider_for(source_type)
-    if provider is None:
-        return None
-    req = _build_metadata_request(row)
-    if req is None:
-        return None
-    try:
-        return provider(req)
-    except Exception:
-        # Defense in depth — providers are documented as never-raises,
-        # but a regression would otherwise 500 the whole catalog.
-        return None
+    query_mode = row.get("query_mode") or "local"
+
+    if query_mode in ("local", "materialized"):
+        return {
+            "rough_size_hint": _materialized_parquet_size_bucket(
+                table_id, source_type, query_mode,
+            ),
+            "metadata_freshness": "not_applicable",
+        }
+
+    if query_mode != "remote":
+        return {
+            "rough_size_hint": None,
+            "metadata_freshness": "not_applicable",
+        }
+
+    # Remote: read from the persistent cache; never call BQ here.
+    from app.api.bq_metadata_refresh import compute_freshness
+    cache_row = bq_cache_index.get(table_id)
+    freshness = compute_freshness(cache_row)
+
+    if cache_row is None:
+        return {
+            "rough_size_hint": None,
+            "rows": None,
+            "size_bytes": None,
+            "partition_by": None,
+            "clustered_by": [],
+            "metadata_freshness": freshness,
+        }
+
+    size_bytes = cache_row.get("size_bytes")
+    return {
+        "rough_size_hint": _bucket_size(size_bytes) if size_bytes is not None else None,
+        "rows": cache_row.get("rows"),
+        "size_bytes": size_bytes,
+        "partition_by": cache_row.get("partition_by"),
+        "clustered_by": cache_row.get("clustered_by") or [],
+        "metadata_freshness": freshness,
+    }
 
 
 def invalidate_for_table(table_id: str) -> None:
@@ -205,50 +172,20 @@ def invalidate_for_table(table_id: str) -> None:
     by the catalog module so admin.py doesn't need to know which caches
     exist.
 
-    Imports v2_schema and v2_sample lazily — keeps catalog tests from
-    pulling in BQ-extension imports they don't need.
+    The persistent ``bq_metadata_cache`` row is NOT invalidated here —
+    the scheduler-driven refresh owns that lifecycle. Admins who need
+    an immediate refresh after a registry edit should hit
+    ``POST /api/v2/metadata-cache/refresh?table=<id>``.
     """
-    import asyncio
-    from app.api import v2_schema, v2_sample
+    from app.api import v2_sample, v2_schema
 
     _table_rows_cache.clear()
-    _metadata_cache.invalidate(table_id)
     v2_schema._schema_cache.invalidate(table_id)
     # Sample cache key is `f"{table_id}|{n}"`; clearing the whole sample
     # cache is heavier than precise invalidation, but registry-change
     # frequency (handful per day on a typical instance) doesn't justify
     # adding a prefix-invalidation primitive to TTLCache.
     v2_sample._sample_cache.clear()
-
-    # Schedule a single-row re-warm so admins editing a registry row
-    # see fresh data within a couple of seconds rather than waiting for
-    # the next analyst to trigger a miss. Fire-and-forget; failures
-    # log + skip inside the coroutine.
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop is not None:
-        # Running inside an async context (production FastAPI path).
-        asyncio.create_task(_rewarm_one_row(table_id))
-    # No running event loop (e.g. called from a sync test or a sync
-    # handler thread). Skip re-warm — the next live request will
-    # populate via miss.
-
-
-async def _rewarm_one_row(table_id: str) -> None:
-    """Background single-row re-warm. Imports cache_warmup lazily to
-    avoid a circular import at module load (cache_warmup.py is created
-    in Task 10; until then, this function logs a warning and returns)."""
-    try:
-        from app.api.cache_warmup import warm_one_table
-        await warm_one_table(table_id)
-    except Exception:
-        import logging
-        logging.getLogger(__name__).warning(
-            "single-row re-warm failed for %s — next live request will populate",
-            table_id,
-        )
 
 
 def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
@@ -258,6 +195,12 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
         rows = repo.list_all()
         _table_rows_cache.set(_TABLE_ROWS_KEY, rows)
 
+    # One DB read for all remote-row metadata. Indexed by table_id so the
+    # per-row loop below stays O(N).
+    bq_cache_index: dict[str, dict[str, Any]] = {
+        r["table_id"]: r for r in BqMetadataCacheRepository(conn).list_all()
+    }
+
     # RBAC is enforced fresh per request. Revoking a user's access to a
     # table takes effect on their next call to this endpoint, not after the
     # cache TTL expires.
@@ -265,7 +208,7 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     for r in rows:
         if not can_access_table(user, r["id"], conn):
             continue
-        hint = _size_hint_for_row(r)
+        hint = _hint_for_row(r, bq_cache_index)
         visible.append({
             "id": r["id"],
             "name": r.get("name") or r["id"],
@@ -279,7 +222,8 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
             "rows": hint.get("rows"),
             "size_bytes": hint.get("size_bytes"),
             "partition_by": hint.get("partition_by"),
-            "clustered_by": hint.get("clustered_by"),
+            "clustered_by": hint.get("clustered_by") or [],
+            "metadata_freshness": hint.get("metadata_freshness"),
         })
 
     return {
@@ -294,12 +238,6 @@ def catalog(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     # Plain ``def`` so FastAPI auto-offloads to the anyio thread pool —
-    # build_catalog now calls `_size_hint_for_row` for every visible row,
-    # which does sync `Path.stat()` / `Path.exists()` on the data volume
-    # (local/materialized) or provider dispatch (remote). On local FS
-    # that's microseconds, but on a network-mounted DATA_DIR (NFS / CIFS /
-    # GCS-FUSE) those calls can block. Plain ``def`` means each request
-    # runs on its own thread; the event loop stays free for non-catalog
-    # traffic. Mirrors the Tier 1 conversion of /api/query, /api/v2/scan,
-    # /api/v2/sample, /api/v2/schema — Devin Review on PR #188.
+    # the request path is pure local I/O (DuckDB reads + filesystem
+    # stat()) and uses a sync DuckDB cursor.
     return build_catalog(conn, user)
