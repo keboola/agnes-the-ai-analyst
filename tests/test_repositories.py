@@ -185,7 +185,7 @@ class TestAuditRepository:
         repo = AuditRepository(db_conn)
         repo.log(user_id="u1", action="sync_trigger", resource="orders",
                  params={"force": True}, result="ok", duration_ms=1200)
-        entries = repo.query(limit=10)
+        entries, _ = repo.query(limit=10)
         assert len(entries) == 1
         assert entries[0]["action"] == "sync_trigger"
         assert entries[0]["duration_ms"] == 1200
@@ -195,7 +195,7 @@ class TestAuditRepository:
         repo = AuditRepository(db_conn)
         repo.log(user_id="u1", action="sync_trigger", resource="orders")
         repo.log(user_id="u1", action="login", resource=None)
-        entries = repo.query(action="sync_trigger")
+        entries, _ = repo.query(action="sync_trigger")
         assert len(entries) == 1
 
     def test_query_by_user(self, db_conn):
@@ -203,7 +203,7 @@ class TestAuditRepository:
         repo = AuditRepository(db_conn)
         repo.log(user_id="u1", action="sync_trigger", resource="orders")
         repo.log(user_id="u2", action="sync_trigger", resource="customers")
-        entries = repo.query(user_id="u1")
+        entries, _ = repo.query(user_id="u1")
         assert len(entries) == 1
 
 
