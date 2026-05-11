@@ -91,25 +91,21 @@ The numbered steps are arranged so that:
     CLAUDE.md fetch, and Claude Code SessionStart/End hooks into one
     non-interactive call. Replaces the old `agnes auth import-token` +
     `agnes auth whoami` pair.
-  - The interactive question (skills copy vs on-demand) is the LAST step
-    before Confirm — by that point everything else is done, the user only
-    needs to decide one thing, and the assistant blocks on their answer.
   - `agnes diagnose` runs late so it doubles as a final smoke test after
-    plugins are in place, instead of gating them.
+    plugins are in place, instead of gating them. It is also the last
+    step before Confirm — the whole prompt is non-interactive, no
+    decision questions for the user.
 
-Layout (with marketplace plugins to install):
+Layout:
   0  TLS trust block (only when ca_pem is supplied)
   1  Install CLI
   2  agnes init (auth + workspace bootstrap)
   3  agnes catalog (smoke verify)
   4  Pre-flight: git + claude
-  5  Marketplace + plugins
-  6  Diagnose
-  7  Skills (interactive — assistant waits for user)
+  5  Marketplace (always, even with empty served stack)
+  6  MCP servers (Atlassian Remote MCP)
+  7  Diagnose
   8  Confirm
-
-Layout (no plugins): steps 4-5 collapse out, diagnose/skills/confirm
-renumber to 4-5-6.
 
 The combined-bundle source uses a fallback chain so the prompt still works
 on machines without the system Python `certifi`: we try (a) `python3 -c
@@ -361,20 +357,23 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     ]
 
 
-def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
-    """Diagnose + skills steps — moved AFTER the marketplace block.
+def _diagnose_lines(*, diagnose_num: str) -> list[str]:
+    """Diagnose step — runs AFTER the marketplace + MCP blocks.
 
-    Putting these last (instead of right after `whoami`) means: by the time
-    we ask the user the skills question, all installation work is finished —
-    the only thing the prompt is still waiting on is one human-loop answer.
-    `agnes diagnose` then doubles as a server-health smoke test that runs after
-    plugins are in place, not as a gate before them. With the new ordering
-    skills is the LAST step before Confirm, so the assistant must wait for
-    the user's answer before finalizing — there's no "run other steps in
-    parallel" affordance any more (and it isn't needed).
+    Putting it last (instead of right after `whoami`) means it doubles as
+    a server-health smoke test that runs once everything else is in place,
+    not as a gate before them. It is the last step before Confirm — the
+    whole prompt is non-interactive.
 
-    Step numbers are filled in by the caller because they shift between
-    the no-marketplace layout (4, 5) and the marketplace layout (6, 7).
+    The bundled `agnes skills` knowledge base (markdown documents listable
+    via `agnes skills list` / readable via `agnes skills show <name>`) is
+    no longer surfaced from this prompt: discovery happens organically
+    when CLAUDE.md or another skill references a specific entry (see the
+    `agnes skills show agnes-data-querying` mention in the CLAUDE.md
+    template's BigQuery section). Bulk-copying every skill into
+    `~/.claude/skills/agnes/` at setup time was an interactive opinion
+    question with no obvious right answer; on-demand lookup is the
+    one-size-fits-all default.
     """
     return [
         "",
@@ -387,25 +386,6 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
         "     - non-admin roles (e.g. `analyst`) that don't have grants to read",
         "       the system schema even on populated instances.",
         "   Only flag actual yellow/red checks (api / duckdb_state / users).",
-        "",
-        f"{skills_num}) Skills (ask the user — this is the last interactive step before Confirm):",
-        "   The CLI ships with reusable markdown skills (setup, connectors,",
-        "   corporate-memory, deploy, notifications, security, troubleshoot),",
-        "   listable via `agnes skills list` and readable via `agnes skills show <name>`.",
-        "",
-        "   Ask the user verbatim: \"Do you want me to copy the Agnes skills into",
-        "   ~/.claude/skills/agnes/ so they are always loaded in Claude Code,",
-        "   or should I pull them on-demand via `agnes skills show <name>` when",
-        "   needed?\"",
-        "",
-        "   Wait for the user's answer before moving to Confirm.",
-        "",
-        "   If they say copy:",
-        "     mkdir -p ~/.claude/skills/agnes",
-        "     for s in $(agnes skills list | awk '{print $1}'); do",
-        "       agnes skills show \"$s\" > ~/.claude/skills/agnes/\"$s\".md",
-        "     done",
-        "     echo \"Copied skills to ~/.claude/skills/agnes/\"",
     ]
 
 
@@ -417,16 +397,16 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
     the trust block ran (`has_ca`). The marketplace clone bullet is
     unconditional now — preflight + marketplace are always emitted (Fix B
     in the 2026-05-10 init-report response). Init + catalog + diagnose +
-    skills + version always render, so their bullets are unconditional."""
+    version always render, so their bullets are unconditional."""
     bullets = [
         "   - `agnes --version` output",
         "   - First few lines of `agnes catalog` (tables you can see)",
         "   - Confirmation that `./CLAUDE.md` and `./AGNES_WORKSPACE.md` exist",
         "   - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks",
         "   - The `agnes diagnose` overall status",
-        "   - Whether skills were copied or left on-demand",
         "   - Confirmation that `~/.agnes/marketplace/.git/` exists "
-        "(the marketplace clone) and that any granted plugins installed",
+        "(the marketplace clone) and that any plugins currently in the "
+        "served stack installed cleanly",
         "   - Reminder to scroll to the connector cards on /home and connect "
         "Asana / Google Workspace / Atlassian (those run separately from this script)",
     ]
@@ -493,13 +473,26 @@ def _marketplace_block(
 ) -> list[str]:
     """Build the marketplace + plugin-install block.
 
-    `plugin_install_names` may be empty: registering the per-user
-    marketplace clone with Claude Code is useful even when the operator
-    has zero plugin grants, because it pre-wires the SessionStart hook
-    and the grant flow — admin grants land on the next Claude Code
-    session without re-running setup. The block copy adapts for the
-    empty case so the comment-bullet doesn't promise plugin installs
-    that won't happen.
+    `plugin_install_names` is the user's current *served stack* as
+    computed by `src/marketplace_filter.py:resolve_user_marketplace` —
+    i.e.::
+
+        (admin_RBAC ∩ /marketplace subscriptions)
+          ∪ system-mandatory plugins (admin-pinned, auto-applied)
+          ∪ Flea market installs (skills/agents bundled, plugins standalone)
+
+    May be empty: the served stack is curated by the user on the
+    `/marketplace` page (admin grants are eligibility only — the user
+    opts in via "Add to stack") plus whatever the admin pinned as
+    system-mandatory plus the user's own Flea market picks. A brand-new
+    account with no system plugins and no curation has an empty stack
+    until something lands in any of those three buckets.
+
+    Registering the marketplace clone is unconditional regardless —
+    Claude Code learns about the `agnes` marketplace at bootstrap, and
+    the moment the served stack becomes non-empty, the user's next
+    `/update-agnes-plugins` run installs the diff. No need to re-run
+    setup when the stack changes server-side.
 
     `step_num` is parameterized because step ordering shifted between
     layouts (this block now runs before diagnose/skills, so it's step 5
@@ -555,29 +548,41 @@ def _marketplace_block(
     """
     has_plugins = bool(plugin_install_names)
     header = (
-        "Register the Agnes Claude Code marketplace and install plugins:"
+        "Register the Agnes Claude Code marketplace and install your current stack:"
         if has_plugins
-        else "Register the Agnes Claude Code marketplace (no plugins granted yet):"
+        else "Register the Agnes Claude Code marketplace (your stack is empty for now):"
     )
     bullet_5 = (
-        "   #   5. install every plugin listed in the served manifest"
+        "   #   5. install every plugin currently in your served stack"
         if has_plugins
-        else "   #   5. (no plugins to install — your account has zero grants)"
+        else "   #   5. (your served stack is empty right now — nothing to install yet)"
     )
     if has_plugins:
         trailer = [
             "   These run non-interactively. After they finish, tell the user to /exit",
-            "   and run `claude` again so the new plugins load. From then on, the",
-            "   SessionStart hook keeps the marketplace clone in sync via",
-            "   `agnes refresh-marketplace --quiet` on every Claude Code session.",
+            "   and run `claude` again so the new plugins load.",
+            "",
+            "   Stack curation lives on the server — visit /marketplace to add or",
+            "   remove items (admin-granted opt-ins, system plugins your org pinned,",
+            "   and uploads from the Flea market tab). The SessionStart hook checks",
+            "   for server-side changes on every Claude Code session and, when it",
+            "   detects a diff, prompts you to run `/update-agnes-plugins` inside",
+            "   Claude Code to apply it. No silent auto-install at session start —",
+            "   the slash command runs full reconcile with output visible in the",
+            "   transcript, under your control.",
         ]
     else:
         trailer = [
-            "   Your account has no plugin grants right now, but registering the",
-            "   marketplace anyway pre-wires the SessionStart hook. When an admin",
-            "   grants you a plugin later, `agnes refresh-marketplace` (run by the",
-            "   hook on every Claude Code session) will install it automatically —",
-            "   no need to re-run this setup script.",
+            "   Your served stack is empty right now — nothing to install yet.",
+            "   Registering the marketplace clone anyway pre-wires Claude Code so",
+            "   future picks land cleanly: visit /marketplace to add plugins to",
+            "   your stack (admin-granted opt-ins, uploads from the Flea market",
+            "   tab), or wait for your admin to pin something as system-mandatory.",
+            "",
+            "   When your stack becomes non-empty, the SessionStart hook detects",
+            "   the change on the next Claude Code session and prompts you to run",
+            "   `/update-agnes-plugins` inside Claude Code to install the new",
+            "   items. No need to re-run this setup script.",
         ]
     return [
         "",
@@ -670,28 +675,23 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
     return lines
 
 
-def _step_numbers(*, has_skills: bool = True) -> dict[str, str]:
+def _step_numbers() -> dict[str, str]:
     """Compute the step numbers for the unified layout.
 
     Returns a dict keyed by logical step name; values are stringified
     1-based step numbers (preserving the existing string-based helper API
     so call sites stay diff-minimal).
 
-    Mandatory steps (always emitted): install (1), init (2), catalog (3),
-    preflight (4), marketplace (5), mcp_servers (6), diagnose (7), skills
-    (8), confirm (9). Preflight + marketplace + mcp_servers are all
-    always-on:
-      - Marketplace registration is useful even when the operator has
-        zero plugin grants (SessionStart hook reconciles future grants
-        automatically).
+    Steps (always emitted): install (1), init (2), catalog (3),
+    preflight (4), marketplace (5), mcp_servers (6), diagnose (7),
+    confirm (8). Preflight + marketplace + mcp_servers are all always-on:
+      - Marketplace registration is useful even with an empty served
+        stack (future admin grants / system pins / Flea installs land
+        cleanly without re-running setup).
       - Atlassian MCP registration is unattended-safe (hosted Remote MCP
         with Claude Code-managed OAuth) and applies to every analyst
         whose work touches Jira/Confluence — high enough hit rate to
         justify default-on.
-
-    `has_skills` is kept as a parameter for future flexibility; default
-    True (the Resolved-Question section in the original plan settled on
-    always-on).
 
     Step-0 (TLS trust block) sits outside this numbering — it is gated by
     has_ca and has its own "0)" header rendered inside the trust block
@@ -702,16 +702,12 @@ def _step_numbers(*, has_skills: bool = True) -> dict[str, str]:
     marketplace = str(n); n += 1
     mcp_servers = str(n); n += 1
     diagnose = str(n); n += 1
-    skills = str(n) if has_skills else ""
-    if has_skills:
-        n += 1
     confirm = str(n)
     return {
         "preflight": preflight,
         "marketplace": marketplace,
         "mcp_servers": mcp_servers,
         "diagnose": diagnose,
-        "skills": skills,
         "confirm": confirm,
     }
 
@@ -729,10 +725,12 @@ def resolve_lines(
     `{server_url}` and `{token}` as placeholders for click-time JS
     substitution (or for `render_setup_instructions()` below).
 
-    When `plugin_install_names` is empty/None, the output matches the
-    six-step no-marketplace layout (Confirm = step 6). When non-empty, a
-    step-4 pre-flight + step-5 marketplace block are inserted and Confirm
-    becomes step 8.
+    The layout is the same regardless of `plugin_install_names`: install
+    (1), init (2), catalog (3), preflight (4), marketplace (5),
+    mcp_servers (6), diagnose (7), confirm (8). The marketplace block's
+    copy adapts to an empty served stack but the step is always emitted
+    so future stack changes (admin grants, system pins, Flea installs)
+    land cleanly without re-running setup.
 
     `ca_pem` (PEM-encoded fullchain of the Agnes server's TLS cert) gates
     the cross-platform step-0 trust-bootstrap block AND switches step 1 to
@@ -749,14 +747,10 @@ def resolve_lines(
     names = list(plugin_install_names or [])
     has_ca = bool(ca_pem and ca_pem.strip())
 
-    # Step layout. Preflight + marketplace go BEFORE diagnose/skills so the
-    # human-loop skills question is the last step before Confirm. Both are
-    # always emitted: the marketplace registration is useful even with zero
-    # plugin grants (the SessionStart hook reconciles future admin grants
-    # automatically without re-running setup). `_step_numbers` returns the
-    # renumbered step labels in one place — no branch on every helper — so
-    # the layout is unambiguous and trivially extendable.
-    steps = _step_numbers(has_skills=True)
+    # Step layout — single fixed shape; `_step_numbers` returns the
+    # renumbered step labels in one place so the layout is unambiguous
+    # and trivially extendable when a future step is added.
+    steps = _step_numbers()
 
     lines: list[str] = []
     if has_ca:
@@ -767,10 +761,9 @@ def resolve_lines(
     lines.extend(_preflight_block(steps["preflight"]))                       # 4
     lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))    # 5
     lines.extend(_mcp_servers_block(steps["mcp_servers"]))                    # 6
-    # Diagnose + skills come AFTER marketplace + MCP wiring.
-    lines.extend(_diagnose_skills_lines(
-        diagnose_num=steps["diagnose"], skills_num=steps["skills"],
-    ))
+    # Diagnose runs AFTER marketplace + MCP wiring so it doubles as a
+    # final smoke test, not a pre-install gate.
+    lines.extend(_diagnose_lines(diagnose_num=steps["diagnose"]))             # 7
     lines.append("")
     lines.extend(_finale_lines(
         confirm_step_num=steps["confirm"],

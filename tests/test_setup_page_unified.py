@@ -37,10 +37,10 @@ def test_setup_page_renders_unified_layout(client):
 
       - `agnes init` is mandatory (subsumes the old admin-only
         `agnes auth import-token` + `agnes auth whoami` pair).
-      - Marketplace block is always emitted (Fix B in 2026-05-10
-        init-report response): anonymous visitors with no plugin grants
-        still get the marketplace registration step so the SessionStart
-        hook is pre-wired. Confirm = step 8.
+      - Marketplace block is always emitted: anonymous visitors with no
+        plugin grants still get the marketplace registration step so
+        future stack changes land cleanly. Confirm = step 8 in the
+        post-skills-removal layout.
     """
     resp = client.get("/setup", follow_redirects=True)
     assert resp.status_code == 200
@@ -49,9 +49,9 @@ def test_setup_page_renders_unified_layout(client):
     assert "agnes init" in text
     # Legacy admin-only login verbs are gone from the rendered prompt.
     assert "agnes auth import-token" not in text
-    # Always-on layout (preflight + marketplace + MCP block all unconditional):
-    # Confirm = step 9.
-    assert "9) Confirm:" in text
+    # Always-on layout (preflight + marketplace + MCP all unconditional,
+    # skills removed): Confirm = step 8.
+    assert "8) Confirm:" in text
 
 
 def test_setup_page_ignores_role_query_param(client):
@@ -72,14 +72,15 @@ def test_setup_page_ignores_role_query_param(client):
 
 
 def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch):
-    """When the caller has plugin grants in `resource_grants`, the
-    unified flow inserts the marketplace + plugins block (step 5) and
-    Confirm shifts to step 8.
+    """When the caller has a non-empty served stack, the marketplace block
+    renders the "install your current stack" copy variant. Confirm stays
+    at step 8 in the post-skills-removal layout (preflight + marketplace
+    + MCP all always-on regardless of stack contents).
 
     Stub `marketplace_filter.resolve_user_marketplace` to return a
     plugin so we don't have to seed the full marketplace plumbing in
-    this test — we're verifying the layout switch, not the RBAC
-    resolver itself (covered by `test_marketplace_filter`).
+    this test — we're verifying the layout, not the RBAC resolver
+    itself (covered by `test_marketplace_filter`).
 
     Post-Model B (v28+): the setup page reads from
     `resolve_user_marketplace` (which gates on explicit subscriptions)
@@ -109,11 +110,11 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
     # Marketplace block marker. The per-plugin install lines moved inside
     # `agnes refresh-marketplace --bootstrap`, so we check the section
     # header + the one-liner instead of `claude plugin install <name>@agnes`.
-    assert "Register the Agnes Claude Code marketplace" in text
+    # Non-empty stack → "install your current stack" header variant.
+    assert "Register the Agnes Claude Code marketplace and install your current stack" in text
     assert "agnes refresh-marketplace --bootstrap" in text
-    # Layout shift: Confirm is now step 9 (preflight + marketplace + MCP all
-    # always-on per Fix B + Fix C in 2026-05-10 init-report response).
-    assert "9) Confirm:" in text
+    # Post-skills-removal layout: Confirm is step 8.
+    assert "8) Confirm:" in text
     # Pre-flight is in the rendered prompt at step 4.
     assert "Make sure git and claude are installed" in text
     # Atlassian MCP registration is at step 6.

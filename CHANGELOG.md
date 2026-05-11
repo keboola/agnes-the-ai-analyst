@@ -10,6 +10,40 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **Setup prompt + CLAUDE.md template: marketplace copy now reflects the
+  actual three-source served stack composition + `--check`-only
+  SessionStart hook.** Previous text (shipped in 0.48.0 / PR #240) said
+  the SessionStart hook keeps the marketplace clone in sync via
+  `agnes refresh-marketplace --quiet` on every session, and that admin
+  grants land automatically without re-running setup — both false since
+  PR #237 (0.47.x) moved the install/update path out of the hook into
+  the `/update-agnes-plugins` slash command. The hook is `--check`-only:
+  it detects server-side changes and prompts the user to run the slash
+  command, which does the full reconcile interactively with output
+  visible in the transcript. Updated copy spells out the real
+  composition of the served stack — `(admin RBAC ∩ /marketplace
+  subscriptions) ∪ system-mandatory plugins ∪ Flea market installs` —
+  rather than the admin-grants-only framing the previous copy implied.
+  Affects: `app/web/setup_instructions.py:_marketplace_block` (both
+  trailer variants) and `config/claude_md_template.txt` (Agnes
+  Marketplace section).
+
+### Removed
+
+- **Setup prompt's interactive Skills step deleted.** The final step
+  before Confirm used to ask the user verbatim whether to bulk-copy
+  every `agnes skills` markdown file into `~/.claude/skills/agnes/` or
+  pull them on-demand via `agnes skills show <name>`. The named-opinion
+  question with no obvious right answer was confusing for new users at
+  the tail end of a wall of technical steps. On-demand lookup via
+  `agnes skills show <name>` is the one-size-fits-all default — the
+  CLI knowledge base remains discoverable through `agnes skills list`
+  and the CLAUDE.md template references specific skills (e.g.
+  `agnes-data-querying`) inline where they're relevant. Layout: Confirm
+  shifts from step 9 to step 8 across all variants.
+
 ## [0.48.0] — 2026-05-10
 
 ### Fixed

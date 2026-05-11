@@ -67,15 +67,28 @@ and use `agnes snapshot create --estimate` to size-check before fetching.
 {% if marketplaces -%}
 ## Agnes Marketplace — plugins available to you
 
-These plugins reach Claude Code through the per-user **`agnes`** marketplace
-served by this server (an aggregated, RBAC-filtered view of the upstream
-marketplaces below). When you install or invoke one of these plugins inside
-Claude Code, address it as `<plugin>@agnes` regardless of which upstream it
-came from — e.g. `claude plugin install <plugin>@agnes`. The
-`agnes refresh-marketplace` command (run by the SessionStart hook every
-session) keeps the local clone in sync.
+The Agnes server publishes a per-user **`agnes`** Claude Code marketplace,
+aggregated from upstream marketplaces and RBAC-filtered. The list below is
+your **eligibility set** — plugins your account is allowed to add to its
+stack on the `/marketplace` page. Eligibility ≠ installed.
 
-Upstream marketplaces folded into your `agnes` view:
+What actually reaches Claude Code is your **served stack**, which is:
+- plugins you opted in to on `/marketplace` (from the eligibility set above),
+- plus any plugin your admin pinned as system-mandatory (auto-applied to every user),
+- plus skills / agents / plugins you installed from the **Flea market** tab on `/marketplace`.
+
+When you install or invoke a stack plugin inside Claude Code, address it
+as `<plugin>@agnes` regardless of which upstream marketplace it came from
+— e.g. `claude plugin install <plugin>@agnes`.
+
+Updates: the SessionStart hook runs `agnes refresh-marketplace --check`
+on every Claude Code session — it only **detects** server-side changes
+(new admin grants, new system plugins, your own `/marketplace` picks) and
+prompts you to run `/update-agnes-plugins` inside Claude Code to install
+the diff. The slash command does the full reconcile with output visible
+in the transcript; no silent auto-install at session start.
+
+Upstream marketplaces folded into your `agnes` view (eligibility):
 {% for mp in marketplaces -%}
 - **{{ mp.name }}** ({{ mp.slug }}): {{ mp.plugins | map(attribute="name") | join(", ") }}
 {% endfor %}
