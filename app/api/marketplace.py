@@ -617,11 +617,17 @@ async def list_categories(
         else:  # my — direct read mirroring the items endpoint's `my` branch.
             granted = resolve_allowed_plugins(conn, user)
             subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
-            for p in granted:
-                if (p["marketplace_id"], p["original_name"]) not in subs:
-                    continue
-                cat = (p["raw"].get("category") or "").strip() or "Other"
-                counts[cat] = counts.get(cat, 0) + 1
+            # Curated plugins are always type='plugin'. When the type filter
+            # is set to skill/agent, those rows won't show in the items grid
+            # (filtered out by the items endpoint at line 579), so they must
+            # not contribute to the category counts either — otherwise the
+            # pill counts overstate what the user will actually see.
+            if type is None or type == "plugin":
+                for p in granted:
+                    if (p["marketplace_id"], p["original_name"]) not in subs:
+                        continue
+                    cat = (p["raw"].get("category") or "").strip() or "Other"
+                    counts[cat] = counts.get(cat, 0) + 1
             for row in UserStoreInstallsRepository(conn).list_for_user(user["id"]):
                 if type and row.get("type") != type:
                     continue
