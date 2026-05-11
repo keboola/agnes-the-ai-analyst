@@ -81,3 +81,16 @@ def test_activity_center_redirects_to_admin_activity(seeded_app, admin_user):
     resp = seeded_app["client"].get("/activity-center", headers=admin_user, follow_redirects=False)
     assert resp.status_code == 308
     assert resp.headers["location"] == "/admin/activity"
+
+
+def test_dashboard_links_to_admin_activity(seeded_app, admin_user):
+    resp = seeded_app["client"].get("/dashboard", headers=admin_user)
+    assert resp.status_code == 200
+    assert "/admin/activity" in resp.text
+    assert "/activity-center" not in resp.text  # old URL removed
+
+
+def test_admin_header_includes_activity_link(seeded_app, admin_user):
+    resp = seeded_app["client"].get("/admin/activity", headers=admin_user)
+    assert resp.status_code == 200
+    assert 'href="/admin/activity"' in resp.text
