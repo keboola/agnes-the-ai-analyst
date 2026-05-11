@@ -50,29 +50,68 @@
 
   .item-detail .hero .head {
     display: grid;
-    grid-template-columns: 160px minmax(0, 1fr) 300px;
+    grid-template-columns: 380px minmax(0, 1fr) 300px;
     gap: 24px;
     align-items: start;
   }
   @media (max-width: 1100px) {
-    .item-detail .hero .head { grid-template-columns: 160px minmax(0, 1fr); }
+    .item-detail .hero .head { grid-template-columns: 380px minmax(0, 1fr); }
   }
   @media (max-width: 720px) {
     .item-detail .hero .head { grid-template-columns: 1fr; }
   }
 
-  .item-detail .hero .photo {
-    width: 160px; height: 160px;
-    border-radius: 14px;
-    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
-    border: 1px solid rgba(255,255,255,0.18);
-    display: flex; align-items: center; justify-content: center;
-    color: #fff;
-    font-size: 44px; font-weight: var(--font-bold);
-    letter-spacing: 1px;
-    overflow: hidden; flex-shrink: 0;
+  /* Hero window — macOS-style frame around the skill/agent cover photo.
+     Mirrors the plugin-detail hero window so the curated/flea detail
+     pages share a consistent visual language. The window's dark chrome
+     stays constant; only the surrounding hero gradient changes per kind
+     (skill=green, agent=purple). The body has aspect-ratio 715/310 so
+     curator-uploaded covers never crop to a square. */
+  .item-detail .hero .hero-window {
+    width: 380px;
+    background: #1e293b;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.40),
+                0 2px 6px rgba(0, 0, 0, 0.18);
+    flex-shrink: 0;
+    align-self: start;
   }
-  .item-detail .hero .photo img { width: 100%; height: 100%; object-fit: cover; }
+  .item-detail .hero .hero-window-titlebar {
+    background: linear-gradient(180deg, #2a3445 0%, #1e293b 100%);
+    height: 26px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.25);
+  }
+  .item-detail .hero .hwdot {
+    width: 11px; height: 11px; border-radius: 50%;
+    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+    flex-shrink: 0;
+  }
+  .item-detail .hero .hwdot.red    { background: #ff5f56; }
+  .item-detail .hero .hwdot.yellow { background: #ffbd2e; }
+  .item-detail .hero .hwdot.green  { background: #27c93f; }
+  .item-detail .hero .hero-window-label {
+    margin: 0 auto;
+    padding-right: 46px;
+    font-size: 10.5px; color: rgba(255, 255, 255, 0.55);
+    font-family: var(--font-mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%;
+  }
+  .item-detail .hero .hero-window-body {
+    aspect-ratio: 715 / 310;
+    overflow: hidden;
+    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 44px; font-weight: var(--font-bold);
+    letter-spacing: 1px;
+  }
+  .item-detail .hero .hero-window-body img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+  }
 
   .item-detail .hero .meta {
     min-width: 0;
@@ -247,6 +286,12 @@
   .item-detail .hero .actions .helper {
     font-size: 11px; color: rgba(255,255,255,0.78); line-height: 1.45;
     text-align: right; max-width: 260px;
+    /* Anchor the 260px box at the right edge of the 300px .actions column
+       so the helper's right edge lines up with the button's right edge —
+       without this the parent's `align-items: stretch` puts the box flush
+       LEFT, and text-align: right only right-aligns within the 260px box,
+       which sits ~40px short of the button. */
+    align-self: flex-end;
   }
   .item-detail .hero .actions .helper strong {
     color: #fff; font-weight: var(--font-semibold);
@@ -556,7 +601,15 @@
       <span id="crumb-loading">Loading…</span>
     </div>
     <div class="head">
-      <div class="photo" id="hero-photo">{{ 'SK' if kind == 'skill' else 'AG' }}</div>
+      <div class="hero-window" id="hero-photo" aria-hidden="true">
+        <div class="hero-window-titlebar">
+          <span class="hwdot red"></span>
+          <span class="hwdot yellow"></span>
+          <span class="hwdot green"></span>
+          <span class="hero-window-label" id="hero-window-label">{{ inner_name or item_name or plugin_name }}</span>
+        </div>
+        <div class="hero-window-body" id="hero-window-body">{{ 'SK' if kind == 'skill' else 'AG' }}</div>
+      </div>
       <div class="meta">
         <h1 id="hero-name">{{ inner_name or item_name or plugin_name }}</h1>
         <div class="meta-row" id="hero-meta-row"></div>
@@ -571,6 +624,7 @@
          #hero-actions); stack-hint stacks below as a glass card. -->
     <div class="actions">
       <div class="actions-row" id="hero-actions"></div>
+      <div class="helper" id="hero-helper" hidden></div>
       <div class="stack-hint" id="stack-hint" hidden>
         <div class="head">
           <span class="title" id="stack-hint-title">✓ Added to your stack</span>
@@ -739,16 +793,22 @@
   // ── Hero name ──────────────────────────────────────────────────────
   document.getElementById('hero-name').textContent = heroTitle;
 
+  // Hero window — macOS-style frame around the cover. The titlebar label
+  // carries the skill/agent name (heroTitle); the body holds the cover
+  // photo (or a placeholder gradient + 'SK'/'AG' initials when no cover).
+  const labelEl = document.getElementById('hero-window-label');
+  if (labelEl) labelEl.textContent = heroTitle;
+
   // Cover photo — flea may have one; curated v32 may also have one when
-  // marketplace-metadata.json sub-tree references a skill/agent cover via either
-  // an internal path (resolved to /asset/) or an external URL.
+  // marketplace-metadata.json sub-tree references a skill/agent cover via
+  // either an internal path (resolved to /asset/) or an external URL.
   if (d.cover_photo_url) {
-    const heroPhoto = document.getElementById('hero-photo');
-    // Initials fallback already lives inside #hero-photo (rendered by the
-    // server-side template as 'SK' / 'AG'). Capture before swapping so a
-    // 404 on the cover restores the original glyph.
-    const initials = heroPhoto.textContent || (kind === 'skill' ? 'SK' : 'AG');
-    heroPhoto.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
+    const bodyEl = document.getElementById('hero-window-body');
+    // Initials fallback already lives inside #hero-window-body (rendered by
+    // the server-side template as 'SK' / 'AG'). Capture before swapping so
+    // a 404 on the cover restores the original glyph.
+    const initials = bodyEl.textContent || (kind === 'skill' ? 'SK' : 'AG');
+    bodyEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
         onerror="this.parentElement.classList.add('photo-failed');
                  this.parentElement.textContent=this.dataset.fallback;"
         data-fallback="${esc(initials)}">`;
@@ -874,12 +934,16 @@
   }
 
   if (source === 'curated') {
-    actions.innerHTML = `
-      <a class="btn" href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">Open parent plugin →</a>
-      <div class="helper">
-        This ${esc(kind === 'skill' ? 'skill' : 'agent')} is part of <strong>${esc(pluginName)}</strong>.<br>
-        Add the bundle to your stack to use it.
-      </div>`;
+    // Button alone in the actions-row (the row is flex-direction: row;
+    // putting the helper inside it would lay them side-by-side). The
+    // helper sits in #hero-helper, a sibling under the actions-row, so
+    // the outer .actions flex-column stacks them: button → helper.
+    actions.innerHTML = `<a class="btn primary" href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">Open parent plugin →</a>`;
+    const helperEl = document.getElementById('hero-helper');
+    helperEl.innerHTML = `
+      This ${esc(kind === 'skill' ? 'skill' : 'agent')} is part of <strong>${esc(pluginName)}</strong>.<br>
+      Add the bundle to your stack to use it.`;
+    helperEl.hidden = false;
   } else {
     // v32+ quarantine: when the entity is non-approved (only owner +
     // admin land here — server-side gate 404s anyone else), render

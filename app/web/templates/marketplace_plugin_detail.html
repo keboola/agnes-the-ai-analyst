@@ -36,30 +36,71 @@
 
   .plugin-detail .hero-head {
     display: grid;
-    grid-template-columns: 160px minmax(0, 1fr) 300px;
+    grid-template-columns: 380px minmax(0, 1fr) 300px;
     gap: 22px;
     align-items: start;
   }
   @media (max-width: 1100px) {
-    .plugin-detail .hero-head { grid-template-columns: 160px minmax(0, 1fr); }
+    .plugin-detail .hero-head { grid-template-columns: 380px minmax(0, 1fr); }
   }
   @media (max-width: 720px) {
     .plugin-detail .hero-head {
       grid-template-columns: 1fr;
     }
   }
-  .plugin-detail .photo {
-    width: 160px; height: 160px;
-    border-radius: 14px;
-    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
-    border: 1px solid rgba(255,255,255,0.18);
-    display: flex; align-items: center; justify-content: center;
+  /* Hero window — macOS-style frame around the cover photo. The body has
+     aspect-ratio 715/310 so curator-uploaded covers never crop to a
+     square. Titlebar shows 3 traffic-light dots + the plugin's
+     manifest_name as a centered label. When cover_photo_url is missing
+     (or the image 404s), the body falls back to a translucent gradient
+     with the plugin's initials — same placeholder feel as before. */
+  .plugin-detail .hero-window {
+    width: 380px;
+    background: #1e293b;
+    border-radius: 10px;
     overflow: hidden;
-    color: #fff; font-size: 44px; font-weight: 700;
-    letter-spacing: 1px;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.40),
+                0 2px 6px rgba(0, 0, 0, 0.18);
+    flex-shrink: 0;
+    align-self: start;
+  }
+  .plugin-detail .hero-window-titlebar {
+    background: linear-gradient(180deg, #2a3445 0%, #1e293b 100%);
+    height: 26px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.25);
+  }
+  .plugin-detail .hwdot {
+    width: 11px; height: 11px; border-radius: 50%;
+    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
     flex-shrink: 0;
   }
-  .plugin-detail .photo img { width: 100%; height: 100%; object-fit: cover; }
+  .plugin-detail .hwdot.red    { background: #ff5f56; }
+  .plugin-detail .hwdot.yellow { background: #ffbd2e; }
+  .plugin-detail .hwdot.green  { background: #27c93f; }
+  .plugin-detail .hero-window-label {
+    margin: 0 auto;
+    /* mirror the dots' left footprint (~46px) on the right so the
+       label lands optically centered, not visually offset by the dots */
+    padding-right: 46px;
+    font-size: 10.5px; color: rgba(255, 255, 255, 0.55);
+    font-family: var(--font-mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%;
+  }
+  .plugin-detail .hero-window-body {
+    aspect-ratio: 715 / 310;
+    overflow: hidden;
+    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 44px; font-weight: 700; letter-spacing: 1px;
+  }
+  .plugin-detail .hero-window-body img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+  }
+
   .plugin-detail .meta { min-width: 0; }
   .plugin-detail h1 {
     margin: 0 0 6px; font-size: 28px; font-weight: 700;
@@ -184,9 +225,10 @@
   /* Glass-on-gradient: lives inside the hero, sitting under the action
      row in the third grid column. Translucent white over the blue
      gradient reads as "elevated tile of the same hero" — no white-on-
-     white card insertion, no layout-shift below the hero (the photo
-     column is 160px and the action+hint stack stays under that, so
-     toggling the hint visibility doesn't grow the hero in practice). */
+     white card insertion, no layout-shift below the hero (the hero
+     window's titlebar + 715:310 body run taller than the action+hint
+     stack, so toggling the hint visibility doesn't grow the hero in
+     practice). */
   .plugin-detail .stack-hint {
     padding: 10px 12px;
     background: rgba(255, 255, 255, 0.14);
@@ -368,7 +410,7 @@
     transform: translateY(-1px);
   }
   .plugin-detail .inner-card .photo {
-    width: 100%; height: 78px;
+    width: 100%; aspect-ratio: 715 / 310;
     display: flex; align-items: center; justify-content: center;
     background: linear-gradient(135deg, var(--primary-light) 0%, #fce7f3 100%);
     color: var(--primary);
@@ -571,7 +613,15 @@
       <span id="crumb-name">{{ plugin_name }}</span>
     </div>
     <div class="hero-head">
-      <div class="photo" id="hero-photo" aria-hidden="true">PL</div>
+      <div class="hero-window" id="hero-photo" aria-hidden="true">
+        <div class="hero-window-titlebar">
+          <span class="hwdot red"></span>
+          <span class="hwdot yellow"></span>
+          <span class="hwdot green"></span>
+          <span class="hero-window-label" id="hero-window-label">{{ plugin_name }}</span>
+        </div>
+        <div class="hero-window-body" id="hero-window-body">PL</div>
+      </div>
       <div class="meta">
         <h1 id="hero-name">{{ plugin_name }}</h1>
         <div class="tagline" id="hero-tagline">Loading…</div>
@@ -581,8 +631,8 @@
     </div>
     <!-- Actions absolutely anchored at the hero's top-right corner with
          the post-action hint card stacked below them. Both stay inside
-         the hero gradient — the hero's natural height (160px photo)
-         contains them without overflow. -->
+         the hero gradient — the hero's natural height (window titlebar
+         + 715:310 body ≈ 191px) contains them without overflow. -->
     <div class="actions">
       <div class="actions-row">
         <button class="btn-install" id="install-btn" type="button" hidden>+ Add to my stack</button>
@@ -733,21 +783,26 @@
   if (d.updated_at) pillBits.push(`<span class="pill muted">Updated ${esc(fmtRelative(d.updated_at))}</span>`);
   pills.innerHTML = pillBits.join('');
 
-  // Cover photo
-  const photoEl = document.getElementById('hero-photo');
+  // Hero window — macOS-style frame around the cover photo. The titlebar
+  // label carries the plugin's manifest_name; the body holds the cover
+  // photo (or a placeholder gradient + initials when no cover is set).
+  const labelEl = document.getElementById('hero-window-label');
+  if (labelEl) labelEl.textContent = d.manifest_name || d.plugin_name;
+
+  const bodyEl = document.getElementById('hero-window-body');
   if (d.cover_photo_url) {
     // Same fallback pattern as the marketplace card grid — when the cover
     // 404s (missing internal file, or external mirror failed and the
     // pass-through URL is dead), restore the initials placeholder so the
     // hero looks identical to the no-cover case rather than showing the
     // browser's broken-image icon.
-    const initials = photoEl.textContent || 'PL';
-    photoEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
+    const initials = bodyEl.textContent || 'PL';
+    bodyEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
         onerror="this.parentElement.classList.add('photo-failed');
                  this.parentElement.textContent=this.dataset.fallback;"
         data-fallback="${esc(initials)}">`;
   } else {
-    photoEl.textContent = 'PL';
+    bodyEl.textContent = 'PL';
   }
 
   // Three-element install state: install button (off-state CTA), status
