@@ -14,6 +14,8 @@ NOT this task. This module ships without recursive auditing initially.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -29,6 +31,42 @@ router = APIRouter(prefix="/api/admin/activity", tags=["activity"])
 
 _HEALTH_CACHE: dict = {"data": None, "expires_at": None}
 _HEALTH_TTL_SECONDS = 30
+
+# Per-process dedup cache.
+# NOTE: This is module-global and lives only in ONE uvicorn worker.
+# v40 ships requiring single-worker uvicorn (Agnes compose default).
+# If multi-worker is later enabled, this must move to a shared store
+# (Redis, or a TTL-cleaned DuckDB table). The dedup is a performance
+# safeguard against /health polling spam, NOT a security control — a
+# malicious admin polling at 61s intervals can defeat it. See parent
+# spec §7.3.
+_RECENT_AUDITS: dict[tuple[str, str], datetime] = {}
+_AUDIT_SUPPRESS_WINDOW = timedelta(seconds=60)
+
+
+def _should_audit(actor_id: str, filter_payload: dict) -> bool:
+    """True if this (actor, filter) combo hasn't been audited in the last 60s."""
+    key = (actor_id, hashlib.sha1(json.dumps(filter_payload, sort_keys=True, default=str).encode()).hexdigest())
+    now = datetime.now(timezone.utc)
+    last = _RECENT_AUDITS.get(key)
+    if last is not None and (now - last) < _AUDIT_SUPPRESS_WINDOW:
+        return False
+    _RECENT_AUDITS[key] = now
+    return True
+
+
+def _audit_read(conn, user: dict, endpoint: str, filter_payload: dict) -> None:
+    """Emit a deduped audit row for an AC read endpoint."""
+    actor_id = (user or {}).get("id") or "anonymous"
+    if not _should_audit(actor_id, {"endpoint": endpoint, **filter_payload}):
+        return
+    AuditRepository(conn).log(
+        user_id=actor_id,
+        action="activity.read",
+        params={"endpoint": endpoint, **filter_payload},
+        result="success",
+        client_kind="web",
+    )
 
 
 @router.get("")
@@ -59,6 +97,11 @@ def activity_timeline(
         limit=limit,
     )
 
+    _audit_read(conn, user, "timeline", {
+        "since_minutes": since_minutes,
+        "user_id": user_id, "action_prefix": action_prefix,
+        "resource": resource, "result_pattern": result_pattern, "q": q,
+    })
     return {
         "rows": rows,
         "next_cursor": (
@@ -87,6 +130,7 @@ def activity_health(
     data = _compute_health(conn, now)
     _HEALTH_CACHE["data"] = data
     _HEALTH_CACHE["expires_at"] = now + timedelta(seconds=_HEALTH_TTL_SECONDS)
+    _audit_read(conn, user, "health", {})
     return data
 
 
@@ -99,6 +143,7 @@ def activity_sync(
 ):
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
     rows = SyncStateRepository(conn).list_recent(since=since, limit=limit)
+    _audit_read(conn, user, "sync", {"since_minutes": since_minutes})
     return {"rows": rows}
 
 
