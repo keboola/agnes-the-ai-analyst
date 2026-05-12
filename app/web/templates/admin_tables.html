@@ -607,6 +607,11 @@
             color: #8B5CF6;
         }
 
+        .mode-badge.mode-internal {
+            background: rgba(15, 118, 110, 0.1);
+            color: #0F766E;
+        }
+
         .folder-badge {
             display: inline-block;
             padding: 1px 6px;
@@ -1646,6 +1651,26 @@
                 To register a new Jira webhook integration, see
                 <code>docs/connectors/jira.md</code>.</p>
             <div id="jiraTableListing"></div>
+        </section>
+
+        {# Internal data source — read-only panel listing the agnes_*
+           tables auto-seeded from `connectors/internal/registry.py`.
+           Renders the same registry-table layout the per-source tabs
+           use (via renderRegistryListing), so admins see consistent
+           columns. No Register button — these rows are seeded on app
+           boot, not added through the UI; the seed re-applies on every
+           start so operators can't edit them away. #}
+        <section class="card" style="margin-bottom: 20px;">
+            <header class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <h2>Agnes internal tables</h2>
+                <span style="font-size: 12px; color: var(--text-secondary);">auto-seeded · read-only</span>
+            </header>
+            <p class="hint" style="margin-bottom: 16px;">
+                System tables backed by <code>system.duckdb</code> and exposed to <code>agnes query</code>
+                through the internal connector. Per-row RBAC: non-admin sees their own rows; admin sees all.
+                Seeded on every boot from <code>connectors/internal/registry.py</code>.
+            </p>
+            <div id="internalTableListing"></div>
         </section>
 
         {# Legacy out-of-tab panels (BQ Register card, Keboola Discovery card,
@@ -3080,6 +3105,10 @@
                     document.getElementById('jiraTableListing'),
                     tables.filter(function(t) { return t.source_type === 'jira'; })
                 );
+                renderRegistryListing(
+                    document.getElementById('internalTableListing'),
+                    tables.filter(function(t) { return t.source_type === 'internal'; })
+                );
             })
             .catch(function(err) {
                 var msg = '<div class="panel-body-empty" style="color: var(--error);">Failed to load registry: ' + escapeHtml(err.message) + '</div>';
@@ -3087,13 +3116,18 @@
                     document.getElementById('bqTableListing'),
                     document.getElementById('kbTableListing'),
                     document.getElementById('jiraTableListing'),
+                    document.getElementById('internalTableListing'),
                 ].forEach(function(target) { if (target) target.innerHTML = msg; });
             });
     }
 
     function renderModeBadge(mode) {
         var m = (mode || 'local').toLowerCase();
-        var cls = 'mode-badge mode-' + (['local','remote','materialized'].indexOf(m) >= 0 ? m : 'local');
+        // `internal` is the v?? addition (agnes_* tables backed by
+        // system.duckdb). Allowlist it so the mode-badge picks up the
+        // dedicated CSS class instead of falling back to mode-local
+        // styling and lying about how the data is served.
+        var cls = 'mode-badge mode-' + (['local','remote','materialized','internal'].indexOf(m) >= 0 ? m : 'local');
         return '<span class="' + cls + '">' + escapeHtml(m) + '</span>';
     }
 
@@ -3168,16 +3202,27 @@
             html += '</td>';
 
             html += '<td class="col-actions"><div style="display:flex; gap:4px; justify-content:flex-end;">';
-            html += '<button class="btn-icon" title="Edit" onclick=\'openEditModal(' + JSON.stringify(table).replace(/'/g, "\\'") + ')\'>';
-            html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
-            html += '</button>';
+            // Internal source tables (agnes_*) are seeded on every app
+            // boot from connectors/internal/registry.py — Edit/Delete
+            // would either no-op or be reverted on next start. Hide both
+            // actions; Manage access stays because RBAC is still
+            // per-table (internal tables auto-grant; the link still
+            // takes the admin to the access page if they want to inspect).
+            var isInternal = (table.source_type === 'internal');
+            if (!isInternal) {
+                html += '<button class="btn-icon" title="Edit" onclick=\'openEditModal(' + JSON.stringify(table).replace(/'/g, "\\'") + ')\'>';
+                html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+                html += '</button>';
+            }
             // Manage access: deep-link to /admin/access pre-filtered to this table.
             html += '<button class="btn-icon" title="Manage access" onclick="manageAccess(\'' + escapeHtml(table.id).replace(/'/g, "\\'") + '\')">';
             html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
             html += '</button>';
-            html += '<button class="btn-icon danger" title="Delete" onclick="deleteTable(\'' + escapeHtml(table.id).replace(/'/g, "\\'") + '\')">';
-            html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-            html += '</button>';
+            if (!isInternal) {
+                html += '<button class="btn-icon danger" title="Delete" onclick="deleteTable(\'' + escapeHtml(table.id).replace(/'/g, "\\'") + '\')">';
+                html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+                html += '</button>';
+            }
             html += '</div></td></tr>';
         });
         html += '</tbody></table>';
