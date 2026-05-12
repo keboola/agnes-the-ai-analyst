@@ -119,7 +119,7 @@ def test_validator_accepts_column_named_read_count():
 def test_ask_endpoint_returns_503_when_no_api_key(seeded_app, admin_user, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     resp = seeded_app["client"].post(
-        "/api/admin/usage/ask",
+        "/api/admin/telemetry/ask",
         json={"question": "how many events today"},
         headers=admin_user,
     )
@@ -150,7 +150,7 @@ def test_ask_endpoint_executes_valid_sql(seeded_app, admin_user, monkeypatch):
             "rationale": "Counts all events.",
         }
         resp = seeded_app["client"].post(
-            "/api/admin/usage/ask",
+            "/api/admin/telemetry/ask",
             json={"question": "how many events"},
             headers=admin_user,
         )
@@ -170,7 +170,7 @@ def test_ask_endpoint_rejects_mutating_sql_returns_200_with_reject(seeded_app, a
             "rationale": "Drops the table.",
         }
         resp = seeded_app["client"].post(
-            "/api/admin/usage/ask",
+            "/api/admin/telemetry/ask",
             json={"question": "how do I delete everything"},
             headers=admin_user,
         )
@@ -189,7 +189,7 @@ def test_ask_endpoint_writes_audit_log_on_success(seeded_app, admin_user, monkey
             "rationale": "Tautology.",
         }
         seeded_app["client"].post(
-            "/api/admin/usage/ask",
+            "/api/admin/telemetry/ask",
             json={"question": "test"},
             headers=admin_user,
         )
@@ -216,7 +216,7 @@ def test_ask_endpoint_writes_audit_log_on_rejection(seeded_app, admin_user, monk
             "rationale": "Deletes everything.",
         }
         resp = seeded_app["client"].post(
-            "/api/admin/usage/ask",
+            "/api/admin/telemetry/ask",
             json={"question": "delete everything"},
             headers=admin_user,
         )
@@ -240,7 +240,7 @@ def test_ask_endpoint_writes_audit_log_on_rejection(seeded_app, admin_user, monk
 def test_ask_endpoint_admin_only(seeded_app, analyst_user, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
     resp = seeded_app["client"].post(
-        "/api/admin/usage/ask",
+        "/api/admin/telemetry/ask",
         json={"question": "anything"},
         headers=analyst_user,
     )
@@ -250,7 +250,7 @@ def test_ask_endpoint_admin_only(seeded_app, analyst_user, monkeypatch):
 def test_ask_endpoint_rejects_empty_question(seeded_app, admin_user, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
     resp = seeded_app["client"].post(
-        "/api/admin/usage/ask",
+        "/api/admin/telemetry/ask",
         json={"question": ""},
         headers=admin_user,
     )
@@ -260,7 +260,7 @@ def test_ask_endpoint_rejects_empty_question(seeded_app, admin_user, monkeypatch
 def test_ask_endpoint_rejects_too_long_question(seeded_app, admin_user, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
     resp = seeded_app["client"].post(
-        "/api/admin/usage/ask",
+        "/api/admin/telemetry/ask",
         json={"question": "x" * 1001},
         headers=admin_user,
     )
@@ -277,7 +277,7 @@ def test_ask_endpoint_row_cap_truncation(seeded_app, admin_user, monkeypatch):
             "rationale": "Returns 1001 numbers.",
         }
         resp = seeded_app["client"].post(
-            "/api/admin/usage/ask",
+            "/api/admin/telemetry/ask",
             json={"question": "give me lots of rows"},
             headers=admin_user,
         )

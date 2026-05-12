@@ -43,7 +43,7 @@ from src.usage_ask import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/admin/usage", tags=["admin-usage"])
+router = APIRouter(prefix="/api/admin/telemetry", tags=["admin-telemetry"])
 
 _FORMATS = ("csv", "json", "parquet")
 

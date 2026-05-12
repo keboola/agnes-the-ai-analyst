@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Usage — Admin{% endblock %}
+{% block title %}Telemetry — Admin{% endblock %}
 
 {% block content %}
 <div class="obs-page page-shell">
 
   <header class="obs-topbar">
     <div class="obs-topbar-left">
-      <h1 class="obs-title">Tool usage</h1>
-      <p class="obs-subtitle">Tool, skill, sub-agent and slash-command invocations parsed out of Claude Code session JSONLs. For server-side admin/API audit events, see <a href="/admin/activity">Server activity</a>.</p>
+      <h1 class="obs-title">Telemetry</h1>
+      <p class="obs-subtitle">Tool, skill, sub-agent and slash-command invocations parsed out of Claude Code session JSONLs — what analysts actually do. For server-side admin/API audit events, see <a href="/admin/activity">Server activity</a>.</p>
       <div class="obs-narrative" id="usage-narrative">Loading…</div>
     </div>
     <div class="obs-topbar-right">
@@ -251,7 +251,7 @@
 
   // --- Facets -------------------------------------------------------------
   async function loadFacets() {
-    const d = await get('/api/admin/usage/facets?since_minutes=' + state.window);
+    const d = await get('/api/admin/telemetry/facets?since_minutes=' + state.window);
     fillSelect(fUser, d.users || [], state.username);
     fillSelect(fTool, d.tools || [], state.tool_name);
     fillSelect(fSrc,  d.sources || [], state.source);
@@ -271,7 +271,7 @@
   // --- KPIs ---------------------------------------------------------------
   async function loadKpis() {
     const p = buildBaseQS();
-    const d = await get('/api/admin/usage/kpis?' + p.toString());
+    const d = await get('/api/admin/telemetry/kpis?' + p.toString());
     $('ukpi-events').textContent = fmtN(d.events_total);
     $('ukpi-users').textContent  = fmtN(d.distinct_users);
     $('ukpi-tools').textContent  = fmtN(d.distinct_tools);
@@ -309,7 +309,7 @@
     p.set('sort',   state.sort);
     p.set('limit',  '100');
     p.set('offset', state.offset);
-    const d = await get('/api/admin/usage/query?' + p.toString());
+    const d = await get('/api/admin/telemetry/query?' + p.toString());
     renderTable(d);
   }
   function renderTable(d) {

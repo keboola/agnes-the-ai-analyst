@@ -1,4 +1,4 @@
-"""GET /api/admin/usage/export — csv/json/parquet streaming."""
+"""GET /api/admin/telemetry/export — csv/json/parquet streaming."""
 from __future__ import annotations
 
 import csv
@@ -37,7 +37,7 @@ def test_export_csv_default(seeded_app, admin_user):
     conn.close()
     close_system_db()
 
-    resp = seeded_app["client"].get("/api/admin/usage/export?format=csv", headers=admin_user)
+    resp = seeded_app["client"].get("/api/admin/telemetry/export?format=csv", headers=admin_user)
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/csv")
     text = resp.text
@@ -54,7 +54,7 @@ def test_export_json_ndjson(seeded_app, admin_user):
     conn.close()
     close_system_db()
 
-    resp = seeded_app["client"].get("/api/admin/usage/export?format=json", headers=admin_user)
+    resp = seeded_app["client"].get("/api/admin/telemetry/export?format=json", headers=admin_user)
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("application/x-ndjson")
     lines = [l for l in resp.text.splitlines() if l.strip()]
@@ -72,7 +72,7 @@ def test_export_parquet(seeded_app, admin_user, tmp_path):
     conn.close()
     close_system_db()
 
-    resp = seeded_app["client"].get("/api/admin/usage/export?format=parquet", headers=admin_user)
+    resp = seeded_app["client"].get("/api/admin/telemetry/export?format=parquet", headers=admin_user)
     assert resp.status_code == 200
     out = tmp_path / "out.parquet"
     out.write_bytes(resp.content)
@@ -92,7 +92,7 @@ def test_export_filters_by_since(seeded_app, admin_user):
     close_system_db()
 
     resp = seeded_app["client"].get(
-        "/api/admin/usage/export?format=csv&since=2026-05-11", headers=admin_user
+        "/api/admin/telemetry/export?format=csv&since=2026-05-11", headers=admin_user
     )
     assert resp.status_code == 200
     rows = list(csv.reader(io.StringIO(resp.text)))
@@ -108,7 +108,7 @@ def test_export_filters_by_user(seeded_app, admin_user):
     close_system_db()
 
     resp = seeded_app["client"].get(
-        "/api/admin/usage/export?format=csv&user_id=nobody", headers=admin_user
+        "/api/admin/telemetry/export?format=csv&user_id=nobody", headers=admin_user
     )
     assert resp.status_code == 200
     rows = list(csv.reader(io.StringIO(resp.text)))
@@ -137,7 +137,7 @@ def test_export_filters_by_source(seeded_app, admin_user):
     close_system_db()
 
     resp = seeded_app["client"].get(
-        "/api/admin/usage/export?format=csv&source=curated", headers=admin_user
+        "/api/admin/telemetry/export?format=csv&source=curated", headers=admin_user
     )
     assert resp.status_code == 200
     rows = list(csv.reader(io.StringIO(resp.text)))
@@ -154,7 +154,7 @@ def test_export_writes_audit_log(seeded_app, admin_user):
     conn.close()
     close_system_db()
 
-    seeded_app["client"].get("/api/admin/usage/export?format=csv", headers=admin_user)
+    seeded_app["client"].get("/api/admin/telemetry/export?format=csv", headers=admin_user)
 
     conn = get_system_db()
     after = conn.execute(
@@ -174,21 +174,21 @@ def test_export_writes_audit_log(seeded_app, admin_user):
 
 def test_export_rejects_invalid_format(seeded_app, admin_user):
     resp = seeded_app["client"].get(
-        "/api/admin/usage/export?format=xml", headers=admin_user
+        "/api/admin/telemetry/export?format=xml", headers=admin_user
     )
     assert resp.status_code == 422  # FastAPI Literal validation
 
 
 def test_export_rejects_invalid_since(seeded_app, admin_user):
     resp = seeded_app["client"].get(
-        "/api/admin/usage/export?format=csv&since=not-a-date", headers=admin_user
+        "/api/admin/telemetry/export?format=csv&since=not-a-date", headers=admin_user
     )
     assert resp.status_code == 400
 
 
 def test_export_admin_only(seeded_app, analyst_user):
     resp = seeded_app["client"].get(
-        "/api/admin/usage/export?format=csv", headers=analyst_user
+        "/api/admin/telemetry/export?format=csv", headers=analyst_user
     )
     assert resp.status_code in (401, 403)
 

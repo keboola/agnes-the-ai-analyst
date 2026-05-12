@@ -1,4 +1,4 @@
-"""POST /api/admin/usage/reprocess and /prune."""
+"""POST /api/admin/telemetry/reprocess and /prune."""
 from __future__ import annotations
 
 import pytest
@@ -45,7 +45,7 @@ def test_reprocess_clears_usage_state_only(seeded_app, admin_user):
     _seed_usage_state(conn, n_events=3)
     conn.close()
 
-    resp = seeded_app["client"].post("/api/admin/usage/reprocess", headers=admin_user)
+    resp = seeded_app["client"].post("/api/admin/telemetry/reprocess", headers=admin_user)
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
@@ -76,7 +76,7 @@ def test_reprocess_writes_audit_log(seeded_app, admin_user):
     conn = get_system_db()
     _seed_usage_state(conn, n_events=2)
     conn.close()
-    seeded_app["client"].post("/api/admin/usage/reprocess", headers=admin_user)
+    seeded_app["client"].post("/api/admin/telemetry/reprocess", headers=admin_user)
     conn = get_system_db()
     n = conn.execute(
         "SELECT COUNT(*) FROM audit_log WHERE action='usage.reprocess'"
@@ -86,20 +86,20 @@ def test_reprocess_writes_audit_log(seeded_app, admin_user):
 
 
 def test_reprocess_admin_only(seeded_app, analyst_user):
-    resp = seeded_app["client"].post("/api/admin/usage/reprocess", headers=analyst_user)
+    resp = seeded_app["client"].post("/api/admin/telemetry/reprocess", headers=analyst_user)
     assert resp.status_code in (401, 403)
 
 
 def test_prune_skipped_when_retention_unset(seeded_app, admin_user, monkeypatch):
     monkeypatch.delenv("USAGE_EVENTS_RETENTION_DAYS", raising=False)
-    resp = seeded_app["client"].post("/api/admin/usage/prune", headers=admin_user)
+    resp = seeded_app["client"].post("/api/admin/telemetry/prune", headers=admin_user)
     assert resp.status_code == 200
     assert resp.json()["status"] == "skipped"
 
 
 def test_prune_skipped_when_retention_zero(seeded_app, admin_user, monkeypatch):
     monkeypatch.setenv("USAGE_EVENTS_RETENTION_DAYS", "0")
-    resp = seeded_app["client"].post("/api/admin/usage/prune", headers=admin_user)
+    resp = seeded_app["client"].post("/api/admin/telemetry/prune", headers=admin_user)
     assert resp.status_code == 200
     assert resp.json()["status"] == "skipped"
 
@@ -126,7 +126,7 @@ def test_prune_respects_retention(seeded_app, admin_user, monkeypatch):
         ["recent", datetime.now(timezone.utc) - timedelta(days=1)],
     )
     conn.close()
-    resp = seeded_app["client"].post("/api/admin/usage/prune", headers=admin_user)
+    resp = seeded_app["client"].post("/api/admin/telemetry/prune", headers=admin_user)
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
@@ -152,7 +152,7 @@ def test_prune_writes_audit_log(seeded_app, admin_user, monkeypatch):
         [datetime.now(timezone.utc) - timedelta(days=30)],
     )
     conn.close()
-    seeded_app["client"].post("/api/admin/usage/prune", headers=admin_user)
+    seeded_app["client"].post("/api/admin/telemetry/prune", headers=admin_user)
     conn = get_system_db()
     n = conn.execute(
         "SELECT COUNT(*) FROM audit_log WHERE action='usage.prune'"
@@ -162,5 +162,5 @@ def test_prune_writes_audit_log(seeded_app, admin_user, monkeypatch):
 
 
 def test_prune_admin_only(seeded_app, analyst_user):
-    resp = seeded_app["client"].post("/api/admin/usage/prune", headers=analyst_user)
+    resp = seeded_app["client"].post("/api/admin/telemetry/prune", headers=analyst_user)
     assert resp.status_code in (401, 403)
