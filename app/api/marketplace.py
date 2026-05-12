@@ -41,6 +41,7 @@ from src.marketplace_filter import (
     resolve_allowed_plugins,
     resolve_manifest_name,
 )
+from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
 from src.marketplace_urls import mirrored_url
 from src.repositories.audit import AuditRepository
 from src.repositories.marketplace_plugins import MarketplacePluginsRepository
@@ -59,9 +60,6 @@ router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
 OWNER_TODO_PLACEHOLDER = "owner_todo"
 """Placeholder displayed in the UI when a curated plugin has no owner / curator
 metadata. To be replaced once ``marketplace_plugins.curator_owner`` lands."""
-
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
-
 
 # ---------------------------------------------------------------------------
 # Pydantic response models
@@ -338,20 +336,6 @@ def _invalidate_etag() -> None:
         packager.invalidate_etag_cache()
     except Exception:
         logger.exception("failed to invalidate marketplace etag cache")
-
-
-def _parse_frontmatter(text: str) -> Dict[str, str]:
-    m = _FRONTMATTER_RE.match(text)
-    if not m:
-        return {}
-    out: Dict[str, str] = {}
-    for line in m.group(1).splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if ":" in line:
-            k, v = line.split(":", 1)
-            out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
 
 
 def _frontmatter_body(text: str) -> str:
@@ -745,6 +729,12 @@ async def list_categories(
 
 
 def _list_inner_skills(plugin_root: Path) -> List[InnerItemSummary]:
+    """Build ``InnerItemSummary`` objects from the shared listing helper.
+
+    The shared helper (``src.marketplace_listing.list_inner_skills``) returns
+    plain names; the API layer re-reads each SKILL.md to populate the
+    ``description`` field used on the detail page.
+    """
     out: List[InnerItemSummary] = []
     skills_dir = plugin_root / "skills"
     if not skills_dir.is_dir():
@@ -769,6 +759,7 @@ def _list_inner_skills(plugin_root: Path) -> List[InnerItemSummary]:
 
 
 def _list_inner_agents(plugin_root: Path) -> List[InnerItemSummary]:
+    """Build ``InnerItemSummary`` objects from the shared listing helper."""
     out: List[InnerItemSummary] = []
     agents_dir = plugin_root / "agents"
     if not agents_dir.is_dir():
@@ -790,7 +781,11 @@ def _list_inner_agents(plugin_root: Path) -> List[InnerItemSummary]:
 
 
 def _list_commands(plugin_root: Path) -> List[CommandEntry]:
-    """Return ``commands/*.md`` as ``[(name, description)]`` from frontmatter."""
+    """Return ``commands/*.md`` as ``CommandEntry`` objects from frontmatter.
+
+    Names from the shared ``src.marketplace_listing.list_commands`` helper
+    already carry the leading ``/``; re-read here to pick up ``description``.
+    """
     d = plugin_root / "commands"
     if not d.is_dir():
         return []
@@ -803,8 +798,12 @@ def _list_commands(plugin_root: Path) -> List[CommandEntry]:
         except OSError:
             continue
         fm = _parse_frontmatter(text)
+        raw = (fm.get("name") or p.stem or "").strip()
+        if not raw:
+            continue
+        name = raw if raw.startswith("/") else f"/{raw}"
         out.append(CommandEntry(
-            name="/" + (fm.get("name") or p.stem),
+            name=name,
             description=fm.get("description"),
         ))
     return out
