@@ -1436,6 +1436,49 @@
             {% endfor %}
         </div>
 
+        {# ── Card: Agnes Internal ─────────────────────────────────────────
+           Renders the three system tables (agnes_sessions / agnes_telemetry /
+           agnes_audit) in their own card so they don't pollute the
+           Core Business Data header counters. Read-only — no profiler
+           click, no `In stack` toggle; analysts query them via
+           `agnes query`. #}
+        {% if internal_card %}
+        <div class="source-card">
+            <div class="source-card-header">
+                <div class="source-card-left">
+                    <div class="source-card-icon" style="background: rgba(15, 118, 110, 0.1);">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0F766E" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                            <path d="M3 5v14a9 3 0 0 0 18 0V5"/>
+                            <path d="M3 12a9 3 0 0 0 18 0"/>
+                        </svg>
+                    </div>
+                    <div class="source-card-info">
+                        <div class="source-card-name">Agnes Internal</div>
+                        <div class="source-card-desc">System tables — telemetry, sessions, audit log. Backed by Agnes's own DuckDB; queryable through <code>agnes query</code> with row-level RBAC (analysts see their own rows; admin sees all).</div>
+                        <div class="source-card-meta">{{ internal_card.count }} table{{ 's' if internal_card.count != 1 else '' }} &middot; read-only &middot; not synced</div>
+                    </div>
+                </div>
+            </div>
+
+            {# Plain list — no accordion, no profile, no In stack toggle. #}
+            <div class="accordion-content expanded" style="display: block;">
+                {% for table in internal_card.tables %}
+                <div class="table-row" style="cursor: default;">
+                    <div class="table-row-left">
+                        <div class="table-row-name">
+                            <code>{{ table.id }}</code>
+                            <span class="query-mode-badge" style="background: rgba(15, 118, 110, 0.1); color: #0F766E;">internal</span>
+                        </div>
+                        <div class="table-row-desc">{{ table.description }}</div>
+                        <div class="table-sync-info">Try: <code>agnes query "SELECT * FROM {{ table.id }} LIMIT 5"</code></div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
         <!-- ── Card: Business Metrics ── -->
         {% if metrics_data %}
         {% set metrics_total = namespace(n=0) %}
