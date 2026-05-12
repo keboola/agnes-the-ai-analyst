@@ -379,7 +379,15 @@ def resolve_inner_metadata(
     kind: str,
     inner_name: str,
 ) -> Dict[str, Any]:
-    """Same shape as :func:`resolve_plugin_metadata`, scoped to skill or agent."""
+    """Same shape as :func:`resolve_plugin_metadata`, scoped to skill or agent.
+
+    Rich user-facing fields (display_name / tagline / description /
+    use_cases / sample_interaction / when_to_use / invocation / category)
+    mirror the plugin-level set and are read on-demand at request time.
+    All optional — UI sections only render when populated. Skill/agent
+    inherits parent plugin's category when no override is set; the
+    rich-content layer is the only place to opt INTO per-item category.
+    """
     section = get_inner_section(metadata, plugin_name, kind, inner_name)
     if not section:
         return {}
@@ -405,6 +413,56 @@ def resolve_inner_metadata(
             logger.warning("%s video_url must be http(s)://", log_prefix)
 
     out["doc_links"] = _validated_doc_links(section.get("doc_links"), log_prefix)
+
+    # Rich user-facing fields (parity with plugin-level rich content from
+    # the 2026-05-12 redesign). All optional — UI hides each section when
+    # the corresponding field is absent.
+    display_name = _validated_string(
+        section.get("display_name"), "display_name", log_prefix,
+    )
+    if display_name:
+        out["display_name"] = display_name
+    tagline = _validated_string(
+        section.get("tagline"), "tagline", log_prefix,
+    )
+    if tagline:
+        out["tagline"] = tagline
+    # Per-item category override — when set, wins over the parent plugin's
+    # category. When absent, the API layer keeps the parent's category as
+    # the fallback so existing skill/agent pages don't lose their badge
+    # until curators opt in to per-item categorization.
+    category = _validated_string(
+        section.get("category"), "category", log_prefix,
+    )
+    if category:
+        out["category"] = category
+    description = _validated_markdown(
+        section.get("description"), "description", log_prefix,
+    )
+    if description:
+        out["description"] = description
+    use_cases = _validated_use_cases(section.get("use_cases"), log_prefix)
+    if use_cases:
+        out["use_cases"] = use_cases
+    sample_interaction = _validated_sample_interaction(
+        section.get("sample_interaction"), log_prefix,
+    )
+    if sample_interaction is not None:
+        out["sample_interaction"] = sample_interaction
+    when_to_use = _validated_markdown(
+        section.get("when_to_use"), "when_to_use", log_prefix,
+    )
+    if when_to_use:
+        out["when_to_use"] = when_to_use
+    # invocation is a single-line literal command the curator wants users
+    # to copy-paste (e.g. "/grpn-eng:confluence <your question>"). When
+    # absent, the API/template falls back to the computed
+    # "<manifest_name>:<inner_name>" so legacy items still show a chip.
+    invocation = _validated_string(
+        section.get("invocation"), "invocation", log_prefix,
+    )
+    if invocation:
+        out["invocation"] = invocation
 
     return out
 

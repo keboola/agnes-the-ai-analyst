@@ -483,3 +483,77 @@ def test_resolve_plugin_metadata_wrong_type_field_logged_and_dropped():
     metadata = {"plugins": {"p": {"display_name": ["wrong", "type"]}}}
     resolved = resolve_plugin_metadata(metadata, "p")
     assert "display_name" not in resolved
+
+
+# --- Rich skill / agent fields (added 2026-05-12) ------------------------
+#
+# Skill / agent level mirrors plugin-level: same 5 rich fields plus
+# `invocation` (the literal slash/at command) and `when_to_use` (markdown
+# disambiguation). Plus `category` for per-item override.
+
+
+def test_resolve_inner_metadata_extracts_rich_fields():
+    """Happy path — all skill-level rich fields survive parsing."""
+    metadata = {
+        "plugins": {
+            "p": {
+                "skills": {
+                    "s": {
+                        "display_name": "Confluence Search",
+                        "tagline": "Find pages in the wiki.",
+                        "category": "Documentation",
+                        "description": "Para1.\n\nPara2.",
+                        "invocation": "/p:s <your question>",
+                        "when_to_use": "Use this for **Confluence only**.",
+                        "use_cases": [
+                            {"title": "T", "description": "D", "prompt": "P"},
+                        ],
+                        "sample_interaction": {"user": "Q", "assistant": "A"},
+                    }
+                }
+            }
+        }
+    }
+    resolved = resolve_inner_metadata(metadata, "p", "skills", "s")
+    assert resolved["display_name"] == "Confluence Search"
+    assert resolved["tagline"] == "Find pages in the wiki."
+    assert resolved["category"] == "Documentation"
+    assert resolved["invocation"] == "/p:s <your question>"
+    assert resolved["when_to_use"].startswith("Use this for")
+    assert len(resolved["use_cases"]) == 1
+    assert resolved["sample_interaction"]["user"] == "Q"
+
+
+def test_resolve_inner_metadata_missing_rich_fields_returns_empty_keys():
+    """Skill with only cover_photo set — rich fields absent from output."""
+    metadata = {
+        "plugins": {
+            "p": {"skills": {"s": {"cover_photo": ".agnes/s.png"}}}
+        }
+    }
+    resolved = resolve_inner_metadata(metadata, "p", "skills", "s")
+    for key in ("display_name", "tagline", "category", "description",
+                "invocation", "when_to_use", "use_cases",
+                "sample_interaction"):
+        assert key not in resolved
+
+
+def test_resolve_inner_metadata_agent_kind_works_identically():
+    """Agents go through the same resolver path with `kind='agents'`."""
+    metadata = {
+        "plugins": {
+            "p": {
+                "agents": {
+                    "a": {
+                        "display_name": "CTO Architect",
+                        "invocation": "@p:a",
+                        "tagline": "Strategy decisions.",
+                    }
+                }
+            }
+        }
+    }
+    resolved = resolve_inner_metadata(metadata, "p", "agents", "a")
+    assert resolved["display_name"] == "CTO Architect"
+    assert resolved["invocation"] == "@p:a"
+    assert resolved["tagline"] == "Strategy decisions."

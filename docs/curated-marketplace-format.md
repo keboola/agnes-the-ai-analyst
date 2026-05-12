@@ -40,9 +40,9 @@ cover photo. Other plugins (and other fields) keep their defaults.
 
 The same shape applies at three levels: plugin, skill, agent. The rich
 content fields (`display_name`, `tagline`, `description`, `use_cases`,
-`sample_interaction`) are currently rendered on the **plugin level only**;
-skill/agent rich content lands in a later phase but the schema accepts
-them today for forward compatibility.
+`sample_interaction`) render at all three levels. Skill/agent items
+additionally accept `invocation` (literal command string for the chip on
+the detail page) and `when_to_use` (markdown disambiguation block).
 
 ```json
 {
@@ -105,7 +105,9 @@ them today for forward compatibility.
 | `tagline`            | Punchy value prop (1 line, ≤ ~120 chars — beyond that the listing card 2-line clamp truncates). | Hero subtitle, listing card description. |
 | `description`        | Multi-paragraph markdown body. Bold, italic, lists, links, fenced code, tables, blockquotes supported. Raw HTML and inline JavaScript are stripped by the server-side sanitizer. | Detail page "What it does" panel, rendered as HTML. |
 | `use_cases[]`        | Concrete usage examples. Each entry: `title` (heading), `description` (1-2 sentences), `prompt` (the literal text a user pastes into Claude Code). | Detail page "When to use it" 3-column card grid. |
-| `sample_interaction` | One example dialog. `{user, assistant}` — both required; `assistant` accepts markdown (renders to safe HTML). | Detail page "Example" Q&A panel. |
+| `sample_interaction` | One example dialog. `{user, assistant}` — both required; `assistant` accepts markdown (renders to safe HTML). | Detail page "Example" Claude Code-style dark Q&A panel. |
+| `invocation`         | **Skill / agent only.** Literal command the user should run, e.g. `/grpn-eng:confluence <your question>` or `@grpn-eng:cto-architect`. Overrides the computed `<manifest_name>:<inner_name>` chip. Use this to add an args hint (`<your question>`) or to fix the prefix for agents (`@` instead of `/`). | "How to call it" code chip + Copy button. |
+| `when_to_use`        | **Skill / agent only.** Markdown body explaining when to pick this skill/agent over a similar one. Sample: `Use this for **Confluence only**. For mixed sources, see /grpn-eng:query.` | "When to use this" panel below "Example". |
 | `skills`             | Map keyed by skill name (matching `name:` in the skill's `SKILL.md` frontmatter). | Skill detail page. |
 | `agents`             | Map keyed by agent name (the agent `.md` filename without extension). | Agent detail page. |
 

@@ -40,9 +40,31 @@
 
       "skills": {
         "explore-table": {
-          "_comment": "Skill-level enrichment — visual fields only for now. Rich content fields (display_name / tagline / description / use_cases / sample_interaction) are accepted by the schema but not yet rendered for skills/agents in the UI; will activate in a later phase.",
+          "_comment": "Skill-level rich content — same schema as plugin level, plus `invocation` and `when_to_use` specific to skills/agents.",
           "cover_photo": ".agnes/skills/explore-table-cover.png",
           "video_url": "https://www.youtube.com/watch?v=oHg5SJYRHA0",
+          "category": "Documentation",
+          "display_name": "Explore Table",
+          "tagline": "Inspect any warehouse table's schema, sample rows, and lineage.",
+          "description": "Drill into one table at a time:\n\n- columns + types + nullability\n- top-N sample rows\n- upstream jobs + downstream consumers (dashboards, dbt models, notebooks).\n\nNo query cost — every read is local.",
+          "invocation": "/data-explorer:explore-table <fully.qualified.table.name>",
+          "when_to_use": "Use when you already know **which table** to look at. For topic-based discovery (\"where does revenue live?\"), use `/data-explorer:find` instead.",
+          "use_cases": [
+            {
+              "title": "Inspect schema",
+              "description": "See columns + types before writing a query.",
+              "prompt": "/data-explorer:explore-table analytics.merchant_revenue_daily"
+            },
+            {
+              "title": "Trace lineage",
+              "description": "Find what writes the table and which dashboards consume it.",
+              "prompt": "Who reads analytics.merchant_revenue_daily?"
+            }
+          ],
+          "sample_interaction": {
+            "user": "/data-explorer:explore-table analytics.merchant_revenue_daily",
+            "assistant": "**`analytics.merchant_revenue_daily`** — last refreshed 4 hours ago.\n\n| Column | Type | Nullable | Sample |\n|--------|------|----------|--------|\n| merchant_id | string | no | `acme-cz` |\n| revenue_date | date | no | `2026-05-11` |\n| gross_revenue_eur | decimal(18,2) | no | `12455.40` |\n\n**Written by**: `dbt_merchant_revenue_rollup` (daily, 02:00 UTC)\n**Read by**: 3 Looker dashboards, 2 notebooks (sample on request)"
+          },
           "doc_links": [
             { "name": "Cheatsheet", "path": "docs/skills/explore-table.md" }
           ]
@@ -52,6 +74,10 @@
         "query-planner": {
           "cover_photo": "https://cdn.example.com/agents/query-planner.webp",
           "video_url": "https://vimeo.com/123456789",
+          "display_name": "Query Planner",
+          "tagline": "Helps you draft a BigQuery query without writing SQL.",
+          "invocation": "@query-planner",
+          "when_to_use": "Use when you have a question in plain English and want a SQL draft + explanation. For schema lookups, use `/data-explorer:explore-table` first.",
           "doc_links": [
             { "name": "Decision flow (PDF)", "url": "https://example.com/query-planner-flow.pdf" }
           ]
