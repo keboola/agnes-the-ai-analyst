@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 import logging
+import time
 from fastapi import APIRouter, Depends, HTTPException
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
+from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.audit import AuditRepository
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
@@ -137,6 +140,27 @@ def build_schema_uncached(
 
     source_type = row.get("source_type") or ""
     query_mode = row.get("query_mode") or ""
+    if source_type == "internal":
+        # Internal data source — schema lives in system.duckdb, not in the
+        # parquet/BQ paths the other branches use. Delegate to the
+        # connector's own introspector so /api/v2/schema/agnes_sessions
+        # returns the same shape as /api/v2/schema/<keboola-table>.
+        from connectors.internal.access import get_schema as _get_internal_schema
+        from src.db import _get_state_dir
+        system_db_path = str(_get_state_dir() / "system.duckdb")
+        cols = _get_internal_schema(system_db_path, table_id)
+        payload = {
+            "table_id": table_id,
+            "source_type": source_type,
+            "sql_flavor": "duckdb",
+            "columns": [
+                {"name": c["name"], "type": c["type"], "nullable": c["nullable"], "description": ""}
+                for c in cols
+            ],
+            "partition_by": None,
+            "clustered_by": [],
+            "where_dialect_hints": {},
+        }
     # Issue #261: a `source_type='bigquery'` row with `query_mode='materialized'`
     # has the data on local disk as a parquet — same shape as Keboola local
     # tables. Hitting BigQuery INFORMATION_SCHEMA on every schema call was
@@ -144,7 +168,7 @@ def build_schema_uncached(
     # in the 0.51.0 perf tests (4.6 s vs 1.0 s for remote VIEW). Use the
     # local-parquet branch for any materialized source regardless of
     # `source_type` — the parquet is the source of truth.
-    if source_type == "bigquery" and query_mode != "materialized":
+    elif source_type == "bigquery" and query_mode != "materialized":
         dataset = row.get("bucket") or ""
         source_table = row.get("source_table") or table_id
         columns = _fetch_bq_schema(bq, dataset, source_table)
@@ -197,19 +221,53 @@ def schema(
 ):
     # Plain ``def`` — opens a `bq.duckdb_session()` and runs sync metadata
     # queries through the BQ extension. See PR #188 Tier 1 entry.
+    t0 = time.monotonic()
+    resource = f"table:{table_id}"[:256]
     try:
-        return build_schema(conn, user, table_id, bq=bq)
-    except NotFound:
-        raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="not authorized for this table")
-    except ValueError as e:
+        result = build_schema(conn, user, table_id, bq=bq)
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="catalog.schema",
+                resource=resource,
+                params={"duration_ms": int((time.monotonic() - t0) * 1000)},
+                result="success",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for catalog.schema; continuing")
+        return result
+    except (NotFound, PermissionError, ValueError, BqAccessError) as exc:
+        try:
+            if isinstance(exc, NotFound):
+                status_code = 404
+            elif isinstance(exc, PermissionError):
+                status_code = 403
+            elif isinstance(exc, ValueError):
+                status_code = 400
+            else:
+                status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="catalog.schema",
+                resource=resource,
+                params={"duration_ms": int((time.monotonic() - t0) * 1000),
+                        "error": str(exc)[:200]},
+                result=f"error.{status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for catalog.schema; continuing")
+        if isinstance(exc, NotFound):
+            raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
+        if isinstance(exc, PermissionError):
+            raise HTTPException(status_code=403, detail="not authorized for this table")
+        if isinstance(exc, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "unsafe_identifier", "message": str(exc), "details": {}},
+            )
         raise HTTPException(
-            status_code=400,
-            detail={"error": "unsafe_identifier", "message": str(e), "details": {}},
-        )
-    except BqAccessError as e:
-        raise HTTPException(
-            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
-            detail={"error": e.kind, "message": e.message, "details": e.details},
+            status_code=BqAccessError.HTTP_STATUS.get(exc.kind, 500),  # type: ignore[union-attr]
+            detail={"error": exc.kind, "message": exc.message, "details": exc.details},  # type: ignore[union-attr]
         )

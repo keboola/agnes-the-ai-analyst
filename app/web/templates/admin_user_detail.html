@@ -170,6 +170,35 @@
     background: #e0e7ff; color: #3730a3; font-weight: 500;
   }
 
+  /* Sessions section */
+  .ud-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ud-table thead th {
+    text-align: left; padding: 10px 18px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .ud-table tbody td {
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: middle;
+  }
+  .ud-table tbody tr:last-child td { border-bottom: none; }
+  .ud-table tbody tr:hover { background: var(--border-light, #fafafa); }
+  .ud-empty { padding: 24px 18px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
+  .ud-pagination { padding: 10px 18px; display: flex; gap: 10px; align-items: center; font-size: 13px; }
+  .btn { display: inline-block; padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
+         border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+         cursor: pointer; text-decoration: none; color: inherit; }
+  .btn:hover { background: var(--border-light, #f9fafb); }
+  .btn-secondary { background: var(--surface, #fff); }
+  .btn-sm { padding: 3px 9px; font-size: 11px; }
+  .unprocessed-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    font-size: 11px; background: #fef9c3; color: #854d0e;
+  }
+
   .toast-stack {
     position: fixed; bottom: 24px; right: 24px; z-index: 2000;
     display: flex; flex-direction: column; gap: 8px; pointer-events: none;
@@ -250,6 +279,74 @@
     <div id="effective-loading" class="ea-loading">Loading…</div>
     <div id="effective-content" style="display:none;"></div>
   </section>
+
+  <!-- Sessions -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Sessions</h2>
+      <a class="btn btn-secondary" id="ud-download-all" href="#">Download all (.zip)</a>
+    </div>
+
+    <div class="ud-empty" id="ud-sessions-loading">Loading…</div>
+
+    <div class="ud-empty" id="ud-sessions-empty" hidden>
+      No collected sessions for this user yet.
+    </div>
+
+    <table class="ud-table" id="ud-sessions-table" hidden>
+      <thead>
+        <tr>
+          <th>Started</th>
+          <th>Active duration</th>
+          <th>Tool calls</th>
+          <th>Errors</th>
+          <th>Model</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="ud-sessions-tbody"></tbody>
+    </table>
+
+    <div class="ud-pagination" id="ud-sessions-pagination" hidden>
+      <button class="btn" id="ud-sessions-prev">Prev</button>
+      <span id="ud-sessions-page-meta"></span>
+      <button class="btn" id="ud-sessions-next">Next</button>
+    </div>
+  </section>
+
+  <!-- Activity -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Activity</h2>
+      <span class="sub">All recorded server actions for this user</span>
+    </div>
+
+    <div class="ud-empty" id="ud-activity-loading">Loading…</div>
+
+    <table class="ud-table" id="ud-activity-table" hidden>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Action</th>
+          <th>Resource</th>
+          <th>Result</th>
+          <th>Client</th>
+          <th>Duration</th>
+        </tr>
+      </thead>
+      <tbody id="ud-activity-tbody"></tbody>
+    </table>
+
+    <div class="ud-empty" id="ud-activity-empty" hidden>
+      No recorded activity for this user yet.
+    </div>
+
+    <div class="ud-pagination" id="ud-activity-pagination" hidden>
+      <button class="btn" id="ud-activity-prev">Prev</button>
+      <span id="ud-activity-page-meta"></span>
+      <button class="btn" id="ud-activity-next">Next</button>
+    </div>
+  </section>
 </div>
 
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
@@ -295,10 +392,6 @@ function toast(msg, kind = "") {
 let userState = null;     // /api/users/{id} response
 let memberships = [];     // [{group_id, group_name, is_system, source, added_at}]
 let allGroups = [];       // for the add-to-group dropdown
-
-async function loadAll() {
-  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess()]);
-}
 
 async function loadUser() {
   const r = await fetch(USER_API, { credentials: "include" });
@@ -591,6 +684,172 @@ document.getElementById("delete-user-btn").addEventListener("click", async () =>
   toast("User deleted", "success");
   setTimeout(() => { window.location.href = "/admin/users"; }, 800);
 });
+
+// ---------------------------------------------------------------------------
+// Sessions section
+// ---------------------------------------------------------------------------
+const SESSIONS_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/sessions`;
+const SESSIONS_DL_ALL = `/api/admin/users/${encodeURIComponent(USER_ID)}/sessions/download-all`;
+let _sessionsOffset = 0;
+const _sessionsLimit = 50;
+let _sessionsTotal = 0;
+
+document.getElementById("ud-download-all").href = SESSIONS_DL_ALL;
+
+function fmtDuration(seconds) {
+  if (seconds == null) return "—";
+  const s = Math.round(Number(seconds));
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60), rem = s % 60;
+  if (m < 60) return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+  const h = Math.floor(m / 60), rm = m % 60;
+  return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+}
+
+async function loadSessions() {
+  const url = `${SESSIONS_API}?limit=${_sessionsLimit}&offset=${_sessionsOffset}`;
+  const r = await fetch(url, { credentials: "include" });
+  const emptyEl = document.getElementById("ud-sessions-empty");
+  document.getElementById("ud-sessions-loading").hidden = true;
+  const tableEl = document.getElementById("ud-sessions-table");
+  const paginEl = document.getElementById("ud-sessions-pagination");
+  const tbody = document.getElementById("ud-sessions-tbody");
+  const pageMeta = document.getElementById("ud-sessions-page-meta");
+
+  if (!r.ok) {
+    emptyEl.textContent = "Failed to load sessions.";
+    emptyEl.hidden = false;
+    tableEl.hidden = true;
+    paginEl.hidden = true;
+    return;
+  }
+  const data = await r.json();
+  _sessionsTotal = data.pagination.total;
+
+  if (data.rows.length === 0 && _sessionsOffset === 0) {
+    emptyEl.hidden = false;
+    tableEl.hidden = true;
+    paginEl.hidden = true;
+    return;
+  }
+
+  emptyEl.hidden = true;
+  tableEl.hidden = false;
+  tbody.innerHTML = "";
+
+  for (const row of data.rows) {
+    const tr = document.createElement("tr");
+    const dlHref = `/api/admin/users/${encodeURIComponent(USER_ID)}/sessions/${encodeURIComponent(row.session_file)}/download`;
+    const modelText = row.primary_model
+      ? esc(row.primary_model).replace(/claude-/i, "").replace(/-\d{8}$/, "")
+      : "—";
+    const unprocessed = !row.processed
+      ? ` <span class="unprocessed-badge">pending</span>` : "";
+    tr.innerHTML = `
+      <td>${esc(fmtDate(row.started_at))}${unprocessed}</td>
+      <td>${fmtDuration(row.active_seconds)}</td>
+      <td>${row.tool_calls != null ? esc(String(row.tool_calls)) : "—"}</td>
+      <td>${row.tool_errors != null && row.tool_errors > 0 ? `<span style="color:#b91c1c">${esc(String(row.tool_errors))}</span>` : (row.tool_errors === 0 ? "0" : "—")}</td>
+      <td style="font-size:11px;color:var(--text-secondary,#6b7280)">${modelText}</td>
+      <td><a class="btn btn-sm" href="${dlHref}">Download .jsonl</a></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  // Pagination
+  const from = _sessionsOffset + 1;
+  const to = Math.min(_sessionsOffset + data.rows.length, _sessionsTotal);
+  pageMeta.textContent = `${from}–${to} of ${_sessionsTotal}`;
+  paginEl.hidden = _sessionsTotal <= _sessionsLimit;
+
+  document.getElementById("ud-sessions-prev").disabled = _sessionsOffset === 0;
+  document.getElementById("ud-sessions-next").disabled = (_sessionsOffset + _sessionsLimit) >= _sessionsTotal;
+}
+
+document.getElementById("ud-sessions-prev").addEventListener("click", () => {
+  if (_sessionsOffset > 0) {
+    _sessionsOffset = Math.max(0, _sessionsOffset - _sessionsLimit);
+    loadSessions();
+  }
+});
+document.getElementById("ud-sessions-next").addEventListener("click", () => {
+  if (_sessionsOffset + _sessionsLimit < _sessionsTotal) {
+    _sessionsOffset += _sessionsLimit;
+    loadSessions();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Activity section
+// ---------------------------------------------------------------------------
+const ACTIVITY_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/activity`;
+let _activityOffset = 0;
+const _activityLimit = 50;
+let _activityTotal = 0;
+
+function loadActivity() {
+  const table = document.getElementById('ud-activity-table');
+  const empty = document.getElementById('ud-activity-empty');
+  const tbody = document.getElementById('ud-activity-tbody');
+  const pag = document.getElementById('ud-activity-pagination');
+
+  fetch(`${ACTIVITY_API}?limit=${_activityLimit}&offset=${_activityOffset}`, { credentials: 'include' })
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('ud-activity-loading').hidden = true;
+      if (!data.rows || (data.rows.length === 0 && _activityOffset === 0)) {
+        empty.hidden = false;
+        table.hidden = true;
+        pag.hidden = true;
+        return;
+      }
+      empty.hidden = true;
+      table.hidden = false;
+      _activityTotal = data.pagination.total;
+      tbody.innerHTML = data.rows.map(r => {
+        const isErr = r.result && (r.result.startsWith('error') || r.result === 'failed');
+        const resultCls = isErr ? 'style="color:#b91c1c"' : '';
+        return `<tr>
+          <td><time datetime="${esc(r.timestamp)}">${esc(fmtDate(r.timestamp))}</time></td>
+          <td><code>${esc(r.action)}</code></td>
+          <td style="font-size:12px;color:var(--text-secondary,#6b7280)">${esc(r.resource || '—')}</td>
+          <td ${resultCls}>${esc(r.result || '—')}</td>
+          <td>${esc(r.client_kind || '—')}</td>
+          <td>${r.duration_ms != null ? esc(String(r.duration_ms)) + ' ms' : '—'}</td>
+        </tr>`;
+      }).join('');
+      const from = _activityOffset + 1;
+      const to = Math.min(_activityOffset + data.rows.length, _activityTotal);
+      document.getElementById('ud-activity-page-meta').textContent = `${from}–${to} of ${_activityTotal}`;
+      pag.hidden = _activityTotal <= _activityLimit;
+      document.getElementById('ud-activity-prev').disabled = _activityOffset === 0;
+      document.getElementById('ud-activity-next').disabled = (_activityOffset + _activityLimit) >= _activityTotal;
+    })
+    .catch(() => {
+      document.getElementById('ud-activity-loading').hidden = true;
+      empty.textContent = 'Failed to load activity.';
+      empty.hidden = false;
+      table.hidden = true;
+      pag.hidden = true;
+    });
+}
+
+document.getElementById('ud-activity-prev').addEventListener('click', () => {
+  if (_activityOffset > 0) {
+    _activityOffset = Math.max(0, _activityOffset - _activityLimit);
+    loadActivity();
+  }
+});
+document.getElementById('ud-activity-next').addEventListener('click', () => {
+  if (_activityOffset + _activityLimit < _activityTotal) {
+    _activityOffset += _activityLimit;
+    loadActivity();
+  }
+});
+
+async function loadAll() {
+  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess(), loadSessions(), loadActivity()]);
+}
 
 loadAll();
 </script>

@@ -3,12 +3,15 @@
 from __future__ import annotations
 import logging
 import math
+import time
 from fastapi import APIRouter, Depends, HTTPException, Query
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
+from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.audit import AuditRepository
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
@@ -99,12 +102,48 @@ def build_sample(
     if not can_access_table(user, table_id, conn):
         raise PermissionError(table_id)
 
+    source_type = row.get("source_type") or ""
+
+    # Internal source — never cache. Sample rows here are RBAC-scoped per
+    # caller (alice sees alice's rows; admin sees all), so a shared cache
+    # would leak alice's rows to bob on the next request. The source data
+    # is small + the per-request query is cheap, so skipping the cache
+    # entirely is the right trade-off.
+    if source_type == "internal":
+        from connectors.internal.access import (
+            INTERNAL_TABLES_BY_ID, build_filter_clause,
+        )
+        from src.db import _get_state_dir
+        from app.auth.access import is_user_admin as _is_admin
+        if table_id not in INTERNAL_TABLES_BY_ID:
+            raise FileNotFoundError(table_id)
+        internal_def = INTERNAL_TABLES_BY_ID[table_id]
+        # is_user_admin takes (user_id, conn) — earlier draft passed the
+        # whole user dict and crashed with TypeError on first request
+        # (review #278/2). Same fix as app/api/query.py:_run_internal_query.
+        is_admin = _is_admin(user.get("id"), conn) if user.get("id") else False
+        where_clause = build_filter_clause(internal_def, user, is_admin)
+        # Reuse the shared system.duckdb connection via cursor — opening a
+        # parallel handle to the same file is rejected process-wide
+        # (DuckDB serialises file handles, even for ATTACH). The SELECT is
+        # constrained to system.duckdb-resident tables, scoped by the
+        # RBAC clause; no writes happen here.
+        from src.db import get_system_db
+        cur = get_system_db().cursor()
+        try:
+            df = cur.execute(
+                f"SELECT * FROM {internal_def.source_table} {where_clause} LIMIT {n}",
+            ).fetchdf()
+            rows = df.to_dict(orient="records")
+        finally:
+            cur.close()
+        return {"table_id": table_id, "rows": _sanitize_for_json(rows), "source": source_type}
+
     cache_key = f"{table_id}|{n}"
     cached = _sample_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    source_type = row.get("source_type") or ""
     if source_type == "bigquery":
         rows = _fetch_bq_sample(bq, row.get("bucket") or "", row.get("source_table") or table_id, n)
     else:
@@ -136,19 +175,56 @@ def sample(
 ):
     # Plain ``def`` — opens a `bq.duckdb_session()` and runs sync queries
     # through the BQ extension. See PR #188 Tier 1 entry.
+    t0 = time.monotonic()
+    resource = f"table:{table_id}"[:256]
     try:
-        return build_sample(conn, user, table_id, n=n, bq=bq)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="not authorized for this table")
-    except ValueError as e:
+        result = build_sample(conn, user, table_id, n=n, bq=bq)
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="catalog.sample",
+                resource=resource,
+                params={
+                    "rows_returned": len(result.get("rows", [])),
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                },
+                result="success",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for catalog.sample; continuing")
+        return result
+    except (FileNotFoundError, PermissionError, ValueError, BqAccessError) as exc:
+        try:
+            if isinstance(exc, FileNotFoundError):
+                status_code = 404
+            elif isinstance(exc, PermissionError):
+                status_code = 403
+            elif isinstance(exc, ValueError):
+                status_code = 400
+            else:
+                status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="catalog.sample",
+                resource=resource,
+                params={"duration_ms": int((time.monotonic() - t0) * 1000),
+                        "error": str(exc)[:200]},
+                result=f"error.{status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for catalog.sample; continuing")
+        if isinstance(exc, FileNotFoundError):
+            raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
+        if isinstance(exc, PermissionError):
+            raise HTTPException(status_code=403, detail="not authorized for this table")
+        if isinstance(exc, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "unsafe_identifier", "message": str(exc), "details": {}},
+            )
         raise HTTPException(
-            status_code=400,
-            detail={"error": "unsafe_identifier", "message": str(e), "details": {}},
-        )
-    except BqAccessError as e:
-        raise HTTPException(
-            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
-            detail={"error": e.kind, "message": e.message, "details": e.details},
+            status_code=BqAccessError.HTTP_STATUS.get(exc.kind, 500),  # type: ignore[union-attr]
+            detail={"error": exc.kind, "message": exc.message, "details": exc.details},  # type: ignore[union-attr]
         )

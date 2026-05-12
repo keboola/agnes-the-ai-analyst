@@ -97,7 +97,19 @@ def can_access(
     Two SELECTs in the worst case:
       1. _user_group_ids — fetch group membership.
       2. has_grant on resource_grants for (group_ids, resource_type, resource_id).
+
+    Internal data-source tables (``agnes_sessions``/``_usage``/``_audit``) are
+    implicitly granted to every authenticated user. Security there is
+    row-level (the per-request view filters to the caller's rows) and
+    enforced in the query path; the table-grain gate just waves them
+    through so they appear in /catalog and /api/v2/catalog for analysts,
+    not just admins.
     """
+    if resource_type == "table":
+        from connectors.internal.access import is_internal_table
+        if is_internal_table(resource_id):
+            return True
+
     group_ids = _user_group_ids(user_id, conn)
     admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn)
     if admin_id is not None and admin_id in group_ids:

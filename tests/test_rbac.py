@@ -130,10 +130,16 @@ class TestGetAccessibleTables:
     def test_non_admin_returns_grant_list(self, setup_db):
         from src.db import get_system_db
         from src.rbac import get_accessible_tables
+        from connectors.internal.access import INTERNAL_TABLES
         conn = get_system_db()
         try:
             tables = get_accessible_tables({"id": "user1"}, conn)
-            assert tables == ["orders"]
+            internal_ids = {t.registry_id for t in INTERNAL_TABLES}
+            # Granted tables + auto-appended internal tables (every
+            # authenticated user gets the agnes_* row-scoped views).
+            assert "orders" in tables
+            assert internal_ids <= set(tables)
+            assert set(tables) - internal_ids == {"orders"}
         finally:
             conn.close()
 
@@ -142,10 +148,13 @@ class TestGetAccessibleTables:
         from src.repositories.user_group_members import UserGroupMembersRepository
         from src.repositories.users import UserRepository
         from src.rbac import get_accessible_tables
+        from connectors.internal.access import INTERNAL_TABLES
         conn = get_system_db()
         try:
             UserRepository(conn).create(id="loner", email="loner@test.com", name="L")
-            # Membership in Everyone alone (no grants on it) → empty list.
+            # Membership in Everyone alone (no grants on it). The user still
+            # gets the agnes_* internal tables (row-level RBAC handles the
+            # actual security), but no granted tables.
             everyone = conn.execute(
                 "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]
             ).fetchone()
@@ -153,6 +162,7 @@ class TestGetAccessibleTables:
                 UserGroupMembersRepository(conn).add_member(
                     "loner", everyone[0], source="system_seed",
                 )
-            assert get_accessible_tables({"id": "loner"}, conn) == []
+            internal_ids = {t.registry_id for t in INTERNAL_TABLES}
+            assert set(get_accessible_tables({"id": "loner"}, conn)) == internal_ids
         finally:
             conn.close()

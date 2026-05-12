@@ -118,6 +118,12 @@ from app.api.claude_md import router as claude_md_router
 from app.api.news import router as news_router
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
+from app.api.activity import router as activity_router
+from app.api.observability import router as observability_router
+from app.api.admin_user_sessions import router as admin_user_sessions_router
+from app.api.admin_sessions import router as admin_sessions_router
+from app.api.admin_usage import router as admin_usage_router
+from app.api.admin_usage_summary import router as admin_usage_summary_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
@@ -166,6 +172,18 @@ async def lifespan(app):
         sweep_stale_parquet_locks(_ddir() / "extracts")
     except Exception:
         logger.exception("startup parquet-lock sweep failed (non-fatal)")
+
+    # Seed the internal data-source registry rows so `agnes_sessions /
+    # agnes_telemetry / agnes_audit` show up in /admin/tables + `agnes
+    # catalog` on every fresh install. Idempotent — re-applies canonical
+    # name + description on every boot so operators can't drift them
+    # away from the seed.
+    try:
+        from src.db import get_system_db
+        from connectors.internal.registry import ensure_internal_tables_registered
+        ensure_internal_tables_registered(get_system_db())
+    except Exception:
+        logger.exception("internal data-source seed failed; continuing")
 
     # Construct the PostHog client up front so its background flush thread
     # starts before the first request — and so a missing/invalid key fails
@@ -612,6 +630,12 @@ def create_app() -> FastAPI:
     app.include_router(news_router)
     app.include_router(cache_warmup_router)
     app.include_router(bq_metadata_refresh_router)
+    app.include_router(activity_router)
+    app.include_router(observability_router)
+    app.include_router(admin_user_sessions_router)
+    app.include_router(admin_sessions_router)
+    app.include_router(admin_usage_router)
+    app.include_router(admin_usage_summary_router)
     app.include_router(marketplace_server_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*

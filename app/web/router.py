@@ -228,6 +228,7 @@ _URL_MAP = {
     "corporate_memory": "/corporate-memory",
     "corporate_memory_admin": "/corporate-memory/admin",
     "activity_center": "/activity-center",
+    "admin_activity": "/admin/activity",
     "index": "/",
     "auth.login": "/login",
     "auth.logout": "/login",  # No logout route — redirect to login
@@ -803,6 +804,7 @@ async def catalog(
 
         user_id = user.get("id", "")
         tables = []
+        internal_tables = []
         for tc in registered:
             table_id = tc.get("id", "")
             if not can_access(user_id, ResourceType.TABLE.value, table_id, conn):
@@ -812,6 +814,7 @@ async def catalog(
                 "name": tc.get("name", ""),
                 "description": tc.get("description", ""),
                 "dataset": tc.get("bucket"),
+                "source_type": tc.get("source_type") or "",
                 "sync_strategy": tc.get("sync_strategy", "full_refresh"),
                 "query_mode": tc.get("query_mode", "local"),
                 "profile": all_profiles.get(table_id),
@@ -822,12 +825,21 @@ async def catalog(
                     table_data["last_sync"] = state.get("last_sync")
                     table_data["rows"] = state.get("rows")
                     break
-            tables.append(table_data)
+            # Agnes internal tables (agnes_sessions / agnes_telemetry /
+            # agnes_audit) render in a dedicated card on /catalog rather
+            # than under "Core Business Data" — they're system tables,
+            # not business data, but analysts should still discover them
+            # for `agnes query` so they need to live on the catalog page.
+            if tc.get("source_type") == "internal":
+                internal_tables.append(table_data)
+            else:
+                tables.append(table_data)
     except Exception as e:
         tables = []
+        internal_tables = []
         logger.warning(f"Could not load catalog: {e}")
 
-    # Build data_stats for catalog template
+    # Build data_stats for catalog template (business-data card header)
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
     data_stats = {
         "total_tables": len(all_states),
@@ -837,19 +849,28 @@ async def catalog(
         "last_updated": max((s.get("last_sync") for s in all_states if s.get("last_sync")), default=None),
     }
 
-    # Build categories from tables
+    # Build business-data categories from `tables` (excludes internal).
     categories = {}
     for t in tables:
         ds = t.get("dataset") or "default"
         if ds not in categories:
             categories[ds] = {"name": ds, "tables": []}
         categories[ds]["tables"].append(t)
-
-    # Add count to each category (template expects .count)
     catalog_data = []
     for cat in categories.values():
         cat["count"] = len(cat["tables"])
         catalog_data.append(cat)
+
+    # Internal-tables card. Single flat list — the three rows already
+    # share one category ("Agnes Internal"), so no accordion grouping is
+    # useful. Template renders them as a plain list under their own card.
+    internal_card = None
+    if internal_tables:
+        internal_card = {
+            "name": "Agnes Internal",
+            "count": len(internal_tables),
+            "tables": internal_tables,
+        }
 
     ctx = _build_context(
         request, user=user,
@@ -859,6 +880,7 @@ async def catalog(
         data_stats=data_stats,
         categories=catalog_data,
         catalog_data=catalog_data,
+        internal_card=internal_card,
         metrics_data=[],
         sync_states=all_states,
         folder_mapping={},
@@ -1026,22 +1048,21 @@ async def corporate_memory_admin(
     return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
 
 
-@router.get("/activity-center", response_class=HTMLResponse)
-async def activity_center(
+@router.get("/activity-center")
+async def activity_center_redirect():
+    """Legacy URL — redirect to /admin/activity."""
+    return RedirectResponse(url="/admin/activity", status_code=308)
+
+
+@router.get("/admin/activity", response_class=HTMLResponse)
+async def admin_activity(
     request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    user: dict = Depends(require_admin),
 ):
-    repo = KnowledgeRepository(conn)
-    stats = {
-        "total_items": len(repo.list_items(limit=10000)),
-    }
-    ctx = _build_context(
-        request, user=user,
-        stats=stats,
-        activity={"recent_sessions": [], "recent_reports": [], "insights": []},
-        knowledge_stats={"total": 0, "approved": 0, "mandatory": 0},
-    )
+    """Unified observability page — KPI cards, faceted filter bar, full
+    audit_log table with sort/search/saved-views. All data loads
+    client-side from /api/admin/observability/* + /api/admin/activity."""
+    ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
@@ -1541,6 +1562,56 @@ async def admin_user_detail_page(
     return templates.TemplateResponse(request, "admin_user_detail.html", ctx)
 
 
+@router.get("/admin/usage")
+async def admin_usage_redirect(_user: dict = Depends(require_admin)):
+    """Legacy URL — 308 to /admin/telemetry. The page was renamed in the
+    platform-telemetry epic to match what's actually shown (tool/skill
+    invocations from session JSONLs). Old bookmarks land on the right
+    place without breaking."""
+    return RedirectResponse(url="/admin/telemetry", status_code=308)
+
+
+@router.get("/admin/telemetry", response_class=HTMLResponse)
+async def admin_telemetry_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Interactive Telemetry page — filter / group-by / search on usage_events.
+
+    All data loads client-side from /api/admin/telemetry/* (facets, kpis,
+    query) so the page state lives in the URL and the server doesn't
+    preload a fixed window's snapshot.
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_usage.html", ctx)
+
+
+@router.get("/admin/sessions", response_class=HTMLResponse)
+async def admin_sessions_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Global Sessions browser — every collected session JSONL across all
+    users. The list page is a shell; data loads client-side via
+    /api/admin/sessions/{list,kpis,facets}."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_sessions.html", ctx)
+
+
+@router.get("/admin/sessions/{username}/{session_file}", response_class=HTMLResponse)
+async def admin_session_detail(
+    request: Request,
+    username: str,
+    session_file: str,
+    user: dict = Depends(require_admin),
+):
+    """Session transcript viewer. Username + session_file are revalidated by
+    the API route (regex + path-escape guard) when /transcript is fetched;
+    here we just render the shell."""
+    ctx = _build_context(request, user=user, username=username, session_file=session_file)
+    return templates.TemplateResponse(request, "admin_session_detail.html", ctx)
+
+
 @router.get("/admin/groups", response_class=HTMLResponse)
 async def admin_groups_page(
     request: Request,
@@ -1843,23 +1914,14 @@ async def admin_store_submission_detail_page(
     return templates.TemplateResponse(request, "admin_store_submission_detail.html", ctx)
 
 
-@router.get("/admin/scheduler-runs", response_class=HTMLResponse)
-async def admin_scheduler_runs_page(
-    request: Request,
-    user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Read-only view of the audit_log filtered to scheduler-driven actions.
-
-    Failed scheduler ticks (HTTP 401, network errors) don't reach this view —
-    they live only in the scheduler container's stdout. The audit_log shows
-    only what reached the admin endpoint and was processed.
+@router.get("/admin/scheduler-runs")
+async def admin_scheduler_runs_redirect(_user: dict = Depends(require_admin)):
+    """Scheduler runs is now a filter on the unified Activity page, not a
+    standalone view — see the unification done in the platform-telemetry
+    epic. Keep the URL as a 308 so existing bookmarks land on the right
+    pre-filtered view.
     """
-    from src.repositories.audit import AuditRepository
-
-    rows = AuditRepository(conn).query_actions(SCHEDULER_AUDIT_ACTIONS, limit=200)
-    ctx = _build_context(request, user=user, rows=rows, actions=SCHEDULER_AUDIT_ACTIONS)
-    return templates.TemplateResponse(request, "admin_scheduler_runs.html", ctx)
+    return RedirectResponse(url="/admin/activity?source=scheduler", status_code=308)
 
 
 @router.get("/admin/agent-prompt", response_class=HTMLResponse)

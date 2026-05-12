@@ -353,12 +353,54 @@ def _refresh_plugin_cache(slug: str) -> int:
 
     conn = _get_conn()
     try:
-        return MarketplacePluginsRepository(conn).replace_for_marketplace(slug, enriched)
+        count = MarketplacePluginsRepository(conn).replace_for_marketplace(slug, enriched)
     except Exception as e:  # noqa: BLE001
         logger.warning("marketplace %s: plugin cache write failed: %s", slug, e)
         return 0
     finally:
         conn.close()
+
+    # ------------------------------------------------------------------
+    # Usage attribution: walk each plugin clone and record skill / agent /
+    # command names so the UsageProcessor can attribute invocations without
+    # re-walking clones at query time.  One plugin failure must never abort
+    # the whole sync.
+    # ------------------------------------------------------------------
+    from src.marketplace_listing import list_inner_skills, list_inner_agents, list_commands
+    from src.repositories.usage_attribution import UsageAttributionRepository
+
+    repo_root = get_marketplaces_dir() / slug
+    attr_conn = _get_conn()
+    try:
+        attr = UsageAttributionRepository(attr_conn)
+        for p in enriched:
+            plugin_name = (p.get("name") or "").strip()
+            if not plugin_name:
+                continue
+            plugin_root = repo_root / "plugins" / plugin_name
+            try:
+                skills = list_inner_skills(plugin_root)
+                agents = list_inner_agents(plugin_root)
+                commands = list_commands(plugin_root)
+                attr.replace_for_curated(
+                    slug, plugin_name,
+                    skills=skills, agents=agents, commands=commands,
+                )
+                logger.debug(
+                    "attribution: %s/%s skills=%d agents=%d commands=%d",
+                    slug, plugin_name, len(skills), len(agents), len(commands),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "attribution explode failed for %s/%s; continuing",
+                    slug, plugin_name,
+                )
+    except Exception:  # noqa: BLE001
+        logger.exception("marketplace %s: attribution pass failed; continuing", slug)
+    finally:
+        attr_conn.close()
+
+    return count
 
 
 def _get_conn():

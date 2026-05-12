@@ -31,8 +31,12 @@
            who deep-link still get a 403 from the route handler. Single
            guard wraps both for clarity. #}
         {% if session.user.is_admin %}
-        <a class="app-nav-link {% if _path.startswith('/corporate-memory') %}is-active{% endif %}" href="/corporate-memory">Memory</a>
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/activity') %}
+        {# "Memory" link moved into the Admin dropdown's Agent Experience
+           section (parallel to Curated Marketplaces / Flea Submissions /
+           Prompts). The primary nav no longer carries an admin-only
+           entry — primary nav stays consistently visible to all
+           authenticated users. #}
+        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/corporate-memory') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
@@ -43,19 +47,44 @@
                     <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
             </button>
+            {# Admin dropdown is grouped into four named sections so admins
+               doing different jobs (debugging activity vs. managing users
+               vs. curating marketplaces) can land on the right page
+               without re-reading the full menu. Section headers are
+               non-clickable, set off by `.app-nav-menu-section` styling
+               (small caps, muted). Items keep the existing
+               `.app-nav-menu-item` look + active state. #}
             <div class="app-nav-menu-panel" id="adminNavPanel" role="menu" hidden>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" role="menuitem" href="/admin/tokens">Tokens</a>
+                <div class="app-nav-menu-section">Activity Center</div>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" role="menuitem" href="/admin/activity">Audit log</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') %}is-active{% endif %}" role="menuitem" href="/admin/telemetry">Telemetry</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/sessions') %}is-active{% endif %}" role="menuitem" href="/admin/sessions">Sessions</a>
+
+                <div class="app-nav-menu-section">Users &amp; Access</div>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">Users</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') %}is-active{% endif %}" role="menuitem" href="/admin/groups">Groups</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/access">Resource access</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" role="menuitem" href="/admin/tokens">Tokens</a>
+
+                <div class="app-nav-menu-section">Data</div>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
+
+                {# "Agent Experience" groups everything the admin curates
+                   for what an analyst's AI agent sees / can do: which
+                   plugins (curated + flea) are available, which prompt
+                   Claude lands on at `agnes init`, and the CLAUDE.md
+                   template injected into each workspace. #}
+                <div class="app-nav-menu-section">Agent Experience</div>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/corporate-memory">Curated Memory</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Init Prompt</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Workspace Prompt</a>
+
+                <div class="app-nav-menu-section">Server</div>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Server config</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Agent Setup Prompt</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Agent Workspace Prompt</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/scheduler-runs') %}is-active{% endif %}" role="menuitem" href="/admin/scheduler-runs">Scheduler runs</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/activity') %}is-active{% endif %}" role="menuitem" href="/activity-center">Activity center</a>
+                {# /admin/scheduler-runs collapsed into /admin/activity as
+                   a `source=scheduler` filter — old route 308-redirects. #}
             </div>
         </div>
         {% endif %}

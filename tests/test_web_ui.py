@@ -341,23 +341,20 @@ class TestAdminRoleGuards:
         assert r.status_code == 200
 
     def test_admin_scheduler_runs_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
-        """The /admin/scheduler-runs read-only audit-log view is gated by require_admin."""
+        """`/admin/scheduler-runs` collapsed into the unified Activity
+        page as a `source=scheduler` filter. Route now 308-redirects;
+        admin-only gate still applies before the redirect fires.
+        """
+        # Anonymous → not admin → 302 to login (require_admin runs first).
         r = web_client.get("/admin/scheduler-runs", follow_redirects=False)
         assert r.status_code in (302, 401, 403)
+        # Analyst → 403 (require_admin fails before we hit the redirect).
         r = web_client.get("/admin/scheduler-runs", cookies=analyst_cookie, follow_redirects=False)
         assert r.status_code == 403
+        # Admin → 308 to the unified page with the source filter pre-set.
         r = web_client.get("/admin/scheduler-runs", cookies=admin_cookie, follow_redirects=False)
-        assert r.status_code == 200
-        assert b"run_session_collector" in r.content
-        # Post-refactor: per-processor audit actions instead of one
-        # run_verification_detector. Both processors are wired in
-        # SCHEDULER_AUDIT_ACTIONS.
-        assert b"run_session_processor:verification" in r.content
-        assert b"run_session_processor:usage" in r.content
-        assert b"run_corporate_memory" in r.content
-        # Devin Review on e86dd5ed: list must use the actual logged action
-        # string, not a guess.
-        assert b"marketplace.sync_all" in r.content
+        assert r.status_code == 308
+        assert r.headers["location"] == "/admin/activity?source=scheduler"
 
     def test_profile_sessions_page_no_admin_required(self, web_client, analyst_cookie, admin_cookie):
         """The /profile/sessions page is gated by get_current_user, not require_admin —

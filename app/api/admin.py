@@ -26,6 +26,7 @@ from src.identifier_validation import (
 )
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
+from src.usage_attribution_helpers import update_flea_attribution
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -3407,6 +3408,17 @@ def run_session_processor(
     job_error: Optional[Exception] = None
     try:
         stats = _run_processor(job_conn, proc)
+        # Rebuild daily rollups after a successful usage run so the
+        # marketplace / admin dashboards see fresh aggregates. Runs on the
+        # same connection while it's still open; incremental (last-7-days)
+        # so it's cheap. Kept here (not in runner.py) to stay
+        # processor-agnostic at the framework level.
+        if processor == "usage" and stats.get("errors", 0) == 0:
+            from services.session_processors.usage_lib import rebuild_rollups
+            try:
+                rebuild_rollups(job_conn)
+            except Exception as rollup_exc:
+                logger.warning("usage rollup rebuild failed: %s", rollup_exc)
     except Exception as e:
         # Capture and re-raise after audit so an unhandled runner error
         # (DuckDB lock, network blip, unexpected SDK type) still leaves a
@@ -3634,7 +3646,16 @@ async def admin_override_store_submission(
         )
 
     subs.set_override(submission_id, admin_user_id=user["id"], reason=body.reason)
-    StoreEntitiesRepository(conn).set_visibility(entity_id, "approved")
+    ents_repo = StoreEntitiesRepository(conn)
+    ents_repo.set_visibility(entity_id, "approved")
+
+    # Update usage-attribution rows now that the entity is live.
+    entity_row = ents_repo.get(entity_id) or {}
+    update_flea_attribution(
+        conn, entity_id,
+        entity_row.get("type", ""),
+        entity_row.get("name", ""),
+    )
 
     AuditRepository(conn).log(
         user_id=user["id"],
@@ -3743,6 +3764,13 @@ async def admin_rescan_store_submission(
         ents.set_visibility(entity_id, "pending")
     else:
         ents.set_visibility(entity_id, "approved")
+        # Guardrails off — immediately live; write attribution.
+        entity_row = ents.get(entity_id) or {}
+        update_flea_attribution(
+            conn, entity_id,
+            entity_row.get("type", ""),
+            entity_row.get("name", ""),
+        )
     AuditRepository(conn).log(
         user_id=user["id"],
         action="store.submission.rescan",

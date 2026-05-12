@@ -30,6 +30,7 @@ import duckdb
 from src.repositories.audit import AuditRepository
 from src.repositories.store_entities import StoreEntitiesRepository
 from src.repositories.store_submissions import StoreSubmissionsRepository
+from src.usage_attribution_helpers import update_flea_attribution
 from . import (
     content_check,
     llm_review,
@@ -262,6 +263,13 @@ def run_llm_review(
                 # serve-able state. Archive / hidden-by-admin paths
                 # leave alone.
                 if current_visibility == "approved":
+                    # Write / refresh usage-attribution rows so the processor
+                    # can attribute invocations of this entity's components.
+                    update_flea_attribution(
+                        ents_repo.conn, entity_id,
+                        ent_row.get("type", ""),
+                        ent_row.get("name", ""),
+                    )
                     sub_row = subs_repo.get(submission_id) or {}
                     sub_hash = sub_row.get("version")
                     target_version_no = None

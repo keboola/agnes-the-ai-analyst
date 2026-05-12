@@ -408,6 +408,7 @@ _LLM_PIPELINE_ENV = (
     "SCHEDULER_SESSION_COLLECTOR_INTERVAL",
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL",
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL",
+    "SCHEDULER_USAGE_PRUNE_INTERVAL",
 )
 
 
@@ -613,3 +614,47 @@ class TestRunLoopParallelism:
         # the first one finished mid-tick — both are correct, the bug is
         # ≥5).
         assert call_count["n"] <= 2, f"in_flight protection failed; {call_count['n']} launches"
+
+
+# ---------------------------------------------------------------------------
+# usage-prune scheduler job
+# ---------------------------------------------------------------------------
+
+
+class TestUsagePruneJob:
+    """SCHEDULER_USAGE_PRUNE_INTERVAL drives the usage-prune job cadence."""
+
+    def test_usage_prune_job_present_in_defaults(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: (schedule, endpoint) for name, schedule, endpoint, *_ in build_jobs()}
+        assert "usage-prune" in jobs, "usage-prune job must be registered in build_jobs()"
+        _, endpoint = jobs["usage-prune"]
+        assert endpoint == "/api/admin/usage/prune"
+
+    def test_usage_prune_default_cadence_is_daily(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        # Default 86400s → every 24h
+        assert jobs["usage-prune"] == "every 24h"
+
+    def test_usage_prune_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_USAGE_PRUNE_INTERVAL", "3600")  # 1h
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["usage-prune"] == "every 1h"
+        # Other jobs unaffected
+        assert jobs["session-collector"] == "every 10m"
+
+    def test_usage_prune_invalid_env_rejected(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_USAGE_PRUNE_INTERVAL", "0")
+        from services.scheduler.__main__ import build_jobs
+
+        with pytest.raises(ValueError):
+            build_jobs()

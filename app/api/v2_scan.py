@@ -3,6 +3,7 @@
 from __future__ import annotations
 import logging
 import re
+import time
 from typing import Optional
 
 import pyarrow as pa
@@ -13,8 +14,10 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.instance_config import get_value
+from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.audit import AuditRepository
 from app.api.where_validator import (
     validate_where, safe_where_predicate, WhereValidationError,
 )
@@ -229,23 +232,62 @@ def scan_estimate_endpoint(
     # dry_run=True)` which blocks until BQ returns the dry-run cost. Under
     # ``async def`` that wait holds the event loop. See PR #188's Tier 1
     # entry for the wider rollout.
+    t0 = time.monotonic()
+    table_id = raw.get("table_id", "") if isinstance(raw, dict) else ""
+    resource = f"table:{table_id}"[:256]
     try:
-        return estimate(conn, user, raw, bq=bq)
-    except WhereValidationError as e:
+        result = estimate(conn, user, raw, bq=bq)
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="snapshot.estimate",
+                resource=resource,
+                params={
+                    "bytes_estimated": result.get("estimated_scan_bytes"),
+                    "where_present": bool(raw.get("where") if isinstance(raw, dict) else False),
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                },
+                result="success",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for snapshot.estimate; continuing")
+        return result
+    except (WhereValidationError, PermissionError, FileNotFoundError, ValueError, BqAccessError) as exc:
+        try:
+            if isinstance(exc, PermissionError):
+                status_code = 403
+            elif isinstance(exc, FileNotFoundError):
+                status_code = 404
+            elif isinstance(exc, (WhereValidationError, ValueError)):
+                status_code = 400
+            else:
+                status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="snapshot.estimate",
+                resource=resource,
+                params={"duration_ms": int((time.monotonic() - t0) * 1000),
+                        "error": str(exc)[:200]},
+                result=f"error.{status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for snapshot.estimate; continuing")
+        if isinstance(exc, WhereValidationError):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "validator_rejected", "kind": exc.kind, "details": exc.detail or {}},
+            )
+        if isinstance(exc, PermissionError):
+            raise HTTPException(status_code=403, detail="not authorized for this table")
+        if isinstance(exc, FileNotFoundError):
+            raise HTTPException(status_code=404, detail=f"table {exc!s} not found")
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=400, detail=str(exc))
         raise HTTPException(
-            status_code=400,
-            detail={"error": "validator_rejected", "kind": e.kind, "details": e.detail or {}},
-        )
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="not authorized for this table")
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=f"table {e!s} not found")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except BqAccessError as e:
-        raise HTTPException(
-            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
-            detail={"error": e.kind, "message": e.message, "details": e.details},
+            status_code=BqAccessError.HTTP_STATUS.get(exc.kind, 500),  # type: ignore[union-attr]
+            detail={"error": exc.kind, "message": exc.message, "details": exc.details},  # type: ignore[union-attr]
         )
 
 
@@ -386,33 +428,91 @@ def scan_endpoint(
     bq: BqAccess = Depends(get_bq_access),
 ):
     quota = _build_quota_tracker()
+    t0 = time.monotonic()
+    table_id = raw.get("table_id", "") if isinstance(raw, dict) else ""
+    snapshot_name = raw.get("as") if isinstance(raw, dict) else None
+    resource = (
+        f"table:{table_id}:as:{snapshot_name}" if snapshot_name else f"table:{table_id}"
+    )[:256]
     try:
         ipc = run_scan(conn, user, raw, bq=bq, quota=quota)
+        # Decode row count from IPC without re-running the scan.
+        # bytes_scanned / bytes_billed / bq_job_id are deferred — the BQ
+        # extension doesn't expose per-job metadata through the DuckDB
+        # execute() path; adding that plumbing is a multi-site change.
+        # TODO: surface bytes_scanned / bytes_billed / bq_job_id once the
+        # BQ extension or _run_bq_scan is extended to return job metadata.
+        try:
+            from app.api.v2_arrow import parse_ipc_bytes
+            rows_written = parse_ipc_bytes(ipc).num_rows
+        except Exception:
+            rows_written = None
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="snapshot.create",
+                resource=resource,
+                params={
+                    "rows_written": rows_written,
+                    "bytes_scanned": None,   # deferred — see TODO above
+                    "bytes_billed": None,    # deferred
+                    "bq_job_id": None,       # deferred
+                    "snapshot_name": snapshot_name,
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                },
+                result="success",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for snapshot.create; continuing")
         return Response(content=ipc, media_type=CONTENT_TYPE)
-    except WhereValidationError as e:
+    except (WhereValidationError, QuotaExceededError, FileNotFoundError,
+            PermissionError, ValueError, BqAccessError) as exc:
+        try:
+            if isinstance(exc, PermissionError):
+                status_code = 403
+            elif isinstance(exc, FileNotFoundError):
+                status_code = 404
+            elif isinstance(exc, QuotaExceededError):
+                status_code = 429
+            elif isinstance(exc, (WhereValidationError, ValueError)):
+                status_code = 400
+            else:
+                status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="snapshot.create",
+                resource=resource,
+                params={"duration_ms": int((time.monotonic() - t0) * 1000),
+                        "error": str(exc)[:200]},
+                result=f"error.{status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for snapshot.create; continuing")
+        if isinstance(exc, WhereValidationError):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "validator_rejected", "kind": exc.kind, "details": exc.detail or {}},
+            )
+        if isinstance(exc, QuotaExceededError):
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "quota_exceeded",
+                    "kind": exc.kind,
+                    "current": exc.current,
+                    "limit": exc.limit,
+                    "retry_after_seconds": exc.retry_after_seconds,
+                },
+            )
+        if isinstance(exc, FileNotFoundError):
+            raise HTTPException(status_code=404, detail="table not found")
+        if isinstance(exc, PermissionError):
+            raise HTTPException(status_code=403, detail="not authorized")
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=400, detail=str(exc))
         raise HTTPException(
-            status_code=400,
-            detail={"error": "validator_rejected", "kind": e.kind, "details": e.detail or {}},
-        )
-    except QuotaExceededError as e:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "quota_exceeded",
-                "kind": e.kind,
-                "current": e.current,
-                "limit": e.limit,
-                "retry_after_seconds": e.retry_after_seconds,
-            },
-        )
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="table not found")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="not authorized")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except BqAccessError as e:
-        raise HTTPException(
-            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
-            detail={"error": e.kind, "message": e.message, "details": e.details},
+            status_code=BqAccessError.HTTP_STATUS.get(exc.kind, 500),  # type: ignore[union-attr]
+            detail={"error": exc.kind, "message": exc.message, "details": exc.details},  # type: ignore[union-attr]
         )

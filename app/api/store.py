@@ -65,6 +65,10 @@ from src.store_naming import (
     sanitize_username,
     suffixed_name,
 )
+from src.usage_attribution_helpers import (
+    delete_flea_attribution,
+    update_flea_attribution,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/store", tags=["store"])
@@ -638,6 +642,8 @@ def _write_synth_plugin_json(
     (target / "plugin.json").write_text(
         json.dumps(payload, indent=2), encoding="utf-8"
     )
+
+
 
 
 def _swap_live_to_version(entity_id: str, version_no: int) -> bool:
@@ -1287,6 +1293,9 @@ async def create_entity(
         )
         if guardrails_on:
             _schedule_llm_review(background_tasks, sub_id, plugin_dir)
+        elif initial_visibility == "approved":
+            # Guardrails off — entity is immediately live; write attribution now.
+            update_flea_attribution(conn, entity_id, type, final_name)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -1626,6 +1635,16 @@ async def update_entity(
         video_url=video_url,
     )
 
+    # Metadata-only rename: live bundle is already updated above; refresh
+    # attribution so lookups resolve the new name immediately.
+    if rename_to is not None and file is None:
+        ent_after_rename = repo.get(entity_id) or {}
+        update_flea_attribution(
+            conn, entity_id,
+            ent_after_rename.get("type") or entity["type"],
+            ent_after_rename.get("name") or rename_to,
+        )
+
     # Bundle change → record a new version + maybe promote.
     #
     # Critical invariant: existing installers keep getting the prior
@@ -1685,6 +1704,13 @@ async def update_entity(
             # update entity columns + swap live to new version.
             repo.promote_version(entity_id, appended_n)
             _swap_live_to_version(entity_id, appended_n)
+            # Live bundle is now the new version; refresh attribution.
+            ent_after_swap = repo.get(entity_id) or {}
+            update_flea_attribution(
+                conn, entity_id,
+                ent_after_swap.get("type") or entity["type"],
+                ent_after_swap.get("name") or (rename_to or entity["name"]),
+            )
 
     # Use the freshly-appended version number when a bundle change
     # produced one, falling back to the planned new_version_no for
@@ -1963,6 +1989,7 @@ async def delete_entity(
         UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
         StoreEntitiesRepository(conn).delete(entity_id)
         shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
+        delete_flea_attribution(conn, entity_id)
         _audit(
             conn,
             user["id"],
@@ -2020,6 +2047,7 @@ async def delete_entity(
             raise HTTPException(
                 status_code=500, detail="archive_rename_failed",
             )
+    delete_flea_attribution(conn, entity_id)
     _audit(
         conn,
         user["id"],

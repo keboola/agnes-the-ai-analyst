@@ -31,6 +31,16 @@ def can_access_table(
     if not user_id:
         return False
 
+    # Internal data-source tables (agnes_sessions / agnes_usage / agnes_audit)
+    # are implicitly accessible to every authenticated user — RBAC there is
+    # row-level (the per-request view filters to the caller's rows) rather
+    # than table-level. Admin gets the unscoped view; non-admin gets their
+    # own rows. Both paths are gated downstream; the table-grain check just
+    # needs to wave them through.
+    from connectors.internal.access import is_internal_table
+    if is_internal_table(table_id):
+        return True
+
     should_close = False
     if conn is None:
         conn = get_system_db()
@@ -64,6 +74,9 @@ def get_accessible_tables(
 
         # Non-admin: list every table_id with a matching grant via any group
         # the user belongs to. Single SQL — no Python-side filtering loop.
+        # Internal tables are auto-granted (see can_access_table) — they're
+        # always in every authenticated user's accessible set even without
+        # a resource_grants row.
         rows = conn.execute(
             """SELECT DISTINCT rg.resource_id
                FROM resource_grants rg
@@ -71,7 +84,12 @@ def get_accessible_tables(
                WHERE m.user_id = ? AND rg.resource_type = 'table'""",
             [user_id],
         ).fetchall()
-        return [r[0] for r in rows]
+        result = [r[0] for r in rows]
+        from connectors.internal.access import INTERNAL_TABLES
+        for t in INTERNAL_TABLES:
+            if t.registry_id not in result:
+                result.append(t.registry_id)
+        return result
     finally:
         if should_close:
             conn.close()
