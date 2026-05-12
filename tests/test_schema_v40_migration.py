@@ -4,8 +4,8 @@ import duckdb
 from src.db import _ensure_schema as init_database, SCHEMA_VERSION
 
 
-def test_schema_version_is_40():
-    assert SCHEMA_VERSION == 40
+def test_schema_version_includes_v40():
+    assert SCHEMA_VERSION >= 40
 
 
 def test_v40_columns_exist_after_init(tmp_path):
@@ -42,7 +42,7 @@ def test_v39_to_v40_is_idempotent(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert version == 40
+    assert version == SCHEMA_VERSION
     conn.close()
 
 
@@ -75,7 +75,7 @@ def test_v30_db_ladders_all_the_way_up(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert version == 40
+    assert version == SCHEMA_VERSION
     assert conn.execute("SELECT COUNT(*) FROM audit_log WHERE id='vintage'").fetchone()[0] == 1
     conn.close()
 
@@ -108,7 +108,7 @@ def test_v39_db_upgrades_cleanly(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert version == 40
+    assert version == SCHEMA_VERSION
     cnt = conn.execute("SELECT COUNT(*) FROM audit_log WHERE id='row1'").fetchone()[0]
     assert cnt == 1
     row = conn.execute(
