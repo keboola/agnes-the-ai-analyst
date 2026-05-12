@@ -19,6 +19,7 @@ from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
 from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
 from app.utils import get_data_dir as _get_data_dir
+from src.audit_helpers import client_kind_from_user
 from src.repositories.audit import AuditRepository
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
@@ -859,7 +860,7 @@ async def trigger_sync(
                 )[:256],
                 params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables},
                 result="error.in_progress",
-                client_kind="scheduler" if user.get("email") == SCHEDULER_USER_EMAIL else "web",
+                client_kind=client_kind_from_user(user),
             )
             _audit_conn.close()
         except Exception:
@@ -883,7 +884,7 @@ async def trigger_sync(
             params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables},
             result="success",
             duration_ms=int((time.monotonic() - _t0) * 1000),
-            client_kind="scheduler" if user.get("email") == SCHEDULER_USER_EMAIL else "web",
+            client_kind=client_kind_from_user(user),
         )
         _audit_conn.close()
     except Exception:

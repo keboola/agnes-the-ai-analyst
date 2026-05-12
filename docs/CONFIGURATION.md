@@ -143,7 +143,7 @@ the full variable list with comments. Never commit `.env`.
 | `SMTP_USER` | SMTP username |
 | `SMTP_PASSWORD` | SMTP password |
 | `TELEGRAM_BOT_TOKEN` | For Telegram notifications |
-| `ANTHROPIC_API_KEY` | For Corporate Memory AI (direct Anthropic) |
+| `ANTHROPIC_API_KEY` | For Corporate Memory AI extraction AND `agnes admin ask` (LLM text-to-SQL on telemetry). Without this, both features show a clear 503 error and skip silently. |
 | `LLM_API_KEY` | API key for LLM proxy (LiteLLM, OpenRouter, etc.) |
 | `JIRA_WEBHOOK_SECRET` | For Jira webhook integration |
 | `JIRA_API_TOKEN` | For Jira REST API access |
