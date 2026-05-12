@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.53.5] — 2026-05-12
+
 ### Added
 
 - **Flea-market content guardrail — two-tier per-component description
