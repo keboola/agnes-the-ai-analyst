@@ -324,7 +324,18 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
 
 
 def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
-    """Steps 2-3 — `agnes init` (auth + workspace bootstrap) + smoke verify.
+    """Steps 2-4 — workspace folder bootstrap, then `agnes init` + smoke verify.
+
+    Step 2 (new) explicitly creates the workspace folder and cd's into it.
+    Previously the script assumed Claude Code was already cd'd to a sensible
+    location and ran `agnes init --workspace .` against whatever that
+    happened to be. With the new explicit mkdir+cd the workspace path is
+    deterministic — `~/{workspace_dir}` — and the visible /home step block
+    + this scripted step stay in lockstep.
+
+    `{workspace_dir}` and `{instance_brand}` are placeholders pre-substituted
+    by :func:`resolve_lines` from the operator-configured brand. Defaults
+    keep `~/Agnes` behavior for instances that don't set the brand knob.
 
     `agnes init` is the workspace-rails delivery mechanism for everyone:
     it authenticates with the PAT, fetches CLAUDE.md (RBAC-filtered),
@@ -341,7 +352,16 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     """
     return [
         "",
-        "2) Bootstrap your Agnes workspace in this directory:",
+        "2) Create the workspace folder in the user's home directory and cd into it:",
+        "   # POSIX (macOS / Linux / WSL):",
+        "   mkdir -p \"$HOME/{workspace_dir}\" && cd \"$HOME/{workspace_dir}\"",
+        "   # Windows (PowerShell) — only run if the user is on Windows:",
+        "   #   New-Item -ItemType Directory -Force -Path \"$HOME\\{workspace_dir}\" | Out-Null",
+        "   #   Set-Location \"$HOME\\{workspace_dir}\"",
+        "",
+        "   The remaining steps run inside this directory.",
+        "",
+        "3) Bootstrap your {instance_brand} workspace in this directory:",
         f"   agnes init --server-url \"{server_url_placeholder}\" --token \"{{token}}\" --workspace .",
         "",
         "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
@@ -349,7 +369,7 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "   SessionStart/End hooks (auto-refresh), and runs an initial `agnes pull`",
         "   so your DuckDB views are ready.",
         "",
-        "3) Verify the data is queryable:",
+        "4) Verify the data is queryable:",
         "   agnes catalog",
         "",
         "   This should list the tables your account has grants for. Empty list",
@@ -457,6 +477,24 @@ def _connectors_block(
     return lines
 
 
+def _restart_claude_lines(step_num: str) -> list[str]:
+    """Final 'restart Claude Code' instruction emitted immediately before
+    Confirm. Marketplace plugins, MCP server registrations, and the
+    SessionStart hooks installed during init only load on the next
+    Claude Code session — without this step the user sits inside the
+    setup session with stale state and re-discovers the requirement
+    later. The marketplace step's trailer already mentions /exit
+    + claude conditionally; this is the unconditional equivalent so
+    every path (with or without plugins) ends on the same cue.
+    """
+    return [
+        "",
+        f"{step_num}) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:",
+        "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same `~/{workspace_dir}` directory.",
+        "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + refresh-marketplace SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
+    ]
+
+
 def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
     """Final Confirm step. Bullets it asks the assistant to report on must
     only reference earlier steps that were actually emitted, otherwise the
@@ -466,7 +504,10 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
     unconditional now — preflight + marketplace are always emitted (Fix B
     in the 2026-05-10 init-report response). Init + catalog + diagnose +
     skills + connectors + version always render, so their bullets are
-    unconditional."""
+    unconditional. The per-connector ✅/❌ bullet exploits the uniform
+    output contract every connector prompt emits on its verify step —
+    the assistant scans its own prior output for those markers instead
+    of re-running probes."""
     bullets = [
         "   - `agnes --version` output",
         "   - First few lines of `agnes catalog` (tables you can see)",
@@ -476,9 +517,11 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
         "   - Whether skills were copied or left on-demand",
         "   - Confirmation that `~/.agnes/marketplace/.git/` exists "
         "(the marketplace clone) and that any granted plugins installed",
-        "   - Which connectors got set up: Asana, Google Workspace, and "
-        "Atlassian — installed or declined for each (the per-connector ask "
-        "in the previous step drives this)",
+        "   - For each connector (Asana, Google Workspace, Atlassian): "
+        "the verbatim ✅ or ❌ line that the connector's verify step "
+        "emitted earlier in this session (e.g. `✅ Asana ready — connected "
+        "as Vojtech Rysanek. 2 workspace(s) visible.` or `❌ Atlassian setup "
+        "failed: ...`). If the user declined a connector, say declined.",
     ]
     if has_ca:
         bullets.append(
@@ -487,7 +530,7 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
         )
     return [
         f"{confirm_step_num}) Confirm:",
-        "   Tell me \"Agnes workspace is ready\" and summarize:",
+        "   Tell me \"{instance_brand} workspace is ready\" and summarize:",
         *bullets,
     ]
 
@@ -660,7 +703,7 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
     stays unconditional — it's good guidance regardless of whether the
     server runs with a private CA."""
     lines = [
-        "Set up the Agnes CLI on this machine.",
+        "Set up the {instance_brand} CLI on this machine.",
         "",
         "Server: {server_url}",
         "Personal access token: {token}",
@@ -689,9 +732,10 @@ def _step_numbers(*, has_connectors: bool = True) -> dict[str, str]:
     1-based step numbers (preserving the existing string-based helper API
     so call sites stay diff-minimal).
 
-    Steps (always emitted): install (1), init (2), catalog (3),
-    preflight (4), marketplace (5), diagnose (6), connectors (7),
-    confirm (8). Preflight + marketplace + connectors are always-on:
+    Steps (always emitted): install (1), mkdir/cd (2), init (3),
+    catalog (4), preflight (5), marketplace (6), diagnose (7),
+    connectors (8), restart_claude (9), confirm (10). Preflight +
+    marketplace + connectors + restart_claude are always-on:
       - Marketplace registration is useful even when the operator has
         zero plugin grants (SessionStart hook reconciles future grants
         automatically).
@@ -720,19 +764,21 @@ def _step_numbers(*, has_connectors: bool = True) -> dict[str, str]:
     has_ca and has its own "0)" header rendered inside the trust block
     helper.
     """
-    n = 4
+    n = 5
     preflight = str(n); n += 1
     marketplace = str(n); n += 1
     diagnose = str(n); n += 1
     connectors = str(n) if has_connectors else ""
     if has_connectors:
         n += 1
+    restart_claude = str(n); n += 1
     confirm = str(n)
     return {
         "preflight": preflight,
         "marketplace": marketplace,
         "diagnose": diagnose,
         "connectors": connectors,
+        "restart_claude": restart_claude,
         "confirm": confirm,
     }
 
@@ -744,6 +790,8 @@ def resolve_lines(
     server_host: str = "",
     ca_pem: str | None = None,
     connector_prompts: dict[str, str] | None = None,
+    instance_brand: str = "Agnes",
+    workspace_dir: str = "Agnes",
 ) -> list[str]:
     """Return the template lines with server-side placeholders substituted.
 
@@ -802,12 +850,18 @@ def resolve_lines(
     # connector's prompt body in step 7 so all Atlassian setup is grouped
     # together.
     lines.extend(_diagnose_lines(diagnose_num=steps["diagnose"]))             # 6
-    # Connectors are the LAST interactive ask before Confirm. Per-connector
-    # default-yes — empty/Enter is install, explicit "no" skips.
+    # Connectors are the LAST interactive ask before the restart-claude
+    # cue. Per-connector default-yes — empty/Enter is install, explicit
+    # "no" skips.
     lines.extend(_connectors_block(
         steps["connectors"], connector_prompts,
         confirm_step_num=steps["confirm"],
     ))
+    # Restart-claude lands between connectors and confirm so the user
+    # picks up freshly-registered plugins / MCP servers / hooks on the
+    # next session — without this every path silently expected the user
+    # to know they had to re-launch.
+    lines.extend(_restart_claude_lines(steps["restart_claude"]))
     lines.append("")
     lines.extend(_finale_lines(
         confirm_step_num=steps["confirm"],
@@ -815,7 +869,11 @@ def resolve_lines(
     ))
 
     return [
-        line.replace("{wheel_filename}", wheel_filename).replace("{server_host}", server_host)
+        line
+        .replace("{wheel_filename}", wheel_filename)
+        .replace("{server_host}", server_host)
+        .replace("{workspace_dir}", workspace_dir)
+        .replace("{instance_brand}", instance_brand)
         for line in lines
     ]
 
@@ -829,13 +887,15 @@ def render_setup_instructions(
     server_host: str = "",
     ca_pem: str | None = None,
     connector_prompts: dict[str, str] | None = None,
+    instance_brand: str = "Agnes",
+    workspace_dir: str = "Agnes",
 ) -> str:
     """Render the setup instructions as a single string.
 
     Used server-side for tests and any non-JS rendering path. The browser
     clipboard flow uses the JS renderer embedded in the Jinja partial; both
     must produce byte-identical output for a given (server_url, token,
-    wheel, plugins, host, ca_pem, connector_prompts) tuple.
+    wheel, plugins, host, ca_pem, connector_prompts, brand, workspace_dir) tuple.
     """
     lines = resolve_lines(
         wheel_filename,
@@ -843,6 +903,8 @@ def render_setup_instructions(
         server_host=server_host,
         ca_pem=ca_pem,
         connector_prompts=connector_prompts,
+        instance_brand=instance_brand,
+        workspace_dir=workspace_dir,
     )
     text = "\n".join(lines)
     return text.replace("{server_url}", server_url).replace("{token}", token)

@@ -34,3 +34,123 @@ class TestInstanceConfig:
 
         # Cleanup: reset cache after test
         mod._instance_config = None
+
+
+class TestInstanceBrand:
+    """Brand and workspace_dir resolution: env > YAML > default,
+    workspace_dir derives from brand when not explicitly set."""
+
+    def _reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        import importlib
+        import app.instance_config as mod
+        mod._instance_config = None
+        importlib.reload(mod)
+        return mod
+
+    def test_brand_defaults_to_agnes(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand() == "Agnes"
+        mod._instance_config = None
+
+    def test_brand_from_yaml(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(
+            "instance:\n  name: Acme\n  brand: Foundry AI\n"
+        )
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand() == "Foundry AI"
+        mod._instance_config = None
+
+    def test_brand_env_overrides_yaml(self, tmp_path, monkeypatch):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(
+            "instance:\n  name: Acme\n  brand: FromYaml\n"
+        )
+        monkeypatch.setenv("AGNES_INSTANCE_BRAND", "FromEnv")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand() == "FromEnv"
+        mod._instance_config = None
+
+    def test_brand_empty_falls_back_to_default(self, tmp_path, monkeypatch):
+        # Empty env should not override the YAML/default to empty.
+        monkeypatch.setenv("AGNES_INSTANCE_BRAND", "   ")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_instance_brand() == "Agnes"
+        mod._instance_config = None
+
+    def test_workspace_dir_derives_from_brand(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_WORKSPACE_DIR_NAME", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Foundry AI")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_workspace_dir_name() == "FoundryAI"
+        mod._instance_config = None
+
+    def test_workspace_dir_strips_all_non_alphanumeric(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_WORKSPACE_DIR_NAME", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_BRAND", "ACME's Data!")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_workspace_dir_name() == "ACMEsData"
+        mod._instance_config = None
+
+    def test_workspace_dir_default_when_brand_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_WORKSPACE_DIR_NAME", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_workspace_dir_name() == "Agnes"
+        mod._instance_config = None
+
+    def test_workspace_dir_explicit_env_overrides_derivation(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Foundry AI")
+        monkeypatch.setenv("AGNES_WORKSPACE_DIR_NAME", "fdry")
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_workspace_dir_name() == "fdry"
+        mod._instance_config = None
+
+    def test_workspace_dir_explicit_yaml_overrides_derivation(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AGNES_WORKSPACE_DIR_NAME", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_BRAND", raising=False)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(
+            "instance:\n  name: Acme\n  brand: Foundry AI\n  workspace_dir: fdry\n"
+        )
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_workspace_dir_name() == "fdry"
+        mod._instance_config = None
+
+    def test_brand_flows_into_resolve_lines(self, tmp_path, monkeypatch):
+        """Brand + workspace_dir substitute into the setup script lines."""
+        mod = self._reload(tmp_path, monkeypatch)
+        from app.web.setup_instructions import resolve_lines
+        joined = "\n".join(resolve_lines(
+            "agnes.whl",
+            instance_brand="Foundry AI",
+            workspace_dir="FoundryAI",
+        ))
+        assert "Set up the Foundry AI CLI on this machine." in joined
+        assert "mkdir -p \"$HOME/FoundryAI\"" in joined
+        assert "Bootstrap your Foundry AI workspace" in joined
+        assert "Foundry AI workspace is ready" in joined
+        # No raw placeholders survive substitution.
+        assert "{instance_brand}" not in joined
+        assert "{workspace_dir}" not in joined
+        mod._instance_config = None
+
+    def test_default_brand_keeps_agnes_branding(self, tmp_path, monkeypatch):
+        """Backwards-compat: callers that don't pass brand/workspace_dir
+        get the literal 'Agnes' / '~/Agnes' rendering."""
+        mod = self._reload(tmp_path, monkeypatch)
+        from app.web.setup_instructions import resolve_lines
+        joined = "\n".join(resolve_lines("agnes.whl"))
+        assert "Set up the Agnes CLI on this machine." in joined
+        assert "mkdir -p \"$HOME/Agnes\"" in joined
+        assert "Bootstrap your Agnes workspace" in joined
+        assert "Agnes workspace is ready" in joined
+        mod._instance_config = None

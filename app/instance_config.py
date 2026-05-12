@@ -258,6 +258,49 @@ def get_instance_subtitle() -> str:
     return get_value("instance", "subtitle", default="")
 
 
+def get_instance_brand() -> str:
+    """Product-name brand string surfaced to end users in the analyst-facing
+    UI (``/home`` hero copy, ``/setup``, ``/login``, the clipboard setup
+    script, etc.). Defaults to ``"Agnes"`` — operators rebranding this OSS
+    set it to e.g. ``"Foundry AI"`` without forking.
+
+    Distinct from :func:`get_instance_name` which drives page titles and
+    represents the deploying organization's display name ("AI Data Analyst").
+    Brand is the *product*; name is the *deployment*.
+
+    Resolution: ``AGNES_INSTANCE_BRAND`` env > ``instance.brand`` YAML > ``"Agnes"``.
+    Mirrors :func:`get_home_route` shape so Terraform env overrides work.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_BRAND")
+    if raw is None:
+        raw = get_value("instance", "brand", default="Agnes")
+    value = (raw or "").strip()
+    return value or "Agnes"
+
+
+def get_workspace_dir_name() -> str:
+    """Filesystem-safe folder name for the analyst's local workspace
+    (``~/<workspace_dir_name>``). Defaults to :func:`get_instance_brand`
+    with every non-alphanumeric character stripped, so ``"Foundry AI"``
+    becomes ``"FoundryAI"`` and ``"Agnes"`` stays ``"Agnes"``.
+
+    An explicit override exists for operators who want a folder name that
+    doesn't follow the strip-whitespace derivation.
+
+    Resolution: ``AGNES_WORKSPACE_DIR_NAME`` env > ``instance.workspace_dir``
+    YAML > derived from :func:`get_instance_brand`.
+    """
+    raw = os.environ.get("AGNES_WORKSPACE_DIR_NAME")
+    if raw is None:
+        raw = get_value("instance", "workspace_dir", default="")
+    explicit = (raw or "").strip()
+    if explicit:
+        return explicit
+    import re
+    derived = re.sub(r"[^A-Za-z0-9]", "", get_instance_brand())
+    return derived or "Agnes"
+
+
 def get_instance_admin_email() -> str:
     """Operator-facing contact address shown in user-side prompts that
     suggest the user reach out to their Agnes admin (e.g. the /home GWS
