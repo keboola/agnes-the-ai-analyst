@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- `agnes marketplace search` — unified search across Curated and Flea Market; RBAC-filtered server-side, supports `--source`, `--type`, `--sort`, `--query`, `--json`
+- `agnes marketplace detail <id>` — full detail view for any marketplace item (curated: `marketplace_id/plugin_name`, flea: UUID)
+- `agnes marketplace add <id>` — add a plugin/skill/agent to your stack; works for both Curated and Flea Market
+- `agnes marketplace remove <id>` — remove from stack; works for both Curated and Flea Market
+
+### Removed
+- **BREAKING** `agnes my-stack toggle` — superseded by `agnes marketplace add/remove` which covers both Curated and Flea Market
+- **BREAKING** `agnes store list` — superseded by `agnes marketplace search --source flea`
+- **BREAKING** `agnes store show` — superseded by `agnes marketplace detail <uuid>`
+- **BREAKING** `agnes store install` — superseded by `agnes marketplace add <uuid>`
+- **BREAKING** `agnes store uninstall` — superseded by `agnes marketplace remove <uuid>`
+
+### Changed
+- `agnes store` now covers only creator-side operations: `upload`, `update`, `delete`, `mine`
+- `agnes my-stack show` output label updated: `From Store:` → `From Flea Market:`
+
 ## [0.54.0] — 2026-05-12
 
 Activity Center build — unified observability surface plus a recursive

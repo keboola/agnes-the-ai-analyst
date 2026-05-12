@@ -65,20 +65,31 @@ agnes catalog
 agnes catalog --json | jq '.[] | select(.query_mode=="local")'
 
 # Schema and sample
-agnes schema opportunity
-agnes describe opportunity -n 10
+agnes schema <table>
+agnes describe <table> -n 10
 
 # Run a SQL query (DuckDB flavor against local parquets)
-agnes query "SELECT count(*) FROM opportunity WHERE stage='Closed Won'"
+agnes query "SELECT count(*) FROM <table> WHERE ..."
 
 # Remote BigQuery query (server-side, no local materialization)
-agnes query --remote "SELECT count(*) FROM web_sessions_example"
+agnes query --remote "SELECT count(*) FROM <table>"
 
 # Materialize a remote subset locally
-agnes snapshot create web_sessions_example \
-  --select event_date,country_code \
-  --where "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)" \
-  --as recent_sessions
+agnes snapshot create <table> \
+  --select col1,col2 \
+  --where "date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)" \
+  --as my_snapshot
+
+# Browse and manage marketplace (skills / agents / plugins)
+agnes marketplace search -q "pdf"
+agnes marketplace detail <id>
+agnes marketplace add <id>
+agnes marketplace remove <id>
+agnes my-stack show
+
+# Upload your own skill/agent/plugin to the Flea Market
+agnes store upload skill ./my-skill.zip
+agnes store mine
 
 # Manual data refresh (the SessionStart hook does this automatically)
 agnes pull
