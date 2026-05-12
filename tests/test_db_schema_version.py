@@ -65,16 +65,25 @@ def test_schema_version_is_37():
     #            from the row's current `version` (hash). Bundle bytes
     #            for each version live on disk under
     #            ${DATA_DIR}/store/<id>/versions/v<N>/plugin/.
-    # v38 → v39 (this PR): system plugin tier — admin-toggleable
-    #            mandatory plugin set. Adds marketplace_plugins.is_system
-    #            BOOLEAN DEFAULT FALSE. The flag drives a fanout that
-    #            materializes resource_grants + user_plugin_optouts rows
-    #            for every existing user_groups + users row, so the
-    #            resolver's existing (rbac ∩ subscriptions) computation
-    #            naturally pulls system plugins into every user's stack.
-    #            UI then locks the corresponding controls so users can't
+    # v38 → v39: system plugin tier — admin-toggleable mandatory plugin
+    #            set. Adds marketplace_plugins.is_system BOOLEAN DEFAULT
+    #            FALSE. The flag drives a fanout that materializes
+    #            resource_grants + user_plugin_optouts rows for every
+    #            existing user_groups + users row, so the resolver's
+    #            existing (rbac ∩ subscriptions) computation naturally
+    #            pulls system plugins into every user's stack. UI then
+    #            locks the corresponding controls so users can't
     #            unsubscribe and admins can't revoke per-group grants.
-    assert SCHEMA_VERSION == 39
+    # v39 → v40 (this PR): persistent BigQuery metadata cache. Adds
+    #            bq_metadata_cache(table_id PK, rows, size_bytes,
+    #            partition_by, clustered_by, refreshed_at, error_at,
+    #            error_msg). Replaces the in-memory per-request BQ fetch
+    #            that GET /api/v2/catalog used to do — the cache is
+    #            populated by a scheduler-driven refresh job
+    #            (SCHEDULER_BQ_METADATA_REFRESH_INTERVAL, default 4 h)
+    #            and the catalog endpoint reads it without ever calling
+    #            BQ at request time.
+    assert SCHEMA_VERSION == 40
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

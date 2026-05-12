@@ -10,6 +10,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-05-12
+
+### Fixed
+
+- **`GET /api/v2/catalog` no longer hangs on cold cache.** Since 0.47.0 the catalog endpoint enriched each remote BigQuery row by fetching `INFORMATION_SCHEMA.TABLE_STORAGE` + `COLUMNS` through the DuckDB BigQuery extension inside the request. On cold caches that fanned out to O(N) sequential BQ jobs-API roundtrips — easily 90 s+ on partitioned / view-backed tables — and reliably exceeded the CLI's 30 s `httpx.ReadTimeout`. Enrichment now reads exclusively from a persistent `bq_metadata_cache` DuckDB table, populated by a scheduler-driven refresh job. First call after a fresh container start returns in tens of milliseconds with `metadata_freshness: never_fetched` for rows the scheduler hasn't reached yet; subsequent ticks fill the cache. Closes the cold-start outage class entirely.
+
+### Added
+
+- **Persistent BigQuery metadata cache (`bq_metadata_cache`, schema v40).** Holds `rows`, `size_bytes`, `partition_by`, `clustered_by`, `refreshed_at`, plus a `error_at` / `error_msg` pair that preserves the last successful row across transient provider failures so analyst tooling keeps seeing last-known-good numbers.
+- **`POST /api/admin/run-bq-metadata-refresh`** — scheduler-driven full refresh of every remote BigQuery row in the registry. Bounded concurrency via `AGNES_BQ_METADATA_REFRESH_CONCURRENCY` (default 4).
+- **`POST /api/v2/metadata-cache/refresh?table=<id>`** — operator on-demand single-row refresh (admin-gated), for use right after a registry edit when waiting for the next scheduled tick is too long.
+- **`GET /api/v2/metadata-cache/status`** — non-admin endpoint surfacing per-row `refreshed_at`, `error_at`, `error_msg`, and `freshness` (`fresh` / `stale` / `never_fetched` / `error`) so CLI / Claude Code can decide whether to trust the catalog's `rows` and `size_bytes`.
+- **`metadata_freshness` field** in every `/api/v2/catalog` row. `not_applicable` for `local` / `materialized` rows where the BQ cache concept doesn't apply.
+- **Scheduler job `bq-metadata-refresh`** running at `SCHEDULER_BQ_METADATA_REFRESH_INTERVAL` (default `4 * 60 * 60` seconds = 4 h). Tunable per deployment; the catalog request path is independent of the value.
+
+### Changed
+
+- **BREAKING (internal API):** removed `app.api.v2_catalog._size_hint_for_row`, `_resolve_remote_metadata`, `_metadata_provider_for`, `_build_metadata_request`, `_materialized_size_hint`, and the in-memory `_metadata_cache` (`TTLCache`). Catalog responses still expose the same enrichment fields (`rows`, `size_bytes`, `partition_by`, `clustered_by`); the new `metadata_freshness` field is additive. External consumers that read the response shape are unaffected.
+- `app.api.cache_warmup._warm_metadata_sync` now refreshes the persistent cache via `bq_metadata_refresh.refresh_one` instead of priming an in-memory TTL cache. The existing `/api/admin/cache-warmup/*` endpoints and admin-tables SSE wiring continue to work.
+
+### Internal
+
+- Schema v40 migration `_V39_TO_V40_MIGRATIONS` adds the new table; existing instances pick it up on next start. Empty cache is treated as `never_fetched` by the catalog, never as an error.
+- **`entity_type` + `known_columns` on `bq_metadata_cache`** (still v40). `entity_type` mirrors `INFORMATION_SCHEMA.TABLES.table_type` (`BASE TABLE` / `VIEW` / `MATERIALIZED VIEW` / `EXTERNAL` / `SNAPSHOT` / `CLONE`); catalog surfaces it per row and hides `rows` / `size_bytes` for views (which `__TABLES__` reports as zero) so analyst tooling sees explicit "unknown" rather than a misleading 0. `known_columns` caches the most recent successful `INFORMATION_SCHEMA.COLUMNS` fetch so the catalog endpoint can filter its generic `where_examples` templates against the table's real schema — the prior behavior of always advertising `country_code = 'CZ'` on tables without that column is gone. New columns are idempotently added via ALTER on existing v40 instances.
+- **`/api/query` cost-guard message names views explicitly.** When `remote_scan_too_large` fires on a query whose target is classified `VIEW` or `MATERIALIZED VIEW`, the suggestion text tells the analyst directly that `LIMIT` does not push into the view body and that `agnes snapshot create` is the right path. New `view_targets` field on the error detail surfaces the matched registry IDs to programmatic consumers.
+- **Scheduler post-deploy hygiene.** `SCHEDULER_STARTUP_GRACE_SECONDS` (default 60) pauses the scheduler's first tick after container start so its "everything is due" burst doesn't overlap the app's own startup `cache_warmup` writes — observed to drop concurrent parquet downloads from ~3 MB/s to ~1 MB/s for ~2 minutes under the previous behavior. `SCHEDULER_BQ_METADATA_INITIAL_OFFSET_MAX_SECONDS` (default 900) randomises the `bq-metadata-refresh` job's first-fire offset so two scheduler containers brought up close in time don't synchronise their refresh ticks.
+- **DuckDB lower bound bumped from `>=0.9.0` to `>=1.5.2`.** 1.5.1 had a regression where `ALTER TABLE … ADD COLUMN IF NOT EXISTS` was rejected with `Cannot alter entry … because there are entries that depend on it` when the target table was FK-referenced from another table; the migration ladder hit this on `internal_roles` (v8→v9) and `user_groups` (v11→v12) when replayed from old schema_version. 1.5.2 restores the previous behavior. CI was already on 1.5.2; this just pins the same floor for local devs.
+- `tests/test_cli_binary_rename.py::test_agnes_command_exists` now skips with an actionable message instead of failing when the local venv has no `agnes` on PATH or the binary is a stale shim from a prior editable install. CI installs the package fresh and still asserts the real contract.
+
 ## [0.50.0] — 2026-05-12
 
 ### Added

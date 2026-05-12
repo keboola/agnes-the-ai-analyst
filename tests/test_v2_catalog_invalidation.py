@@ -1,47 +1,58 @@
-"""Unified cache flush across all four catalog/schema/sample/metadata
-caches on registry write."""
+"""Unified cache flush across the three in-memory catalog/schema/sample
+caches on registry write.
 
-from unittest.mock import patch
+Post-0.50: the persistent ``bq_metadata_cache`` is intentionally NOT
+invalidated here. That table's lifecycle is owned by the scheduler-
+driven refresh — admins who need an immediate refresh after editing a
+remote row hit ``POST /api/v2/metadata-cache/refresh?table=<id>``
+explicitly. Auto-invalidation on every registry edit would re-introduce
+the request-path BQ fan-out the refactor exists to avoid.
+"""
+
+from src.db import get_system_db
+from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
 
 
-def test_invalidate_flushes_all_four_caches():
+def test_invalidate_flushes_three_in_memory_caches():
     from app.api import v2_catalog, v2_schema, v2_sample
-    from app.api._metadata_models import TableMetadata
 
     # Pre-populate.
     v2_catalog._table_rows_cache.set("all", ["fake_row"])
-    v2_catalog._metadata_cache.set("orders", TableMetadata(rows=10))
     v2_schema._schema_cache.set("orders", {"columns": []})
     v2_sample._sample_cache.set("orders|10", [{"row": 1}])
 
     v2_catalog.invalidate_for_table("orders")
 
     assert v2_catalog._table_rows_cache.get("all") is None
-    assert v2_catalog._metadata_cache.get("orders") is None
     assert v2_schema._schema_cache.get("orders") is None
     # Sample cache is cleared whole (we don't have prefix-invalidation).
     assert v2_sample._sample_cache.get("orders|10") is None
 
 
-def test_invalidate_schedules_single_row_rewarm(monkeypatch):
-    """After the flush, a background re-warm task is scheduled for the
-    same table_id. Assert via patching create_task."""
-    import asyncio
+def test_invalidate_does_not_touch_persistent_bq_cache():
+    """The persistent cache survives registry-row invalidations; only an
+    explicit ``POST /api/v2/metadata-cache/refresh`` (or the scheduled
+    refresh) should change it."""
     from app.api import v2_catalog
 
-    scheduled = []
+    conn = get_system_db()
+    try:
+        BqMetadataCacheRepository(conn).upsert_success(
+            "survives_invalidate",
+            rows=42, size_bytes=4096, partition_by=None, clustered_by=None,
+        )
+    finally:
+        conn.close()
 
-    def fake_create_task(coro):
-        # Drain the coroutine so the test doesn't leak it.
-        coro.close()
-        scheduled.append(coro)
-        return None
+    v2_catalog.invalidate_for_table("survives_invalidate")
 
-    # Simulate a running event loop so the create_task branch is reached.
-    monkeypatch.setattr(asyncio, "get_running_loop", lambda: object())
-    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
-    v2_catalog.invalidate_for_table("orders")
-    assert len(scheduled) == 1
+    conn = get_system_db()
+    try:
+        row = BqMetadataCacheRepository(conn).get("survives_invalidate")
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["rows"] == 42
 
 
 def test_register_table_invalidates(seeded_app):

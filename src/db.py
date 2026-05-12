@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -640,6 +640,56 @@ CREATE INDEX IF NOT EXISTS idx_store_submissions_entity ON store_submissions(ent
 -- (reproduced with N=2 against 3 rows during /admin/store/submissions
 -- paging). Submissions table is admin-only and bounded by upload
 -- volume, so the index buys little; dropping it sidesteps the bug.
+
+-- v40: persistent metadata cache for remote sources (BigQuery initially).
+-- Replaces the per-request, in-memory `_metadata_cache` in v2_catalog.py
+-- that turned every cold-cache /api/v2/catalog into a sequence of N×3 BQ
+-- jobs API calls (one TABLE_STORAGE + COLUMNS pair per remote row) — long
+-- enough on view-backed or partitioned tables (>>30 s) to blow the CLI's
+-- httpx 30 s read timeout. Now refresh is driven exclusively by the
+-- scheduler (default every 4 h, `SCHEDULER_BQ_METADATA_REFRESH_INTERVAL`),
+-- and the catalog endpoint just reads this table — no BQ at request time.
+--
+-- Columns:
+--   table_id          — registry.id; PK and join key with table_registry.
+--   rows / size_bytes / partition_by / clustered_by — last successful
+--                       provider result. NULL when the table has never
+--                       been fetched, or fetch failed before any success.
+--                       clustered_by stored as JSON array of column names.
+--   refreshed_at      — wall-clock of the last successful fetch. Used by
+--                       the catalog response to compute metadata_freshness
+--                       (`fresh` if < 2× scheduler interval old, `stale`
+--                       otherwise, `never_fetched` if NULL).
+--   error_at / error_msg — last failure timestamp + redacted message.
+--                       NULL after the next successful refresh.
+CREATE TABLE IF NOT EXISTS bq_metadata_cache (
+    table_id        VARCHAR PRIMARY KEY,
+    rows            BIGINT,
+    size_bytes      BIGINT,
+    partition_by    VARCHAR,
+    clustered_by    JSON,
+    -- BigQuery entity classification, surfaced in catalog so analyst Claude
+    -- can decide query strategy. Values mirror INFORMATION_SCHEMA.TABLES.
+    -- table_type: `BASE TABLE`, `VIEW`, `MATERIALIZED VIEW`, `EXTERNAL`,
+    -- `SNAPSHOT`, `CLONE`. NULL until first successful refresh.
+    entity_type     VARCHAR,
+    -- Cache of known column names from the most recent successful refresh,
+    -- as JSON array of strings. Used by /api/v2/catalog to filter generic
+    -- where_examples against the table's actual schema — drops example
+    -- predicates that reference columns the table doesn't have. Populated
+    -- by bq_metadata_refresh.refresh_one from fetch_bq_columns_full, so
+    -- there is no extra BQ roundtrip just for this.
+    known_columns   JSON,
+    refreshed_at    TIMESTAMP,
+    error_at        TIMESTAMP,
+    error_msg       VARCHAR
+);
+-- Self-heal for instances that already ran an earlier v40 incarnation
+-- that lacked entity_type / known_columns. The CREATE TABLE above is
+-- IF NOT EXISTS so it skips on already-existing tables; these ALTERs
+-- close the column-set gap. Idempotent on fresh installs (no-op).
+ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS entity_type VARCHAR;
+ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS known_columns JSON;
 """
 
 
@@ -2489,6 +2539,35 @@ _V38_TO_V39_MIGRATIONS = [
 ]
 
 
+# v40: bq_metadata_cache table. Existing DBs get an empty table; the next
+# scheduler tick (or app startup warmup) populates it. The catalog endpoint
+# treats absence-of-row as `metadata_freshness: never_fetched` and returns
+# NULL for the optional fields rather than failing — analyst tooling already
+# tolerates NULL rows / size_bytes from the pre-0.47 contract.
+_V39_TO_V40_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS bq_metadata_cache (
+        table_id      VARCHAR PRIMARY KEY,
+        rows          BIGINT,
+        size_bytes    BIGINT,
+        partition_by  VARCHAR,
+        clustered_by  JSON,
+        entity_type   VARCHAR,
+        known_columns JSON,
+        refreshed_at  TIMESTAMP,
+        error_at      TIMESTAMP,
+        error_msg     VARCHAR
+    )
+    """,
+    # entity_type + known_columns may be absent on instances that picked
+    # up the early v40 (`bq_metadata_cache` without these columns) before
+    # the field was added. IF NOT EXISTS makes the ALTERs idempotent for
+    # the fresh-create path above and additive for the upgrade path.
+    "ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS entity_type VARCHAR",
+    "ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS known_columns JSON",
+]
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -2881,6 +2960,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 39:
                 for sql in _V38_TO_V39_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 40:
+                for sql in _V39_TO_V40_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

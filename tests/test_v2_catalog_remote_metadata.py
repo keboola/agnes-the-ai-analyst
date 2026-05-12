@@ -1,9 +1,15 @@
 """Catalog endpoint integration: per-table metadata enrichment for
-remote rows."""
+remote rows.
+
+Post-0.50 the catalog endpoint reads enrichment fields exclusively from
+the persistent ``bq_metadata_cache`` table (populated by the scheduler-
+driven refresh in ``app/api/bq_metadata_refresh.py``). These tests
+pre-seed cache rows and verify the catalog response shape; they do NOT
+mock ``connectors.bigquery.metadata.fetch`` because that path is no
+longer reachable from the catalog request.
+"""
 
 from unittest.mock import patch
-
-from app.api._metadata_models import TableMetadata
 
 
 def _register_table(seeded_app, **kwargs):
@@ -13,42 +19,70 @@ def _register_table(seeded_app, **kwargs):
     conn = get_system_db()
     try:
         repo = TableRegistryRepository(conn)
-        # `name` defaults to `id` if not supplied
         name = kwargs.pop("name", kwargs.get("id"))
         repo.register(name=name, **kwargs)
     finally:
         conn.close()
 
 
-def test_remote_row_includes_metadata_fields(seeded_app, monkeypatch):
-    """Catalog response for a query_mode='remote' BQ row carries the four
-    new fields populated by the provider."""
-    # Reset catalog row cache so this test's registered table is visible.
+def _seed_cache_row(
+    table_id: str,
+    *,
+    rows=None,
+    size_bytes=None,
+    partition_by=None,
+    clustered_by=None,
+    entity_type=None,
+    known_columns=None,
+):
+    """Insert a successful refresh row into bq_metadata_cache."""
+    from src.db import get_system_db
+    from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
+    conn = get_system_db()
+    try:
+        BqMetadataCacheRepository(conn).upsert_success(
+            table_id,
+            rows=rows,
+            size_bytes=size_bytes,
+            partition_by=partition_by,
+            clustered_by=clustered_by,
+            entity_type=entity_type,
+            known_columns=known_columns,
+        )
+    finally:
+        conn.close()
+
+
+def _reset_catalog_caches():
     from app.api import v2_catalog
     v2_catalog._table_rows_cache.clear()
-    v2_catalog._metadata_cache.clear()
+
+
+def test_remote_row_includes_metadata_fields(seeded_app):
+    """Catalog response for a query_mode='remote' BQ row carries the four
+    enrichment fields read from the persistent cache."""
+    _reset_catalog_caches()
 
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
-
-    fake_meta = TableMetadata(
-        rows=10000, size_bytes=2_000_000,
-        partition_by="event_date", clustered_by=["country", "platform"],
-    )
 
     _register_table(
         seeded_app,
         id="orders", source_type="bigquery", bucket="dwh_base",
         source_table="orders_2024", query_mode="remote",
     )
+    _seed_cache_row(
+        "orders",
+        rows=10000, size_bytes=2_000_000,
+        partition_by="event_date", clustered_by=["country", "platform"],
+        entity_type="BASE TABLE",
+        known_columns=["event_date", "country", "platform", "amount"],
+    )
 
-    with patch(
-        "connectors.bigquery.metadata.fetch", return_value=fake_meta,
-    ):
-        r = c.get(
-            "/api/v2/catalog",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    r = c.get(
+        "/api/v2/catalog",
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert r.status_code == 200, r.text
     tables = r.json()["tables"]
     orders = next(t for t in tables if t["id"] == "orders")
@@ -56,15 +90,140 @@ def test_remote_row_includes_metadata_fields(seeded_app, monkeypatch):
     assert orders["size_bytes"] == 2_000_000
     assert orders["partition_by"] == "event_date"
     assert orders["clustered_by"] == ["country", "platform"]
-    # Existing fields still present.
     assert orders["query_mode"] == "remote"
+    assert orders["metadata_freshness"] == "fresh"
+    assert orders["entity_type"] == "BASE TABLE"
+    # Both example templates apply: event_date present, country+platform present
+    assert "event_date > DATE '2026-01-01'" in orders["where_examples"]
+    assert "country_code = 'CZ' AND platform = 'web'" not in orders["where_examples"]
 
 
-def test_local_row_unaffected_by_provider_dispatch(seeded_app):
-    """query_mode='local' rows take the parquet-stat path; provider not called."""
-    from app.api import v2_catalog
-    v2_catalog._table_rows_cache.clear()
-    v2_catalog._metadata_cache.clear()
+def test_where_examples_filtered_against_real_columns(seeded_app):
+    """Generic where_examples that reference columns the table doesn't
+    have must be dropped (the pre-fix bug the test suite is designed to
+    catch). unit_economics-style table has event_date but no country_code."""
+    _reset_catalog_caches()
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    _register_table(
+        seeded_app,
+        id="ue_like", source_type="bigquery", bucket="dwh_base",
+        source_table="unit_economics", query_mode="remote",
+    )
+    _seed_cache_row(
+        "ue_like",
+        rows=None, size_bytes=None,
+        partition_by="event_date", clustered_by=[],
+        entity_type="VIEW",
+        # Real schema: event_date present, country_code absent.
+        known_columns=["event_date", "order_event_id", "merchant_country"],
+    )
+
+    r = c.get(
+        "/api/v2/catalog",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    row = next(t for t in r.json()["tables"] if t["id"] == "ue_like")
+    # event_date example passes (column exists).
+    assert "event_date > DATE '2026-01-01'" in row["where_examples"]
+    # country_code/platform example dropped (columns missing).
+    assert all("country_code" not in e for e in row["where_examples"])
+
+
+def test_view_returns_null_rows_and_size_bytes(seeded_app):
+    """For a VIEW we keep rows/size_bytes as null even if the cache row
+    has them populated — pre-existing cache rows from before the
+    entity_type field existed will fix themselves on next refresh."""
+    _reset_catalog_caches()
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    _register_table(
+        seeded_app,
+        id="ue_view", source_type="bigquery", bucket="dwh_base",
+        source_table="ue_view", query_mode="remote",
+    )
+    # Provider would have set rows/size_bytes to None for views; we mirror
+    # that contract here in the cache row.
+    _seed_cache_row(
+        "ue_view", rows=None, size_bytes=None,
+        partition_by=None, clustered_by=[],
+        entity_type="VIEW",
+        known_columns=["event_date"],
+    )
+
+    r = c.get(
+        "/api/v2/catalog",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    row = next(t for t in r.json()["tables"] if t["id"] == "ue_view")
+    assert row["entity_type"] == "VIEW"
+    assert row["rows"] is None
+    assert row["size_bytes"] is None
+    assert row["rough_size_hint"] is None
+
+
+def test_where_examples_empty_when_columns_unknown(seeded_app):
+    """For a remote row with no cache entry yet (never_fetched), don't
+    advertise any where_examples — we can't validate them against an
+    unknown schema."""
+    _reset_catalog_caches()
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    _register_table(
+        seeded_app,
+        id="unfetched", source_type="bigquery", bucket="dwh_base",
+        source_table="unfetched", query_mode="remote",
+    )
+
+    r = c.get(
+        "/api/v2/catalog",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    row = next(t for t in r.json()["tables"] if t["id"] == "unfetched")
+    assert row["metadata_freshness"] == "never_fetched"
+    assert row["where_examples"] == []
+    assert row["entity_type"] is None
+
+
+def test_remote_row_with_no_cache_returns_null_fields(seeded_app):
+    """Catalog response for a remote row with no cache entry — first boot
+    before scheduler tick — returns null enrichment fields and
+    metadata_freshness='never_fetched'. MUST stay 200; MUST NOT call BQ."""
+    _reset_catalog_caches()
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    _register_table(
+        seeded_app,
+        id="cold_t", source_type="bigquery", bucket="dwh_base",
+        source_table="cold_t", query_mode="remote",
+    )
+
+    # Patch the BQ provider so we can prove the request path never reaches it.
+    with patch("connectors.bigquery.metadata.fetch") as mock_fetch:
+        r = c.get(
+            "/api/v2/catalog",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 200, r.text
+    mock_fetch.assert_not_called()
+
+    tables = r.json()["tables"]
+    cold = next(t for t in tables if t["id"] == "cold_t")
+    assert cold["rows"] is None
+    assert cold["size_bytes"] is None
+    assert cold["partition_by"] is None
+    assert cold["clustered_by"] == []
+    assert cold["metadata_freshness"] == "never_fetched"
+
+
+def test_local_row_metadata_freshness_is_not_applicable(seeded_app):
+    """query_mode='local' rows take the parquet-stat path; the freshness
+    field signals that the BQ cache concept doesn't apply."""
+    _reset_catalog_caches()
 
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
@@ -74,93 +233,50 @@ def test_local_row_unaffected_by_provider_dispatch(seeded_app):
         source_table="users", query_mode="local",
     )
 
-    with patch("connectors.keboola.metadata.fetch") as mock_fetch:
-        r = c.get(
-            "/api/v2/catalog",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-    assert r.status_code == 200, r.text
-    mock_fetch.assert_not_called()
-
-
-def test_provider_failure_returns_null_metadata(seeded_app):
-    """Provider returns None → row appears with null new fields, not
-    a 500. Catalog endpoint must stay 200."""
-    from app.api import v2_catalog
-    v2_catalog._table_rows_cache.clear()
-    v2_catalog._metadata_cache.clear()
-
-    c = seeded_app["client"]
-    token = seeded_app["admin_token"]
-    _register_table(
-        seeded_app,
-        id="broken", source_type="bigquery", bucket="dwh_base",
-        source_table="broken_t", query_mode="remote",
+    r = c.get(
+        "/api/v2/catalog",
+        headers={"Authorization": f"Bearer {token}"},
     )
-
-    with patch(
-        "connectors.bigquery.metadata.fetch", return_value=None,
-    ):
-        r = c.get(
-            "/api/v2/catalog",
-            headers={"Authorization": f"Bearer {token}"},
-        )
     assert r.status_code == 200, r.text
     tables = r.json()["tables"]
-    broken = next(t for t in tables if t["id"] == "broken")
-    assert broken["rows"] is None
-    assert broken["size_bytes"] is None
-    assert broken["partition_by"] is None
-    assert broken["clustered_by"] is None
+    users = next(t for t in tables if t["id"] == "users")
+    assert users["metadata_freshness"] == "not_applicable"
 
 
 def test_zero_size_bytes_reports_small_not_unknown(seeded_app):
-    """Devin Review #1 regression: `if cached.size_bytes:` is falsy when
-    `size_bytes == 0` (genuinely empty table) — that wrongly emitted
-    `rough_size_hint=None` ("unknown") instead of `"small"` (the bucket
-    `_bucket_size(0)` returns).
-
-    Fix in `_size_hint_for_row`: distinguish "size known to be zero" from
-    "size is unknown" with `is not None`."""
-    from app.api import v2_catalog
-    v2_catalog._table_rows_cache.clear()
-    v2_catalog._metadata_cache.clear()
+    """Devin Review #1 regression preserved across the refactor: a cache
+    row with size_bytes=0 must surface rough_size_hint='small', not None.
+    """
+    _reset_catalog_caches()
 
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
-
-    fake_meta = TableMetadata(
-        rows=0, size_bytes=0, partition_by=None, clustered_by=[],
-    )
-
     _register_table(
         seeded_app,
         id="empty_t", source_type="bigquery", bucket="dwh_base",
         source_table="empty_t", query_mode="remote",
     )
+    _seed_cache_row(
+        "empty_t", rows=0, size_bytes=0, clustered_by=[],
+        entity_type="BASE TABLE", known_columns=["event_date"],
+    )
 
-    with patch(
-        "connectors.bigquery.metadata.fetch", return_value=fake_meta,
-    ):
-        r = c.get(
-            "/api/v2/catalog",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    r = c.get(
+        "/api/v2/catalog",
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert r.status_code == 200, r.text
     tables = r.json()["tables"]
     empty = next(t for t in tables if t["id"] == "empty_t")
-    # The whole point of this test: 0 bytes is NOT "unknown".
     assert empty["size_bytes"] == 0
-    assert empty["rough_size_hint"] == "small", (
-        f"size_bytes=0 should bucket to 'small', got {empty['rough_size_hint']}"
-    )
+    assert empty["rough_size_hint"] == "small"
 
 
-def test_cache_hit_does_not_call_provider_twice(seeded_app):
-    """First call invokes provider; second within 15 min hits cache."""
-    from app.api import v2_catalog
-    v2_catalog._table_rows_cache.clear()
-    v2_catalog._metadata_cache.clear()
+def test_catalog_request_never_calls_bq(seeded_app):
+    """The whole point of the refactor: even with a cold cache and a
+    remote BQ row in the registry, GET /api/v2/catalog MUST NOT touch
+    the BQ provider. Regressing this re-introduces the >90 s hang."""
+    _reset_catalog_caches()
 
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
@@ -170,10 +286,8 @@ def test_cache_hit_does_not_call_provider_twice(seeded_app):
         source_table="orders_2024", query_mode="remote",
     )
 
-    fake_meta = TableMetadata(rows=1, size_bytes=2)
-    with patch(
-        "connectors.bigquery.metadata.fetch", return_value=fake_meta,
-    ) as mock_fetch:
+    with patch("connectors.bigquery.metadata.fetch") as mock_fetch:
         c.get("/api/v2/catalog", headers={"Authorization": f"Bearer {token}"})
         c.get("/api/v2/catalog", headers={"Authorization": f"Bearer {token}"})
-    assert mock_fetch.call_count == 1
+
+    mock_fetch.assert_not_called()

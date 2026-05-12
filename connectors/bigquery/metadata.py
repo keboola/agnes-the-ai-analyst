@@ -54,16 +54,71 @@ def fetch(req: MetadataRequest) -> TableMetadata | None:
     rows_size = _fetch_rows_and_size(bq, req)
     columns = fetch_bq_columns_full(bq, req.bucket, req.source_table)
     part_clust = _derive_partition_cluster(columns) if columns else None
+    entity_type = _fetch_entity_type(bq, req)
+    known_columns = [c["name"] for c in columns] if columns else None
 
-    if rows_size is None and part_clust is None:
+    if (
+        rows_size is None
+        and part_clust is None
+        and entity_type is None
+        and not known_columns
+    ):
         return None
 
+    # For VIEW / MATERIALIZED VIEW the __TABLES__ fallback returns
+    # ``(0, 0)`` for ``row_count`` and ``size_bytes`` — accurate for the
+    # storage layer (views have no own storage) but misleading for
+    # analysts. Surface ``None`` so catalog consumers see explicit
+    # "unknown" rather than a confidently-wrong zero.
+    if entity_type in ("VIEW", "MATERIALIZED VIEW"):
+        rows_value = None
+        size_value = None
+    else:
+        rows_value = (rows_size or {}).get("rows")
+        size_value = (rows_size or {}).get("size_bytes")
+
     return TableMetadata(
-        rows=(rows_size or {}).get("rows"),
-        size_bytes=(rows_size or {}).get("size_bytes"),
+        rows=rows_value,
+        size_bytes=size_value,
         partition_by=(part_clust or {}).get("partition_by"),
         clustered_by=(part_clust or {}).get("clustered_by"),
+        entity_type=entity_type,
+        known_columns=known_columns,
     )
+
+
+def _fetch_entity_type(bq, req: MetadataRequest) -> str | None:
+    """Look up ``INFORMATION_SCHEMA.TABLES.table_type`` for the table.
+
+    Single dataset-scoped query, no region required. Returns one of the
+    documented BQ values (``BASE TABLE``, ``VIEW``, ``MATERIALIZED VIEW``,
+    ``EXTERNAL``, ``SNAPSHOT``, ``CLONE``) or ``None`` if the lookup
+    fails / the row isn't found.
+
+    ``req.bucket`` and ``req.source_table`` are pre-validated by
+    `app/api/v2_catalog._build_metadata_request`, so direct interpolation
+    into the backtick-quoted path is safe.
+    """
+    try:
+        bq_sql = (
+            f"SELECT table_type "
+            f"FROM `{bq.projects.data}.{req.bucket}.INFORMATION_SCHEMA.TABLES` "
+            f"WHERE table_name = ?"
+        )
+        with bq.duckdb_session() as conn:
+            row = conn.execute(
+                "SELECT * FROM bigquery_query(?, ?, ?)",
+                [bq.projects.billing, bq_sql, req.source_table],
+            ).fetchone()
+    except Exception as e:
+        logger.warning(
+            "BQ INFORMATION_SCHEMA.TABLES lookup failed for %s.%s.%s: %s",
+            bq.projects.data, req.bucket, req.source_table, e,
+        )
+        return None
+    if row is None or row[0] is None:
+        return None
+    return str(row[0])
 
 
 def _derive_partition_cluster(columns: list[dict]) -> dict | None:

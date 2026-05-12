@@ -159,9 +159,16 @@ async def _warm_one(
 
 
 def _warm_metadata_sync(row: dict) -> None:
-    """Trigger metadata cache populate via the catalog's normal path."""
-    from app.api.v2_catalog import _size_hint_for_row
-    _size_hint_for_row(row)
+    """Refresh the persistent ``bq_metadata_cache`` row.
+
+    Pre-0.50 this called ``v2_catalog._size_hint_for_row`` to populate
+    an in-memory TTL cache. The in-memory cache is gone — metadata now
+    lives in DuckDB, owned by ``app/api/bq_metadata_refresh.refresh_one``
+    (the same primitive the scheduler-driven refresh uses).
+    """
+    from app.api.bq_metadata_refresh import refresh_one
+    from src.db import get_system_db
+    refresh_one(get_system_db(), row)
 
 
 def _warm_schema_sync(row: dict) -> None:

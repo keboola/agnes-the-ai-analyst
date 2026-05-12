@@ -18,7 +18,71 @@ def test_build_jobs_uses_documented_defaults(monkeypatch):
     assert jobs["health-check"]    == "every 5m"
     assert jobs["script-runner"]   == "every 1m"
     assert jobs["marketplaces"]    == "daily 03:00"
+    assert jobs["bq-metadata-refresh"] == "every 4h"
     assert resolved_tick_seconds() == 30
+
+
+def test_build_jobs_honors_bq_metadata_env_override(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL", "7200")  # 2h
+    from services.scheduler.__main__ import build_jobs
+    jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+    assert jobs["bq-metadata-refresh"] == "every 2h"
+
+
+def test_resolved_startup_grace_default(monkeypatch):
+    monkeypatch.delenv("SCHEDULER_STARTUP_GRACE_SECONDS", raising=False)
+    from services.scheduler.__main__ import resolved_startup_grace_seconds
+    assert resolved_startup_grace_seconds() == 60
+
+
+def test_resolved_startup_grace_zero_is_valid(monkeypatch):
+    """0 means "disable" — useful for unit tests / fast dev iterations."""
+    monkeypatch.setenv("SCHEDULER_STARTUP_GRACE_SECONDS", "0")
+    from services.scheduler.__main__ import resolved_startup_grace_seconds
+    assert resolved_startup_grace_seconds() == 0
+
+
+def test_resolved_startup_grace_rejects_negative(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_STARTUP_GRACE_SECONDS", "-1")
+    from services.scheduler.__main__ import resolved_startup_grace_seconds
+    with pytest.raises(ValueError):
+        resolved_startup_grace_seconds()
+
+
+def test_resolved_startup_grace_rejects_empty(monkeypatch):
+    """Empty string is operator typo, not 'use default' — fail fast."""
+    monkeypatch.setenv("SCHEDULER_STARTUP_GRACE_SECONDS", "")
+    from services.scheduler.__main__ import resolved_startup_grace_seconds
+    with pytest.raises(ValueError):
+        resolved_startup_grace_seconds()
+
+
+def test_bq_metadata_initial_offset_within_cap(monkeypatch):
+    """Default cap is 900s. With a fixed RNG, the offset is deterministic
+    and bounded."""
+    monkeypatch.delenv("SCHEDULER_BQ_METADATA_INITIAL_OFFSET_MAX_SECONDS", raising=False)
+    import random
+    from services.scheduler.__main__ import resolved_bq_metadata_initial_offset_seconds
+    rng = random.Random(42)  # deterministic
+    val = resolved_bq_metadata_initial_offset_seconds(rng=rng)
+    assert 0 <= val <= 900
+
+
+def test_bq_metadata_initial_offset_zero_cap_returns_zero(monkeypatch):
+    """Operator opt-out: setting cap to 0 disables the jitter."""
+    monkeypatch.setenv("SCHEDULER_BQ_METADATA_INITIAL_OFFSET_MAX_SECONDS", "0")
+    from services.scheduler.__main__ import resolved_bq_metadata_initial_offset_seconds
+    assert resolved_bq_metadata_initial_offset_seconds() == 0
+
+
+def test_bq_metadata_initial_offset_honors_custom_cap(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_BQ_METADATA_INITIAL_OFFSET_MAX_SECONDS", "60")
+    import random
+    from services.scheduler.__main__ import resolved_bq_metadata_initial_offset_seconds
+    # Loop a few times since RNG could legitimately return 60.
+    for seed in range(20):
+        val = resolved_bq_metadata_initial_offset_seconds(rng=random.Random(seed))
+        assert 0 <= val <= 60
 
 
 def test_build_jobs_honors_env_overrides(monkeypatch):
