@@ -9,6 +9,7 @@ from cli.commands.admin_activity import activity_app
 from cli.commands.admin_ask import app as admin_ask_app
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.admin_news import admin_news_app
+from cli.commands.admin_sessions import sessions_app as admin_sessions_app
 from cli.commands.admin_store import admin_store_app
 from cli.commands.admin_usage import app as admin_usage_app
 from cli.commands.memory_admin import memory_admin_app
@@ -17,6 +18,7 @@ admin_app = typer.Typer(help="Admin operations (requires admin role)")
 admin_app.add_typer(activity_app, name="activity", help="Activity Center — audit_log timeline, health pulse, sync history")
 admin_app.add_typer(admin_ask_app, name="ask", help="Ask a natural-language question about telemetry")
 admin_app.add_typer(admin_metrics_app, name="metrics")
+admin_app.add_typer(admin_sessions_app, name="sessions", help="Browse Claude Code sessions across all users")
 admin_app.add_typer(admin_store_app, name="store")
 admin_app.add_typer(admin_news_app, name="news")
 admin_app.add_typer(memory_admin_app, name="memory")
