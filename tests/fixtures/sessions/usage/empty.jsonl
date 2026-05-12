@@ -1,0 +1,2 @@
+{"type": "system", "uuid": "s1", "parentUuid": null, "sessionId": "sess-empty", "timestamp": "2026-05-12T16:00:00.000Z", "cwd": "/workspace", "message": {"role": "system", "content": ""}}
+{"type": "summary", "uuid": "sum1", "parentUuid": "s1", "sessionId": "sess-empty", "timestamp": "2026-05-12T16:00:01.000Z", "cwd": "/workspace", "summary": "Empty session"}
