@@ -63,10 +63,16 @@ def _flea_zip_for_skill(tmp_path):
     """
     import zipfile
     buf = io.BytesIO()
+    body = (
+        "Body explaining when to invoke the skill and the expected outputs. "
+        "Long enough to clear the 200-char content guardrail floor. " * 2
+    )
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             "SKILL.md",
-            "---\nname: testskill\ndescription: A test skill\n---\nbody\n",
+            "---\nname: testskill\n"
+            "description: Use when validating flea-market endpoint integrations across guardrails\n"
+            f"---\n\n{body}\n",
         )
     return buf.getvalue()
 
@@ -82,7 +88,7 @@ def test_flea_doc_upload_rejects_docx(seeded_app, _flea_zip_for_skill):
             ("file", ("skill.zip", _flea_zip_for_skill, "application/zip")),
             ("docs", ("notes.docx", b"PKfake-docx-content", "application/vnd.openxmlformats")),
         ],
-        data={"type": "skill", "version": "1.0"},
+        data={"type": "skill", "version": "1.0", "description": "Use when validating flea-market endpoint integrations across guardrails"},
     )
     assert r.status_code == 415
     assert "unsupported_doc_type" in r.text or "doc_extension" in r.text
@@ -101,7 +107,7 @@ def test_flea_doc_upload_accepts_pdf(seeded_app, _flea_zip_for_skill):
             ("file", ("skill.zip", _flea_zip_for_skill, "application/zip")),
             ("docs", ("setup.pdf", pdf_body, "application/pdf")),
         ],
-        data={"type": "skill", "version": "1.0"},
+        data={"type": "skill", "version": "1.0", "description": "Use when validating flea-market endpoint integrations across guardrails"},
     )
     assert r.status_code == 201, r.text
 
@@ -118,7 +124,7 @@ def test_flea_doc_upload_rejects_pdf_with_bad_magic_bytes(seeded_app, _flea_zip_
             ("file", ("skill.zip", _flea_zip_for_skill, "application/zip")),
             ("docs", ("evil.pdf", b"not a pdf at all", "application/pdf")),
         ],
-        data={"type": "skill", "version": "1.0"},
+        data={"type": "skill", "version": "1.0", "description": "Use when validating flea-market endpoint integrations across guardrails"},
     )
     assert r.status_code == 415
     assert "magic_bytes" in r.text or "unsupported" in r.text
@@ -136,7 +142,7 @@ def test_flea_photo_upload_rejects_svg(seeded_app, _flea_zip_for_skill):
             ("file", ("skill.zip", _flea_zip_for_skill, "application/zip")),
             ("photo", ("logo.svg", b"<svg></svg>", "image/svg+xml")),
         ],
-        data={"type": "skill", "version": "1.0"},
+        data={"type": "skill", "version": "1.0", "description": "Use when validating flea-market endpoint integrations across guardrails"},
     )
     assert r.status_code == 415
     assert "photo_unsupported_format" in r.text

@@ -47,33 +47,60 @@ def _create_user(client, email, password="UserPass1!"):
     return user_id, {"access_token": r.json()["access_token"]}
 
 
-def _make_skill_zip(skill_name: str = "code-review", desc: str = "Reviews code.") -> bytes:
+# Strong defaults so the per-component content guardrail (≥ 30 chars,
+# ≥ 4 distinct words, body ≥ 200 chars for skills/agents) passes for
+# every helper bundle. Individual tests that want to exercise failure
+# modes pass shorter overrides explicitly.
+_OK_DESC = "Use when validating the store upload pipeline across every guardrail tier"
+_OK_BODY = (
+    "Body explaining when to invoke the component, what inputs it needs, "
+    "and the behavior contract. Long enough to clear the 200-char body floor. "
+    "Repeated content for length."
+) * 2
+
+
+def _make_skill_zip(
+    skill_name: str = "code-review",
+    desc: str = _OK_DESC,
+    body: str = _OK_BODY,
+) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            f"---\nname: {skill_name}\ndescription: {desc}\n---\n\nDo the thing.\n",
+            f"---\nname: {skill_name}\ndescription: {desc}\n---\n\n{body}\n",
         )
     return buf.getvalue()
 
 
-def _make_plugin_zip(name: str = "my-plugin") -> bytes:
+def _make_plugin_zip(
+    name: str = "my-plugin",
+    desc: str = _OK_DESC,
+    body: str = _OK_BODY,
+) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             ".claude-plugin/plugin.json",
-            json.dumps({"name": name, "description": "test", "version": "0.1"}),
+            json.dumps({"name": name, "description": desc, "version": "0.1"}),
         )
-        zf.writestr("skills/dummy/SKILL.md", "---\nname: dummy\n---\nbody")
+        zf.writestr(
+            "skills/dummy/SKILL.md",
+            f"---\nname: dummy\ndescription: {desc}\n---\n\n{body}\n",
+        )
     return buf.getvalue()
 
 
-def _make_agent_zip(name: str = "my-agent") -> bytes:
+def _make_agent_zip(
+    name: str = "my-agent",
+    desc: str = _OK_DESC,
+    body: str = _OK_BODY,
+) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{name}.md",
-            f"---\nname: {name}\ndescription: A test agent.\n---\n\nBe helpful.\n",
+            f"---\nname: {name}\ndescription: {desc}\n---\n\n{body}\n",
         )
     return buf.getvalue()
 
@@ -86,17 +113,17 @@ class TestStoreOwners:
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("a1"), "application/zip")},
-            data={"type": "skill"}, cookies=a_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=a_cookies,
         )
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("a2"), "application/zip")},
-            data={"type": "skill"}, cookies=a_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=a_cookies,
         )
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("b1"), "application/zip")},
-            data={"type": "skill"}, cookies=b_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=b_cookies,
         )
         # A third user with no uploads must NOT appear.
         _, _ = _create_user(web_client, "carol@x.com")
@@ -113,12 +140,12 @@ class TestStoreOwners:
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("a-only"), "application/zip")},
-            data={"type": "skill"}, cookies=a_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=a_cookies,
         )
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("b-only"), "application/zip")},
-            data={"type": "skill"}, cookies=b_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=b_cookies,
         )
         # Filter by Alice's id → only Alice's entity comes back.
         r = web_client.get(f"/api/store/entities?owner={a_id}", cookies=a_cookies)
@@ -135,7 +162,7 @@ class TestStorePreview:
         r = web_client.post(
             "/api/store/entities/preview",
             files={"file": ("s.zip", zip_bytes, "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 200, r.text
@@ -151,7 +178,7 @@ class TestStorePreview:
         web_client.post(
             "/api/store/entities/preview",
             files={"file": ("s.zip", _make_skill_zip("ghost"), "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         conn = get_system_db()
@@ -166,7 +193,7 @@ class TestStorePreview:
         r = web_client.post(
             "/api/store/entities/preview",
             files={"file": ("s.zip", _make_skill_zip("oops"), "application/zip")},
-            data={"type": "plugin"},
+            data={"type": "plugin", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 422
@@ -182,7 +209,7 @@ class TestStoreDocsUpload:
                 ("docs", ("readme.md", b"# Readme", "text/markdown")),
                 ("docs", ("howto.txt", b"do this then that", "text/plain")),
             ],
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 201, r.text
@@ -200,7 +227,7 @@ class TestStoreDocsUpload:
                 ("docs", ("notes.md", b"first", "text/markdown")),
                 ("docs", ("notes.md", b"second", "text/markdown")),
             ],
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 201, r.text
@@ -216,7 +243,7 @@ class TestStoreDocsUpload:
                 ("file", ("s.zip", _make_skill_zip("dl"), "application/zip")),
                 ("docs", ("readme.md", b"# Hello", "text/markdown")),
             ],
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         eid = r.json()["id"]
@@ -229,7 +256,7 @@ class TestStoreDocsUpload:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("trav"), "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         eid = r.json()["id"]
@@ -250,7 +277,7 @@ class TestStoreUpload:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", zip_bytes, "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 201, r.text
@@ -273,7 +300,7 @@ class TestStoreUpload:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("p.zip", zip_bytes, "application/zip")},
-            data={"type": "plugin"},
+            data={"type": "plugin", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 201, r.text
@@ -290,7 +317,7 @@ class TestStoreUpload:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("a.zip", zip_bytes, "application/zip")},
-            data={"type": "agent"},
+            data={"type": "agent", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 201, r.text
@@ -307,14 +334,14 @@ class TestStoreUpload:
             r = web_client.post(
                 "/api/store/entities",
                 files={"file": ("s.zip", zip_bytes, "application/zip")},
-                data={"type": "skill"},
+                data={"type": "skill", "description": _OK_DESC},
                 cookies=cookies,
             )
             assert r.status_code == 201, r.text
         r2 = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", zip_bytes, "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r2.status_code == 409
@@ -327,7 +354,7 @@ class TestStoreUpload:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", zip_bytes, "application/zip")},
-            data={"type": "plugin"},
+            data={"type": "plugin", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 422
@@ -343,7 +370,7 @@ class TestStoreUpload:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", zip_bytes, "application/zip")},
-            data={"type": "agent"},
+            data={"type": "agent", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 422
@@ -355,7 +382,7 @@ class TestStoreUpload:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("p.zip", zip_bytes, "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 422
@@ -367,7 +394,7 @@ class TestStoreUpload:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("p.zip", zip_bytes, "application/zip")},
-            data={"type": "agent"},
+            data={"type": "agent", "description": _OK_DESC},
             cookies=cookies,
         )
         assert r.status_code == 422
@@ -389,7 +416,7 @@ class TestStoreSecurityFixes:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("vid1"), "application/zip")},
-            data={"type": "skill", "video_url": "javascript:alert(1)"},
+            data={"type": "skill", "description": _OK_DESC, "video_url": "javascript:alert(1)"},
             cookies=cookies,
         )
         assert r.status_code == 400, r.text
@@ -400,7 +427,7 @@ class TestStoreSecurityFixes:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("vid2"), "application/zip")},
-            data={"type": "skill", "video_url": "data:text/html,<script>alert(1)</script>"},
+            data={"type": "skill", "description": _OK_DESC, "video_url": "data:text/html,<script>alert(1)</script>"},
             cookies=cookies,
         )
         assert r.status_code == 400
@@ -411,7 +438,7 @@ class TestStoreSecurityFixes:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("vid3"), "application/zip")},
-            data={"type": "skill", "video_url": "https://www.youtube.com/watch?v=abc"},
+            data={"type": "skill", "description": _OK_DESC, "video_url": "https://www.youtube.com/watch?v=abc"},
             cookies=cookies,
         )
         assert r.status_code == 201, r.text
@@ -422,7 +449,7 @@ class TestStoreSecurityFixes:
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("vid4"), "application/zip")},
-            data={"type": "skill"}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
         )
         eid = c.json()["id"]
         u = web_client.put(
@@ -486,7 +513,7 @@ class TestStoreSecurityFixes:
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("f4-skill"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         )
         eid = c.json()["id"]
 
@@ -516,7 +543,7 @@ class TestStoreSecurityFixes:
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("f4b-skill"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         )
         eid = c.json()["id"]
         _, intruder_cookies = _create_user(web_client, "intruder-f4@x.com")
@@ -542,7 +569,7 @@ class TestStoreSecurityFixes:
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("ui-skill"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         )
         eid = c.json()["id"]
 
@@ -576,7 +603,7 @@ class TestStoreSecurityFixes:
         r1 = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("collide"), "application/zip")},
-            data={"type": "skill"}, cookies=a_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=a_cookies,
         )
         assert r1.status_code == 201, r1.text
         assert r1.json()["invocation_name"] == "collide-by-alice-smith"
@@ -585,7 +612,7 @@ class TestStoreSecurityFixes:
         r2 = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("collide"), "application/zip")},
-            data={"type": "skill"}, cookies=b_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=b_cookies,
         )
         assert r2.status_code == 409, r2.text
         assert r2.json()["detail"] == "conflict_global_suffix"
@@ -615,7 +642,7 @@ class TestStoreSecurityFixes:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("bad.zip", bad_zip, "application/zip")},
-            data={"type": "skill"}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
         )
         assert r.status_code == 422, r.text
         assert r.json()["detail"] == "zip_unsafe_path"
@@ -633,7 +660,7 @@ class TestStoreSecurityFixes:
             r = web_client.post(
                 "/api/store/entities",
                 files={"file": ("s.zip", _make_skill_zip(skill_name), "application/zip")},
-                data={"type": "skill"}, cookies=cookies,
+                data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
             )
             assert r.status_code == 201, r.text
 
@@ -645,7 +672,7 @@ class TestStoreBundle:
         return web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip(name), "application/zip")},
-            data={"type": "skill"}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
         )
 
     def test_bundle_zip_contains_manifest_and_entity_tree(self, web_client):
@@ -699,7 +726,7 @@ class TestStoreBundle:
         web_client.post(
             "/api/store/entities",
             files={"file": ("p.zip", _make_plugin_zip("filter-out"), "application/zip")},
-            data={"type": "plugin"}, cookies=cookies,
+            data={"type": "plugin", "description": _OK_DESC}, cookies=cookies,
         )
 
         only_skill = web_client.get(
@@ -876,7 +903,7 @@ class TestInstallCycle:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("share"), "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=owner_cookies,
         )
         eid = r.json()["id"]
@@ -905,7 +932,7 @@ class TestInstallCycle:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("cascade"), "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=owner_cookies,
         )
         eid = r.json()["id"]
@@ -936,7 +963,7 @@ class TestInstallCycle:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("cascade-hd"), "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=owner_cookies,
         )
         eid = r.json()["id"]
@@ -975,7 +1002,7 @@ class TestInstallCycle:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("guarded"), "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=owner_cookies,
         )
         eid = r.json()["id"]
@@ -1006,22 +1033,22 @@ class TestMarketplaceBundle:
         skill_a = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("alpha"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         ).json()["id"]
         skill_b = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("beta"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         ).json()["id"]
         agent_c = web_client.post(
             "/api/store/entities",
             files={"file": ("a.zip", _make_agent_zip("gamma"), "application/zip")},
-            data={"type": "agent"}, cookies=owner_cookies,
+            data={"type": "agent", "description": _OK_DESC}, cookies=owner_cookies,
         ).json()["id"]
         plugin_d = web_client.post(
             "/api/store/entities",
             files={"file": ("p.zip", _make_plugin_zip("delta"), "application/zip")},
-            data={"type": "plugin"}, cookies=owner_cookies,
+            data={"type": "plugin", "description": _OK_DESC}, cookies=owner_cookies,
         ).json()["id"]
 
         _, installer_cookies = _create_user(web_client, "installer@bundle.x")
@@ -1063,7 +1090,7 @@ class TestMarketplaceBundle:
         eid = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("solo"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         ).json()["id"]
         _, installer_cookies = _create_user(web_client, "ib@x.x")
         web_client.post(f"/api/store/entities/{eid}/install", cookies=installer_cookies)
@@ -1081,12 +1108,12 @@ class TestMarketplaceBundle:
         a = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("keepme"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         ).json()["id"]
         b = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("dropme"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         ).json()["id"]
         _, installer_cookies = _create_user(web_client, "ic@x.x")
         web_client.post(f"/api/store/entities/{a}/install", cookies=installer_cookies)
@@ -1120,7 +1147,7 @@ class TestWebPages:
         r = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("page-skill"), "application/zip")},
-            data={"type": "skill"},
+            data={"type": "skill", "description": _OK_DESC},
             cookies=cookies,
         )
         eid = r.json()["id"]

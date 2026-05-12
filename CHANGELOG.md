@@ -10,6 +10,40 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Flea-market content guardrail — two-tier per-component description
+  enforcement.** Submissions are now rejected when any component
+  (plugin, agent, skill, command) ships a description that doesn't
+  meet a basic bar. A mechanical inline check (`src/store_guardrails/
+  content_check.py`) catches the obvious cases — empty,
+  literal `TODO` / `TBD`, unfilled `{{var}}` tokens, fewer than 30
+  characters (20 for commands), fewer than 4 distinct words — and
+  blocks before any LLM call. The existing security LLM review
+  (`src/store_guardrails/llm_review.py`) gains a `content_quality`
+  verdict layered on top so substantively weak descriptions (vague,
+  generic, name-restating) also block, even when they clear the
+  mechanical floor. Rejections surface per-component findings with
+  concrete rewrite hints in both the upload form and the entity
+  detail quarantine banner. The submission form now displays a
+  "Before you upload — what passes review" disclosure, a live
+  character counter on the description field, and a per-component
+  preview table with red/green dots after the ZIP is validated.
+
+### Internal
+
+- `_parse_frontmatter` moved out of `app/api/store.py` into
+  `src/store_guardrails/_frontmatter.py` so the new content check
+  shares the parser without inverting the app→src dependency
+  direction.
+- `InlineResult.passed` now also requires `content.status == 'pass'`;
+  `inline_checks.content` joins `inline_checks.{manifest, static_security,
+  quality}` in the persisted submission row.
+- `REVIEW_JSON_SCHEMA` adds the required `content_quality` object;
+  `MAX_RESPONSE_TOKENS` bumped from 2000 to 2500 to fit the additional
+  per-issue payload. Verdicts missing `content_quality` are treated as
+  pass for backward compatibility with already-recorded verdicts.
+
 ## [0.53.0] — 2026-05-12
 
 Second hygiene round closing the Tier B trackers opened during the

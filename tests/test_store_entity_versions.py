@@ -29,6 +29,13 @@ from src.repositories.store_entities import StoreEntitiesRepository
 from src.repositories.users import UserRepository
 
 
+# Strong default description that clears the content guardrail's
+# per-component bar (30 chars + 4 distinct words, no placeholder
+# leftovers). Tests don't assert on its contents — they just need a
+# value that passes review so we can exercise the edit/version path.
+_OK_DESC = "Use when validating store version edit flow across every guardrail tier"
+
+
 @pytest.fixture
 def web_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -66,12 +73,12 @@ def _create_admin(client, email="admin-edit@x.com"):
     return user_id, cookies
 
 
-def _make_skill_zip(skill_name: str, body: str = "Body. " * 30) -> bytes:
+def _make_skill_zip(skill_name: str, body: str = "Body line explaining the skill. " * 12) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            f"---\nname: {skill_name}\ndescription: A clean test skill for the edit feature.\n---\n\n"
+            f"---\nname: {skill_name}\ndescription: Use when verifying clean-bundle edits across the version-history lifecycle\n---\n\n"
             + body,
         )
     return buf.getvalue()
@@ -82,8 +89,8 @@ def _make_eval_skill_zip(skill_name: str) -> bytes:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            f"---\nname: {skill_name}\ndescription: A bad test skill.\n---\n\n"
-            + ("Body. " * 30),
+            f"---\nname: {skill_name}\ndescription: Use when verifying static-security rejects eval-using upload bundles cleanly\n---\n\n"
+            + ("Body line explaining the skill. " * 12),
         )
         zf.writestr(f"{skill_name}/run.sh", "#!/bin/sh\neval $1\n")
     return buf.getvalue()
@@ -93,7 +100,7 @@ def _upload_clean(client, cookies, name="ed1"):
     r = client.post(
         "/api/store/entities",
         files={"file": ("s.zip", _make_skill_zip(name), "application/zip")},
-        data={"type": "skill"}, cookies=cookies,
+        data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
     )
     assert r.status_code == 201, r.text
     return r.json()["id"]
@@ -123,7 +130,7 @@ class TestEditFeature:
         eid = _upload_clean(web_client, owner_cookies, name="bundleedit")
 
         # PUT with new bundle bytes.
-        new_zip = _make_skill_zip("bundleedit", body="V2 body. " * 30)
+        new_zip = _make_skill_zip("bundleedit", body="V2 body. " * 80)
         r = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", new_zip, "application/zip")},
@@ -146,7 +153,7 @@ class TestEditFeature:
         eid = _upload_clean(web_client, owner_cookies, name="typelock")
         r = web_client.put(
             f"/api/store/entities/{eid}",
-            data={"type": "agent"},
+            data={"type": "agent", "description": _OK_DESC},
             cookies=owner_cookies,
         )
         assert r.status_code == 400, r.text
@@ -210,7 +217,7 @@ class TestRestoreVersion:
         eid = _upload_clean(web_client, owner_cookies, name="restoreme")
 
         # Edit to v2.
-        v2_zip = _make_skill_zip("restoreme", body="VERSION-2-BODY " * 20)
+        v2_zip = _make_skill_zip("restoreme", body="VERSION-2-BODY " * 80)
         r = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2_zip, "application/zip")},
@@ -267,7 +274,7 @@ class TestRestoreVersion:
     def test_non_owner_non_admin_cannot_restore(self, web_client):
         owner_id, owner_cookies = _create_user(web_client, "owrestore@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="ownedver")
-        v2 = _make_skill_zip("ownedver", body="v2 " * 30)
+        v2 = _make_skill_zip("ownedver", body="v2 " * 80)
         web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -382,7 +389,7 @@ class TestInstallerAlwaysGetsLatestApproved:
 
         # PUT a new bundle. Guardrails on → submission lands at
         # pending_llm; promotion deferred.
-        v2_zip = _make_skill_zip("sticky", body="V2 BODY " * 30)
+        v2_zip = _make_skill_zip("sticky", body="V2 BODY " * 80)
         r = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2_zip, "application/zip")},
@@ -461,7 +468,7 @@ class TestInstallerAlwaysGetsLatestApproved:
         installer_id, _ = self._install_as_user(web_client, owner_cookies, eid)
 
         # Edit. Inline checks pass; LLM mocked to block.
-        v2_zip = _make_skill_zip("blocksticky", body="v2-content " * 30)
+        v2_zip = _make_skill_zip("blocksticky", body="v2-content " * 80)
         # Run the LLM synchronously by calling runner directly after
         # the PUT (the BG task may not have fired in TestClient).
         r = web_client.put(
@@ -513,7 +520,7 @@ class TestInstallerAlwaysGetsLatestApproved:
 
         installer_id, _ = self._install_as_user(web_client, owner_cookies, eid)
 
-        v2_zip = _make_skill_zip("promosticky", body="promo-v2 " * 30)
+        v2_zip = _make_skill_zip("promosticky", body="promo-v2 " * 80)
         r = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2_zip, "application/zip")},
@@ -556,7 +563,7 @@ class TestAdminAccess:
     def test_admin_can_restore_non_owned_entity(self, web_client):
         owner_id, owner_cookies = _create_user(web_client, "adminrestore-owner@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="adminrestore")
-        v2 = _make_skill_zip("adminrestore", body="v2 " * 30)
+        v2 = _make_skill_zip("adminrestore", body="v2 " * 80)
         web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -585,7 +592,7 @@ class TestRestoreDeferredPromotion:
         Until LLM approves, live + version_no stay at v2."""
         owner_id, owner_cookies = _create_user(web_client, "restoreowner-defer@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="restoredefer")
-        v2 = _make_skill_zip("restoredefer", body="v2 " * 30)
+        v2 = _make_skill_zip("restoredefer", body="v2 " * 80)
         web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -631,7 +638,7 @@ class TestEditPageBanner:
             lambda *a, **kw: None,
         )
 
-        v2 = _make_skill_zip("bannerver", body="v2 " * 30)
+        v2 = _make_skill_zip("bannerver", body="v2 " * 80)
         web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -673,7 +680,7 @@ class TestAuditLogPerVersion:
         from src.repositories.audit import AuditRepository
         owner_id, owner_cookies = _create_user(web_client, "auditver@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="auditver")
-        v2 = _make_skill_zip("auditver", body="v2 " * 30)
+        v2 = _make_skill_zip("auditver", body="v2 " * 80)
         web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -698,7 +705,7 @@ class TestAuditLogPerVersion:
         from src.repositories.audit import AuditRepository
         owner_id, owner_cookies = _create_user(web_client, "auditrestore@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="auditrest")
-        v2 = _make_skill_zip("auditrest", body="v2 " * 30)
+        v2 = _make_skill_zip("auditrest", body="v2 " * 80)
         web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -740,7 +747,7 @@ class TestPRReviewFixes:
             lambda *a, **kw: None,
         )
 
-        v2 = _make_skill_zip("blockv2", body="v2 " * 30)
+        v2 = _make_skill_zip("blockv2", body="v2 " * 80)
         r = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -757,7 +764,7 @@ class TestPRReviewFixes:
         assert sub["status"] == "pending_llm"
 
         # Second concurrent edit MUST be blocked.
-        v3 = _make_skill_zip("blockv2", body="v3 " * 30)
+        v3 = _make_skill_zip("blockv2", body="v3 " * 80)
         r = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v3.zip", v3, "application/zip")},
@@ -787,7 +794,7 @@ class TestPRReviewFixes:
             lambda *a, **kw: None,
         )
 
-        v2 = _make_skill_zip("origname", body="v2 " * 30)
+        v2 = _make_skill_zip("origname", body="v2 " * 80)
         r = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -847,7 +854,7 @@ class TestPRReviewFixes:
             },
         )
 
-        v2 = _make_skill_zip("auditv2", body="v2 " * 30)
+        v2 = _make_skill_zip("auditv2", body="v2 " * 80)
         web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -914,7 +921,7 @@ class TestPRReviewFixes:
             },
         )
 
-        v2 = _make_skill_zip("archmid", body="v2 " * 30)
+        v2 = _make_skill_zip("archmid", body="v2 " * 80)
         web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -955,7 +962,7 @@ class TestAdminQueueShowsVersion:
         matching submission.version (hash) against the entry hashes."""
         owner_id, owner_cookies = _create_user(web_client, "vqowner@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="vqcol")
-        v2 = _make_skill_zip("vqcol", body="v2 body. " * 20)
+        v2 = _make_skill_zip("vqcol", body="v2 body. " * 80)
         web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},

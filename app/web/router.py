@@ -1125,6 +1125,22 @@ async def store_new(
     return templates.TemplateResponse(request, "store_upload.html", ctx)
 
 
+@router.get("/store/examples", response_class=HTMLResponse)
+async def store_examples(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Examples of well-formed flea-market submissions.
+
+    Linked from the content-guardrail rejection banner so a submitter
+    whose bundle failed review can see what 'good' looks like
+    side-by-side with the rule that bit them.
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "store_examples.html", ctx)
+
+
 @router.get("/marketplace/flea/{entity_id}/edit", response_class=HTMLResponse)
 async def store_edit(
     entity_id: str,
