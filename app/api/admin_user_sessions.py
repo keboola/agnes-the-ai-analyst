@@ -159,7 +159,7 @@ def list_user_sessions(
     # Sort: processed (have started_at) first then unprocessed, both newest-first
     def _sort_key(r: dict):
         ts = r.get("started_at") or ""
-        return (0 if r["processed"] else 1, "" if not ts else ts)
+        return (1 if r["processed"] else 0, "" if not ts else ts)
 
     all_rows.sort(key=_sort_key, reverse=True)
 

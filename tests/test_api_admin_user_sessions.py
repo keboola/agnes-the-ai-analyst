@@ -351,3 +351,60 @@ class TestDownloadAllSessions:
             headers=analyst_user,
         )
         assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# Sort order regression
+# ---------------------------------------------------------------------------
+
+
+class TestListUserSessionsSortOrder:
+    def test_processed_sessions_sort_before_unprocessed(
+        self, seeded_app, admin_user, session_data_dir
+    ):
+        """Processed sessions must appear before unprocessed ones in the list."""
+        import datetime as dt
+
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+
+        # Write two JSONL files to the filesystem
+        _seed_jsonl(session_data_dir, username, "processed.jsonl")
+        _seed_jsonl(session_data_dir, username, "unprocessed.jsonl")
+
+        # Seed a usage_session_summary row only for the processed file
+        conn = get_system_db()
+        conn.execute(
+            """INSERT INTO usage_session_summary
+            (session_file, session_id, username, started_at, ended_at,
+             tool_calls, tool_errors, processor_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
+            [
+                "processed.jsonl",
+                "sess-processed",
+                username,
+                dt.datetime(2026, 5, 10, 12, 0, tzinfo=dt.timezone.utc),
+                dt.datetime(2026, 5, 10, 13, 0, tzinfo=dt.timezone.utc),
+                7,
+                0,
+            ],
+        )
+        conn.close()
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions", headers=admin_user
+        )
+        assert r.status_code == 200
+        rows = r.json()["rows"]
+
+        processed_indices = [i for i, row in enumerate(rows) if row.get("processed")]
+        unprocessed_indices = [i for i, row in enumerate(rows) if not row.get("processed")]
+
+        assert processed_indices, "Expected at least one processed row"
+        assert unprocessed_indices, "Expected at least one unprocessed row"
+
+        assert max(processed_indices) < min(unprocessed_indices), (
+            f"Processed sessions should all appear before unprocessed ones; "
+            f"got processed at {processed_indices}, unprocessed at {unprocessed_indices}, "
+            f"rows={[{'file': r['session_file'], 'processed': r['processed']} for r in rows]}"
+        )

@@ -169,7 +169,12 @@ def _stream_parquet(conn, sql, params):
     out_path = Path(tmp.name)
     # DuckDB COPY embeds the filter directly — use the same params
     copy_sql = f"COPY ({sql}) TO '{out_path}' (FORMAT PARQUET)"
-    conn.execute(copy_sql, params)
+    try:
+        conn.execute(copy_sql, params)
+    except Exception:
+        # Ensure the temp file is cleaned up if COPY fails before we hand off to StreamingResponse
+        out_path.unlink(missing_ok=True)
+        raise
 
     def gen():
         try:
@@ -180,10 +185,7 @@ def _stream_parquet(conn, sql, params):
                         break
                     yield chunk
         finally:
-            try:
-                out_path.unlink()
-            except Exception:
-                pass
+            out_path.unlink(missing_ok=True)
 
     return StreamingResponse(
         gen(),
