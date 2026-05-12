@@ -728,7 +728,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_ref ON usage_events(source, ref_id);
 
 CREATE TABLE IF NOT EXISTS usage_session_summary (
     session_file        VARCHAR PRIMARY KEY,
-    session_id          VARCHAR,
+    session_id          VARCHAR NOT NULL,
     username            VARCHAR NOT NULL,
     started_at          TIMESTAMP,
     ended_at            TIMESTAMP,
@@ -2707,6 +2707,8 @@ def _v41_to_v42(conn: duckdb.DuckDBPyConnection) -> None:
     - usage_events: per-event log (tool_use, slash_command, subagent, mcp_call)
       extracted from session JSONLs.
     - usage_session_summary: per-session aggregate keyed by session_file.
+      session_id is NOT NULL — the processor always extracts a session_id from
+      JSONL; orphan sessions are skipped before this row is written.
     - usage_tool_daily / usage_plugin_daily: daily rollups for fast marketplace
       queries.
     - usage_attribution_skills / _agents / _commands: skill/agent/command
@@ -2742,7 +2744,7 @@ def _v41_to_v42(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS usage_session_summary (
             session_file        VARCHAR PRIMARY KEY,
-            session_id          VARCHAR,
+            session_id          VARCHAR NOT NULL,
             username            VARCHAR NOT NULL,
             started_at          TIMESTAMP,
             ended_at            TIMESTAMP,
