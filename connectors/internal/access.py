@@ -77,11 +77,11 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
         ),
     ),
     InternalTable(
-        registry_id="agnes_usage",
+        registry_id="agnes_telemetry",
         source_table="usage_events",
         filter_column="username",
         filter_kind="username",
-        display_name="Agnes — my usage events",
+        display_name="Agnes — my telemetry events",
         description=(
             "Per-event log of Claude Code tool / skill / subagent / slash "
             "command / MCP invocations. Analysts see their own events; "

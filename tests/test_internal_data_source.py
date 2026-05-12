@@ -81,7 +81,7 @@ def system_db(tmp_path, monkeypatch):
 
 def test_is_internal_table_recognises_canonical_ids():
     assert is_internal_table("agnes_sessions")
-    assert is_internal_table("agnes_usage")
+    assert is_internal_table("agnes_telemetry")
     assert is_internal_table("agnes_audit")
     assert not is_internal_table("usage_session_summary")  # underlying physical
     assert not is_internal_table("orders_daily")

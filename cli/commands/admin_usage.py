@@ -62,7 +62,7 @@ def export(
 
     try:
         with get_client(timeout=120.0) as client:
-            with client.stream("GET", "/api/admin/usage/export", params=params) as resp:
+            with client.stream("GET", "/api/admin/telemetry/export", params=params) as resp:
                 if resp.status_code in (401, 403):
                     typer.echo(
                         "[err] authentication required — run `agnes auth login` or import a PAT",
@@ -95,7 +95,7 @@ def reprocess():
     """Force re-extraction of all sessions for the usage processor."""
     client = get_client(timeout=60)
     try:
-        resp = client.post("/api/admin/usage/reprocess")
+        resp = client.post("/api/admin/telemetry/reprocess")
     except Exception as e:
         typer.echo(f"[err] cannot reach server: {e}", err=True)
         raise typer.Exit(1)
@@ -121,7 +121,7 @@ def prune(
     """Prune usage_events older than USAGE_EVENTS_RETENTION_DAYS env var on the server."""
     client = get_client(timeout=60)
     try:
-        resp = client.post("/api/admin/usage/prune")
+        resp = client.post("/api/admin/telemetry/prune")
     except Exception as e:
         typer.echo(f"[err] cannot reach server: {e}", err=True)
         raise typer.Exit(1)

@@ -21,7 +21,7 @@ from app.auth.dependencies import _get_db
 from app.api.activity import _should_audit
 from src.repositories.audit import AuditRepository
 
-router = APIRouter(prefix="/api/admin/usage", tags=["admin-usage"])
+router = APIRouter(prefix="/api/admin/telemetry", tags=["admin-telemetry"])
 logger = logging.getLogger(__name__)
 
 _GROUP_BY_COLUMNS = {

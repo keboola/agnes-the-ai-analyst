@@ -21,7 +21,7 @@ def ask(
     """Translate question -> SQL -> execute. Prints SQL + result."""
     client = get_client(timeout=120)
     try:
-        resp = client.post("/api/admin/usage/ask", json={"question": question})
+        resp = client.post("/api/admin/telemetry/ask", json={"question": question})
     except Exception as e:
         typer.echo(f"[err] cannot reach server: {e}", err=True)
         raise typer.Exit(1)

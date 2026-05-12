@@ -1510,17 +1510,25 @@ async def admin_user_detail_page(
     return templates.TemplateResponse(request, "admin_user_detail.html", ctx)
 
 
-@router.get("/admin/usage", response_class=HTMLResponse)
-async def admin_usage_page(
+@router.get("/admin/usage")
+async def admin_usage_redirect(_user: dict = Depends(require_admin)):
+    """Legacy URL — 308 to /admin/telemetry. The page was renamed in the
+    platform-telemetry epic to match what's actually shown (tool/skill
+    invocations from session JSONLs). Old bookmarks land on the right
+    place without breaking."""
+    return RedirectResponse(url="/admin/telemetry", status_code=308)
+
+
+@router.get("/admin/telemetry", response_class=HTMLResponse)
+async def admin_telemetry_page(
     request: Request,
     user: dict = Depends(require_admin),
 ):
-    """Interactive Usage page — filter / group-by / search on usage_events.
+    """Interactive Telemetry page — filter / group-by / search on usage_events.
 
-    All data loads client-side from /api/admin/usage/* (facets, kpis, query)
-    so the page state lives in the URL and the server doesn't preload a
-    fixed window's snapshot. The old static `?window=7d|30d|all` is gone
-    — the JS uses `since_minutes` in the query string instead.
+    All data loads client-side from /api/admin/telemetry/* (facets, kpis,
+    query) so the page state lives in the URL and the server doesn't
+    preload a fixed window's snapshot.
     """
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_usage.html", ctx)

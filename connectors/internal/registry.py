@@ -30,8 +30,26 @@ def ensure_internal_tables_registered(conn: duckdb.DuckDBPyConnection) -> None:
     Safe to call on every boot. Operators see these in /admin/tables
     flagged as ``source_type='internal'`` and can't accidentally delete
     them without an explicit admin action; the next boot puts them back.
+
+    Also evicts stale internal-source rows whose id no longer matches
+    ``INTERNAL_TABLES`` — used when an internal table is renamed
+    (e.g. agnes_usage → agnes_telemetry). Without this the old row
+    would linger in /catalog forever.
     """
     repo = TableRegistryRepository(conn)
+    canonical_ids = {t.registry_id for t in INTERNAL_TABLES}
+    placeholders = ",".join("?" for _ in canonical_ids) if canonical_ids else "''"
+    try:
+        conn.execute(
+            f"DELETE FROM table_registry "
+            f"WHERE source_type = 'internal' AND id NOT IN ({placeholders})",
+            list(canonical_ids),
+        )
+    except Exception:
+        logger.exception(
+            "ensure_internal_tables_registered: stale-row cleanup failed; "
+            "renamed internal tables may still appear under their old ids"
+        )
     for table in INTERNAL_TABLES:
         try:
             repo.register(

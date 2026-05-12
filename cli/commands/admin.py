@@ -22,7 +22,12 @@ admin_app.add_typer(admin_sessions_app, name="sessions", help="Browse Claude Cod
 admin_app.add_typer(admin_store_app, name="store")
 admin_app.add_typer(admin_news_app, name="news")
 admin_app.add_typer(memory_admin_app, name="memory")
-admin_app.add_typer(admin_usage_app, name="usage", help="Telemetry export and admin queries")
+# Telemetry subcommand: primary name is "telemetry", "usage" kept as an
+# alias so existing operator scripts that call `agnes admin usage export …`
+# keep working through this release. Drop the alias in a future cleanup
+# once external callers have caught up.
+admin_app.add_typer(admin_usage_app, name="telemetry", help="Telemetry export and admin queries")
+admin_app.add_typer(admin_usage_app, name="usage", help="(deprecated alias of `telemetry`)")
 
 
 @admin_app.command("add-user")
