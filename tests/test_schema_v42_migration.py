@@ -1,14 +1,14 @@
-"""v40 → v41 migration: 7 new usage_* tables for telemetry."""
+"""v41 → v42 migration: 7 new usage_* tables for telemetry."""
 import duckdb
 import pytest
 from src.db import _ensure_schema as init_database, SCHEMA_VERSION
 
 
-def test_schema_version_is_41():
-    assert SCHEMA_VERSION == 41
+def test_schema_version_is_42():
+    assert SCHEMA_VERSION == 42
 
 
-def test_v41_tables_exist_after_init(tmp_path):
+def test_v42_tables_exist_after_init(tmp_path):
     db_path = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(db_path))
     init_database(conn)
@@ -22,7 +22,7 @@ def test_v41_tables_exist_after_init(tmp_path):
     conn.close()
 
 
-def test_v41_indices_exist(tmp_path):
+def test_v42_indices_exist(tmp_path):
     db_path = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(db_path))
     init_database(conn)
@@ -37,7 +37,7 @@ def test_v41_indices_exist(tmp_path):
     conn.close()
 
 
-def test_v40_to_v41_is_idempotent(tmp_path):
+def test_v41_to_v42_is_idempotent(tmp_path):
     """Running init twice on same DB must not error and version stays 41."""
     db_path = tmp_path / "twice.duckdb"
     conn = duckdb.connect(str(db_path))
@@ -46,17 +46,17 @@ def test_v40_to_v41_is_idempotent(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 41
+    assert v == 42
     conn.close()
 
 
-def test_v40_db_upgrades_cleanly(tmp_path):
+def test_v41_db_upgrades_cleanly(tmp_path):
     """A v40-state DB (post-Activity-Center) must climb to v41 without error."""
-    db_path = tmp_path / "v40.duckdb"
+    db_path = tmp_path / "v41.duckdb"
     conn = duckdb.connect(str(db_path))
     # Minimal v40 baseline shape — schema_version + audit_log with v40 columns.
     conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
-    conn.execute("INSERT INTO schema_version (version) VALUES (40)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (41)")
     conn.execute("""CREATE TABLE audit_log (
         id VARCHAR PRIMARY KEY, timestamp TIMESTAMP DEFAULT current_timestamp,
         user_id VARCHAR, action VARCHAR, resource VARCHAR, params JSON,
@@ -67,7 +67,7 @@ def test_v40_db_upgrades_cleanly(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 41
+    assert v == 42
     # All 7 new v41 tables exist after the v40→v41 upgrade
     tables = {row[0] for row in conn.execute(
         "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
@@ -94,7 +94,7 @@ def test_v30_db_ladders_all_the_way_up(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 41
+    assert v == 42
     cnt = conn.execute("SELECT COUNT(*) FROM audit_log WHERE id='vintage'").fetchone()[0]
     assert cnt == 1
     # New v41 table exists

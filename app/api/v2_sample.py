@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
+from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
 from src.repositories.audit import AuditRepository
@@ -152,7 +153,7 @@ def sample(
                     "duration_ms": int((time.monotonic() - t0) * 1000),
                 },
                 result="success",
-                client_kind="cli",  # sample is primarily CLI-driven (agnes describe)
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed for catalog.sample; continuing")
@@ -174,7 +175,7 @@ def sample(
                 params={"duration_ms": int((time.monotonic() - t0) * 1000),
                         "error": str(exc)[:200]},
                 result=f"error.{status_code}",
-                client_kind="cli",
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed on error path for catalog.sample; continuing")

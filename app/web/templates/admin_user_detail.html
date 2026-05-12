@@ -287,6 +287,8 @@
       <a class="btn btn-secondary" id="ud-download-all" href="#">Download all (.zip)</a>
     </div>
 
+    <div class="ud-empty" id="ud-sessions-loading">Loading…</div>
+
     <div class="ud-empty" id="ud-sessions-empty" hidden>
       No collected sessions for this user yet.
     </div>
@@ -318,6 +320,8 @@
       <h2>Activity</h2>
       <span class="sub">All recorded server actions for this user</span>
     </div>
+
+    <div class="ud-empty" id="ud-activity-loading">Loading…</div>
 
     <table class="ud-table" id="ud-activity-table" hidden>
       <thead>
@@ -706,6 +710,7 @@ async function loadSessions() {
   const url = `${SESSIONS_API}?limit=${_sessionsLimit}&offset=${_sessionsOffset}`;
   const r = await fetch(url, { credentials: "include" });
   const emptyEl = document.getElementById("ud-sessions-empty");
+  document.getElementById("ud-sessions-loading").hidden = true;
   const tableEl = document.getElementById("ud-sessions-table");
   const paginEl = document.getElementById("ud-sessions-pagination");
   const tbody = document.getElementById("ud-sessions-tbody");
@@ -791,6 +796,7 @@ function loadActivity() {
   fetch(`${ACTIVITY_API}?limit=${_activityLimit}&offset=${_activityOffset}`, { credentials: 'include' })
     .then(r => r.json())
     .then(data => {
+      document.getElementById('ud-activity-loading').hidden = true;
       if (!data.rows || (data.rows.length === 0 && _activityOffset === 0)) {
         empty.hidden = false;
         table.hidden = true;
@@ -820,6 +826,7 @@ function loadActivity() {
       document.getElementById('ud-activity-next').disabled = (_activityOffset + _activityLimit) >= _activityTotal;
     })
     .catch(() => {
+      document.getElementById('ud-activity-loading').hidden = true;
       empty.textContent = 'Failed to load activity.';
       empty.hidden = false;
       table.hidden = true;

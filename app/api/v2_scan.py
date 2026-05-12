@@ -14,6 +14,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.instance_config import get_value
+from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
 from src.repositories.audit import AuditRepository
@@ -247,7 +248,7 @@ def scan_estimate_endpoint(
                     "duration_ms": int((time.monotonic() - t0) * 1000),
                 },
                 result="success",
-                client_kind="cli",  # estimate is primarily CLI-driven (agnes snapshot create --estimate)
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed for snapshot.estimate; continuing")
@@ -269,7 +270,7 @@ def scan_estimate_endpoint(
                 params={"duration_ms": int((time.monotonic() - t0) * 1000),
                         "error": str(exc)[:200]},
                 result=f"error.{status_code}",
-                client_kind="cli",
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed on error path for snapshot.estimate; continuing")
@@ -460,7 +461,7 @@ def scan_endpoint(
                     "duration_ms": int((time.monotonic() - t0) * 1000),
                 },
                 result="success",
-                client_kind="cli",  # scan/snapshot is primarily CLI-driven (agnes snapshot create)
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed for snapshot.create; continuing")
@@ -485,7 +486,7 @@ def scan_endpoint(
                 params={"duration_ms": int((time.monotonic() - t0) * 1000),
                         "error": str(exc)[:200]},
                 result=f"error.{status_code}",
-                client_kind="cli",
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed on error path for snapshot.create; continuing")

@@ -3086,15 +3086,16 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     "ON CONFLICT (key) DO NOTHING",
                     [key],
                 )
-            # v40 indices: _SYSTEM_SCHEMA omits CREATE INDEX to avoid
-            # failures when pre-existing audit_log lacks timestamp (migration
-            # tests). Create them here explicitly for fresh installs; the
-            # upgrade path uses _v39_to_v40 below.
-            _v39_to_v40(conn)
-            # v41 usage_* tables + indices. _SYSTEM_SCHEMA already creates them
-            # via IF NOT EXISTS, so this is a safe no-op for fresh installs;
-            # mirrors the established pattern for the upgrade path below.
+            # v41 audit_log indices: _SYSTEM_SCHEMA omits CREATE INDEX to
+            # avoid failures when pre-existing audit_log lacks timestamp
+            # (migration tests). Create them here for fresh installs; the
+            # upgrade path uses _v40_to_v41 below.
             _v40_to_v41(conn)
+            # v42 usage_* tables + indices. _SYSTEM_SCHEMA already creates
+            # them via IF NOT EXISTS, so this is a safe no-op for fresh
+            # installs; mirrors the established pattern for the upgrade
+            # path below.
+            _v41_to_v42(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still

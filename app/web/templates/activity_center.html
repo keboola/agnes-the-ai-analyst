@@ -42,7 +42,13 @@
         {% for row in timeline %}
         <tr data-event-id="{{ row.id }}">
           <td><time datetime="{{ row.timestamp }}">{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</time></td>
-          <td>{{ row.user_id or '—' }}</td>
+          <td>
+            {% if row.user_email %}
+            <span title="{{ row.user_id }}">{{ row.user_email }}</span>
+            {% elif row.user_id %}
+            <code title="{{ row.user_id }}">{{ row.user_id[:8] }}…</code>
+            {% else %}—{% endif %}
+          </td>
           <td><code>{{ row.action }}</code></td>
           <td>{{ row.resource or '—' }}</td>
           <td>
@@ -54,6 +60,9 @@
           </td>
         </tr>
         {% endfor %}
+        {% if not timeline %}
+        <tr><td colspan="5" class="ac-empty">No activity in the last 24h — server is freshly deployed, or all actions fall outside the filter window.</td></tr>
+        {% endif %}
       </tbody>
     </table>
     {% if next_cursor %}
