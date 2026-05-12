@@ -197,8 +197,7 @@ def cli_non_admin(monkeypatch, fresh_db):
 class TestExportCsv:
     def test_csv_success_has_header(self, cli_admin):
         runner, app = cli_admin
-        # The Typer app has a single @app.command(); invoke directly (no subcommand prefix).
-        result = runner.invoke(app, ["--format", "csv"])
+        result = runner.invoke(app, ["export", "--format", "csv"])
         assert result.exit_code == 0, _clean(result.output)
         lines = result.output.splitlines()
         # First line should be the CSV header row
@@ -208,7 +207,7 @@ class TestExportCsv:
 
     def test_csv_is_parseable(self, cli_admin):
         runner, app = cli_admin
-        result = runner.invoke(app, ["--format", "csv"])
+        result = runner.invoke(app, ["export", "--format", "csv"])
         assert result.exit_code == 0, _clean(result.output)
         rows = list(csv.reader(io.StringIO(result.output)))
         assert len(rows) >= 1  # at minimum the header row
@@ -218,7 +217,7 @@ class TestExportCsv:
 class TestExportJson:
     def test_json_success_ndjson_parseable(self, cli_admin):
         runner, app = cli_admin
-        result = runner.invoke(app, ["--format", "json"])
+        result = runner.invoke(app, ["export", "--format", "json"])
         assert result.exit_code == 0, _clean(result.output)
         lines = [l for l in result.output.splitlines() if l.strip()]
         assert len(lines) >= 1
@@ -231,7 +230,7 @@ class TestExportParquet:
     def test_parquet_writes_valid_file(self, cli_admin, tmp_path):
         runner, app = cli_admin
         out_file = tmp_path / "usage.parquet"
-        result = runner.invoke(app, ["--format", "parquet", "--out", str(out_file)])
+        result = runner.invoke(app, ["export", "--format", "parquet", "--out", str(out_file)])
         assert result.exit_code == 0, _clean(result.output)
         assert out_file.exists()
         assert out_file.stat().st_size > 0
@@ -245,7 +244,7 @@ class TestExportParquet:
 class TestExportAuthEnforcement:
     def test_non_admin_exits_1_with_auth_error(self, cli_non_admin):
         runner, app = cli_non_admin
-        result = runner.invoke(app, ["--format", "csv"])
+        result = runner.invoke(app, ["export", "--format", "csv"])
         assert result.exit_code != 0
         out = _clean(result.output)
         assert (
@@ -260,7 +259,7 @@ class TestExportAuthEnforcement:
 class TestExportValidation:
     def test_bogus_format_exits_1_client_side(self, cli_admin):
         runner, app = cli_admin
-        result = runner.invoke(app, ["--format", "bogus"])
+        result = runner.invoke(app, ["export", "--format", "bogus"])
         assert result.exit_code != 0
         out = _clean(result.output)
         assert "bogus" in out or "format" in out.lower() or "csv" in out.lower()

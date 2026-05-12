@@ -90,6 +90,7 @@ _DEFAULTS = {
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL": 15 * 60,
     "SCHEDULER_USAGE_PROCESSOR_INTERVAL":       10 * 60,
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL":      17 * 60,
+    "SCHEDULER_USAGE_PRUNE_INTERVAL":           86400,
 }
 
 
@@ -142,15 +143,16 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     Tuple shape: (name, schedule_string, endpoint, method, http_timeout_sec).
     Marketplaces stays hardcoded — promoting it to env is out of #77 scope.
     """
-    refresh = _read_positive_int("SCHEDULER_DATA_REFRESH_INTERVAL")
-    health  = _read_positive_int("SCHEDULER_HEALTH_CHECK_INTERVAL")
-    scripts = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
-    sess    = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
-    verify  = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
-    usage   = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
-    corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
-    tick    = _read_positive_int("SCHEDULER_TICK_SECONDS")
-    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem)
+    refresh    = _read_positive_int("SCHEDULER_DATA_REFRESH_INTERVAL")
+    health     = _read_positive_int("SCHEDULER_HEALTH_CHECK_INTERVAL")
+    scripts    = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
+    sess       = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
+    verify     = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
+    usage      = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
+    corpmem    = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
+    usageprune = _read_positive_int("SCHEDULER_USAGE_PRUNE_INTERVAL")
+    tick       = _read_positive_int("SCHEDULER_TICK_SECONDS")
+    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem, usageprune)
     if tick > smallest:
         raise ValueError(
             f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
@@ -193,6 +195,12 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # to review_error so admin can retry. Cheap (one indexed
         # SELECT + N small UPDATEs); short timeout sufficient.
         ("store-reap-stuck-reviews", "every 15m",                 "/api/admin/run-reap-stuck-reviews",   "POST", 60),
+        # Usage event retention pruning. Reads USAGE_EVENTS_RETENTION_DAYS
+        # on the server side; short-circuits when unset or 0. Runs daily
+        # (default 86400s) so old events accumulate at most one day beyond
+        # the configured retention window. Short timeout sufficient — pure
+        # DELETE query; rollup tables untouched.
+        ("usage-prune",              _seconds_to_schedule(usageprune), "/api/admin/usage/prune",         "POST", 60),
     ]
 
 _running = True
