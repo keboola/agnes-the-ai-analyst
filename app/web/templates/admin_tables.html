@@ -1673,10 +1673,9 @@
            above so switchTab() handles it without code changes. #}
         <section id="tab-content-internal" class="tab-content" style="display: none;">
             <p class="hint" style="margin-bottom: 16px;">
-                System tables backed by <code>system.duckdb</code> and exposed to <code>agnes query</code>
-                through the internal connector. Per-row RBAC: non-admin sees their own rows; admin sees all.
-                Seeded on every boot from <code>connectors/internal/registry.py</code> — Edit / Delete
-                actions are hidden because changes would revert on next start.
+                System tables — sessions, telemetry, audit. Also available
+                locally for analysis. Read-only here; Edit / Delete are
+                hidden because the rows are seeded on every app boot.
             </p>
             <div id="internalTableListing"></div>
         </section>
