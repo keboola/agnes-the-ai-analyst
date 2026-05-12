@@ -149,6 +149,37 @@ curl -X POST http://localhost:8000/api/sync/trigger
 docker compose up
 ```
 
+### Parallel Claude Code worktrees
+
+Use `scripts/dev/worktree-spawn.sh` when starting a second Claude Code session for
+parallel work. It creates an isolated Git worktree under `.worktrees/<branch-slug>`
+while symlinking shared local state (`user/`, `.venv/`, `.env`, `data/`) back to
+the main checkout.
+
+```bash
+scripts/dev/worktree-spawn.sh <branch-name> [base-branch]
+
+# Example: create a feature branch from latest main
+scripts/dev/worktree-spawn.sh fix/auth-redirect origin/main
+cd .worktrees/fix-auth-redirect
+```
+
+Keep only one writer active for DuckDB-backed state at a time. Do not run
+`da sync`, migrations, or other DuckDB-writing commands concurrently across
+worktrees. For parallel Docker Compose stacks, set a unique project name first:
+
+```bash
+export COMPOSE_PROJECT_NAME=agnes-<branch-slug>
+```
+
+When the side work is done, remove the worktree and delete the branch after it
+has been merged:
+
+```bash
+git worktree remove .worktrees/<branch-slug>
+git branch -d <branch-name>
+```
+
 ### Local sync & Claude Code hooks
 
 `agnes pull` is the canonical analyst-side distribution path: pulls the RBAC-filtered manifest from the server, downloads parquets whose MD5 changed (skipping `query_mode='remote'` rows), rebuilds local DuckDB views over them. `agnes push` mirrors it for the upload direction (sessions, CLAUDE.local.md).
