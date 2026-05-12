@@ -11,6 +11,7 @@ All admin-gated. Both download endpoints write audit_log rows.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import re
@@ -353,7 +354,6 @@ def list_user_activity(
     rows = rows[offset: offset + limit]
 
     # Normalise timestamps to ISO strings and decode JSON params
-    import json as _json
     for r in rows:
         for k in ("timestamp",):
             v = r.get(k)
@@ -362,7 +362,7 @@ def list_user_activity(
         params_val = r.get("params")
         if isinstance(params_val, str):
             try:
-                r["params"] = _json.loads(params_val) if params_val else None
+                r["params"] = json.loads(params_val) if params_val else None
             except (ValueError, TypeError):
                 pass
 

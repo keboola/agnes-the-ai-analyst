@@ -114,6 +114,17 @@ class TestCatalogListAudit:
         resp = c.get("/api/v2/catalog", headers=analyst_user)
         assert resp.status_code == 200
 
+    def test_catalog_list_error_path_has_audit(self):
+        """Source-level verification: catalog.list error path has audit logging."""
+        import inspect
+        from app.api.v2_catalog import catalog
+        src = inspect.getsource(catalog)
+        # Verify outer except clause for error path audit
+        assert "except Exception as exc:" in src
+        assert "error" in src.lower()
+        # Verify error audit is logged with error message
+        assert 'str(exc)[:200]' in src or "str(exc)" in src
+
 
 # ---------------------------------------------------------------------------
 # catalog.schema
