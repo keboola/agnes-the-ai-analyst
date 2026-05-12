@@ -2275,19 +2275,27 @@ a.app-header-logo:focus-visible {
 .app-nav-menu-item.is-active { background: rgba(0, 115, 209, 0.08); color: var(--primary, #0073D1); font-weight: 500; }
 .admin-menu-separator { margin: 4px 8px; border: 0; border-top: 1px solid var(--border, #e5e7eb); }
 /* Section header inside the admin dropdown — non-clickable, small-caps,
-   muted. Re-used across all four named groups (Activity Center, Users &
-   Access, Data, Configuration). The :first-child rule trims the top
-   padding so the panel doesn't open with an awkward gap above its first
-   section. */
+   muted. Re-used across all five named groups (Activity Center, Users &
+   Access, Data, Agent Experience, Server). The :first-child rule trims
+   the top padding so the panel doesn't open with an awkward gap above
+   its first section. A top border on every section EXCEPT the first
+   gives admins a visual divider between groups so the panel reads at a
+   glance. */
 .app-nav-menu-section {
-    padding: 10px 12px 4px;
+    padding: 12px 12px 4px;
+    margin-top: 6px;
+    border-top: 1px solid var(--border-light, #f3f4f6);
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-secondary, #6b7280);
     font-weight: 600;
 }
-.app-nav-menu-section:first-child { padding-top: 4px; }
+.app-nav-menu-section:first-child {
+    padding-top: 4px;
+    margin-top: 0;
+    border-top: 0;
+}
 .app-nav-menu-section + .app-nav-menu-item { margin-top: 0; }
 
 @media (max-width: 720px) {
