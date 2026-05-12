@@ -1159,20 +1159,20 @@
         <div class="eyebrow">Welcome back, {{ display_name }} — your workspace is ready</div>
         <h1>You're set up — keep this page handy</h1>
         <p class="lead">
-            Your local Agnes install is confirmed. The steps below stay useful for <strong>adding another machine</strong>, <strong>connecting more services</strong>, or <strong>turning on auto-accept mode</strong>. Skip whatever you don't need; nothing here re-runs unless you click it.
+            Your local {{ instance_brand }} install is confirmed. The steps below stay useful for <strong>adding another machine</strong>, <strong>connecting more services</strong>, or <strong>turning on auto-accept mode</strong>. Skip whatever you don't need; nothing here re-runs unless you click it.
         </p>
         {% else %}
         <div class="eyebrow">Welcome, {{ display_name }} — let's get you set up</div>
         <h1>Connect Claude Code on your machine to your team's data</h1>
         <p class="lead">
-            {{ instance_name or "Agnes" }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>. Everything it installs lives in your home folder (<code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/Agnes</code>) and can be removed in one command.
+            {{ instance_brand }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>. Everything it installs lives in your home folder (<code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/{{ workspace_dir }}</code>) and can be removed in one command.
         </p>
         {% endif %}
 
         {% if onboarded %}
         <div class="install-done" role="status" aria-live="polite">
             <span class="check" aria-hidden="true">&#x2705;</span>
-            <span><strong>Step 1, 2 &amp; 3 done</strong> — Claude Code installed, auto-mode set, Agnes ready in <code>~/Agnes</code>. The full install steps stay one click away under the offboard control below.</span>
+            <span><strong>Steps 1–4 done</strong> — Claude Code installed, auto-mode set, workspace folder created, {{ instance_brand }} ready in <code>~/{{ workspace_dir }}</code>. The full install steps stay one click away under the offboard control below.</span>
         </div>
         {% endif %}
 
@@ -1218,7 +1218,7 @@
 
         {% if home_automode.show %}
         <div class="install-block">
-            <div class="label">Step 2 — turn on auto-mode (recommended before Step 3)</div>
+            <div class="label">Step 2 — turn on auto-mode (recommended before Step 4)</div>
             <div class="install-note">
                 In the Claude Code session you just signed into, press <strong>Shift + Tab</strong>. Claude cycles modes: default → <strong>auto-accept edits</strong> → plan mode → default; the footer shows <code>⏵⏵</code> when auto-accept is on. On the first cycle to auto-accept, Claude asks whether to make it the default — say <strong>yes</strong>. Closed the session already? Run <code>claude</code> again, then press <strong>Shift + Tab</strong>.
                 <br><br>
@@ -1228,9 +1228,31 @@
         {% endif %}
 
         <div class="install-block">
-            <div class="label">Step 3 — install Agnes from inside Claude Code</div>
+            <div class="label">Step 3 — create your workspace folder</div>
+            <div class="os-tabs" role="tablist" aria-label="Operating system">
+                <button type="button" role="tab" class="os-tab is-active"
+                        data-os-tab="unix" aria-selected="true">macOS / Linux / WSL</button>
+                <button type="button" role="tab" class="os-tab"
+                        data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
+            </div>
+            <div class="install-cmd" role="tabpanel" data-os-panel="unix">
+                <span class="multiline" id="install-cmd-mkdir-unix">mkdir -p ~/{{ workspace_dir }} &amp;&amp; cd ~/{{ workspace_dir }}</span>
+                <button class="copy-btn" data-copy-target="install-cmd-mkdir-unix">Copy</button>
+            </div>
+            <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
+                <span class="multiline" id="install-cmd-mkdir-windows">New-Item -ItemType Directory -Force -Path "$HOME\{{ workspace_dir }}" | Out-Null
+Set-Location "$HOME\{{ workspace_dir }}"</span>
+                <button class="copy-btn" data-copy-target="install-cmd-mkdir-windows">Copy</button>
+            </div>
+            <div class="install-note">
+                This is where {{ instance_brand }} will live. Run the command in the terminal you opened for Step 1, then keep that terminal handy — the next step pastes the setup script into Claude Code from this same directory.
+            </div>
+        </div>
+
+        <div class="install-block">
+            <div class="label">Step 4 — install {{ instance_brand }} from inside Claude Code</div>
             <p class="setup-cta-lead">
-                Click the button — {{ instance_name or "Agnes" }} <strong>creates a 90-day login token</strong>, copies a ready-to-paste setup script to your clipboard, and a follow-up popup tells you exactly where to paste it. The script bootstraps everything in <code>~/Agnes</code> once Claude Code receives it.
+                Click the button — {{ instance_brand }} <strong>creates a 90-day login token</strong>, copies a ready-to-paste setup script to your clipboard, and a follow-up popup tells you exactly where to paste it. The script bootstraps everything in <code>~/{{ workspace_dir }}</code> once Claude Code receives it.
             </p>
             <div class="setup-cta-row">
                 <button type="button" id="setupClaudeBtn" class="btn-setup-primary" onclick="setupNewClaude(this)">
@@ -1254,7 +1276,7 @@
                     {% endwith %}
                 </div>
                 <div class="install-note">
-                    The preview above is the exact text the button copies; the placeholder is replaced with a real token at click time. Don't create <code>~/Agnes/Projects/</code> manually — the bundled plugin offers to set it up after install.
+                    The preview above is the exact text the button copies; the placeholder is replaced with a real token at click time. Don't create <code>~/{{ workspace_dir }}/Projects/</code> manually — the bundled plugin offers to set it up after install.
                 </div>
             </details>
 
@@ -1318,7 +1340,7 @@
             <span class="ttl">Connect your tools <small>(Asana / Google Workspace / Atlassian)</small></span>
             <span class="chev" aria-hidden="true">&rsaquo;</span>
         </summary>
-        <div class="section-label section-label-flat">Once Agnes is installed — connect your tools</div>
+        <div class="section-label section-label-flat">Once {{ instance_brand }} is installed — connect your tools</div>
 
     <div class="connector-tiles">
         <div class="connector-tile">
@@ -1365,13 +1387,13 @@
             <div class="desc">Drive, Calendar, Gmail, Docs, Sheets, Chat — Claude reads and acts across your work account via the official <code>gws</code> CLI.</div>
             {% if not gws_oauth.configured %}
             <div class="gating-note">
-                <strong>Heads up:</strong> your Agnes admin hasn't provisioned a shared Google Cloud OAuth app yet, so this connector needs GCP project setup (creating an OAuth client, enabling APIs). It's fastest to ask your admin first — the button below pre-fills the email.
+                <strong>Heads up:</strong> your {{ instance_brand }} admin hasn't provisioned a shared Google Cloud OAuth app yet, so this connector needs GCP project setup (creating an OAuth client, enabling APIs). It's fastest to ask your admin first — the button below pre-fills the email.
             </div>
             {% endif %}
             <div class="connector-actions">
                 <button class="connector-copy" data-copy-target="gws-prompt" data-connector="Google Workspace">Copy prompt</button>
                 {% if not gws_oauth.configured and instance_admin_email %}
-                <a class="email-admin" href="mailto:{{ instance_admin_email }}?subject=Agnes%20%E2%80%94%20Google%20Workspace%20OAuth%20setup&amp;body=Hi%20%E2%80%94%20I'd%20like%20to%20connect%20Google%20Workspace%20in%20Agnes%20but%20it%20looks%20like%20a%20shared%20OAuth%20app%20isn't%20provisioned%20yet.%20Could%20you%20set%20it%20up%20for%20our%20instance%3F%20Thanks!">
+                <a class="email-admin" href="mailto:{{ instance_admin_email }}?subject={{ instance_brand|urlencode }}%20%E2%80%94%20Google%20Workspace%20OAuth%20setup&amp;body=Hi%20%E2%80%94%20I'd%20like%20to%20connect%20Google%20Workspace%20in%20{{ instance_brand|urlencode }}%20but%20it%20looks%20like%20a%20shared%20OAuth%20app%20isn't%20provisioned%20yet.%20Could%20you%20set%20it%20up%20for%20our%20instance%3F%20Thanks!">
                     &#x2709;&#xFE0F; Email admin
                 </a>
                 {% endif %}
@@ -1407,7 +1429,7 @@
     </details>
 
     <div class="section-label">Want to look around first?</div>
-    <p class="look-around-lead">You don't need Agnes installed locally to browse what's available. Anything you bookmark or subscribe to will be there waiting after you set Agnes up.</p>
+    <p class="look-around-lead">You don't need {{ instance_brand }} installed locally to browse what's available. Anything you bookmark or subscribe to will be there waiting after you set {{ instance_brand }} up.</p>
 
     <div class="what-is look-around-grid">
         <a class="what-is-item" href="/marketplace">
@@ -1434,7 +1456,7 @@
         <a class="what-is-item" href="/activity-center">
             <span class="ico">&#x1F4C8;</span>
             <div class="ttl">Activity center <span class="arrow">&rarr;</span></div>
-            <div class="desc">Per-user analytics on Agnes adoption across your team. Sessions, plugin installs, prompt patterns.</div>
+            <div class="desc">Per-user analytics on {{ instance_brand }} adoption across your team. Sessions, plugin installs, prompt patterns.</div>
         </a>
         {% endif %}
     </div>

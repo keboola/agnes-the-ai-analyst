@@ -68,6 +68,7 @@ def all_connector_prompts(
     gws_oauth: dict | None = None,
     instance_admin_email: str = "",
     atlassian_base_url: str = "",
+    instance_brand: str = "Agnes",
 ) -> dict[str, str]:
     """Resolve every connector's prompt text with the operator's runtime
     config baked in. Caller (router._build_context, setup_instructions
@@ -92,7 +93,7 @@ def all_connector_prompts(
     """
     gws_oauth = gws_oauth or {}
     return {
-        "asana": asana_prompt(),
+        "asana": asana_prompt(instance_brand=instance_brand),
         "gws": gws_prompt(
             gws_oauth_configured=bool(gws_oauth.get("configured")),
             gws_client_id=str(gws_oauth.get("client_id") or ""),
@@ -103,7 +104,10 @@ def all_connector_prompts(
             ),
             instance_admin_email=instance_admin_email,
         ),
-        "atlassian": atlassian_prompt(base_url=atlassian_base_url),
+        "atlassian": atlassian_prompt(
+            base_url=atlassian_base_url,
+            instance_brand=instance_brand,
+        ),
     }
 
 
@@ -116,23 +120,27 @@ def all_connector_prompts(
 # inlines them straight into bash heredocs / numbered steps.
 # ---------------------------------------------------------------------------
 
-def asana_prompt() -> str:
-    """Asana MCP setup — registers Asana's hosted Remote MCP (V2
-    streamable HTTP at https://mcp.asana.com/mcp) so Claude Code can
-    read tasks, comment, and create updates on demand.
+def asana_prompt(*, instance_brand: str = "Agnes") -> str:
+    """Asana setup — Personal Access Token stored in OS keychain, used
+    against Asana's flat REST API at https://app.asana.com/api/1.0.
 
-    No PAT storage. The hosted Asana MCP handles auth via OAuth (Claude
-    Code opens a browser tab on first tool use; the user signs in once
-    with their Asana account; subsequent calls reuse the grant).
-    Earlier versions of this prompt walked the user through creating +
-    keychain-storing an Asana Personal Access Token, but the MCP path
-    has its own OAuth grant — the PAT had no consumer once the MCP
-    became the actual integration surface, so it's gone.
+    We tried the hosted Remote MCP (commit ``adee8ea``, 2026-05-11) but
+    the MCP path returned large JSON envelopes Claude Code reads in full
+    on every tool call. On real engagements the token cost was untenable
+    (~5× the REST equivalent), so we reverted. The PAT + curl path lets
+    the agent read only the fields it needs from flat responses; on
+    Asana's side both surfaces use the same workspace permissions.
 
-    Precheck short-circuits when `claude mcp list` already shows the
-    `asana` server registered — re-running setup on a connected machine
-    is a no-op."""
-    return _ASANA_PROMPT
+    Precheck short-circuits when the keychain already holds a working
+    PAT — re-running setup on a connected machine is a no-op. Also
+    detects a leftover MCP registration from the previous MCP-based
+    flow and asks the user to remove it before continuing, so users
+    don't end up with two competing Asana surfaces.
+
+    ``instance_brand`` is baked into the token's display label so the
+    user sees "Claude Code — <brand>" when reviewing PATs on Asana's
+    developer-console page."""
+    return _ASANA_PROMPT.replace("{instance_brand}", instance_brand)
 
 
 def gws_prompt(
@@ -175,7 +183,7 @@ def gws_prompt(
     )
 
 
-def atlassian_prompt(*, base_url: str = "") -> str:
+def atlassian_prompt(*, base_url: str = "", instance_brand: str = "Agnes") -> str:
     """Atlassian (Jira + Confluence) API token setup. Stores token in OS
     keychain under ``agnes-atlassian-api-token``, plus email + normalized
     base URL in ``~/.claude/agnes/secrets.env``. Jira-first / Confluence-
@@ -191,19 +199,22 @@ def atlassian_prompt(*, base_url: str = "") -> str:
 
     Caller is expected to normalize: strip trailing slash + ``/wiki``
     (handled by :func:`app.instance_config.get_atlassian_base_url`)."""
+    body = _ATLASSIAN_PROMPT.replace("{instance_brand}", instance_brand)
     if base_url:
         # The {{ }} pair in the f-string escapes a literal `{` — the
         # `${ATLASSIAN_BASE_URL%/}` shell parameter expansion in step 0
         # precheck uses `${...}` which f-strings DON'T touch, so no
         # additional escaping is needed there. Replace only the two
         # explicit placeholder strings.
-        return _ATLASSIAN_PROMPT \
-            .replace("<the site URL I gave you>", base_url) \
+        body = (
+            body
+            .replace("<the site URL I gave you>", base_url)
             .replace(
                 "1. Ask me for my Atlassian Cloud site URL (looks like https://<myorg>.atlassian.net) and the email I sign in with. Site URL and email are NOT secrets — fine to type into chat. Don't proceed until I've given you both.",
-                f"1. Ask me only for the email I sign in with — the Atlassian Cloud site URL is already provisioned by the Agnes operator (``{base_url}``) and baked into the helper script. Email is not a secret — fine to type into chat. Don't proceed until I've given you the email.",
+                f"1. Ask me only for the email I sign in with — the Atlassian Cloud site URL is already provisioned by the {instance_brand} operator (``{base_url}``) and baked into the helper script. Email is not a secret — fine to type into chat. Don't proceed until I've given you the email.",
             )
-    return _ATLASSIAN_PROMPT
+        )
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -211,17 +222,44 @@ def atlassian_prompt(*, base_url: str = "") -> str:
 # any per-call allocation cost and trivially diffable.
 # ---------------------------------------------------------------------------
 
-_ASANA_PROMPT = """Set up Asana access for Claude Code via Asana's hosted Remote MCP. Walk me through it step by step.
+_ASANA_PROMPT = """Set up an Asana Personal Access Token for Claude Code. Walk me through it step by step.
 
-Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when the `asana` MCP server is already registered. No Personal Access Token is created or stored; Asana's hosted MCP handles auth via OAuth, with Claude Code holding the grant. If any step fails with an unfamiliar error, paste the exact error back and stop. Do NOT improvise around TLS errors by disabling verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `git -c http.sslVerify=false`, etc.) — those hide the real problem.
+Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when Asana is already wired up. We hit Asana's flat REST API at https://app.asana.com/api/1.0 directly via `curl` — no MCP server. (We tried the hosted MCP earlier; it consumed ~5× the tokens per call because the agent reads the entire response envelope, so we reverted to PAT + REST where the agent reads only the JSON fields it needs.) If any step fails with an unfamiliar error, paste the exact error back and stop. Do NOT improvise around TLS errors by disabling verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `git -c http.sslVerify=false`, etc.) — those hide the real problem.
 
-0. Precheck — skip the rest if Asana is already wired up. Run `claude mcp list` and grep for a line starting with `asana` (the server name we register in step 1). If it's there, the MCP is registered AND Claude Code is holding its OAuth grant (otherwise the server would have been removed by a previous failure). Print "Asana MCP already registered — skipping setup. To force re-register: `claude mcp remove asana && claude logout asana`, then re-run." and STOP. Continue to step 1 only when `claude mcp list` shows NO `asana` row.
-1. Register Asana's hosted Remote MCP: `claude mcp add --transport http asana https://mcp.asana.com/mcp`. This is Asana's V2 MCP (streamable HTTP, launched February 2026); the V1 SSE endpoint at `https://mcp.asana.com/sse` was deprecated 2026-05-11 and must not be used. If `claude mcp add` errors with "server already exists", the precheck in step 0 missed it — abort cleanly with `claude mcp remove asana && claude mcp add --transport http asana https://mcp.asana.com/mcp` to force a clean state. No PAT is required: Asana's hosted MCP authenticates via OAuth on first tool use.
-2. Log the user in through the Asana MCP, then validate end-to-end before declaring success. Claude Code's MCP OAuth opens a browser tab the FIRST time any tool from the `asana` MCP is invoked, not when the server is added — so the registration in step 1 alone proves nothing. Drive a real verification:
-   a. Tell the user verbatim: "I'm going to make a low-impact read through the Asana MCP. Your browser will open an Asana sign-in page — sign in with your Asana account and approve the consent screen. The approval is one-time; subsequent MCP calls reuse the grant."
-   b. Invoke the lightest read the Asana MCP exposes (typically a "list workspaces" / "users me" tool — call whatever shows up under the `mcp__asana__*` prefix in your tool list; pick the one that returns the caller's profile or a small list). Wait for the OAuth tab to come back. If Claude Code times out waiting for tool use, run `claude mcp list` to confirm the server registered, then retry the same MCP call.
-   c. On success, print ONE line that proves both the wiring AND the auth work: "Asana MCP connected as &lt;display name from the MCP response&gt; — &lt;workspace count&gt; workspace(s) visible." Never echo the OAuth token or any task / comment content. On failure, surface the exact error Claude Code returned (NotAuthenticated, NotFound, network) and stop — do not silently move on.
-3. Remind me how to disconnect later: `claude mcp remove asana` removes the server from Claude Code's config; `claude logout asana` drops the OAuth grant. To revoke the grant on Asana's side, sign in at https://app.asana.com and revoke the "Claude Code" entry from Settings → Apps."""
+0. Precheck — skip the rest if Asana is already connected.
+   a. Leftover MCP registration: run `claude mcp list 2>/dev/null | grep -q '^asana'`. If it matches, ASK me verbatim: "I see Asana's hosted MCP server is still registered with Claude Code. {instance_brand} now uses the Asana REST API directly (PAT + curl). Benefits over the MCP path: (1) ~5× fewer tokens per call — the agent reads only the JSON fields it needs from flat REST responses instead of unwrapping MCP envelopes on every tool use; (2) no third-party hop — requests go straight from your machine to api.asana.com, not through mcp.asana.com (also better in airgapped / corporate-proxy setups where mcp.asana.com may not be allowlisted); (3) no OAuth refresh dance — PATs are static, MCP grants need re-auth on token rotation; (4) deterministic cost — curl returns the same bytes every time, whereas MCP envelope shapes can drift across server versions. Remove the MCP registration now? (Y/n)". Treat empty/Enter as YES. On Y: run `claude mcp remove asana` and (best-effort) `claude logout asana 2>/dev/null || true` to drop the OAuth grant. On explicit n / no / skip: leave it; warn that the two surfaces will compete (Claude Code may try the MCP path first for any `mcp__asana__*` tool calls) and continue to step 0b.
+   b. Detect my OS, then look up an existing keychain entry under the service name `agnes-asana-pat` and verify it against Asana's API. macOS: `t=$(security find-generic-password -s 'agnes-asana-pat' -w 2>/dev/null) && curl -fsS -H "Authorization: Bearer $t" https://app.asana.com/api/1.0/users/me | jq -r '.data | "✅ Asana ready — connected as \\(.name). \\(.workspaces | length) workspace(s) visible."' && exit 0`. Linux: `t=$(secret-tool lookup service agnes-asana-pat username "$USER" 2>/dev/null) && ...same curl...`. Windows PowerShell: `$cred = cmdkey /list:agnes-asana-pat 2>$null; if ($LASTEXITCODE -eq 0) { Write-Host "Asana cred entry found — verify in your real terminal before re-running setup." }` (Windows can't read the password back without a CredentialManager module — print a hint and let me confirm). If the verify call returns 200, print the one-line "✅ Asana ready" message and STOP. Only continue to step 1 when no cred exists OR the cached token returns 401.
+1. Open the Asana developer tokens page in my default browser — use your Bash tool: `open https://app.asana.com/0/developer-console/tokens` on macOS, `xdg-open https://app.asana.com/0/developer-console/tokens` on Linux/WSL, or `Start-Process https://app.asana.com/0/developer-console/tokens` on Windows. Detect OS first. If that URL doesn't render the tokens UI (rare), tell me to click my avatar (top right) → Settings → "Apps" tab → "Manage Developer Apps" → Personal access tokens.
+2. Tell me to click "+ New access token", name it "Claude Code — {instance_brand}", and click "Create token". Warn me the token is shown ONCE and Asana PATs do not expire — I'd need to revoke it from the same page if it leaks.
+3. Prepare a helper script for me to run in my real terminal (so the token never enters the chat):
+   a. Detect my OS. Use the Write tool (NOT a shell here-doc that echoes the body) to create `~/.claude/agnes/bin/store-asana.sh` on macOS/Linux, or `~/.claude/agnes/bin/store-asana.ps1` on Windows. chmod 700 the file. Body for macOS:
+      #!/usr/bin/env bash
+      set -e
+      read -srp 'Paste Asana token (hidden): ' t; echo
+      # Verify against the live API BEFORE storing — never write a bad token to the keychain.
+      tmp=$(mktemp)
+      status=$(curl -sS -o "$tmp" -w '%{http_code}' -H "Authorization: Bearer $t" https://app.asana.com/api/1.0/users/me || true)
+      if [ "$status" != "200" ]; then
+        if [ "$status" = "401" ]; then
+          echo "❌ Asana setup failed: token rejected (HTTP 401). The PAT is wrong, revoked, or pasted with whitespace — re-mint at https://app.asana.com/0/developer-console/tokens and retry." >&2
+        else
+          echo "❌ Asana setup failed: API verification returned HTTP $status. Aborting without storing." >&2
+        fi
+        rm -f "$tmp"; unset t; exit 1
+      fi
+      display=$(python3 -c 'import sys,json;d=json.load(sys.stdin)["data"];print(d.get("name","?"))' < "$tmp")
+      wcount=$(python3 -c 'import sys,json;print(len(json.load(sys.stdin)["data"].get("workspaces",[])))' < "$tmp")
+      rm -f "$tmp"
+      security add-generic-password -U -s 'agnes-asana-pat' -a "$USER" -w "$t"
+      unset t
+      echo "✅ Asana ready — connected as $display. $wcount workspace(s) visible."
+
+      Linux variant: same shape; replace `security add-generic-password ...` with `printf %s "$t" | secret-tool store --label='Agnes Asana PAT' service agnes-asana-pat username "$USER"`. Windows .ps1: `$t = Read-Host 'Paste Asana token' -AsSecureString; $p = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($t))`; verify with `Invoke-RestMethod -Uri 'https://app.asana.com/api/1.0/users/me' -Headers @{Authorization = "Bearer $p"}` inside a try/catch; on success `cmdkey /generic:agnes-asana-pat /user:$env:USERNAME /pass:$p > $null` and emit the same `✅ Asana ready — ...` line; on failure emit `❌ Asana setup failed: ...` and exit 1 without writing.
+   b. Tell me to open a real terminal (Terminal.app / iTerm / WSL / PowerShell — NOT Claude Code's `!` prefix, which has no TTY) and run `bash ~/.claude/agnes/bin/store-asana.sh` (or `pwsh ~/.claude/agnes/bin/store-asana.ps1` on Windows). The script will wait silently at the hidden prompt.
+   c. Walk me through clipboard order: copy the launcher first, paste it in my terminal, press Enter (terminal now waiting). Switch to the Asana tab, copy the token from step 2 — use the panel's Copy button, NOT click-and-drag (which can truncate). Switch back to terminal, paste at the silent prompt, press Enter. Token enters via stdin only — not shown on screen, not in shell history, not in clipboard at the moment Claude is involved.
+4. After I report the script printed `✅ Asana ready — ...`, surface that exact line back to me in the chat so the final summary can grep for it. If the script printed `❌ Asana setup failed: ...` instead, surface that line and stop — do not silently re-run or move on.
+5. End-to-end test through your Bash tool — proves the integration works from inside Claude Code, not just from the user's real terminal where the store script ran. The store script's verify ran in MY shell; you (Claude Code) have not yet exercised the credential from your own sandbox. macOS: `t=$(security find-generic-password -s 'agnes-asana-pat' -w 2>/dev/null) && curl -fsS -H "Authorization: Bearer $t" https://app.asana.com/api/1.0/users/me | jq -r '.data | "✅ Asana integration verified — Claude Code can read as \\(.name). \\(.workspaces | length) workspace(s) visible."'`. Linux: `t=$(secret-tool lookup service agnes-asana-pat username "$USER" 2>/dev/null) && curl -fsS -H "Authorization: Bearer $t" https://app.asana.com/api/1.0/users/me | jq -r '.data | "✅ Asana integration verified — Claude Code can read as \\(.name). \\(.workspaces | length) workspace(s) visible."'`. Windows native: skip this active test — `cmdkey` does not expose the secret to a non-interactive subshell; instead tell me to run the verify from a real PowerShell terminal: `$c = Get-StoredCredential -Target 'agnes-asana-pat'; Invoke-RestMethod -Uri 'https://app.asana.com/api/1.0/users/me' -Headers @{Authorization = "Bearer $($c.GetNetworkCredential().Password)"} | % { $_.data.name }` (requires the CredentialManager PowerShell module — install with `Install-Module CredentialManager` if missing). On 200, print the `✅ Asana integration verified — ...` line verbatim; this is the line the final summary picks up. On any other status, print `❌ Asana integration test failed: HTTP <status>. Token stored but unreadable from Claude Code's bash — likely a keychain-access policy / TCC denial; check macOS Keychain Access app for a denied prompt, or re-grant Claude Code access to the keychain.` and stop.
+6. Remind me where the token is stored and how to revoke: in macOS Keychain Access search "agnes-asana-pat" or run `security delete-generic-password -s 'agnes-asana-pat'`; on Asana, revoke from the same developer-console page."""
 
 
 _GWS_PROMPT_HEAD = """Set up Google Workspace access for Claude Code using the official `gws` CLI from https://github.com/googleworkspace/cli (install steps: README → Installation). The npm path is what we'll use because (a) it's the README's documented convenience path, (b) it works the same on macOS / Linux / WSL / Windows, and (c) it can run with zero admin rights when Node is managed by `nvm` (Unix) or `fnm` (Windows).
@@ -230,7 +268,7 @@ Ground rules: this is idempotent — safe to re-run, the precheck below short-ci
 
 YOU run every command via your Bash tool. Do NOT print install commands and ask me to type them. Only stop and ask me when I have to (a) approve an OAuth consent screen in a browser, (b) make a product decision (Cloud project name), or (c) paste OAuth client credentials Google shows me.
 
-0. Precheck — skip the rest if Google Workspace is already connected. Run `command -v gws` AND `gws auth status` AND a low-impact verify call: `gws drive files list --params '{"pageSize": 1}' && gws chat spaces list --params '{"pageSize": 1}'`. If both succeed, the gws CLI is installed AND authed AND the Chat scope is present. Print "Already connected as <email from `gws auth status`> — Drive + Chat scopes verified. Skipping setup." and STOP. If `gws drive` succeeds but `gws chat` fails with 403/PERMISSION_DENIED, the user authed without `--full` previously — skip to step 6 (re-login with widened scopes), do NOT re-install. Only walk steps 1–5 (install + OAuth client setup) when `command -v gws` itself fails.
+0. Precheck — skip the rest if Google Workspace is already connected. Run `command -v gws` AND `gws auth status` AND a low-impact verify call: `gws drive files list --params '{"pageSize": 1}' && gws chat spaces list --params '{"pageSize": 1}'`. If both succeed, the gws CLI is installed AND authed AND the Chat scope is present. Print "✅ Google Workspace ready — connected as <email from `gws auth status`>. Drive + Chat scopes verified." and STOP. If `gws drive` succeeds but `gws chat` fails with 403/PERMISSION_DENIED, the user authed without `--full` previously — skip to step 6 (re-login with widened scopes), do NOT re-install. Only walk steps 1–5 (install + OAuth client setup) when `command -v gws` itself fails.
 
 1. Detect my OS (`uname -s` → Darwin / Linux, or PowerShell `$env:OS` → Windows_NT). On Linux check `grep -qi microsoft /proc/version` and treat WSL as Linux.
 
@@ -305,7 +343,7 @@ _GWS_PROMPT_TAIL_TEMPLATE = """
 
 7. Find where gws stored my credentials (`gws auth status` should show the path; typically ~/.config/gws/ on Unix, %APPDATA%\\gws\\ on Windows). chmod 600 on Unix; on native Windows, restrict ACLs to my user with `icacls "$creds_path" /inheritance:r /grant:r "$env:USERNAME:F"` — file is already in my user profile so this needs no admin.
 
-8. Verify with two low-impact reads, one per scope group: `gws drive files list --params '{{"pageSize": 1}}'` (Drive scope landed) and `gws chat spaces list --params '{{"pageSize": 1}}'` (Chat scope landed). Print only "Connected as <my email>" plus the file + space counts. Never echo tokens, file/message metadata, or scope strings to chat.
+8. Verify with two low-impact reads, one per scope group: `gws drive files list --params '{{"pageSize": 1}}'` (Drive scope landed) and `gws chat spaces list --params '{{"pageSize": 1}}'` (Chat scope landed). If both return 200 with valid JSON, print `✅ Google Workspace ready — connected as <my email>. <N> drive file(s), <M> chat space(s) visible.` (exact prefix — the final summary grep for it). On any failure, print `❌ Google Workspace setup failed: <which call failed (drive|chat)>, HTTP/status <code>. <one-line hint to fix (rotate creds | rerun gws auth login --full | etc.)>.` and stop. Never echo tokens, file/message metadata, or scope strings to chat.
 
 9. Remind me how to revoke later: `gws auth logout` clears local creds; the OAuth grant also appears at https://myaccount.google.com/permissions for Google-side revocation."""
 
@@ -314,10 +352,10 @@ _ATLASSIAN_PROMPT = """Set up Atlassian (Jira + Confluence) API access for Claud
 
 Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when Atlassian is already wired up. If any step fails with an unfamiliar error, paste the exact error back and stop. Do NOT improvise around TLS errors by disabling verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `git -c http.sslVerify=false`, etc.) — those hide the real problem.
 
-0. Precheck — skip the rest if Atlassian is already connected. The setup script stores email + the *normalized* site root URL (no trailing slash, no `/wiki` suffix) in `~/.claude/agnes/secrets.env` and the API token in the OS keychain under `agnes-atlassian-api-token`. Verify all three exist + auth works against the LIVE Atlassian API before reinstalling, and probe BOTH Jira and Confluence — sites can have either product enabled, so Jira's `/rest/api/3/myself` returns 404 on Confluence-only sites and vice-versa. macOS: `[ -r ~/.claude/agnes/secrets.env ] && . ~/.claude/agnes/secrets.env && t=$(security find-generic-password -s 'agnes-atlassian-api-token' -a "$ATLASSIAN_EMAIL" -w 2>/dev/null) && B="${ATLASSIAN_BASE_URL%/}" && B="${B%/wiki}" && tmp=$(mktemp) && code=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$ATLASSIAN_EMAIL:$t" "$B/rest/api/3/myself") && { [ "$code" = "404" ] && code=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$ATLASSIAN_EMAIL:$t" "$B/wiki/rest/api/user/current"); :; } && [ "$code" = "200" ] && jq -r '"Already connected as \\(.displayName) (\\(.emailAddress // "no email scope")) on '"$B"'. Skipping setup."' < "$tmp" && rm -f "$tmp" && exit 0`. Linux: same shape but `t=$(secret-tool lookup service agnes-atlassian-api-token username "$ATLASSIAN_EMAIL")`. Windows: read `secrets.env`, then `cmdkey /list:agnes-atlassian-api-token` — if entry exists, print "Atlassian cred entry found — verify in your real terminal before re-running setup." and let me confirm rather than auto-skipping. If the verify call (either probe) returns 200, STOP with the "Already connected" line. Continue to step 1 only when secrets.env is missing OR keychain lookup fails OR BOTH probes return non-200. Treat 401 from either probe as "real auth failure — token is bad" and skip the second probe.
+0. Precheck — skip the rest if Atlassian is already connected. The setup script stores email + the *normalized* site root URL (no trailing slash, no `/wiki` suffix) in `~/.claude/agnes/secrets.env` and the API token in the OS keychain under `agnes-atlassian-api-token`. Verify all three exist + auth works against the LIVE Atlassian API before reinstalling, and probe BOTH Jira and Confluence — sites can have either product enabled, so Jira's `/rest/api/3/myself` returns 404 on Confluence-only sites and vice-versa. macOS: `[ -r ~/.claude/agnes/secrets.env ] && . ~/.claude/agnes/secrets.env && t=$(security find-generic-password -s 'agnes-atlassian-api-token' -a "$ATLASSIAN_EMAIL" -w 2>/dev/null) && B="${ATLASSIAN_BASE_URL%/}" && B="${B%/wiki}" && tmp=$(mktemp) && code=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$ATLASSIAN_EMAIL:$t" "$B/rest/api/3/myself") && { [ "$code" = "404" ] && code=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$ATLASSIAN_EMAIL:$t" "$B/wiki/rest/api/user/current"); :; } && [ "$code" = "200" ] && jq -r '"✅ Atlassian ready — connected as \\(.displayName) on '"$B"'."' < "$tmp" && rm -f "$tmp" && exit 0`. Linux: same shape but `t=$(secret-tool lookup service agnes-atlassian-api-token username "$ATLASSIAN_EMAIL")`. Windows: read `secrets.env`, then `cmdkey /list:agnes-atlassian-api-token` — if entry exists, print "Atlassian cred entry found — verify in your real terminal before re-running setup." and let me confirm rather than auto-skipping. If the verify call (either probe) returns 200, STOP with the "✅ Atlassian ready — ..." line. Continue to step 1 only when secrets.env is missing OR keychain lookup fails OR BOTH probes return non-200. Treat 401 from either probe as "real auth failure — token is bad" and skip the second probe.
 1. Ask me for my Atlassian Cloud site URL (looks like https://<myorg>.atlassian.net) and the email I sign in with. Site URL and email are NOT secrets — fine to type into chat. Don't proceed until I've given you both.
 2. Open the Atlassian API tokens page in my default browser — use your Bash tool: `open https://id.atlassian.com/manage-profile/security/api-tokens` on macOS, `xdg-open ...` on Linux/WSL, or `Start-Process ...` on Windows. Detect OS first. If I land on a generic profile page, tell me: avatar (top right) → Manage account → Security → "Create and manage API tokens".
-3. Tell me to click "Create API token" (NOT "Create API token with scopes" unless I specifically need fine-grained — one-line trade-off: scoped tokens are limited per project but expire and need rotation; unscoped is simplest for personal use). Label it "Claude Code — Agnes", click Create, copy the token. Warn me it is shown ONCE.
+3. Tell me to click "Create API token" (NOT "Create API token with scopes" unless I specifically need fine-grained — one-line trade-off: scoped tokens are limited per project but expire and need rotation; unscoped is simplest for personal use). Label it "Claude Code — {instance_brand}". **In the "Expires" / validity dropdown, pick the longest option Atlassian offers (today that's "1 year") — Atlassian's default sets short-lived expiry and the re-mint friction is the #1 reason this connector goes stale.** There is NO query-parameter hook on `id.atlassian.com/manage-profile/security/api-tokens` to pre-select the expiry, so the user has to click it; just tell them which option to pick. Click Create, copy the token. Warn me it is shown ONCE.
 4. Important: do NOT ask me to paste the token into the chat. Prepare a helper script for me to run in my real terminal, with my email and site URL baked in as literals (so they're not re-prompted at runtime):
    a. Use the Write tool to create ~/.claude/agnes/bin/store-atlassian.sh on macOS/Linux (or .ps1 on Windows). chmod 700. The script must (i) reject obviously-truncated tokens via a length floor, (ii) NORMALIZE the base URL so the verify call hits a real endpoint, and (iii) verify the credentials against the live Atlassian API — trying Jira first, then Confluence on 404 — BEFORE writing anything to the keychain. The length guard exists because Atlassian's "shown ONCE" copy panel commonly truncates if the user click-copies instead of using the panel's Copy button — silently storing a 43-char fragment then discovering it later is the failure mode we're avoiding. The URL-normalization + product-fallback exists because `/rest/api/3/myself` only lives under Jira and returns 404 on Confluence-only sites (and vice-versa for `/wiki/rest/api/user/current`); previously a perfectly valid token paired with a Confluence-only URL or a URL the user pasted with a `/wiki` or trailing slash would 404 here and the prompt would falsely report the token as broken. Body for macOS:
       #!/usr/bin/env bash
@@ -330,7 +368,7 @@ Ground rules: this is idempotent — safe to re-run, the precheck below short-ci
       # means a truncated copy. Bail before touching the keychain.
       tlen=$(printf %s "$t" | wc -c | tr -d ' ')
       if [ "$tlen" -lt 100 ]; then
-        echo "Token looks too short ($tlen chars) — copy the full value via the Copy button on the Atlassian token page. Aborting." >&2
+        echo "❌ Atlassian setup failed: token looks too short ($tlen chars). Use the panel's Copy button on the Atlassian token page (NOT click-and-drag, which can truncate) and re-run." >&2
         unset t
         exit 1
       fi
@@ -355,11 +393,11 @@ Ground rules: this is idempotent — safe to re-run, the precheck below short-ci
       fi
       if [ "$status" != "200" ]; then
         if [ "$status" = "401" ]; then
-          echo "API verification failed (HTTP 401 — token rejected by Atlassian). The token is either wrong, revoked, or paired with the wrong email. Aborting without storing." >&2
+          echo "❌ Atlassian setup failed: token rejected (HTTP 401). The token is wrong, revoked, or paired with the wrong email — re-mint at https://id.atlassian.com/manage-profile/security/api-tokens and retry. Aborting without storing." >&2
         elif [ "$status" = "404" ]; then
-          echo "API verification failed (HTTP 404 on both Jira and Confluence probes). The site URL '$BASE_URL' is reachable but exposes neither product to this token — double-check the URL (it should be your Atlassian Cloud site root, e.g. https://yourorg.atlassian.net) or that your account has access to Jira or Confluence on this site. Aborting without storing." >&2
+          echo "❌ Atlassian setup failed: HTTP 404 on both Jira and Confluence probes. The site URL '$BASE_URL' is reachable but exposes neither product to this token — double-check the URL (Atlassian Cloud site root, e.g. https://yourorg.atlassian.net) or that your account has access to Jira or Confluence on this site. Aborting without storing." >&2
         else
-          echo "API verification failed (HTTP $status). Aborting without storing." >&2
+          echo "❌ Atlassian setup failed: API verification returned HTTP $status. Aborting without storing." >&2
         fi
         cat "$tmp" >&2 2>/dev/null || true
         rm -f "$tmp"; unset t
@@ -374,11 +412,11 @@ Ground rules: this is idempotent — safe to re-run, the precheck below short-ci
       printf 'ATLASSIAN_EMAIL=%s\\nATLASSIAN_BASE_URL=%s\\n' "$EMAIL" "$BASE_URL" > ~/.claude/agnes/secrets.env
       chmod 600 ~/.claude/agnes/secrets.env
       unset t
-      echo "Stored ($product). Verified as $display."
+      echo "✅ Atlassian ready — connected as $display on $BASE_URL ($product)."
 
       Linux variant: replace `security add-generic-password ...` with `printf %s "$t" | secret-tool store --label='Agnes Atlassian token' service agnes-atlassian-api-token username "$EMAIL"`. All three guards (length floor, URL normalization, Jira-then-Confluence verification) stay identical — they run before the storage call. Windows .ps1: same control flow — `Read-Host -AsSecureString`, convert via `Marshal::PtrToStringAuto`, check `$t.Length -lt 100`, then `$BASE_URL = $BASE_URL.TrimEnd('/').TrimEnd('/wiki')` (or `if ($BASE_URL.EndsWith('/wiki')) { $BASE_URL = $BASE_URL.Substring(0, $BASE_URL.Length - 5) }`), `try { Invoke-RestMethod -Uri "$BASE_URL/rest/api/3/myself" -Authentication Basic -Credential (New-Object PSCredential($EMAIL, $secureToken)) } catch { if ($_.Exception.Response.StatusCode.value__ -eq 404) { Invoke-RestMethod -Uri "$BASE_URL/wiki/rest/api/user/current" -Authentication Basic -Credential ... } else { throw } }` — write to `cmdkey` + `secrets.env` only after a 200 lands from either probe.
    b. Tell me to open a real terminal (not Claude Code's `!`) and run `bash ~/.claude/agnes/bin/store-atlassian.sh` (or `pwsh ~/.claude/agnes/bin/store-atlassian.ps1` on Windows). The script will wait silently at the hidden prompt.
-   c. Walk me through clipboard order: copy the launcher first, paste in terminal, Enter (terminal waiting). Switch to the Atlassian tab, copy the token from step 3 — use the panel's "Copy" button, NOT click-and-drag (which often truncates). Switch back to terminal, paste at the silent prompt, Enter. The script will print "Stored. Verified as <your name>." on success, or fail loudly with the exact reason (too short / HTTP 401 / etc.) without writing anything.
+   c. Walk me through clipboard order: copy the launcher first, paste in terminal, Enter (terminal waiting). Switch to the Atlassian tab, copy the token from step 3 — use the panel's "Copy" button, NOT click-and-drag (which often truncates). Switch back to terminal, paste at the silent prompt, Enter. The script will print `✅ Atlassian ready — connected as <your name> on <site> (<product>).` on success, or `❌ Atlassian setup failed: <reason>` and exit non-zero without writing anything. Surface that exact line back to me in the chat so the final summary can grep for it.
 5. Register the hosted Atlassian Remote MCP so Claude Code can read Jira tickets and Confluence pages on demand: `claude mcp add --transport sse atlassian https://mcp.atlassian.com/v1/sse || true`. Idempotent — the `|| true` swallows the "server already exists" error from re-runs. OAuth is handled by Claude Code the first time it actually queries the MCP (it'll open a browser tab; approve once). The PAT stored in step 4 stays for direct `curl` calls (e.g. the precheck) — the MCP path uses its own OAuth grant, not the PAT.
-6. The store script already verified the token end-to-end. If I want a second redacted readback later, hit `GET $BASE_URL/rest/api/3/myself` (Jira) or `GET $BASE_URL/wiki/rest/api/user/current` (Confluence) — try Jira first, fall back to Confluence on 404, same shape as the store script's verify. Print just displayName + accountId — never the token.
+6. End-to-end test through your Bash tool — proves the integration works from inside Claude Code, not just from the user's real terminal where the store script ran. The store script's verify ran in MY shell; you (Claude Code) have not yet exercised the credential from your own sandbox. macOS: `. ~/.claude/agnes/secrets.env && t=$(security find-generic-password -s 'agnes-atlassian-api-token' -a "$ATLASSIAN_EMAIL" -w 2>/dev/null) && B="${ATLASSIAN_BASE_URL%/}" && B="${B%/wiki}" && tmp=$(mktemp) && code=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$ATLASSIAN_EMAIL:$t" "$B/rest/api/3/myself") && { [ "$code" = "404" ] && code=$(curl -sS -o "$tmp" -w '%{http_code}' -u "$ATLASSIAN_EMAIL:$t" "$B/wiki/rest/api/user/current"); :; } && [ "$code" = "200" ] && jq -r '"✅ Atlassian integration verified — Claude Code can read as \\(.displayName) on '"$B"'."' < "$tmp" && rm -f "$tmp"`. Linux: same shape but `t=$(secret-tool lookup service agnes-atlassian-api-token username "$ATLASSIAN_EMAIL")`. Windows native: skip this active test — instead tell me to run an equivalent `Invoke-RestMethod` against `$BASE_URL/rest/api/3/myself` (Jira) or `$BASE_URL/wiki/rest/api/user/current` (Confluence on 404) from a real PowerShell terminal where the CredentialManager module can read the stored token back. On 200, print the `✅ Atlassian integration verified — ...` line verbatim; that is the marker the final summary picks up. On any other status, print `❌ Atlassian integration test failed: HTTP <status>. Token stored but unreadable from Claude Code's bash (likely keychain-access policy / TCC denial), or the API endpoint shifted — check macOS Keychain Access for a denied prompt, or that $BASE_URL still resolves to Jira/Confluence.` and stop.
 7. Remind me how to revoke: same API tokens page on Atlassian, plus `security delete-generic-password -s 'agnes-atlassian-api-token'` locally (macOS) / `secret-tool clear service agnes-atlassian-api-token` (Linux) / `cmdkey /delete:agnes-atlassian-api-token` (Windows)."""
