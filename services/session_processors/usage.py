@@ -48,12 +48,11 @@ class UsageProcessor:
         rows = []
         for e in events:
             source, ref_id = attr.attribute(e)
-            # Stable dedup key: session_id + event_uuid + event_type + tool_name
-            # event_uuid may be None for slash-command turns, so we include
-            # event_type and tool_name to keep the key unique within a session.
-            event_uuid_part = e.event_uuid or ""
+            # Stable dedup key: session_id + event_uuid + tool_id + event_type + tool_name + command_name.
+            # tool_id (tu_xxx) disambiguates parallel tool_use items in the same assistant turn
+            # that share the same event_uuid, event_type, and tool_name.
             id_input = (
-                f"{session_id}|{event_uuid_part}"
+                f"{session_id}|{e.event_uuid or ''}|{e.tool_id or ''}"
                 f"|{e.event_type}|{e.tool_name or ''}"
                 f"|{e.command_name or ''}"
             )
@@ -89,13 +88,12 @@ class UsageProcessor:
             summary["session_id"] = session_id
 
         repo = UsageRepository(conn)
-        inserted = repo.upsert_events(rows, processor_version=USAGE_PROCESSOR_VERSION)
+        n_written = repo.upsert_events(rows, processor_version=USAGE_PROCESSOR_VERSION)
         repo.upsert_summary(summary, processor_version=USAGE_PROCESSOR_VERSION)
 
         logger.info(
-            "UsageProcessor: %s — %d events extracted (%d new)",
+            "usage processor: %d events written for session %s",
+            n_written,
             session_key,
-            len(rows),
-            inserted,
         )
         return ProcessorResult(items_count=len(rows))

@@ -10,45 +10,22 @@ class UsageRepository:
         self.conn = conn
 
     def upsert_events(self, rows: list[dict], *, processor_version: int) -> int:
-        """INSERT OR IGNORE keyed by id = sha256(session_id || event_uuid || ...).
-
-        Returns count of newly inserted rows.
+        """INSERT OR IGNORE keyed by event id. Returns number of input rows passed (not new inserts;
+        DuckDB returns rowcount=-1 for INSERT OR IGNORE so we cannot cheaply count new vs duplicate).
         """
         if not rows:
             return 0
-        inserted = 0
-        for row in rows:
-            result = self.conn.execute(
-                """
-                INSERT OR IGNORE INTO usage_events
-                    (id, session_id, session_file, username, event_uuid, parent_uuid,
-                     event_type, tool_name, skill_name, subagent_type, command_name,
-                     is_error, source, ref_id, model, cwd, occurred_at, processor_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    row["id"],
-                    row["session_id"],
-                    row["session_file"],
-                    row["username"],
-                    row.get("event_uuid"),
-                    row.get("parent_uuid"),
-                    row["event_type"],
-                    row.get("tool_name"),
-                    row.get("skill_name"),
-                    row.get("subagent_type"),
-                    row.get("command_name"),
-                    bool(row.get("is_error", False)),
-                    row["source"],
-                    row.get("ref_id"),
-                    row.get("model"),
-                    row.get("cwd"),
-                    row["occurred_at"],
-                    processor_version,
-                ],
-            )
-            inserted += result.rowcount if result.rowcount and result.rowcount > 0 else 0
-        return inserted
+        cols = [
+            "id", "session_id", "session_file", "username", "event_uuid", "parent_uuid",
+            "event_type", "tool_name", "skill_name", "subagent_type", "command_name",
+            "is_error", "source", "ref_id", "model", "cwd", "occurred_at", "processor_version",
+        ]
+        placeholders = ",".join("?" for _ in cols)
+        sql = f"INSERT OR IGNORE INTO usage_events ({','.join(cols)}) VALUES ({placeholders})"
+        self.conn.executemany(sql, [
+            [r.get(c) if c != "processor_version" else processor_version for c in cols] for r in rows
+        ])
+        return len(rows)
 
     def upsert_summary(self, summary: dict, *, processor_version: int) -> None:
         """INSERT OR REPLACE on session_file PK."""
