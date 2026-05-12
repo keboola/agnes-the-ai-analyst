@@ -100,6 +100,62 @@ def test_run_refresh_requires_admin(seeded_app):
     assert r.status_code == 401
 
 
+def test_run_refresh_returns_run_id_and_started_at(seeded_app):
+    """Issue #256: response now carries `run_id` + `started_at` so two
+    log streams (server + client) can correlate against the same run."""
+    _register_remote(seeded_app, "for_run_id")
+    fake = TableMetadata(rows=1, size_bytes=1)
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    with patch("connectors.bigquery.metadata.fetch", return_value=fake):
+        r = c.post(
+            "/api/admin/run-bq-metadata-refresh",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "run_id" in body and len(body["run_id"]) == 8
+    assert "started_at" in body and body["started_at"]
+
+
+def test_concurrent_refresh_returns_409_already_running(seeded_app):
+    """Issue #256: second concurrent POST receives 409 instead of doing
+    duplicate BQ work. Implemented via module-level asyncio.Lock."""
+    import asyncio
+    import httpx
+
+    from app.api import bq_metadata_refresh as mod
+
+    _register_remote(seeded_app, "concurrent_t")
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # Simulate "refresh in flight" by holding the module-level lock
+    # ourselves and asserting the endpoint returns 409 immediately.
+    # `asyncio.Lock` requires a running loop to acquire; use a fresh one.
+    async def _hold_lock_and_call():
+        async with mod._refresh_lock:
+            mod._refresh_state["run_id"] = "abcd1234"
+            mod._refresh_state["started_at"] = "2026-05-12T13:00:00+00:00"
+            try:
+                # Call via TestClient (sync) — locking is module-level so the
+                # endpoint handler sees the lock held.
+                return c.post(
+                    "/api/admin/run-bq-metadata-refresh",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            finally:
+                mod._refresh_state["run_id"] = None
+                mod._refresh_state["started_at"] = None
+
+    r = asyncio.new_event_loop().run_until_complete(_hold_lock_and_call())
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["reason"] == "already_running"
+    assert detail["run_id"] == "abcd1234"
+    assert detail["started_at"] == "2026-05-12T13:00:00+00:00"
+
+
 # ─── POST /api/v2/metadata-cache/refresh?table= ───────────────────────────
 
 

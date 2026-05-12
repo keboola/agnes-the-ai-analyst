@@ -217,7 +217,16 @@ class _TextualProgress:
         duration = max(0.001, now - started)
         rate = current / duration
         if total > 0:
-            pct_str = f"{int((current * 100) / total)}%"
+            # Clamp displayed percentage to [0, 100]. When `current`
+            # exceeds the advertised `total` (range/chunked transfer
+            # over-counts, manifest size is compressed vs response is
+            # decompressed, server retransmits a chunk, etc.) the raw
+            # percentage would creep past 100% and snap back at
+            # `finish()`, which surfaced in 2026-05-12 sub-agent perf
+            # tests as confusing "174%" lines. Issue #258.
+            raw_pct = int((current * 100) / total)
+            pct_display = min(raw_pct, 100)
+            pct_str = f"{pct_display}%"
             size_str = (
                 f"({self._fmt_bytes(current)} / {self._fmt_bytes(total)})"
             )

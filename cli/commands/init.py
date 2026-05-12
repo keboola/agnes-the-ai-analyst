@@ -386,7 +386,23 @@ def init(
     # ------------------------------------------------------------------
     typer.echo("Workspace ready.")
     typer.echo(f"  Server   : {server_url}")
-    typer.echo(f"  Tables   : {result.tables_updated} synced ({result.parquets_total} total)")
+    # `parquets_total` is the count of materialized rows in the manifest;
+    # `tables_updated` is the count of those actually fetched this run.
+    # The catalog can carry many more remote-only rows that aren't part
+    # of `parquets_total` at all — surface that explicitly so analysts
+    # who see "0 synced (0 total)" after `--skip-materialize` don't
+    # conclude the server returned an empty catalog. Issue #257.
+    if skip_materialize:
+        typer.echo(
+            f"  Tables   : 0 fetched locally — {result.parquets_total} "
+            f"materialized row(s) skipped (re-run without --skip-materialize "
+            f"to download). Catalog still serves all registered tables."
+        )
+    else:
+        typer.echo(
+            f"  Tables   : {result.tables_updated}/{result.parquets_total} "
+            f"local materialized rows fetched"
+        )
     typer.echo(f"  Rules    : {result.rules_count}")
     typer.echo(f"  Workspace: {workspace}")
     typer.echo("")

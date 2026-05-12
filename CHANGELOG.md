@@ -10,6 +10,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.52.0] — 2026-05-12
+
+UX + hygiene round following the 0.51.0 catalog-hang fix. Five small,
+analyst-facing improvements surfaced by the post-merge perf-test runs
+(`~/Downloads/agnes-perf-test-2026-05-12/`); each closes a tracker
+issue opened during the 0.51.0 retro.
+
+### Added
+
+- **`agnes sample <table>`** (#254) — shorthand for `agnes describe <table> -n 5`. CLAUDE.md and the agent-rails protocol have referenced ``sample`` for months but only `describe` was registered; AI analysts following the docs literally would hit "Usage: agnes [OPTIONS] COMMAND" until they guessed the right name. Thin alias module + Typer registration.
+- **`run_id` + `started_at` on `/api/admin/run-bq-metadata-refresh` response** (#256) so client and server log streams can correlate against the same run.
+
+### Fixed
+
+- **`agnes query` falls back to vertical record mode on wide tables** (#255). 53-column `SELECT *` on an 80-col TTY collapsed every cell to zero width (header pipes only, no data visible). Renderer now detects `len(columns) * 6 > terminal_columns` and switches to `psql \x`-style record output (`─── row 1 ───\n  col_a : val\n  col_b : val\n…`). Narrow tables still render normally.
+- **`agnes init` summary wording after `--skip-materialize`** (#257). "Tables: 0 synced (0 total)" misleadingly suggested the catalog was empty; the catalog still serves all registered tables. Now reads "0 fetched locally — N materialized row(s) skipped" with an explicit hint to re-run without the flag to download.
+- **`agnes init` progress bar clamps at 100%** (#258). Pre-0.52 the percentage could climb past 100% mid-transfer when actual bytes exceeded the manifest-advertised total (range-download / chunked transfer artifacts), surfacing as confusing `174%` lines. Now `min(int((current * 100) / total), 100)` — the final "done" line still reports the real total in bytes.
+- **`POST /api/admin/run-bq-metadata-refresh` single-flight guard** (#256). Pre-0.52 two concurrent POSTs (operator clicked "Re-warm all" while a scheduler tick was in flight, or two scheduler containers raced during an upgrade) would both run their own loops and do 2× BQ jobs-API traffic for the same UPSERT result. Module-level `asyncio.Lock` now returns ``409 already_running`` with the in-flight `run_id` + `started_at` to the second caller; the scheduler treats 409 as a no-op success.
+
+### Tracker-only (no code in this release)
+
+- **`agnes init` resume after kill** (#259) — UX feature, ~200 LOC sprint.
+- **Stale `.parquet.lock` cleanup** (#260) — operational hygiene.
+- **`schema <materialized_table>` cold-start anomaly** (#261) — needs investigation.
+- **Docker root on boot disk** (#262) — infra-level, not app code.
+
 ## [0.51.0] — 2026-05-12
 
 ### Fixed
