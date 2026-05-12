@@ -13,7 +13,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_42():
+def test_schema_version_is_43():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -87,7 +87,11 @@ def test_schema_version_is_42():
     #            (per-session aggregate), usage_tool_daily + usage_plugin_daily
     #            (daily rollups), usage_attribution_skills/agents/commands
     #            (plugin manifest attribution). 10 indices for fast queries.
-    assert SCHEMA_VERSION == 42
+    # v42 → v43 (this PR): user_observability_views — per-user saved
+    #            filter combinations backing the unified /admin/activity
+    #            page (UNIQUE(user_id, name)). Schema is intentionally
+    #            opaque JSON because the UI evolves faster than DB.
+    assert SCHEMA_VERSION == 43
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

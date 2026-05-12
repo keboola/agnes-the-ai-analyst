@@ -1037,46 +1037,11 @@ async def activity_center_redirect():
 async def admin_activity(
     request: Request,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Activity Center — health pulse + audit_log timeline + sync history."""
-    from datetime import datetime, timezone, timedelta
-    from src.repositories.audit import AuditRepository
-    from src.repositories.sync_state import SyncStateRepository
-    from app.api.activity import _compute_health
-
-    now = datetime.now(timezone.utc)
-    audit_repo = AuditRepository(conn)
-    sync_repo = SyncStateRepository(conn)
-
-    timeline, next_cursor = audit_repo.query(
-        since=now - timedelta(hours=24),
-        limit=50,
-    )
-    # Resolve user_id → email for display in the User column.
-    user_ids = {r["user_id"] for r in timeline if r.get("user_id")}
-    if user_ids:
-        user_emails = {
-            row[0]: row[1] for row in conn.execute(
-                f"SELECT id, email FROM users WHERE id IN ({','.join('?' * len(user_ids))})",
-                list(user_ids),
-            ).fetchall()
-        }
-    else:
-        user_emails = {}
-    for r in timeline:
-        r["user_email"] = user_emails.get(r.get("user_id")) or None
-    sync_rows = sync_repo.list_recent(since=now - timedelta(hours=24), limit=100)
-    health = _compute_health(conn, now)
-
-    ctx = _build_context(
-        request,
-        user=user,
-        health=health,
-        timeline=timeline,
-        next_cursor=next_cursor,
-        sync_rows=sync_rows,
-    )
+    """Unified observability page — KPI cards, faceted filter bar, full
+    audit_log table with sort/search/saved-views. All data loads
+    client-side from /api/admin/observability/* + /api/admin/activity."""
+    ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
@@ -1894,23 +1859,14 @@ async def admin_store_submission_detail_page(
     return templates.TemplateResponse(request, "admin_store_submission_detail.html", ctx)
 
 
-@router.get("/admin/scheduler-runs", response_class=HTMLResponse)
-async def admin_scheduler_runs_page(
-    request: Request,
-    user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Read-only view of the audit_log filtered to scheduler-driven actions.
-
-    Failed scheduler ticks (HTTP 401, network errors) don't reach this view —
-    they live only in the scheduler container's stdout. The audit_log shows
-    only what reached the admin endpoint and was processed.
+@router.get("/admin/scheduler-runs")
+async def admin_scheduler_runs_redirect(_user: dict = Depends(require_admin)):
+    """Scheduler runs is now a filter on the unified Activity page, not a
+    standalone view — see the unification done in the platform-telemetry
+    epic. Keep the URL as a 308 so existing bookmarks land on the right
+    pre-filtered view.
     """
-    from src.repositories.audit import AuditRepository
-
-    rows = AuditRepository(conn).query_actions(SCHEDULER_AUDIT_ACTIONS, limit=200)
-    ctx = _build_context(request, user=user, rows=rows, actions=SCHEDULER_AUDIT_ACTIONS)
-    return templates.TemplateResponse(request, "admin_scheduler_runs.html", ctx)
+    return RedirectResponse(url="/admin/activity?source=scheduler", status_code=308)
 
 
 @router.get("/admin/agent-prompt", response_class=HTMLResponse)
