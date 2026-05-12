@@ -319,10 +319,19 @@
 .obs-panel-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 
 /* Save-view modal ------------------------------------------------------ */
+/* `display: flex` would override the [hidden] attribute (UA stylesheet
+   only sets `display: none` at lower specificity than author CSS), so the
+   modal would render on page load. Gate display on the absence of the
+   attribute. */
 .obs-modal {
   position: fixed; inset: 0; background: rgba(17, 24, 39, 0.4);
-  display: flex; align-items: center; justify-content: center; z-index: 200;
+  align-items: center; justify-content: center; z-index: 200;
 }
+.obs-modal:not([hidden]) { display: flex; }
+.obs-modal[hidden]       { display: none; }
+/* Same trap on the side panel + saved-views dropdown, prophylactically. */
+.obs-panel[hidden],
+.obs-views-panel[hidden] { display: none; }
 .obs-modal-body {
   background: var(--obs-bg); border-radius: 12px; padding: 24px; width: min(420px, 90vw);
   box-shadow: 0 24px 48px rgba(0,0,0,0.18);
