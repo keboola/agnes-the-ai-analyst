@@ -1726,6 +1726,13 @@ async def curated_skill_detail(
     enrichment = _curated_inner_enrichment(
         marketplace_id, plugin_name, "skill", skill_name,
     )
+    # Merge parent fallback fields with curator overrides BEFORE unpacking
+    # — Python function-call `**a, **b` with overlapping keys raises
+    # TypeError, it doesn't merge like a literal dict does. Today only
+    # `category` overlaps (both parent + enrichment may set it), but the
+    # explicit merge keeps the unpack future-proof against any new field
+    # added to both layers.
+    merged = {**parent, **enrichment}
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
@@ -1736,8 +1743,7 @@ async def curated_skill_detail(
         relpath=relpath,
         bundle_size=_bundle_size(skill_dir),
         files=_walk_files(skill_dir),
-        **parent,
-        **enrichment,
+        **merged,
     )
 
 
@@ -1772,6 +1778,10 @@ async def curated_agent_detail(
     enrichment = _curated_inner_enrichment(
         marketplace_id, plugin_name, "agent", agent_name,
     )
+    # See curated_skill_detail above — explicit merge avoids the
+    # TypeError that `**parent, **enrichment` raises when both supply
+    # an overlapping key (e.g. `category`).
+    merged = {**parent, **enrichment}
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
@@ -1782,8 +1792,7 @@ async def curated_agent_detail(
         relpath=relpath,
         bundle_size=agent_size,
         files=[FileEntry(path=f"{agent_name}.md", size=agent_size)],
-        **parent,
-        **enrichment,
+        **merged,
     )
 
 

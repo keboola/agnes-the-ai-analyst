@@ -538,6 +538,26 @@ def test_resolve_inner_metadata_missing_rich_fields_returns_empty_keys():
         assert key not in resolved
 
 
+def test_resolve_inner_metadata_per_item_category_set_separately():
+    """Per-item `category` is part of the inner-section payload — used by
+    the API layer to override the parent plugin's category badge. Regression
+    test for the TypeError that surfaced when both parent_fields and the
+    inner-enrichment returned `category` and they were unpacked into the
+    same Pydantic constructor: explicit dict-merge needed (see
+    app/api/marketplace.py curated_skill_detail)."""
+    metadata = {
+        "plugins": {
+            "p": {
+                "skills": {
+                    "s": {"category": "Documentation"},
+                }
+            }
+        }
+    }
+    resolved = resolve_inner_metadata(metadata, "p", "skills", "s")
+    assert resolved["category"] == "Documentation"
+
+
 def test_resolve_inner_metadata_agent_kind_works_identically():
     """Agents go through the same resolver path with `kind='agents'`."""
     metadata = {
