@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `agnes admin activity` CLI: terminal access to Activity Center (timeline + health + sync) with filters + --json output. Mirrors the three /api/admin/activity/* JSON endpoints.
 - **Activity Center rebuild** (`/admin/activity`): health pulse (cached 30s) + chronological audit_log timeline + sync_history grid. Replaces the empty-stub `/activity-center` page. Old URL 308-redirects.
 - Three new read endpoints: `GET /api/admin/activity`, `GET /api/admin/activity/health`, `GET /api/admin/activity/sync`. All admin-only.
 - `audit_log` now writes from `POST /api/sync/trigger`, `POST /api/scripts/run-due`, `POST /api/upload/sessions`, and `GET /api/data/{id}/download` — closing four longstanding coverage gaps.
