@@ -3634,7 +3634,24 @@ async def admin_override_store_submission(
         )
 
     subs.set_override(submission_id, admin_user_id=user["id"], reason=body.reason)
-    StoreEntitiesRepository(conn).set_visibility(entity_id, "approved")
+    ents_repo = StoreEntitiesRepository(conn)
+    ents_repo.set_visibility(entity_id, "approved")
+
+    # Update usage-attribution rows now that the entity is live.
+    try:
+        from app.api.store import _update_flea_attribution
+        entity_row = ents_repo.get(entity_id) or {}
+        _update_flea_attribution(
+            entity_id,
+            entity_row.get("type", ""),
+            entity_row.get("name", ""),
+            conn,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "flea attribution update failed for entity %s on admin override; continuing",
+            entity_id,
+        )
 
     AuditRepository(conn).log(
         user_id=user["id"],
@@ -3743,6 +3760,21 @@ async def admin_rescan_store_submission(
         ents.set_visibility(entity_id, "pending")
     else:
         ents.set_visibility(entity_id, "approved")
+        # Guardrails off — immediately live; write attribution.
+        try:
+            from app.api.store import _update_flea_attribution
+            entity_row = ents.get(entity_id) or {}
+            _update_flea_attribution(
+                entity_id,
+                entity_row.get("type", ""),
+                entity_row.get("name", ""),
+                conn,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "flea attribution update failed for entity %s on rescan approve; continuing",
+                entity_id,
+            )
     AuditRepository(conn).log(
         user_id=user["id"],
         action="store.submission.rescan",

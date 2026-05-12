@@ -262,6 +262,22 @@ def run_llm_review(
                 # serve-able state. Archive / hidden-by-admin paths
                 # leave alone.
                 if current_visibility == "approved":
+                    # Write / refresh usage-attribution rows so the processor
+                    # can attribute invocations of this entity's components.
+                    try:
+                        from app.api.store import _update_flea_attribution, _plugin_dir
+                        _update_flea_attribution(
+                            entity_id,
+                            ent_row.get("type", ""),
+                            ent_row.get("name", ""),
+                            ents_repo.conn,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "flea attribution update failed for entity %s on LLM approve; "
+                            "continuing",
+                            entity_id,
+                        )
                     sub_row = subs_repo.get(submission_id) or {}
                     sub_hash = sub_row.get("version")
                     target_version_no = None
