@@ -278,3 +278,57 @@ def test_sample_internal_via_api_admin_path(seeded_app, admin_user):
     assert body["table_id"] == "agnes_sessions"
     assert body["source"] == "internal"
     assert isinstance(body["rows"], list)
+
+
+# ---------------------------------------------------------------------------
+# Negative tests — non-admin must not bypass row filter by referencing
+# the underlying physical tables or by smuggling the alias into a string
+# literal to enter the privileged code path. Both vectors flagged in the
+# round-2 review (PR #278 R2 finding #1).
+# ---------------------------------------------------------------------------
+
+def test_string_literal_alone_does_not_route_internal(system_db):
+    """A SQL with `agnes_sessions` only inside a string literal should not
+    be treated as referencing the internal table — find_internal_refs
+    strips literals first."""
+    refs = find_internal_refs("SELECT 'agnes_sessions' AS x")
+    assert refs == []
+
+
+def test_non_admin_cannot_reference_underlying_physical_table(system_db):
+    """If a non-admin's SQL touches an agnes_* alias AND a base
+    table (usage_session_summary etc.) directly, the request is
+    rejected before execution — the CTE wrapper would otherwise only
+    scope the alias, leaking every user's rows."""
+    db_path = str(_get_state_dir() / "system.duckdb")
+    payloads = (
+        "SELECT * FROM usage_session_summary WHERE 'agnes_sessions'='agnes_sessions'",
+        "SELECT * FROM agnes_sessions UNION ALL SELECT * FROM audit_log LIMIT 1",
+        # CTE shadow attempt — still has to touch the base table to do anything.
+        "WITH agnes_sessions AS (SELECT * FROM usage_events) SELECT * FROM agnes_sessions",
+    )
+    for sql in payloads:
+        with pytest.raises(InternalAccessError):
+            execute_internal_query(
+                db_path,
+                {"email": "alice@x", "id": "alice-uuid"},
+                is_admin=False,
+                sql=sql,
+            )
+
+
+def test_admin_unaffected_by_underlying_table_guard(system_db):
+    """Admins can reference underlying physical tables — they're already
+    god-mode through the filter clause, and they have legitimate reasons
+    to read raw rows."""
+    db_path = str(_get_state_dir() / "system.duckdb")
+    # Admin must still reference at least one agnes_* alias to enter the
+    # internal-query path (the routing rule unchanged), but the base
+    # table guard doesn't apply.
+    _, rows, _ = execute_internal_query(
+        db_path,
+        {"email": "admin@x", "id": "admin-uuid"},
+        is_admin=True,
+        sql="SELECT (SELECT COUNT(*) FROM usage_session_summary) AS n FROM agnes_sessions LIMIT 1",
+    )
+    assert rows  # admin can join base table inside the wrapper

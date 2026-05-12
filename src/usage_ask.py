@@ -123,6 +123,13 @@ _FORBIDDEN_FUNCS = re.compile(
     r"glob|"
     r"http_get|http_post|http_head|"
     r"aws_secret|azure|gcs|iceberg_scan|delta_scan|hudi_scan|"
+    # `pragma_*` table-valued forms expose schema / storage metadata —
+    # `\bPRAGMA\b` in `_FORBIDDEN` doesn't match `pragma_table_info` because
+    # the word boundary between `A` and `_` fails (both word chars). Cover
+    # the function-call variant here. Same shape for `duckdb_*` reflection
+    # functions which can leak table / view inventory.
+    r"pragma_table_info|pragma_storage_info|pragma_database_size|pragma_database_list|"
+    r"duckdb_tables|duckdb_columns|duckdb_views|duckdb_indexes|duckdb_schemas|"
     r"duckdb_extensions|duckdb_functions|duckdb_settings|duckdb_databases|duckdb_secrets|"
     r"shell|system"
     r")\s*\(",

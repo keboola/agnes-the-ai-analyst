@@ -166,16 +166,35 @@ _TABLE_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Single-quoted SQL string literals (with `''` escape handling). Stripped
+# before reference detection so a non-admin can't trigger the internal
+# privileged code path by smuggling the alias inside a literal.
+_SQL_STRING_LITERAL_RE = re.compile(r"'(?:''|[^'])*'")
+
+# Underlying physical tables the agnes_* aliases wrap. A non-admin
+# whose SQL references any of these directly is bypassing the CTE
+# wrapper's RBAC — block before execution. Admins are unaffected
+# (god-mode short-circuits the filter clause anyway).
+_FORBIDDEN_UNDERLYING_RE = re.compile(
+    r"\b("
+    r"usage_session_summary|usage_events|usage_tool_daily|usage_plugin_daily|"
+    r"usage_attribution_skills|usage_attribution_agents|usage_attribution_commands|"
+    r"audit_log"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def find_internal_refs(sql: str) -> list[str]:
     """Word-boundary scan of `sql` for the registered internal table IDs.
 
-    Returns the matched IDs (lowercase, deduped) in declaration order. We
-    intentionally don't try to parse the SQL — we only need to know which
-    temp views to create. Stray matches inside string literals would just
-    create harmless extra views.
+    Returns the matched IDs (lowercase, deduped) in declaration order.
+    Single-quoted string literals are stripped first so a literal that
+    happens to contain `agnes_sessions` doesn't route the request into
+    the privileged internal-query path (review #278 R2 finding #1).
     """
-    found = {m.group(1).lower() for m in _TABLE_REF_RE.finditer(sql)}
+    stripped = _SQL_STRING_LITERAL_RE.sub("''", sql)
+    found = {m.group(1).lower() for m in _TABLE_REF_RE.finditer(stripped)}
     # Preserve declaration order so reasoning about the resulting set is stable.
     return [t.registry_id for t in INTERNAL_TABLES if t.registry_id.lower() in found]
 
@@ -218,6 +237,26 @@ def execute_internal_query(
     refs = find_internal_refs(sql)
     if not refs:
         raise InternalAccessError("no internal-table references in SQL")
+
+    # Non-admins are NOT allowed to reference the underlying physical
+    # tables (`usage_session_summary`, `audit_log`, etc.) directly — the
+    # CTE wrapper only scopes the agnes_* aliases; a direct FROM on the
+    # base table would bypass the row filter and leak every user's data.
+    # This also blocks the inner-WITH shadow-attack
+    # (`WITH agnes_sessions AS (SELECT * FROM usage_session_summary)`):
+    # to do anything useful the user still has to reach the base table
+    # somewhere in the SQL. Admin god-mode is unaffected (the filter
+    # clause is empty, so the user sees the same rows either way).
+    # Strip string literals first so a value like
+    # `WHERE name = 'usage_events_url'` doesn't trip the guard.
+    if not is_admin:
+        stripped = _SQL_STRING_LITERAL_RE.sub("''", sql)
+        m = _FORBIDDEN_UNDERLYING_RE.search(stripped)
+        if m is not None:
+            raise InternalAccessError(
+                f"direct reference to internal physical table {m.group(1)!r} "
+                "is not allowed; query the agnes_* alias instead"
+            )
 
     # Lazy import to avoid a hard cycle (src.db imports go via repositories
     # which then end up importing access in some test paths).
