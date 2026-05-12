@@ -155,6 +155,18 @@ async def lifespan(app):
     from app.api.cache_warmup import maybe_schedule_startup_warmup
     maybe_schedule_startup_warmup()
 
+    # Sweep stale materialize parquet locks left behind by previous runs
+    # that were SIGKILL'd mid-materialize. Lazy reclaim at next acquire
+    # already handles correctness, but an active sweep at startup keeps
+    # the data directory tidy and gives operators a clear "swept N" log
+    # line instead of zombie 0-byte files lingering for days (issue #260).
+    try:
+        from connectors.bigquery.extractor import sweep_stale_parquet_locks
+        from src.db import _get_data_dir as _ddir
+        sweep_stale_parquet_locks(_ddir() / "extracts")
+    except Exception:
+        logger.exception("startup parquet-lock sweep failed (non-fatal)")
+
     # Construct the PostHog client up front so its background flush thread
     # starts before the first request — and so a missing/invalid key fails
     # loud at boot rather than on first capture. No-op when disabled.

@@ -60,6 +60,17 @@ from cli.lib.pull import PullResult, _override_server_env, run_pull
 # template can override this via the `--force` flag.
 _INIT_MARKER = "AI Data Analyst"
 
+# Sentinel written at the very END of a successful `agnes init`. Existence
+# of CLAUDE.md alone is NOT a "workspace is initialized" signal because
+# CLAUDE.md is written early in the flow — long before the parquet pull,
+# the AGNES_WORKSPACE.md render, and the final summary. Killed runs
+# (SIGKILL from the harness, network drop mid-pull, operator Ctrl-C)
+# leave CLAUDE.md on disk but not this sentinel. The next `agnes init`
+# can then resume without requiring `--force`, which would otherwise
+# force a full re-download of any large materialized parquet that was
+# 80 % complete. Issue #259.
+_INIT_COMPLETE_FILE = ".agnes/init-complete"
+
 
 # Env vars that, when set to a non-existent path, cause every TLS handshake
 # on the host to fail before Agnes itself runs. Past versions of the Agnes
@@ -201,17 +212,32 @@ def init(
     # Step 1: detect an existing workspace.
     # ------------------------------------------------------------------
     claude_md = workspace / "CLAUDE.md"
+    init_complete = workspace / _INIT_COMPLETE_FILE
     if claude_md.exists() and not force:
         try:
             existing = claude_md.read_text(encoding="utf-8")
         except OSError:
             existing = ""
         if _INIT_MARKER in existing:
-            typer.echo(render_error(0, {"detail": {
-                "kind": "partial_state",
-                "hint": "Workspace already initialized. Re-run with --force to redo.",
-            }}), err=True)
-            raise typer.Exit(1)
+            # Distinguish "fully initialized" from "previous attempt was
+            # killed mid-flight": only block when the completion sentinel
+            # is there. Issue #259 — pre-0.53 every interrupted init left
+            # CLAUDE.md behind and the next `agnes init` errored with
+            # `partial_state`, forcing `--force` + full re-download of any
+            # large materialized parquet.
+            if init_complete.exists():
+                typer.echo(render_error(0, {"detail": {
+                    "kind": "partial_state",
+                    "hint": "Workspace already initialized. Re-run with --force to redo.",
+                }}), err=True)
+                raise typer.Exit(1)
+            else:
+                typer.echo(
+                    "Previous init was interrupted (no completion sentinel "
+                    "found). Resuming — partial downloads will continue where "
+                    "they stopped.",
+                    err=True,
+                )
 
     # On --force, snapshot the existing CLAUDE.md before regenerating it
     # so an operator who edited it can recover their notes (issue #164).
@@ -380,6 +406,25 @@ def init(
         .replace("{workspace_path}", str(workspace))
     )
     (workspace / "AGNES_WORKSPACE.md").write_text(workspace_md, encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # Step 9: write the completion sentinel. The next `agnes init` (no
+    # flags) checks this; absence means a previous attempt was killed
+    # mid-flight and we should resume rather than refuse. Issue #259.
+    # ------------------------------------------------------------------
+    sentinel = workspace / _INIT_COMPLETE_FILE
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import importlib.metadata as _md
+        agnes_version = _md.version("agnes-the-ai-analyst")
+    except Exception:
+        agnes_version = "unknown"
+    sentinel.write_text(
+        f"completed_at: {datetime.now(timezone.utc).isoformat()}\n"
+        f"agnes_version: {agnes_version}\n"
+        f"server_url: {server_url}\n",
+        encoding="utf-8",
+    )
 
     # ------------------------------------------------------------------
     # Final: human-readable summary.

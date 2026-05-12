@@ -10,6 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.53.0] — 2026-05-12
+
+Second hygiene round closing the Tier B trackers opened during the
+0.51.0 retro plus one new admin UI bug. `agnes init` resumes after a
+kill (#259), schema endpoint stops calling BigQuery for materialized
+tables (#261), admin tables UI no longer breaks on apostrophes (#265),
+stale parquet locks get swept at startup (#260).
+
+### Fixed
+
+- **`agnes init` resumes after an interrupted run, no `--force` required** (#259). Pre-0.53 a killed `agnes init` (SIGKILL from a runtime watchdog, network drop, operator Ctrl-C) left `CLAUDE.md` on disk; the next attempt errored with `partial_state` and `--force` then re-downloaded the full materialized parquet from scratch. Init now writes a completion sentinel at `.agnes/init-complete` at the end of the flow. The early-out gate distinguishes "fully initialized" (`CLAUDE.md` + sentinel both present → still `partial_state`) from "previous run was interrupted" (`CLAUDE.md` present but sentinel missing → resume silently, log a one-line notice).
+- **Materialized BQ tables read schema from the local parquet, not from BigQuery** (#261). `app/api/v2_schema.build_schema_uncached` dispatched on `source_type` alone and always reached for `INFORMATION_SCHEMA.COLUMNS` when `source_type='bigquery'` — including for `query_mode='materialized'` rows whose actual data is sitting next to the dataset as a parquet. The 0.51.0 perf tests measured this as a 4–5× cold-start anomaly (4.6 s vs 1.0 s for a remote VIEW); root cause is the wasted BQ round-trip. Branch now uses the local-parquet path for ANY `query_mode='materialized'` row.
+- **Apostrophe in `table_registry.description` no longer breaks every Edit / Delete button on `/admin/tables`** (#265). The row-rendering JS wrapped the per-row payload in a single-quoted HTML `onclick` attribute and escaped apostrophes with a JS-style backslash (`\'`). HTML attribute values don't recognize backslash escapes — the first real `'` in the description terminated the attribute, the rest of the HTML was malformed, and the onclick handlers on every subsequent row silently failed to attach. New `escapeHtmlAttr` helper does proper HTML-entity escaping (`&#39;` for `'`, plus `"`, `<`, `>`, `&`); applied to all three onclick callsites in the row template. Also addresses the implicit XSS-adjacent risk of admin-controlled text in an HTML attribute.
+- **Stale `*.parquet.lock` files swept on app startup** (#260). The acquire path already reclaims locks older than `materialize.lock_ttl_seconds` (default 24 h) lazily on the next materialize attempt, but lock files left behind by a SIGKILL'd materialize would sit next to parquets for days waiting for the next sync. New `connectors.bigquery.extractor.sweep_stale_parquet_locks(data_root)` walks every `*.parquet.lock` under the extracts tree at app boot and unlinks the stale ones. Failures are logged at WARNING, not raised. Wired into the FastAPI startup hook.
+
+### Tracker-only (still open, no code in this release)
+
+- **#262** closed as obsolete — Caddy `file_server` + persistent catalog cache already address the user-facing impact this issue was originally written about.
+- **#266** admin tables Edit dialog dataset field "disabled for materialized" — actual behavior is `display:none` (hidden when sync mode is custom-SQL); not the same as "disabled". UX clarification not in scope for this release.
+
 ## [0.52.0] — 2026-05-12
 
 UX + hygiene round following the 0.51.0 catalog-hang fix. Five small,
