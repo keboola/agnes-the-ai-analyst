@@ -350,3 +350,136 @@ def test_parse_doc_link_external_url_without_extension_passes_parse():
     ok, value = parse_doc_link({"name": "Doc", "url": "https://x.com/api/getting-started"})
     assert ok is True
     assert value.kind == "external"
+
+
+# --- Rich plugin-level fields (added 2026-05-12) -------------------------
+#
+# display_name, tagline, description, use_cases, sample_interaction are all
+# optional. Curator-friendly fields render in the plugin detail hero and
+# the dedicated "Use cases" / "Sample interaction" sections.
+
+
+def test_resolve_plugin_metadata_extracts_rich_fields():
+    """Happy path — all 5 rich fields survive parsing into the resolved dict."""
+    metadata = {
+        "plugins": {
+            "grpn-eng": {
+                "display_name": "Architecture Intelligence",
+                "tagline": "Stop reading code — ask Claude.",
+                "description": "Para 1.\n\nPara 2 with **bold**.",
+                "use_cases": [
+                    {"title": "Find owner", "description": "Find owners + deps.", "prompt": "/grpn-eng:query who owns X?"},
+                ],
+                "sample_interaction": {
+                    "user": "What does X do?",
+                    "assistant": "X is a service that...",
+                },
+            }
+        }
+    }
+    resolved = resolve_plugin_metadata(metadata, "grpn-eng")
+    assert resolved["display_name"] == "Architecture Intelligence"
+    assert resolved["tagline"] == "Stop reading code — ask Claude."
+    assert resolved["description"].startswith("Para 1.")
+    assert len(resolved["use_cases"]) == 1
+    assert resolved["use_cases"][0] == {
+        "title": "Find owner",
+        "description": "Find owners + deps.",
+        "prompt": "/grpn-eng:query who owns X?",
+    }
+    assert resolved["sample_interaction"] == {
+        "user": "What does X do?",
+        "assistant": "X is a service that...",
+    }
+
+
+def test_resolve_plugin_metadata_missing_rich_fields_returns_empty_keys():
+    """Plugin with only `cover_photo` set — rich fields absent from output;
+    the API layer treats absent keys as "use the fallback chain"."""
+    metadata = {
+        "plugins": {
+            "minimal": {"cover_photo": ".foundryai/x.png"},
+        }
+    }
+    resolved = resolve_plugin_metadata(metadata, "minimal")
+    assert "display_name" not in resolved
+    assert "tagline" not in resolved
+    assert "description" not in resolved
+    assert "use_cases" not in resolved
+    assert "sample_interaction" not in resolved
+
+
+def test_resolve_plugin_metadata_use_cases_drops_invalid_entries():
+    """Each use_case must carry non-empty title, description, prompt — bad
+    entries are dropped with a warning; surviving entries preserve order."""
+    metadata = {
+        "plugins": {
+            "p": {
+                "use_cases": [
+                    {"title": "Good", "description": "ok", "prompt": "do it"},
+                    {"title": "Missing prompt", "description": "x"},
+                    "not an object",
+                    {"title": "", "description": "x", "prompt": "y"},  # empty title
+                    {"title": "B", "description": "ok", "prompt": "p"},
+                ]
+            }
+        }
+    }
+    resolved = resolve_plugin_metadata(metadata, "p")
+    assert [uc["title"] for uc in resolved["use_cases"]] == ["Good", "B"]
+
+
+def test_resolve_plugin_metadata_use_cases_non_list_is_dropped():
+    """A use_cases value of the wrong type (object instead of array) gets
+    dropped entirely with a warning. Curator typo shouldn't break parse."""
+    metadata = {"plugins": {"p": {"use_cases": {"oops": "wrong shape"}}}}
+    resolved = resolve_plugin_metadata(metadata, "p")
+    assert "use_cases" not in resolved
+
+
+def test_resolve_plugin_metadata_sample_interaction_requires_both_sides():
+    """`sample_interaction` must carry both `user` AND `assistant`. Missing
+    one half → drop the whole block; UI never renders half a dialog."""
+    metadata_user_only = {
+        "plugins": {"p": {"sample_interaction": {"user": "Q"}}}
+    }
+    assert "sample_interaction" not in resolve_plugin_metadata(metadata_user_only, "p")
+
+    metadata_assistant_only = {
+        "plugins": {"p": {"sample_interaction": {"assistant": "A"}}}
+    }
+    assert "sample_interaction" not in resolve_plugin_metadata(metadata_assistant_only, "p")
+
+    metadata_empty_strings = {
+        "plugins": {"p": {"sample_interaction": {"user": "  ", "assistant": "A"}}}
+    }
+    assert "sample_interaction" not in resolve_plugin_metadata(metadata_empty_strings, "p")
+
+
+def test_resolve_plugin_metadata_strips_whitespace_in_strings():
+    """display_name / tagline are single-line — strip leading/trailing
+    whitespace. description preserves interior structure but trims edges."""
+    metadata = {
+        "plugins": {
+            "p": {
+                "display_name": "  Friendly  ",
+                "tagline": "\n  Punchy line  \n",
+                "description": "\n\nPara 1.\n\nPara 2.\n\n",
+            }
+        }
+    }
+    resolved = resolve_plugin_metadata(metadata, "p")
+    assert resolved["display_name"] == "Friendly"
+    assert resolved["tagline"] == "Punchy line"
+    # description: leading newlines stripped, but interior newlines preserved
+    # so the markdown renderer sees paragraph breaks.
+    assert resolved["description"].startswith("Para 1.")
+    assert "\n\nPara 2." in resolved["description"]
+
+
+def test_resolve_plugin_metadata_wrong_type_field_logged_and_dropped():
+    """A non-string display_name (curator typo: array instead of string)
+    drops the field silently — UI falls back to manifest_name."""
+    metadata = {"plugins": {"p": {"display_name": ["wrong", "type"]}}}
+    resolved = resolve_plugin_metadata(metadata, "p")
+    assert "display_name" not in resolved

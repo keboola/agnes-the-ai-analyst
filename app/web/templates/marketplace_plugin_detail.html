@@ -312,10 +312,12 @@
     align-items: stretch;
   }
 
-  /* Spacing between the bottom panels (video / docs / internal structure).
-     The hero-row has its own margin-bottom; subsequent stacked panels need
-     equivalent breathing room or they collide visually (~2px between
-     bordered cards looks like a render bug). */
+  /* Spacing between the bottom panels (use-cases / sample / video / docs /
+     internal structure). The hero-row has its own margin-bottom; subsequent
+     stacked panels need equivalent breathing room or they collide visually
+     (~2px between bordered cards looks like a render bug). */
+  .plugin-detail #panel-use-cases,
+  .plugin-detail #panel-sample,
   .plugin-detail #panel-video,
   .plugin-detail #panel-docs,
   .plugin-detail .structure {
@@ -336,6 +338,191 @@
     color: var(--text-secondary);
   }
   .plugin-detail .lead { font-size: 14.5px; line-height: 1.65; color: var(--text-primary); white-space: pre-wrap; }
+  /* `.lead-rendered` switches the lead block from plain-text mode (which
+     uses `white-space: pre-wrap` so plain `description` line breaks survive)
+     to HTML mode (markdown-rendered body where paragraph breaks come from
+     `<p>` tags, not whitespace). pre-wrap would otherwise turn the gap
+     between two `<p>` blocks into stacked blank lines. */
+  .plugin-detail .lead-rendered { white-space: normal; }
+  .plugin-detail .lead-rendered > *:first-child { margin-top: 0; }
+  .plugin-detail .lead-rendered > *:last-child { margin-bottom: 0; }
+  .plugin-detail .lead-rendered p { margin: 0 0 12px; }
+  .plugin-detail .lead-rendered h2,
+  .plugin-detail .lead-rendered h3,
+  .plugin-detail .lead-rendered h4 {
+    /* Scoped overrides — the panel already provides an `<h2>` for the
+       section title; markdown headings nested inside the body shouldn't
+       inherit the uppercase / letter-spaced style of the section h2. */
+    font-size: 14.5px; font-weight: 600;
+    margin: 14px 0 6px;
+    text-transform: none; letter-spacing: 0; color: var(--text-primary);
+  }
+  .plugin-detail .lead-rendered ul,
+  .plugin-detail .lead-rendered ol { margin: 0 0 12px 22px; padding: 0; }
+  .plugin-detail .lead-rendered code {
+    background: var(--surface-alt, #f4f4f5); border-radius: 4px;
+    padding: 1px 5px; font-size: 0.92em;
+    font-family: var(--font-mono);
+  }
+  .plugin-detail .lead-rendered pre {
+    background: #1e1e2e; color: #cdd6f4;
+    border-radius: 8px; padding: 12px 14px;
+    font-family: var(--font-mono); font-size: 12.5px;
+    overflow-x: auto; margin: 8px 0 14px;
+  }
+  .plugin-detail .lead-rendered pre code {
+    background: transparent; padding: 0; color: inherit;
+  }
+  .plugin-detail .lead-rendered a { color: var(--primary); text-decoration: none; }
+  .plugin-detail .lead-rendered a:hover { text-decoration: underline; }
+
+  /* Use-cases grid — 3-column on wide, 2 on tablet, 1 on phone. Each card
+     has title, short description, and the literal slash-prompt the user
+     would paste into Claude Code. */
+  .plugin-detail .use-cases-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+  @media (max-width: 1100px) {
+    .plugin-detail .use-cases-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 700px) {
+    .plugin-detail .use-cases-grid { grid-template-columns: 1fr; }
+  }
+  .plugin-detail .use-case-card {
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px;
+    background: var(--surface-alt, #fafafa);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .plugin-detail .use-case-card h3 {
+    margin: 0; font-size: 13.5px; font-weight: 600;
+    color: var(--text-primary); letter-spacing: 0;
+    text-transform: none;
+  }
+  .plugin-detail .use-case-card p {
+    margin: 0; font-size: 12.5px; line-height: 1.5;
+    color: var(--text-secondary);
+  }
+  .plugin-detail .use-case-prompt {
+    margin: 4px 0 0;
+    background: #1e1e2e; color: #a6e3a1;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: var(--font-mono); font-size: 12px;
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* Sample interaction — Claude Code transcript styling. Single dark
+     Catppuccin Mocha panel splits the user prompt from Claude's response
+     with a thin separator; same visual language as the .invocation chip
+     elsewhere so the curated detail page reads as "this is what you'll
+     get inside Claude Code", not "this is a generic chat app". */
+  .plugin-detail .sample-interaction {
+    background: #1e1e2e;                     /* mocha base */
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .plugin-detail .sample-user,
+  .plugin-detail .sample-assistant {
+    padding: 14px 18px;
+  }
+  .plugin-detail .sample-user {
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.015);    /* a hair lighter — separates rows */
+  }
+  .plugin-detail .sample-label {
+    /* Hidden in the Claude-Code transcript styling. The `>` green prompt
+     * indicator on the user row + the bare prose body on the assistant
+     * row are the same visual cues a real Claude Code session uses to
+     * tell who's speaking — labels would add chrome the original
+     * doesn't have. The markup stays for accessibility (screen readers
+     * read the inline text) but is visually collapsed.
+     */
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0);
+    white-space: nowrap; border: 0;
+  }
+  /* User prompt — monospace, leading `>` green prompt glyph. Reads like
+     a literal shell-input line the curator could copy-paste verbatim. */
+  .plugin-detail .sample-user > div:last-child {
+    font-family: var(--font-mono);
+    color: #cdd6f4;                          /* mocha text */
+    font-size: 13.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .plugin-detail .sample-user > div:last-child::before {
+    content: "> ";
+    color: #a6e3a1;                          /* mocha green */
+    font-weight: 700;
+    user-select: none;
+  }
+  /* Claude's response — sans-serif prose (Claude doesn't reply in mono),
+     markdown body lives inside. Inline code keeps the mono treatment so
+     code mentions still read as code. */
+  .plugin-detail .sample-assistant-body {
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+    color: #cdd6f4;
+    font-size: 13.5px; line-height: 1.65;
+  }
+  .plugin-detail .sample-assistant-body > *:first-child { margin-top: 0; }
+  .plugin-detail .sample-assistant-body > *:last-child { margin-bottom: 0; }
+  .plugin-detail .sample-assistant-body p { margin: 0 0 10px; }
+  .plugin-detail .sample-assistant-body strong { color: #fab387; }   /* mocha peach */
+  .plugin-detail .sample-assistant-body em { color: #f9e2af; font-style: italic; } /* mocha yellow */
+  .plugin-detail .sample-assistant-body code {
+    background: rgba(255,255,255,0.06);
+    color: #f5c2e7;                          /* mocha pink */
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 0.92em;
+    font-family: var(--font-mono);
+  }
+  .plugin-detail .sample-assistant-body pre {
+    background: #181825;                     /* mocha mantle — darker nested */
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5;
+    color: #cdd6f4;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  .plugin-detail .sample-assistant-body pre code {
+    background: transparent; padding: 0;
+    color: inherit;
+  }
+  .plugin-detail .sample-assistant-body ul,
+  .plugin-detail .sample-assistant-body ol {
+    margin: 0 0 10px 22px; padding: 0;
+  }
+  .plugin-detail .sample-assistant-body li { margin: 2px 0; }
+  .plugin-detail .sample-assistant-body a {
+    color: #89b4fa;                          /* mocha blue */
+    text-decoration: none;
+  }
+  .plugin-detail .sample-assistant-body a:hover { text-decoration: underline; }
+  .plugin-detail .sample-assistant-body blockquote {
+    border-left: 3px solid #585b70;          /* mocha surface2 */
+    margin: 8px 0;
+    padding: 4px 0 4px 12px;
+    color: #bac2de;                          /* mocha subtext1 */
+  }
+  .plugin-detail .sample-assistant-body h2,
+  .plugin-detail .sample-assistant-body h3,
+  .plugin-detail .sample-assistant-body h4 {
+    color: #cdd6f4;
+    font-size: 14px; font-weight: 600;
+    margin: 12px 0 6px;
+    text-transform: none; letter-spacing: 0;
+  }
   .plugin-detail .details dl { margin: 0; }
   .plugin-detail .details .row {
     display: grid; grid-template-columns: max-content 1fr; gap: 12px;
@@ -665,6 +852,23 @@
     </div>
   </div>
 
+  <!-- Use cases — populated from marketplace-metadata.json use_cases[]. Hidden
+       until the curator has supplied at least one card. -->
+  <div class="panel" id="panel-use-cases" hidden>
+    <h2>When to use it</h2>
+    <div class="use-cases-grid" id="panel-use-cases-grid"></div>
+  </div>
+
+  <!-- Sample interaction — single user/assistant Q&A from
+       marketplace-metadata.json sample_interaction. Hidden until populated. -->
+  <div class="panel" id="panel-sample" hidden>
+    <h2>Example</h2>
+    <div class="sample-interaction">
+      <div class="sample-user"><span class="sample-label">You</span><div id="sample-user"></div></div>
+      <div class="sample-assistant"><span class="sample-label">Claude</span><div id="sample-assistant" class="sample-assistant-body"></div></div>
+    </div>
+  </div>
+
   <!-- v32: video + doc_links section. Both blocks stay hidden until populated
        so the layout collapses gracefully when an upstream marketplace ships
        no marketplace-metadata.json. Doc icons differentiate internal-cached files
@@ -750,13 +954,26 @@
   const d = await res.json();
 
   // ── Hero ────────────────────────────────────────────────────────
+  // Display name resolution priority:
+  //   1. marketplace-metadata.json `display_name` (curator-friendly label)
+  //   2. .claude-plugin/plugin.json `name` (manifest_name — the value
+  //      Claude Code uses for slash-command namespacing)
+  //   3. URL path's plugin_name (technical id, last-resort fallback)
+  // Tagline falls back to marketplace.json description (verbose tech text)
+  // when the curator hasn't filled the friendly tagline yet — preserves
+  // the historical hero look for un-enriched plugins.
+  const heroTitle = d.display_name || d.manifest_name || d.plugin_name;
   document.getElementById('crumb-mid').textContent =
     d.source === 'curated' ? (d.marketplace_name || d.marketplace_id) : 'Flea Market';
-  document.getElementById('crumb-name').textContent = d.manifest_name || d.plugin_name;
-  document.title = `${d.manifest_name || d.plugin_name} — Marketplace`;
+  document.getElementById('crumb-name').textContent = heroTitle;
+  document.title = `${heroTitle} — Marketplace`;
 
-  document.getElementById('hero-name').textContent = d.manifest_name || d.plugin_name;
-  document.getElementById('hero-tagline').textContent = d.description || '';
+  document.getElementById('hero-name').textContent = heroTitle;
+  document.getElementById('hero-tagline').textContent = d.tagline || d.description || '';
+  // Window titlebar label mirrors the h1 — keeps the mac-window framing
+  // consistent with whichever name the user actually sees as the title.
+  const heroWindowLabel = document.getElementById('hero-window-label');
+  if (heroWindowLabel) heroWindowLabel.textContent = heroTitle;
 
   const curator = document.getElementById('hero-curator');
   if (d.source === 'curated') {
@@ -943,11 +1160,46 @@
   });
 
   // ── What it does ────────────────────────────────────────────────
+  // When the curator authored a rich markdown body in marketplace-metadata.json,
+  // the API renders + sanitizes it server-side and ships it in
+  // `description_long_html`. We inject as HTML. Falling back to the plain
+  // marketplace.json `description` preserves the historical render path for
+  // plugins whose curator hasn't filled the new field yet.
   const lead = document.getElementById('lead-text');
-  if (d.description && d.description.trim()) {
+  if (d.description_long_html && d.description_long_html.trim()) {
+    lead.innerHTML = d.description_long_html;
+    lead.classList.add('lead-rendered');
+  } else if (d.description && d.description.trim()) {
     lead.textContent = d.description;
   } else {
     document.getElementById('panel-what').hidden = true;
+  }
+
+  // ── Kdy to použiju (Use cases) ──────────────────────────────────
+  // marketplace-metadata.json :: use_cases[] — one card per entry. Hidden
+  // until populated; un-enriched plugins skip this section entirely.
+  const useCasesEl = document.getElementById('panel-use-cases-grid');
+  const useCasesPanel = document.getElementById('panel-use-cases');
+  if (useCasesEl && Array.isArray(d.use_cases) && d.use_cases.length) {
+    useCasesEl.innerHTML = d.use_cases.map(uc => `
+      <div class="use-case-card">
+        <h3>${esc(uc.title)}</h3>
+        <p>${esc(uc.description)}</p>
+        <pre class="use-case-prompt"><code>${esc(uc.prompt)}</code></pre>
+      </div>
+    `).join('');
+    useCasesPanel.hidden = false;
+  }
+
+  // ── Ukázka konverzace (Sample interaction) ──────────────────────
+  // marketplace-metadata.json :: sample_interaction — {user, assistant_html}.
+  // Assistant body was rendered + sanitized server-side; we inject as HTML.
+  const sampleEl = document.getElementById('panel-sample');
+  if (sampleEl && d.sample_interaction
+      && d.sample_interaction.user && d.sample_interaction.assistant_html) {
+    document.getElementById('sample-user').textContent = d.sample_interaction.user;
+    document.getElementById('sample-assistant').innerHTML = d.sample_interaction.assistant_html;
+    sampleEl.hidden = false;
   }
 
   // ── v32: demo video (marketplace-metadata.json :: video_url) ─────────

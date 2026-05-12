@@ -669,6 +669,16 @@ function renderGrid(items) {
     const verFmt = it.version ? `v${esc(it.version)}` : '';
     const catBadge = it.category ? `<span class="cat-badge">${esc(it.category)}</span>` : '';
 
+    // Rich-content fallback chain:
+    // - card name uses display_name (curator-friendly) when set; falls back
+    //   to the raw `it.name` (plugin id from marketplace.json) otherwise.
+    // - card description uses tagline (1-line punchy value prop) when set;
+    //   falls back to the marketplace.json `description` (often verbose
+    //   technical copy, clamped to 2 lines by CSS line-clamp).
+    // Both fields come from marketplace-metadata.json — curated only;
+    // flea entities don't have a metadata layer yet.
+    const cardName = it.display_name || it.name;
+    const cardDesc = it.tagline || it.description || '';
     card.innerHTML = `
       ${quarantineBadge}
       ${photoMarkup}
@@ -678,9 +688,9 @@ function renderGrid(items) {
           <span class="type-badge" data-type="${esc(it.type)}">${esc(it.type)}</span>
           ${catBadge}
         </div>
-        <div class="name">${esc(it.name)}</div>
+        <div class="name">${esc(cardName)}</div>
         <div class="by">${ownerLine}</div>
-        <div class="desc">${esc(it.description || '')}</div>
+        <div class="desc">${esc(cardDesc)}</div>
       </div>
       <div class="footer">
         <span class="added">${addedFmt ? 'Added ' + addedFmt : ''}</span>

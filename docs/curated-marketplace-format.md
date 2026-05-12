@@ -38,16 +38,37 @@ cover photo. Other plugins (and other fields) keep their defaults.
 
 ## The schema
 
-The same shape applies at three levels: plugin, skill, agent.
+The same shape applies at three levels: plugin, skill, agent. The rich
+content fields (`display_name`, `tagline`, `description`, `use_cases`,
+`sample_interaction`) are currently rendered on the **plugin level only**;
+skill/agent rich content lands in a later phase but the schema accepts
+them today for forward compatibility.
 
 ```json
 {
   "plugins": {
     "<plugin-name>": {
-      "cover_photo": "...",
-      "video_url":   "...",
-      "category":    "...",
-      "doc_links":   [
+      "cover_photo":    "...",
+      "video_url":      "...",
+      "category":       "...",
+
+      "display_name":   "Friendly Plugin Name",
+      "tagline":        "One punchy line explaining what this does.",
+      "description":    "Multi-paragraph **markdown** body...",
+
+      "use_cases": [
+        {
+          "title":       "Understand a service",
+          "description": "Find owners, deps, tech stack.",
+          "prompt":      "What does order-orchestration do?"
+        }
+      ],
+      "sample_interaction": {
+        "user":      "What does the order-orchestration service do?",
+        "assistant": "The order-orchestration service is a B2B order-routing layer..."
+      },
+
+      "doc_links": [
         { "name": "Setup",   "path": "docs/setup.md" },
         { "name": "API ref", "url":  "https://example.com/api.pdf" }
       ],
@@ -74,14 +95,27 @@ The same shape applies at three levels: plugin, skill, agent.
 
 **Fields, all optional:**
 
-| Field         | What it does |
-|---------------|--------------|
-| `cover_photo` | Image shown on the card and on the detail page hero. |
-| `video_url`   | Demo video shown on the detail page. External URL only. |
-| `category`    | Overrides the category in `marketplace.json` for this plugin. |
-| `doc_links[]` | Extra documentation links shown on the detail page. Each entry is `{name, path}` (a file in your repo) or `{name, url}` (an external URL). |
-| `skills`      | Map keyed by skill name (matching `name:` in the skill's `SKILL.md` frontmatter). |
-| `agents`      | Map keyed by agent name (the agent `.md` filename without extension). |
+| Field                | What it does | Where it renders |
+|----------------------|--------------|------------------|
+| `cover_photo`        | Image (715 : 310 aspect recommended). | Hero window, listing card, inner-card grid. |
+| `video_url`          | Demo video URL — YouTube / Vimeo / direct `.mp4`. | Detail page "Demo video" panel. |
+| `category`           | Override the `marketplace.json` category. Must match Agnes vocabulary: `Code & Engineering`, `Data & Analytics`, `Documentation`, `Productivity`, `Communication`, `DevOps & Infra`, `Security`, `Research`, `Other`. | Category pill on cards + filter chips. |
+| `doc_links[]`        | Optional standalone docs (PDF / MD / TXT). `{name, path}` for repo files or `{name, url}` for external. **Use only for genuine extras** (deep-dive PDFs, examples) — don't dump README / CLAUDE.md / SKILL.md here; the curated marketplace UI shows them only as downloadables, not rendered docs. | Detail page "Documentation" panel. |
+| `display_name`       | Friendly plugin name (1 line, ≤ ~40 chars). | Hero h1, listing card name, mac-window titlebar label. |
+| `tagline`            | Punchy value prop (1 line, ≤ ~120 chars — beyond that the listing card 2-line clamp truncates). | Hero subtitle, listing card description. |
+| `description`        | Multi-paragraph markdown body. Bold, italic, lists, links, fenced code, tables, blockquotes supported. Raw HTML and inline JavaScript are stripped by the server-side sanitizer. | Detail page "What it does" panel, rendered as HTML. |
+| `use_cases[]`        | Concrete usage examples. Each entry: `title` (heading), `description` (1-2 sentences), `prompt` (the literal text a user pastes into Claude Code). | Detail page "When to use it" 3-column card grid. |
+| `sample_interaction` | One example dialog. `{user, assistant}` — both required; `assistant` accepts markdown (renders to safe HTML). | Detail page "Example" Q&A panel. |
+| `skills`             | Map keyed by skill name (matching `name:` in the skill's `SKILL.md` frontmatter). | Skill detail page. |
+| `agents`             | Map keyed by agent name (the agent `.md` filename without extension). | Agent detail page. |
+
+The rich-content fields (`display_name`, `tagline`, `description`,
+`use_cases`, `sample_interaction`) are **read on-demand** from the working
+tree at request time — curator edits to `marketplace-metadata.json` land at
+the next page refresh without waiting for the next sync cycle. The visual
+fields (`cover_photo`, `video_url`, `category`, `doc_links`) are persisted
+into the marketplace database at sync time, because they participate in the
+asset-mirror flow that needs to run once per push.
 
 `<plugin-name>` matches the `name` field of the plugin in your
 `marketplace.json`. Same for skill and agent names — they match what's
