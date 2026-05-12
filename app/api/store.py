@@ -65,6 +65,10 @@ from src.store_naming import (
     sanitize_username,
     suffixed_name,
 )
+from src.usage_attribution_helpers import (
+    delete_flea_attribution,
+    update_flea_attribution,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/store", tags=["store"])
@@ -637,71 +641,6 @@ def _write_synth_plugin_json(
     )
 
 
-def _update_flea_attribution(
-    entity_id: str,
-    entity_type: str,
-    entity_name: str,
-    conn: duckdb.DuckDBPyConnection,
-) -> None:
-    """Write / overwrite usage-attribution rows for a flea entity.
-
-    For ``type='plugin'`` we walk the baked plugin tree to enumerate
-    skills, agents, and commands.  For ``type='skill'`` / ``type='agent'``
-    the baked tree contains exactly one component, so we fall back to the
-    entity name directly (single-row attribution).
-
-    Failures are logged but never re-raised — attribution is best-effort;
-    it must never block a create / approve / update path.
-    """
-    from src.marketplace_listing import list_inner_skills, list_inner_agents, list_commands
-    from src.repositories.usage_attribution import UsageAttributionRepository
-
-    try:
-        attr = UsageAttributionRepository(conn)
-        plugin_dir = _plugin_dir(entity_id)
-
-        if entity_type == "skill":
-            attr.replace_for_flea(entity_id, skills=[entity_name])
-        elif entity_type == "agent":
-            attr.replace_for_flea(entity_id, agents=[entity_name])
-        elif entity_type == "plugin":
-            if plugin_dir.is_dir():
-                skills = list_inner_skills(plugin_dir)
-                agents = list_inner_agents(plugin_dir)
-                commands = list_commands(plugin_dir)
-                attr.replace_for_flea(
-                    entity_id, skills=skills, agents=agents, commands=commands,
-                )
-            else:
-                # TODO Phase B: explode store entity plugin bundles when
-                # bundle path is unknown / not yet on disk.
-                attr.replace_for_flea(entity_id, skills=[entity_name])
-        else:
-            # Unknown type — record name as a skill as a best-effort fallback.
-            attr.replace_for_flea(entity_id, skills=[entity_name])
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "flea attribution explode failed for entity %s (type=%s); continuing",
-            entity_id, entity_type,
-        )
-
-
-def _delete_flea_attribution(
-    entity_id: str,
-    conn: duckdb.DuckDBPyConnection,
-) -> None:
-    """Remove usage-attribution rows for a deleted / archived flea entity.
-
-    Best-effort — failures are logged, not re-raised.
-    """
-    from src.repositories.usage_attribution import UsageAttributionRepository
-
-    try:
-        UsageAttributionRepository(conn).delete_for_flea(entity_id)
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "flea attribution delete failed for entity %s; continuing", entity_id,
-        )
 
 
 def _swap_live_to_version(entity_id: str, version_no: int) -> bool:
@@ -1338,7 +1277,7 @@ async def create_entity(
             _schedule_llm_review(background_tasks, sub_id, plugin_dir)
         elif initial_visibility == "approved":
             # Guardrails off — entity is immediately live; write attribution now.
-            _update_flea_attribution(entity_id, type, final_name, conn)
+            update_flea_attribution(conn, entity_id, type, final_name)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -1674,6 +1613,16 @@ async def update_entity(
         video_url=video_url,
     )
 
+    # Metadata-only rename: live bundle is already updated above; refresh
+    # attribution so lookups resolve the new name immediately.
+    if rename_to is not None and file is None:
+        ent_after_rename = repo.get(entity_id) or {}
+        update_flea_attribution(
+            conn, entity_id,
+            ent_after_rename.get("type") or entity["type"],
+            ent_after_rename.get("name") or rename_to,
+        )
+
     # Bundle change → record a new version + maybe promote.
     #
     # Critical invariant: existing installers keep getting the prior
@@ -1733,6 +1682,13 @@ async def update_entity(
             # update entity columns + swap live to new version.
             repo.promote_version(entity_id, appended_n)
             _swap_live_to_version(entity_id, appended_n)
+            # Live bundle is now the new version; refresh attribution.
+            ent_after_swap = repo.get(entity_id) or {}
+            update_flea_attribution(
+                conn, entity_id,
+                ent_after_swap.get("type") or entity["type"],
+                ent_after_swap.get("name") or (rename_to or entity["name"]),
+            )
 
     # Use the freshly-appended version number when a bundle change
     # produced one, falling back to the planned new_version_no for
@@ -2011,7 +1967,7 @@ async def delete_entity(
         UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
         StoreEntitiesRepository(conn).delete(entity_id)
         shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
-        _delete_flea_attribution(entity_id, conn)
+        delete_flea_attribution(conn, entity_id)
         _audit(
             conn,
             user["id"],
@@ -2069,7 +2025,7 @@ async def delete_entity(
             raise HTTPException(
                 status_code=500, detail="archive_rename_failed",
             )
-    _delete_flea_attribution(entity_id, conn)
+    delete_flea_attribution(conn, entity_id)
     _audit(
         conn,
         user["id"],

@@ -1,9 +1,17 @@
-"""UsageAttributionRepository — replace, delete, lookup, precedence."""
+"""UsageAttributionRepository — replace, delete, lookup, precedence.
+
+Also covers ``src.usage_attribution_helpers.update_flea_attribution`` and
+``delete_flea_attribution`` as the public orchestration layer.
+"""
 import duckdb
 import pytest
 
 from src.db import _ensure_schema as init_database
 from src.repositories.usage_attribution import UsageAttributionRepository
+from src.usage_attribution_helpers import (
+    delete_flea_attribution,
+    update_flea_attribution,
+)
 
 
 @pytest.fixture
@@ -139,3 +147,67 @@ def test_replace_does_not_cross_contaminate_other_plugins(conn):
     repo.replace_for_curated("mp", "plug-a")
     assert repo.lookup(skill_name="y") == ("curated", "mp/plug-b")
     assert repo.lookup(skill_name="x") is None
+
+
+# ---------------------------------------------------------------------------
+# update_flea_attribution / delete_flea_attribution helpers
+# ---------------------------------------------------------------------------
+
+
+def test_update_flea_attribution_skill(conn):
+    """update_flea_attribution records a skill row for type='skill'."""
+    update_flea_attribution(conn, "e1", "skill", "my-skill-by-alice")
+    repo = UsageAttributionRepository(conn)
+    assert repo.lookup(skill_name="my-skill-by-alice") == ("flea", "e1")
+
+
+def test_update_flea_attribution_agent(conn):
+    """update_flea_attribution records an agent row for type='agent'."""
+    update_flea_attribution(conn, "e2", "agent", "my-agent-by-bob")
+    repo = UsageAttributionRepository(conn)
+    assert repo.lookup(agent_name="my-agent-by-bob") == ("flea", "e2")
+
+
+def test_update_flea_attribution_rename_roundtrip(conn):
+    """Rename: old name no longer resolves; new name does.
+
+    Simulates the metadata-only rename path in update_entity:
+      1. Entity created with name 'old-skill-by-alice'
+      2. Entity renamed to 'new-skill-by-alice'
+      3. Old lookup → None; new lookup → ('flea', entity_id)
+    """
+    entity_id = "e-rename-1"
+    # Step 1: initial registration
+    update_flea_attribution(conn, entity_id, "skill", "old-skill-by-alice")
+    repo = UsageAttributionRepository(conn)
+    assert repo.lookup(skill_name="old-skill-by-alice") == ("flea", entity_id)
+
+    # Step 2: rename — re-run helper with the new name
+    update_flea_attribution(conn, entity_id, "skill", "new-skill-by-alice")
+
+    # Step 3: old name gone, new name resolves
+    assert repo.lookup(skill_name="old-skill-by-alice") is None
+    assert repo.lookup(skill_name="new-skill-by-alice") == ("flea", entity_id)
+
+
+def test_update_flea_attribution_unknown_type_falls_back_to_skill(conn):
+    """Unknown entity type records a skill row (best-effort fallback)."""
+    update_flea_attribution(conn, "e3", "unknown_type", "some-thing-by-user")
+    repo = UsageAttributionRepository(conn)
+    assert repo.lookup(skill_name="some-thing-by-user") == ("flea", "e3")
+
+
+def test_delete_flea_attribution_removes_rows(conn):
+    """delete_flea_attribution wipes all three kinds for the entity."""
+    update_flea_attribution(conn, "e4", "skill", "skill-to-delete")
+    delete_flea_attribution(conn, "e4")
+    repo = UsageAttributionRepository(conn)
+    assert repo.lookup(skill_name="skill-to-delete") is None
+
+
+def test_update_flea_attribution_is_best_effort_on_bad_conn(conn):
+    """Passing a closed connection must not raise — failures are swallowed."""
+    conn.close()
+    # Should not raise even though the connection is closed
+    update_flea_attribution(conn, "e5", "skill", "irrelevant")
+    delete_flea_attribution(conn, "e5")
