@@ -5,7 +5,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import typer
 
@@ -16,11 +16,6 @@ def query_command(
     remote: bool = typer.Option(False, "--remote", help="Execute on server instead of locally"),
     fmt: str = typer.Option("table", "--format", "-f", help="Output format: table, json, csv"),
     limit: int = typer.Option(1000, "--limit", help="Max rows to return"),
-    register_bq: Optional[List[str]] = typer.Option(
-        None,
-        "--register-bq",
-        help="Register a BigQuery result as a DuckDB view. Format: alias=BQ_SQL. Can be repeated.",
-    ),
     stdin: bool = typer.Option(False, "--stdin", help="Read SQL from stdin as JSON {\"sql\": \"...\"}"),
 ):
     """Execute SQL query against DuckDB."""
@@ -42,10 +37,6 @@ def query_command(
         try:
             payload = json.loads(raw)
             resolved_sql = payload["sql"]
-            # Extract register_bq from stdin JSON
-            stdin_bq = payload.get("register_bq", {})
-            if stdin_bq and isinstance(stdin_bq, dict):
-                register_bq = [f"{k}={v}" for k, v in stdin_bq.items()]
         except (json.JSONDecodeError, KeyError) as exc:
             typer.echo(f"Error: failed to parse stdin JSON: {exc}", err=True)
             raise typer.Exit(1)
@@ -54,9 +45,7 @@ def query_command(
     else:
         resolved_sql = sql
 
-    if register_bq:
-        _query_hybrid(resolved_sql, fmt, limit, register_bq)
-    elif remote:
+    if remote:
         _query_remote(resolved_sql, fmt, limit)
     else:
         _query_local(resolved_sql, fmt, limit)
@@ -130,77 +119,6 @@ def _query_remote(sql: str, fmt: str, limit: int):
     _output(data["columns"], data["rows"], fmt)
     if data.get("truncated"):
         typer.echo(f"(truncated at {limit} rows)", err=True)
-
-
-def _query_hybrid(sql: str, fmt: str, limit: int, register_bq_specs: List[str]):
-    """Run a hybrid query: register BigQuery results as DuckDB views, then execute locally."""
-    import duckdb
-    from src.remote_query import RemoteQueryEngine, RemoteQueryError, load_config
-
-    local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
-    db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
-    if not db_path.exists():
-        typer.echo("Local DuckDB not found. Run: agnes pull", err=True)
-        raise typer.Exit(1)
-
-    conn = duckdb.connect(str(db_path), read_only=True)
-    try:
-        config = load_config()
-        engine_kwargs = {k: v for k, v in config.items() if k in (
-            "max_bq_registration_rows", "max_memory_mb", "max_result_rows", "timeout_seconds"
-        )}
-        # CLI --limit flag overrides config max_result_rows
-        engine_kwargs["max_result_rows"] = limit
-        engine = RemoteQueryEngine(conn, **engine_kwargs)
-
-        for spec in register_bq_specs:
-            if "=" not in spec:
-                typer.echo(
-                    f"Error: --register-bq spec must be 'alias=BQ_SQL', got: {spec!r}",
-                    err=True,
-                )
-                raise typer.Exit(1)
-            alias, bq_sql = spec.split("=", 1)
-            alias = alias.strip()
-            bq_sql = bq_sql.strip()
-            try:
-                info = engine.register_bq(alias, bq_sql)
-                typer.echo(
-                    f"Registered BQ alias '{alias}': {info['rows']:,} rows, "
-                    f"{info['memory_mb']:.1f} MiB",
-                    err=True,
-                )
-            except RemoteQueryError as exc:
-                # Use the shared renderer so typed BqAccessError details
-                # (carried via RemoteQueryError.details) surface as a
-                # multi-line block with the operator-facing hint.
-                from cli.error_render import render_error
-                synthetic = {"detail": {
-                    "kind": exc.error_type,
-                    "alias": alias,
-                    "message": str(exc),
-                    **(exc.details or {}),
-                }}
-                typer.echo(render_error(400, synthetic), err=True)
-                raise typer.Exit(1)
-
-        try:
-            result = engine.execute(sql)
-        except RemoteQueryError as exc:
-            from cli.error_render import render_error
-            synthetic = {"detail": {
-                "kind": exc.error_type,
-                "message": str(exc),
-                **(exc.details or {}),
-            }}
-            typer.echo(render_error(400, synthetic), err=True)
-            raise typer.Exit(1)
-
-        _output(result["columns"], result["rows"], fmt)
-        if result.get("truncated"):
-            typer.echo(f"(truncated at {result['row_count']} rows)", err=True)
-    finally:
-        conn.close()
 
 
 def _output(columns: list, rows: list, fmt: str):
