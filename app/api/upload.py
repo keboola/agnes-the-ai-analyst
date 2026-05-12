@@ -122,13 +122,13 @@ async def upload_session(
     try:
         AuditRepository(conn).log(
             user_id=user_id,
-            action="session.upload",
+            action="upload.session",
             params={"filename": filename[:256], "bytes": size},
             result="success",
             client_kind=client_kind_from_user(user),
         )
     except Exception:
-        logger.exception("audit_log write failed for session.upload; continuing")
+        logger.exception("audit_log write failed for upload.session; continuing")
     finally:
         conn.close()
 
