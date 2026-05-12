@@ -7,7 +7,7 @@
   <header class="obs-topbar">
     <div class="obs-topbar-left">
       <h1 class="obs-title">Sessions</h1>
-      <p class="obs-subtitle">All Claude Code sessions across every user, parsed from collected JSONL files. Click any row to read the full transcript (user prompts, tool calls, tool errors). Tick <b>Errors only</b> to surface sessions where tools failed.</p>
+      <p class="obs-subtitle">All Claude Code sessions across every user, parsed from collected JSONL files. Click any row to read the full transcript (user prompts, tool calls, tool errors). Tick <b>Errors only</b> to surface sessions where tools failed. Also queryable from Claude Code via <code>agnes query "SELECT * FROM agnes_sessions …"</code> — analysts see their own sessions; admin sees all.</p>
       <div class="obs-narrative" id="sx-narrative">Loading…</div>
     </div>
     <div class="obs-topbar-right">
