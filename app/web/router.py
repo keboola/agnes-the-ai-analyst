@@ -1471,6 +1471,22 @@ async def admin_user_detail_page(
     return templates.TemplateResponse(request, "admin_user_detail.html", ctx)
 
 
+@router.get("/admin/usage", response_class=HTMLResponse)
+async def admin_usage_page(
+    request: Request,
+    window: str = "7d",
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Usage summary page — admin-only telemetry overview."""
+    if window not in ("7d", "30d", "all"):
+        window = "7d"
+    from app.api.admin_usage_summary import usage_summary
+    data = usage_summary(window=window, user=user, conn=conn)
+    ctx = _build_context(request, user=user, **data)
+    return templates.TemplateResponse(request, "admin_usage.html", ctx)
+
+
 @router.get("/admin/groups", response_class=HTMLResponse)
 async def admin_groups_page(
     request: Request,
