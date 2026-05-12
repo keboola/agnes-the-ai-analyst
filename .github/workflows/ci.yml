@@ -23,12 +23,61 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install --system ".[dev,server]"
 
       - name: Run tests (parallel)
         run: pytest tests/ -v --tb=short -n auto
         env:
           TESTING: "1"
+
+  cli-wheel-clean-install:
+    # Catches the "wheel METADATA conflicts with transitive deps under fresh
+    # resolver" class — exactly what the workspace-only `[tool.uv]
+    # override-dependencies` does NOT protect against. Builds the wheel the
+    # way `release.yml` ships it to analysts (`uv build --wheel`), then
+    # installs it into a fresh `python:3.13-slim` container with `uv tool
+    # install` (the path the `/setup` page advertises) and asserts the
+    # `agnes` binary actually launches. Without this, a regression like
+    # 0.53.3's `kbcstorage>=0.9.0 → urllib3<2.0.0` cap silently caps the
+    # wheel METADATA, every existing test passes (workspace overrides the
+    # cap), and the break only surfaces on the next analyst's first install.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build wheel
+        run: uv build --wheel --out-dir dist
+
+      - name: Smoke install in fresh python:3.13-slim
+        run: |
+          docker run --rm -v "$PWD/dist:/wheels:ro" python:3.13-slim bash -c '
+            set -euo pipefail
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
+            curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+            export PATH="$HOME/.local/bin:$PATH"
+            WHEEL=$(ls /wheels/agnes_the_ai_analyst-*-py3-none-any.whl | head -1)
+            uv tool install --force "$WHEEL"
+            agnes --version
+            agnes --help > /dev/null
+            agnes catalog --help > /dev/null
+            python3 -c "
+            try:
+                import kbcstorage
+                raise SystemExit(\"REGRESSION: kbcstorage leaked into the CLI wheel — should be in [server] extra only\")
+            except ImportError:
+                pass
+            import urllib3
+            assert tuple(int(x) for x in urllib3.__version__.split(\".\")[:2]) >= (2, 7), urllib3.__version__
+            print(\"OK: kbcstorage absent, urllib3\", urllib3.__version__)
+            "
+          '
 
   docker-build:
     runs-on: ubuntu-latest
@@ -53,7 +102,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install --system ".[dev,server]"
 
       - name: Start services
         run: |

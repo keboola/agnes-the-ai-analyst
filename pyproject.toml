@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.53.3"
+version = "0.53.4"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -78,7 +78,10 @@ dependencies = [
     # module (export-async + signed-URL download) which talks to Storage API
     # directly via `requests` — no SDK dependency on the data-path side. The
     # SDK stays for the metadata reads.
-    "kbcstorage>=0.9.0",
+    #
+    # NOTE: kbcstorage moved to the [server] extra below — see the rationale
+    # in [project.optional-dependencies].server. CLI wheels installed via
+    # `uv tool install` deliberately ship without it.
     "sse-starlette>=2.0",
     # Optional observability — pure-Python, no compilation. Lazily initialized
     # in src/observability/posthog_client.py and only emits events when
@@ -105,13 +108,26 @@ dependencies = [
     # (4 high, 1 medium) flagged on urllib3<2.7.0: cross-origin sensitive
     # header leak on proxied low-level redirects, decompression-bomb bypass
     # + unbounded decompression chain on the streaming API, redirects-when-
-    # retries-disabled. Forced via `[tool.uv] override-dependencies` below
-    # because kbcstorage<=0.9.5 still pins urllib3<2.0.0 even though
-    # botocore/requests/google-cloud-* all support 2.x on Python 3.10+.
+    # retries-disabled. The `[server]` extra below adds kbcstorage which
+    # transitively caps urllib3<2.0.0; `[tool.uv] override-dependencies`
+    # forces 2.7+ in workspace installs (Dockerfile + dev). Wheel consumers
+    # who install only the CLI (`uv tool install <wheel>`) get no kbcstorage
+    # and no conflict.
     "urllib3>=2.7.0",
 ]
 
 [project.optional-dependencies]
+# Server-side connectors. The CLI wheel does NOT need these — analysts who
+# `uv tool install` the wheel never reach a kbcstorage import. Splitting it
+# out keeps the wheel's METADATA `Requires-Dist` set free of the
+# `kbcstorage<=0.9.5 → urllib3<2.0.0` cap that conflicts with our
+# `urllib3>=2.7.0` security pin under any fresh resolver context (where
+# `[tool.uv] override-dependencies` does NOT apply — see comment on
+# [tool.uv] below). Server install pulls it in via Dockerfile's
+# `uv pip install --system --no-cache .[server]`.
+server = [
+    "kbcstorage>=0.9.0",
+]
 observability = [
     # Already in base dependencies — listed here so operators who want to
     # be explicit can `pip install -e ".[observability]"` and signal intent.
