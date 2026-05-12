@@ -855,6 +855,33 @@ class TestHintForBqBadRequest:
         # Must NOT lead with the misleading column-not-found hint
         assert "column referenced" not in hint.lower()
 
+    def test_no_hint_branch_leaks_literal_backslashes(self):
+        # Hints are surfaced as JSON `hint:` and printed verbatim by the
+        # CLI — no markdown rendering. A backslash-backtick in the Python
+        # source literal becomes a literal backslash followed by a
+        # backtick in the output, which is exactly the misleading shape
+        # this dispatcher exists to fix (see #274 follow-up). Pin every
+        # branch against the regression.
+        from app.api.query import _hint_for_bq_bad_request
+
+        cases = [
+            "Syntax error: Unexpected keyword ROWS at [1:20]",
+            "Unrecognized name: authorize_date at [1:88]",
+            "Field 'foo' not found inside record_type",
+            "Table not found: my-project.dataset.tbl",
+            "Some unfamiliar BQ diagnostic",  # fallback
+        ]
+        for msg in cases:
+            hint = _hint_for_bq_bad_request(msg)
+            assert "\\`" not in hint, (
+                f"hint for {msg!r} contains literal backslash-backtick: "
+                f"{hint!r}"
+            )
+            assert "\\\\" not in hint, (
+                f"hint for {msg!r} contains literal double-backslash: "
+                f"{hint!r}"
+            )
+
     def test_unrecognized_name_hint_points_at_agnes_schema(self):
         from app.api.query import _hint_for_bq_bad_request
 

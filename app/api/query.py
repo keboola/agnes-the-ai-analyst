@@ -88,13 +88,20 @@ def _hint_for_bq_bad_request(message: str) -> str:
     rather than always blaming columns."""
     msg = message.lower()
     if "unexpected keyword" in msg or "syntax error" in msg:
+        # Plain text — this string is surfaced as JSON `hint:` and printed
+        # verbatim by the CLI. No markdown rendering, so avoid backtick
+        # quoting around BQ-style backtick identifiers (`\\\`` escape in
+        # a Python source literal renders the backslashes literally to
+        # the analyst — exactly the misleading shape this hint tries to
+        # fix).
         return (
             "BigQuery rejected this on SQL syntax. Most often this is a "
             "reserved-keyword identifier used unquoted — e.g. "
-            "`SELECT COUNT(*) AS rows` fails because `rows` is reserved. "
-            "Backtick the alias (`AS \\`rows\\``) or rename it "
-            "(`AS row_count`). For other syntax errors, see the "
-            "`underlying` field below — it carries BigQuery's own "
+            "SELECT COUNT(*) AS rows fails because 'rows' is reserved. "
+            "Either rename the alias to a non-reserved word (AS row_count) "
+            "or backtick-quote it BQ-style (AS `rows` with literal "
+            "backticks around the identifier). For other syntax errors, "
+            "see the 'underlying' field below — it carries BigQuery's own "
             "diagnostic with the error position."
         )
     if "unrecognized name" in msg or "not found inside" in msg or "field name" in msg:

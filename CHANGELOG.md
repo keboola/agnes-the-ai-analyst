@@ -16,7 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- **`/api/query` `remote_estimate_failed` hint now branches on the BigQuery error class** instead of always claiming a column doesn't exist. The previous hardcoded "Most often this means a column referenced … doesn't exist" misled analysts whenever BigQuery actually rejected on syntax (e.g. `SELECT COUNT(*) AS rows` — `rows` is reserved, BQ returns `Syntax error: Unexpected keyword ROWS at [1:20]`, the previous hint pointed at non-existent columns). Branching: syntax errors get a hint about reserved-keyword aliases (with the `AS \`rows\`` / `AS row_count` workaround); `Unrecognized name` / `not found inside` still points at `agnes schema <id>`; `Table not found` points at `agnes catalog`; the fallback hint enumerates all three causes for the analyst to triage.
+- **`/api/query` `remote_estimate_failed` hint now branches on the BigQuery error class** instead of always claiming a column doesn't exist. The previous hardcoded "Most often this means a column referenced … doesn't exist" misled analysts whenever BigQuery actually rejected on syntax (e.g. `SELECT COUNT(*) AS rows` — `rows` is reserved, BQ returns `Syntax error: Unexpected keyword ROWS at [1:20]`, the previous hint pointed at non-existent columns). Branching: syntax errors get a hint about reserved-keyword aliases with both rename + BQ-style backtick-quote alternatives; `Unrecognized name` / `not found inside` still points at `agnes schema <id>`; `Table not found` points at `agnes catalog`; the fallback hint enumerates all three causes for the analyst to triage.
 
 ## [0.53.4] — 2026-05-12
 
