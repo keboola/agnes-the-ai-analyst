@@ -1,8 +1,8 @@
 """Admin telemetry endpoints: /api/admin/usage/*.
 
 Phase C.1: GET /api/admin/usage/export — stream telemetry export as csv|json|parquet
+Phase C.3: POST /api/admin/usage/ask  — LLM Text-to-SQL over usage_* tables
 Phase C.4 (future): POST /api/admin/usage/reprocess, POST /api/admin/usage/prune
-Phase C.3 (future): POST /api/admin/usage/ask  (LLM Text-to-SQL)
 
 All endpoints admin-only. Export writes one audit_log row per call.
 """
@@ -13,17 +13,33 @@ import csv
 import io
 import json
 import logging
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from connectors.llm.anthropic_provider import AnthropicExtractor
+from connectors.llm.exceptions import (
+    LLMAuthError,
+    LLMFormatError,
+    LLMRateLimitError,
+    LLMRefusalError,
+    LLMTimeoutError,
+)
 from src.repositories.audit import AuditRepository
+from src.usage_ask import (
+    RESPONSE_SCHEMA,
+    SYSTEM_PROMPT,
+    build_prompt,
+    validate_select_only,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,3 +190,143 @@ def _stream_parquet(conn, sql, params):
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=usage_events.parquet"},
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/admin/usage/ask — LLM Text-to-SQL (Phase C.3)
+# ---------------------------------------------------------------------------
+
+_ASK_MODEL = os.environ.get("USAGE_ASK_MODEL", "claude-haiku-4-5-20251001")
+
+
+@router.post("/ask")
+def ask_usage(
+    payload: dict = Body(...),
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Translate a natural-language question to SELECT-only SQL via Anthropic + execute.
+
+    Returns the generated SQL even when validation rejects it, so the
+    admin sees what the LLM tried.
+    """
+    question = (payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    if len(question) > 1000:
+        raise HTTPException(status_code=400, detail="question too long (>1000 chars)")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="ANTHROPIC_API_KEY is not configured on the server. Set it in instance env / .env_overlay.",
+        )
+
+    extractor = AnthropicExtractor(api_key=api_key, model=_ASK_MODEL)
+    t0 = time.monotonic()
+    try:
+        llm_out = extractor.extract_json(
+            prompt=build_prompt(question),
+            max_tokens=1024,
+            json_schema=RESPONSE_SCHEMA,
+            schema_name="usage_ask_response",
+            system=SYSTEM_PROMPT,
+        )
+    except LLMAuthError:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY is invalid")
+    except LLMRateLimitError:
+        raise HTTPException(status_code=503, detail="LLM rate limit — try again in a moment")
+    except LLMTimeoutError:
+        raise HTTPException(status_code=503, detail="LLM timeout — try again")
+    except LLMRefusalError:
+        raise HTTPException(status_code=400, detail="LLM refused the request (probably an unsafe question)")
+    except LLMFormatError:
+        raise HTTPException(status_code=502, detail="LLM returned non-JSON output — try rephrasing")
+    except Exception as e:
+        logger.exception("usage.ask LLM call failed")
+        raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
+    llm_ms = int((time.monotonic() - t0) * 1000)
+
+    sql = llm_out.get("sql") or ""
+    rationale = llm_out.get("rationale") or ""
+
+    try:
+        validated_sql = validate_select_only(sql)
+    except ValueError as e:
+        # Return 200 with rejection details so admin sees what the LLM tried.
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="usage.ask",
+                params={"question": question, "sql": sql, "rejected": str(e), "llm_ms": llm_ms},
+                result="error.invalid_sql",
+            )
+        except Exception:
+            logger.exception("audit_log write failed for usage.ask rejection")
+        return {
+            "question": question,
+            "sql": sql,
+            "rationale": rationale,
+            "rejected": str(e),
+            "rows": None,
+            "row_count": 0,
+            "llm_ms": llm_ms,
+        }
+
+    # Execute the validated SQL with a row cap (defense in depth even though prompt asks for LIMIT)
+    exec_t0 = time.monotonic()
+    try:
+        rel = conn.execute(validated_sql)
+        cols = [d[0] for d in rel.description]
+        rows = rel.fetchall()
+        if len(rows) > 1000:
+            rows = rows[:1000]
+            truncated = True
+        else:
+            truncated = False
+        row_dicts = [
+            {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in zip(cols, r)}
+            for r in rows
+        ]
+    except Exception as e:
+        logger.exception("usage.ask SQL execution failed")
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="usage.ask",
+                params={"question": question, "sql": validated_sql, "error": str(e), "llm_ms": llm_ms},
+                result="error.exec_failed",
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=f"SQL execution failed: {e}")
+    exec_ms = int((time.monotonic() - exec_t0) * 1000)
+
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("id"),
+            action="usage.ask",
+            params={
+                "question": question,
+                "sql": validated_sql,
+                "row_count": len(row_dicts),
+                "llm_ms": llm_ms,
+                "exec_ms": exec_ms,
+            },
+            result="success",
+        )
+    except Exception:
+        logger.exception("audit_log write failed for usage.ask success")
+
+    return {
+        "question": question,
+        "sql": validated_sql,
+        "rationale": rationale,
+        "columns": cols,
+        "rows": row_dicts,
+        "row_count": len(row_dicts),
+        "truncated": truncated,
+        "llm_ms": llm_ms,
+        "exec_ms": exec_ms,
+    }
