@@ -9,6 +9,7 @@ from cli.commands.admin_activity import activity_app
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.admin_news import admin_news_app
 from cli.commands.admin_store import admin_store_app
+from cli.commands.admin_usage import app as admin_usage_app
 from cli.commands.memory_admin import memory_admin_app
 
 admin_app = typer.Typer(help="Admin operations (requires admin role)")
@@ -17,6 +18,7 @@ admin_app.add_typer(admin_metrics_app, name="metrics")
 admin_app.add_typer(admin_store_app, name="store")
 admin_app.add_typer(admin_news_app, name="news")
 admin_app.add_typer(memory_admin_app, name="memory")
+admin_app.add_typer(admin_usage_app, name="usage", help="Telemetry export and admin queries")
 
 
 @admin_app.command("add-user")
