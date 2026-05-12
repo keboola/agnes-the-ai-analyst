@@ -1,3 +1,5 @@
+> New: [docs/PLATFORM_SETUP.md](./PLATFORM_SETUP.md) is the consolidated operator playbook. This doc covers a focused subset; check the playbook first.
+
 # Quick Start Guide
 
 ## Prerequisites
