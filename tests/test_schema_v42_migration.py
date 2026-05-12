@@ -5,7 +5,7 @@ from src.db import _ensure_schema as init_database, SCHEMA_VERSION
 
 
 def test_schema_version_is_42():
-    assert SCHEMA_VERSION == 42
+    assert SCHEMA_VERSION == 43
 
 
 def test_v42_tables_exist_after_init(tmp_path):
@@ -46,7 +46,7 @@ def test_v41_to_v42_is_idempotent(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 42
+    assert v == 43
     conn.close()
 
 
@@ -67,7 +67,7 @@ def test_v41_db_upgrades_cleanly(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 42
+    assert v == 43
     # All 7 new v41 tables exist after the v40→v41 upgrade
     tables = {row[0] for row in conn.execute(
         "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
@@ -94,7 +94,7 @@ def test_v30_db_ladders_all_the_way_up(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 42
+    assert v == 43
     cnt = conn.execute("SELECT COUNT(*) FROM audit_log WHERE id='vintage'").fetchone()[0]
     assert cnt == 1
     # New v41 table exists

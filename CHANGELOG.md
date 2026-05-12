@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added — Unified Activity page
+
+- **`/admin/activity` redesigned end-to-end** into a single observability surface. Top bar with time-window selector (`1h / 6h / 24h / 7d / 30d`), Live toggle (30s poll, off by default), and Saved Views dropdown. 4 KPI cards (Events, Active users, Error rate, p95 latency) — each clickable as a quick-filter onto the table below. Faceted filter row whose dropdowns are **populated from the actual `audit_log` in the selected window** (only users/actions/results/sources that exist appear, each with a count beside it — no free-text guessing). Debounced free-text search runs LIKE against `params` JSON. Full audit table with sortable columns, cursor pagination, and a per-row side panel that pretty-prints params + result and offers "Filter to this user / action" shortcuts. All state is mirrored to the URL so admins can share or bookmark a view.
+- **Saved views** persist the full UI state under a per-user name. New schema **v43**: `user_observability_views(id, user_id, name, query_json, created_at)` with `UNIQUE(user_id, name)` — re-saving the same name overwrites.
+- **New endpoints** (admin-gated):
+  - `GET /api/admin/observability/facets?since_minutes=N` — distinct facet values for filter dropdowns, scoped to the window. Returns `{users, actions, results, sources, resources}` with counts.
+  - `GET /api/admin/observability/kpis?since_minutes=N` — events_total / active_users / error_rate / p95_duration_ms.
+  - `GET /api/admin/observability/views` / `POST` / `DELETE /{id}` — CRUD on saved views.
+- `/admin/scheduler-runs` now **308-redirects** to `/admin/activity?source=scheduler`. The standalone Scheduler runs page was a strict subset of the audit-log timeline filtered on a hardcoded action whitelist; that overlap is gone. Admin dropdown nav drops the Scheduler runs entry.
+
 ### Added — Platform telemetry foundation
 
 - **`usage_events`, `usage_session_summary`, `usage_tool_daily`, `usage_plugin_daily`** tables (schema v41). `UsageProcessor` now extracts skill/agent/tool/MCP/slash-command invocations from Claude Code session JSONLs and writes to all four. Daily rollups refresh after every successful tick.

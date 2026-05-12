@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -2825,6 +2825,31 @@ def _v41_to_v42(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_command_lookup ON usage_attribution_commands(command_name)")
 
 
+def _v42_to_v43(conn: duckdb.DuckDBPyConnection) -> None:
+    """v43: user_observability_views — per-user saved filter combinations for
+    the new unified /admin/activity page.
+
+    Saved view payload (`query_json`) is the full UI state needed to reproduce
+    a page render: `{window, lens, filters: {user_id, action_prefix, source,
+    result_pattern}, search, sort}`. The schema is intentionally JSON not
+    columns — the UI evolves faster than DB migrations.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_observability_views (
+            id          VARCHAR PRIMARY KEY,
+            user_id     VARCHAR NOT NULL,
+            name        VARCHAR NOT NULL,
+            query_json  JSON NOT NULL,
+            created_at  TIMESTAMP DEFAULT current_timestamp,
+            UNIQUE (user_id, name)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_obs_views_user "
+        "ON user_observability_views(user_id, created_at)"
+    )
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -3096,6 +3121,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # installs; mirrors the established pattern for the upgrade
             # path below.
             _v41_to_v42(conn)
+            # v43 user_observability_views — saved-views for /admin/activity.
+            _v42_to_v43(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3235,6 +3262,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v40_to_v41(conn)
             if current < 42:
                 _v41_to_v42(conn)
+            if current < 43:
+                _v42_to_v43(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
