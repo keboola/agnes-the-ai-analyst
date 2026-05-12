@@ -26,6 +26,7 @@ from src.identifier_validation import (
 )
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
+from src.usage_attribution_helpers import update_flea_attribution
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -3638,20 +3639,12 @@ async def admin_override_store_submission(
     ents_repo.set_visibility(entity_id, "approved")
 
     # Update usage-attribution rows now that the entity is live.
-    try:
-        from app.api.store import _update_flea_attribution
-        entity_row = ents_repo.get(entity_id) or {}
-        _update_flea_attribution(
-            entity_id,
-            entity_row.get("type", ""),
-            entity_row.get("name", ""),
-            conn,
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "flea attribution update failed for entity %s on admin override; continuing",
-            entity_id,
-        )
+    entity_row = ents_repo.get(entity_id) or {}
+    update_flea_attribution(
+        conn, entity_id,
+        entity_row.get("type", ""),
+        entity_row.get("name", ""),
+    )
 
     AuditRepository(conn).log(
         user_id=user["id"],
@@ -3761,20 +3754,12 @@ async def admin_rescan_store_submission(
     else:
         ents.set_visibility(entity_id, "approved")
         # Guardrails off — immediately live; write attribution.
-        try:
-            from app.api.store import _update_flea_attribution
-            entity_row = ents.get(entity_id) or {}
-            _update_flea_attribution(
-                entity_id,
-                entity_row.get("type", ""),
-                entity_row.get("name", ""),
-                conn,
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "flea attribution update failed for entity %s on rescan approve; continuing",
-                entity_id,
-            )
+        entity_row = ents.get(entity_id) or {}
+        update_flea_attribution(
+            conn, entity_id,
+            entity_row.get("type", ""),
+            entity_row.get("name", ""),
+        )
     AuditRepository(conn).log(
         user_id=user["id"],
         action="store.submission.rescan",
