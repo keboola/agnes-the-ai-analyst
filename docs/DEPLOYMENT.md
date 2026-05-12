@@ -1,3 +1,5 @@
+> New: [docs/PLATFORM_SETUP.md](./PLATFORM_SETUP.md) is the consolidated operator playbook. This doc covers a focused subset; check the playbook first.
+
 # Deployment Guide
 
 Agnes supports two deployment paths. Pick the one that matches your use case.
