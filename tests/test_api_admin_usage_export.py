@@ -191,3 +191,12 @@ def test_export_admin_only(seeded_app, analyst_user):
         "/api/admin/usage/export?format=csv", headers=analyst_user
     )
     assert resp.status_code in (401, 403)
+
+
+def test_parquet_stream_has_dual_cleanup():
+    """Source-level check: _stream_parquet unlinks on both COPY-failure path and generator-finally."""
+    import inspect
+    from app.api.admin_usage import _stream_parquet
+    src = inspect.getsource(_stream_parquet)
+    # Two unlink calls expected: one inside the except (COPY-failure path) + one in the generator finally
+    assert src.count("unlink") >= 2
