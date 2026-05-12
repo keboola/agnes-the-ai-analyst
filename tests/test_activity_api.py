@@ -90,7 +90,7 @@ def test_admin_activity_page_renders(seeded_app, admin_user):
     # so we assert only the structural anchors the JS attaches to.
     assert "obs-page" in resp.text
     assert "obs-table" in resp.text
-    assert "Server activity" in resp.text
+    assert "Audit log" in resp.text
 
 
 def test_activity_center_redirects_to_admin_activity(seeded_app, admin_user):
