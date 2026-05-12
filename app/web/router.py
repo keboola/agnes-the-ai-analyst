@@ -1160,6 +1160,24 @@ async def corporate_memory_admin(
     return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
 
 
+@router.get("/activity-center")
+async def activity_center_redirect():
+    """Legacy URL — redirect to /admin/activity."""
+    return RedirectResponse(url="/admin/activity", status_code=308)
+
+
+@router.get("/admin/activity", response_class=HTMLResponse)
+async def admin_activity(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Unified observability page — KPI cards, faceted filter bar, full
+    audit_log table with sort/search/saved-views. All data loads
+    client-side from /api/admin/observability/* + /api/admin/activity."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "activity_center.html", ctx)
+
+
 @router.get("/setup", response_class=HTMLResponse)
 async def setup_page(
     request: Request,

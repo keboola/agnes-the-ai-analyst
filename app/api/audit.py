@@ -47,7 +47,7 @@ async def query_audit_log(
         limit = 500
 
     repo = AuditRepository(conn)
-    rows = repo.query(
+    rows, _next_cursor = repo.query(
         user_id=user,
         action=action,
         action_prefix=action_prefix,
@@ -56,7 +56,10 @@ async def query_audit_log(
     )
     out = []
     for r in rows:
-        item = dict(r)
+        if isinstance(r, dict):
+            item = r
+        else:
+            item = dict(r)
         ts = item.get("timestamp")
         if ts is not None:
             item["timestamp"] = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)

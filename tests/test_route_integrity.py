@@ -59,8 +59,30 @@ ALLOWLIST = {
     # Store detail pages reached from /store list view.
     "/store/new",
     "/store/{entity_id}",
+    "/store/examples",
     # Catch-all 404 handler — not a real page.
     "/{full_path:path}",
+    # Main landing page — /dashboard reached via {{ _home }} template var.
+    "/dashboard",
+    # /home is the operator-customizable landing used in some deployments.
+    "/home",
+    # Advanced setup wizard triggered from /home or /setup.
+    "/setup-advanced",
+    # News page — reached from dashboard or direct link, not pinned in nav.
+    "/news",
+    # Admin pages reached from list views, not the top nav.
+    "/admin/news",
+    "/admin/sessions/{username}/{session_file}",
+    "/admin/store/submissions/{submission_id}",
+    # Marketplace detail pages reached from /marketplace list view.
+    "/marketplace/curated/{marketplace_id}/{plugin_name}",
+    "/marketplace/curated/{marketplace_id}/{plugin_name}/agent/{agent_name}",
+    "/marketplace/curated/{marketplace_id}/{plugin_name}/skill/{skill_name}",
+    "/marketplace/flea/{entity_id}",
+    "/marketplace/flea/{entity_id}/edit",
+    "/marketplace/format-guide",
+    "/marketplace/guide/curated",
+    "/marketplace/guide/flea",
 }
 
 
@@ -125,7 +147,9 @@ def test_required_top_level_nav_links_present():
     the kind of regression operators only notice when an analyst opens
     a support ticket asking 'where did the data catalog go?'."""
     nav = _nav_hrefs()
-    required = {"/dashboard", "/catalog", "/corporate-memory", "/setup"}
+    # /dashboard is linked via {{ _home }} Jinja var — not a literal href.
+    # /setup was moved to the install flow (/home) and removed from primary nav.
+    required = {"/catalog", "/corporate-memory"}
     missing = required - nav
     assert not missing, (
         f"Top nav missing required entries: {sorted(missing)}."
