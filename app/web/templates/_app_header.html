@@ -31,8 +31,12 @@
            who deep-link still get a 403 from the route handler. Single
            guard wraps both for clarity. #}
         {% if session.user.is_admin %}
-        <a class="app-nav-link {% if _path.startswith('/corporate-memory') %}is-active{% endif %}" href="/corporate-memory">Memory</a>
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/activity') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') %}
+        {# "Memory" link moved into the Admin dropdown's Agent Experience
+           section (parallel to Curated Marketplaces / Flea Submissions /
+           Prompts). The primary nav no longer carries an admin-only
+           entry — primary nav stays consistently visible to all
+           authenticated users. #}
+        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/activity') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/corporate-memory') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
@@ -72,6 +76,7 @@
                    template injected into each workspace. #}
                 <div class="app-nav-menu-section">Agent Experience</div>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/corporate-memory">Shared Knowledge</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Agent Setup Prompt</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Agent Workspace Prompt</a>
