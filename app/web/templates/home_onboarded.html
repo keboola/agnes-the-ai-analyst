@@ -104,8 +104,8 @@
         <div class="eyebrow">Welcome back, {{ display_name }}</div>
         <h1>You're all set up</h1>
         <p>
-            Open Claude Code in any project under <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 12.5px;">~/Agnes/Projects/</code>
-            and start a session — your data and plugins are already synced. Use the cards below to jump into the parts of {{ instance_name or "Agnes" }} you need.
+            Open Claude Code in any project under <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 12.5px;">~/{{ workspace_dir }}/Projects/</code>
+            and start a session — your data and plugins are already synced. Use the cards below to jump into the parts of {{ instance_brand }} you need.
         </p>
     </div>
 
@@ -130,7 +130,7 @@
         <a class="quick-card" href="/activity-center">
             <span class="ico">&#x1F4C8;</span>
             <div class="ttl">Activity Center</div>
-            <div class="desc">Per-user analytics on Agnes adoption.</div>
+            <div class="desc">Per-user analytics on {{ instance_brand }} adoption.</div>
         </a>
         <a class="quick-card" href="/corporate-memory">
             <span class="ico">&#x1F9E0;</span>

@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable analyst-facing product brand via `instance.brand` (env `AGNES_INSTANCE_BRAND`, default `"Agnes"`).** Replaces the hard-coded "Agnes" / `~/Agnes` strings across the analyst-facing UI (`/home`, `/setup`, `/setup-advanced`, `/login`, `/install`, `/me/debug`) and the clipboard "Setup a new Claude Code" script. Operators rebranding the OSS (e.g. to "Foundry AI") flip a single env var via Terraform — defaults preserve "Agnes" branding for everyone else. The deploying-organization display name (`instance.name`, "AI Data Analyst") stays untouched; it drives page titles and is conceptually distinct from the product brand.
+- **`instance.workspace_dir` (env `AGNES_WORKSPACE_DIR_NAME`)** — filesystem-safe folder name shown in `~/<workspace_dir>` and baked into the setup script's `mkdir`/`cd`. Defaults to `instance.brand` with non-alphanumerics stripped (`"Foundry AI"` → `"FoundryAI"`). Explicit override exists when the auto-derivation isn't what an operator wants.
+- **Explicit "create workspace folder" step on `/home`** — visible OS-tabbed block (POSIX `mkdir -p ~/<dir> && cd ~/<dir>` / PowerShell `New-Item … ; Set-Location …`) inserted between auto-mode and the install-from-Claude-Code CTA. Same `mkdir`/`cd` lines are baked into the clipboard script as the new step 2. Replaces the prior implicit assumption that `agnes init --workspace .` would land in a sensibly-cd'd shell. Setup-script step numbering shifts by +1 from step 2 onward; client-side test assertions updated.
+- **Final "Restart Claude Code" step in the setup script** — unconditional step inserted between the connectors block and the Confirm summary. Marketplace plugins, MCP servers, and the SessionStart hooks installed during setup only load on the next Claude Code session, so every path (with or without plugins) now ends with an explicit cue to `/exit` and re-launch `claude` from the workspace dir. Confirm shifts to step 10 in the always-on layout.
+- **Uniform `✅ <Connector> ready — …` / `❌ <Connector> setup failed: …` markers** in every connector prompt body (Asana, Google Workspace, Atlassian). The verify step now emits the same shape across connectors so the final Confirm summary can quote them verbatim back to the user, and operators can grep their session transcripts with a single pattern to confirm each connector landed.
+
+### Changed
+
+- **Asana connector reverted from hosted Remote MCP back to PAT + raw REST against `app.asana.com/api/1.0`.** The MCP path (introduced in commit `adee8ea`, 2026-05-11) used ~5× the tokens per call because Claude Code reads the entire MCP response envelope; the PAT + REST path lets the agent read only the fields it needs from a flat JSON response. The new Asana prompt stores the PAT in the OS keychain under `agnes-asana-pat`, verifies against `/users/me` before writing, and prints the unified `✅`/`❌` line. Re-running setup on an instance still holding the leftover MCP registration detects it and asks the user to run `claude mcp remove asana` first so the two surfaces don't compete.
+- **Atlassian connector instructs picking the longest API-token expiry (today: "1 year").** The Atlassian Cloud token-create dropdown defaults to a short-lived expiry; the prompt now tells Claude to direct the user to choose the longest option in the "Expires" dropdown. There's no public query-parameter hook on `id.atlassian.com/manage-profile/security/api-tokens` to pre-select the expiry (verified — `?expiry=1y` returns identical HTML); the prompt acknowledges that limitation so a future contributor doesn't re-investigate.
+
 ## [0.52.0] — 2026-05-12
 
 UX + hygiene round following the 0.51.0 catalog-hang fix. Five small,

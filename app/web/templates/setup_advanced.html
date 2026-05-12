@@ -291,7 +291,7 @@
         <h2>On this page</h2>
         <ol>
             <li><a href="#vscode">VS Code as your workspace</a></li>
-            <li><a href="#workspace">~/Agnes workspace anatomy</a></li>
+            <li><a href="#workspace">~/{{ workspace_dir }} workspace anatomy</a></li>
             <li><a href="#projects">Project workflows</a></li>
             <li><a href="#plugins">Recommended plugins</a></li>
             <li><a href="#second-opinions">Multi-model second opinions</a></li>
@@ -303,11 +303,11 @@
 
     <section class="ad-section" id="vscode">
         <h2>1. VS Code as your workspace</h2>
-        <p class="ad-lead">Agnes is terminal-driven. You spend most of your time talking to Claude in a terminal — not in a web app. VS Code's split-terminal layout gives you one panel for the conversation, one for diffs and tool output, and an optional third for parallel work. Files open as tabs when you need them.</p>
+        <p class="ad-lead">{{ instance_brand }} is terminal-driven. You spend most of your time talking to Claude in a terminal — not in a web app. VS Code's split-terminal layout gives you one panel for the conversation, one for diffs and tool output, and an optional third for parallel work. Files open as tabs when you need them.</p>
 
         <h3>Recommended layout</h3>
         <ul>
-            <li>Open <code>~/Agnes</code>: <strong>File → Open Folder…</strong> → select <code>~/Agnes</code>.</li>
+            <li>Open <code>~/{{ workspace_dir }}</code>: <strong>File → Open Folder…</strong> → select <code>~/{{ workspace_dir }}</code>.</li>
             <li>Open the built-in terminal: <kbd>Cmd</kbd>+<kbd>&#96;</kbd> on macOS, <kbd>Ctrl</kbd>+<kbd>&#96;</kbd> on Windows/Linux.</li>
             <li>Move terminal into the editor area: right-click the terminal tab → <strong>"Move Terminal into Editor Area"</strong>. Now it fills the main panel.</li>
             <li>Split into more terminals: <kbd>Cmd</kbd>+<kbd>\</kbd> (or <kbd>Ctrl</kbd>+<kbd>\</kbd>) splits side-by-side. One for your Claude conversation, one for diffs/output, optional third for parallel work.</li>
@@ -324,9 +324,9 @@
     </section>
 
     <section class="ad-section" id="workspace">
-        <h2>2. <code>~/Agnes</code> workspace anatomy</h2>
-        <p class="ad-lead">Your workspace was created by <code>agnes init</code> and the bundled Agnes plugin. Here's what each folder is for.</p>
-<pre>~/Agnes/
+        <h2>2. <code>~/{{ workspace_dir }}</code> workspace anatomy</h2>
+        <p class="ad-lead">Your workspace was created by <code>agnes init</code> and the bundled {{ instance_brand }} plugin. Here's what each folder is for.</p>
+<pre>~/{{ workspace_dir }}/
 ├── .claude/
 │   ├── skills/      # Reusable workflow templates Claude follows
 │   ├── rules/       # Behavioral rules injected into every message
@@ -347,11 +347,11 @@
 
     <section class="ad-section" id="projects">
         <h2>3. Project workflows</h2>
-        <p class="ad-lead">Every piece of work lives in a project folder. Always start Claude from the <code>~/Agnes</code> root — the welcome menu and prompt-history logging both depend on it.</p>
+        <p class="ad-lead">Every piece of work lives in a project folder. Always start Claude from the <code>~/{{ workspace_dir }}</code> root — the welcome menu and prompt-history logging both depend on it.</p>
 
         <h3>Daily startup</h3>
         <ol>
-            <li>Open terminal in <code>~/Agnes</code>.</li>
+            <li>Open terminal in <code>~/{{ workspace_dir }}</code>.</li>
             <li>Type <code>claude</code> (or <code>yolo</code>).</li>
             <li>The agnes-welcome menu shows recent projects ranked by activity. Pick a number, type a name, or describe what you want.</li>
         </ol>
@@ -361,16 +361,16 @@
         <ul>
             <li><em>"Create a new project called 'website redesign' under work"</em> — Claude scaffolds folders, initializes Git, drops in a CLAUDE.md.</li>
             <li><em>"Switch to the quarterly review project"</em> — Claude <code>cd</code>s and loads project context.</li>
-            <li><em>"Go back to Agnes root"</em> — returns to <code>~/Agnes</code>.</li>
+            <li><em>"Go back to {{ instance_brand }} root"</em> — returns to <code>~/{{ workspace_dir }}</code>.</li>
         </ul>
 
         <h3>Why this matters</h3>
-        <p>The agnes-welcome hook fires only when Claude starts in <code>~/Agnes</code>. Prompt-history logging uses <code>$PWD</code> to route prompts to the right project's history. Launch Claude from inside a project folder and you skip both.</p>
+        <p>The agnes-welcome hook fires only when Claude starts in <code>~/{{ workspace_dir }}</code>. Prompt-history logging uses <code>$PWD</code> to route prompts to the right project's history. Launch Claude from inside a project folder and you skip both.</p>
     </section>
 
     <section class="ad-section" id="plugins">
         <h2>4. Recommended plugins</h2>
-        <p class="ad-lead">Plugins extend Claude's capabilities. Install only what you need. Browse the operator-curated set at <a href="/marketplace?tab=flea">/marketplace</a> for the marketplace tied to this Agnes instance.</p>
+        <p class="ad-lead">Plugins extend Claude's capabilities. Install only what you need. Browse the operator-curated set at <a href="/marketplace?tab=flea">/marketplace</a> for the marketplace tied to this {{ instance_brand }} instance.</p>
 
         <h3>How to install</h3>
         <p>Inside any Claude Code session, run the slash command shown in the row's <strong>Install</strong> column — e.g. <code>/plugin install superpowers@every-marketplace</code>. Click <strong>Copy</strong>, switch to Claude Code, paste, hit Enter. If the marketplace isn't registered yet, Claude will tell you and you can add it with <code>/plugin marketplace add &lt;url&gt;</code> first. Or paste the catch-all prompt at the end of this section and let Claude do the registration + install in one go.</p>
@@ -445,7 +445,7 @@
 
     <section class="ad-section" id="second-opinions">
         <h2>5. Multi-model second opinions</h2>
-        <p class="ad-lead">Send your work to multiple AI models for independent review. They catch blind spots, challenge assumptions, improve quality. One of the most useful workflows you can run inside Agnes.</p>
+        <p class="ad-lead">Send your work to multiple AI models for independent review. They catch blind spots, challenge assumptions, improve quality. One of the most useful workflows you can run inside {{ instance_brand }}.</p>
 
         <h3>Codex CLI (OpenAI)</h3>
         <p>Paste this into Claude Code:</p>
@@ -466,7 +466,7 @@
 4. Verify: `gemini --version` and a low-cost test prompt.</pre>
 
         <h3>How review-panel + second-opinion work together</h3>
-        <p>The bundled Agnes plugin ships two skills:</p>
+        <p>The bundled {{ instance_brand }} plugin ships two skills:</p>
         <ul>
             <li><strong>review-panel</strong> — runs 4 internal persona reviewers (engineer, executive, skeptic, user-voice) inside a single Claude process. Catches domain-specific blind spots before external review. No extra setup.</li>
             <li><strong>second-opinion</strong> — sends work to whichever external CLIs are installed (Claude, Codex, Gemini) in parallel, collects feedback, synthesizes agreement vs disagreement, and presents prioritized action items.</li>
@@ -476,7 +476,7 @@
 
     <section class="ad-section" id="skills-rules-hooks">
         <h2>6. Skills, rules, hooks</h2>
-        <p class="ad-lead">The mechanics that turn Claude from a blank slate into a workspace that follows your conventions. Most of Agnes's day-to-day power lives here.</p>
+        <p class="ad-lead">The mechanics that turn Claude from a blank slate into a workspace that follows your conventions. Most of {{ instance_brand }}'s day-to-day power lives here.</p>
 
         <h3>Skills</h3>
         <p>Reusable workflow templates at <code>.claude/skills/&lt;name&gt;/SKILL.md</code>. Invoked by name or automatically.</p>
@@ -509,7 +509,7 @@
         <p class="ad-lead">Pick whichever you can run today.</p>
 
         <h3>A. Create a project plan (no services needed)</h3>
-        <p>Paste this into Claude Code at the <code>~/Agnes</code> root:</p>
+        <p>Paste this into Claude Code at the <code>~/{{ workspace_dir }}</code> root:</p>
 <pre>Create a new project called "Q4 strategy review" under work. Then enter plan mode and draft a 6-week project plan covering: stakeholder interviews, current-state analysis, gap identification, recommendations, and stakeholder review. Save the plan to docs/plans/.</pre>
 
         <h3>B. Process your emails (requires Google Workspace connected)</h3>
@@ -547,8 +547,8 @@ Add-Content $PROFILE 'function yolo { claude --dangerously-skip-permissions @arg
         <h3 id="claude-plan">Claude plan tier</h3>
         <table class="ad-table">
             <tr><th>Plan</th><th>Price</th><th>Best for</th></tr>
-            <tr><td><strong>Pro</strong></td><td>$20/mo</td><td>Trying Agnes — base limits, resets every 5–8h. Will hit limits within first week of real use.</td></tr>
-            <tr><td><strong>Max 5×</strong></td><td>$100/mo</td><td>The natural home for daily Agnes use. 5× Pro limits, weekly reset.</td></tr>
+            <tr><td><strong>Pro</strong></td><td>$20/mo</td><td>Trying {{ instance_brand }} — base limits, resets every 5–8h. Will hit limits within first week of real use.</td></tr>
+            <tr><td><strong>Max 5×</strong></td><td>$100/mo</td><td>The natural home for daily {{ instance_brand }} use. 5× Pro limits, weekly reset.</td></tr>
             <tr><td><strong>Max 20×</strong></td><td>$200/mo</td><td>Heavy parallel work — multiple subagents, long sessions, power users.</td></tr>
         </table>
         <p>Subagents and long conversations burn through quota faster than quick questions. Treat it like a data plan: Pro is the trial, Max 5× is the real subscription.</p>
