@@ -1,3 +1,5 @@
+> New: [docs/PLATFORM_SETUP.md](./PLATFORM_SETUP.md) is the consolidated operator playbook. This doc covers a focused subset; check the playbook first.
+
 # Onboarding a new Agnes instance
 
 End-to-end guide for deploying Agnes into a new GCP project. Target time: **under 1 hour**.
