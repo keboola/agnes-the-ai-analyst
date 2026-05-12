@@ -15,6 +15,12 @@ import duckdb
 from app.auth.access import is_user_admin
 from app.auth.dependencies import get_current_user, _get_db
 from app.instance_config import get_value
+from connectors.internal.access import (
+    InternalAccessError,
+    execute_internal_query,
+    find_internal_refs,
+    is_internal_table,
+)
 from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.rbac import get_accessible_tables
@@ -188,6 +194,66 @@ class QueryResponse(BaseModel):
     truncated: bool = False
 
 
+def _run_internal_query(
+    request: "QueryRequest",
+    user: dict,
+    conn: duckdb.DuckDBPyConnection,
+    t0: float,
+    internal_refs: list[str],
+) -> "QueryResponse":
+    """Execute a SELECT against system.duckdb under per-request RBAC views.
+
+    Builds a fresh read-only connection, materialises one TEMP VIEW per
+    referenced internal table with the appropriate row filter, runs the
+    user SQL, and writes an audit row. Errors are converted to 400 with
+    a hint that points at ``agnes catalog`` for the registered ids.
+    """
+    from src.db import _get_state_dir
+    system_db_path = str(_get_state_dir() / "system.duckdb")
+    is_admin = is_user_admin(user)
+    try:
+        columns, rows, truncated = execute_internal_query(
+            system_db_path=system_db_path,
+            user=user,
+            is_admin=is_admin,
+            sql=request.sql,
+            limit=request.limit,
+        )
+    except InternalAccessError as exc:
+        raise HTTPException(status_code=400, detail=f"Internal query rejected: {exc}")
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=400, detail=f"DuckDB error: {exc}")
+
+    serializable = [
+        [str(v) if v is not None and not isinstance(v, (int, float, bool, str)) else v
+         for v in row]
+        for row in rows
+    ]
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("id"),
+            action="query.internal",
+            resource=("table:" + ",".join(internal_refs))[:256],
+            params={
+                "sql_preview": (request.sql or "")[:200],
+                "internal_tables": internal_refs,
+                "is_admin": is_admin,
+                "rows_returned": len(serializable),
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+            result="success",
+            client_kind=client_kind_from_user(user),
+        )
+    except Exception:
+        logger.exception("audit_log write failed for query.internal; continuing")
+    return QueryResponse(
+        columns=columns,
+        rows=serializable,
+        row_count=len(serializable),
+        truncated=truncated,
+    )
+
+
 def _first_table_from_sql(sql: str) -> Optional[str]:
     """Extract the first identifier after FROM or JOIN for audit resource tagging.
 
@@ -258,6 +324,39 @@ def execute_query(
     import re as _re
     if not _re.match(r"^(select|with)\s", sql_lower):
         raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
+
+    # ----- Internal-source short-circuit ----------------------------------
+    # SQL referencing one of the seeded internal tables (agnes_sessions,
+    # agnes_usage, agnes_audit) is executed against system.duckdb with a
+    # per-request RBAC view, not against analytics.duckdb. Mixing internal
+    # + BQ/local refs in one SQL is rejected — the two backends live in
+    # different DuckDB instances, joining across requires materialising
+    # one side and isn't worth the complexity in v1. The BQ guardrail
+    # logic doesn't apply (no BQ traffic), and the view-name RBAC check
+    # below doesn't either (internal tables don't live in analytics.duckdb
+    # at all).
+    internal_refs = find_internal_refs(request.sql)
+    if internal_refs:
+        if BQ_PATH.search(_mask_backticks(request.sql)) or _BACKTICK_FULL_PATH.search(request.sql):
+            raise HTTPException(
+                status_code=400,
+                detail="Internal tables can't be combined with `bq.*` paths in a "
+                       "single SELECT (v1 limitation).",
+            )
+        # Reject if user SQL also mentions any non-internal registry id —
+        # that would be a mixed query against analytics.duckdb views.
+        registry_rows = TableRegistryRepository(conn).list_all()
+        for r in registry_rows:
+            rid = r.get("id") or ""
+            if not rid or is_internal_table(rid):
+                continue
+            if re.search(rf"\b{re.escape(rid)}\b", sql_lower):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Internal tables can't be joined with registered "
+                           f"table {rid!r} in a single SELECT (v1 limitation).",
+                )
+        return _run_internal_query(request, user, conn, _t0, internal_refs)
 
     # Get allowed tables for this user
     allowed = get_accessible_tables(user, conn)

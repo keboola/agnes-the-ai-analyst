@@ -140,6 +140,27 @@ def build_schema_uncached(
 
     source_type = row.get("source_type") or ""
     query_mode = row.get("query_mode") or ""
+    if source_type == "internal":
+        # Internal data source — schema lives in system.duckdb, not in the
+        # parquet/BQ paths the other branches use. Delegate to the
+        # connector's own introspector so /api/v2/schema/agnes_sessions
+        # returns the same shape as /api/v2/schema/<keboola-table>.
+        from connectors.internal.access import get_schema as _get_internal_schema
+        from src.db import _get_state_dir
+        system_db_path = str(_get_state_dir() / "system.duckdb")
+        cols = _get_internal_schema(system_db_path, table_id)
+        payload = {
+            "table_id": table_id,
+            "source_type": source_type,
+            "sql_flavor": "duckdb",
+            "columns": [
+                {"name": c["name"], "type": c["type"], "nullable": c["nullable"], "description": ""}
+                for c in cols
+            ],
+            "partition_by": None,
+            "clustered_by": [],
+            "where_dialect_hints": {},
+        }
     # Issue #261: a `source_type='bigquery'` row with `query_mode='materialized'`
     # has the data on local disk as a parquet — same shape as Keboola local
     # tables. Hitting BigQuery INFORMATION_SCHEMA on every schema call was
@@ -147,7 +168,7 @@ def build_schema_uncached(
     # in the 0.51.0 perf tests (4.6 s vs 1.0 s for remote VIEW). Use the
     # local-parquet branch for any materialized source regardless of
     # `source_type` — the parquet is the source of truth.
-    if source_type == "bigquery" and query_mode != "materialized":
+    elif source_type == "bigquery" and query_mode != "materialized":
         dataset = row.get("bucket") or ""
         source_table = row.get("source_table") or table_id
         columns = _fetch_bq_schema(bq, dataset, source_table)
