@@ -311,6 +311,38 @@
       <button class="btn" id="ud-sessions-next">Next</button>
     </div>
   </section>
+
+  <!-- Activity -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Activity</h2>
+      <span class="sub">All recorded server actions for this user</span>
+    </div>
+
+    <table class="ud-table" id="ud-activity-table" hidden>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Action</th>
+          <th>Resource</th>
+          <th>Result</th>
+          <th>Client</th>
+          <th>Duration</th>
+        </tr>
+      </thead>
+      <tbody id="ud-activity-tbody"></tbody>
+    </table>
+
+    <div class="ud-empty" id="ud-activity-empty" hidden>
+      No recorded activity for this user yet.
+    </div>
+
+    <div class="ud-pagination" id="ud-activity-pagination" hidden>
+      <button class="btn" id="ud-activity-prev">Prev</button>
+      <span id="ud-activity-page-meta"></span>
+      <button class="btn" id="ud-activity-next">Next</button>
+    </div>
+  </section>
 </div>
 
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
@@ -742,8 +774,74 @@ document.getElementById("ud-sessions-next").addEventListener("click", () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Activity section
+// ---------------------------------------------------------------------------
+const ACTIVITY_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/activity`;
+let _activityOffset = 0;
+const _activityLimit = 50;
+let _activityTotal = 0;
+
+function loadActivity() {
+  const table = document.getElementById('ud-activity-table');
+  const empty = document.getElementById('ud-activity-empty');
+  const tbody = document.getElementById('ud-activity-tbody');
+  const pag = document.getElementById('ud-activity-pagination');
+
+  fetch(`${ACTIVITY_API}?limit=${_activityLimit}&offset=${_activityOffset}`, { credentials: 'include' })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.rows || (data.rows.length === 0 && _activityOffset === 0)) {
+        empty.hidden = false;
+        table.hidden = true;
+        pag.hidden = true;
+        return;
+      }
+      empty.hidden = true;
+      table.hidden = false;
+      _activityTotal = data.pagination.total;
+      tbody.innerHTML = data.rows.map(r => {
+        const isErr = r.result && (r.result.startsWith('error') || r.result === 'failed');
+        const resultCls = isErr ? 'style="color:#b91c1c"' : '';
+        return `<tr>
+          <td><time datetime="${esc(r.timestamp)}">${esc(fmtDate(r.timestamp))}</time></td>
+          <td><code>${esc(r.action)}</code></td>
+          <td style="font-size:12px;color:var(--text-secondary,#6b7280)">${esc(r.resource || '—')}</td>
+          <td ${resultCls}>${esc(r.result || '—')}</td>
+          <td>${esc(r.client_kind || '—')}</td>
+          <td>${r.duration_ms != null ? esc(String(r.duration_ms)) + ' ms' : '—'}</td>
+        </tr>`;
+      }).join('');
+      const from = _activityOffset + 1;
+      const to = Math.min(_activityOffset + data.rows.length, _activityTotal);
+      document.getElementById('ud-activity-page-meta').textContent = `${from}–${to} of ${_activityTotal}`;
+      pag.hidden = _activityTotal <= _activityLimit;
+      document.getElementById('ud-activity-prev').disabled = _activityOffset === 0;
+      document.getElementById('ud-activity-next').disabled = (_activityOffset + _activityLimit) >= _activityTotal;
+    })
+    .catch(() => {
+      empty.textContent = 'Failed to load activity.';
+      empty.hidden = false;
+      table.hidden = true;
+      pag.hidden = true;
+    });
+}
+
+document.getElementById('ud-activity-prev').addEventListener('click', () => {
+  if (_activityOffset > 0) {
+    _activityOffset = Math.max(0, _activityOffset - _activityLimit);
+    loadActivity();
+  }
+});
+document.getElementById('ud-activity-next').addEventListener('click', () => {
+  if (_activityOffset + _activityLimit < _activityTotal) {
+    _activityOffset += _activityLimit;
+    loadActivity();
+  }
+});
+
 async function loadAll() {
-  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess(), loadSessions()]);
+  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess(), loadSessions(), loadActivity()]);
 }
 
 loadAll();

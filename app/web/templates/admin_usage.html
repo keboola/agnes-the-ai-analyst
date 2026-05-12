@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Usage — Admin{% endblock %}
+
+{% block content %}
+<div class="container-activity">
+  <header class="ud-section-head">
+    <h1>Usage</h1>
+    <div class="ud-window-tabs">
+      <a href="?window=7d" class="{{ 'active' if window == '7d' else '' }}">Last 7 days</a>
+      <a href="?window=30d" class="{{ 'active' if window == '30d' else '' }}">Last 30 days</a>
+      <a href="?window=all" class="{{ 'active' if window == 'all' else '' }}">All time</a>
+    </div>
+  </header>
+
+  <div class="ud-grid-3">
+    <section class="ud-card">
+      <h2>Top 10 tools</h2>
+      <ol class="ud-rank-list">
+        {% for t in top_tools %}
+        <li><span class="rank-name"><code>{{ t.tool_name }}</code> <small>({{ t.source }})</small></span><span class="rank-val">{{ "{:,}".format(t.invocations) }}</span></li>
+        {% endfor %}
+        {% if not top_tools %}<li class="empty">No tool invocations in this window.</li>{% endif %}
+      </ol>
+    </section>
+
+    <section class="ud-card">
+      <h2>Top 10 users</h2>
+      <ol class="ud-rank-list">
+        {% for u in top_users %}
+        <li><span class="rank-name">{{ u.username }}</span><span class="rank-val">{{ "{:,}".format(u.tool_calls) }} tool calls</span></li>
+        {% endfor %}
+        {% if not top_users %}<li class="empty">No user activity in this window.</li>{% endif %}
+      </ol>
+    </section>
+
+    <section class="ud-card">
+      <h2>Error rate per tool</h2>
+      <table class="ud-table">
+        <thead><tr><th>Tool</th><th>Rate</th><th>Errors</th><th>Total</th></tr></thead>
+        <tbody>
+          {% for e in error_rate %}
+          <tr>
+            <td><code>{{ e.tool_name }}</code></td>
+            <td>{{ "%.1f"|format(e.rate * 100) }}%</td>
+            <td>{{ e.errors }}</td>
+            <td>{{ "{:,}".format(e.invocations) }}</td>
+          </tr>
+          {% endfor %}
+          {% if not error_rate %}<tr><td colspan="4" class="empty">No data.</td></tr>{% endif %}
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <section class="ud-card">
+    <h2>DAU — Active analysts per day (last 30 days)</h2>
+    <p class="dau-avg">avg {{ dau_avg }} DAU</p>
+    {% if dau_series %}
+    {% set max_dau = (dau_series | max(attribute='active_users')).active_users or 1 %}
+    <svg class="dau-sparkline" viewBox="0 0 300 60" preserveAspectRatio="none" width="100%" height="60">
+      <polyline fill="none" stroke="#2563eb" stroke-width="2"
+        points="
+          {%- for s in dau_series -%}
+          {{ (loop.index0 * 300 / 29) }},{{ 60 - (s.active_users * 50 / max_dau) }}
+          {%- if not loop.last %} {% endif %}
+          {%- endfor -%}
+        " />
+    </svg>
+    {% else %}
+    <p class="empty">No activity in the last 30 days.</p>
+    {% endif %}
+  </section>
+
+  <section class="ud-card">
+    <h2>Slow actions — top 10 by p95 latency</h2>
+    <table class="ud-table">
+      <thead><tr><th>Action</th><th>p50</th><th>p95</th><th>p99</th><th>max</th><th>n</th></tr></thead>
+      <tbody>
+        {% for s in slow_actions %}
+        <tr>
+          <td><code>{{ s.action }}</code></td>
+          <td>{{ s.p50 }} ms</td>
+          <td>{{ s.p95 }} ms</td>
+          <td>{{ s.p99 }} ms</td>
+          <td>{{ s.max_ms }} ms</td>
+          <td>{{ "{:,}".format(s.n) }}</td>
+        </tr>
+        {% endfor %}
+        {% if not slow_actions %}<tr><td colspan="6" class="empty">No duration data — server actions must be auditing duration_ms.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<style>
+  .container-activity { max-width: 1200px; margin: 24px auto; padding: 0 16px; font: 14px/1.5 system-ui; }
+  .ud-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  .ud-section-head h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  .ud-window-tabs { display: flex; gap: 8px; }
+  .ud-window-tabs a { padding: 6px 12px; border: 1px solid #e5e7eb; border-radius: 6px; text-decoration: none; color: #4b5563; }
+  .ud-window-tabs a.active { background: #2563eb; color: white; border-color: #2563eb; }
+  .ud-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin: 0 0 16px; }
+  .ud-card { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; }
+  .ud-card h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: #4b5563; text-transform: uppercase; letter-spacing: 0.3px; }
+  .ud-rank-list { list-style: none; padding: 0; margin: 0; counter-reset: rank; }
+  .ud-rank-list li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f3f4f6; }
+  .ud-rank-list li::before { counter-increment: rank; content: counter(rank) "."; color: #9ca3af; margin-right: 8px; flex-shrink: 0; }
+  .ud-rank-list .rank-name { flex: 1; }
+  .ud-rank-list .rank-val { font-weight: 500; color: #1f2937; }
+  .ud-table { width: 100%; border-collapse: collapse; }
+  .ud-table th { text-align: left; padding: 4px 8px; font-weight: 600; color: #4b5563; font-size: 12px; }
+  .ud-table td { padding: 4px 8px; border-top: 1px solid #f3f4f6; font-size: 13px; }
+  .ud-table .empty { text-align: center; color: #9ca3af; padding: 16px; }
+  .empty { color: #9ca3af; font-style: italic; }
+  .dau-sparkline { display: block; margin-top: 12px; max-width: 100%; }
+  .dau-avg { color: #4b5563; font-size: 13px; margin: 4px 0 0; }
+  @media (max-width: 900px) { .ud-grid-3 { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}
