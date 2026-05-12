@@ -69,12 +69,7 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
         filter_column="username",
         filter_kind="username",
         display_name="Agnes sessions",
-        description=(
-            "Per-session aggregate of Claude Code sessions: tool calls, "
-            "errors, duration, primary model. Row-level RBAC at query "
-            "time — analysts see their own sessions; admin sees all. "
-            "Backed by usage_session_summary."
-        ),
+        description="Claude Code sessions. Also available locally for analysis.",
     ),
     InternalTable(
         registry_id="agnes_telemetry",
@@ -82,12 +77,7 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
         filter_column="username",
         filter_kind="username",
         display_name="Agnes telemetry events",
-        description=(
-            "Per-event log of Claude Code tool / skill / subagent / "
-            "slash-command / MCP invocations. Row-level RBAC at query "
-            "time — analysts see their own events; admin sees all. "
-            "Backed by usage_events."
-        ),
+        description="Tool and skill invocations from Claude Code. Also available locally for analysis.",
     ),
     InternalTable(
         registry_id="agnes_audit",
@@ -95,12 +85,7 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
         filter_column="user_id",
         filter_kind="user_id",
         display_name="Agnes audit log",
-        description=(
-            "Server-side audit_log: pulls, queries, downloads, admin "
-            "endpoint calls. Row-level RBAC at query time — analysts "
-            "see their own actions; admin sees all (handy for 'who "
-            "looked at whose session transcripts')."
-        ),
+        description="Server-side actions performed against Agnes. Also available locally for analysis.",
     ),
 )
 
