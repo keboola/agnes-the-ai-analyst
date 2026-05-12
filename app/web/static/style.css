@@ -286,7 +286,6 @@ nav {
 code {
     font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
     font-size: 0.875rem;
-    background-color: var(--bg);
     padding: 2px 6px;
     border-radius: 4px;
 }

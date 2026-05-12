@@ -276,6 +276,100 @@ class TestCuratedDetail:
         assert "docs" in data and isinstance(data["docs"], list)
         assert data["install_count"] == 0
 
+    def test_detail_rich_content_from_marketplace_metadata(
+        self, web_client, tmp_path,
+    ):
+        """When curator wrote rich content into marketplace-metadata.json, the
+        detail endpoint surfaces display_name, tagline, description_long_html
+        (server-rendered markdown), use_cases, and sample_interaction. The
+        on-demand parser reads from `${DATA_DIR}/marketplaces/<id>/...` —
+        this test seeds that file and verifies the API response carries
+        the fields through to PluginDetailResponse."""
+        import json
+        from pathlib import Path
+
+        user_id, cookies = _create_user(web_client, "alice@x.com")
+        _seed_curated_grant(user_id=user_id, marketplace="mkt-x", plugin="alpha")
+
+        # Write a marketplace-metadata.json to the working tree the on-demand
+        # parser will read.
+        marketplaces_dir = Path(tmp_path) / "marketplaces" / "mkt-x" / ".claude-plugin"
+        marketplaces_dir.mkdir(parents=True, exist_ok=True)
+        (marketplaces_dir / "marketplace-metadata.json").write_text(json.dumps({
+            "plugins": {
+                "alpha": {
+                    "display_name": "Friendly Alpha",
+                    "tagline": "One-line value prop.",
+                    "description": "Para 1.\n\nPara 2 with **bold**.",
+                    "use_cases": [
+                        {"title": "Find owner", "description": "X+Y.", "prompt": "/q"},
+                    ],
+                    "sample_interaction": {
+                        "user": "What?",
+                        "assistant": "Here's *the* answer.",
+                    },
+                },
+            },
+        }), encoding="utf-8")
+
+        r = web_client.get("/api/marketplace/curated/mkt-x/alpha", cookies=cookies)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["display_name"] == "Friendly Alpha"
+        assert data["tagline"] == "One-line value prop."
+        # description_long_html is the server-rendered markdown body.
+        assert "<strong>bold</strong>" in data["description_long_html"]
+        assert "<p>Para 1.</p>" in data["description_long_html"]
+        assert len(data["use_cases"]) == 1
+        assert data["use_cases"][0]["title"] == "Find owner"
+        # sample_interaction carries both the raw assistant text + rendered HTML.
+        assert data["sample_interaction"]["user"] == "What?"
+        assert "<em>the</em>" in data["sample_interaction"]["assistant_html"]
+
+    def test_detail_falls_back_when_no_rich_content(self, web_client):
+        """No marketplace-metadata.json on disk → API returns the historical
+        shape with rich fields left null / empty. No 500, no crash."""
+        user_id, cookies = _create_user(web_client, "alice@x.com")
+        _seed_curated_grant(user_id=user_id, marketplace="mkt-x", plugin="alpha")
+        r = web_client.get(
+            "/api/marketplace/curated/mkt-x/alpha", cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["display_name"] is None
+        assert data["tagline"] is None
+        assert data["description_long_html"] is None
+        assert data["use_cases"] == []
+        assert data["sample_interaction"] is None
+
+    def test_detail_html_is_sanitized(self, web_client, tmp_path):
+        """Curator-written `<script>` in description markdown must NOT
+        survive into description_long_html — defense-in-depth check."""
+        import json
+        from pathlib import Path
+
+        user_id, cookies = _create_user(web_client, "alice@x.com")
+        _seed_curated_grant(user_id=user_id, marketplace="mkt-x", plugin="alpha")
+
+        marketplaces_dir = Path(tmp_path) / "marketplaces" / "mkt-x" / ".claude-plugin"
+        marketplaces_dir.mkdir(parents=True, exist_ok=True)
+        (marketplaces_dir / "marketplace-metadata.json").write_text(json.dumps({
+            "plugins": {
+                "alpha": {
+                    "description": "Hello <script>alert(1)</script> world",
+                },
+            },
+        }), encoding="utf-8")
+
+        r = web_client.get("/api/marketplace/curated/mkt-x/alpha", cookies=cookies)
+        assert r.status_code == 200, r.text
+        html = r.json()["description_long_html"] or ""
+        assert "<script>" not in html
+        # `alert(1)` could appear as escaped text inside the rendered HTML;
+        # what we MUST not see is unescaped `<script>` tags executing it.
+        # Verify the literal `<script` open-tag never reaches the response.
+        assert "<script" not in html.lower()
+
     def test_install_403_without_grant(self, web_client):
         _, cookies = _create_user(web_client, "alice@x.com")
         r = web_client.post(

@@ -91,6 +91,13 @@ class MarketplaceItem(BaseModel):
     # v39: drives the "Required" pill on the curated browse cards. Only
     # set on curated items (flea/store entities are never system).
     is_system: bool = False
+    # Rich-content fields from marketplace-metadata.json (plugin-level only
+    # for now; skill/agent rich content lands in a later phase). Frontend
+    # falls back to `name` / `description` when these are missing, so the
+    # card renders identically to pre-enrichment behaviour for any plugin
+    # whose curator hasn't filled the new fields yet.
+    display_name: Optional[str] = None
+    tagline: Optional[str] = None
 
 
 class ItemListResponse(BaseModel):
@@ -152,6 +159,28 @@ class DocEntry(BaseModel):
     url: str
 
 
+class UseCase(BaseModel):
+    """One "When to use it" example from marketplace-metadata.json.
+    Curator-authored: friendly title + 1-2-sentence description + the
+    literal prompt the user would paste into Claude Code."""
+    title: str
+    description: str
+    prompt: str
+
+
+class SampleInteraction(BaseModel):
+    """Example dialog shown in the "Sample interaction" section.
+
+    ``assistant`` is markdown — the API pre-renders to safe HTML in
+    ``assistant_html`` so the template can inject without a client-side
+    markdown lib. ``assistant`` stays as the source for copy-paste / future
+    re-rendering needs.
+    """
+    user: str
+    assistant: str
+    assistant_html: str
+
+
 class PluginDetailResponse(BaseModel):
     """Unified detail response for a plugin (curated *or* flea).
 
@@ -204,6 +233,22 @@ class PluginDetailResponse(BaseModel):
     # detail page. The same flag travels via /api/marketplace/items so
     # the browse cards can show a "Required" pill.
     is_system: bool = False
+    # Rich-content fields from marketplace-metadata.json (plugin-level, curated
+    # only — flea entities don't have a metadata layer). All optional; UI
+    # sections render only when populated.
+    #
+    # `display_name` overrides the technical `manifest_name` on the hero h1
+    # and window titlebar. `tagline` is the friendly subtitle (replacing
+    # `description` as the hero summary on listing cards + hero).
+    #
+    # `description_long_html` is server-side rendered + sanitized markdown
+    # (see app/markdown_render.render_safe). It powers the "What it does"
+    # panel; the raw `description` from marketplace.json is the fallback.
+    display_name: Optional[str] = None
+    tagline: Optional[str] = None
+    description_long_html: Optional[str] = None
+    use_cases: List[UseCase] = []
+    sample_interaction: Optional[SampleInteraction] = None
 
 
 # Legacy alias kept so any unmigrated import continues to resolve. The new
@@ -361,6 +406,11 @@ def _curated_to_item(
     # is the human accountable for the plugin's presence in this Agnes
     # instance; upstream author belongs in the plugin source repo.
     owner = meta["curator_name"] or OWNER_TODO_PLACEHOLDER
+    # Lazy enrichment read for the listing card — cached per (marketplace_id,
+    # mtime) so a page of 24 plugins from the same marketplace triggers ONE
+    # disk read, not 24. Empty dict when curator hasn't filled the fields →
+    # listing card falls back to raw name + marketplace.json description.
+    enrichment = _curated_plugin_enrichment(marketplace_id, plugin_name)
     return MarketplaceItem(
         id=f"curated-{marketplace_id}/{plugin_name}",
         source="curated",
@@ -380,6 +430,8 @@ def _curated_to_item(
         marketplace_name=meta["name"],
         detail_url=_curated_detail_url(marketplace_id, plugin_name),
         is_system=bool(plugin_row.get("is_system")),
+        display_name=enrichment.get("display_name"),
+        tagline=enrichment.get("tagline"),
     )
 
 
@@ -1005,6 +1057,13 @@ async def curated_detail(
                     DocEntry(name=str(link["name"]), url=str(link["url"]))
                 )
 
+    # Plugin-level rich content (display_name, tagline, description_long_html,
+    # use_cases, sample_interaction) — on-demand read from the working tree's
+    # marketplace-metadata.json so curator edits land at next page refresh
+    # without a sync cycle. Empty dict when curator hasn't filled any of the
+    # new fields → PluginDetailResponse renders the historical fallback shape.
+    enrichment = _curated_plugin_enrichment(marketplace_id, plugin_name)
+
     return PluginDetailResponse(
         source="curated",
         marketplace_id=marketplace_id,
@@ -1031,6 +1090,7 @@ async def curated_detail(
         files=_walk_files(plugin_root),
         docs=doc_link_entries,
         is_system=bool(plugin_row.get("is_system")),
+        **enrichment,
     )
 
 
@@ -1433,6 +1493,111 @@ def _curated_inner_enrichment(
         "video_url": resolved.get("video_url"),
         "docs": docs,
     }
+
+
+# Module-level cache for marketplace-metadata.json reads. Keyed by
+# ``(marketplace_id, mtime_ns)`` so a curator's `git push` (which updates
+# the file's mtime after the next sync's `git pull`) implicitly invalidates
+# the cached parse. The 24-plugin listing endpoint reads from the same
+# marketplace's metadata 24 times per page; without this cache that's 24
+# disk reads + JSON parses per request. With cache: 1.
+_PLUGIN_METADATA_CACHE: Dict[Tuple[str, int], Dict[str, Any]] = {}
+
+
+def _read_metadata_cached(marketplace_id: str) -> Dict[str, Any]:
+    """Return the parsed marketplace-metadata.json for a given marketplace.
+
+    Cached by mtime so curator edits land at next request without explicit
+    invalidation. Missing / malformed files degrade to ``{}`` (delegated to
+    :func:`src.marketplace_metadata.read_marketplace_metadata` which already
+    swallows OSError / JSONDecodeError).
+    """
+    from src.marketplace_metadata import (
+        MARKETPLACE_METADATA_REL,
+        read_marketplace_metadata,
+    )
+    repo_root = Path(get_marketplaces_dir()) / marketplace_id
+    metadata_path = repo_root / MARKETPLACE_METADATA_REL
+    try:
+        mtime_ns = metadata_path.stat().st_mtime_ns
+    except OSError:
+        # File doesn't exist or unreadable — read_marketplace_metadata handles
+        # the same case below; we just skip the cache lookup.
+        return read_marketplace_metadata(repo_root)
+    key = (marketplace_id, mtime_ns)
+    cached = _PLUGIN_METADATA_CACHE.get(key)
+    if cached is not None:
+        return cached
+    parsed = read_marketplace_metadata(repo_root)
+    _PLUGIN_METADATA_CACHE[key] = parsed
+    # Soft eviction: when the cache outgrows ~100 entries, drop the entry
+    # for this marketplace's PREVIOUS mtime (if any). Keeps memory bounded
+    # across long-running processes without needing a TTL thread.
+    if len(_PLUGIN_METADATA_CACHE) > 100:
+        for k in list(_PLUGIN_METADATA_CACHE):
+            if k[0] == marketplace_id and k[1] != mtime_ns:
+                _PLUGIN_METADATA_CACHE.pop(k, None)
+    return parsed
+
+
+def _curated_plugin_enrichment(
+    marketplace_id: str,
+    plugin_name: str,
+) -> Dict[str, Any]:
+    """Load plugin-level rich content from marketplace-metadata.json.
+
+    Returns a dict shaped for direct merge into ``PluginDetailResponse``:
+    ``display_name``, ``tagline``, ``description_long_html``, ``use_cases``,
+    ``sample_interaction`` — any subset of those keys may be missing when
+    the curator hasn't filled the corresponding field.
+
+    Markdown is rendered to safe HTML here (via
+    :func:`app.markdown_render.render_safe`) so the template can inject the
+    body with ``{{ x | safe }}`` without a client-side markdown library.
+
+    This is the plugin-level analogue of ``_curated_inner_enrichment`` — both
+    read on demand from the working tree so curator edits don't need a full
+    sync cycle to land in the UI. The other persisted plugin-level fields
+    (cover_photo_url, video_url, category, doc_links) continue to flow via
+    ``marketplace_plugins`` rows written at sync time — only the NEW rich
+    fields are read on-demand here.
+    """
+    from app.markdown_render import render_safe
+    from src.marketplace_metadata import resolve_plugin_metadata
+
+    metadata = _read_metadata_cached(marketplace_id)
+    resolved = resolve_plugin_metadata(metadata, plugin_name)
+    if not resolved:
+        return {}
+
+    out: Dict[str, Any] = {}
+    if resolved.get("display_name"):
+        out["display_name"] = resolved["display_name"]
+    if resolved.get("tagline"):
+        out["tagline"] = resolved["tagline"]
+    if resolved.get("description"):
+        out["description_long_html"] = render_safe(resolved["description"])
+
+    use_cases_raw = resolved.get("use_cases") or []
+    if use_cases_raw:
+        out["use_cases"] = [
+            UseCase(
+                title=uc["title"],
+                description=uc["description"],
+                prompt=uc["prompt"],
+            )
+            for uc in use_cases_raw
+        ]
+
+    sample = resolved.get("sample_interaction")
+    if sample:
+        out["sample_interaction"] = SampleInteraction(
+            user=sample["user"],
+            assistant=sample["assistant"],
+            assistant_html=render_safe(sample["assistant"]),
+        )
+
+    return out
 
 
 def _curated_inner_cover(
