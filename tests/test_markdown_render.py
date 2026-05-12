@@ -146,3 +146,63 @@ def test_render_safe_strips_event_handler_attribute():
     assert "<img" not in out  # raw open-tag would mean live attribute
     # The escaped form `&lt;img` is fine.
     assert "&lt;img" in out or "&amp;lt;img" in out
+
+
+# --- XSS regression — disallowed schemes via markdown-native links ----------
+# CommonMark autolinks (e.g. `<javascript:alert(1)>`) and reference links
+# emit `href` regardless of scheme; defense rests on nh3's `url_schemes`
+# allowlist. These tests pin the scheme allowlist so adding `data:` /
+# `tel:` / etc. later requires updating both the allowlist AND a test.
+
+
+def test_render_safe_strips_javascript_autolink():
+    """`<javascript:...>` autolink — with `html=False` markdown-it escapes
+    the literal `<` to `&lt;`, so it never reaches the href emitter at all.
+    Either way: no live `<a href="javascript:...">` anchor in output."""
+    out = render_safe("<javascript:alert(1)>")
+    assert 'href="javascript:' not in out.lower()
+    assert "<a " not in out  # no anchor tag at all
+
+
+def test_render_safe_strips_javascript_link_mixed_case():
+    """Scheme matching must be case-insensitive (`JaVaScRiPt:` would slip
+    through a literal-string filter). `javascript:` may appear as escaped
+    text in the output; the invariant is that no live `<a href=...>`
+    anchor was emitted."""
+    out = render_safe("[click](JaVaScRiPt:alert(1))")
+    assert 'href=' not in out  # link entirely stripped
+
+
+def test_render_safe_strips_data_url_link():
+    """`data:` URLs can carry `text/html` payloads — browsers happily
+    execute scripts in them. Allowlist must reject."""
+    out = render_safe("[click](data:text/html,<script>alert(1)</script>)")
+    assert 'href="data:' not in out.lower()
+
+
+def test_render_safe_strips_vbscript_link():
+    """Legacy IE attack surface, still worth pinning."""
+    out = render_safe("[click](vbscript:msgbox(1))")
+    assert 'href="vbscript:' not in out.lower()
+
+
+def test_render_safe_strips_javascript_reference_link():
+    """Reference-style links route through the same href emitter."""
+    out = render_safe("[click][1]\n\n[1]: javascript:alert(1)")
+    assert 'href="javascript:' not in out.lower()
+
+
+def test_render_safe_keeps_http_https_mailto_schemes():
+    """Allowlist positive-coverage so future tightening is a visible diff."""
+    out = render_safe("[a](https://example.com) [b](http://example.com) [c](mailto:x@example.com)")
+    assert 'href="https://example.com"' in out
+    assert 'href="http://example.com"' in out
+    assert 'href="mailto:x@example.com"' in out
+
+
+def test_render_safe_adds_noopener_noreferrer_rel():
+    """Render must add `rel="noopener noreferrer"` to outbound links so
+    `window.opener` tabnabbing isn't possible from curator-controlled
+    markdown."""
+    out = render_safe("[a](https://example.com)")
+    assert "noopener" in out and "noreferrer" in out

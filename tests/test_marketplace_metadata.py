@@ -363,12 +363,12 @@ def test_resolve_plugin_metadata_extracts_rich_fields():
     """Happy path — all 5 rich fields survive parsing into the resolved dict."""
     metadata = {
         "plugins": {
-            "grpn-eng": {
+            "my-plugin": {
                 "display_name": "Architecture Intelligence",
                 "tagline": "Stop reading code — ask Claude.",
                 "description": "Para 1.\n\nPara 2 with **bold**.",
                 "use_cases": [
-                    {"title": "Find owner", "description": "Find owners + deps.", "prompt": "/grpn-eng:query who owns X?"},
+                    {"title": "Find owner", "description": "Find owners + deps.", "prompt": "/my-plugin:query who owns X?"},
                 ],
                 "sample_interaction": {
                     "user": "What does X do?",
@@ -377,7 +377,7 @@ def test_resolve_plugin_metadata_extracts_rich_fields():
             }
         }
     }
-    resolved = resolve_plugin_metadata(metadata, "grpn-eng")
+    resolved = resolve_plugin_metadata(metadata, "my-plugin")
     assert resolved["display_name"] == "Architecture Intelligence"
     assert resolved["tagline"] == "Stop reading code — ask Claude."
     assert resolved["description"].startswith("Para 1.")
@@ -385,7 +385,7 @@ def test_resolve_plugin_metadata_extracts_rich_fields():
     assert resolved["use_cases"][0] == {
         "title": "Find owner",
         "description": "Find owners + deps.",
-        "prompt": "/grpn-eng:query who owns X?",
+        "prompt": "/my-plugin:query who owns X?",
     }
     assert resolved["sample_interaction"] == {
         "user": "What does X do?",
@@ -398,7 +398,7 @@ def test_resolve_plugin_metadata_missing_rich_fields_returns_empty_keys():
     the API layer treats absent keys as "use the fallback chain"."""
     metadata = {
         "plugins": {
-            "minimal": {"cover_photo": ".foundryai/x.png"},
+            "minimal": {"cover_photo": ".example/x.png"},
         }
     }
     resolved = resolve_plugin_metadata(metadata, "minimal")
@@ -577,3 +577,102 @@ def test_resolve_inner_metadata_agent_kind_works_identically():
     assert resolved["display_name"] == "CTO Architect"
     assert resolved["invocation"] == "@p:a"
     assert resolved["tagline"] == "Strategy decisions."
+
+
+# --- Per-field byte cap (CPU-burn defense) ----------------------------------
+
+
+def test_validated_markdown_truncates_oversized_field():
+    """Curator commits a field over the per-field cap (`MARKETPLACE_METADATA_FIELD_MAX_BYTES`)
+    — resolver truncates rather than letting the renderer chew through 1 MiB on every
+    request. Truncation must produce a valid UTF-8 string (drop trailing partial codepoint)."""
+    from src.marketplace_metadata import (
+        MARKETPLACE_METADATA_FIELD_MAX_BYTES,
+        _validated_markdown,
+    )
+    # 2x the cap of one-byte chars + one multi-byte char straddling the cap.
+    body = "a" * (MARKETPLACE_METADATA_FIELD_MAX_BYTES * 2)
+    out = _validated_markdown(body, "description", "test")
+    # Output is at most the cap (counting UTF-8 bytes) — typically much less
+    # because we trim trailing whitespace too.
+    assert len(out.encode("utf-8")) <= MARKETPLACE_METADATA_FIELD_MAX_BYTES
+
+
+def test_validated_markdown_truncation_preserves_utf8_boundary():
+    """Truncation must not split a multi-byte UTF-8 sequence."""
+    from src.marketplace_metadata import (
+        MARKETPLACE_METADATA_FIELD_MAX_BYTES,
+        _validated_markdown,
+    )
+    # Build a body where the byte at position cap-1 is mid-character:
+    # all-emoji content, each emoji = 4 bytes, so the cap likely lands inside one.
+    emoji = "\U0001F600"  # 😀
+    body = emoji * (MARKETPLACE_METADATA_FIELD_MAX_BYTES // 2)
+    out = _validated_markdown(body, "description", "test")
+    # Round-trip must succeed (no UnicodeDecodeError); resolver guarantees
+    # valid UTF-8 by construction.
+    assert out.encode("utf-8").decode("utf-8") == out
+
+
+def test_validated_markdown_under_cap_passes_through_untouched():
+    """The cap is a guard; small content is unchanged byte-for-byte."""
+    from src.marketplace_metadata import _validated_markdown
+    body = "## Title\n\nA paragraph with **bold** and `code`.\n"
+    out = _validated_markdown(body, "description", "test")
+    # Trailing whitespace stripped per existing contract; structure preserved.
+    assert out == body.strip("\n").rstrip()
+
+
+# --- Cache eviction stress (bounded LRU) ------------------------------------
+
+
+def test_metadata_cache_bounded_lru_evicts_oldest(monkeypatch, tmp_path):
+    """At >MAX entries the cache must drop oldest (FIFO of insert order via
+    OrderedDict). Without bounded LRU, cache grows linearly with the number
+    of marketplaces × historical mtimes — the silent-failure mode in the
+    earlier per-marketplace eviction predicate."""
+    from app.api import marketplace as mod
+    from app.api.marketplace import _PLUGIN_METADATA_CACHE, _PLUGIN_METADATA_CACHE_MAX
+
+    _PLUGIN_METADATA_CACHE.clear()
+    monkeypatch.setattr(mod, "get_marketplaces_dir", lambda: str(tmp_path))
+
+    # Seed cache with > MAX entries by simulating fresh marketplaces.
+    # Each `_read_metadata_cached` call must add exactly one entry (since
+    # mtime is unique per marketplace_id directory).
+    for i in range(_PLUGIN_METADATA_CACHE_MAX + 50):
+        mp_dir = tmp_path / f"marketplace-{i}"
+        plugin_dir = mp_dir / ".claude-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "marketplace-metadata.json").write_text(
+            '{"plugins": {}}', encoding="utf-8",
+        )
+        mod._read_metadata_cached(f"marketplace-{i}")
+
+    assert len(_PLUGIN_METADATA_CACHE) == _PLUGIN_METADATA_CACHE_MAX, (
+        f"cache must be bounded at {_PLUGIN_METADATA_CACHE_MAX}, "
+        f"got {len(_PLUGIN_METADATA_CACHE)} — eviction is broken"
+    )
+    # Oldest-inserted entries (the first 50) should have been evicted.
+    for i in range(50):
+        assert all(
+            k[0] != f"marketplace-{i}" for k in _PLUGIN_METADATA_CACHE
+        ), f"marketplace-{i} should have been evicted"
+
+
+# --- Truthy-vs-presence merge trap (resolver contract) ----------------------
+
+
+def test_resolve_plugin_metadata_includes_explicit_empty_only_via_resolver_contract():
+    """Resolver writes a key into ``out`` only when validation passes
+    (truthy guard). API layer (``_curated_plugin_enrichment`` etc.) then
+    propagates via presence check. Today's resolver drops empty-string
+    `description: ""` (truthy guard inside `_validated_markdown` returns
+    `""` → outer truthy guard skips). This test pins the contract so a
+    future resolver-side change to keep empty-string descriptions doesn't
+    silently corrupt the API output."""
+    metadata = {"plugins": {"p": {"description": ""}}}
+    resolved = resolve_plugin_metadata(metadata, "p")
+    assert "description" not in resolved, (
+        "empty string `description` must not reach `out` — resolver contract"
+    )

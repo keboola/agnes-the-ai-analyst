@@ -186,11 +186,23 @@ def _validated_string(raw: Any, field_name: str, log_prefix: str) -> str:
     return raw.strip()
 
 
+#: Per-field byte cap for markdown content. Stops a curator from committing a
+#: 1 MB markdown body (under the file-level ``MARKETPLACE_METADATA_MAX_BYTES``
+#: cap) and turning every plugin/inner-detail request into curator-controlled
+#: CPU burn × QPS via the pure-Python ``markdown-it-py`` renderer. 64 KiB is
+#: well above any plausible "What it does" / "When to use" / sample-assistant
+#: body — overruns are truncated with a warning so the curator can see they
+#: hit the cap on the next sync.
+MARKETPLACE_METADATA_FIELD_MAX_BYTES = 64 * 1024
+
+
 def _validated_markdown(raw: Any, field_name: str, log_prefix: str) -> str:
     """Return ``raw`` stripped of leading / trailing whitespace, preserving
     interior structure (blank lines, indentation) so the markdown renderer
     can interpret paragraphs / lists / fenced code blocks correctly. Empty
-    or wrong-type input collapses to ``""``."""
+    or wrong-type input collapses to ``""``. Per-field byte cap enforced
+    via UTF-8 length (matches what the renderer pays for) so curator-
+    controlled markdown can't dominate request CPU."""
     if raw is None:
         return ""
     if not isinstance(raw, str):
@@ -199,6 +211,23 @@ def _validated_markdown(raw: Any, field_name: str, log_prefix: str) -> str:
             log_prefix, field_name, type(raw).__name__,
         )
         return ""
+    encoded_len = len(raw.encode("utf-8"))
+    if encoded_len > MARKETPLACE_METADATA_FIELD_MAX_BYTES:
+        logger.warning(
+            "%s %s truncated: %d bytes exceeds per-field cap %d",
+            log_prefix, field_name, encoded_len, MARKETPLACE_METADATA_FIELD_MAX_BYTES,
+        )
+        # Truncate to the cap measured in UTF-8 bytes; use a generous slice
+        # of CHARS first, then bisect down on bytes (cheap; runs once when
+        # the cap is hit, not in the hot path).
+        encoded = raw.encode("utf-8")[:MARKETPLACE_METADATA_FIELD_MAX_BYTES]
+        # Drop trailing partial UTF-8 sequence (max 3 trailing bytes).
+        for trim in range(4):
+            try:
+                raw = encoded[: len(encoded) - trim].decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                continue
     return raw.strip("\n").rstrip()
 
 
@@ -271,9 +300,14 @@ def _validated_sample_interaction(
             log_prefix,
         )
         return None
+    # `assistant` is rendered as markdown in the UI — apply the same per-field
+    # byte cap that ``description`` and ``when_to_use`` use so a single
+    # `sample_interaction.assistant` of 1 MiB can't dominate request CPU.
     return {
         "user": user.strip(),
-        "assistant": assistant.strip("\n").rstrip(),  # markdown body
+        "assistant": _validated_markdown(
+            assistant, "sample_interaction.assistant", log_prefix,
+        ),
     }
 
 
@@ -455,8 +489,8 @@ def resolve_inner_metadata(
     if when_to_use:
         out["when_to_use"] = when_to_use
     # invocation is a single-line literal command the curator wants users
-    # to copy-paste (e.g. "/grpn-eng:confluence <your question>"). When
-    # absent, the API/template falls back to the computed
+    # to copy-paste (e.g. "/my-plugin:tool <your question>"). When absent,
+    # the API/template falls back to the computed
     # "<manifest_name>:<inner_name>" so legacy items still show a chip.
     invocation = _validated_string(
         section.get("invocation"), "invocation", log_prefix,

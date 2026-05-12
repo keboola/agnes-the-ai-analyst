@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -1023,11 +1024,9 @@ async def curated_detail(
     # v32: enrich each skill/agent card with its marketplace-metadata cover photo
     # so the inner cards on the plugin detail page render the real image
     # instead of just initials. Read marketplace-metadata + mirror manifest once
-    # (cached by the helpers) and reuse for all inner items in the plugin.
-    from src.marketplace_metadata import read_marketplace_metadata as _read_md
-    inner_metadata = _read_md(
-        Path(get_marketplaces_dir()) / marketplace_id,
-    )
+    # (mtime cache makes the metadata read free on cache hit) and reuse for
+    # all inner items in the plugin.
+    inner_metadata = _read_metadata_cached(marketplace_id)
     inner_manifest = _load_mirror_manifest(marketplace_id)
 
     for s in skills:
@@ -1492,13 +1491,14 @@ def _curated_inner_enrichment(
     ``cover_photo_url`` (resolved served URL or None),
     ``video_url`` (str or None), ``docs`` (list of DocEntry).
     """
-    from src.marketplace_metadata import (
-        read_marketplace_metadata,
-        resolve_inner_metadata,
-    )
+    from src.marketplace_metadata import resolve_inner_metadata
 
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
-    metadata = read_marketplace_metadata(repo_root)
+    # Route through the mtime cache so skill / agent detail hits don't
+    # re-parse the JSON on every request. Plugin listing already shares
+    # this cache, so opening 5 inner-detail pages on a marketplace whose
+    # metadata file hasn't changed = 0 disk reads beyond the first.
+    metadata = _read_metadata_cached(marketplace_id)
     section_kind = "skills" if kind == "skill" else "agents"
     resolved = resolve_inner_metadata(metadata, plugin_name, section_kind, inner_name)
     if not resolved:
@@ -1553,21 +1553,26 @@ def _curated_inner_enrichment(
         "docs": docs,
     }
     # Rich user-facing fields — same shape as the plugin-level enrichment.
-    # All optional; missing fields stay absent so the API's existing
-    # `default=` clauses on InnerDetailResponse hold the right None / [].
-    if resolved.get("display_name"):
+    # Presence check (``in``) rather than truthy check so the resolver's
+    # contract is respected: if the resolver decided to include a key,
+    # the API propagates it. Future falsy-but-valid fields (e.g. a bool
+    # ``featured: false`` or numeric ``priority: 0``) inherit correctly
+    # instead of silently falling back to the parent — the trap @cvrysanek
+    # flagged in the multi-persona review. String fields stay truthy-
+    # guarded by the resolver itself, so today's behaviour is unchanged.
+    if "display_name" in resolved:
         out["display_name"] = resolved["display_name"]
-    if resolved.get("tagline"):
+    if "tagline" in resolved:
         out["tagline"] = resolved["tagline"]
     # Per-item category override — caller merges with the parent plugin's
     # category, preferring the override when set.
-    if resolved.get("category"):
+    if "category" in resolved:
         out["category"] = resolved["category"]
-    if resolved.get("description"):
+    if "description" in resolved:
         out["description_long_html"] = render_safe(resolved["description"])
-    if resolved.get("when_to_use"):
+    if "when_to_use" in resolved:
         out["when_to_use_html"] = render_safe(resolved["when_to_use"])
-    if resolved.get("invocation"):
+    if "invocation" in resolved:
         out["invocation"] = resolved["invocation"]
 
     use_cases_raw = resolved.get("use_cases") or []
@@ -1588,7 +1593,15 @@ def _curated_inner_enrichment(
 # the cached parse. The 24-plugin listing endpoint reads from the same
 # marketplace's metadata 24 times per page; without this cache that's 24
 # disk reads + JSON parses per request. With cache: 1.
-_PLUGIN_METADATA_CACHE: Dict[Tuple[str, int], Dict[str, Any]] = {}
+#
+# OrderedDict + popitem(last=False) on overflow gives us a bounded LRU
+# without a third-party dependency. Earlier versions used a per-marketplace
+# eviction predicate that only swept stale entries for the CURRENT marketplace
+# — at N>100 distinct marketplaces the inner predicate matched zero entries,
+# so the cap silently failed and memory grew linearly. The bounded LRU here
+# guarantees the dict size never exceeds _PLUGIN_METADATA_CACHE_MAX.
+_PLUGIN_METADATA_CACHE_MAX = 256
+_PLUGIN_METADATA_CACHE: "OrderedDict[Tuple[str, int], Dict[str, Any]]" = OrderedDict()
 
 
 def _read_metadata_cached(marketplace_id: str) -> Dict[str, Any]:
@@ -1597,7 +1610,8 @@ def _read_metadata_cached(marketplace_id: str) -> Dict[str, Any]:
     Cached by mtime so curator edits land at next request without explicit
     invalidation. Missing / malformed files degrade to ``{}`` (delegated to
     :func:`src.marketplace_metadata.read_marketplace_metadata` which already
-    swallows OSError / JSONDecodeError).
+    swallows OSError / JSONDecodeError). Cache is bounded LRU; the oldest
+    entry is dropped when the cap is reached.
     """
     from src.marketplace_metadata import (
         MARKETPLACE_METADATA_REL,
@@ -1614,16 +1628,14 @@ def _read_metadata_cached(marketplace_id: str) -> Dict[str, Any]:
     key = (marketplace_id, mtime_ns)
     cached = _PLUGIN_METADATA_CACHE.get(key)
     if cached is not None:
+        # Touch the entry so the LRU bookkeeping treats it as recently used.
+        _PLUGIN_METADATA_CACHE.move_to_end(key)
         return cached
     parsed = read_marketplace_metadata(repo_root)
     _PLUGIN_METADATA_CACHE[key] = parsed
-    # Soft eviction: when the cache outgrows ~100 entries, drop the entry
-    # for this marketplace's PREVIOUS mtime (if any). Keeps memory bounded
-    # across long-running processes without needing a TTL thread.
-    if len(_PLUGIN_METADATA_CACHE) > 100:
-        for k in list(_PLUGIN_METADATA_CACHE):
-            if k[0] == marketplace_id and k[1] != mtime_ns:
-                _PLUGIN_METADATA_CACHE.pop(k, None)
+    # Bounded LRU: drop oldest entries until we're back under the cap.
+    while len(_PLUGIN_METADATA_CACHE) > _PLUGIN_METADATA_CACHE_MAX:
+        _PLUGIN_METADATA_CACHE.popitem(last=False)
     return parsed
 
 
@@ -1658,11 +1670,14 @@ def _curated_plugin_enrichment(
         return {}
 
     out: Dict[str, Any] = {}
-    if resolved.get("display_name"):
+    # Presence check (`in`) so future falsy-but-valid resolver fields
+    # (bool / int / "" with explicit-empty semantics) survive — see the
+    # parallel comment in `_curated_inner_enrichment` for the trap rationale.
+    if "display_name" in resolved:
         out["display_name"] = resolved["display_name"]
-    if resolved.get("tagline"):
+    if "tagline" in resolved:
         out["tagline"] = resolved["tagline"]
-    if resolved.get("description"):
+    if "description" in resolved:
         out["description_long_html"] = render_safe(resolved["description"])
 
     use_cases_raw = resolved.get("use_cases") or []
@@ -1697,9 +1712,10 @@ def _curated_inner_cover(
     from src.marketplace_metadata import resolve_inner_metadata
 
     if metadata is None:
-        from src.marketplace_metadata import read_marketplace_metadata
-        repo_root = Path(get_marketplaces_dir()) / marketplace_id
-        metadata = read_marketplace_metadata(repo_root)
+        # Route through the mtime cache; this helper gets called once per
+        # inner item on the parent-plugin's skills/agents card list, so
+        # cache miss only happens on the first card.
+        metadata = _read_metadata_cached(marketplace_id)
     if manifest is None:
         manifest = _load_mirror_manifest(marketplace_id)
 
