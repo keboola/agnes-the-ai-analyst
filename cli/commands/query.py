@@ -212,10 +212,33 @@ def _output(columns: list, rows: list, fmt: str):
         for row in rows:
             typer.echo(",".join(str(v) if v is not None else "" for v in row))
     else:
-        # Table format using rich
+        # Table format using rich, with a vertical-record fallback when the
+        # column count would collapse every cell to zero width.
+        #
+        # Issue #255: `SELECT * FROM order_economics LIMIT 3` against a
+        # 53-column table on an 80-col TTY produced an empty grid with
+        # only header pipes visible — rich shrinks each column to fit and
+        # gives up at 53 × 1-char minimum. Fallback to a psql-`\x`-style
+        # record view ("─── row 1 ───\n  col: val\n…") when the column
+        # count exceeds what the terminal can sensibly render.
+        import shutil
         from rich.console import Console
         from rich.table import Table
+
+        term_cols = shutil.get_terminal_size((120, 24)).columns
+        # Conservative threshold: rich's column overhead (separators +
+        # padding) is ~3 chars; below ~6 chars per column the result is
+        # unreadable. Switch to vertical when columns × 6 > terminal.
+        too_wide = len(columns) * 6 > term_cols
         console = Console()
+        if too_wide:
+            for i, row in enumerate(rows, 1):
+                console.print(f"─── row {i} ───", style="dim")
+                pad = max(len(c) for c in columns)
+                for col, val in zip(columns, row):
+                    rendered = "" if val is None else str(val)
+                    console.print(f"  {col:<{pad}} : {rendered}")
+            return
         table = Table()
         for col in columns:
             table.add_column(col)

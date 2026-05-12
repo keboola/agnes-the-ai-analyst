@@ -191,6 +191,24 @@ def _refresh_concurrency() -> int:
     return value if value > 0 else 4
 
 
+# ─── Single-flight state ──────────────────────────────────────────────────
+#
+# Module-level guard so a second concurrent
+# ``POST /api/admin/run-bq-metadata-refresh`` doesn't fan out duplicate
+# BQ work. Pre-0.52 the second call would happily run its own loop and
+# do 2× BQ jobs-API traffic against the same set of tables for the same
+# eventual UPSERT result — confirmed by stress test C on 2026-05-12.
+# DuckDB MVCC kept the rows consistent, but BQ quota leaked.
+#
+# Semantics: while a refresh is running, additional callers get
+# ``409 already_running`` with the in-flight ``run_id`` + ``started_at``
+# so they can correlate against logs. Scheduler treats 409 as a no-op
+# success (next tick will fire again — usually 4 h later — and find
+# the lock free).
+_refresh_lock = asyncio.Lock()
+_refresh_state: dict[str, Any] = {"run_id": None, "started_at": None}
+
+
 # ─── Endpoints ─────────────────────────────────────────────────────────────
 
 
@@ -202,29 +220,56 @@ async def run_bq_metadata_refresh(
     """Refresh metadata for every remote BQ row in the registry.
 
     Called by the scheduler at ``SCHEDULER_BQ_METADATA_REFRESH_INTERVAL``
-    (default 4 h). Idempotent — running twice in quick succession is
-    safe but wasteful; the scheduler enforces the interval.
+    (default 4 h). Single-flight guarded: if a refresh is already
+    running (e.g. operator clicked "Re-warm all" while a scheduler tick
+    is in flight, or two scheduler containers raced during an upgrade),
+    the second caller gets ``409 already_running`` with the in-flight
+    ``run_id`` + ``started_at`` so they can correlate against logs.
+    The scheduler treats 409 as a no-op success.
 
-    Bounded concurrency (default 4, override via
+    Bounded concurrency within a run (default 4, override via
     ``AGNES_BQ_METADATA_REFRESH_CONCURRENCY``) so a deployment with
     many remote tables doesn't fan out to dozens of parallel BQ jobs.
     """
+    import uuid
+
     from src.db import get_system_db
 
-    rows = _list_remote_bq_rows(conn)
-    sem = asyncio.Semaphore(_refresh_concurrency())
+    if _refresh_lock.locked():
+        # Issue #256: emit 409 instead of doing 2× BQ work.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "already_running",
+                "run_id": _refresh_state.get("run_id"),
+                "started_at": _refresh_state.get("started_at"),
+                "hint": "A refresh is already in flight; this caller is a no-op.",
+            },
+        )
 
-    async def _one(row: dict[str, Any]) -> dict[str, Any]:
-        async with sem:
-            # Each refresh_one call wants its own cursor; the singleton
-            # connection accessor returns a fresh cursor each call.
-            return await asyncio.to_thread(refresh_one, get_system_db(), row)
+    async with _refresh_lock:
+        run_id = uuid.uuid4().hex[:8]
+        started_at = datetime.now(timezone.utc).isoformat()
+        _refresh_state["run_id"] = run_id
+        _refresh_state["started_at"] = started_at
+        try:
+            rows = _list_remote_bq_rows(conn)
+            sem = asyncio.Semaphore(_refresh_concurrency())
 
-    t0 = time.monotonic()
-    results = await asyncio.gather(
-        *(_one(r) for r in rows), return_exceptions=True,
-    )
-    duration_ms = int((time.monotonic() - t0) * 1000)
+            async def _one(row: dict[str, Any]) -> dict[str, Any]:
+                async with sem:
+                    # Each refresh_one call wants its own cursor; the singleton
+                    # connection accessor returns a fresh cursor each call.
+                    return await asyncio.to_thread(refresh_one, get_system_db(), row)
+
+            t0 = time.monotonic()
+            results = await asyncio.gather(
+                *(_one(r) for r in rows), return_exceptions=True,
+            )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+        finally:
+            _refresh_state["run_id"] = None
+            _refresh_state["started_at"] = None
 
     succeeded = sum(
         1 for r in results if isinstance(r, dict) and r.get("status") == "ok"
@@ -239,10 +284,12 @@ async def run_bq_metadata_refresh(
     )
 
     logger.info(
-        "bq metadata refresh: total=%d ok=%d no_data=%d failed=%d duration_ms=%d",
-        len(rows), succeeded, no_data, failed, duration_ms,
+        "bq metadata refresh: run_id=%s total=%d ok=%d no_data=%d failed=%d duration_ms=%d",
+        run_id, len(rows), succeeded, no_data, failed, duration_ms,
     )
     return {
+        "run_id": run_id,
+        "started_at": started_at,
         "total": len(rows),
         "succeeded": succeeded,
         "no_data": no_data,
