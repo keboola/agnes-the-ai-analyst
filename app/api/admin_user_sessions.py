@@ -370,6 +370,18 @@ def list_user_activity(
         "SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]
     ).fetchone()[0]
 
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("id"),
+            action="admin.user_activity_read",
+            resource=f"users/{user_id}/activity"[:256],
+            params={"target_user_id": user_id, "limit": limit, "offset": offset, "row_count": len(rows)},
+            result="success",
+            client_kind="web",
+        )
+    except Exception:
+        logger.exception("audit_log write failed for admin.user_activity_read; continuing")
+
     return {
         "rows": rows,
         "pagination": {"limit": limit, "offset": offset, "total": int(total)},

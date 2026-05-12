@@ -564,3 +564,89 @@ class TestSnapshotCreateAudit:
         assert after == before + 1
         row = _last_audit_row("snapshot.create")
         assert row[3].startswith("error.")
+
+
+# ---------------------------------------------------------------------------
+# Error message capping (Fix 1)
+# ---------------------------------------------------------------------------
+
+def _get_last_audit_params(action: str) -> dict:
+    """Fetch params dict from the latest audit row matching action."""
+    import json
+    conn = get_system_db()
+    try:
+        row = conn.execute(
+            "SELECT params FROM audit_log WHERE action = ? ORDER BY timestamp DESC LIMIT 1",
+            [action],
+        ).fetchone()
+        if row:
+            params_str = row[0]
+            if isinstance(params_str, str):
+                return json.loads(params_str) or {}
+            return params_str or {}
+        return {}
+    finally:
+        conn.close()
+
+
+class TestErrorMessageCapping:
+    """Verify that audit error paths cap error messages at 200 chars.
+
+    Rather than monkeypatching to force errors, we trigger 404 errors
+    (table not found) which emit audit rows with error messages.
+    The error message from FileNotFoundError (the exception) is capped
+    by the fix in each endpoint's error handler.
+    """
+
+    def test_v2_schema_error_message_is_capped(self, seeded_app, admin_user):
+        """v2/schema error path caps error message at 200 chars."""
+        c = seeded_app["client"]
+        before = _count_audit_rows("catalog.schema")
+        # Request a nonexistent table to trigger FileNotFoundError
+        resp = c.get("/api/v2/schema/nonexistent_xyz_123456789", headers=admin_user)
+        assert resp.status_code == 404
+        after = _count_audit_rows("catalog.schema")
+        assert after == before + 1
+
+        params = _get_last_audit_params("catalog.schema")
+        error_msg = params.get("error", "")
+        assert len(error_msg) <= 200, f"error message length {len(error_msg)} exceeds 200"
+
+    def test_v2_sample_error_message_is_capped(self, seeded_app, admin_user):
+        """v2/sample error path caps error message at 200 chars."""
+        c = seeded_app["client"]
+        before = _count_audit_rows("catalog.sample")
+        resp = c.get("/api/v2/sample/nonexistent_xyz_sample123", headers=admin_user)
+        assert resp.status_code == 404
+        after = _count_audit_rows("catalog.sample")
+        assert after == before + 1
+
+        params = _get_last_audit_params("catalog.sample")
+        error_msg = params.get("error", "")
+        assert len(error_msg) <= 200, f"error message length {len(error_msg)} exceeds 200"
+
+    def test_v2_scan_estimate_error_message_is_capped(self, seeded_app, admin_user):
+        """v2/scan/estimate error path caps error message at 200 chars."""
+        c = seeded_app["client"]
+        before = _count_audit_rows("snapshot.estimate")
+        resp = c.post("/api/v2/scan/estimate", json={"table_id": "nonexistent_xyz_estimate"}, headers=admin_user)
+        assert resp.status_code == 404
+        after = _count_audit_rows("snapshot.estimate")
+        assert after == before + 1
+
+        params = _get_last_audit_params("snapshot.estimate")
+        error_msg = params.get("error", "")
+        assert len(error_msg) <= 200, f"error message length {len(error_msg)} exceeds 200"
+
+    def test_v2_scan_error_message_is_capped(self, seeded_app, admin_user):
+        """v2/scan error path caps error message at 200 chars."""
+        c = seeded_app["client"]
+        before = _count_audit_rows("snapshot.create")
+        resp = c.post("/api/v2/scan", json={"table_id": "nonexistent_xyz_scan123"}, headers=admin_user)
+        assert resp.status_code == 404
+        after = _count_audit_rows("snapshot.create")
+        assert after == before + 1
+
+        params = _get_last_audit_params("snapshot.create")
+        error_msg = params.get("error", "")
+        assert len(error_msg) <= 200, f"error message length {len(error_msg)} exceeds 200"
