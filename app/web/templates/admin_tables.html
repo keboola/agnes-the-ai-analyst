@@ -910,6 +910,7 @@
             <button data-tab="bigquery" aria-selected="{{ 'true' if initial_tab == 'bigquery' else 'false' }}" class="tab" onclick="switchTab('bigquery')">BigQuery</button>
             <button data-tab="keboola" aria-selected="{{ 'true' if initial_tab == 'keboola' else 'false' }}" class="tab" onclick="switchTab('keboola')">Keboola</button>
             <button data-tab="jira" aria-selected="{{ 'true' if initial_tab == 'jira' else 'false' }}" class="tab" onclick="switchTab('jira')">Jira</button>
+            <button data-tab="internal" aria-selected="false" class="tab" onclick="switchTab('internal')">Agnes internal</button>
         </nav>
 
         <section id="tab-content-bigquery" class="tab-content"
@@ -1653,22 +1654,18 @@
             <div id="jiraTableListing"></div>
         </section>
 
-        {# Internal data source — read-only panel listing the agnes_*
-           tables auto-seeded from `connectors/internal/registry.py`.
-           Renders the same registry-table layout the per-source tabs
-           use (via renderRegistryListing), so admins see consistent
-           columns. No Register button — these rows are seeded on app
-           boot, not added through the UI; the seed re-applies on every
-           start so operators can't edit them away. #}
-        <section class="card" style="margin-bottom: 20px;">
-            <header class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <h2>Agnes internal tables</h2>
-                <span style="font-size: 12px; color: var(--text-secondary);">auto-seeded · read-only</span>
-            </header>
+        {# Fourth tab: Agnes internal data source. Auto-seeded read-only
+           rows backed by system.duckdb (agnes_sessions / agnes_telemetry /
+           agnes_audit). No Register button — these are seeded on every
+           app boot from connectors/internal/registry.py. The
+           tab-content visibility matches the BQ/Keboola/Jira pattern
+           above so switchTab() handles it without code changes. #}
+        <section id="tab-content-internal" class="tab-content" style="display: none;">
             <p class="hint" style="margin-bottom: 16px;">
                 System tables backed by <code>system.duckdb</code> and exposed to <code>agnes query</code>
                 through the internal connector. Per-row RBAC: non-admin sees their own rows; admin sees all.
-                Seeded on every boot from <code>connectors/internal/registry.py</code>.
+                Seeded on every boot from <code>connectors/internal/registry.py</code> — Edit / Delete
+                actions are hidden because changes would revert on next start.
             </p>
             <div id="internalTableListing"></div>
         </section>
@@ -1774,7 +1771,7 @@
 
     function getActiveTabFromHash() {
         var hash = window.location.hash.replace(/^#/, '');
-        if (hash === 'bigquery' || hash === 'keboola' || hash === 'jira') {
+        if (hash === 'bigquery' || hash === 'keboola' || hash === 'jira' || hash === 'internal') {
             return hash;
         }
         return null;
