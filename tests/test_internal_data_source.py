@@ -216,3 +216,65 @@ def test_execute_rejects_sql_without_internal_refs():
             is_admin=False,
             sql="SELECT 1",
         )
+
+
+# ---------------------------------------------------------------------------
+# FastAPI-level wiring tests — catch the two arity bugs that the unit
+# tests on `execute_internal_query` / `build_filter_clause` missed,
+# because those test the connector primitives directly and skip the
+# request handler layer where `is_user_admin(user)` was mis-called.
+# ---------------------------------------------------------------------------
+
+def _seed_internal_via_api():
+    """``seeded_app`` bypasses the FastAPI lifespan, so the registry seed
+    that puts agnes_sessions / agnes_telemetry / agnes_audit into
+    ``table_registry`` doesn't run. Register them inline so the API
+    routes (`/api/query`, `/api/v2/sample`) can find them."""
+    from src.db import get_system_db
+    from connectors.internal.registry import ensure_internal_tables_registered
+    ensure_internal_tables_registered(get_system_db())
+
+
+def test_query_internal_via_api_admin_path(seeded_app, admin_user):
+    """POST /api/query with SQL referencing agnes_sessions returns rows
+    for an admin caller. Catches the regression where
+    app/api/query.py:_run_internal_query called is_user_admin(user) with
+    a dict instead of (user_id, conn) — request blew up with TypeError.
+    """
+    _seed_internal_via_api()
+    from src.db import get_system_db
+    conn = get_system_db()
+    conn.execute(
+        "INSERT INTO usage_session_summary "
+        "(session_file, session_id, username, processor_version) VALUES "
+        "('alice/api-1.jsonl', 's-api-1', 'alice', 1) "
+        "ON CONFLICT (session_file) DO NOTHING"
+    )
+    resp = seeded_app["client"].post(
+        "/api/query",
+        json={"sql": "SELECT COUNT(*) AS n FROM agnes_sessions"},
+        headers=admin_user,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["row_count"] == 1
+    # Admin sees all rows seeded earlier + this fixture's row.
+    assert int(body["rows"][0][0]) >= 1
+
+
+def test_sample_internal_via_api_admin_path(seeded_app, admin_user):
+    """GET /api/v2/sample/agnes_sessions returns rows for an admin caller.
+
+    Catches the regression where v2_sample.py called is_user_admin(user)
+    with a dict instead of (user_id, conn) — request blew up with 500.
+    """
+    _seed_internal_via_api()
+    resp = seeded_app["client"].get(
+        "/api/v2/sample/agnes_sessions?n=3",
+        headers=admin_user,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["table_id"] == "agnes_sessions"
+    assert body["source"] == "internal"
+    assert isinstance(body["rows"], list)

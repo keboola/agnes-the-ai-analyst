@@ -210,7 +210,9 @@ def _run_internal_query(
     """
     from src.db import _get_state_dir
     system_db_path = str(_get_state_dir() / "system.duckdb")
-    is_admin = is_user_admin(user)
+    # is_user_admin takes (user_id, conn) — passing the dict raises
+    # TypeError, which is exactly the regression review #278/1 caught.
+    is_admin = is_user_admin(user.get("id"), conn) if user.get("id") else False
     try:
         columns, rows, truncated = execute_internal_query(
             system_db_path=system_db_path,

@@ -205,6 +205,15 @@ def save_view(
         raise HTTPException(status_code=400, detail="query must be an object")
     if len(name) > 80:
         raise HTTPException(status_code=400, detail="name too long (max 80 chars)")
+    # Cap the saved-view payload so an admin can't bloat system.duckdb
+    # with a malformed save. 64 KiB is generous for the saved-view shape
+    # (window + a handful of short filter values + sort).
+    import json as _json
+    if len(_json.dumps(query)) > 64 * 1024:
+        raise HTTPException(
+            status_code=400,
+            detail="query payload too large (max 64 KiB)",
+        )
     return ObservabilityViewsRepository(conn).create(user_id, name, query)
 
 

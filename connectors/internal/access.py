@@ -102,8 +102,11 @@ def is_internal_table(table_id: str) -> bool:
 # RBAC filter resolution
 # ---------------------------------------------------------------------------
 
-_USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
-_USER_ID_RE  = re.compile(r"^[A-Za-z0-9._@:-]{1,200}$")
+# `+` allowed in both regexes — RFC 5321 local-parts (e.g. alice+test@x)
+# resolve to filesystem usernames with a `+`, and the session-data-dir
+# layout already supports the same character class.
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9._+-]{1,200}$")
+_USER_ID_RE  = re.compile(r"^[A-Za-z0-9._@:+-]{1,200}$")
 
 
 class InternalAccessError(Exception):

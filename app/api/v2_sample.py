@@ -118,7 +118,11 @@ def build_sample(
         if table_id not in INTERNAL_TABLES_BY_ID:
             raise FileNotFoundError(table_id)
         internal_def = INTERNAL_TABLES_BY_ID[table_id]
-        where_clause = build_filter_clause(internal_def, user, _is_admin(user))
+        # is_user_admin takes (user_id, conn) — earlier draft passed the
+        # whole user dict and crashed with TypeError on first request
+        # (review #278/2). Same fix as app/api/query.py:_run_internal_query.
+        is_admin = _is_admin(user.get("id"), conn) if user.get("id") else False
+        where_clause = build_filter_clause(internal_def, user, is_admin)
         # Reuse the shared system.duckdb connection via cursor — opening a
         # parallel handle to the same file is rejected process-wide
         # (DuckDB serialises file handles, even for ATTACH). The SELECT is
