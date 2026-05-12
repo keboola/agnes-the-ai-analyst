@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.53.1"
+version = "0.53.2"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -101,6 +101,14 @@ dependencies = [
     # a uniform API; OS releases the lock automatically on process exit (no
     # stale-lock detection required). Used by cli/lib/push_lock.py.
     "filelock>=3.13,<4",
+    # Transitive dependency hardened directly to dodge 5 dependabot advisories
+    # (4 high, 1 medium) flagged on urllib3<2.7.0: cross-origin sensitive
+    # header leak on proxied low-level redirects, decompression-bomb bypass
+    # + unbounded decompression chain on the streaming API, redirects-when-
+    # retries-disabled. Forced via `[tool.uv] override-dependencies` below
+    # because kbcstorage<=0.9.5 still pins urllib3<2.0.0 even though
+    # botocore/requests/google-cloud-* all support 2.x on Python 3.10+.
+    "urllib3>=2.7.0",
 ]
 
 [project.optional-dependencies]
@@ -148,3 +156,11 @@ dev-dependencies = [
     "openai>=1.30.0",
     "fastapi-debug-toolbar>=0.6.3",
 ]
+# Override the urllib3<2.0.0 ceiling kbcstorage 0.9.5 declares (upstream
+# hasn't relaxed it as of 2026-05-12 but the SDK works fine against
+# urllib3 2.x in practice — we only use `Client` + `Tables` from it and
+# both go through `requests`, which natively supports both lines). Lets
+# the resolver pick a urllib3 line that closes Dependabot advisories
+# CVE-2024-37891 / CVE-2025-{xxx}. See `urllib3>=2.7.0` in [project]
+# dependencies above for the security rationale.
+override-dependencies = ["urllib3>=2.7.0"]

@@ -590,14 +590,25 @@ class TestStoreSecurityFixes:
         assert r2.status_code == 409, r2.text
         assert r2.json()["detail"] == "conflict_global_suffix"
 
-    def test_scratch_dir_cleaned_up_after_failed_extraction(self, web_client, monkeypatch):
+    def test_scratch_dir_cleaned_up_after_failed_extraction(self, web_client, monkeypatch, tmp_path):
         """Devin: ZIP-validation failure inside _safe_zip_extract was leaving
         the ``agnes_store_*`` scratch dir on disk because scratch creation
         and cleanup lived in different try/finally scopes. After the fix
         both share one outer try/finally; assert the dir really is gone.
+
+        Issue #252: redirect ``tempfile.mkdtemp()`` to a per-test ``tmp_path``
+        via ``monkeypatch.setattr(tempfile, "tempdir", ...)`` so the
+        ``agnes_store_*`` glob is scoped to this test's exclusive directory.
+        Pre-#252 the glob ran against the shared system tmp and would flake
+        when a sibling pytest-xdist worker's store test happened to be
+        mid-creation inside the [before, after] window.
         """
         import tempfile as _tempfile
         from pathlib import Path as _Path
+
+        # FastAPI app runs in-process under TestClient → patching the
+        # tempfile module here also redirects the server-side mkdtemp call.
+        monkeypatch.setattr(_tempfile, "tempdir", str(tmp_path))
 
         # A ZIP whose only member traverses out of the destination —
         # _safe_zip_extract raises 422 zip_unsafe_path before it touches
@@ -608,7 +619,7 @@ class TestStoreSecurityFixes:
             zf.writestr("../escape.txt", "boom")
         bad_zip = buf.getvalue()
 
-        tmp_root = _Path(_tempfile.gettempdir())
+        tmp_root = tmp_path
         before = {p.name for p in tmp_root.glob("agnes_store_*")}
 
         _, cookies = _create_user(web_client, "leak@x.com")

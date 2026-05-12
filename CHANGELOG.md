@@ -23,6 +23,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Asana connector reverted from hosted Remote MCP back to PAT + raw REST against `app.asana.com/api/1.0`.** The MCP path (introduced in commit `adee8ea`, 2026-05-11) used ~5× the tokens per call because Claude Code reads the entire MCP response envelope; the PAT + REST path lets the agent read only the fields it needs from a flat JSON response. The new Asana prompt stores the PAT in the OS keychain under `agnes-asana-pat`, verifies against `/users/me` before writing, and prints the unified `✅`/`❌` line. Re-running setup on an instance still holding the leftover MCP registration detects it and asks the user to run `claude mcp remove asana` first so the two surfaces don't compete.
 - **Atlassian connector instructs picking the longest API-token expiry (today: "1 year").** The Atlassian Cloud token-create dropdown defaults to a short-lived expiry; the prompt now tells Claude to direct the user to choose the longest option in the "Expires" dropdown. There's no public query-parameter hook on `id.atlassian.com/manage-profile/security/api-tokens` to pre-select the expiry (verified — `?expiry=1y` returns identical HTML); the prompt acknowledges that limitation so a future contributor doesn't re-investigate.
 
+## [0.53.2] — 2026-05-12
+
+Hygiene round closing #244 + #252 + clearing 5 Dependabot urllib3 advisories.
+
+### Added
+
+- **`agnes diagnose` flags silently-broken `agnes capture-session`** (#244). New check compares `~/.claude/projects/<encoded>/*.jsonl` (SessionStart events Claude Code wrote) against `<workspace>/.claude/agnes-sessions-uploaded.txt` (entries `agnes push` actually shipped) inside a 7-day window. If the gap exceeds 3 sessions, surfaces a `warning` status with both counts plus a `agnes capture-session --verbose` pointer for manual triage. Pre-#244 a stdin-contract change in Claude Code would silently stop session uploads with the only observable signal being "session uploads stopped happening" — usually noticed weeks later.
+
+### Changed
+
+- **`urllib3` bumped from 1.26.20 to 2.7.0** to close 5 Dependabot advisories (4 high, 1 medium): cross-origin sensitive-header leak on proxied low-level redirects, decompression-bomb safeguard bypass + unbounded decompression chain on the streaming API, and redirects-when-retries-disabled. `kbcstorage` 0.9.5 still declares `urllib3<2.0.0` upstream as of this release; we override it via `[tool.uv] override-dependencies` because the SDK works fine against 2.x in practice (we only use `Client` + `Tables`, both go through `requests`, which natively supports both lines). Keboola client + connector test paths exercised against 2.7.0 — no regressions.
+
+### Fixed
+
+- **`test_scratch_dir_cleaned_up_after_failed_extraction` no longer flakes under pytest-xdist** (#252). Pre-#252 the test scanned `tempfile.gettempdir()` for `agnes_store_*` directories and asserted the set hadn't grown across a request — but with `-n auto` workers a sibling store test in another worker could be mid-creation of its own `agnes_store_*` inside the [before, after] window, flipping the assertion. Test now redirects `tempfile.tempdir` to a per-test `tmp_path` so the glob only sees this test's scratch dir.
+
+### Internal
+
+- 8 regression tests in `tests/test_session_health.py` cover the #244 check matrix (ok / warning / info / threshold / window-bounds / malformed-log resilience).
+
 ## [0.53.1] — 2026-05-12
 
 Follow-up to 0.53.0 closing #266 — `/admin/tables` Edit modal on BQ
