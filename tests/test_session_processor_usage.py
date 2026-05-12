@@ -340,3 +340,47 @@ class TestIdempotency:
         _process("mixed.jsonl", conn)
         n2 = conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]
         assert n1 == n2
+
+
+class TestMultiToolTurnDedup:
+    def test_two_tool_calls_in_same_turn_produce_two_events(self, tmp_path, monkeypatch):
+        """Parallel Bash + Read in the same assistant turn must produce 2 distinct events.
+
+        Regression — earlier bug: same event_uuid + same tool_name collided in id hash,
+        so the second tool_use was silently dropped by INSERT OR IGNORE.
+        """
+        conn = _fresh_db(tmp_path, monkeypatch)
+        _seed_attribution(conn)
+
+        jsonl_path = tmp_path / "multi_tool_turn.jsonl"
+        jsonl_path.write_text(
+            json.dumps({
+                "uuid": "turn-1",
+                "parentUuid": None,
+                "type": "assistant",
+                "sessionId": "sess-multi",
+                "timestamp": "2026-05-12T10:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-x",
+                    "content": [
+                        {"type": "tool_use", "id": "tu_a", "name": "Bash", "input": {"command": "ls"}},
+                        {"type": "tool_use", "id": "tu_b", "name": "Bash", "input": {"command": "pwd"}},
+                    ],
+                },
+            }) + "\n"
+        )
+
+        from services.session_processors.usage import UsageProcessor
+        processor = UsageProcessor()
+        processor.process_session(
+            session_path=jsonl_path,
+            username="alice",
+            session_key="alice/multi_tool_turn.jsonl",
+            conn=conn,
+        )
+
+        n = conn.execute(
+            "SELECT COUNT(*) FROM usage_events WHERE session_id='sess-multi'"
+        ).fetchone()[0]
+        assert n == 2, f"expected 2 events (one per tu_xxx), got {n}"

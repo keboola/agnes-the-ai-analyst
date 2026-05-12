@@ -62,6 +62,7 @@ _SKIP_TYPES = frozenset({
 class ParsedEvent:
     event_uuid: str | None
     parent_uuid: str | None
+    tool_id: str | None        # tool_use 'id' (tu_xxx) from message.content item; None for slash_command
     event_type: str            # 'tool_use' | 'slash_command' | 'subagent' | 'mcp_call'
     tool_name: str | None
     skill_name: str | None
@@ -177,6 +178,7 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
                     yield ParsedEvent(
                         event_uuid=event_uuid,
                         parent_uuid=parent_uuid,
+                        tool_id=tool_id or None,
                         event_type=event_type,
                         tool_name=tool_name or None,
                         skill_name=skill_name,
@@ -209,6 +211,7 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
                     yield ParsedEvent(
                         event_uuid=event_uuid,
                         parent_uuid=parent_uuid,
+                        tool_id=None,
                         event_type="slash_command",
                         tool_name=None,
                         skill_name=None,
@@ -379,48 +382,59 @@ def rebuild_rollups(conn, *, since_day=None) -> None:
 
     Default since_day = CURRENT_DATE - 7 (incremental refresh on every tick).
     Pass since_day=None to do full rebuild on reprocess.
+
+    Both rollup tables are updated inside a single transaction so a partial
+    failure never leaves them inconsistent.
     """
     if since_day is None:
         since_day = (datetime.now(timezone.utc) - timedelta(days=7)).date()
 
-    conn.execute("DELETE FROM usage_tool_daily WHERE day >= ?", [since_day])
-    conn.execute(
-        """
-        INSERT INTO usage_tool_daily
-            (day, tool_name, source, invocations, error_count, distinct_users, distinct_sessions)
-        SELECT
-            CAST(occurred_at AS DATE) AS day,
-            tool_name,
-            source,
-            COUNT(*) AS invocations,
-            SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_count,
-            COUNT(DISTINCT username) AS distinct_users,
-            COUNT(DISTINCT session_id) AS distinct_sessions
-        FROM usage_events
-        WHERE CAST(occurred_at AS DATE) >= ?
-          AND tool_name IS NOT NULL
-        GROUP BY day, tool_name, source
-        """,
-        [since_day],
-    )
-
-    conn.execute("DELETE FROM usage_plugin_daily WHERE day >= ?", [since_day])
-    conn.execute(
-        """
-        INSERT INTO usage_plugin_daily
-            (day, source, ref_id, invocations, distinct_users, distinct_sessions)
-        SELECT
-            CAST(occurred_at AS DATE) AS day,
-            source,
-            ref_id,
-            COUNT(*),
-            COUNT(DISTINCT username),
-            COUNT(DISTINCT session_id)
-        FROM usage_events
-        WHERE CAST(occurred_at AS DATE) >= ?
-          AND ref_id IS NOT NULL
-          AND source IN ('curated', 'flea')
-        GROUP BY day, source, ref_id
-        """,
-        [since_day],
-    )
+    try:
+        conn.execute("BEGIN")
+        conn.execute("DELETE FROM usage_tool_daily WHERE day >= ?", [since_day])
+        conn.execute(
+            """
+            INSERT INTO usage_tool_daily
+                (day, tool_name, source, invocations, error_count, distinct_users, distinct_sessions)
+            SELECT
+                CAST(occurred_at AS DATE) AS day,
+                tool_name,
+                source,
+                COUNT(*) AS invocations,
+                SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_count,
+                COUNT(DISTINCT username) AS distinct_users,
+                COUNT(DISTINCT session_id) AS distinct_sessions
+            FROM usage_events
+            WHERE CAST(occurred_at AS DATE) >= ?
+              AND tool_name IS NOT NULL
+            GROUP BY day, tool_name, source
+            """,
+            [since_day],
+        )
+        conn.execute("DELETE FROM usage_plugin_daily WHERE day >= ?", [since_day])
+        conn.execute(
+            """
+            INSERT INTO usage_plugin_daily
+                (day, source, ref_id, invocations, distinct_users, distinct_sessions)
+            SELECT
+                CAST(occurred_at AS DATE) AS day,
+                source,
+                ref_id,
+                COUNT(*),
+                COUNT(DISTINCT username),
+                COUNT(DISTINCT session_id)
+            FROM usage_events
+            WHERE CAST(occurred_at AS DATE) >= ?
+              AND ref_id IS NOT NULL
+              AND source IN ('curated', 'flea')
+            GROUP BY day, source, ref_id
+            """,
+            [since_day],
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
