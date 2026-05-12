@@ -459,3 +459,34 @@ class TestListUserActivity:
             f"/api/admin/users/{user_id}/activity", headers=analyst_user
         )
         assert resp.status_code in (401, 403)
+
+    def test_list_user_activity_writes_audit_row(self, seeded_app, admin_user):
+        """Reading another user's activity is itself audit-logged."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        # Grab an admin user ID (any user will do for this test)
+        admin_id = conn.execute("SELECT id FROM users WHERE email LIKE '%admin%' LIMIT 1").fetchone()
+        if admin_id:
+            target_user_id = admin_id[0]
+        else:
+            # Fallback: use the current admin user (assuming they exist)
+            target_user_id = admin_user.get("email") or "admin1"
+
+        before = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='admin.user_activity_read'"
+        ).fetchone()[0]
+        conn.close()
+
+        resp = seeded_app["client"].get(
+            f"/api/admin/users/{target_user_id}/activity", headers=admin_user
+        )
+        assert resp.status_code == 200
+
+        conn = get_system_db()
+        after = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='admin.user_activity_read'"
+        ).fetchone()[0]
+        conn.close()
+
+        assert after == before + 1

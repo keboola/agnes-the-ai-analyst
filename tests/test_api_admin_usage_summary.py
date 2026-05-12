@@ -113,3 +113,25 @@ def test_admin_usage_page_renders(seeded_app, admin_user):
 def test_admin_usage_page_admin_only(seeded_app, analyst_user):
     resp = seeded_app["client"].get("/admin/usage", headers=analyst_user)
     assert resp.status_code in (302, 403)
+
+
+def test_summary_does_not_audit_burst_polls(seeded_app, admin_user):
+    """5 rapid /summary calls produce at most 1 usage.summary audit row (60s dedup)."""
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    conn.execute("DELETE FROM audit_log WHERE action='usage.summary'")
+    conn.close()
+
+    client = seeded_app["client"]
+    for _ in range(5):
+        resp = client.get("/api/admin/usage/summary?window=7d", headers=admin_user)
+        assert resp.status_code == 200
+
+    conn = get_system_db()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='usage.summary'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert n <= 1, f"Expected at most 1 usage.summary audit row, got {n}"
