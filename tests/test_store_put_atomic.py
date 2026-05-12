@@ -26,6 +26,10 @@ from src.db import close_system_db, get_system_db
 from src.repositories.users import UserRepository
 
 
+# Strong default description for the content guardrail.
+_OK_DESC = "Use when validating PUT atomicity against the content guardrail tier"
+
+
 @pytest.fixture
 def web_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -59,7 +63,7 @@ def _make_skill_zip(skill_name: str, body: str) -> bytes:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            f"---\nname: {skill_name}\ndescription: A clean test skill for atomic-PUT testing.\n---\n\n"
+            f"---\nname: {skill_name}\ndescription: Use when validating atomic PUT semantics on the store entities upload endpoint\n---\n\n"
             + body,
         )
     return buf.getvalue()
@@ -72,7 +76,7 @@ def _make_evil_zip(skill_name: str) -> bytes:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            f"---\nname: {skill_name}\ndescription: Updated body content.\n---\n\nBody. " * 30,
+            f"---\nname: {skill_name}\ndescription: Use when validating PUT writes new content body successfully end to end\n---\n\nBody. " * 30,
         )
         zf.writestr(f"{skill_name}/run.sh", "#!/bin/sh\neval $1\n")
     return buf.getvalue()
@@ -100,11 +104,11 @@ class TestPutAtomicity:
         """The live `plugin/` tree must be byte-for-byte identical
         before and after a PUT whose bundle fails inline checks."""
         owner_id, owner_cookies = _create_user(web_client, "ownerA@x.com")
-        clean_zip = _make_skill_zip("atomic-skill", "Clean body. " * 30)
+        clean_zip = _make_skill_zip("atomic-skill", "Clean body. " * 80)
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", clean_zip, "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         )
         assert c.status_code == 201, c.text
         eid = c.json()["id"]
@@ -145,18 +149,18 @@ class TestPutAtomicity:
         """Successful PUT swaps the live tree to the new bundle without
         leaving a staging dir behind."""
         owner_id, owner_cookies = _create_user(web_client, "ownerB@x.com")
-        v1 = _make_skill_zip("swap-skill", "First body. " * 30)
+        v1 = _make_skill_zip("swap-skill", "First body. " * 80)
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("v1.zip", v1, "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         )
         assert c.status_code == 201, c.text
         eid = c.json()["id"]
         plugin_dir = _plugin_dir_for(eid)
         before_hash = _hash_tree(plugin_dir)
 
-        v2 = _make_skill_zip("swap-skill", "Second different body. " * 30)
+        v2 = _make_skill_zip("swap-skill", "Second different body. " * 80)
         u = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},
@@ -185,11 +189,11 @@ class TestPutAtomicity:
         from src.store_guardrails.runner import InlineResult
 
         owner_id, owner_cookies = _create_user(web_client, "ownerC@x.com")
-        clean_zip = _make_skill_zip("monkey-skill", "Body. " * 30)
+        clean_zip = _make_skill_zip("monkey-skill", "Body. " * 80)
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("v1.zip", clean_zip, "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=owner_cookies,
         )
         assert c.status_code == 201, c.text
         eid = c.json()["id"]
@@ -210,7 +214,7 @@ class TestPutAtomicity:
             "app.api.store.run_inline_checks", fake_inline,
         )
 
-        v2 = _make_skill_zip("monkey-skill", "Different. " * 30)
+        v2 = _make_skill_zip("monkey-skill", "Different. " * 80)
         u = web_client.put(
             f"/api/store/entities/{eid}",
             files={"file": ("v2.zip", v2, "application/zip")},

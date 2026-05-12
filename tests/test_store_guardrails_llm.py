@@ -165,6 +165,73 @@ class TestLlmReviewRunner:
         sub = StoreSubmissionsRepository(conn).get(sub_id)
         assert sub["status"] == "blocked_llm"
 
+    def test_content_quality_fail_blocks(self, conn, plugin_dir):
+        """Safe security verdict but content_quality.verdict=fail must still
+        block. The LLM substantive layer is a hard gate — descriptions that
+        clear the mechanical floor can still get flagged for vagueness."""
+        eid, sub_id = _seed_pending_submission(conn, plugin_dir)
+
+        verdict = {
+            "risk_level": "safe", "summary": "OK",
+            "findings": [],
+            "template_placeholders_found": 0,
+            "content_quality": {
+                "verdict": "fail",
+                "issues": [{
+                    "file": "skills/probe/SKILL.md",
+                    "field": "frontmatter.description",
+                    "issue": "describes WHAT the skill is, not WHEN to invoke it",
+                    "hint": "Rewrite as 'Use when reviewing PRs to flag missing tests.'",
+                }],
+            },
+            "reviewed_by_model": "claude-haiku-4-5-20251001",
+            "error": None,
+        }
+        with patch(
+            "src.store_guardrails.runner.llm_review.review_bundle",
+            return_value=verdict,
+        ):
+            run_llm_review(
+                sub_id, plugin_dir=plugin_dir,
+                conn_factory=_conn_factory(conn),
+                api_key_loader=lambda: "sk-test",
+                model_loader=lambda: "claude-haiku-4-5-20251001",
+            )
+
+        sub = StoreSubmissionsRepository(conn).get(sub_id)
+        assert sub["status"] == "blocked_llm"
+        # The content_quality verdict + issues persisted on the submission
+        # so the quarantine banner can render the rewrite hints.
+        assert sub["llm_findings"]["content_quality"]["verdict"] == "fail"
+        assert len(sub["llm_findings"]["content_quality"]["issues"]) == 1
+
+    def test_content_quality_missing_treated_as_pass(self, conn, plugin_dir):
+        """Backward compat — older recorded verdicts without content_quality
+        must not retroactively block. The wire format adds the field; absent
+        means pass."""
+        eid, sub_id = _seed_pending_submission(conn, plugin_dir)
+
+        verdict = {
+            "risk_level": "safe", "summary": "OK", "findings": [],
+            "template_placeholders_found": 0,
+            # content_quality intentionally absent
+            "reviewed_by_model": "claude-haiku-4-5-20251001",
+            "error": None,
+        }
+        with patch(
+            "src.store_guardrails.runner.llm_review.review_bundle",
+            return_value=verdict,
+        ):
+            run_llm_review(
+                sub_id, plugin_dir=plugin_dir,
+                conn_factory=_conn_factory(conn),
+                api_key_loader=lambda: "sk-test",
+                model_loader=lambda: "claude-haiku-4-5-20251001",
+            )
+
+        sub = StoreSubmissionsRepository(conn).get(sub_id)
+        assert sub["status"] == "approved"
+
     def test_medium_finding_with_safe_risk_passes(self, conn, plugin_dir):
         """Medium findings shouldn't block when overall risk is safe — that's
         the 'noise but no exploit' band the operator opted into when picking

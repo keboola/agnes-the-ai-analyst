@@ -94,24 +94,44 @@
         {% endif %}
       </ul>
       {% endif %}
+      {% if ic.content and ic.content.issues %}
+        {% include "_content_findings.html" with context %}
+      {% endif %}
     {% endif %}
 
   {% elif st == 'blocked_llm' %}
-    <h3>⚠ Quarantined — security review flagged risk</h3>
+    <h3>⚠ Quarantined — review flagged issues</h3>
     <div>
-      The security reviewer flagged this submission. It is hidden from
-      the public Store and from every other user; nobody can install
-      it. Address the findings below and re-upload, or wait for an
-      admin to resolve the quarantine.
+      The reviewer flagged this submission for security risk and/or
+      weak component descriptions. It is hidden from the public Store
+      and from every other user; nobody can install it. Address the
+      findings below and re-upload, or wait for an admin to resolve
+      the quarantine.
     </div>
     {% if sub and sub.llm_findings %}
       {% if sub.llm_findings.summary %}
       <div style="margin-top: 6px;"><em>{{ sub.llm_findings.summary }}</em></div>
       {% endif %}
       {% if sub.llm_findings.findings %}
+      <div style="margin-top: 8px; font-weight: 600;">Security findings</div>
       <ul>
         {% for f in sub.llm_findings.findings[:6] %}
         <li>[{{ f.severity }}] <code>{{ f.file }}</code> — {{ f.explanation }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if sub.llm_findings.content_quality and sub.llm_findings.content_quality.issues %}
+      <div style="margin-top: 10px; font-weight: 600;">Description quality — reviewer suggestions</div>
+      <ul>
+        {% for issue in sub.llm_findings.content_quality.issues[:8] %}
+        <li>
+          <code>{{ issue.file }}</code> — {{ issue.issue }}
+          {% if issue.hint %}
+          <div style="margin: 4px 0 0 0; font-size: 12px; opacity: 0.85;">
+            <strong>Rewrite:</strong> {{ issue.hint }}
+          </div>
+          {% endif %}
+        </li>
         {% endfor %}
       </ul>
       {% endif %}
@@ -187,6 +207,15 @@
       </ul>
       {% endif %}
     {% endif %}
+  {% endif %}
+
+  {# How-to-fix panel — render once below the per-tier findings whenever
+     content-quality issues exist on either tier. Same guidance regardless
+     of whether the inline mechanical check or the LLM substantive check
+     rejected the submission. #}
+  {% if sub and ((sub.inline_checks and sub.inline_checks.content and sub.inline_checks.content.issues)
+                 or (sub.llm_findings and sub.llm_findings.content_quality and sub.llm_findings.content_quality.issues)) %}
+    {% include "_content_howto_fix.html" with context %}
   {% endif %}
 
   {% if is_admin and sub %}

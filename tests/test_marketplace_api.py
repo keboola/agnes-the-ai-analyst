@@ -97,12 +97,19 @@ def _seed_curated_grant(
         conn.close()
 
 
+_OK_DESC = "Use when validating marketplace API endpoints across guardrail tiers"
+_OK_BODY = (
+    "Body explaining the skill, when to invoke it, and the expected outputs. "
+    "Long enough to clear the 200-char content guardrail floor. " * 2
+)
+
+
 def _make_skill_zip(skill_name: str = "code-review") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            f"---\nname: {skill_name}\ndescription: A test skill.\n---\nbody",
+            f"---\nname: {skill_name}\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}",
         )
     return buf.getvalue()
 
@@ -138,7 +145,7 @@ class TestListItems:
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("alpha"), "application/zip")},
-            data={"type": "skill"}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
         )
         r = web_client.get("/api/marketplace/items?tab=flea", cookies=cookies)
         assert r.status_code == 200
@@ -477,7 +484,7 @@ def _seed_curated_skill_on_disk(
     skill_dir = tmp_path / "marketplaces" / marketplace / "plugins" / plugin / "skills" / skill
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {skill}\ndescription: A test skill.\n---\nbody",
+        f"---\nname: {skill}\ndescription: Use when validating marketplace skill rows across guardrail tiers and endpoints\n---\nbody",
         encoding="utf-8",
     )
     for rel, content in (files or {}).items():
@@ -492,7 +499,7 @@ def _seed_curated_agent_on_disk(
     agents_dir = tmp_path / "marketplaces" / marketplace / "plugins" / plugin / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
     (agents_dir / f"{agent}.md").write_text(
-        f"---\nname: {agent}\ndescription: A test agent.\n---\nbody",
+        f"---\nname: {agent}\ndescription: Use when validating marketplace agent rows across guardrail tiers and endpoints\n---\nbody",
         encoding="utf-8",
     )
 
@@ -519,7 +526,7 @@ class TestCuratedInnerDetail:
         # Inner-detail fields.
         assert d["kind"] == "skill"
         assert d["name"] == "data-explorer"
-        assert d["description"] == "A test skill."
+        assert d["description"] == "Use when validating marketplace skill rows across guardrail tiers and endpoints"
         # Parent plugin metadata surfaced for the redesigned hero / sidebar.
         assert d["category"] == "Data"
         assert d["marketplace_name"]  # registry display name
@@ -646,7 +653,7 @@ class TestFleaDetail:
         up = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("alpha"), "application/zip")},
-            data={"type": "skill"}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
         )
         assert up.status_code == 201, up.text
         entity_id = up.json()["id"]

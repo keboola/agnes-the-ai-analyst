@@ -30,7 +30,13 @@ import duckdb
 from src.repositories.audit import AuditRepository
 from src.repositories.store_entities import StoreEntitiesRepository
 from src.repositories.store_submissions import StoreSubmissionsRepository
-from . import llm_review, manifest_check, quality_check, static_scan
+from . import (
+    content_check,
+    llm_review,
+    manifest_check,
+    quality_check,
+    static_scan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +47,19 @@ class InlineResult:
 
     manifest: Dict[str, Any] = field(default_factory=dict)
     static_security: Dict[str, Any] = field(default_factory=dict)
+    content: Dict[str, Any] = field(default_factory=dict)
     quality: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
         # Quality is a soft check — it can ``warn`` but never ``fail``,
-        # so we ignore its status here and only block on manifest +
-        # static-security failures.
+        # so we ignore its status here. Content is a hard fail
+        # (per-component description floor) and joins manifest +
+        # static-security as a blocking condition.
         return (
             self.manifest.get("status") == "pass"
             and self.static_security.get("status") == "pass"
+            and self.content.get("status") == "pass"
         )
 
     def to_response_dict(self) -> Dict[str, Any]:
@@ -58,6 +67,7 @@ class InlineResult:
         return {
             "manifest": self.manifest,
             "static_security": self.static_security,
+            "content": self.content,
             "quality": self.quality,
         }
 
@@ -83,10 +93,29 @@ def run_inline_checks(
     type_: str,
     description: Optional[str],
 ) -> InlineResult:
-    """Run the three deterministic checks and aggregate the verdicts."""
+    """Run the deterministic checks and aggregate the verdicts.
+
+    Content check merges per-component issues with the submission-level
+    description check — both go into ``content.issues`` so the rejection
+    UI doesn't need a special case for "submission description failed
+    AND a plugin agent description failed" combos.
+    """
+    content = content_check.check(plugin_dir)
+    submission_desc = content_check.check_submission_description(description)
+    if submission_desc.get("issues"):
+        # Merge the submission-level issues into the same bag. Mark the
+        # aggregate status fail if either component- or submission-level
+        # check failed.
+        merged_issues = list(content.get("issues") or []) + list(submission_desc["issues"])
+        content = {
+            "status": "fail" if merged_issues else "pass",
+            "issues": merged_issues,
+        }
+
     return InlineResult(
         manifest=manifest_check.check(plugin_dir, type_),
         static_security=static_scan.scan_dir(plugin_dir),
+        content=content,
         quality=quality_check.check(plugin_dir, description=description),
     )
 

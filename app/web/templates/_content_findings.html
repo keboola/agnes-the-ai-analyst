@@ -1,0 +1,80 @@
+{# Inline content-check findings rendered inside _quarantine_banner.html.
+   Expects `ic.content.issues` in scope — each issue has file, field,
+   code, hint, optional name. Grouped by file. Field + code names
+   translated to plain English so a non-developer reader still
+   understands what the problem is and which line to edit.
+#}
+{% set issues = ic.content.issues %}
+
+{# {file → [issue, ...]} grouping preserving first-seen order. #}
+{% set grouped = namespace(map={}, order=[]) %}
+{% for issue in issues %}
+  {% set _ = grouped.map.setdefault(issue.file, []) %}
+  {% if issue.file not in grouped.order %}{% set _ = grouped.order.append(issue.file) %}{% endif %}
+  {% set _ = grouped.map[issue.file].append(issue) %}
+{% endfor %}
+
+{# Field-label → plain English. Defined inline so the template stays
+   the single source of truth for what the submitter sees. #}
+{% set field_label = {
+  'frontmatter.description': 'Description (the line at the top of the file, after `description:`)',
+  'plugin.json.description': 'Description (the `description` field in `.claude-plugin/plugin.json`)',
+  'description': 'Description (on the upload form)',
+  'body': 'Content (the rest of the file after the description line)',
+} %}
+{% set code_label = {
+  'empty': 'is missing',
+  'too_short': 'is too short',
+  'low_word_count': 'needs more distinct words',
+  'placeholder_text': 'still has placeholder text (TODO, template, etc.)',
+  'body_too_short': 'is too short',
+} %}
+{% set component_label = {
+  'skill': 'skill',
+  'agent': 'agent',
+  'plugin': 'plugin',
+  'command': 'command',
+  'submission': 'description',
+} %}
+
+<div style="margin-top: 10px; font-weight: 600;">What needs fixing</div>
+<div style="font-size: 12px; opacity: 0.75; margin-bottom: 6px;">
+  Each block below is one part of your upload that needs more text.
+  Open the example to see exactly which line / field to change.
+</div>
+<ul style="list-style: none; padding-left: 0;">
+{% for file in grouped.order[:12] %}
+  {% set file_issues = grouped.map[file] %}
+  {% set first = file_issues[0] %}
+  {% set anchor = first.component_type or 'skill' %}
+  {% set anchor_label = component_label.get(anchor, 'description') %}
+  <li style="margin-bottom: 12px; padding: 8px 10px; background: rgba(0,0,0,0.03); border-radius: 6px;">
+    <div>
+      <strong>
+        {% if anchor == 'submission' %}Description on the upload form
+        {% else %}{{ anchor_label|capitalize }}{% if first.name %} <span style="opacity: 0.7;">— {{ first.name }}</span>{% endif %}
+        {% endif %}
+      </strong>
+      <span style="opacity: 0.6; font-size: 11px;">
+        {% if anchor != 'submission' %}<code>{{ file }}</code>{% endif %}
+      </span>
+      <a href="/store/examples#{{ anchor }}" target="_blank" rel="noopener"
+         style="margin-left: 8px; color: inherit; text-decoration: underline; font-weight: 600; font-size: 12px;">
+        See {{ anchor_label }} example ↗
+      </a>
+    </div>
+    <ul style="margin: 6px 0 0 0; padding-left: 18px; font-size: 12px;">
+      {% for issue in file_issues %}
+      <li style="margin-bottom: 6px;">
+        <strong>{{ field_label.get(issue.field, issue.field) }}</strong>
+        <span style="opacity: 0.8;">{{ code_label.get(issue.code, issue.code|replace('_', ' ')) }}.</span>
+        {% if issue.hint %}<div style="opacity: 0.85; margin-top: 3px;">{{ issue.hint }}</div>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </li>
+{% endfor %}
+</ul>
+{% if grouped.order|length > 12 %}
+<div style="font-size: 12px; opacity: 0.7;">… and {{ grouped.order|length - 12 }} more.</div>
+{% endif %}
