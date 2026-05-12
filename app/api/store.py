@@ -186,10 +186,20 @@ class InstallResponse(BaseModel):
     installed: bool
 
 
+class PreviewComponent(BaseModel):
+    type: str
+    name: Optional[str] = None
+    file: str
+    description: Optional[str] = None
+    ok: bool
+    issues: list = []
+
+
 class PreviewResponse(BaseModel):
     type: str
     name: Optional[str] = None
     description: Optional[str] = None
+    components: list[PreviewComponent] = []
 
 
 class OkResponse(BaseModel):
@@ -400,18 +410,11 @@ def _safe_zip_extract(zf: zipfile.ZipFile, dest: Path) -> None:
 
 
 def _parse_frontmatter(text: str) -> dict:
-    m = _FRONTMATTER_RE.match(text)
-    if not m:
-        return {}
-    body = m.group(1)
-    out: dict = {}
-    for line in body.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if ":" in line:
-            k, v = line.split(":", 1)
-            out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
+    # Delegated to src/store_guardrails/_frontmatter.py so the guardrail
+    # module can parse the same shape without creating an app→src→app
+    # import cycle. Wrapper kept for callers inside this file.
+    from src.store_guardrails._frontmatter import parse_frontmatter
+    return parse_frontmatter(text)
 
 
 def _set_frontmatter_name(text: str, new_name: str) -> str:
@@ -995,6 +998,8 @@ async def preview_entity(
             except zipfile.BadZipFile:
                 raise HTTPException(status_code=422, detail="zip_invalid")
             meta = _validate_and_extract_metadata(type, scratch)
+            from src.store_guardrails.content_check import summarize_for_preview
+            component_rows = summarize_for_preview(scratch, type)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
     finally:
@@ -1004,6 +1009,17 @@ async def preview_entity(
         type=type,
         name=meta.get("name"),
         description=meta.get("description"),
+        components=[
+            PreviewComponent(
+                type=row["type"],
+                name=row.get("name") or None,
+                file=row["file"],
+                description=row.get("description") or None,
+                ok=row["ok"],
+                issues=row["issues"],
+            )
+            for row in component_rows
+        ],
     )
 
 
@@ -1202,6 +1218,8 @@ async def create_entity(
                     "manifest": inline.manifest.get("status"),
                     "static_security": inline.static_security.get("status"),
                     "static_findings": len(inline.static_security.get("findings") or []),
+                    "content": inline.content.get("status"),
+                    "content_issues": len(inline.content.get("issues") or []),
                     "sha256": bundle_meta.sha256,
                     "file_size": bundle_meta.file_size,
                 },
@@ -1470,6 +1488,10 @@ async def update_entity(
                 _audit(
                     conn, user["id"], "store.submission.blocked_inline",
                     sub_id, {"entity_id": entity_id, "on": "update",
+                             "manifest": inline_after_update.manifest.get("status"),
+                             "static_security": inline_after_update.static_security.get("status"),
+                             "content": inline_after_update.content.get("status"),
+                             "content_issues": len(inline_after_update.content.get("issues") or []),
                              "sha256": rejected_meta.sha256,
                              "file_size": rejected_meta.file_size},
                 )

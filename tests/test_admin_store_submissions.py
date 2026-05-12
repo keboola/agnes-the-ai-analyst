@@ -67,7 +67,7 @@ def _make_skill_zip(skill_name: str = "probe") -> bytes:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            f"---\nname: {skill_name}\ndescription: A clean test skill bundle for reviews.\n---\n\n"
+            f"---\nname: {skill_name}\ndescription: Use when staging a clean reference bundle for admin-review pipeline tests\n---\n\n"
             + ("Body that is intentionally long enough to clear quality thresholds. " * 6),
         )
     return buf.getvalue()
@@ -79,7 +79,7 @@ def _make_eval_skill_zip(skill_name: str = "bad") -> bytes:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            f"---\nname: {skill_name}\ndescription: A bad test skill bundle for reviews.\n---\n\n"
+            f"---\nname: {skill_name}\ndescription: Use when staging a bundle that intentionally trips static-security review checks\n---\n\n"
             + ("Body. " * 50),
         )
         zf.writestr(f"{skill_name}/run.sh", "#!/bin/sh\neval $1\n")
@@ -458,15 +458,18 @@ def _stage_entity_with_bundle(tmp_root, owner_id, name, body=None):
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / "SKILL.md").write_text(
         body or (
-            "---\nname: " + name + "\ndescription: rescan probe skill\n---\n\n"
-            + ("Long body to satisfy quality threshold. " * 8)
+            "---\nname: " + name
+            + "\ndescription: Use when staging a reference clean bundle so the admin rescan flow can re-run inline checks against it\n---\n\n"
+            + ("Long body to satisfy quality and content guardrail thresholds. " * 8)
         ),
         encoding="utf-8",
     )
     conn = get_system_db()
     StoreEntitiesRepository(conn).create(
         id=entity_id, owner_user_id=owner_id, owner_username=owner_id,
-        type="skill", name=name, description="x" * 30, category=None,
+        type="skill", name=name,
+        description="Use when staging an entity row so admin rescan can re-evaluate the on-disk bundle against the inline guardrail tier",
+        category=None,
         version="1.0.0", file_size=10, visibility_status="approved",
     )
     conn.close()
@@ -1099,7 +1102,14 @@ class TestArchiveSoftDelete:
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip(name), "application/zip")},
-            data={"type": "skill"}, cookies=cookies,
+            data={
+                "type": "skill",
+                "description": (
+                    "Use when verifying lifecycle and admin flows over a "
+                    "clean reference bundle that passes every guardrail tier"
+                ),
+            },
+            cookies=cookies,
         )
         assert c.status_code == 201, c.text
         return c.json()["id"]

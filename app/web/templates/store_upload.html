@@ -229,6 +229,105 @@
   /* ── Step swap ─────────────────────────────────────────────────── */
   .step { display: none; }
   .step.is-active { display: block; }
+
+  /* ── Description char counter + guidelines disclosure ──────────── */
+  .desc-counter {
+    margin-top: 4px; font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+    font-family: var(--font-mono);
+  }
+  .desc-counter.ok { color: #16a34a; }
+  .desc-counter.warn { color: #b45309; }
+  .guidelines {
+    margin-bottom: 14px;
+    background: var(--background, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    overflow: hidden;
+    /* base.html has a sticky top bar; scroll target needs headroom so
+       the chevron lands BELOW the bar, not behind it. */
+    scroll-margin-top: 80px;
+  }
+  .guidelines-toggle {
+    appearance: none; -webkit-appearance: none;
+    width: 100%; text-align: left;
+    cursor: pointer;
+    padding: 12px 14px;
+    border: 0; background: transparent;
+    font-size: 13px; font-weight: 600;
+    color: var(--text-primary, #111827);
+    font-family: inherit;
+    user-select: none;
+    display: flex; align-items: center; gap: 8px;
+    transition: background 0.12s ease;
+    /* Same headroom as the wrap so direct .scrollIntoView() on the
+       button clears the sticky page header. */
+    scroll-margin-top: 80px;
+  }
+  .guidelines-toggle:hover { background: rgba(0, 115, 209, 0.06); }
+  .guidelines-toggle::before {
+    content: "▸"; transition: transform 0.15s ease;
+    display: inline-block; color: var(--primary, #0073D1); font-weight: 700;
+  }
+  .guidelines-toggle[aria-expanded="true"] {
+    background: rgba(0, 115, 209, 0.08);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+  }
+  .guidelines-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+  .guidelines-body {
+    padding: 10px 14px 14px 30px; font-size: 13px;
+    color: var(--text-primary, #374151); line-height: 1.6;
+    background: #ffffff;
+  }
+  .guidelines-body[hidden] { display: none; }
+  .guidelines-body p { margin: 6px 0; }
+  .guidelines-body ul { margin: 4px 0; padding-left: 18px; }
+  .guidelines-body code {
+    background: var(--border-light, #eef2f7); padding: 1px 5px;
+    border-radius: 4px; font-size: 12px; color: var(--text-primary, #111827);
+  }
+
+  /* ── Component preview table ───────────────────────────────────── */
+  .comp-list {
+    margin-top: 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; overflow: hidden;
+    font-size: 13px;
+  }
+  .comp-list-header {
+    background: var(--background, #f9fafb);
+    padding: 8px 12px; font-weight: 600; font-size: 12px;
+    color: var(--text-secondary, #6b7280); border-bottom: 1px solid var(--border, #e5e7eb);
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .comp-row {
+    padding: 8px 12px;
+    border-top: 1px solid var(--border, #e5e7eb);
+    display: flex; gap: 10px; align-items: flex-start;
+  }
+  .comp-row:first-of-type { border-top: none; }
+  .comp-dot {
+    flex-shrink: 0; width: 10px; height: 10px; border-radius: 50%;
+    margin-top: 6px;
+  }
+  .comp-dot.ok { background: #16a34a; }
+  .comp-dot.bad { background: #dc2626; }
+  .comp-text { flex: 1; min-width: 0; }
+  .comp-text .file {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-primary, #111827);
+  }
+  .comp-text .type {
+    display: inline-block; margin-left: 6px; padding: 1px 6px;
+    border-radius: 4px; background: rgba(0, 115, 209, 0.08);
+    color: var(--primary, #0073D1); font-size: 11px;
+  }
+  .comp-text .preview {
+    margin-top: 3px; color: var(--text-secondary, #6b7280); font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .comp-text .issue {
+    margin-top: 3px; color: #b91c1c; font-size: 12px;
+  }
 </style>
 
 <div class="upload-page page-shell">
@@ -251,6 +350,12 @@
   <div id="banner" class="banner error" hidden>
     <span class="ico">!</span><span id="banner-text"></span>
   </div>
+  <div id="banner-actions" hidden style="margin: -10px 0 14px 0; font-size: 13px;">
+    <a href="/store/examples" target="_blank" rel="noopener"
+       style="color: var(--primary, #0073D1); text-decoration: none; font-weight: 500;">
+      See submission examples ↗
+    </a>
+  </div>
 
   <!-- ─── Step 1: Type + ZIP ──────────────────────────────────────── -->
   <div id="step-1" class="step is-active">
@@ -262,6 +367,46 @@
       <div class="card-body">
         <p class="card-sub">Pick what you're uploading and the ZIP archive.
           The server validates the layout when you click <code>Next</code>.</p>
+
+        <div id="guidelines" class="guidelines">
+          <button type="button" class="guidelines-toggle" id="guidelines-toggle"
+                  aria-expanded="false" aria-controls="guidelines-body">
+            Before you upload — what passes review
+          </button>
+          <div class="guidelines-body" id="guidelines-body" hidden>
+            <p style="margin-top: 4px;">
+              Every component description (plugin, agents, skills, commands)
+              is the trigger string Claude reads to decide whether to invoke
+              it. Vague or missing descriptions get rejected even when the
+              code is fine.
+            </p>
+            <p><strong>The bar:</strong></p>
+            <ul>
+              <li>Each description ≥ <strong>60 characters</strong> (commands ≥ 25). Aim for one complete sentence — too short and the assistant can't tell when to use it.</li>
+              <li>At least 5 distinct words</li>
+              <li>No <code>TODO</code> / <code>TBD</code> / template placeholders</li>
+              <li>Action-oriented, names the trigger condition</li>
+            </ul>
+            <p><strong>Patterns that work:</strong></p>
+            <ul>
+              <li><strong>Skills</strong>: <code>Use when &lt;trigger&gt; — &lt;what it does&gt;</code></li>
+              <li><strong>Agents</strong>: <code>&lt;What the agent does&gt;. Use for &lt;invocation context&gt;</code></li>
+              <li><strong>Plugins</strong>: one-sentence marketplace pitch</li>
+              <li><strong>Commands</strong>: one-verb summary of the action</li>
+            </ul>
+            <p style="margin-bottom: 4px;">
+              The reviewer also runs a substantive pass on descriptions
+              — generic ones ("a useful skill for working with data")
+              get flagged even when they clear the mechanical bar.
+            </p>
+            <p style="margin-top: 10px;">
+              <a href="/store/examples" target="_blank" rel="noopener"
+                 style="color: var(--primary, #0073D1); text-decoration: none; font-weight: 500;">
+                See full examples ↗
+              </a>
+            </p>
+          </div>
+        </div>
 
         <div class="field">
           <label class="field-label">Type</label>
@@ -317,7 +462,36 @@
       </div>
       <div class="card-body">
         <p class="card-sub">Pre-filled from the ZIP's frontmatter — change anything you want.
-          Name and description are required; everything below is optional.</p>
+          Name and description are required; everything below is optional.
+        </p>
+
+        <div id="guidelines-2" class="guidelines">
+          <button type="button" class="guidelines-toggle" id="guidelines-toggle-2"
+                  aria-expanded="false" aria-controls="guidelines-body-2">
+            Before you upload — what passes review
+          </button>
+          <div class="guidelines-body" id="guidelines-body-2" hidden>
+            <p style="margin-top: 4px;">
+              Every component description (plugin, agents, skills, commands)
+              is the trigger string Claude reads to decide whether to invoke
+              it. Vague or missing descriptions get rejected even when the
+              code is fine.
+            </p>
+            <p><strong>The bar:</strong></p>
+            <ul>
+              <li>Each description ≥ <strong>60 characters</strong> (commands ≥ 25). Aim for one complete sentence — too short and the assistant can't tell when to use it.</li>
+              <li>At least 5 distinct words</li>
+              <li>No <code>TODO</code> / <code>TBD</code> / template placeholders</li>
+              <li>Action-oriented, names the trigger condition</li>
+            </ul>
+            <p style="margin-top: 10px;">
+              <a href="/store/examples" target="_blank" rel="noopener"
+                 style="color: var(--primary, #0073D1); text-decoration: none; font-weight: 500;">
+                See full examples ↗
+              </a>
+            </p>
+          </div>
+        </div>
 
         <div class="field">
           <label class="field-label" for="name">Name</label>
@@ -327,7 +501,25 @@
 
         <div class="field">
           <label class="field-label" for="description">Description</label>
-          <textarea id="description" placeholder="What does it do?"></textarea>
+          <textarea id="description"
+            placeholder="Use when reviewing pull requests to flag missing tests, weak assertions, and brittle implementation coupling."></textarea>
+          <div id="desc-counter" class="desc-counter">0 / 30 minimum</div>
+          <div class="field-hint">
+            Shown on the marketplace tile. Same bar as the per-component
+            descriptions —
+            <a href="#guidelines-2" id="open-guidelines-link"
+               style="color: var(--primary, #0073D1); text-decoration: underline;">see Before you upload</a>.
+          </div>
+        </div>
+
+        <div id="comp-preview" class="field" hidden>
+          <label class="field-label">Bundle components</label>
+          <div id="comp-list" class="comp-list"></div>
+          <div class="field-hint">
+            Green dots pass the mechanical description bar. The
+            substantive review runs after you Finish — bundles can still
+            be flagged for vague descriptions even when every dot is green.
+          </div>
         </div>
 
         <div class="field">
@@ -462,8 +654,48 @@ function humanizeError(detail) {
       for (const m of manifestIssues.slice(0, 3)) {
         lines.push('• manifest: ' + m);
       }
+      const contentIssues = (checks.content && checks.content.issues) || [];
+      if (contentIssues.length) {
+        // Plain-language labels — match the server-side rendering in
+        // _content_findings.html so the wording stays consistent.
+        const FIELD_LABEL = {
+          'frontmatter.description': 'Description (top of the file, after `description:`)',
+          'plugin.json.description': 'Description (in `.claude-plugin/plugin.json`)',
+          'description': 'Description (on the upload form)',
+          'body': 'Content (rest of the file after the description line)',
+        };
+        const CODE_LABEL = {
+          'empty': 'is missing',
+          'too_short': 'is too short',
+          'low_word_count': 'needs more distinct words',
+          'placeholder_text': 'still has placeholder text (TODO, template, etc.)',
+          'body_too_short': 'is too short',
+        };
+        const COMPONENT_LABEL = {
+          'skill': 'skill', 'agent': 'agent', 'plugin': 'plugin',
+          'command': 'command', 'submission': 'description',
+        };
+        lines.push('');
+        lines.push('What needs fixing:');
+        for (const issue of contentIssues.slice(0, 6)) {
+          const comp = COMPONENT_LABEL[issue.component_type] || 'component';
+          const fieldLabel = FIELD_LABEL[issue.field] || issue.field || 'description';
+          const codeLabel = CODE_LABEL[issue.code] || (issue.code || 'issue').replace(/_/g, ' ');
+          const where = issue.component_type === 'submission'
+            ? 'Description on the upload form'
+            : (comp.charAt(0).toUpperCase() + comp.slice(1))
+              + (issue.name ? ' — ' + issue.name : '');
+          lines.push('• ' + where);
+          lines.push('    ' + fieldLabel + ' ' + codeLabel + '.');
+          if (issue.hint) lines.push('    ' + issue.hint);
+        }
+        if (contentIssues.length > 6) {
+          lines.push('  …and ' + (contentIssues.length - 6) + ' more.');
+        }
+      }
       lines.push('');
-      lines.push('Fix the issues above and re-upload, or open the admin queue if the rule was over-strict.');
+      lines.push('Fix the issues above and re-upload as a new version.');
+      lines.push('See /store/examples for full before/after examples (opens in new tab).');
       return lines.join('\n');
     }
     if (code === 'quota_exceeded') {
@@ -487,13 +719,50 @@ function humanizeError(detail) {
   return 'Upload failed: ' + s;
 }
 
-function showError(msg) {
+const bannerActions = document.getElementById('banner-actions');
+
+// Manual toggle for the "Before you upload" disclosure. Native <details>
+// behaviour was unreliable in at least one operator browser — explicit
+// button + aria-expanded keeps the toggle deterministic. Renders on both
+// step 1 and step 2 so the bar stays visible after Next.
+function setGuidelinesOpen(btn, body, open) {
+  btn.setAttribute('aria-expanded', String(open));
+  body.hidden = !open;
+}
+
+document.querySelectorAll('.guidelines-toggle').forEach((btn) => {
+  const bodyId = btn.getAttribute('aria-controls');
+  const body = bodyId ? document.getElementById(bodyId) : null;
+  if (!body) return;
+  btn.addEventListener('click', () => {
+    const isOpen = btn.getAttribute('aria-expanded') === 'true';
+    setGuidelinesOpen(btn, body, !isOpen);
+  });
+});
+
+// "See Before you upload" inline link below the description textarea —
+// open the step-2 disclosure programmatically so the user lands with
+// the panel already expanded.
+const openGuidelinesLink = document.getElementById('open-guidelines-link');
+if (openGuidelinesLink) {
+  openGuidelinesLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('guidelines-toggle-2');
+    const body = document.getElementById('guidelines-body-2');
+    if (btn && body) {
+      setGuidelinesOpen(btn, body, true);
+      btn.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+  });
+}
+function showError(msg, {showExamplesLink = false} = {}) {
   banner.className = 'banner error';
   banner.firstElementChild.textContent = '!';
   bannerText.textContent = msg;
   banner.hidden = false;
+  bannerActions.hidden = !showExamplesLink;
 }
-function clearBanner() { banner.hidden = true; }
+function clearBanner() { banner.hidden = true; bannerActions.hidden = true; }
 
 function showStep(n) {
   document.getElementById('step-1').classList.toggle('is-active', n === 1);
@@ -646,6 +915,104 @@ function renderDocs() {
   });
 }
 
+// Description char counter — turns green at the 30-char threshold so the
+// submitter gets immediate feedback that they're past the floor. The
+// server is the source of truth; this is purely UX.
+const DESC_MIN = 60;  // Matches src/store_guardrails/content_check.py
+const descField = document.getElementById('description');
+const descCounter = document.getElementById('desc-counter');
+function updateDescCounter() {
+  const n = (descField.value || '').trim().length;
+  descCounter.textContent = `${n} / ${DESC_MIN} minimum`;
+  descCounter.classList.toggle('ok', n >= DESC_MIN);
+  descCounter.classList.toggle('warn', n > 0 && n < DESC_MIN);
+}
+descField.addEventListener('input', updateDescCounter);
+
+// Component preview rendering. Called after /preview with the
+// `components` array — shows green/red dots per component description.
+// Same plain-language maps used by humanizeError above. Kept inline
+// here so the renderComponents preview shows the same wording as the
+// rejection banner.
+const FIELD_LABEL_PREVIEW = {
+  'frontmatter.description': 'Description (top of the file)',
+  'plugin.json.description': 'Description (in plugin.json)',
+  'description': 'Description',
+  'body': 'Content (rest of the file)',
+};
+const CODE_LABEL_PREVIEW = {
+  'empty': 'is missing',
+  'too_short': 'is too short',
+  'low_word_count': 'needs more distinct words',
+  'placeholder_text': 'still has placeholder text',
+  'body_too_short': 'is too short',
+};
+
+function renderComponents(components) {
+  const wrap = document.getElementById('comp-preview');
+  const list = document.getElementById('comp-list');
+  list.innerHTML = '';
+  if (!components || components.length === 0) {
+    wrap.hidden = true;
+    return;
+  }
+  for (const c of components) {
+    const row = document.createElement('div');
+    row.className = 'comp-row';
+    const dot = document.createElement('div');
+    dot.className = 'comp-dot ' + (c.ok ? 'ok' : 'bad');
+    const text = document.createElement('div');
+    text.className = 'comp-text';
+    const fileLine = document.createElement('div');
+    const fileSpan = document.createElement('span');
+    fileSpan.className = 'file';
+    fileSpan.textContent = c.file || '';
+    const typeBadge = document.createElement('span');
+    typeBadge.className = 'type';
+    typeBadge.textContent = c.type;
+    fileLine.appendChild(fileSpan);
+    fileLine.appendChild(typeBadge);
+    text.appendChild(fileLine);
+    if (c.ok && c.description) {
+      const preview = document.createElement('div');
+      preview.className = 'preview';
+      preview.textContent = c.description;
+      text.appendChild(preview);
+    }
+    if (!c.ok) {
+      for (const issue of (c.issues || []).slice(0, 3)) {
+        const issLine = document.createElement('div');
+        issLine.className = 'issue';
+        const fieldLabel = FIELD_LABEL_PREVIEW[issue.field]
+          || issue.field || 'Description';
+        const codeLabel = CODE_LABEL_PREVIEW[issue.code]
+          || (issue.code || 'issue').replace(/_/g, ' ');
+        issLine.textContent = fieldLabel + ' ' + codeLabel + '. ' + (issue.hint || '');
+        text.appendChild(issLine);
+      }
+      // Single "See example ↗" link per component pointing at the
+      // matching anchor on /store/examples.
+      const anchor = c.type || 'skill';
+      const linkRow = document.createElement('div');
+      linkRow.style.marginTop = '4px';
+      const link = document.createElement('a');
+      link.href = '/store/examples#' + anchor;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = 'See ' + anchor + ' example ↗';
+      link.style.fontSize = '12px';
+      link.style.color = 'var(--primary, #0073D1)';
+      link.style.textDecoration = 'underline';
+      linkRow.appendChild(link);
+      text.appendChild(linkRow);
+    }
+    row.appendChild(dot);
+    row.appendChild(text);
+    list.appendChild(row);
+  }
+  wrap.hidden = false;
+}
+
 // Step 1 → preview
 nextBtn.addEventListener('click', async () => {
   clearBanner();
@@ -671,6 +1038,8 @@ nextBtn.addEventListener('click', async () => {
     const preview = await res.json();
     document.getElementById('name').value = preview.name || '';
     document.getElementById('description').value = preview.description || '';
+    updateDescCounter();
+    renderComponents(preview.components || []);
     showStep(2);
   } catch (err) {
     showError(String(err));
@@ -687,6 +1056,12 @@ finishBtn.addEventListener('click', async () => {
   clearBanner();
   const name = document.getElementById('name').value.trim();
   if (!name) { showError('Name is required.'); return; }
+
+  function isContentBlock(detail) {
+    return detail && detail.code === 'submission_blocked'
+      && detail.checks && detail.checks.content
+      && (detail.checks.content.issues || []).length > 0;
+  }
   const type = document.querySelector('input[name=type]:checked').value;
 
   finishBtn.disabled = true;
@@ -718,6 +1093,7 @@ finishBtn.addEventListener('click', async () => {
     // a successful upload, just landing on a banner instead of an
     // approved card.
     let msg = 'Upload failed.';
+    let showLink = false;
     try {
       const j = await res.json();
       const eid = j && j.detail && j.detail.entity_id;
@@ -725,9 +1101,12 @@ finishBtn.addEventListener('click', async () => {
         window.location = `/marketplace/flea/${encodeURIComponent(eid)}`;
         return;
       }
-      if (j.detail) msg = humanizeError(j.detail);
+      if (j.detail) {
+        msg = humanizeError(j.detail);
+        showLink = isContentBlock(j.detail);
+      }
     } catch(_) {}
-    showError(msg);
+    showError(msg, {showExamplesLink: showLink});
   } catch (err) {
     showError(String(err));
   } finally {

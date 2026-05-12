@@ -10,6 +10,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Flea-market content guardrail — two-tier per-component description
+  enforcement.** Submissions are now rejected when any component (plugin,
+  agent, skill, command) ships a description that doesn't meet a basic
+  bar. A mechanical inline check (`src/store_guardrails/content_check.py`)
+  catches the obvious cases — empty, literal `TODO` / `TBD`, unfilled
+  `{{var}}` tokens, fewer than 60 characters (25 for commands), fewer
+  than 5 distinct words, skill/agent body shorter than 200 characters —
+  and blocks before any LLM call. The existing security LLM review
+  (`src/store_guardrails/llm_review.py`) gains a `content_quality`
+  verdict layered on top so substantively weak descriptions (vague,
+  generic, name-restating) also block, even when they clear the
+  mechanical floor. Rejections surface per-component findings with
+  concrete rewrite hints in both the upload form and the entity detail
+  quarantine banner. The submission form now displays a "Before you
+  upload — what passes review" disclosure, a live character counter on
+  the description field, and a per-component preview table with
+  red/green dots after the ZIP is validated. New `/store/examples` page
+  carries rejected/passes pairs per component type with anchored
+  sections (`#skill` / `#agent` / `#plugin` / `#command`) so every
+  rejection finding can deep-link by type.
+
 ### Changed
 
 - **`agnes catalog` replaces the `FLAVOR` column with `ENTITY`.** The old `FLAVOR` column rendered `t['sql_flavor']` (`bigquery`/`duckdb`) which duplicated `SOURCE` for any catalog dominated by one source type — analysts saw `SOURCE=bigquery FLAVOR=bigquery` on every row and the column carried zero information. `ENTITY` instead renders the upstream BigQuery `entity_type` (`BASE TABLE` / `VIEW` / `MATERIALIZED_VIEW`) for remote rows, surfacing the distinction that actually changes how the analyst should query: views don't support predicate pushdown, so `agnes query --remote` against a view trips the cost guardrail where the same query against a BASE TABLE pushes down cleanly. Non-remote rows (`local`/`materialized`) render `-` since the distinction doesn't apply. JSON output (`agnes catalog --json`) is unchanged — `entity_type` was already in the v2 catalog response since 0.51.0; only the human-readable column changed.
@@ -17,6 +40,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **`/api/query` `remote_estimate_failed` hint now branches on the BigQuery error class** instead of always claiming a column doesn't exist. The previous hardcoded "Most often this means a column referenced … doesn't exist" misled analysts whenever BigQuery actually rejected on syntax (e.g. `SELECT COUNT(*) AS rows` — `rows` is reserved, BQ returns `Syntax error: Unexpected keyword ROWS at [1:20]`, the previous hint pointed at non-existent columns). Branching: syntax errors get a hint about reserved-keyword aliases with both rename + BQ-style backtick-quote alternatives; `Unrecognized name` / `not found inside` still points at `agnes schema <id>`; `Table not found` points at `agnes catalog`; the fallback hint enumerates all three causes for the analyst to triage.
+
+### Internal
+
+- `_parse_frontmatter` moved out of `app/api/store.py` into
+  `src/store_guardrails/_frontmatter.py` so the new content check shares
+  the parser without inverting the app→src dependency direction.
+- `InlineResult.passed` now also requires `content.status == 'pass'`;
+  `inline_checks.content` joins `inline_checks.{manifest, static_security,
+  quality}` in the persisted submission row.
+- `REVIEW_JSON_SCHEMA` adds the required `content_quality` object;
+  `MAX_RESPONSE_TOKENS` bumped from 2000 to 2500 to fit the additional
+  per-issue payload. Verdicts missing `content_quality` are treated as
+  pass for backward compatibility with already-recorded verdicts.
+- Content guardrail's `agents/` walker (`_iter_components`) now skips
+  README-style files lacking frontmatter so it stops false-flagging
+  `agents/README.md` as a missing-description agent — aligns with the
+  preview walker (`summarize_for_preview` for `type=agent`) which
+  already filtered the same shape.
 
 ## [0.53.4] — 2026-05-12
 
@@ -99,7 +140,40 @@ relies on.
 ### Internal
 
 - 4 regression tests in `tests/test_issue_266_bq_edit_modal_destruction.py` pin the server-side PUT contract (omitted fields preserved, explicit null clears) and template-grep the three JS-side fixes.
+### Added
 
+- **Flea-market content guardrail — two-tier per-component description
+  enforcement.** Submissions are now rejected when any component
+  (plugin, agent, skill, command) ships a description that doesn't
+  meet a basic bar. A mechanical inline check (`src/store_guardrails/
+  content_check.py`) catches the obvious cases — empty,
+  literal `TODO` / `TBD`, unfilled `{{var}}` tokens, fewer than 30
+  characters (20 for commands), fewer than 4 distinct words — and
+  blocks before any LLM call. The existing security LLM review
+  (`src/store_guardrails/llm_review.py`) gains a `content_quality`
+  verdict layered on top so substantively weak descriptions (vague,
+  generic, name-restating) also block, even when they clear the
+  mechanical floor. Rejections surface per-component findings with
+  concrete rewrite hints in both the upload form and the entity
+  detail quarantine banner. The submission form now displays a
+  "Before you upload — what passes review" disclosure, a live
+  character counter on the description field, and a per-component
+  preview table with red/green dots after the ZIP is validated.
+
+### Internal
+
+- `_parse_frontmatter` moved out of `app/api/store.py` into
+  `src/store_guardrails/_frontmatter.py` so the new content check
+  shares the parser without inverting the app→src dependency
+  direction.
+- `InlineResult.passed` now also requires `content.status == 'pass'`;
+  `inline_checks.content` joins `inline_checks.{manifest, static_security,
+  quality}` in the persisted submission row.
+- `REVIEW_JSON_SCHEMA` adds the required `content_quality` object;
+  `MAX_RESPONSE_TOKENS` bumped from 2000 to 2500 to fit the additional
+  per-issue payload. Verdicts missing `content_quality` are treated as
+  pass for backward compatibility with already-recorded verdicts.
+>
 ## [0.53.0] — 2026-05-12
 
 Second hygiene round closing the Tier B trackers opened during the
