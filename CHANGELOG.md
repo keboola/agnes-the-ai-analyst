@@ -10,6 +10,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.53.2] — 2026-05-12
+
+Two threads in one cut. **Operator surface:** `instance.brand` /
+`instance.workspace_dir` let an operator rebrand the analyst-facing UI
+and the `~/Agnes` workspace folder without a fork (defaults preserve
+"Agnes"), and the setup script picks up an explicit "create workspace
+folder" step plus a final "restart Claude Code" step so a fresh
+analyst lands in a deterministic state. **Connector hygiene:** Asana
+reverts from the Remote MCP path (5× token cost) back to PAT + raw
+REST, Atlassian instructs the longest API-token expiry, and every
+connector ends with the same `✅`/`❌` marker so the Confirm summary
+grep is uniform. **Breaking removal:** `agnes query --register-bq` is
+gone from the client CLI; it required local BigQuery credentials that
+analysts don't have. Server-side `POST /api/query/hybrid` is
+unchanged.
+
 ### Added
 
 - **Configurable analyst-facing product brand via `instance.brand` (env `AGNES_INSTANCE_BRAND`, default `"Agnes"`).** Replaces the hard-coded "Agnes" / `~/Agnes` strings across the analyst-facing UI (`/home`, `/setup`, `/setup-advanced`, `/login`, `/install`, `/me/debug`) and the clipboard "Setup a new Claude Code" script. Operators rebranding the OSS (e.g. to "Foundry AI") flip a single env var via Terraform — defaults preserve "Agnes" branding for everyone else. The deploying-organization display name (`instance.name`, "AI Data Analyst") stays untouched; it drives page titles and is conceptually distinct from the product brand.
