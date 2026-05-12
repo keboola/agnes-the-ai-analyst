@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING: `agnes query --register-bq` CLI flag removed.** The flag ran the `RemoteQueryEngine` in-process on the caller's machine and required local BigQuery credentials (`BIGQUERY_PROJECT` + ADC) that analysts don't have. Calling it from an analyst workspace surfaced as a confusing `not_configured` error chain ("Could not load static instance.yaml" + "BigQuery project not configured"), and an agent following CLAUDE.md guidance for hybrid queries would land in exactly that trap. The underlying engine was originally designed server-side ("Step 28: Remote query architecture", commit `d180b201`); the CLI port (`d605e7d9`) silently assumed parity. Analysts now have two paths for combining local and remote data: `agnes snapshot create` a filtered slice of the remote table and join it locally, or run the join server-side via `agnes query --remote`. Admins keep an unchanged server-side path via `POST /api/query/hybrid` (`app/api/query_hybrid.py`). Removed: `--register-bq` flag, `register_bq` field in `--stdin` JSON, `_query_hybrid()` in `cli/commands/query.py`. CLAUDE.md "Hybrid Queries" section rewritten; `cli/skills/agnes-data-querying.md` and `docs/DATA_SOURCES.md` updated to drop the flag.
+
 ## [0.53.0] — 2026-05-12
 
 Second hygiene round closing the Tier B trackers opened during the
