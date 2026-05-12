@@ -48,8 +48,9 @@ def test_render_setup_instructions_wires_all_placeholders():
 
 
 def test_resolve_lines_no_plugins_unified_layout():
-    """Unified always-on layout: 1 install, 2 init, 3 catalog, 4 preflight,
-    5 marketplace, 6 mcp_servers, 7 diagnose, 8 connectors, 9 confirm.
+    """Unified always-on layout: 1 install, 2 mkdir/cd, 3 init, 4 catalog,
+    5 preflight, 6 marketplace, 7 diagnose, 8 connectors, 9 restart-claude,
+    10 confirm.
     Preflight + marketplace + MCP + connectors block are emitted even when
     the operator has zero plugin grants — registering the per-user
     marketplace clone pre-wires the SessionStart hook, the Atlassian
@@ -62,16 +63,18 @@ def test_resolve_lines_no_plugins_unified_layout():
     joined = "\n".join(resolve_lines("agnes.whl"))
     # Mandatory unified-flow steps.
     assert "1) Install the CLI" in joined
-    assert "2) Bootstrap your Agnes workspace" in joined
-    assert "3) Verify the data is queryable:" in joined
-    assert "4) Make sure git and claude are installed" in joined
-    assert "5) Register the Agnes Claude Code marketplace" in joined
-    assert "6) Run diagnostics:" in joined
-    assert "7) Connect the user's tools" in joined
-    assert "8) Confirm:" in joined
+    assert "3) Bootstrap your Agnes workspace" in joined
+    assert "4) Verify the data is queryable:" in joined
+    assert "5) Make sure git and claude are installed" in joined
+    assert "6) Register the Agnes Claude Code marketplace" in joined
+    assert "7) Run diagnostics:" in joined
+    assert "8) Connect the user's tools" in joined
+    assert "10) Confirm:" in joined
     # No stray Confirms at other positions.
-    assert "10) Confirm:" not in joined
+    assert "11) Confirm:" not in joined
     assert "6) Confirm:" not in joined
+    # Restart-claude step lands between connectors and Confirm.
+    assert "9) Restart Claude Code" in joined
     # Skills step is intentionally absent.
     assert "Skills (ask the user" not in joined
     # The marketplace step header adapts to "no plugins granted yet" copy
@@ -252,11 +255,12 @@ def test_trust_block_step_0c_does_not_reference_stale_step_number():
 
 
 def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
-    """Marketplace layout puts install/init/catalog/preflight/marketplace
-    BEFORE diagnose, so diagnose is the final smoke test before Confirm.
-    Step numbers: 4 preflight, 5 marketplace, 6 mcp, 7 diagnose,
-    8 confirm. No skills step — interactive copy-or-on-demand question
-    was confusing; on-demand `agnes skills show` is the default."""
+    """Marketplace layout puts install/mkdir/init/catalog/preflight/marketplace
+    BEFORE diagnose, so diagnose is the final smoke test before the
+    restart-claude cue. Step numbers: 5 preflight, 6 marketplace, 7 diagnose,
+    8 connectors, 9 restart-claude, 10 confirm. No skills step —
+    interactive copy-or-on-demand question was confusing; on-demand
+    `agnes skills show` is the default."""
     from app.web.setup_instructions import resolve_lines
 
     lines = resolve_lines(
@@ -266,14 +270,14 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     )
     joined = "\n".join(lines)
     # Step 4 — pre-flight, with all three platforms' install commands.
-    assert "4) Make sure git and claude are installed" in joined
+    assert "5) Make sure git and claude are installed" in joined
     assert "git --version" in joined
     assert "claude --version" in joined
     assert "brew install git" in joined
     assert "winget install --id Git.Git -e --source winget --silent" in joined
     assert "sudo apt-get install git" in joined or "sudo dnf install git" in joined
     # Step 5 — marketplace + stack install.
-    assert "5) Register the Agnes Claude Code marketplace" in joined
+    assert "6) Register the Agnes Claude Code marketplace" in joined
     assert "agnes refresh-marketplace --bootstrap" in joined
     # The destructive prep + per-plugin install commands are inside the
     # CLI; the prompt must not emit the inline shell forms in
@@ -287,23 +291,26 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "claude plugin install bar@agnes" not in executable
     # Step 6 — Atlassian MCP registration (Fix C in 2026-05-10 init-report response).
     # Step 7 — diagnose now AFTER marketplace + MCP wiring.
-    assert "6) Run diagnostics:" in joined
-    # Step 8 — connectors, the LAST interactive step before Confirm
+    assert "7) Run diagnostics:" in joined
+    # Step 8 — connectors, last interactive step before restart-claude
     # (skills step deleted in #242).
-    assert "7) Connect the user's tools" in joined
-    assert "8) Confirm:" in joined
-    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "9) Confirm:", "10) Confirm:"):
+    assert "8) Connect the user's tools" in joined
+    # Step 9 — restart-claude. Step 10 — Confirm.
+    assert "9) Restart Claude Code" in joined
+    assert "10) Confirm:" in joined
+    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:", "8) Confirm:", "9) Confirm:", "11) Confirm:"):
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
-    init_idx = joined.index("2) Bootstrap your Agnes workspace")
-    catalog_idx = joined.index("3) Verify the data is queryable:")
-    git_idx = joined.index("4) Make sure git and claude are installed")
-    market_idx = joined.index("5) Register the Agnes Claude Code marketplace")
-    diag_idx = joined.index("6) Run diagnostics:")
-    conn_idx = joined.index("7) Connect the user's tools")
-    confirm_idx = joined.index("8) Confirm:")
-    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < diag_idx < conn_idx < confirm_idx
+    init_idx = joined.index("3) Bootstrap your Agnes workspace")
+    catalog_idx = joined.index("4) Verify the data is queryable:")
+    git_idx = joined.index("5) Make sure git and claude are installed")
+    market_idx = joined.index("6) Register the Agnes Claude Code marketplace")
+    diag_idx = joined.index("7) Run diagnostics:")
+    conn_idx = joined.index("8) Connect the user's tools")
+    restart_idx = joined.index("9) Restart Claude Code")
+    confirm_idx = joined.index("10) Confirm:")
+    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < diag_idx < conn_idx < restart_idx < confirm_idx
     # Legacy `git config sslVerify=false` downgrade is gone — see CHANGELOG.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
@@ -634,7 +641,7 @@ def test_resolve_lines_ca_pem_works_without_plugins():
 
     joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
     assert "0) Trust the Agnes TLS certificate" in joined
-    assert "8) Confirm:" in joined
+    assert "10) Confirm:" in joined
     # Marketplace block is now emitted unconditionally; the bootstrap
     # one-liner does the `claude plugin marketplace add` internally so
     # the literal string isn't in the prompt text — the user-facing
@@ -705,20 +712,22 @@ def test_no_skills_step_emitted():
 
 
 def test_no_plugins_layout_keeps_diagnose_before_connectors():
-    """Always-on layout: install → init → catalog → preflight →
-    marketplace → mcp_servers → diagnose → connectors → confirm,
+    """Always-on layout: install → mkdir/cd → init → catalog → preflight →
+    marketplace → diagnose → connectors → restart_claude → confirm,
     regardless of plugin grants. Step numbers: 7 diagnose, 8 connectors,
-    9 confirm. Skills step deleted in #242."""
+    9 restart-claude, 10 confirm. Skills step deleted in #242."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "6) Run diagnostics:" in joined
-    assert "7) Connect the user's tools" in joined
-    assert "8) Confirm:" in joined
-    diag_idx = joined.index("6) Run diagnostics:")
-    conn_idx = joined.index("7) Connect the user's tools")
-    confirm_idx = joined.index("8) Confirm:")
-    assert diag_idx < conn_idx < confirm_idx
+    assert "7) Run diagnostics:" in joined
+    assert "8) Connect the user's tools" in joined
+    assert "9) Restart Claude Code" in joined
+    assert "10) Confirm:" in joined
+    diag_idx = joined.index("7) Run diagnostics:")
+    conn_idx = joined.index("8) Connect the user's tools")
+    restart_idx = joined.index("9) Restart Claude Code")
+    confirm_idx = joined.index("10) Confirm:")
+    assert diag_idx < conn_idx < restart_idx < confirm_idx
 
 
 def test_unified_flow_uses_only_agnes_verbs():
@@ -854,32 +863,140 @@ def test_connectors_block_uses_gws_manual_branch_when_oauth_unset():
 
 
 def test_step_numbering_with_connectors_step():
-    """_step_numbers must return diagnose=6, connectors=7, confirm=8.
-    Anchors the numeric expectations the rest of the test suite assumes.
-    (Skills step deleted in #242; connectors added in #243; standalone
-    `mcp_servers` step retired and folded into the Atlassian connector's
-    prompt body, so the layout drops by one.)"""
+    """_step_numbers must return preflight=5, marketplace=6, diagnose=7,
+    connectors=8, restart_claude=9, confirm=10. Anchors the numeric
+    expectations the rest of the test suite assumes. (Skills step deleted
+    in #242; connectors added in #243; standalone `mcp_servers` step
+    retired and folded into the Atlassian connector's prompt body;
+    explicit mkdir/cd step added between install and init shifts later
+    step numbers up by 1; explicit restart-Claude step added between
+    connectors and confirm shifts confirm up by 1 more.)"""
     from app.web.setup_instructions import _step_numbers
 
     steps = _step_numbers()
-    assert steps["preflight"] == "4"
-    assert steps["marketplace"] == "5"
+    assert steps["preflight"] == "5"
+    assert steps["marketplace"] == "6"
     assert "mcp_servers" not in steps
-    assert steps["diagnose"] == "6"
-    assert steps["connectors"] == "7"
-    assert steps["confirm"] == "8"
+    assert steps["diagnose"] == "7"
+    assert steps["connectors"] == "8"
+    assert steps["restart_claude"] == "9"
+    assert steps["confirm"] == "10"
     assert "skills" not in steps  # deleted in #242
 
 
 def test_finale_bullets_mention_connector_outcomes():
-    """The Confirm step's summary bullets must include "Which connectors
-    got set up: Asana, Google Workspace, and Atlassian — installed or
-    declined for each". Without this the assistant has no reason to
-    summarise the per-connector ask answers in the final Confirm
-    message."""
+    """The Confirm step's summary bullets must reference the verbatim ✅/❌
+    line each connector's verify step emitted earlier. Without this the
+    assistant has no reason to summarise the per-connector ask answers
+    in the final Confirm message."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "Which connectors got set up" in joined
-    assert "Asana, Google Workspace, and Atlassian" in joined
-    assert "installed or declined for each" in joined
+    assert "Asana, Google Workspace, Atlassian" in joined
+    assert "✅" in joined
+    assert "❌" in joined
+
+
+def test_restart_claude_step_emitted_unconditionally():
+    """`9) Restart Claude Code` renders in every layout (with / without
+    plugins, with / without CA) so users never finish setup sitting in
+    a stale Claude Code session that has not loaded the freshly-installed
+    plugins / MCP servers / SessionStart hooks."""
+    from app.web.setup_instructions import resolve_lines
+
+    fake_ca = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
+    for kwargs in (
+        {},
+        {"plugin_install_names": ["foo"], "server_host": "h"},
+        {"ca_pem": fake_ca},
+        {"plugin_install_names": ["foo"], "server_host": "h", "ca_pem": fake_ca},
+    ):
+        joined = "\n".join(resolve_lines("agnes.whl", **kwargs))
+        assert "9) Restart Claude Code" in joined, f"missing restart step for kwargs={kwargs!r}"
+        # The body should mention /exit + re-running `claude` from the
+        # workspace dir so the SessionStart hook (workspace-scoped) fires.
+        assert "/exit" in joined
+        assert "claude` again" in joined
+
+
+def test_restart_claude_substitutes_workspace_dir():
+    """The restart-claude body interpolates the workspace folder so the
+    user sees their actual `~/<brand>` path, not a literal placeholder."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines(
+        "agnes.whl",
+        instance_brand="Foundry AI",
+        workspace_dir="FoundryAI",
+    ))
+    assert "9) Restart Claude Code" in joined
+    assert "~/FoundryAI" in joined
+    assert "{workspace_dir}" not in joined
+
+
+def test_asana_prompt_uses_pat_not_mcp():
+    """Asana reverted to PAT + REST after the MCP path turned out to be
+    too token-hungry. Pin both directions: the PAT/keychain flow is
+    present, AND the MCP-specific strings are gone, so a future refactor
+    doesn't silently flip Asana back to MCP without re-validating the
+    token-cost regression that motivated the revert."""
+    from app.web.connector_prompts import asana_prompt
+
+    body = asana_prompt()
+    # PAT path present.
+    assert "agnes-asana-pat" in body
+    assert "https://app.asana.com/api/1.0/users/me" in body
+    assert "✅ Asana ready" in body
+    # MCP path is gone.
+    assert "claude mcp add --transport http asana" not in body
+    assert "mcp.asana.com/mcp" not in body
+    # Brand placeholder gets substituted (default keeps "Agnes").
+    assert "{instance_brand}" not in body
+    assert "Claude Code — Agnes" in body
+
+
+def test_asana_prompt_brand_kwarg_threads_through():
+    """When a caller passes a brand string, the PAT-label template
+    renders with that brand instead of the default 'Agnes'."""
+    from app.web.connector_prompts import asana_prompt
+
+    body = asana_prompt(instance_brand="Foundry AI")
+    assert "Claude Code — Foundry AI" in body
+    assert "{instance_brand}" not in body
+
+
+def test_atlassian_prompt_instructs_1_year_expiry():
+    """Atlassian PATs default to short-lived; pin the prompt to direct
+    the user to pick the longest expiry option (today: 1 year) so the
+    connector doesn't go stale every couple of months."""
+    from app.web.connector_prompts import atlassian_prompt
+
+    body = atlassian_prompt()
+    assert '"1 year"' in body
+    # Acknowledge the lack of a query-param hook so a future contributor
+    # doesn't waste an hour trying to deep-link the expiry.
+    assert "NO query-parameter hook" in body
+    # ✅/❌ output contract present.
+    assert "✅ Atlassian ready" in body
+    assert "❌ Atlassian setup failed" in body
+    # Brand substituted (default).
+    assert "{instance_brand}" not in body
+    assert "Claude Code — Agnes" in body
+
+
+def test_atlassian_prompt_brand_kwarg_threads_through():
+    from app.web.connector_prompts import atlassian_prompt
+
+    body = atlassian_prompt(instance_brand="Foundry AI")
+    assert "Claude Code — Foundry AI" in body
+    assert "{instance_brand}" not in body
+
+
+def test_gws_prompt_emits_pass_fail_contract():
+    """GWS verify step must emit the uniform ✅/❌ marker the finale
+    summary scans for."""
+    from app.web.connector_prompts import gws_prompt
+
+    body = gws_prompt(gws_oauth_configured=False)
+    assert "✅ Google Workspace ready" in body
+    assert "❌ Google Workspace setup failed" in body
