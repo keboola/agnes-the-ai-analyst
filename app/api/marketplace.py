@@ -286,6 +286,25 @@ class InnerDetailResponse(BaseModel):
     cover_photo_url: Optional[str] = None
     video_url: Optional[str] = None
     docs: List[DocEntry] = []
+    # Rich user-facing fields (parity with plugin-level rich content from
+    # the 2026-05-12 redesign). All optional — UI hides each section when
+    # the corresponding field is absent.
+    #
+    # `category` on the response is curator-override-OR-parent-fallback:
+    # the API hands back the parent plugin's category when the skill/agent
+    # didn't opt into its own. The override happens in the inner-detail
+    # handler before the response leaves the API.
+    #
+    # `invocation`: curator-provided literal command string ("…&lt;arg&gt;"
+    # forms welcome). When absent, the template falls back to its computed
+    # "<manifest_name>:<inner_name>" string.
+    display_name: Optional[str] = None
+    tagline: Optional[str] = None
+    description_long_html: Optional[str] = None
+    use_cases: List[UseCase] = []
+    sample_interaction: Optional[SampleInteraction] = None
+    when_to_use_html: Optional[str] = None
+    invocation: Optional[str] = None
 
 
 class InstallActionResponse(BaseModel):
@@ -1488,11 +1507,49 @@ def _curated_inner_enrichment(
                 continue
             docs.append(DocEntry(name=link.name, url=served))
 
-    return {
+    from app.markdown_render import render_safe
+
+    out: Dict[str, Any] = {
         "cover_photo_url": cover_url,
         "video_url": resolved.get("video_url"),
         "docs": docs,
     }
+    # Rich user-facing fields — same shape as the plugin-level enrichment.
+    # All optional; missing fields stay absent so the API's existing
+    # `default=` clauses on InnerDetailResponse hold the right None / [].
+    if resolved.get("display_name"):
+        out["display_name"] = resolved["display_name"]
+    if resolved.get("tagline"):
+        out["tagline"] = resolved["tagline"]
+    # Per-item category override — caller merges with the parent plugin's
+    # category, preferring the override when set.
+    if resolved.get("category"):
+        out["category"] = resolved["category"]
+    if resolved.get("description"):
+        out["description_long_html"] = render_safe(resolved["description"])
+    if resolved.get("when_to_use"):
+        out["when_to_use_html"] = render_safe(resolved["when_to_use"])
+    if resolved.get("invocation"):
+        out["invocation"] = resolved["invocation"]
+
+    use_cases_raw = resolved.get("use_cases") or []
+    if use_cases_raw:
+        out["use_cases"] = [
+            UseCase(
+                title=uc["title"],
+                description=uc["description"],
+                prompt=uc["prompt"],
+            )
+            for uc in use_cases_raw
+        ]
+    sample = resolved.get("sample_interaction")
+    if sample:
+        out["sample_interaction"] = SampleInteraction(
+            user=sample["user"],
+            assistant=sample["assistant"],
+            assistant_html=render_safe(sample["assistant"]),
+        )
+    return out
 
 
 # Module-level cache for marketplace-metadata.json reads. Keyed by
