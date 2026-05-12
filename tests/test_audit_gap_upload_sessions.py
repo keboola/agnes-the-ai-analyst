@@ -8,7 +8,7 @@ def test_upload_sessions_writes_audit_log(seeded_app, analyst_user):
     c = seeded_app["client"]
     conn = get_system_db()
     before = conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE action='session.upload'"
+        "SELECT COUNT(*) FROM audit_log WHERE action='upload.session'"
     ).fetchone()[0]
     conn.close()
 
@@ -19,10 +19,10 @@ def test_upload_sessions_writes_audit_log(seeded_app, analyst_user):
 
     conn = get_system_db()
     after = conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE action='session.upload'"
+        "SELECT COUNT(*) FROM audit_log WHERE action='upload.session'"
     ).fetchone()[0]
     row = conn.execute(
-        "SELECT params FROM audit_log WHERE action='session.upload' ORDER BY timestamp DESC LIMIT 1"
+        "SELECT params FROM audit_log WHERE action='upload.session' ORDER BY timestamp DESC LIMIT 1"
     ).fetchone()
     conn.close()
     assert after == before + 1
