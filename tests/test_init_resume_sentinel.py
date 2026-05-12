@@ -9,10 +9,12 @@ from pathlib import Path
 
 
 def test_init_complete_constant_points_at_dotfile():
-    """The sentinel lives under `.agnes/` so it doesn't pollute the
-    workspace root."""
+    """The sentinel lives under `.claude/` (already created by init for
+    settings.json + hooks) so it doesn't pollute the workspace root and
+    doesn't trip the `forbidden_unconditional` check in
+    test_clean_install_integration.py (which bans `.agnes/`)."""
     from cli.commands.init import _INIT_COMPLETE_FILE
-    assert _INIT_COMPLETE_FILE.startswith(".agnes/")
+    assert _INIT_COMPLETE_FILE.startswith(".claude/")
     assert _INIT_COMPLETE_FILE.endswith("init-complete")
 
 
@@ -37,7 +39,7 @@ def test_workspace_without_sentinel_is_treated_as_resumable(tmp_path: Path):
 def test_workspace_with_sentinel_blocks_without_force(tmp_path: Path):
     """Both CLAUDE.md AND sentinel present → require --force (old behavior)."""
     (tmp_path / "CLAUDE.md").write_text("# Acme — AI Data Analyst\n", encoding="utf-8")
-    sentinel = tmp_path / ".agnes" / "init-complete"
+    sentinel = tmp_path / ".claude" / "init-complete"
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("completed_at: 2026-05-12T10:00:00+00:00\n", encoding="utf-8")
     is_blocked = (tmp_path / "CLAUDE.md").exists() and sentinel.exists()

@@ -69,7 +69,7 @@ _INIT_MARKER = "AI Data Analyst"
 # can then resume without requiring `--force`, which would otherwise
 # force a full re-download of any large materialized parquet that was
 # 80 % complete. Issue #259.
-_INIT_COMPLETE_FILE = ".agnes/init-complete"
+_INIT_COMPLETE_FILE = ".claude/init-complete"
 
 
 # Env vars that, when set to a non-existent path, cause every TLS handshake
