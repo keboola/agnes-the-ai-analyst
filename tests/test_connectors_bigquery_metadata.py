@@ -18,6 +18,7 @@ def req():
 def _bq_with_session(table_storage_rows=None, columns_rows=None,
                      table_storage_raises=None, columns_raises=None,
                      legacy_tables_rows=None, legacy_tables_raises=None,
+                     entity_type_rows=None, entity_type_raises=None,
                      projects_data="data-proj", projects_billing="billing-proj"):
     """Mock `BqAccess` whose `duckdb_session()` returns a context manager
     routing `.execute(...)` based on the inner SQL string."""
@@ -39,6 +40,14 @@ def _bq_with_session(table_storage_rows=None, columns_rows=None,
                 raise columns_raises
             return MagicMock(
                 fetchall=lambda: columns_rows or [],
+            )
+        if "INFORMATION_SCHEMA.TABLES" in inner_sql:
+            # entity_type lookup added in 0.50.0 — order matters: this check
+            # must come BEFORE __TABLES__ because the substring overlaps.
+            if entity_type_raises:
+                raise entity_type_raises
+            return MagicMock(
+                fetchone=lambda: entity_type_rows[0] if entity_type_rows else None,
             )
         if "__TABLES__" in inner_sql:
             if legacy_tables_raises:
@@ -85,6 +94,7 @@ def test_happy_path_returns_full_metadata(req, monkeypatch):
             ("country", "STRING", "YES", "NO", 1),
             ("user_id", "STRING", "NO", "NO", None),
         ],
+        entity_type_rows=[("BASE TABLE",)],
     )
     with patch("connectors.bigquery.metadata.get_bq_access", return_value=bq):
         result = metadata.fetch(req)
@@ -93,6 +103,8 @@ def test_happy_path_returns_full_metadata(req, monkeypatch):
         size_bytes=5_000_000,
         partition_by="event_date",
         clustered_by=["country"],
+        entity_type="BASE TABLE",
+        known_columns=["event_date", "country", "user_id"],
     )
 
 
@@ -120,6 +132,7 @@ def test_view_path_returns_metadata_with_null_rows_size(req, monkeypatch):
         columns_rows=[
             ("event_date", "DATE", "NO", "YES", None),
         ],
+        entity_type_rows=[("VIEW",)],
     )
     with patch("connectors.bigquery.metadata.get_bq_access", return_value=bq):
         result = metadata.fetch(req)
@@ -127,6 +140,8 @@ def test_view_path_returns_metadata_with_null_rows_size(req, monkeypatch):
     assert result.rows is None
     assert result.size_bytes is None
     assert result.partition_by == "event_date"
+    assert result.entity_type == "VIEW"
+    assert result.known_columns == ["event_date"]
 
 
 def test_region_typo_falls_through_to_legacy_tables(req, monkeypatch):

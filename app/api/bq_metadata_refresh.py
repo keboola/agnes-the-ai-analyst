@@ -162,12 +162,15 @@ def refresh_one(conn: duckdb.DuckDBPyConnection, row: dict[str, Any]) -> dict[st
         size_bytes=result.size_bytes,
         partition_by=result.partition_by,
         clustered_by=result.clustered_by,
+        entity_type=result.entity_type,
+        known_columns=result.known_columns,
     )
     return {
         "table_id": table_id,
         "status": "ok",
         "rows": result.rows,
         "size_bytes": result.size_bytes,
+        "entity_type": result.entity_type,
     }
 
 
@@ -298,6 +301,8 @@ def metadata_cache_status(
             "size_bytes": r.get("size_bytes"),
             "partition_by": r.get("partition_by"),
             "clustered_by": r.get("clustered_by") or [],
+            "entity_type": r.get("entity_type"),
+            "known_columns": r.get("known_columns") or [],
             "error_at": error_at.isoformat() if error_at else None,
             "error_msg": r.get("error_msg"),
             "freshness": compute_freshness(r, now=now, fresh_threshold=threshold),

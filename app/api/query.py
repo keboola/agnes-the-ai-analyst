@@ -931,6 +931,52 @@ def _rewrite_user_sql_for_bigquery_query(
     return rewritten, True
 
 
+def _view_targets_in(dry_run_set: list) -> list[str]:
+    """Return registry IDs from ``dry_run_set`` whose ``bq_metadata_cache``
+    row classifies them as ``VIEW`` or ``MATERIALIZED VIEW``.
+
+    Used to enrich the ``remote_scan_too_large`` error message: when the
+    target is a view, BigQuery does NOT push ``LIMIT`` into the view body,
+    so a `SELECT * FROM <view> LIMIT 1` still scans the full underlying
+    tables. Telling the analyst that explicitly saves them from retrying
+    with the same query expecting different results.
+
+    Best-effort: any lookup failure returns ``[]`` so the original error
+    message still ships. The catalog is the source of truth for entity_type;
+    if the bq_metadata_cache hasn't been refreshed yet for a table, that
+    table is silently skipped (we just won't add the VIEW hint for it).
+    """
+    if not dry_run_set:
+        return []
+    try:
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            pairs = [(b, t) for b, t, _ in dry_run_set]
+            # Build a parameterized OR of (bucket, source_table) pairs.
+            # DuckDB supports row-tuple IN but keeping it explicit OR
+            # avoids any version-specific syntax surprises.
+            where = " OR ".join(
+                "(tr.bucket = ? AND tr.source_table = ?)" for _ in pairs
+            )
+            params: list = []
+            for b, t in pairs:
+                params.extend([b, t])
+            sql_ = (
+                f"SELECT mc.table_id "
+                f"FROM bq_metadata_cache mc "
+                f"JOIN table_registry tr ON tr.id = mc.table_id "
+                f"WHERE mc.entity_type IN ('VIEW', 'MATERIALIZED VIEW') "
+                f"AND ({where})"
+            )
+            rows = conn.execute(sql_, params).fetchall()
+            return [r[0] for r in rows]
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
 @contextlib.contextmanager
 def _bq_quota_and_cap_guard(
     *,
@@ -1115,16 +1161,30 @@ def _bq_quota_and_cap_guard(
 
             if cap_bytes > 0 and total_bytes > cap_bytes:
                 tables = [f"{b}.{t}" for b, t, _ in dry_run_set]
+                view_targets = _view_targets_in(dry_run_set)
+                if view_targets:
+                    suggestion = (
+                        f"Target(s) {', '.join(view_targets)} are VIEW or "
+                        "MATERIALIZED VIEW. BigQuery does not push `LIMIT` "
+                        "into the view body — `SELECT * FROM <view> LIMIT 1` "
+                        "still runs the full underlying scan. Use "
+                        "`agnes snapshot create <id> --select <cols> --where "
+                        "<predicate>` to bound the scan, then query the "
+                        "snapshot locally."
+                    )
+                else:
+                    suggestion = (
+                        "Use `agnes snapshot create <id> --select <cols> "
+                        "--where <predicate> --estimate` to materialize a "
+                        "filtered subset, then query the snapshot locally."
+                    )
                 raise HTTPException(status_code=400, detail={
                     "reason": "remote_scan_too_large",
                     "scan_bytes": total_bytes,
                     "limit_bytes": cap_bytes,
                     "tables": tables,
-                    "suggestion": (
-                        "Use `agnes snapshot create <id> --select <cols> --where <predicate> "
-                        "--estimate` to materialize a filtered subset, then query "
-                        "the snapshot locally."
-                    ),
+                    "view_targets": view_targets,
+                    "suggestion": suggestion,
                 })
 
             # Yield control to the handler — slot stays acquired while the

@@ -663,15 +663,33 @@ CREATE INDEX IF NOT EXISTS idx_store_submissions_entity ON store_submissions(ent
 --   error_at / error_msg — last failure timestamp + redacted message.
 --                       NULL after the next successful refresh.
 CREATE TABLE IF NOT EXISTS bq_metadata_cache (
-    table_id      VARCHAR PRIMARY KEY,
-    rows          BIGINT,
-    size_bytes    BIGINT,
-    partition_by  VARCHAR,
-    clustered_by  JSON,
-    refreshed_at  TIMESTAMP,
-    error_at      TIMESTAMP,
-    error_msg     VARCHAR
+    table_id        VARCHAR PRIMARY KEY,
+    rows            BIGINT,
+    size_bytes      BIGINT,
+    partition_by    VARCHAR,
+    clustered_by    JSON,
+    -- BigQuery entity classification, surfaced in catalog so analyst Claude
+    -- can decide query strategy. Values mirror INFORMATION_SCHEMA.TABLES.
+    -- table_type: `BASE TABLE`, `VIEW`, `MATERIALIZED VIEW`, `EXTERNAL`,
+    -- `SNAPSHOT`, `CLONE`. NULL until first successful refresh.
+    entity_type     VARCHAR,
+    -- Cache of known column names from the most recent successful refresh,
+    -- as JSON array of strings. Used by /api/v2/catalog to filter generic
+    -- where_examples against the table's actual schema — drops example
+    -- predicates that reference columns the table doesn't have. Populated
+    -- by bq_metadata_refresh.refresh_one from fetch_bq_columns_full, so
+    -- there is no extra BQ roundtrip just for this.
+    known_columns   JSON,
+    refreshed_at    TIMESTAMP,
+    error_at        TIMESTAMP,
+    error_msg       VARCHAR
 );
+-- Self-heal for instances that already ran an earlier v40 incarnation
+-- that lacked entity_type / known_columns. The CREATE TABLE above is
+-- IF NOT EXISTS so it skips on already-existing tables; these ALTERs
+-- close the column-set gap. Idempotent on fresh installs (no-op).
+ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS entity_type VARCHAR;
+ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS known_columns JSON;
 """
 
 
@@ -2534,11 +2552,19 @@ _V39_TO_V40_MIGRATIONS = [
         size_bytes    BIGINT,
         partition_by  VARCHAR,
         clustered_by  JSON,
+        entity_type   VARCHAR,
+        known_columns JSON,
         refreshed_at  TIMESTAMP,
         error_at      TIMESTAMP,
         error_msg     VARCHAR
     )
     """,
+    # entity_type + known_columns may be absent on instances that picked
+    # up the early v40 (`bq_metadata_cache` without these columns) before
+    # the field was added. IF NOT EXISTS makes the ALTERs idempotent for
+    # the fresh-create path above and additive for the upgrade path.
+    "ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS entity_type VARCHAR",
+    "ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS known_columns JSON",
 ]
 
 

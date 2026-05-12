@@ -98,6 +98,12 @@ _DEFAULTS = {
     # to DuckDB, never to BQ, so this can be tuned freely without touching
     # request-path latency.
     "SCHEDULER_BQ_METADATA_REFRESH_INTERVAL":   4 * 60 * 60,
+    # Pause between scheduler startup and the first tick. Keeps the
+    # scheduler from synchronising its "Table never synced, marking as
+    # due" burst with the app's own startup cache_warmup (which writes
+    # heavily to the system DB for several seconds). Set to 0 to disable
+    # — useful in tests that need deterministic-fast first-tick.
+    "SCHEDULER_STARTUP_GRACE_SECONDS":          60,
 }
 
 
@@ -124,6 +130,29 @@ def _read_positive_int(name: str) -> int:
     return value
 
 
+def _read_non_negative_int(name: str) -> int:
+    """Like ``_read_positive_int`` but also accepts ``0`` as a valid value.
+
+    Used for knobs where ``0`` means "disable" rather than "operator typo"
+    — e.g. ``SCHEDULER_STARTUP_GRACE_SECONDS=0`` legitimately skips the
+    startup pause in unit tests / fast-iteration dev setups.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        if name not in _DEFAULTS:
+            raise ValueError(f"Unknown scheduler env var: {name}")
+        return _DEFAULTS[name]
+    if raw == "":
+        raise ValueError(f"{name}='' must be a non-negative integer (seconds)")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}={raw!r} must be a non-negative integer (seconds)")
+    if value < 0:
+        raise ValueError(f"{name}={value} must be >= 0 (seconds)")
+    return value
+
+
 def _seconds_to_schedule(seconds: int) -> str:
     """Convert a seconds value to the closest 'every Nm' / 'every Nh' string.
 
@@ -142,6 +171,45 @@ def _seconds_to_schedule(seconds: int) -> str:
 def resolved_tick_seconds() -> int:
     """Read + validate SCHEDULER_TICK_SECONDS in isolation (test helper)."""
     return _read_positive_int("SCHEDULER_TICK_SECONDS")
+
+
+def resolved_startup_grace_seconds() -> int:
+    """Read SCHEDULER_STARTUP_GRACE_SECONDS (default 60).
+
+    Sleep duration between scheduler startup and the first tick. Mitigates
+    the "post-deploy contention burst" where the scheduler's "everything
+    is due" first tick (5+ paralle HTTP POSTs against the just-restarted
+    app) overlaps the app's own startup ``cache_warmup`` job, doubling
+    disk I/O on the host's boot disk and dropping concurrent parquet
+    downloads from ~3 MB/s to ~1 MB/s for the duration of the burst.
+    """
+    return _read_non_negative_int("SCHEDULER_STARTUP_GRACE_SECONDS")
+
+
+def resolved_bq_metadata_initial_offset_seconds(rng=None) -> int:
+    """Random startup-jitter for ``bq-metadata-refresh``.
+
+    Returns a value in ``[0, BQ_METADATA_INITIAL_OFFSET_MAX_SECONDS]``
+    that the run loop uses to fake a recent ``last_run`` for the
+    ``bq-metadata-refresh`` job at startup. With ``last_run = now - jitter``
+    and the default 4 h interval, the first refresh fires
+    ``interval - jitter`` seconds after the startup grace finishes
+    (≈ 3 h 45 m to 4 h). This intentionally suppresses an immediate
+    refresh on every container start — the app's own ``cache_warmup``
+    already populates the persistent cache at startup, so a duplicate
+    refresh from the scheduler would just compete for disk I/O while
+    adding nothing.
+
+    ``rng`` injectable for deterministic tests.
+    """
+    import random as _random
+    cap = int(os.environ.get(
+        "SCHEDULER_BQ_METADATA_INITIAL_OFFSET_MAX_SECONDS", "900",
+    ))
+    if cap <= 0:
+        return 0
+    r = rng or _random.Random()
+    return r.randint(0, cap)
 
 
 def build_jobs() -> list[tuple[str, str, str, str, int]]:
@@ -259,13 +327,40 @@ def run():
 
     jobs = build_jobs()
     tick = resolved_tick_seconds()
+    grace = resolved_startup_grace_seconds()
+    bqmeta_offset = resolved_bq_metadata_initial_offset_seconds()
     logger.info(
-        "Scheduler started. API_URL=%s, %d jobs, tick=%ds. Schedules: %s",
-        API_URL, len(jobs), tick,
+        "Scheduler started. API_URL=%s, %d jobs, tick=%ds, "
+        "startup_grace=%ds, bq_metadata_initial_offset=%ds. Schedules: %s",
+        API_URL, len(jobs), tick, grace, bqmeta_offset,
         {name: schedule for name, schedule, *_ in jobs},
     )
 
+    # Startup grace — see ``resolved_startup_grace_seconds`` for why.
+    # Honors SIGTERM by polling _running in short slices, so an operator
+    # `docker compose stop` during grace doesn't hang for ~60s.
+    grace_remaining = grace
+    while grace_remaining > 0 and _running:
+        time.sleep(min(grace_remaining, 5))
+        grace_remaining -= 5
+    if not _running:
+        logger.info("Scheduler shutdown during startup grace; exiting.")
+        return
+
     last_run: dict[str, str | None] = {name: None for name, *_ in jobs}
+
+    # Suppress the first ``bq-metadata-refresh`` fire by pretending the
+    # job ran ``bqmeta_offset`` seconds ago at startup. ``is_table_due``
+    # will then wait the remainder of the configured interval before
+    # firing for the first time. Two scheduler containers that came up
+    # within seconds of each other will pick different offsets and stop
+    # synchronising their refresh ticks against one another.
+    if bqmeta_offset > 0:
+        from datetime import timedelta as _td
+        offset_ago = (
+            datetime.now(timezone.utc) - _td(seconds=bqmeta_offset)
+        ).isoformat()
+        last_run["bq-metadata-refresh"] = offset_ago
 
     # Per-tick concurrency: one thread per job slot, so a 900s verification
     # run can't block the 60s health-check or the 30s data-refresh from

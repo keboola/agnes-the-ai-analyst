@@ -46,13 +46,35 @@ def _flavor_for(source_type: str) -> str:
     return "bigquery" if source_type == "bigquery" else "duckdb"
 
 
-def _examples_for(source_type: str) -> list[str]:
-    if source_type == "bigquery":
-        return [
-            "event_date > DATE '2026-01-01'",
-            "country_code = 'CZ' AND platform = 'web'",
-        ]
-    return []
+# Generic ``where_examples`` templates the catalog surfaces as a starting
+# point for AI consumers. Each entry is a tuple of ``(predicate_text,
+# required_columns)``: the template is only included in the response when
+# every required column is present in the table's actual schema (from
+# ``bq_metadata_cache.known_columns``). This prevents the old behavior of
+# always advertising ``country_code = 'CZ'`` on tables that have no
+# ``country_code`` column at all.
+_BQ_WHERE_TEMPLATES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("event_date > DATE '2026-01-01'", ("event_date",)),
+    ("country_code = 'CZ' AND platform = 'web'", ("country_code", "platform")),
+)
+
+
+def _examples_for(source_type: str, known_columns: list[str] | None) -> list[str]:
+    """Return generic ``where_examples`` filtered against the table's
+    actual columns. ``known_columns`` comes from the persistent metadata
+    cache; when it is unknown (None) or empty, return an empty list
+    instead of a possibly-wrong template — silence is better than
+    misleading hints for AI consumers."""
+    if source_type != "bigquery":
+        return []
+    if not known_columns:
+        return []
+    cols = set(known_columns)
+    return [
+        predicate
+        for predicate, required in _BQ_WHERE_TEMPLATES
+        if all(c in cols for c in required)
+    ]
 
 
 def _fetch_hint(table_id: str, source_type: str) -> str:
@@ -131,12 +153,16 @@ def _hint_for_row(
             "rough_size_hint": _materialized_parquet_size_bucket(
                 table_id, source_type, query_mode,
             ),
+            "entity_type": None,
+            "known_columns": [],
             "metadata_freshness": "not_applicable",
         }
 
     if query_mode != "remote":
         return {
             "rough_size_hint": None,
+            "entity_type": None,
+            "known_columns": [],
             "metadata_freshness": "not_applicable",
         }
 
@@ -152,6 +178,8 @@ def _hint_for_row(
             "size_bytes": None,
             "partition_by": None,
             "clustered_by": [],
+            "entity_type": None,
+            "known_columns": [],
             "metadata_freshness": freshness,
         }
 
@@ -162,6 +190,8 @@ def _hint_for_row(
         "size_bytes": size_bytes,
         "partition_by": cache_row.get("partition_by"),
         "clustered_by": cache_row.get("clustered_by") or [],
+        "entity_type": cache_row.get("entity_type"),
+        "known_columns": cache_row.get("known_columns") or [],
         "metadata_freshness": freshness,
     }
 
@@ -216,13 +246,16 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
             "source_type": r.get("source_type") or "",
             "query_mode": r.get("query_mode") or "local",
             "sql_flavor": _flavor_for(r.get("source_type") or ""),
-            "where_examples": _examples_for(r.get("source_type") or ""),
+            "where_examples": _examples_for(
+                r.get("source_type") or "", hint.get("known_columns"),
+            ),
             "fetch_via": _fetch_hint(r["id"], r.get("source_type") or ""),
             "rough_size_hint": hint.get("rough_size_hint"),
             "rows": hint.get("rows"),
             "size_bytes": hint.get("size_bytes"),
             "partition_by": hint.get("partition_by"),
             "clustered_by": hint.get("clustered_by") or [],
+            "entity_type": hint.get("entity_type"),
             "metadata_freshness": hint.get("metadata_freshness"),
         })
 

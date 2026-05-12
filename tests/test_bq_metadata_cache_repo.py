@@ -15,6 +15,8 @@ def test_upsert_success_inserts_then_updates(seeded_app):
         repo.upsert_success(
             "orders", rows=10, size_bytes=2048,
             partition_by="event_date", clustered_by=["country"],
+            entity_type="BASE TABLE",
+            known_columns=["event_date", "country", "amount"],
         )
         row = repo.get("orders")
         assert row is not None
@@ -22,6 +24,8 @@ def test_upsert_success_inserts_then_updates(seeded_app):
         assert row["size_bytes"] == 2048
         assert row["partition_by"] == "event_date"
         assert row["clustered_by"] == ["country"]
+        assert row["entity_type"] == "BASE TABLE"
+        assert row["known_columns"] == ["event_date", "country", "amount"]
         assert row["refreshed_at"] is not None
         assert row["error_at"] is None
 
@@ -158,3 +162,59 @@ def test_freshness_stale_beyond_threshold():
         "error_at": None,
     }
     assert compute_freshness(row, now=now, fresh_threshold=3600) == "stale"
+
+
+# ─── entity_type + known_columns ───────────────────────────────────────────
+
+
+def test_upsert_without_entity_type_or_known_columns(seeded_app):
+    """Legacy callers (or pre-fetch paths) may not have entity_type or
+    known_columns yet. Default-None must round-trip as None / None."""
+    from src.db import get_system_db
+    conn = get_system_db()
+    try:
+        repo = BqMetadataCacheRepository(conn)
+        repo.upsert_success(
+            "older", rows=1, size_bytes=1,
+            partition_by=None, clustered_by=None,
+        )
+        row = repo.get("older")
+        assert row["entity_type"] is None
+        assert row["known_columns"] is None
+    finally:
+        conn.close()
+
+
+def test_entity_type_view_is_round_tripped(seeded_app):
+    from src.db import get_system_db
+    conn = get_system_db()
+    try:
+        repo = BqMetadataCacheRepository(conn)
+        repo.upsert_success(
+            "a_view", rows=None, size_bytes=None,
+            partition_by=None, clustered_by=None,
+            entity_type="VIEW", known_columns=["a", "b"],
+        )
+        row = repo.get("a_view")
+        assert row["entity_type"] == "VIEW"
+        assert row["known_columns"] == ["a", "b"]
+    finally:
+        conn.close()
+
+
+def test_known_columns_empty_list_distinct_from_none(seeded_app):
+    """An empty known_columns list (e.g. table exists but COLUMNS returned
+    nothing) must round-trip as ``[]`` not ``None``."""
+    from src.db import get_system_db
+    conn = get_system_db()
+    try:
+        repo = BqMetadataCacheRepository(conn)
+        repo.upsert_success(
+            "empty_cols", rows=0, size_bytes=0,
+            partition_by=None, clustered_by=None,
+            entity_type="BASE TABLE", known_columns=[],
+        )
+        row = repo.get("empty_cols")
+        assert row["known_columns"] == []
+    finally:
+        conn.close()

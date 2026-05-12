@@ -115,6 +115,47 @@ def test_query_over_cap_rejected_400(seeded_app, mock_dry_run, monkeypatch):
                any("ue" in t for t in detail.get("tables", []))
 
 
+def test_query_over_cap_against_view_includes_view_hint(seeded_app, mock_dry_run, monkeypatch):
+    """When the target table is classified as VIEW in bq_metadata_cache,
+    the cost-guard suggestion explicitly tells the analyst LIMIT does
+    not push into the view body — the literal #1 surprise from the
+    sub-agent test runs."""
+    from src.db import get_system_db
+    from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
+
+    _register_bq_remote_row("ue_view", "finance", "ue_view")
+    # _register_bq_remote_row writes id = "bq.<bucket>.<source_table>";
+    # the cache row's table_id must match that ID, not the catalog name.
+    cached_id = "bq.finance.ue_view"
+    conn = get_system_db()
+    try:
+        BqMetadataCacheRepository(conn).upsert_success(
+            cached_id, rows=None, size_bytes=None,
+            partition_by=None, clustered_by=None,
+            entity_type="VIEW", known_columns=["event_date"],
+        )
+    finally:
+        conn.close()
+
+    mock_dry_run["bytes"] = 10 * 1024 * 1024 * 1024
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={"sql": "SELECT * FROM ue_view LIMIT 1"},
+        headers=_auth(token),
+    )
+    assert r.status_code == 400, r.json()
+    detail = r.json()["detail"]
+    assert detail["reason"] == "remote_scan_too_large"
+    assert cached_id in detail.get("view_targets", [])
+    suggestion = detail["suggestion"]
+    assert "VIEW" in suggestion
+    assert "LIMIT" in suggestion
+    assert "snapshot create" in suggestion
+
+
 def test_no_bq_row_reference_skips_dry_run(seeded_app, monkeypatch):
     """A query that doesn't touch any registered BQ remote row must NOT
     invoke `_bq_dry_run_bytes` — guardrail incurs zero new latency on

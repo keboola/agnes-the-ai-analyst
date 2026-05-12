@@ -33,8 +33,22 @@ class TableMetadata:
     field here is a non-breaking change: existing CLI consumers don't
     even render `rough_size_hint` (verified `grep -rn rough_size_hint cli/`
     is empty), let alone the new fields.
+
+    ``entity_type`` for BigQuery mirrors INFORMATION_SCHEMA.TABLES.table_type
+    (``BASE TABLE`` / ``VIEW`` / ``MATERIALIZED VIEW`` / ``EXTERNAL`` /
+    ``SNAPSHOT`` / ``CLONE``). Catalog uses it to hide misleading
+    ``rows=0, size_bytes=0`` for VIEWs (which __TABLES__ reports as zero)
+    and to inject a "LIMIT doesn't push into view body" hint into
+    cost-guard errors when a remote query targets a VIEW.
+
+    ``known_columns`` is the list of column names from the same refresh
+    that populated this row. Catalog endpoint filters generic
+    ``where_examples`` templates against this list — drops example
+    predicates that reference columns the table doesn't have.
     """
     rows: int | None = None
     size_bytes: int | None = None
     partition_by: str | None = None
     clustered_by: list[str] | None = None
+    entity_type: str | None = None
+    known_columns: list[str] | None = None
