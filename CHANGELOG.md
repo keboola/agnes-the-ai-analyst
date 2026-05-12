@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`/corporate-memory/admin` no longer fails with "Error loading pending items." once pending knowledge items exist.** `GET /corporate-memory/admin` was passing the `corporate_memory.groups` YAML section (a dict, default `{}`) into the template as `groups=`, but `renderItemCard` evaluates `GROUPS.map(g => ...)` to build the mandate-form audience picker — `{}.map is not a function` threw inside the template literal, bubbled up to `renderReviewItems`, and the `loadReviewQueue` catch block painted the misleading "Error loading pending items." banner over a perfectly valid `/api/memory/admin/pending` response. Bug was dormant since the initial system commit because `renderItemCard` only runs when at least one pending item exists, so test fixtures and empty queues never tripped it. Fix: route now passes RBAC user_groups (`user_groups` table) shaped as `[{name, members_count}]`, which is what the mandate form actually targets (audience targeting is `group:<rbac-group-name>`, not `corporate_memory.groups`); template hardens the `.map` call with `Array.isArray(GROUPS) ? GROUPS : []` so a future shape regression degrades to "no group options" instead of crashing the whole list. No DB migration; no API change.
+
 ## [0.51.0] — 2026-05-12
 
 ### Fixed
