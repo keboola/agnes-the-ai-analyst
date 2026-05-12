@@ -88,6 +88,10 @@ class MarketplaceItem(BaseModel):
     # v39: drives the "Required" pill on the curated browse cards. Only
     # set on curated items (flea/store entities are never system).
     is_system: bool = False
+    # telemetry (Phase B.1): populated from usage_plugin_daily rollup
+    invocations_30d: int = 0
+    unique_users_30d: int = 0
+    trend_pct: Optional[float] = None
 
 
 class ItemListResponse(BaseModel):
@@ -201,6 +205,8 @@ class PluginDetailResponse(BaseModel):
     # detail page. The same flag travels via /api/marketplace/items so
     # the browse cards can show a "Required" pill.
     is_system: bool = False
+    # telemetry (Phase B.1)
+    telemetry: Optional[Dict[str, Any]] = None
 
 
 # Legacy alias kept so any unmigrated import continues to resolve. The new
@@ -247,6 +253,83 @@ class InstallActionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _load_invocation_stats(
+    conn: duckdb.DuckDBPyConnection,
+    source: str,
+) -> Dict[str, Dict]:
+    """Return {ref_id: {invocations_30d, unique_users_30d, trend_pct}}.
+
+    One query per source per page render — avoids N+1.
+    """
+    rows = conn.execute("""
+        WITH last_30 AS (
+            SELECT ref_id,
+                   SUM(invocations) AS inv30,
+                   SUM(distinct_users) AS u30
+            FROM usage_plugin_daily
+            WHERE source = ? AND day >= CURRENT_DATE - INTERVAL 30 DAY
+            GROUP BY ref_id
+        ),
+        prior_week AS (
+            SELECT ref_id, SUM(invocations) AS inv_prior
+            FROM usage_plugin_daily
+            WHERE source = ?
+              AND day >= CURRENT_DATE - INTERVAL 14 DAY
+              AND day <  CURRENT_DATE - INTERVAL 7  DAY
+            GROUP BY ref_id
+        ),
+        recent_week AS (
+            SELECT ref_id, SUM(invocations) AS inv_recent
+            FROM usage_plugin_daily
+            WHERE source = ?
+              AND day >= CURRENT_DATE - INTERVAL 7 DAY
+            GROUP BY ref_id
+        )
+        SELECT l.ref_id, l.inv30, l.u30, p.inv_prior, r.inv_recent
+        FROM last_30 l
+        LEFT JOIN prior_week p USING (ref_id)
+        LEFT JOIN recent_week r USING (ref_id)
+    """, [source, source, source]).fetchall()
+    out: Dict[str, Dict] = {}
+    for ref_id, inv30, u30, prior, recent in rows:
+        trend = None
+        if prior is not None and prior >= 3:
+            _recent = recent or 0
+            trend = (_recent - prior) / prior * 100.0
+        out[ref_id] = {
+            "invocations_30d": int(inv30 or 0),
+            "unique_users_30d": int(u30 or 0),
+            "trend_pct": trend,
+        }
+    return out
+
+
+def _load_plugin_daily_series(
+    conn: duckdb.DuckDBPyConnection,
+    source: str,
+    ref_id: str,
+) -> List[Dict]:
+    """Return a 30-entry list [{day, invocations}] with missing days filled to 0."""
+    rows = conn.execute("""
+        SELECT day, SUM(invocations) AS inv
+        FROM usage_plugin_daily
+        WHERE source = ? AND ref_id = ?
+          AND day >= CURRENT_DATE - INTERVAL 30 DAY
+        GROUP BY day
+        ORDER BY day
+    """, [source, ref_id]).fetchall()
+    by_day = {str(r[0]): int(r[1] or 0) for r in rows}
+
+    import datetime as _dt
+    today = _dt.date.today()
+    series = []
+    for offset in range(29, -1, -1):
+        day = today - _dt.timedelta(days=offset)
+        day_str = day.isoformat()
+        series.append({"day": day_str, "invocations": by_day.get(day_str, 0)})
+    return series
 
 
 def _audit(
@@ -331,6 +414,7 @@ def _curated_to_item(
     *,
     subs: set,
     marketplace_meta: Dict[str, Dict[str, Optional[str]]],
+    stats: Optional[Dict[str, Dict]] = None,
 ) -> MarketplaceItem:
     marketplace_id = plugin_row["marketplace_id"]
     plugin_name = plugin_row["name"]
@@ -344,6 +428,8 @@ def _curated_to_item(
     # is the human accountable for the plugin's presence in this Agnes
     # instance; upstream author belongs in the plugin source repo.
     owner = meta["curator_name"] or OWNER_TODO_PLACEHOLDER
+    ref_id = f"{marketplace_id}/{plugin_name}"
+    stat = (stats or {}).get(ref_id, {})
     return MarketplaceItem(
         id=f"curated-{marketplace_id}/{plugin_name}",
         source="curated",
@@ -363,11 +449,18 @@ def _curated_to_item(
         marketplace_name=meta["name"],
         detail_url=_curated_detail_url(marketplace_id, plugin_name),
         is_system=bool(plugin_row.get("is_system")),
+        invocations_30d=stat.get("invocations_30d", 0),
+        unique_users_30d=stat.get("unique_users_30d", 0),
+        trend_pct=stat.get("trend_pct"),
     )
 
 
 def _flea_to_item(
-    entity: dict, *, installed_set: set, viewer_id: Optional[str] = None,
+    entity: dict,
+    *,
+    installed_set: set,
+    viewer_id: Optional[str] = None,
+    stats: Optional[Dict[str, Dict]] = None,
 ) -> MarketplaceItem:
     photo_url = (
         f"/api/store/entities/{entity['id']}/photo"
@@ -382,6 +475,7 @@ def _flea_to_item(
     display_name = strip_archive_suffix(entity["name"])
     invocation = suffixed_name(display_name, entity.get("owner_username") or "")
     is_viewer_owner = bool(viewer_id and entity.get("owner_user_id") == viewer_id)
+    stat = (stats or {}).get(entity["id"], {})
     return MarketplaceItem(
         id=f"flea-{entity['id']}",
         source="flea",
@@ -399,6 +493,9 @@ def _flea_to_item(
         detail_url=_flea_detail_url(entity["id"]),
         visibility_status=entity.get("visibility_status") or "approved",
         is_viewer_owner=is_viewer_owner,
+        invocations_30d=stat.get("invocations_30d", 0),
+        unique_users_30d=stat.get("unique_users_30d", 0),
+        trend_pct=stat.get("trend_pct"),
     )
 
 
@@ -407,12 +504,55 @@ def _flea_to_item(
 # ---------------------------------------------------------------------------
 
 
+def _build_telemetry(
+    conn: duckdb.DuckDBPyConnection,
+    source: str,
+    ref_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Build the telemetry dict for detail endpoints.
+
+    Returns None when invocations_30d == 0 (no data yet).
+    Otherwise returns {invocations_30d, unique_users_30d, daily_series}.
+    """
+    stats = _load_invocation_stats(conn, source)
+    stat = stats.get(ref_id)
+    inv30 = stat["invocations_30d"] if stat else 0
+    if inv30 == 0:
+        return None
+    return {
+        "invocations_30d": inv30,
+        "unique_users_30d": stat["unique_users_30d"] if stat else 0,
+        "daily_series": _load_plugin_daily_series(conn, source, ref_id),
+    }
+
+
+def _apply_sort(
+    items: List[MarketplaceItem],
+    sort: str,
+) -> List[MarketplaceItem]:
+    """Sort a list of MarketplaceItem objects in-place and return it.
+
+    - ``recent``    — preserve existing order (no-op).
+    - ``most_used`` — DESC by invocations_30d, then DESC install_count, then name ASC.
+    - ``trending``  — DESC by trend_pct; items with trend_pct=None are excluded.
+    """
+    if sort == "most_used":
+        items.sort(
+            key=lambda it: (-it.invocations_30d, it.name.lower())
+        )
+    elif sort == "trending":
+        items = [it for it in items if it.trend_pct is not None]
+        items.sort(key=lambda it: -(it.trend_pct or 0.0))
+    return items
+
+
 @router.get("/items", response_model=ItemListResponse)
 async def list_items(
     tab: Literal["curated", "flea", "my"] = Query("curated"),
     q: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     type: Optional[Literal["skill", "agent", "plugin"]] = Query(None),
+    sort: Literal["recent", "most_used", "trending"] = Query("recent"),
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
     user: dict = Depends(get_current_user),
@@ -435,28 +575,53 @@ async def list_items(
       marketplace ZIP/git endpoints but wrong for /marketplace browsing,
       where each item should appear as its own card. Mirrors the
       ``/api/my-stack`` reading pattern.
+
+    ``sort`` controls ordering after stats are joined:
+      * ``recent``    — existing DB order (default, backward-compatible).
+      * ``most_used`` — DESC by invocations_30d, ties by install_count then name.
+      * ``trending``  — DESC by trend_pct; items with no trend data are excluded.
     """
     skip = (page - 1) * page_size
+    needs_sort = sort != "recent"
 
     if tab == "curated":
         group_ids = _user_group_ids(user["id"], conn) or set()
         subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
-        rows, total = MarketplacePluginsRepository(conn).list_with_filters(
-            group_ids=group_ids,
-            search=q or None,
-            category=category or None,
-            skip=skip,
-            limit=page_size,
-        )
+        # When sorting, we need all rows to sort before paginating.
+        if needs_sort:
+            all_rows, total = MarketplacePluginsRepository(conn).list_with_filters(
+                group_ids=group_ids,
+                search=q or None,
+                category=category or None,
+                skip=0,
+                limit=10000,
+            )
+        else:
+            all_rows, total = MarketplacePluginsRepository(conn).list_with_filters(
+                group_ids=group_ids,
+                search=q or None,
+                category=category or None,
+                skip=skip,
+                limit=page_size,
+            )
         marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
-        if rows:
-            distinct_ids = {r["marketplace_id"] for r in rows}
+        if all_rows:
+            distinct_ids = {r["marketplace_id"] for r in all_rows}
             for mp_id in distinct_ids:
                 marketplace_meta[mp_id] = _resolve_marketplace_meta(conn, mp_id)
+        curated_stats = _load_invocation_stats(conn, "curated")
         items = [
-            _curated_to_item(conn, r, subs=subs, marketplace_meta=marketplace_meta)
-            for r in rows
+            _curated_to_item(
+                conn, r, subs=subs,
+                marketplace_meta=marketplace_meta,
+                stats=curated_stats,
+            )
+            for r in all_rows
         ]
+        if needs_sort:
+            items = _apply_sort(items, sort)
+            total = len(items)
+            items = items[skip: skip + page_size]
         return ItemListResponse(
             items=items, total=total, page=page, page_size=page_size,
         )
@@ -476,16 +641,33 @@ async def list_items(
         else:
             visibility_filter = ["approved"]
             include_owner = user["id"]
-        rows, total = StoreEntitiesRepository(conn).list(
-            skip=skip, limit=page_size,
-            type=type, category=category, search=q or None,
-            visibility_status=visibility_filter,
-            include_owner_id=include_owner,
-        )
+        if needs_sort:
+            all_flea_rows, total = StoreEntitiesRepository(conn).list(
+                skip=0, limit=10000,
+                type=type, category=category, search=q or None,
+                visibility_status=visibility_filter,
+                include_owner_id=include_owner,
+            )
+        else:
+            all_flea_rows, total = StoreEntitiesRepository(conn).list(
+                skip=skip, limit=page_size,
+                type=type, category=category, search=q or None,
+                visibility_status=visibility_filter,
+                include_owner_id=include_owner,
+            )
+        flea_stats = _load_invocation_stats(conn, "flea")
         items = [
-            _flea_to_item(r, installed_set=installed_set, viewer_id=user["id"])
-            for r in rows
+            _flea_to_item(
+                r, installed_set=installed_set,
+                viewer_id=user["id"],
+                stats=flea_stats,
+            )
+            for r in all_flea_rows
         ]
+        if needs_sort:
+            items = _apply_sort(items, sort)
+            total = len(items)
+            items = items[skip: skip + page_size]
         return ItemListResponse(
             items=items, total=total, page=page, page_size=page_size,
         )
@@ -510,6 +692,9 @@ async def list_items(
     for mp_id in subscribed_mp_ids:
         for row in plugin_repo.list_for_marketplace(mp_id):
             enriched_lookup[(mp_id, row["name"])] = row
+
+    curated_stats = _load_invocation_stats(conn, "curated")
+    flea_stats = _load_invocation_stats(conn, "flea")
 
     for p in granted:
         key = (p["marketplace_id"], p["original_name"])
@@ -540,12 +725,15 @@ async def list_items(
             }
         items.append(_curated_to_item(
             conn, plugin_row, subs=subs, marketplace_meta=marketplace_meta,
+            stats=curated_stats,
         ))
 
     flea_installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
     flea_installed_set = {row["id"] for row in flea_installs}
     for entity in flea_installs:
-        items.append(_flea_to_item(entity, installed_set=flea_installed_set))
+        items.append(_flea_to_item(
+            entity, installed_set=flea_installed_set, stats=flea_stats,
+        ))
 
     # Apply optional filters client-server-style for `my` tab (small N):
     if q:
@@ -561,6 +749,7 @@ async def list_items(
         items = [it for it in items if (it.category or "Other") == category]
     if type:
         items = [it for it in items if it.type == type]
+    items = _apply_sort(items, sort)
     total = len(items)
     items = items[skip : skip + page_size]
     return ItemListResponse(
@@ -1023,6 +1212,9 @@ async def curated_detail(
         files=_walk_files(plugin_root),
         docs=doc_link_entries,
         is_system=bool(plugin_row.get("is_system")),
+        telemetry=_build_telemetry(
+            conn, "curated", f"{marketplace_id}/{plugin_name}",
+        ),
     )
 
 
@@ -1147,6 +1339,7 @@ async def flea_detail(
         docs=docs,
         visibility_status=entity.get("visibility_status") or "approved",
         submission_status=submission_status,
+        telemetry=_build_telemetry(conn, "flea", entity_id),
     )
 
 
