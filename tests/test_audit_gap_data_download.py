@@ -82,4 +82,5 @@ def test_data_download_writes_audit_log(seeded_app, analyst_user, mock_extract_f
     assert row[1] == "data.download"
     assert "dl_test_tbl" in row[2]
     assert row[3] == "success"
-    assert row[4] == "cli"
+    # Session JWT → 'web'; PAT → 'cli'. analyst_user fixture uses a session token.
+    assert row[4] == "web"

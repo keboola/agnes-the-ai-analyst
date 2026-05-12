@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.remote_query import RemoteQueryEngine, RemoteQueryError, load_config
 from src.repositories.audit import AuditRepository
@@ -58,7 +59,7 @@ async def hybrid_query(
                                 "error": f"BQ '{alias}': {e.error_type}: {e}"[:200],
                                 "duration_ms": int((time.monotonic() - t0) * 1000)},
                         result="error.400",
-                        client_kind="cli",
+                        client_kind=client_kind_from_user(user),
                     )
                 except Exception:
                     logger.exception("audit_log write failed for query.hybrid (bq error); continuing")
@@ -76,7 +77,7 @@ async def hybrid_query(
                             "error": f"Query: {e.error_type}: {e}"[:200],
                             "duration_ms": int((time.monotonic() - t0) * 1000)},
                     result="error.400",
-                    client_kind="cli",
+                    client_kind=client_kind_from_user(user),
                 )
             except Exception:
                 logger.exception("audit_log write failed for query.hybrid (exec error); continuing")
@@ -96,7 +97,7 @@ async def hybrid_query(
                     "duration_ms": int((time.monotonic() - t0) * 1000),
                 },
                 result="success",
-                client_kind="cli",  # hybrid is admin + CLI-driven
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed for query.hybrid; continuing")

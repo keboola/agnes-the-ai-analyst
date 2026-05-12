@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
 from app.utils import get_data_dir as _get_data_dir
+from src.audit_helpers import client_kind_from_user
 from src.db import get_system_db
 from src.repositories.audit import AuditRepository
 
@@ -95,7 +96,7 @@ async def upload_session(
             action="session.upload",
             params={"filename": filename[:256], "bytes": size},
             result="success",
-            client_kind="cli",
+            client_kind=client_kind_from_user(user),
         )
     except Exception:
         logger.exception("audit_log write failed for session.upload; continuing")
