@@ -121,6 +121,7 @@ from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.activity import router as activity_router
 from app.api.observability import router as observability_router
 from app.api.admin_user_sessions import router as admin_user_sessions_router
+from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
 from app.marketplace_server.router import router as marketplace_server_router
@@ -620,6 +621,7 @@ def create_app() -> FastAPI:
     app.include_router(activity_router)
     app.include_router(observability_router)
     app.include_router(admin_user_sessions_router)
+    app.include_router(admin_sessions_router)
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
     app.include_router(marketplace_server_router)

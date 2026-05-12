@@ -1557,6 +1557,32 @@ async def admin_usage_page(
     return templates.TemplateResponse(request, "admin_usage.html", ctx)
 
 
+@router.get("/admin/sessions", response_class=HTMLResponse)
+async def admin_sessions_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Global Sessions browser — every collected session JSONL across all
+    users. The list page is a shell; data loads client-side via
+    /api/admin/sessions/{list,kpis,facets}."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_sessions.html", ctx)
+
+
+@router.get("/admin/sessions/{username}/{session_file}", response_class=HTMLResponse)
+async def admin_session_detail(
+    request: Request,
+    username: str,
+    session_file: str,
+    user: dict = Depends(require_admin),
+):
+    """Session transcript viewer. Username + session_file are revalidated by
+    the API route (regex + path-escape guard) when /transcript is fetched;
+    here we just render the shell."""
+    ctx = _build_context(request, user=user, username=username, session_file=session_file)
+    return templates.TemplateResponse(request, "admin_session_detail.html", ctx)
+
+
 @router.get("/admin/groups", response_class=HTMLResponse)
 async def admin_groups_page(
     request: Request,
