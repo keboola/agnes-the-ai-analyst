@@ -14,6 +14,8 @@ The request path never calls BQ.
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,7 +29,9 @@ from app.utils import get_data_dir as _get_data_dir
 from src.rbac import can_access_table
 from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
 from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.audit import AuditRepository
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
 # Global cache of the raw table_registry rows. RBAC is enforced PER REQUEST
@@ -273,4 +277,20 @@ def catalog(
     # Plain ``def`` so FastAPI auto-offloads to the anyio thread pool —
     # the request path is pure local I/O (DuckDB reads + filesystem
     # stat()) and uses a sync DuckDB cursor.
-    return build_catalog(conn, user)
+    t0 = time.monotonic()
+    result = build_catalog(conn, user)
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("id"),
+            action="catalog.list",
+            resource="catalog",
+            params={
+                "rows_returned": len(result.get("tables", [])),
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+            result="success",
+            client_kind="cli",  # catalog is primarily CLI-driven (agnes catalog)
+        )
+    except Exception:
+        logger.exception("audit_log write failed for catalog.list; continuing")
+    return result

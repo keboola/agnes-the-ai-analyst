@@ -3,12 +3,14 @@
 from __future__ import annotations
 import logging
 import math
+import time
 from fastapi import APIRouter, Depends, HTTPException, Query
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.audit import AuditRepository
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
@@ -136,19 +138,56 @@ def sample(
 ):
     # Plain ``def`` — opens a `bq.duckdb_session()` and runs sync queries
     # through the BQ extension. See PR #188 Tier 1 entry.
+    t0 = time.monotonic()
+    resource = f"table:{table_id}"[:256]
     try:
-        return build_sample(conn, user, table_id, n=n, bq=bq)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="not authorized for this table")
-    except ValueError as e:
+        result = build_sample(conn, user, table_id, n=n, bq=bq)
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="catalog.sample",
+                resource=resource,
+                params={
+                    "rows_returned": len(result.get("rows", [])),
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                },
+                result="success",
+                client_kind="cli",  # sample is primarily CLI-driven (agnes describe)
+            )
+        except Exception:
+            logger.exception("audit_log write failed for catalog.sample; continuing")
+        return result
+    except (FileNotFoundError, PermissionError, ValueError, BqAccessError) as exc:
+        try:
+            if isinstance(exc, FileNotFoundError):
+                status_code = 404
+            elif isinstance(exc, PermissionError):
+                status_code = 403
+            elif isinstance(exc, ValueError):
+                status_code = 400
+            else:
+                status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="catalog.sample",
+                resource=resource,
+                params={"duration_ms": int((time.monotonic() - t0) * 1000),
+                        "error": str(exc)},
+                result=f"error.{status_code}",
+                client_kind="cli",
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for catalog.sample; continuing")
+        if isinstance(exc, FileNotFoundError):
+            raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
+        if isinstance(exc, PermissionError):
+            raise HTTPException(status_code=403, detail="not authorized for this table")
+        if isinstance(exc, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "unsafe_identifier", "message": str(exc), "details": {}},
+            )
         raise HTTPException(
-            status_code=400,
-            detail={"error": "unsafe_identifier", "message": str(e), "details": {}},
-        )
-    except BqAccessError as e:
-        raise HTTPException(
-            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
-            detail={"error": e.kind, "message": e.message, "details": e.details},
+            status_code=BqAccessError.HTTP_STATUS.get(exc.kind, 500),  # type: ignore[union-attr]
+            detail={"error": exc.kind, "message": exc.message, "details": exc.details},  # type: ignore[union-attr]
         )
