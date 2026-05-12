@@ -214,6 +214,25 @@ def save_view(
             status_code=400,
             detail="query payload too large (max 64 KiB)",
         )
+    # Per-user view-count cap — admin is the only role here, but a
+    # runaway script shouldn't be able to fill system.duckdb with
+    # thousands of views. 100 is well above any plausible curation
+    # ceiling; ON CONFLICT updates an existing name rather than
+    # adding rows, so this only bites genuine fan-out.
+    existing = conn.execute(
+        "SELECT COUNT(*) FROM user_observability_views WHERE user_id = ?",
+        [user_id],
+    ).fetchone()[0]
+    already_exists = conn.execute(
+        "SELECT 1 FROM user_observability_views "
+        "WHERE user_id = ? AND name = ?",
+        [user_id, name],
+    ).fetchone()
+    if existing >= 100 and not already_exists:
+        raise HTTPException(
+            status_code=400,
+            detail="saved-view count for this user has reached 100; delete one before adding another",
+        )
     return ObservabilityViewsRepository(conn).create(user_id, name, query)
 
 

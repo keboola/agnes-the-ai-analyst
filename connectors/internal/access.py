@@ -171,29 +171,69 @@ _TABLE_REF_RE = re.compile(
 # privileged code path by smuggling the alias inside a literal.
 _SQL_STRING_LITERAL_RE = re.compile(r"'(?:''|[^'])*'")
 
-# Underlying physical tables the agnes_* aliases wrap. A non-admin
-# whose SQL references any of these directly is bypassing the CTE
-# wrapper's RBAC — block before execution. Admins are unaffected
-# (god-mode short-circuits the filter clause anyway).
-_FORBIDDEN_UNDERLYING_RE = re.compile(
-    r"\b("
-    r"usage_session_summary|usage_events|usage_tool_daily|usage_plugin_daily|"
-    r"usage_attribution_skills|usage_attribution_agents|usage_attribution_commands|"
-    r"audit_log"
-    r")\b",
-    re.IGNORECASE,
+# SQL comments — block `/* … */` and `--` line forms. Stripped so a
+# comment-wrapped table name (`/**/users/**/`) can't slip past the
+# identifier scan downstream.
+_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
+_SQL_LINE_COMMENT_RE  = re.compile(r"--[^\n]*")
+
+
+def _strip_sql_noise(sql: str) -> str:
+    """Strip string literals + block + line comments so the identifier
+    scanners that follow see only structural SQL. Order matters: strip
+    literals first (they can contain comment-looking text), then
+    comments (which can contain literal-looking text). String content
+    is replaced with empty `''` to keep token spacing intact."""
+    s = _SQL_STRING_LITERAL_RE.sub("''", sql)
+    s = _SQL_BLOCK_COMMENT_RE.sub(" ", s)
+    s = _SQL_LINE_COMMENT_RE.sub(" ", s)
+    return s
+
+
+_INTERNAL_ALIAS_NAMES: frozenset[str] = frozenset(
+    t.registry_id.lower() for t in INTERNAL_TABLES
 )
+
+
+def _sensitive_table_reference(stripped_sql: str, conn) -> str | None:
+    """Return the first non-allowlisted system.duckdb table name that
+    appears in ``stripped_sql``, or None if clean.
+
+    Allowlist = the registered ``agnes_*`` internal-table IDs. The
+    denylist is derived dynamically from ``information_schema.tables``
+    in the system.duckdb main schema, so adding a new sensitive table
+    in a future migration is automatically covered without re-editing
+    this module.
+
+    ``stripped_sql`` MUST already have string literals and comments
+    stripped (see ``_strip_sql_noise``). Identifier scan is
+    case-insensitive word-boundary; schema-prefixed (`main.users`) and
+    double-quoted (`"users"`) forms both match because the bare name
+    still sits between word boundaries.
+    """
+    rows = conn.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'main'"
+    ).fetchall()
+    for (name,) in rows:
+        if name is None:
+            continue
+        if name.lower() in _INTERNAL_ALIAS_NAMES:
+            continue
+        if re.search(rf"\b{re.escape(name)}\b", stripped_sql, re.IGNORECASE):
+            return name
+    return None
 
 
 def find_internal_refs(sql: str) -> list[str]:
     """Word-boundary scan of `sql` for the registered internal table IDs.
 
     Returns the matched IDs (lowercase, deduped) in declaration order.
-    Single-quoted string literals are stripped first so a literal that
-    happens to contain `agnes_sessions` doesn't route the request into
-    the privileged internal-query path (review #278 R2 finding #1).
+    String literals AND comments are stripped first so a literal /
+    commented mention of `agnes_sessions` doesn't route the request
+    into the privileged internal-query path (review #278 R2 / R3).
     """
-    stripped = _SQL_STRING_LITERAL_RE.sub("''", sql)
+    stripped = _strip_sql_noise(sql)
     found = {m.group(1).lower() for m in _TABLE_REF_RE.finditer(stripped)}
     # Preserve declaration order so reasoning about the resulting set is stable.
     return [t.registry_id for t in INTERNAL_TABLES if t.registry_id.lower() in found]
@@ -238,29 +278,31 @@ def execute_internal_query(
     if not refs:
         raise InternalAccessError("no internal-table references in SQL")
 
-    # Non-admins are NOT allowed to reference the underlying physical
-    # tables (`usage_session_summary`, `audit_log`, etc.) directly — the
-    # CTE wrapper only scopes the agnes_* aliases; a direct FROM on the
-    # base table would bypass the row filter and leak every user's data.
-    # This also blocks the inner-WITH shadow-attack
-    # (`WITH agnes_sessions AS (SELECT * FROM usage_session_summary)`):
-    # to do anything useful the user still has to reach the base table
-    # somewhere in the SQL. Admin god-mode is unaffected (the filter
-    # clause is empty, so the user sees the same rows either way).
-    # Strip string literals first so a value like
-    # `WHERE name = 'usage_events_url'` doesn't trip the guard.
-    if not is_admin:
-        stripped = _SQL_STRING_LITERAL_RE.sub("''", sql)
-        m = _FORBIDDEN_UNDERLYING_RE.search(stripped)
-        if m is not None:
-            raise InternalAccessError(
-                f"direct reference to internal physical table {m.group(1)!r} "
-                "is not allowed; query the agnes_* alias instead"
-            )
-
     # Lazy import to avoid a hard cycle (src.db imports go via repositories
     # which then end up importing access in some test paths).
     from src.db import get_system_db
+
+    # Non-admins are NOT allowed to reference any system.duckdb table
+    # outside the registered agnes_* aliases. The CTE wrapper only
+    # scopes those aliases; a direct FROM on the base table
+    # (`usage_session_summary`, `audit_log`, `users`,
+    # `personal_access_tokens`, etc.) would bypass row-level RBAC and
+    # leak other users' data. Denylist is derived dynamically from
+    # `information_schema.tables` — every table in system.duckdb that
+    # is NOT one of the agnes_* aliases is sensitive. This is
+    # future-proof: new tables added by later migrations are
+    # automatically covered without re-editing this module.
+    #
+    # Admin path is unaffected — admins have legitimate need to read
+    # raw rows, and the filter clause is empty for them anyway.
+    if not is_admin:
+        stripped = _strip_sql_noise(sql)
+        sensitive = _sensitive_table_reference(stripped, get_system_db())
+        if sensitive is not None:
+            raise InternalAccessError(
+                f"non-admin SQL cannot reference table {sensitive!r}; "
+                "query one of the agnes_* aliases instead"
+            )
     cte_parts = []
     for table_id in refs:
         table = INTERNAL_TABLES_BY_ID[table_id]

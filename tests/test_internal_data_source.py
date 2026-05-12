@@ -332,3 +332,60 @@ def test_admin_unaffected_by_underlying_table_guard(system_db):
         sql="SELECT (SELECT COUNT(*) FROM usage_session_summary) AS n FROM agnes_sessions LIMIT 1",
     )
     assert rows  # admin can join base table inside the wrapper
+
+
+def test_non_admin_cannot_reference_users_table(system_db):
+    """R3 finding: non-admin must not reach any non-agnes_* table in
+    system.duckdb (users / personal_access_tokens / resource_grants /
+    saved views / etc.). The dynamic denylist from information_schema
+    covers all of them; this test pins one critical case (`users`)."""
+    db_path = str(_get_state_dir() / "system.duckdb")
+    with pytest.raises(InternalAccessError):
+        execute_internal_query(
+            db_path,
+            {"email": "alice@x", "id": "alice-uuid"},
+            is_admin=False,
+            sql="SELECT * FROM agnes_sessions UNION ALL SELECT email, id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM users LIMIT 1",
+        )
+
+
+def test_non_admin_cannot_reference_pat_table(system_db):
+    """PAT table is one of the most sensitive — explicit pin."""
+    db_path = str(_get_state_dir() / "system.duckdb")
+    with pytest.raises(InternalAccessError):
+        execute_internal_query(
+            db_path,
+            {"email": "alice@x", "id": "alice-uuid"},
+            is_admin=False,
+            sql="SELECT * FROM agnes_audit; SELECT * FROM personal_access_tokens",
+        )
+
+
+def test_non_admin_block_survives_block_comment(system_db):
+    """`/* */` comment-wrapped table name should still be caught — the
+    pre-pass strips comments before the identifier scan."""
+    db_path = str(_get_state_dir() / "system.duckdb")
+    with pytest.raises(InternalAccessError):
+        execute_internal_query(
+            db_path,
+            {"email": "alice@x", "id": "alice-uuid"},
+            is_admin=False,
+            sql="SELECT * FROM agnes_sessions /**/ JOIN /**/ users /**/ ON 1=1",
+        )
+
+
+def test_non_admin_block_survives_line_comment(system_db):
+    """`--` line-comment shouldn't hide the table name from the scan."""
+    db_path = str(_get_state_dir() / "system.duckdb")
+    with pytest.raises(InternalAccessError):
+        execute_internal_query(
+            db_path,
+            {"email": "alice@x", "id": "alice-uuid"},
+            is_admin=False,
+            sql=(
+                "SELECT * FROM agnes_sessions\n"
+                "-- this is a comment but we still touch the table below\n"
+                "UNION ALL SELECT email, id, NULL, NULL, NULL, NULL, NULL, NULL, "
+                "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM users LIMIT 1"
+            ),
+        )
