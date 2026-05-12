@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **`agnes catalog` replaces the `FLAVOR` column with `ENTITY`.** The old `FLAVOR` column rendered `t['sql_flavor']` (`bigquery`/`duckdb`) which duplicated `SOURCE` for any catalog dominated by one source type — analysts saw `SOURCE=bigquery FLAVOR=bigquery` on every row and the column carried zero information. `ENTITY` instead renders the upstream BigQuery `entity_type` (`BASE TABLE` / `VIEW` / `MATERIALIZED_VIEW`) for remote rows, surfacing the distinction that actually changes how the analyst should query: views don't support predicate pushdown, so `agnes query --remote` against a view trips the cost guardrail where the same query against a BASE TABLE pushes down cleanly. Non-remote rows (`local`/`materialized`) render `-` since the distinction doesn't apply. JSON output (`agnes catalog --json`) is unchanged — `entity_type` was already in the v2 catalog response since 0.51.0; only the human-readable column changed.
+
+### Fixed
+
+- **`/api/query` `remote_estimate_failed` hint now branches on the BigQuery error class** instead of always claiming a column doesn't exist. The previous hardcoded "Most often this means a column referenced … doesn't exist" misled analysts whenever BigQuery actually rejected on syntax (e.g. `SELECT COUNT(*) AS rows` — `rows` is reserved, BQ returns `Syntax error: Unexpected keyword ROWS at [1:20]`, the previous hint pointed at non-existent columns). Branching: syntax errors get a hint about reserved-keyword aliases (with the `AS \`rows\`` / `AS row_count` workaround); `Unrecognized name` / `not found inside` still points at `agnes schema <id>`; `Table not found` points at `agnes catalog`; the fallback hint enumerates all three causes for the analyst to triage.
+
 ## [0.53.4] — 2026-05-12
 
 ### Fixed

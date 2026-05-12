@@ -831,3 +831,54 @@ def test_full_backtick_path_inside_string_literal_not_gated(
                 "bq_path_not_registered",
                 "bq_path_cross_project",
             ), detail
+
+
+class TestHintForBqBadRequest:
+    """The `remote_estimate_failed` hint must branch on the BQ error class.
+
+    Pre-#NNN every BQ rejection got the same "column referenced doesn't
+    exist" hint, which actively misled analysts whenever BQ actually
+    rejected on syntax (e.g. `SELECT COUNT(*) AS rows` — `rows` is
+    reserved). The dispatch helper picks the most useful one-line hint
+    based on what BigQuery actually said.
+    """
+
+    def test_syntax_error_hint_calls_out_reserved_keyword_alias(self):
+        from app.api.query import _hint_for_bq_bad_request
+
+        # Sub-agent-reported actual case from the v0.53.4 smoke test
+        hint = _hint_for_bq_bad_request(
+            "Syntax error: Unexpected keyword ROWS at [1:20]"
+        )
+        assert "syntax" in hint.lower()
+        assert "reserved" in hint.lower() or "rows" in hint.lower()
+        # Must NOT lead with the misleading column-not-found hint
+        assert "column referenced" not in hint.lower()
+
+    def test_unrecognized_name_hint_points_at_agnes_schema(self):
+        from app.api.query import _hint_for_bq_bad_request
+
+        hint = _hint_for_bq_bad_request(
+            "Unrecognized name: authorize_date at [1:88]"
+        )
+        assert "agnes schema" in hint.lower()
+        assert "doesn't exist" in hint.lower() or "column" in hint.lower()
+
+    def test_table_not_found_hint_points_at_agnes_catalog(self):
+        from app.api.query import _hint_for_bq_bad_request
+
+        hint = _hint_for_bq_bad_request(
+            "Table not found: my-project.dataset.tbl"
+        )
+        assert "agnes catalog" in hint.lower()
+
+    def test_unknown_error_falls_back_to_generic_hint(self):
+        from app.api.query import _hint_for_bq_bad_request
+
+        hint = _hint_for_bq_bad_request(
+            "Some unfamiliar BigQuery diagnostic we don't classify yet"
+        )
+        # Generic hint mentions all three common causes so the analyst
+        # has somewhere to start
+        assert "schema" in hint.lower()
+        assert "underlying" in hint.lower()
