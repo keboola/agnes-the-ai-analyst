@@ -112,6 +112,23 @@ _FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 
+# DuckDB table-valued / scalar functions that can read arbitrary files,
+# make network calls, or expose internal secrets.  We match only when
+# the name is immediately followed by optional whitespace + "(" so that
+# benign column names like "read_count" or "shell_name" are not rejected.
+_FORBIDDEN_FUNCS = re.compile(
+    r"\b("
+    r"read_csv|read_json|read_json_auto|read_parquet|read_text|read_file|read_blob|"
+    r"parquet_scan|json_scan|"
+    r"glob|"
+    r"http_get|http_post|http_head|"
+    r"aws_secret|azure|gcs|iceberg_scan|delta_scan|hudi_scan|"
+    r"duckdb_extensions|duckdb_functions|duckdb_settings|duckdb_databases|duckdb_secrets|"
+    r"shell|system"
+    r")\s*\(",
+    re.IGNORECASE,
+)
+
 
 def validate_select_only(sql: str) -> str:
     """Validate the SQL is a single SELECT statement; raise ValueError otherwise.
@@ -133,6 +150,10 @@ def validate_select_only(sql: str) -> str:
     m = _FORBIDDEN.search(s)
     if m:
         raise ValueError(f"forbidden keyword: {m.group(1)}")
+    # Reject DuckDB file-read / network / system functions (function-call form only).
+    m2 = _FORBIDDEN_FUNCS.search(s)
+    if m2:
+        raise ValueError(f"forbidden function: {m2.group(1).lower()}")
     # Must start with SELECT or WITH
     head = s.lstrip().split(None, 1)
     if not head or head[0].upper() not in ("SELECT", "WITH"):

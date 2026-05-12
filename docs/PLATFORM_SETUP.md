@@ -123,6 +123,11 @@ This clears `session_processor_state` rows for the usage processor, `usage_event
 - **Per-session opt-out**: `agnes mark-private` excludes the current Claude Code session from `agnes push`. The CLI statusline shows 🔒 when a session is marked private. The server never receives that session's JSONL.
 - **Per-user opt-out**: not implemented in v1. If needed: env var or a `users.telemetry_opt_out` column — design parked for v2.
 - **What "private" means**: the JSONL for that session is not uploaded. Previously uploaded sessions are not deleted. The opt-out is per-session, not retroactive.
+
+  > **Important — `mark-private` is not retroactive.**
+  > - It prevents the **current** session from being uploaded by `agnes push`.
+  > - It does **not** remove previously-uploaded sessions from the server. Once a session reaches the server, the `UsageProcessor` will extract its events and admins can access it via `/admin/users/<id>/sessions`.
+  > - If you need to redact a previously-uploaded session, contact your operator — they can delete the JSONL from `${SESSION_DATA_DIR}/<user>/` **and** run `agnes admin usage reprocess` to wipe extracted events.
 - **Audit log**: every admin action, every telemetry export, and every `agnes admin ask` query is written to `audit_log`. Visible at `/admin/activity`.
 - **PostHog (optional)**: opt-in via `POSTHOG_API_KEY`. Sends backend exceptions, frontend errors, and masked session replay (sensitive CSS selectors auto-masked). LLM payloads are off by default — set `POSTHOG_LLM_PAYLOADS=1` to enable.
 
