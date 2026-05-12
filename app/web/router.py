@@ -974,6 +974,21 @@ async def corporate_memory_admin(
         "WHERE relation_type = 'likely_duplicate' AND resolved = FALSE"
     ).fetchone()[0]
 
+    # Mandate-form audience picker needs RBAC user_groups, not the
+    # `corporate_memory.groups` YAML section — those are unrelated.
+    # Template expects an array of {name, members_count} so it can render
+    # `<option value="group:<name>">` rows in the per-item mandate form;
+    # the previous shape (`{}` from the YAML config) crashed renderItemCard
+    # with "GROUPS.map is not a function" the moment any pending item rendered.
+    from src.repositories.user_groups import UserGroupsRepository as _UserGroupsRepo
+    from src.repositories.user_group_members import UserGroupMembersRepository as _UserGroupMembersRepo
+    _groups_repo = _UserGroupsRepo(conn)
+    _members_repo = _UserGroupMembersRepo(conn)
+    user_groups_for_ui = [
+        {"name": g["name"], "members_count": _members_repo.count_members(g["id"])}
+        for g in _groups_repo.list_all()
+    ]
+
     ctx = _build_context(
         request, user=user,
         pending_items=pending,
@@ -989,7 +1004,7 @@ async def corporate_memory_admin(
             "duplicates": duplicates_count,
         },
         governance=get_corporate_memory_config(),
-        groups=get_corporate_memory_config().get("groups", {}),
+        groups=user_groups_for_ui,
         contradictions=contradictions,
         audit_entries=[],
     )

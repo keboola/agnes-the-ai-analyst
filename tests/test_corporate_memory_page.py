@@ -70,3 +70,28 @@ class TestNonAdminBlocked:
         token = seeded_app["analyst_token"]
         resp = c.get("/corporate-memory", headers=_auth(token))
         assert resp.status_code == 403
+
+
+class TestAdminGroupsContract:
+    def test_admin_page_renders_groups_as_array_not_dict(self, seeded_app):
+        """`/corporate-memory/admin` must serialize `groups` as a JS array
+        of `{name, members_count}` rows. Earlier the route passed the
+        `corporate_memory.groups` YAML config (a dict, default `{}`),
+        so `GROUPS.map(...)` inside `renderItemCard` threw
+        `{}.map is not a function` and the page surfaced a misleading
+        "Error loading pending items" banner over a perfectly valid
+        pending payload. Bug was dormant because `renderItemCard` only
+        runs when ≥1 pending item exists. This test seeds one pending
+        item and asserts the array shape so the regression can't return."""
+        _seed_pending_item("groups_shape_1")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/corporate-memory/admin", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+        # JS literal must be an array — even when empty it is `[]`, never `{}`.
+        assert "const GROUPS = [" in body, (
+            "groups must serialize as a JS array of {name, members_count}; "
+            "a `{` prefix means we regressed to passing a dict and "
+            "renderItemCard's GROUPS.map(...) will crash at runtime."
+        )
