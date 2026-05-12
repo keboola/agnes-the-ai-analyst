@@ -408,3 +408,54 @@ class TestListUserSessionsSortOrder:
             f"got processed at {processed_indices}, unprocessed at {unprocessed_indices}, "
             f"rows={[{'file': r['session_file'], 'processed': r['processed']} for r in rows]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# list_user_activity  (Phase F.2)
+# ---------------------------------------------------------------------------
+
+
+class TestListUserActivity:
+    def test_list_user_activity_paginated(self, seeded_app, admin_user):
+        """audit_log rows filtered by user_id, newest first, paginated."""
+        conn = get_system_db()
+        admin_id_row = conn.execute(
+            "SELECT id FROM users WHERE email LIKE '%admin%' LIMIT 1"
+        ).fetchone()
+        if admin_id_row is None:
+            conn.close()
+            pytest.skip("admin user not seeded")
+        admin_id = admin_id_row[0]
+        # Seed 5 audit rows for this user
+        for i in range(5):
+            conn.execute(
+                """INSERT INTO audit_log (id, timestamp, user_id, action, result, duration_ms)
+                VALUES (?, current_timestamp, ?, ?, 'success', ?)""",
+                [str(__import__('uuid').uuid4()), admin_id, f"test.action.{i}", 100 + i]
+            )
+        conn.close()
+        resp = seeded_app["client"].get(
+            f"/api/admin/users/{admin_id}/activity?limit=10", headers=admin_user
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["rows"]) >= 5
+        assert data["pagination"]["total"] >= 5
+
+    def test_list_user_activity_user_not_found(self, seeded_app, admin_user):
+        resp = seeded_app["client"].get(
+            "/api/admin/users/does-not-exist/activity", headers=admin_user
+        )
+        assert resp.status_code == 404
+
+    def test_list_user_activity_admin_only(self, seeded_app, analyst_user):
+        conn = get_system_db()
+        admin_id_row = conn.execute("SELECT id FROM users LIMIT 1").fetchone()
+        conn.close()
+        if admin_id_row is None:
+            pytest.skip()
+        user_id = admin_id_row[0]
+        resp = seeded_app["client"].get(
+            f"/api/admin/users/{user_id}/activity", headers=analyst_user
+        )
+        assert resp.status_code in (401, 403)

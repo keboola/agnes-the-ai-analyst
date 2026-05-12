@@ -321,3 +321,56 @@ def download_session(
             "Content-Length": str(size),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/users/{user_id}/activity
+# ---------------------------------------------------------------------------
+
+
+@router.get("/users/{user_id}/activity")
+def list_user_activity(
+    user_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """List audit_log rows for a specific user.
+
+    Resolves user_id to the user record (404 if not found), filters audit_log
+    on the user_id field, returns paginated rows newest first.
+    """
+    from src.repositories.audit import AuditRepository
+
+    row = conn.execute("SELECT id, email FROM users WHERE id = ?", [user_id]).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    audit_repo = AuditRepository(conn)
+    rows, _ = audit_repo.query(user_id=user_id, limit=limit + offset)
+    # Apply offset via slicing — cursor-based pagination is per-page only
+    rows = rows[offset: offset + limit]
+
+    # Normalise timestamps to ISO strings and decode JSON params
+    import json as _json
+    for r in rows:
+        for k in ("timestamp",):
+            v = r.get(k)
+            if v is not None and hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
+        params_val = r.get("params")
+        if isinstance(params_val, str):
+            try:
+                r["params"] = _json.loads(params_val) if params_val else None
+            except (ValueError, TypeError):
+                pass
+
+    total = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]
+    ).fetchone()[0]
+
+    return {
+        "rows": rows,
+        "pagination": {"limit": limit, "offset": offset, "total": int(total)},
+    }
