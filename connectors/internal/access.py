@@ -68,12 +68,12 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
         source_table="usage_session_summary",
         filter_column="username",
         filter_kind="username",
-        display_name="Agnes — my sessions",
+        display_name="Agnes sessions",
         description=(
             "Per-session aggregate of Claude Code sessions: tool calls, "
-            "errors, duration, primary model. Analysts see their own "
-            "sessions; admin sees every user's. Backed by "
-            "usage_session_summary."
+            "errors, duration, primary model. Row-level RBAC at query "
+            "time — analysts see their own sessions; admin sees all. "
+            "Backed by usage_session_summary."
         ),
     ),
     InternalTable(
@@ -81,11 +81,12 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
         source_table="usage_events",
         filter_column="username",
         filter_kind="username",
-        display_name="Agnes — my telemetry events",
+        display_name="Agnes telemetry events",
         description=(
-            "Per-event log of Claude Code tool / skill / subagent / slash "
-            "command / MCP invocations. Analysts see their own events; "
-            "admin sees every user's. Backed by usage_events."
+            "Per-event log of Claude Code tool / skill / subagent / "
+            "slash-command / MCP invocations. Row-level RBAC at query "
+            "time — analysts see their own events; admin sees all. "
+            "Backed by usage_events."
         ),
     ),
     InternalTable(
@@ -93,12 +94,12 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
         source_table="audit_log",
         filter_column="user_id",
         filter_kind="user_id",
-        display_name="Agnes — my audit log",
+        display_name="Agnes audit log",
         description=(
-            "Server-side audit_log of actions performed *by you* against "
-            "Agnes: pulls, queries, downloads, admin endpoints. Admin sees "
-            "every user's actions (handy for 'who looked at whose session "
-            "transcripts')."
+            "Server-side audit_log: pulls, queries, downloads, admin "
+            "endpoint calls. Row-level RBAC at query time — analysts "
+            "see their own actions; admin sees all (handy for 'who "
+            "looked at whose session transcripts')."
         ),
     ),
 )

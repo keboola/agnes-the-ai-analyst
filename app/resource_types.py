@@ -147,9 +147,16 @@ def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     Tables with NULL/empty bucket fall into a synthetic ``"(no bucket)"``
     block so they are still grantable.
     """
+    # Filter out source_type='internal' rows (agnes_sessions /
+    # agnes_telemetry / agnes_audit). Their RBAC is row-level, enforced
+    # in the query path; the table-grain `resource_grants` gate is
+    # bypassed for them (see can_access). Surfacing them on
+    # /admin/access would let admins assign grants that do nothing,
+    # which is exactly the confusion this filter prevents.
     rows = conn.execute(
         """SELECT id, name, bucket, source_type, query_mode, description
            FROM table_registry
+           WHERE source_type IS DISTINCT FROM 'internal'
            ORDER BY COALESCE(bucket, ''), name"""
     ).fetchall()
     blocks: dict[str, Block] = {}
