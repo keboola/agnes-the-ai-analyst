@@ -10,6 +10,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.0] — 2026-05-12
+
+Activity Center build — unified observability surface plus a recursive
+internal data source so Claude Code can introspect its own usage.
+
+Five surfaces in the regrouped **Admin** dropdown:
+
+- **Audit log** (`/admin/activity`) — server-side actions with KPI cards,
+  faceted filters, sortable table, per-row JSON side panel.
+- **Telemetry** (`/admin/telemetry`) — Claude Code tool / skill / agent /
+  slash-command invocations. Filter + group-by + faceted dropdowns.
+- **Sessions** (`/admin/sessions`) — every collected JSONL across users
+  plus a transcript viewer with "Next error" navigation.
+- **Curated Memory** — moved into Admin → Agent Experience.
+- **Internal data source** — three tables (`agnes_sessions`,
+  `agnes_telemetry`, `agnes_audit`) registered in `table_registry` and
+  queryable via `agnes query` with row-level RBAC (analyst sees own
+  rows; admin sees all). Surfaced as a dedicated card on `/catalog`
+  and a fourth tab on `/admin/tables`.
+
+Plus an admin-dropdown reorg (5 named sections with gray-band headers),
+the `Usage` → `Telemetry` rename across UI / URL / API / CLI
+(`agnes admin usage` kept as a deprecated alias), and the
+`Server activity` / `Tool usage` / `Memory` label cleanups.
+
 ### Added — Unified Activity page
 
 - **`/admin/activity` redesigned end-to-end** into a single observability surface. Top bar with time-window selector (`1h / 6h / 24h / 7d / 30d`), Live toggle (30s poll, off by default), and Saved Views dropdown. 4 KPI cards (Events, Active users, Error rate, p95 latency) — each clickable as a quick-filter onto the table below. Faceted filter row whose dropdowns are **populated from the actual `audit_log` in the selected window** (only users/actions/results/sources that exist appear, each with a count beside it — no free-text guessing). Debounced free-text search runs LIKE against `params` JSON. Full audit table with sortable columns, cursor pagination, and a per-row side panel that pretty-prints params + result and offers "Filter to this user / action" shortcuts. All state is mirrored to the URL so admins can share or bookmark a view.
