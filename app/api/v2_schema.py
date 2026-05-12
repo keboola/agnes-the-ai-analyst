@@ -139,7 +139,28 @@ def build_schema_uncached(
             raise NotFound(table_id)
 
     source_type = row.get("source_type") or ""
-    if source_type == "bigquery":
+    if source_type == "internal":
+        # Internal data source — schema lives in system.duckdb, not in the
+        # parquet/BQ paths the other branches use. Delegate to the
+        # connector's own introspector so /api/v2/schema/agnes_sessions
+        # returns the same shape as /api/v2/schema/<keboola-table>.
+        from connectors.internal.access import get_schema as _get_internal_schema
+        from src.db import _get_state_dir
+        system_db_path = str(_get_state_dir() / "system.duckdb")
+        cols = _get_internal_schema(system_db_path, table_id)
+        payload = {
+            "table_id": table_id,
+            "source_type": source_type,
+            "sql_flavor": "duckdb",
+            "columns": [
+                {"name": c["name"], "type": c["type"], "nullable": c["nullable"], "description": ""}
+                for c in cols
+            ],
+            "partition_by": None,
+            "clustered_by": [],
+            "where_dialect_hints": {},
+        }
+    elif source_type == "bigquery":
         dataset = row.get("bucket") or ""
         source_table = row.get("source_table") or table_id
         columns = _fetch_bq_schema(bq, dataset, source_table)

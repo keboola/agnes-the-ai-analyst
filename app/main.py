@@ -161,6 +161,17 @@ async def lifespan(app):
     from app.api.cache_warmup import maybe_schedule_startup_warmup
     maybe_schedule_startup_warmup()
 
+    # Seed the internal data-source registry rows so `agnes_sessions /
+    # _usage / _audit` show up in /admin/tables + `agnes catalog` on every
+    # fresh install. Idempotent — re-applies canonical name + description
+    # on every boot so operators can't drift them away from the seed.
+    try:
+        from src.db import get_system_db
+        from connectors.internal.registry import ensure_internal_tables_registered
+        ensure_internal_tables_registered(get_system_db())
+    except Exception:
+        logger.exception("internal data-source seed failed; continuing")
+
     # Construct the PostHog client up front so its background flush thread
     # starts before the first request — and so a missing/invalid key fails
     # loud at boot rather than on first capture. No-op when disabled.

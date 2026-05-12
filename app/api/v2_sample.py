@@ -102,12 +102,44 @@ def build_sample(
     if not can_access_table(user, table_id, conn):
         raise PermissionError(table_id)
 
+    source_type = row.get("source_type") or ""
+
+    # Internal source — never cache. Sample rows here are RBAC-scoped per
+    # caller (alice sees alice's rows; admin sees all), so a shared cache
+    # would leak alice's rows to bob on the next request. The source data
+    # is small + the per-request query is cheap, so skipping the cache
+    # entirely is the right trade-off.
+    if source_type == "internal":
+        from connectors.internal.access import (
+            INTERNAL_TABLES_BY_ID, build_filter_clause,
+        )
+        from src.db import _get_state_dir
+        from app.auth.access import is_user_admin as _is_admin
+        if table_id not in INTERNAL_TABLES_BY_ID:
+            raise FileNotFoundError(table_id)
+        internal_def = INTERNAL_TABLES_BY_ID[table_id]
+        where_clause = build_filter_clause(internal_def, user, _is_admin(user))
+        # Reuse the shared system.duckdb connection via cursor — opening a
+        # parallel handle to the same file is rejected process-wide
+        # (DuckDB serialises file handles, even for ATTACH). The SELECT is
+        # constrained to system.duckdb-resident tables, scoped by the
+        # RBAC clause; no writes happen here.
+        from src.db import get_system_db
+        cur = get_system_db().cursor()
+        try:
+            df = cur.execute(
+                f"SELECT * FROM {internal_def.source_table} {where_clause} LIMIT {n}",
+            ).fetchdf()
+            rows = df.to_dict(orient="records")
+        finally:
+            cur.close()
+        return {"table_id": table_id, "rows": _sanitize_for_json(rows), "source": source_type}
+
     cache_key = f"{table_id}|{n}"
     cached = _sample_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    source_type = row.get("source_type") or ""
     if source_type == "bigquery":
         rows = _fetch_bq_sample(bq, row.get("bucket") or "", row.get("source_table") or table_id, n)
     else:
