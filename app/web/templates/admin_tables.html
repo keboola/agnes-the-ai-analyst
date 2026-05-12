@@ -888,14 +888,16 @@
                     <span id="cacheWarmupSummary">Loading…</span>
                 </div>
                 <progress id="cacheWarmupBar" max="100" value="0" style="width: 100%; display: none;"></progress>
-                <details style="margin-top: 8px;">
+                <details id="cacheWarmupDetails" style="margin-top: 8px;">
                     <summary style="cursor: pointer; user-select: none;">Show log</summary>
-                    <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 8px 0 0;">
+                    <p id="cacheWarmupHint" style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 8px 0 0;">
                         Live log from <em>Re-warm all</em>. Each row reports
                         <code>[hh:mm:ss] ok/error  &lt;table_id&gt; (duration)</code>
-                        as the BQ metadata refresh streams in via SSE. Empty
-                        until you click <strong>Re-warm all</strong> — historical
-                        runs aren't persisted; check
+                        as the BQ metadata refresh streams in via SSE. Only
+                        <code>query_mode='remote'</code> BigQuery tables are
+                        warmed (e.g. <code>product_inventory_remote</code>);
+                        materialized + internal tables don't need it.
+                        Historical runs aren't persisted; check
                         <a href="/admin/activity">/admin/activity</a> for the
                         audit trail.
                     </p>
@@ -3413,6 +3415,15 @@
         var data = JSON.parse(e.data);
         var log = document.getElementById('cacheWarmupLog');
         log.textContent = '';
+        // Hide the inline hint paragraph as soon as a real log line lands
+        // — the empty <pre>'s placeholder context is no longer useful and
+        // the dark log block is what the operator wants to watch.
+        var hint = document.getElementById('cacheWarmupHint');
+        if (hint) hint.style.display = 'none';
+        // Auto-open the details so streamed events are visible immediately,
+        // even if the operator clicked Re-warm without expanding first.
+        var details = document.getElementById('cacheWarmupDetails');
+        if (details) details.open = true;
         cacheWarmupAppendLog(
             '[' + nowHHMMSS() + '] start  trigger=' + data.trigger + ' total=' + data.total
         );
@@ -3477,6 +3488,12 @@
     function cacheWarmupRun() {
         var btn = document.getElementById('cacheWarmupRunBtn');
         btn.disabled = true;
+        // Auto-open the log section so the operator sees streaming output
+        // instead of staring at a disabled button while ~24s pass per
+        // remote BQ row. The hint paragraph hides as soon as a real log
+        // line lands (see cacheWarmupOnStart).
+        var details = document.getElementById('cacheWarmupDetails');
+        if (details) details.open = true;
         fetch('/api/admin/cache-warmup/run', {method: 'POST'})
             .then(function(r) { return r.json(); })
             .then(function() { /* SSE stream picks up the new run */ })
