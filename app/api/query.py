@@ -75,6 +75,47 @@ def _looks_like_bq_rewrite_parse_error(exc: BaseException) -> bool:
     msg = str(exc)
     return any(pat in msg for pat in _BQ_REWRITE_PARSE_ERROR_PATTERNS)
 
+
+def _hint_for_bq_bad_request(message: str) -> str:
+    """Pick the most useful one-line hint for a BigQuery `bad_request`
+    error message. The default "column doesn't exist" hint is correct
+    for ~half of BQ rejections (`Unrecognized name: foo`,
+    `Field foo not found in record`) but actively misleading when BQ
+    actually rejected on syntax (`Syntax error: Unexpected keyword
+    ROWS at [1:20]` — reserved-keyword alias without quoting,
+    extremely common because `rows` / `range` / `groups` / `window`
+    are all reserved). Branch on the BQ message to pick the right hint
+    rather than always blaming columns."""
+    msg = message.lower()
+    if "unexpected keyword" in msg or "syntax error" in msg:
+        return (
+            "BigQuery rejected this on SQL syntax. Most often this is a "
+            "reserved-keyword identifier used unquoted — e.g. "
+            "`SELECT COUNT(*) AS rows` fails because `rows` is reserved. "
+            "Backtick the alias (`AS \\`rows\\``) or rename it "
+            "(`AS row_count`). For other syntax errors, see the "
+            "`underlying` field below — it carries BigQuery's own "
+            "diagnostic with the error position."
+        )
+    if "unrecognized name" in msg or "not found inside" in msg or "field name" in msg:
+        return (
+            "BigQuery rejected this because a column referenced in "
+            "WHERE/SELECT/etc doesn't exist on the table. Verify with "
+            "`agnes schema <id>`."
+        )
+    if "table not found" in msg or "not found:" in msg:
+        return (
+            "BigQuery rejected this because the table reference doesn't "
+            "exist. Use a registered table id from `agnes catalog`, or "
+            "write a full backtick path like `` `<project>.<dataset>.<table>` ``."
+        )
+    return (
+        "BigQuery rejected this query during cost estimation. See the "
+        "`underlying` field for BigQuery's own diagnostic; common causes "
+        "are missing columns (verify with `agnes schema <id>`), "
+        "reserved-keyword aliases, or unregistered table paths."
+    )
+
 # Issue #160 §4.3.1 — direct `bq.<dataset>.<source_table>` references in user
 # SQL. Catalog token accepts both `bq` (the unquoted DuckDB-style name) and
 # `"bq"` (quoted identifier). DuckDB resolves both to the same ATTACHed
@@ -1127,14 +1168,17 @@ def _bq_quota_and_cap_guard(
                             "BigQuery rejected this query during cost "
                             "estimation."
                         ),
-                        "hint": (
-                            "Most often this means a column referenced "
-                            "in WHERE/SELECT/etc doesn't exist on the "
-                            "table — verify with `agnes schema <id>`. "
-                            "Otherwise: use a registered table name from "
-                            "`agnes catalog`, or write BQ-native SQL "
-                            "with full backtick paths."
-                        ),
+                        # Branch the hint on the actual BQ error class —
+                        # syntax errors (e.g. reserved-keyword aliases like
+                        # `AS rows`) deserve a different pointer than
+                        # column-not-found, which deserves a different one
+                        # than table-not-found. Pre-#NNN this was a single
+                        # hardcoded "column referenced doesn't exist" hint
+                        # that misled analysts whenever BQ actually rejected
+                        # on syntax. The first attempt's diagnostic
+                        # (rewritten SQL — has the real BQ position info)
+                        # is the more informative one to dispatch on.
+                        "hint": _hint_for_bq_bad_request(exc.message),
                         # Surface the FIRST attempt's diagnostic (rewritten
                         # SQL — has the real "Unrecognized name" / syntax
                         # info). Second attempt for catalog-id-only SQL
