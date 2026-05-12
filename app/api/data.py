@@ -1,6 +1,7 @@
 """Data download endpoint — streaming parquet files."""
 
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -40,9 +41,39 @@ async def check_access(
     RBAC check is ~1 ms while a HEAD path involves filesystem walks
     (``rglob`` for the parquet across source subdirs).
     """
+    t0 = time.monotonic()
+    resource = f"table:{table_id}"[:256]
     if not _SAFE_QUOTED_IDENTIFIER.match(table_id):
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="data.access_check",
+                resource=resource,
+                params={"granted": False,
+                        "duration_ms": int((time.monotonic() - t0) * 1000),
+                        "error": "invalid_table_id"},
+                result="error.404",
+                client_kind="cli",
+            )
+        except Exception:
+            logger.exception("audit_log write failed for data.access_check (invalid id); continuing")
         raise HTTPException(status_code=404, detail="Table not found")
-    if not can_access_table(user, table_id, conn):
+    granted = can_access_table(user, table_id, conn)
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("id"),
+            action="data.access_check",
+            resource=resource,
+            params={
+                "granted": granted,
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+            result="success" if granted else "error.403",
+            client_kind="cli",  # check-access is called by Caddy on every parquet download (CLI flow)
+        )
+    except Exception:
+        logger.exception("audit_log write failed for data.access_check; continuing")
+    if not granted:
         raise HTTPException(status_code=403, detail="Access denied to this table")
     return Response(status_code=204)
 

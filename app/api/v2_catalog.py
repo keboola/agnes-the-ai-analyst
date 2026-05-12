@@ -1,6 +1,8 @@
 """GET /api/v2/catalog — list tables visible to caller (spec §3.1)."""
 
 from __future__ import annotations
+import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Depends
@@ -10,10 +12,12 @@ from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.audit import AuditRepository
 from app.api.v2_cache import TTLCache
 from app.api._metadata_models import MetadataRequest, TableMetadata
 from src.identifier_validation import validate_quoted_identifier
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
 # Global cache of the raw table_registry rows. RBAC is enforced PER REQUEST
@@ -302,4 +306,20 @@ def catalog(
     # runs on its own thread; the event loop stays free for non-catalog
     # traffic. Mirrors the Tier 1 conversion of /api/query, /api/v2/scan,
     # /api/v2/sample, /api/v2/schema — Devin Review on PR #188.
-    return build_catalog(conn, user)
+    t0 = time.monotonic()
+    result = build_catalog(conn, user)
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("id"),
+            action="catalog.list",
+            resource="catalog",
+            params={
+                "rows_returned": len(result.get("tables", [])),
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+            result="success",
+            client_kind="cli",  # catalog is primarily CLI-driven (agnes catalog)
+        )
+    except Exception:
+        logger.exception("audit_log write failed for catalog.list; continuing")
+    return result
