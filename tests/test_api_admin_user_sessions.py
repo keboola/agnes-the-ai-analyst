@@ -322,6 +322,29 @@ class TestDownloadAllSessions:
         )
         assert r.status_code == 404
 
+    def test_download_all_skips_symlink_escape(self, seeded_app, admin_user, session_data_dir, tmp_path):
+        """A symlink inside the user dir pointing outside is silently skipped, not included in zip."""
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+        user_dir = session_data_dir / username
+        user_dir.mkdir(exist_ok=True)
+        # A real file inside user dir
+        (user_dir / "ok.jsonl").write_text('{"role":"user"}')
+        # A symlink jsonl pointing outside the user dir
+        target = tmp_path / "outside.txt"
+        target.write_text("SECRET DATA OUTSIDE SESSION DIR")
+        os.symlink(target, user_dir / "escape.jsonl")
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions/download-all",
+            headers=admin_user,
+        )
+        assert r.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(r.content))
+        names = zf.namelist()
+        assert "ok.jsonl" in names
+        assert "escape.jsonl" not in names
+
     def test_non_admin_gets_403(self, seeded_app, analyst_user):
         r = seeded_app["client"].get(
             "/api/admin/users/anyid/sessions/download-all",

