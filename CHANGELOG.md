@@ -10,9 +10,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-### Added
-- `agnes admin activity` CLI: terminal access to Activity Center (timeline + health + sync) with filters + --json output. Mirrors the three /api/admin/activity/* JSON endpoints.
-- **Activity Center rebuild** (`/admin/activity`): health pulse (cached 30s) + chronological audit_log timeline + sync_history grid. Replaces the empty-stub `/activity-center` page. Old URL 308-redirects.
+### Added — Platform telemetry foundation
+
+- **`usage_events`, `usage_session_summary`, `usage_tool_daily`, `usage_plugin_daily`** tables (schema v41). `UsageProcessor` now extracts skill/agent/tool/MCP/slash-command invocations from Claude Code session JSONLs and writes to all four. Daily rollups refresh after every successful tick.
+- **`usage_attribution_skills` / `_agents` / `_commands`** lookup tables. Plugin manifests (curated marketplace + flea store entities) are exploded into these at write time (marketplace sync / store entity create-update-delete). Curated > flea precedence on lookup. Builtin tools (`Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `TodoWrite`, `Task`, `Agent`, `NotebookEdit`, `WebFetch`, `WebSearch`, `ExitPlanMode`) attribute to `(builtin, None)`.
+- **Backfill script** `scripts/backfill_usage_attribution.py` — populates attribution tables from existing curated + flea data on first deploy.
+- **`POST /api/admin/run-session-processor?processor=usage`** now real-extracts (was a no-op skeleton).
+
+### Added — Telemetry surfaces
+
+- **`/marketplace` Most Popular** section — top 8 cards by invocations over the last 30 days, per tab. Hidden when zero data (week 1 after telemetry deploy).
+- **`/marketplace` card invocation chip + trend** — `🔥 1,243 uses · ↑ 24%` (week-over-week). Trend suppressed when prior week < 3 invocations.
+- **`/marketplace` sort dropdown** — `Recent` (default) / `Most used (30d)` / `Trending (week-over-week)`.
+- **`MarketplaceItem`** + plugin/flea detail endpoints gain `invocations_30d`, `unique_users_30d`, `trend_pct`. Detail payloads include `telemetry.daily_series` (30 entries, zero-filled).
+- **`/admin/users/<user_id>` Sessions section** — list of the user's collected sessions with started/duration/tool calls/errors/model + per-file `.jsonl` download + bulk `.zip` download. Both downloads audit-logged.
+
+### Added — Admin telemetry access
+
+- **`GET /api/admin/usage/export?format=csv|json|parquet`** — streamed telemetry export with `since`/`until`/`user_id`/`source` filters. Audit-logged with row count.
+- **`agnes admin usage export`** CLI mirror.
+- **`POST /api/admin/usage/ask`** + **`agnes admin ask "..."`** — natural-language telemetry queries via Anthropic Claude Haiku Text-to-SQL. SELECT-only server-side validator. Returns generated SQL + result rows. Audit-logged with question + SQL + row count. Requires `ANTHROPIC_API_KEY`.
+- **`POST /api/admin/usage/reprocess`** + **`agnes admin usage reprocess`** — force re-extraction of all sessions for the usage processor. Clears `session_processor_state` rows + `usage_events` + summaries + rollups in one transaction. Verification processor untouched.
+- **`POST /api/admin/usage/prune`** + **`agnes admin usage prune`** — delete `usage_events` older than `USAGE_EVENTS_RETENTION_DAYS` (default `0` = forever). Scheduled daily via `SCHEDULER_USAGE_PRUNE_INTERVAL` (default 86400s).
+
+### Added — Activity Center (v41 base, shipped in this epic)
+
+- `agnes admin activity` CLI: terminal access to Activity Center (timeline + health + sync) with filters + `--json` output. Mirrors the three `/api/admin/activity/*` JSON endpoints.
+- **Activity Center rebuild** (`/admin/activity`): health pulse (cached 30s) + chronological `audit_log` timeline + `sync_history` grid. Replaces the empty-stub `/activity-center` page. Old URL 308-redirects.
 - Three new read endpoints: `GET /api/admin/activity`, `GET /api/admin/activity/health`, `GET /api/admin/activity/sync`. All admin-only.
 - `audit_log` now writes from `POST /api/sync/trigger`, `POST /api/scripts/run-due`, `POST /api/upload/sessions`, and `GET /api/data/{id}/download` — closing four longstanding coverage gaps.
 - Filename sanitization on `POST /api/upload/sessions` — only `[A-Za-z0-9._-]{1,200}` accepted. Replaces the older strip-to-basename approach with a stricter regex.
@@ -23,10 +47,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Recursive-audit suppression on `/api/admin/activity/*` reads — same actor + same filter within 60s deduped to one row. Per-uvicorn-worker (single-worker assumption for v41).
 
 ### Changed
+
 - Admin dropdown menu now includes **Activity** link. Dashboard widget points to `/admin/activity`.
 
 ### Removed
-- **BREAKING (UI):** demo content removed from `activity_center.html` — the "Executive Pulse / Maturity Roadmap / Business Processes / Teams / Opportunities" sections never had a real data source and are gone. The page now reflects `audit_log` + `sync_history` only. Operators relying on the old layout: it never rendered any real data; this is a no-op fix.
+
+- **BREAKING (UI):** demo content removed from `activity_center.html` — the "Executive Pulse / Maturity Roadmap / Business Processes / Teams / Opportunities" sections never had a real data source and are gone. The page now reflects `audit_log` + `sync_history` only.
+
+### Documentation
+
+- **`docs/PLATFORM_SETUP.md`** — consolidated operator playbook covering bootstrap, TLS, marketplaces, scheduler, telemetry, privacy posture, and daily routine. Existing setup docs (`QUICKSTART.md`, `DEPLOYMENT.md`, `ONBOARDING.md`, `HEADLESS_USAGE.md`) cross-reference it.
+- **`docs/HOWTO/`** — 5 analyst cookbook guides (first query, snapshots for remote tables, private sessions, feedback + admin ask, customizing skills) + index.
+
+### Operations
+
+- Operators upgrading to schema v41: the migration creates 7 new tables + 10 indices on first boot. With no existing `usage_events` data this is fast (no data migration). The first scheduler ticks will populate via `UsageProcessor` — expect ~10 minutes from deploy to first invocations data visible on `/marketplace`.
+- Retention default is `USAGE_EVENTS_RETENTION_DAYS=0` (keep forever). Set to a positive integer to enable automatic daily pruning.
+- Privacy posture: per-session opt-out is via `agnes mark-private`. No global opt-out in v1 — design parked for v2.
 
 ### Operations
 - First boot on v41 against an existing instance with >100k `audit_log` rows: index creation runs synchronously and may take 30–120s. Plan an upgrade window. Subsequent restarts are unaffected.
@@ -69,7 +106,7 @@ issue opened during the 0.51.0 retro.
 
 ### Added
 
-- **Persistent BigQuery metadata cache (`bq_metadata_cache`, schema v40).** Holds `rows`, `size_bytes`, `partition_by`, `clustered_by`, `refreshed_at`, plus a `error_at` / `error_msg` pair that preserves the last successful row across transient provider failures so analyst tooling keeps seeing last-known-good numbers.
+- **Persistent BigQuery metadata cache (`bq_metadata_cache`, schema v41).** Holds `rows`, `size_bytes`, `partition_by`, `clustered_by`, `refreshed_at`, plus a `error_at` / `error_msg` pair that preserves the last successful row across transient provider failures so analyst tooling keeps seeing last-known-good numbers.
 - **`POST /api/admin/run-bq-metadata-refresh`** — scheduler-driven full refresh of every remote BigQuery row in the registry. Bounded concurrency via `AGNES_BQ_METADATA_REFRESH_CONCURRENCY` (default 4).
 - **`POST /api/v2/metadata-cache/refresh?table=<id>`** — operator on-demand single-row refresh (admin-gated), for use right after a registry edit when waiting for the next scheduled tick is too long.
 - **`GET /api/v2/metadata-cache/status`** — non-admin endpoint surfacing per-row `refreshed_at`, `error_at`, `error_msg`, and `freshness` (`fresh` / `stale` / `never_fetched` / `error`) so CLI / Claude Code can decide whether to trust the catalog's `rows` and `size_bytes`.
