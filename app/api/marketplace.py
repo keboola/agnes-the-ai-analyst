@@ -1427,6 +1427,44 @@ def _resolve_external_via_mirror(
     return mirrored_url(marketplace_id, plugin_name, rest)
 
 
+def _safe_use_case(raw: Any) -> Optional[UseCase]:
+    """Build a ``UseCase`` from curator JSON, skipping malformed entries.
+
+    Curator-authored input — a missing or empty ``title`` / ``description`` /
+    ``prompt`` returns ``None`` so the caller drops the card instead of
+    500-ing the whole detail page on Pydantic's required-field validation.
+    """
+    if not isinstance(raw, dict):
+        return None
+    title = raw.get("title")
+    description = raw.get("description")
+    prompt = raw.get("prompt")
+    if not (title and description and prompt):
+        return None
+    return UseCase(title=title, description=description, prompt=prompt)
+
+
+def _safe_sample_interaction(raw: Any) -> Optional[SampleInteraction]:
+    """Build a ``SampleInteraction`` from curator JSON, skipping malformed input.
+
+    Same rationale as :func:`_safe_use_case` — partial curator JSON should
+    silently drop the section, not crash the endpoint.
+    """
+    from app.markdown_render import render_safe
+
+    if not isinstance(raw, dict):
+        return None
+    user = raw.get("user")
+    assistant = raw.get("assistant")
+    if not (user and assistant):
+        return None
+    return SampleInteraction(
+        user=user,
+        assistant=assistant,
+        assistant_html=render_safe(assistant),
+    )
+
+
 def _curated_inner_enrichment(
     marketplace_id: str,
     plugin_name: str,
@@ -1534,21 +1572,13 @@ def _curated_inner_enrichment(
 
     use_cases_raw = resolved.get("use_cases") or []
     if use_cases_raw:
-        out["use_cases"] = [
-            UseCase(
-                title=uc["title"],
-                description=uc["description"],
-                prompt=uc["prompt"],
-            )
-            for uc in use_cases_raw
-        ]
-    sample = resolved.get("sample_interaction")
-    if sample:
-        out["sample_interaction"] = SampleInteraction(
-            user=sample["user"],
-            assistant=sample["assistant"],
-            assistant_html=render_safe(sample["assistant"]),
-        )
+        cards = [_safe_use_case(uc) for uc in use_cases_raw]
+        cards = [c for c in cards if c is not None]
+        if cards:
+            out["use_cases"] = cards
+    sample = _safe_sample_interaction(resolved.get("sample_interaction"))
+    if sample is not None:
+        out["sample_interaction"] = sample
     return out
 
 
@@ -1637,22 +1667,14 @@ def _curated_plugin_enrichment(
 
     use_cases_raw = resolved.get("use_cases") or []
     if use_cases_raw:
-        out["use_cases"] = [
-            UseCase(
-                title=uc["title"],
-                description=uc["description"],
-                prompt=uc["prompt"],
-            )
-            for uc in use_cases_raw
-        ]
+        cards = [_safe_use_case(uc) for uc in use_cases_raw]
+        cards = [c for c in cards if c is not None]
+        if cards:
+            out["use_cases"] = cards
 
-    sample = resolved.get("sample_interaction")
-    if sample:
-        out["sample_interaction"] = SampleInteraction(
-            user=sample["user"],
-            assistant=sample["assistant"],
-            assistant_html=render_safe(sample["assistant"]),
-        )
+    sample = _safe_sample_interaction(resolved.get("sample_interaction"))
+    if sample is not None:
+        out["sample_interaction"] = sample
 
     return out
 

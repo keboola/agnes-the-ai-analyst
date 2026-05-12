@@ -342,6 +342,46 @@ class TestCuratedDetail:
         assert data["use_cases"] == []
         assert data["sample_interaction"] is None
 
+    def test_detail_tolerates_partial_curator_json(self, web_client, tmp_path):
+        """Curator commits a sample_interaction with only ``user`` (forgot
+        ``assistant``) and a use_cases entry missing ``prompt``. The endpoint
+        must skip the malformed sections instead of 500-ing on Pydantic's
+        required-field validation — PR description promises rich content
+        renders only when populated, partial population should degrade
+        gracefully."""
+        import json
+        from pathlib import Path
+
+        user_id, cookies = _create_user(web_client, "alice@x.com")
+        _seed_curated_grant(user_id=user_id, marketplace="mkt-x", plugin="alpha")
+
+        marketplaces_dir = Path(tmp_path) / "marketplaces" / "mkt-x" / ".claude-plugin"
+        marketplaces_dir.mkdir(parents=True, exist_ok=True)
+        (marketplaces_dir / "marketplace-metadata.json").write_text(json.dumps({
+            "plugins": {
+                "alpha": {
+                    "display_name": "Friendly Alpha",
+                    "use_cases": [
+                        {"title": "Good one", "description": "X.", "prompt": "/q"},
+                        {"title": "Missing prompt", "description": "Y."},
+                        {"title": "Empty prompt", "description": "Z.", "prompt": ""},
+                    ],
+                    "sample_interaction": {"user": "Just user, no assistant"},
+                },
+            },
+        }), encoding="utf-8")
+
+        r = web_client.get("/api/marketplace/curated/mkt-x/alpha", cookies=cookies)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        # Good card survives; malformed cards are dropped.
+        assert len(data["use_cases"]) == 1
+        assert data["use_cases"][0]["title"] == "Good one"
+        # Partial sample_interaction is dropped, not crashed.
+        assert data["sample_interaction"] is None
+        # The well-formed field next to the broken ones still renders.
+        assert data["display_name"] == "Friendly Alpha"
+
     def test_detail_html_is_sanitized(self, web_client, tmp_path):
         """Curator-written `<script>` in description markdown must NOT
         survive into description_long_html — defense-in-depth check."""
