@@ -7,12 +7,13 @@
   <!-- TOP BAR --------------------------------------------------------- -->
   <header class="obs-topbar">
     <div class="obs-topbar-left">
-      <h1 class="obs-title">Activity</h1>
+      <h1 class="obs-title">Server activity</h1>
+      <p class="obs-subtitle">Audit log of server-side actions — admin endpoints, API calls, scheduler ticks, sync runs. For Claude Code tool / skill telemetry, see <a href="/admin/usage">Usage</a>.</p>
       <div class="obs-narrative" id="obs-narrative">Loading…</div>
     </div>
     <div class="obs-topbar-right">
       <label class="obs-window">
-        <span class="obs-label">Window</span>
+        <span class="obs-label">Time range</span>
         <select id="obs-window">
           <option value="60">Last 1h</option>
           <option value="360">Last 6h</option>
@@ -21,23 +22,11 @@
           <option value="43200">Last 30d</option>
         </select>
       </label>
-      <label class="obs-live">
+      <label class="obs-live" title="Re-fetches KPIs + table every 30s. Independent of the time range — the range still controls what counts as 'recent'.">
         <input type="checkbox" id="obs-live" />
-        <span>Live (30s)</span>
+        <span>Auto-refresh (30s)</span>
         <span class="obs-live-dot" id="obs-live-dot" aria-hidden="true"></span>
       </label>
-      <div class="obs-views" id="obs-views-wrap">
-        <button class="obs-btn" id="obs-views-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
-          Saved views <span class="obs-chev">▾</span>
-        </button>
-        <div class="obs-views-panel" id="obs-views-panel" hidden role="menu">
-          <div class="obs-views-list" id="obs-views-list">
-            <div class="obs-views-empty">No saved views yet.</div>
-          </div>
-          <hr />
-          <button class="obs-btn obs-btn-primary" id="obs-save-view" type="button">Save current as view…</button>
-        </div>
-      </div>
     </div>
   </header>
 
@@ -98,17 +87,17 @@
     <table class="obs-table" id="obs-table">
       <thead>
         <tr>
-          <th class="th-time" data-sort="timestamp" aria-sort="descending">
-            <button type="button">Time <span class="obs-sort-arrow">▼</span></button>
-          </th>
-          <th>User</th>
-          <th>Source</th>
-          <th>Action</th>
-          <th>Resource</th>
-          <th class="th-dur" data-sort="duration_ms">
-            <button type="button">Duration <span class="obs-sort-arrow"></span></button>
-          </th>
-          <th>Result</th>
+          {# Sort is page-local: server returns rows ordered by timestamp DESC
+             for keyset pagination; clicking another header re-sorts only the
+             rows currently loaded. Adding a `Load all` step would let the
+             user sort across the full result set but isn't wired yet. #}
+          <th data-sort="timestamp" aria-sort="descending"><button type="button">Time <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="user"><button type="button">User <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="source"><button type="button">Source <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="action"><button type="button">Action <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="resource"><button type="button">Resource <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="duration_ms"><button type="button">Duration <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="result"><button type="button">Result <span class="obs-sort-arrow"></span></button></th>
         </tr>
       </thead>
       <tbody id="obs-rows">
@@ -140,19 +129,6 @@
   </div>
 </aside>
 
-<!-- SAVE-VIEW MODAL ----------------------------------------------------- -->
-<div class="obs-modal" id="obs-save-modal" hidden role="dialog" aria-modal="true" aria-labelledby="obs-save-h">
-  <div class="obs-modal-body">
-    <h2 id="obs-save-h">Save view</h2>
-    <p class="obs-modal-help">Saves the current window + filters + sort under a name. Reopen anytime from "Saved views".</p>
-    <label for="obs-save-name">Name</label>
-    <input id="obs-save-name" type="text" maxlength="80" placeholder="e.g. Errors today" />
-    <div class="obs-modal-actions">
-      <button class="obs-btn" id="obs-save-cancel" type="button">Cancel</button>
-      <button class="obs-btn obs-btn-primary" id="obs-save-confirm" type="button">Save</button>
-    </div>
-  </div>
-</div>
 
 <style>
 :root {
@@ -180,8 +156,10 @@
   margin-bottom: 16px;
 }
 .obs-topbar-left { flex: 1; min-width: 0; }
-.obs-title { margin: 0 0 6px 0; font-size: 14px; font-weight: 600; color: var(--obs-muted);
-  text-transform: uppercase; letter-spacing: 0.5px; }
+.obs-title { margin: 0 0 4px 0; font-size: 22px; font-weight: 600; color: var(--obs-fg); }
+.obs-subtitle { margin: 0 0 10px; color: var(--obs-muted); font-size: 13px; max-width: 720px; }
+.obs-subtitle a { color: var(--obs-link); text-decoration: none; border-bottom: 1px dashed currentColor; }
+.obs-subtitle a:hover { border-bottom-style: solid; }
 .obs-narrative { font-size: 16px; color: var(--obs-fg); line-height: 1.45; }
 .obs-narrative b { font-weight: 600; }
 .obs-narrative a { color: var(--obs-link); text-decoration: none; border-bottom: 1px dashed transparent; cursor: pointer; }
@@ -524,10 +502,18 @@
       filtered = filtered.filter(r => (r.action || '').startsWith(state.action_prefix));
     }
 
-    // Sort (client side for the current page; server is already DESC by time)
+    // Sort (client side for the current page; server is already DESC by time).
+    // Sort key 'user' / 'source' map to derived display values; the rest read
+    // straight off the row.
     const [sortKey, sortDir] = (state.sort || 'timestamp:desc').split(':');
+    const keyFor = r => {
+      if (sortKey === 'user')   return (r.user_email || r.user_name || r.user_id || '').toLowerCase();
+      if (sortKey === 'source') return (r._source || '').toLowerCase();
+      const v = r[sortKey];
+      return (typeof v === 'string') ? v.toLowerCase() : v;
+    };
     filtered.sort((a, b) => {
-      let av = a[sortKey], bv = b[sortKey];
+      let av = keyFor(a), bv = keyFor(b);
       if (av == null) av = '';
       if (bv == null) bv = '';
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
@@ -679,103 +665,10 @@
   }
   $('obs-panel-close').addEventListener('click', () => panel.hidden = true);
 
-  // ---------------------------------------------------------------------
-  // Saved views — list, save, load, delete
-  // ---------------------------------------------------------------------
-  const viewsWrap   = $('obs-views-wrap');
-  const viewsPanel  = $('obs-views-panel');
-  const viewsList   = $('obs-views-list');
-  const saveModal   = $('obs-save-modal');
-  const saveName    = $('obs-save-name');
-
-  $('obs-views-trigger').addEventListener('click', e => {
-    e.stopPropagation();
-    const open = viewsPanel.hidden;
-    viewsPanel.hidden = !open;
-    $('obs-views-trigger').setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) loadViews();
-  });
-  document.addEventListener('click', e => {
-    if (!viewsWrap.contains(e.target)) viewsPanel.hidden = true;
-  });
-
-  async function loadViews() {
-    try {
-      const d = await get('/api/admin/observability/views');
-      renderViews(d.views || []);
-    } catch (e) {
-      viewsList.innerHTML = '<div class="obs-views-empty">Failed to load.</div>';
-    }
-  }
-  function renderViews(views) {
-    if (!views.length) {
-      viewsList.innerHTML = '<div class="obs-views-empty">No saved views yet.</div>';
-      return;
-    }
-    viewsList.innerHTML = '';
-    views.forEach(v => {
-      const item = document.createElement('div');
-      item.className = 'obs-view-item';
-      item.innerHTML = '<span class="obs-view-name">' + escapeHtml(v.name) + '</span>'
-        + '<button class="obs-view-del" title="Delete view" data-id="' + escapeHtml(v.id) + '">✕</button>';
-      item.querySelector('.obs-view-name').addEventListener('click', () => applyView(v));
-      item.querySelector('.obs-view-del').addEventListener('click', e => {
-        e.stopPropagation();
-        deleteView(v.id);
-      });
-      viewsList.appendChild(item);
-    });
-  }
-  function applyView(v) {
-    const q = v.query || {};
-    Object.assign(state, {
-      window:        q.window || 1440,
-      user_id:       q.user_id || '',
-      action_prefix: q.action_prefix || '',
-      result:        q.result || '',
-      source:        q.source || '',
-      q:             q.q || '',
-      sort:          q.sort || 'timestamp:desc',
-    });
-    winSel.value = String(state.window);
-    fUser.value = state.user_id; fAct.value = state.action_prefix;
-    fRes.value = state.result;   fSrc.value = state.source; fQ.value = state.q;
-    viewsPanel.hidden = true;
-    writeUrl();
-    refreshAll();
-  }
-  async function deleteView(id) {
-    try {
-      await fetch('/api/admin/observability/views/' + encodeURIComponent(id), {
-        method: 'DELETE', credentials: 'same-origin',
-      });
-      loadViews();
-    } catch (_) { /* swallow */ }
-  }
-
-  $('obs-save-view').addEventListener('click', () => {
-    saveModal.hidden = false;
-    saveName.value = '';
-    saveName.focus();
-  });
-  $('obs-save-cancel').addEventListener('click', () => saveModal.hidden = true);
-  saveModal.addEventListener('click', e => {
-    if (e.target === saveModal) saveModal.hidden = true;
-  });
-  $('obs-save-confirm').addEventListener('click', async () => {
-    const name = (saveName.value || '').trim();
-    if (!name) return;
-    try {
-      await fetch('/api/admin/observability/views', {
-        method: 'POST', credentials: 'same-origin',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ name, query: { ...state } }),
-      });
-      saveModal.hidden = true;
-      viewsPanel.hidden = false;
-      loadViews();
-    } catch (_) { /* swallow */ }
-  });
+  // Saved-views UI was removed on user feedback (the modal pop-open on load
+  // bug was the trigger; the underlying value-add wasn't there). The
+  // /api/admin/observability/views CRUD + DuckDB table remain in case we
+  // bring it back behind an opt-in toggle. See PR thread.
 
   // ---------------------------------------------------------------------
   // KPI quick-filter buttons

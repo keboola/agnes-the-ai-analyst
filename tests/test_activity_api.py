@@ -86,11 +86,11 @@ def test_activity_sync_returns_recent(seeded_app, admin_user):
 def test_admin_activity_page_renders(seeded_app, admin_user):
     resp = seeded_app["client"].get("/admin/activity", headers=admin_user)
     assert resp.status_code == 200
-    # Page is the unified observability shell — fixtures it must render.
-    # All data loads client-side, so we only assert structural anchors.
+    # Page is the unified observability shell. All data loads client-side
+    # so we assert only the structural anchors the JS attaches to.
     assert "obs-page" in resp.text
-    assert "Saved views" in resp.text
     assert "obs-table" in resp.text
+    assert "Server activity" in resp.text
 
 
 def test_activity_center_redirects_to_admin_activity(seeded_app, admin_user):

@@ -6,12 +6,13 @@
 
   <header class="obs-topbar">
     <div class="obs-topbar-left">
-      <h1 class="obs-title">Usage</h1>
+      <h1 class="obs-title">Tool usage</h1>
+      <p class="obs-subtitle">Tool, skill, sub-agent and slash-command invocations parsed out of Claude Code session JSONLs. For server-side admin/API audit events, see <a href="/admin/activity">Server activity</a>.</p>
       <div class="obs-narrative" id="usage-narrative">Loading…</div>
     </div>
     <div class="obs-topbar-right">
       <label class="obs-window">
-        <span class="obs-label">Window</span>
+        <span class="obs-label">Time range</span>
         <select id="u-window">
           <option value="1440">Last 24h</option>
           <option value="10080" selected>Last 7d</option>
@@ -108,8 +109,10 @@
 .obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
   padding: 12px 0 20px; border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 16px; }
 .obs-topbar-left { flex: 1; min-width: 0; }
-.obs-title { margin: 0 0 6px 0; font-size: 14px; font-weight: 600; color: var(--text-secondary, #6b7280);
-  text-transform: uppercase; letter-spacing: 0.5px; }
+.obs-title { margin: 0 0 4px 0; font-size: 22px; font-weight: 600; color: var(--text-primary, #111827); }
+.obs-subtitle { margin: 0 0 10px; color: var(--text-secondary, #6b7280); font-size: 13px; max-width: 720px; }
+.obs-subtitle a { color: #2563eb; text-decoration: none; border-bottom: 1px dashed currentColor; }
+.obs-subtitle a:hover { border-bottom-style: solid; }
 .obs-narrative { font-size: 16px; line-height: 1.45; }
 .obs-narrative b { font-weight: 600; }
 .obs-topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -376,15 +379,34 @@
     thead.innerHTML =
       '<tr>' +
       '<th data-sort="occurred_at"><button type="button">When <span class="obs-sort-arrow"></span></button></th>' +
-      '<th>User</th><th>Source</th><th>Event</th><th>Tool / Skill / Subagent</th><th>Err?</th>' +
+      '<th data-sort="username"><button type="button">User <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="source"><button type="button">Source <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="event_type"><button type="button">Event <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="what"><button type="button">Tool / Skill / Subagent <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="is_error"><button type="button">Err? <span class="obs-sort-arrow"></span></button></th>' +
       '</tr>';
     wireSort();
     if (!d.rows.length) {
       tbody.innerHTML = '<tr><td colspan="6" class="obs-empty">No usage events match these filters.</td></tr>';
       return;
     }
+    // Client-side sort over the loaded page. Server orders by occurred_at;
+    // other keys are sorted in JS for the rows currently visible.
+    const [sortKey, sortDir] = (state.sort || 'occurred_at:desc').split(':');
+    const keyFor = r => {
+      if (sortKey === 'what')
+        return (r.tool_name || r.skill_name || r.subagent_type || r.command_name || '').toLowerCase();
+      const v = r[sortKey];
+      return (typeof v === 'string') ? v.toLowerCase() : (v ?? '');
+    };
+    const sorted = [...d.rows].sort((a, b) => {
+      const av = keyFor(a), bv = keyFor(b);
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ?  1 : -1;
+      return 0;
+    });
     tbody.innerHTML = '';
-    d.rows.forEach(r => {
+    sorted.forEach(r => {
       const tr = document.createElement('tr');
       const what = r.tool_name || r.skill_name || r.subagent_type || r.command_name || '';
       const src = r.source || 'other';
