@@ -1,11 +1,13 @@
 """Diagnose command — agnes diagnose."""
 
 import json
+from pathlib import Path
 
 import typer
 
 from cli.client import api_get
 from cli.config import get_sync_state
+from cli.lib.session_health import capture_session_health
 
 diagnose_app = typer.Typer(help="System diagnostics")
 
@@ -56,6 +58,14 @@ def diagnose(
     except Exception as e:
         checks.append({"name": "api", "status": "error", "detail": str(e)})
 
+    # Issue #244: detect silently-broken capture-session by comparing
+    # observed SessionStart files against the uploaded-log entries.
+    # Adds one entry to `checks` with status ok / warning / info.
+    try:
+        checks.append(capture_session_health(Path.cwd()))
+    except Exception as e:
+        checks.append({"name": "capture-session", "status": "info", "detail": f"health check failed: {e}"})
+
     # Determine overall — `info` and `unknown` surface in the per-check
     # output but never promote the headline (issue #178).
     overall = "healthy"
@@ -74,6 +84,12 @@ def diagnose(
         if c.get("stale_tables"):
             for t in c["stale_tables"]:
                 actions.append(f"Table '{t}' is stale. Run: agnes server logs scheduler | grep {t}")
+        if c["name"] == "capture-session" and c["status"] == "warning":
+            actions.append(
+                "Capture-session may be silently failing. Run "
+                "`agnes capture-session --verbose < ~/.claude/projects/<encoded>/<session>.jsonl` "
+                "against a recent session file to surface the real error."
+            )
 
     result = {
         "overall": overall,
