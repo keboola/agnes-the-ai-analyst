@@ -68,10 +68,16 @@ def test_v40_db_upgrades_cleanly(tmp_path):
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
     assert v == 41
-    # All 7 new tables exist
-    tables = {row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()}
-    assert "usage_events" in tables
-    assert "usage_attribution_skills" in tables
+    # All 7 new v41 tables exist after the v40→v41 upgrade
+    tables = {row[0] for row in conn.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+    ).fetchall()}
+    for tbl in [
+        "usage_events", "usage_session_summary",
+        "usage_tool_daily", "usage_plugin_daily",
+        "usage_attribution_skills", "usage_attribution_agents", "usage_attribution_commands",
+    ]:
+        assert tbl in tables, f"missing table {tbl} after v40→v41 upgrade"
     conn.close()
 
 
