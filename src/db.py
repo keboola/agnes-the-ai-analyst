@@ -2511,6 +2511,7 @@ def _v39_to_v40(conn: duckdb.DuckDBPyConnection) -> None:
     """
     conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS timestamp TIMESTAMP DEFAULT current_timestamp")
     conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS user_id VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS action VARCHAR")
     conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS resource VARCHAR")
     conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS params JSON")
     conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS result VARCHAR")
