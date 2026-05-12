@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.49.1"
+version = "0.50.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -83,11 +83,16 @@ dependencies = [
     # integration is fully off (no network, no init). See docs/observability.md.
     "posthog>=3.7.0",
     # Rust-backed (ammonia) HTML sanitizer for admin-edited rich content
-    # (news intro + body). Allowlist-based with per-tag attribute scoping;
-    # closes the bypass shapes the legacy regex sanitizer in
-    # src/welcome_template.py was vulnerable to. Pre-built wheels published
-    # for all supported (mac/linux/windows × arm64/x86_64) targets.
+    # (news intro + body, curated marketplace-metadata.json descriptions).
+    # Allowlist-based with per-tag attribute scoping; closes the bypass
+    # shapes the legacy regex sanitizer in src/welcome_template.py was
+    # vulnerable to. Pre-built wheels published for all supported
+    # (mac/linux/windows × arm64/x86_64) targets.
     "nh3>=0.2",
+    # CommonMark markdown renderer for curator-authored marketplace-metadata.json
+    # rich content (plugin description / sample_interaction.assistant). Pure
+    # Python, no compilation. Rendered output is funneled through nh3 above.
+    "markdown-it-py>=3.0",
     # Cross-platform advisory file locking for the `agnes push` single-instance
     # guard. Wraps fcntl.flock on POSIX and msvcrt.locking on Windows behind
     # a uniform API; OS releases the lock automatically on process exit (no

@@ -1,0 +1,93 @@
+{
+  "_comment": "Example .claude-plugin/marketplace-metadata.json — copy to your marketplace repo and adjust. See docs/curated-marketplace-format.md for the full schema. The `_comment` keys are ignored by Agnes — they're here purely as inline documentation; remove them in production.",
+  "plugins": {
+    "data-explorer": {
+      "_comment": "Plugin-level enrichment — surfaces on /marketplace cards and on the plugin detail page.",
+      "cover_photo": ".agnes/data-explorer-cover.png",
+      "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "category": "Data & Analytics",
+
+      "display_name": "Data Explorer",
+      "tagline": "Catalogue lookups + schema drill-down for the data warehouse — no SQL required.",
+      "description": "**Data Explorer** answers everyday warehouse questions without you writing SQL:\n\n- Find a table by topic, owner, or freshness.\n- Drill into a table's schema, sample rows, lineage upstream / downstream.\n- Cross-reference dashboards that already query the table.\n\nPowered by the daily catalogue sync that Agnes ingests into DuckDB — every read is local and millisecond-fast. No BigQuery cost, no risk of touching production.",
+
+      "use_cases": [
+        {
+          "title": "Find the right table",
+          "description": "When you know what data you need but not where it lives.",
+          "prompt": "Where can I find daily revenue by merchant?"
+        },
+        {
+          "title": "Schema drill-down",
+          "description": "Inspect columns, types, nullability, and sample values for one table.",
+          "prompt": "/data-explorer:schema orders.fact_revenue"
+        },
+        {
+          "title": "Lineage upstream / downstream",
+          "description": "See which jobs write a table and which dashboards / models depend on it.",
+          "prompt": "What dashboards depend on orders.fact_revenue?"
+        }
+      ],
+      "sample_interaction": {
+        "user": "Where can I find daily revenue by merchant for the last 30 days?",
+        "assistant": "The closest match is **`analytics.merchant_revenue_daily`** (last updated 4 hours ago).\n\n- **Primary key**: `(merchant_id, revenue_date)`\n- **Granularity**: daily\n- **Owner**: Analytics Platform team — `analytics-platform@example.com`\n- **Source**: aggregated from `orders.fact_revenue` via the `merchant_revenue_rollup` dbt model\n\nFor live (intraday) revenue, see `analytics.merchant_revenue_hourly` instead — it's refreshed every 15 min but only retains the last 7 days."
+      },
+
+      "doc_links": [
+        { "name": "Setup guide", "path": "docs/setup.md" },
+        { "name": "API reference (PDF)", "url": "https://example.com/data-explorer-api.pdf" }
+      ],
+
+      "skills": {
+        "explore-table": {
+          "_comment": "Skill-level rich content — same schema as plugin level, plus `invocation` and `when_to_use` specific to skills/agents.",
+          "cover_photo": ".agnes/skills/explore-table-cover.png",
+          "video_url": "https://www.youtube.com/watch?v=oHg5SJYRHA0",
+          "category": "Documentation",
+          "display_name": "Explore Table",
+          "tagline": "Inspect any warehouse table's schema, sample rows, and lineage.",
+          "description": "Drill into one table at a time:\n\n- columns + types + nullability\n- top-N sample rows\n- upstream jobs + downstream consumers (dashboards, dbt models, notebooks).\n\nNo query cost — every read is local.",
+          "invocation": "/data-explorer:explore-table <fully.qualified.table.name>",
+          "when_to_use": "Use when you already know **which table** to look at. For topic-based discovery (\"where does revenue live?\"), use `/data-explorer:find` instead.",
+          "use_cases": [
+            {
+              "title": "Inspect schema",
+              "description": "See columns + types before writing a query.",
+              "prompt": "/data-explorer:explore-table analytics.merchant_revenue_daily"
+            },
+            {
+              "title": "Trace lineage",
+              "description": "Find what writes the table and which dashboards consume it.",
+              "prompt": "Who reads analytics.merchant_revenue_daily?"
+            }
+          ],
+          "sample_interaction": {
+            "user": "/data-explorer:explore-table analytics.merchant_revenue_daily",
+            "assistant": "**`analytics.merchant_revenue_daily`** — last refreshed 4 hours ago.\n\n| Column | Type | Nullable | Sample |\n|--------|------|----------|--------|\n| merchant_id | string | no | `acme-cz` |\n| revenue_date | date | no | `2026-05-11` |\n| gross_revenue_eur | decimal(18,2) | no | `12455.40` |\n\n**Written by**: `dbt_merchant_revenue_rollup` (daily, 02:00 UTC)\n**Read by**: 3 Looker dashboards, 2 notebooks (sample on request)"
+          },
+          "doc_links": [
+            { "name": "Cheatsheet", "path": "docs/skills/explore-table.md" }
+          ]
+        }
+      },
+      "agents": {
+        "query-planner": {
+          "cover_photo": "https://cdn.example.com/agents/query-planner.webp",
+          "video_url": "https://vimeo.com/123456789",
+          "display_name": "Query Planner",
+          "tagline": "Helps you draft a BigQuery query without writing SQL.",
+          "invocation": "@query-planner",
+          "when_to_use": "Use when you have a question in plain English and want a SQL draft + explanation. For schema lookups, use `/data-explorer:explore-table` first.",
+          "doc_links": [
+            { "name": "Decision flow (PDF)", "url": "https://example.com/query-planner-flow.pdf" }
+          ]
+        }
+      }
+    },
+    "report-generator": {
+      "_comment": "Minimal example — only a cover photo + category override. Other fields default to absent and the UI hides those sections.",
+      "cover_photo": "https://cdn.example.com/report-generator-cover.png",
+      "category": "Productivity"
+    }
+  }
+}
