@@ -1,12 +1,12 @@
 {% extends "base_login.html" %}
 
-{% block title %}Setup - Agnes AI Data Analyst{% endblock %}
+{% block title %}Setup - {{ instance_brand or "Agnes" }} {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
 {% block content %}
 <div class="login-page">
     <div class="login-card-wrapper" style="max-width: 520px; margin: 40px auto; padding: 0 20px;">
         <div class="login-card" style="max-width: 520px;">
-            <h2 id="wizard-title">Setup Agnes</h2>
+            <h2 id="wizard-title">Setup {{ instance_brand or "Agnes" }}</h2>
             <p class="login-description" id="wizard-description">
                 Create your admin account to get started.
             </p>
@@ -112,7 +112,7 @@
 <script>
 let token = '';
 const steps = {
-    1: { title: 'Setup Agnes', desc: 'Create your admin account to get started.' },
+    1: { title: 'Setup ' + {{ (instance_brand or "Agnes") | tojson }}, desc: 'Create your admin account to get started.' },
     2: { title: 'Data Source', desc: 'Connect to your data source.' },
     3: { title: 'Discover Tables', desc: 'Find and register tables from your data source.' },
     4: { title: 'Almost Done', desc: 'Start syncing data and open your dashboard.' },

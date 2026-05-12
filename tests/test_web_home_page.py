@@ -94,16 +94,18 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
     assert resp.status_code == 200
     body = resp.text
     assert "Welcome back" in body
-    # Banner copy updated when auto-mode moved into install-hero as a real
-    # Step 2 (between Claude install and Agnes install). The completion
-    # badge now names all three.
-    assert "Step 1, 2 &amp; 3 done" in body  # completion badge
+    # Banner copy updated when the explicit "create workspace folder"
+    # step was inserted between auto-mode and install-Agnes — completion
+    # badge now spans Steps 1-4 (install Claude Code, auto-mode, mkdir
+    # workspace, install Agnes from Claude Code).
+    assert "Steps 1&#8211;4 done" in body or "Steps 1–4 done" in body
     assert "Mark me as offboarded" in body  # offboard control visible
-    # All three inline install-blocks are hidden post-onboarding — the
+    # All four inline install-blocks are hidden post-onboarding — the
     # labels rendered inside the install-block divs go away.
     assert "Step 1 — install Claude Code" not in body
     assert "Step 2 — turn on auto-mode" not in body
-    assert "Step 3 — install Agnes from inside Claude Code" not in body
+    assert "Step 3 — create your workspace folder" not in body
+    assert "Step 4 — install" not in body
 
 
 def test_connectors_render_flat_when_onboarded_by_default(fresh_db):

@@ -206,21 +206,25 @@ def compute_default_agent_prompt(
             from app.instance_config import (
                 get_gws_oauth_credentials, get_instance_admin_email,
             )
-            from app.instance_config import get_atlassian_base_url
+            from app.instance_config import get_atlassian_base_url, get_instance_brand
             connector_prompts = all_connector_prompts(
                 gws_oauth=get_gws_oauth_credentials(),
                 instance_admin_email=get_instance_admin_email(),
                 atlassian_base_url=get_atlassian_base_url(),
+                instance_brand=get_instance_brand(),
             )
         except Exception:
             logger.exception("compute_default_agent_prompt: connector prompt resolution failed; using module defaults")
 
+        from app.instance_config import get_instance_brand, get_workspace_dir_name
         lines = resolve_lines(
             _wheel_filename,
             plugin_install_names=plugin_install_names,
             server_host=server_host,
             ca_pem=ca_pem,
             connector_prompts=connector_prompts,
+            instance_brand=get_instance_brand(),
+            workspace_dir=get_workspace_dir_name(),
         )
         return "\n".join(lines)
     except Exception:

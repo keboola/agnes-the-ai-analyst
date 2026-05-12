@@ -24,6 +24,7 @@ from app.instance_config import (
     get_theme, get_corporate_memory_config, get_home_route,
     get_gws_oauth_credentials, get_home_automode_visibility,
     get_instance_admin_email, get_atlassian_base_url,
+    get_instance_brand, get_workspace_dir_name,
 )
 from app.web.connector_prompts import all_connector_prompts
 from src.repositories.sync_state import SyncStateRepository
@@ -413,6 +414,7 @@ def _build_context(
             gws_oauth=get_gws_oauth_credentials(),
             instance_admin_email=get_instance_admin_email(),
             atlassian_base_url=get_atlassian_base_url(),
+            instance_brand=get_instance_brand(),
         )
 
         setup_instructions_lines = resolve_lines(
@@ -421,6 +423,8 @@ def _build_context(
             server_host=server_host,
             ca_pem=ca_pem,
             connector_prompts=_connector_prompts,
+            instance_brand=get_instance_brand(),
+            workspace_dir=get_workspace_dir_name(),
         )
 
     ctx = {
@@ -448,6 +452,16 @@ def _build_context(
         # tile's "Email admin" mailto button. Empty string hides the
         # button — template guards with `{% if instance_admin_email %}`.
         "instance_admin_email": get_instance_admin_email(),
+        # Branding: `instance_name` is the deploying org's display name
+        # (page titles); `instance_brand` is the product name used in body
+        # copy and CTAs ("Setup {brand}", "{brand} runs SELECT…"); `workspace_dir`
+        # is the filesystem-safe folder name shown in `~/<workspace_dir>` and
+        # baked into the clipboard setup script. All three default to the
+        # Agnes-flavored values out of the box; Terraform can flip them via
+        # env vars (AGNES_INSTANCE_BRAND / AGNES_WORKSPACE_DIR_NAME).
+        "instance_name": get_instance_name(),
+        "instance_brand": get_instance_brand(),
+        "workspace_dir": get_workspace_dir_name(),
         # Resolved connector setup prompts — single source of truth for
         # both the /home "Copy prompt" tiles and the main setup script
         # (app/web/setup_instructions.py inlines them in step 9). The
@@ -458,6 +472,7 @@ def _build_context(
             gws_oauth=get_gws_oauth_credentials(),
             instance_admin_email=get_instance_admin_email(),
             atlassian_base_url=get_atlassian_base_url(),
+            instance_brand=get_instance_brand(),
         ),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0

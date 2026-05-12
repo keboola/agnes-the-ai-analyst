@@ -233,10 +233,10 @@ class TestClaudeSetupPreview:
         assert "/cli/agnes.whl" not in body
         # Unified always-on layout (Fix B + Fix C in 2026-05-10 init-report
         # response): preflight + marketplace + Atlassian MCP all unconditional.
-        # Step 1 install, step 4 preflight, step 5 marketplace, step 6 MCP,
-        # step 7 diagnose.
+        # Step 1 install, step 2 mkdir/cd, step 3 init, step 4 catalog,
+        # step 5 preflight, step 6 marketplace, step 7 diagnose.
         assert "1) Install the CLI" in body
-        assert "6) Run diagnostics" in body
+        assert "7) Run diagnostics" in body
         assert "agnes diagnose" in body
         # `agnes init` is now the mandatory bootstrap step.
         assert "agnes init" in body
