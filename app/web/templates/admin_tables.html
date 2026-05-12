@@ -2510,10 +2510,19 @@
             // fail-open with a warning — operator who needs the cap to engage
             // picks Custom query and writes backtick-quoted native BQ
             // identifiers.
+            //
+            // Issue #266: also persist bucket+source_table on the row so the
+            // Edit modal can pre-fill those inputs on a subsequent open. Pre-
+            // #266 the register flow only sent source_query, leaving bucket=
+            // NULL in the registry; the Edit modal then loaded empty inputs
+            // and an admin saving with the visible empty fields would
+            // synthesize the broken `SELECT * FROM bq."".""` SQL.
             return {
                 name: viewName || sourceTable,
                 source_type: 'bigquery',
                 query_mode: 'materialized',
+                bucket: dataset,
+                source_table: sourceTable,
                 source_query: 'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"',
                 profile_after_sync: false,
                 description: description,
@@ -2849,17 +2858,35 @@
 
         var qmode = (table.query_mode || 'remote');
         var sq = (table.source_query || '');
+        // Issue #266: register-time the whole-table branch omits
+        // bucket/source_table from the JSON payload (only source_query is
+        // sent), so existing whole-table materialized rows persist with
+        // bucket=NULL in the registry. When the Edit modal then reads
+        // table.bucket on those rows it gets null → empty input → admin
+        // saves a broken `SELECT * FROM bq."".""` SQL. Parse the source_query
+        // to recover the dataset+table for the pre-fill. Same regex shape
+        // we already use to detect whole-table mode below.
+        var SELECT_STAR_RE = /^\s*SELECT\s+\*\s+FROM\s+bq\."([^"]+)"\."([^"]+)"\s*$/i;
+        var isAutoSelectStar = SELECT_STAR_RE.test(sq);
         if (qmode === 'materialized') {
             _setEditBqRadio('editBqAccessMode', 'synced');
-            var isAutoSelectStar = /^\s*SELECT\s+\*\s+FROM\s+bq\.".+"\.".+"\s*$/i.test(sq);
             _setEditBqRadio('editBqSyncMode', isAutoSelectStar ? 'whole' : 'custom');
         } else {
             _setEditBqRadio('editBqAccessMode', 'live');
             _setEditBqRadio('editBqSyncMode', 'whole');
         }
 
-        document.getElementById('editBqDataset').value = table.bucket || '';
-        document.getElementById('editBqSourceTable').value = table.source_table || '';
+        // Pre-fill dataset/table inputs. For whole-table materialized rows
+        // without persisted bucket/source_table (pre-#266 register state),
+        // recover them from the SQL.
+        var preDataset = table.bucket || '';
+        var preSourceTable = table.source_table || '';
+        if (!preDataset && !preSourceTable && isAutoSelectStar) {
+            var m = sq.match(SELECT_STAR_RE);
+            if (m) { preDataset = m[1]; preSourceTable = m[2]; }
+        }
+        document.getElementById('editBqDataset').value = preDataset;
+        document.getElementById('editBqSourceTable').value = preSourceTable;
         document.getElementById('editBqSourceQuery').value = sq;
         document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
         document.getElementById('editBqDescription').value = table.description || '';
@@ -3025,12 +3052,20 @@
             payload.query_mode = 'materialized';
             payload.source_query =
                 document.getElementById('editBqSourceQuery').value.trim();
-            // PUT semantics: explicit null clears prior value so a
-            // remote→materialized switch doesn't carry stale
-            // bucket/source_table forward through the synthetic
-            // RegisterTableRequest validator.
-            payload.bucket = null;
-            payload.source_table = null;
+            // Issue #266: only clear bucket/source_table on a genuine mode
+            // flip (was non-materialized → now custom-SQL materialized). The
+            // original pre-#266 code nulled unconditionally on every save —
+            // so an admin editing only the description on an already-
+            // materialized custom-SQL row would silently wipe bucket/
+            // source_table. Destructive for rows that had them persisted
+            // (whole-table-then-switched-to-custom, or curl-set via API).
+            // On no-op saves (mode didn't change since modal load), omit
+            // the keys entirely so the PUT handler's `exclude_unset=True`
+            // preserves the existing values in the registry.
+            if (_editOriginalQueryMode !== 'materialized') {
+                payload.bucket = null;
+                payload.source_table = null;
+            }
         } else if (accessMode === 'synced' && syncMode === 'whole') {
             payload.query_mode = 'materialized';
             payload.source_query =

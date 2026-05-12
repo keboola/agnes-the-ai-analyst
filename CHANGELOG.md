@@ -23,6 +23,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Asana connector reverted from hosted Remote MCP back to PAT + raw REST against `app.asana.com/api/1.0`.** The MCP path (introduced in commit `adee8ea`, 2026-05-11) used ~5× the tokens per call because Claude Code reads the entire MCP response envelope; the PAT + REST path lets the agent read only the fields it needs from a flat JSON response. The new Asana prompt stores the PAT in the OS keychain under `agnes-asana-pat`, verifies against `/users/me` before writing, and prints the unified `✅`/`❌` line. Re-running setup on an instance still holding the leftover MCP registration detects it and asks the user to run `claude mcp remove asana` first so the two surfaces don't compete.
 - **Atlassian connector instructs picking the longest API-token expiry (today: "1 year").** The Atlassian Cloud token-create dropdown defaults to a short-lived expiry; the prompt now tells Claude to direct the user to choose the longest option in the "Expires" dropdown. There's no public query-parameter hook on `id.atlassian.com/manage-profile/security/api-tokens` to pre-select the expiry (verified — `?expiry=1y` returns identical HTML); the prompt acknowledges that limitation so a future contributor doesn't re-investigate.
 
+## [0.53.1] — 2026-05-12
+
+Follow-up to 0.53.0 closing #266 — `/admin/tables` Edit modal on BQ
+materialized rows silently destroyed `bucket` / `source_table` on every
+save, and the prior whole-table register path never persisted them in
+the first place. Three small client-side fixes in `admin_tables.html`,
+plus regression tests pinning the server-side PUT contract the new JS
+relies on.
+
+### Fixed
+
+- **Edit modal on custom-SQL materialized rows no longer wipes `bucket` / `source_table`** (#266). `saveBqTabEdit` nulled both fields on every save in the `synced/custom` branch, originally to clear stale values on a remote→materialized mode flip. The null fired even when the operator was just editing description / folder / sync_schedule on an already-materialized row — an unrelated change destroyed the row's `bucket=` and `source_table=` columns. Guarded by `_editOriginalQueryMode !== 'materialized'` so the null only fires on a genuine mode flip; otherwise the keys are omitted from the JSON and the server's `exclude_unset=True` semantics preserve the existing values.
+- **Register modal whole-table branch now persists `bucket` + `source_table`** (#266). `_buildBigQueryPayload` previously sent only `source_query` for `synced/whole` registers, leaving `bucket=NULL` on the row even though the dataset+table were the source of truth in the SQL. Edit modal then loaded empty Dataset/Table inputs over a `SELECT *` SQL, and a save with the empty inputs would synthesize a broken `SELECT * FROM bq."".""` SQL. Register now sends both fields alongside the SQL — consistent with the live-mode branch.
+- **Edit modal pre-fills Dataset/Table from `source_query` when bucket is null** (#266). Back-compat for whole-table materialized rows that were registered pre-0.53.1 (`bucket=NULL` in the registry). `_openEditBqModal` now parses the `SELECT * FROM bq."<ds>"."<tbl>"` form with the same regex it already uses to set the whole/custom radio, and falls back to the captured groups when `table.bucket` is empty.
+
+### Internal
+
+- 4 regression tests in `tests/test_issue_266_bq_edit_modal_destruction.py` pin the server-side PUT contract (omitted fields preserved, explicit null clears) and template-grep the three JS-side fixes.
+
 ## [0.53.0] — 2026-05-12
 
 Second hygiene round closing the Tier B trackers opened during the
