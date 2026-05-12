@@ -210,7 +210,6 @@ Tables in `agnes catalog` have a `query_mode`:
      5 GiB scan cap (configurable in /admin/server-config). Direct
      `bq."<dataset>"."<table>"` paths are registry-gated — unregistered
      paths return 403 `bq_path_not_registered`.
-  3. **`agnes query --register-bq`** for hybrid joins (rarely needed).
 
 ### `agnes snapshot create` workflow (preferred for remote tables)
 
@@ -391,19 +390,17 @@ analysts whose first attempt failed and need to retry by hand).
 
 ## Hybrid Queries (BigQuery + Local)
 
-For tables too large to sync locally, use hybrid queries that JOIN local data with on-demand BigQuery results:
+Server-side only. Admins can POST `{sql, register_bq: {alias: bq_sql}}` to
+`/api/query/hybrid` (see `app/api/query_hybrid.py`), which runs the BQ
+sub-queries server-side (where BQ credentials live) and joins the result
+against the server's local parquet views in a single DuckDB session.
 
-```bash
-agnes query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.date" \
-         --register-bq "traffic=SELECT date, SUM(views) as views FROM dataset.web WHERE date > '2026-01-01' GROUP BY 1"
-```
-
-The `--register-bq` flag executes a BigQuery subquery, loads the result into memory, and makes it available as a DuckDB view for the final SQL. Multiple `--register-bq` flags can be used for multiple BQ sources.
-
-For complex SQL, use stdin mode:
-```bash
-echo '{"register_bq": {"traffic": "SELECT ..."}, "sql": "SELECT ..."}' | agnes query --stdin
-```
+There is no analyst-facing CLI flag for this — analysts who need to combine
+a local table with a remote one should `agnes snapshot create` a filtered
+subset of the remote table and `agnes query` the join locally, or run the
+join server-side via `agnes query --remote`. The earlier `agnes query
+--register-bq` flag ran in-process on the caller's machine and required
+local BigQuery credentials that analysts don't have; it was removed.
 
 ## Extensibility
 
