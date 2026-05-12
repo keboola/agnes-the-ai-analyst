@@ -94,16 +94,16 @@ _DEFAULTS = {
     # persistent ``bq_metadata_cache``. Default 4 h — long enough that the
     # cumulative BQ jobs API cost stays negligible on a typical 10–50-table
     # registry, short enough that operator-edited tables show real numbers
-    # within an analyst's working day. Hot reads of ``/api/v2/catalog`` go
-    # to DuckDB, never to BQ, so this can be tuned freely without touching
-    # request-path latency.
+    # within an analyst's working day.
     "SCHEDULER_BQ_METADATA_REFRESH_INTERVAL":   4 * 60 * 60,
     # Pause between scheduler startup and the first tick. Keeps the
     # scheduler from synchronising its "Table never synced, marking as
-    # due" burst with the app's own startup cache_warmup (which writes
-    # heavily to the system DB for several seconds). Set to 0 to disable
-    # — useful in tests that need deterministic-fast first-tick.
+    # due" burst with the app's own startup cache_warmup. Set to 0 to
+    # disable — useful in tests that need deterministic-fast first-tick.
     "SCHEDULER_STARTUP_GRACE_SECONDS":          60,
+    # Daily prune of usage_events older than USAGE_EVENTS_RETENTION_DAYS
+    # (default 0 = forever). Rollups are not pruned.
+    "SCHEDULER_USAGE_PRUNE_INTERVAL":           86400,
 }
 
 
@@ -218,16 +218,17 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     Tuple shape: (name, schedule_string, endpoint, method, http_timeout_sec).
     Marketplaces stays hardcoded — promoting it to env is out of #77 scope.
     """
-    refresh = _read_positive_int("SCHEDULER_DATA_REFRESH_INTERVAL")
-    health  = _read_positive_int("SCHEDULER_HEALTH_CHECK_INTERVAL")
-    scripts = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
-    sess    = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
-    verify  = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
-    usage   = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
-    corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
-    bqmeta  = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
-    tick    = _read_positive_int("SCHEDULER_TICK_SECONDS")
-    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem, bqmeta)
+    refresh    = _read_positive_int("SCHEDULER_DATA_REFRESH_INTERVAL")
+    health     = _read_positive_int("SCHEDULER_HEALTH_CHECK_INTERVAL")
+    scripts    = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
+    sess       = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
+    verify     = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
+    usage      = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
+    corpmem    = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
+    bqmeta     = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
+    usageprune = _read_positive_int("SCHEDULER_USAGE_PRUNE_INTERVAL")
+    tick       = _read_positive_int("SCHEDULER_TICK_SECONDS")
+    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem, bqmeta, usageprune)
     if tick > smallest:
         raise ValueError(
             f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
@@ -272,12 +273,11 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         ("store-reap-stuck-reviews", "every 15m",                 "/api/admin/run-reap-stuck-reviews",   "POST", 60),
         # BigQuery metadata refresh — keeps ``bq_metadata_cache`` warm so
         # ``GET /api/v2/catalog`` never has to call BQ at request time.
-        # 30-min timeout is generous; on a 10-table dev registry the
-        # observed full refresh ran in ~7 min when two view-backed rows
-        # took 7 min each. Bounded concurrency
-        # (``AGNES_BQ_METADATA_REFRESH_CONCURRENCY``, default 4) caps the
-        # tail.
         ("bq-metadata-refresh",   _seconds_to_schedule(bqmeta),  "/api/admin/run-bq-metadata-refresh",   "POST", 1800),
+        # Usage event retention pruning. Reads USAGE_EVENTS_RETENTION_DAYS
+        # on the server side; short-circuits when unset or 0. Runs daily
+        # (default 86400s). Rollup tables untouched.
+        ("usage-prune",           _seconds_to_schedule(usageprune), "/api/admin/usage/prune",            "POST", 60),
     ]
 
 _running = True

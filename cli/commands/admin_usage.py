@@ -82,3 +82,61 @@ def export(
     except Exception as exc:
         typer.echo(f"[err] cannot reach server: {exc}", err=True)
         raise typer.Exit(1)
+
+
+@app.command()
+def reprocess():
+    """Force re-extraction of all sessions for the usage processor."""
+    client = get_client(timeout=60)
+    try:
+        resp = client.post("/api/admin/usage/reprocess")
+    except Exception as e:
+        typer.echo(f"[err] cannot reach server: {e}", err=True)
+        raise typer.Exit(1)
+    if resp.status_code == 401:
+        typer.echo("[err] authentication required", err=True)
+        raise typer.Exit(1)
+    if resp.status_code == 403:
+        typer.echo("[err] admin only", err=True)
+        raise typer.Exit(1)
+    if resp.status_code >= 400:
+        typer.echo(f"[err] {resp.status_code}: {resp.text}", err=True)
+        raise typer.Exit(1)
+    data = resp.json()
+    typer.echo("Reprocess scheduled — UsageProcessor will re-extract on next scheduler tick.")
+    for k, v in data.get("deleted", {}).items():
+        typer.echo(f"  deleted {k}: {v}")
+
+
+@app.command()
+def prune(
+    json_out: bool = typer.Option(False, "--json", help="Emit raw JSON instead of summary."),
+):
+    """Prune usage_events older than USAGE_EVENTS_RETENTION_DAYS env var on the server."""
+    client = get_client(timeout=60)
+    try:
+        resp = client.post("/api/admin/usage/prune")
+    except Exception as e:
+        typer.echo(f"[err] cannot reach server: {e}", err=True)
+        raise typer.Exit(1)
+    if resp.status_code == 401:
+        typer.echo("[err] authentication required", err=True)
+        raise typer.Exit(1)
+    if resp.status_code == 403:
+        typer.echo("[err] admin only", err=True)
+        raise typer.Exit(1)
+    if resp.status_code >= 400:
+        typer.echo(f"[err] {resp.status_code}: {resp.text}", err=True)
+        raise typer.Exit(1)
+    data = resp.json()
+    if json_out:
+        import json
+        typer.echo(json.dumps(data, indent=2))
+        return
+    if data.get("status") == "skipped":
+        typer.echo(f"Skipped: {data.get('reason')}")
+    else:
+        typer.echo(
+            f"Pruned {data['deleted']} events older than {data['retention_days']} days; "
+            f"{data['remaining']} remain."
+        )
