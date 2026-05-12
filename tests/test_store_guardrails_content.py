@@ -267,3 +267,36 @@ class TestSummaries:
         assert rows[0]["ok"] is False
         codes = {i["code"] for i in rows[0]["issues"]}
         assert "placeholder_text" in codes
+
+
+class TestAgentsWalkerSkipsNonAgentFiles:
+    """`agents/README.md` (and other helper files without frontmatter)
+    must not be evaluated as a missing-description agent. Pre-fix the
+    `_iter_components` walker greedily evaluated every `*.md` under
+    `agents/`, which gave a green dot in the upload preview (preview
+    walker correctly filtered) but a red rejection on submit (check
+    walker did not). Pin the parity here so the two stay aligned."""
+
+    def test_readme_under_agents_is_skipped(self, plugin_dir):
+        # One real agent + one README (no frontmatter at all).
+        _write_agent(plugin_dir, name="reviewer")
+        (plugin_dir / "agents" / "README.md").write_text(
+            "# How to author agents in this plugin\n\nA few notes for contributors.\n",
+            encoding="utf-8",
+        )
+        result = content_check(plugin_dir)
+        # README must NOT generate any issue. The lone real agent passes
+        # the floor, so the whole plugin passes.
+        assert result["status"] == "pass", result["issues"]
+
+    def test_helper_md_without_frontmatter_is_skipped(self, plugin_dir):
+        _write_agent(plugin_dir, name="reviewer")
+        (plugin_dir / "agents" / "_NOTES.md").write_text(
+            "Some helper notes — not an agent. No frontmatter, no agent shape.\n",
+            encoding="utf-8",
+        )
+        rows = summarize_components(plugin_dir)
+        types_files = {(r["type"], r["file"]) for r in rows}
+        # Only the real agent should appear; _NOTES.md is filtered out.
+        assert ("agent", "agents/reviewer.md") in types_files
+        assert ("agent", "agents/_NOTES.md") not in types_files

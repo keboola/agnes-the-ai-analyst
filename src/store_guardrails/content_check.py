@@ -268,6 +268,11 @@ def _iter_components(plugin_dir: Path):
             }
 
     # Agents: agents/*.md at the top level (the baked tree puts them there).
+    # Skip files that obviously aren't agents — README and other helper docs
+    # under agents/ would otherwise trip a `frontmatter.description empty`
+    # rejection. Mirror the filter `summarize_for_preview` already applies
+    # for type=agent (skip files without `name`/`description` in frontmatter)
+    # so the upload preview's red/green dots match the post-bake decision.
     agents_root = plugin_dir / "agents"
     if agents_root.is_dir():
         for agent_md in sorted(agents_root.rglob("*.md")):
@@ -275,6 +280,11 @@ def _iter_components(plugin_dir: Path):
                 continue
             text = _read_text(agent_md)
             fm = parse_frontmatter(text)
+            # No frontmatter at all → not an agent file (README, NOTES, etc.).
+            # The preview walker uses the same heuristic; keeping the two
+            # in sync prevents the "preview says OK, submit says fail" UX.
+            if not fm.get("name") and fm.get("description") is None:
+                continue
             body_offset = frontmatter_body_offset(text)
             yield {
                 "type": "agent",
@@ -339,7 +349,7 @@ def _evaluate(comp: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "file": comp["file"],
                 "field": "body",
                 "code": "body_too_short",
-                "hint": _hint_for(type_, "body_too_short"),
+                "hint": _hint_for(type_, "body_too_short", min_chars=_MIN_BODY_CHARS),
                 "name": comp.get("name"),
                 "component_type": type_,
             })
@@ -459,7 +469,7 @@ _HINTS: Dict[Tuple[str, str], str] = {
         "Skill content is too short (minimum {min_chars} characters). "
         "Explain what the skill does, when to use it, and what inputs "
         "it expects."
-    ).format(min_chars=_MIN_BODY_CHARS),
+    ),
     # ---- Agents --------------------------------------------------------
     ("agent", "empty"): (
         "Agent description is missing. Add a frontmatter "
@@ -484,7 +494,7 @@ _HINTS: Dict[Tuple[str, str], str] = {
         "Agent content is too short (minimum {min_chars} characters). "
         "Explain the agent's behaviour, expected inputs, and when to "
         "dispatch it."
-    ).format(min_chars=_MIN_BODY_CHARS),
+    ),
     # ---- Plugins -------------------------------------------------------
     ("plugin", "empty"): (
         "Plugin description is missing. Add a `description` field to "
