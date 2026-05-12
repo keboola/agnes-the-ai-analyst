@@ -99,6 +99,67 @@ def _get_lock_ttl_seconds() -> int:
         return _LOCK_TTL_DEFAULT_SECONDS
 
 
+def sweep_stale_parquet_locks(data_root: Path | str) -> int:
+    """Walk every ``*.parquet.lock`` under ``data_root`` and unlink the
+    ones older than the configured TTL. Returns the count reclaimed.
+
+    Called once at app startup so the dev VM doesn't accumulate 0-byte
+    zombie lock files (issue #260 — observed lock from a SIGKILL'd
+    materialize run sitting for 6 days). The acquire path already
+    reclaims stale locks lazily on the next attempt, but startup sweep
+    keeps `/data/extracts/*/data/` tidy regardless of whether the next
+    materialize is scheduled soon.
+
+    Failures (permission, vanished mid-stat, weird FS) are logged at
+    WARNING and counted toward "errors"; the sweep doesn't raise.
+    """
+    root = Path(data_root)
+    if not root.exists():
+        return 0
+    ttl = _get_lock_ttl_seconds()
+    now = time.time()
+    reclaimed = 0
+    errors = 0
+    # Search both ``<root>/data/*.lock`` (Keboola/BQ layout) and
+    # ``<root>/*/data/*.lock`` (multi-source layout under /data/extracts).
+    candidates: list[Path] = []
+    try:
+        candidates.extend(root.rglob("*.parquet.lock"))
+    except Exception as e:
+        logger.warning("sweep_stale_parquet_locks: rglob failed at %s: %s", root, e)
+        return 0
+    for lock_path in candidates:
+        try:
+            age = now - lock_path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logger.warning("sweep_stale_parquet_locks: stat failed on %s: %s", lock_path, e)
+            errors += 1
+            continue
+        if age <= ttl:
+            continue
+        try:
+            lock_path.unlink()
+            logger.info(
+                "Swept stale materialize lock at %s (age %.0fs > TTL %ds)",
+                lock_path, age, ttl,
+            )
+            reclaimed += 1
+        except FileNotFoundError:
+            # Concurrent reclaim won — fine.
+            continue
+        except Exception as e:
+            logger.warning("sweep_stale_parquet_locks: unlink failed on %s: %s", lock_path, e)
+            errors += 1
+    if reclaimed or errors:
+        logger.info(
+            "sweep_stale_parquet_locks: reclaimed=%d errors=%d under %s",
+            reclaimed, errors, root,
+        )
+    return reclaimed
+
+
 def _try_acquire_file_lock(lock_path: Path):
     """Try to acquire an advisory exclusive flock on `lock_path`. Returns
     the open file object on success (caller must close to release); None

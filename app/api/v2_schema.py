@@ -136,7 +136,15 @@ def build_schema_uncached(
             raise NotFound(table_id)
 
     source_type = row.get("source_type") or ""
-    if source_type == "bigquery":
+    query_mode = row.get("query_mode") or ""
+    # Issue #261: a `source_type='bigquery'` row with `query_mode='materialized'`
+    # has the data on local disk as a parquet — same shape as Keboola local
+    # tables. Hitting BigQuery INFORMATION_SCHEMA on every schema call was
+    # the root cause of the materialized-schema cold-start anomaly observed
+    # in the 0.51.0 perf tests (4.6 s vs 1.0 s for remote VIEW). Use the
+    # local-parquet branch for any materialized source regardless of
+    # `source_type` — the parquet is the source of truth.
+    if source_type == "bigquery" and query_mode != "materialized":
         dataset = row.get("bucket") or ""
         source_table = row.get("source_table") or table_id
         columns = _fetch_bq_schema(bq, dataset, source_table)
