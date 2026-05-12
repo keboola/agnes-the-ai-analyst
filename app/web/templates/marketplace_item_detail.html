@@ -50,29 +50,68 @@
 
   .item-detail .hero .head {
     display: grid;
-    grid-template-columns: 160px minmax(0, 1fr) 300px;
+    grid-template-columns: 380px minmax(0, 1fr) 300px;
     gap: 24px;
     align-items: start;
   }
   @media (max-width: 1100px) {
-    .item-detail .hero .head { grid-template-columns: 160px minmax(0, 1fr); }
+    .item-detail .hero .head { grid-template-columns: 380px minmax(0, 1fr); }
   }
   @media (max-width: 720px) {
     .item-detail .hero .head { grid-template-columns: 1fr; }
   }
 
-  .item-detail .hero .photo {
-    width: 160px; height: 160px;
-    border-radius: 14px;
-    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
-    border: 1px solid rgba(255,255,255,0.18);
-    display: flex; align-items: center; justify-content: center;
-    color: #fff;
-    font-size: 44px; font-weight: var(--font-bold);
-    letter-spacing: 1px;
-    overflow: hidden; flex-shrink: 0;
+  /* Hero window — macOS-style frame around the skill/agent cover photo.
+     Mirrors the plugin-detail hero window so the curated/flea detail
+     pages share a consistent visual language. The window's dark chrome
+     stays constant; only the surrounding hero gradient changes per kind
+     (skill=green, agent=purple). The body has aspect-ratio 715/310 so
+     curator-uploaded covers never crop to a square. */
+  .item-detail .hero .hero-window {
+    width: 380px;
+    background: #1e293b;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.40),
+                0 2px 6px rgba(0, 0, 0, 0.18);
+    flex-shrink: 0;
+    align-self: start;
   }
-  .item-detail .hero .photo img { width: 100%; height: 100%; object-fit: cover; }
+  .item-detail .hero .hero-window-titlebar {
+    background: linear-gradient(180deg, #2a3445 0%, #1e293b 100%);
+    height: 26px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.25);
+  }
+  .item-detail .hero .hwdot {
+    width: 11px; height: 11px; border-radius: 50%;
+    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+    flex-shrink: 0;
+  }
+  .item-detail .hero .hwdot.red    { background: #ff5f56; }
+  .item-detail .hero .hwdot.yellow { background: #ffbd2e; }
+  .item-detail .hero .hwdot.green  { background: #27c93f; }
+  .item-detail .hero .hero-window-label {
+    margin: 0 auto;
+    padding-right: 46px;
+    font-size: 10.5px; color: rgba(255, 255, 255, 0.55);
+    font-family: var(--font-mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%;
+  }
+  .item-detail .hero .hero-window-body {
+    aspect-ratio: 715 / 310;
+    overflow: hidden;
+    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 44px; font-weight: var(--font-bold);
+    letter-spacing: 1px;
+  }
+  .item-detail .hero .hero-window-body img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+  }
 
   .item-detail .hero .meta {
     min-width: 0;
@@ -247,6 +286,12 @@
   .item-detail .hero .actions .helper {
     font-size: 11px; color: rgba(255,255,255,0.78); line-height: 1.45;
     text-align: right; max-width: 260px;
+    /* Anchor the 260px box at the right edge of the 300px .actions column
+       so the helper's right edge lines up with the button's right edge —
+       without this the parent's `align-items: stretch` puts the box flush
+       LEFT, and text-align: right only right-aligns within the 260px box,
+       which sits ~40px short of the button. */
+    align-self: flex-end;
   }
   .item-detail .hero .actions .helper strong {
     color: #fff; font-weight: var(--font-semibold);
@@ -363,6 +408,175 @@
   .item-detail .panel .lead {
     font-size: 14.5px; line-height: 1.65; color: var(--text-primary);
     white-space: pre-wrap;
+  }
+  /* Hero tagline — single-line friendly subtitle below the h1. Same
+     placement contract as the plugin-detail hero tagline. */
+  .item-detail .hero .hero-tagline {
+    font-size: 14.5px; line-height: 1.5;
+    color: rgba(255,255,255,0.92);
+    margin: -2px 0 8px;
+  }
+
+  /* Rich-content rendering helpers (parity with marketplace_plugin_detail).
+     `.lead-rendered` switches the lead block from plain-text mode (which
+     uses `white-space: pre-wrap` so plain frontmatter descriptions retain
+     line breaks) to HTML mode where paragraph breaks come from <p> tags. */
+  .item-detail .lead-rendered { white-space: normal; }
+  .item-detail .lead-rendered > *:first-child { margin-top: 0; }
+  .item-detail .lead-rendered > *:last-child { margin-bottom: 0; }
+  .item-detail .lead-rendered p { margin: 0 0 12px; }
+  .item-detail .lead-rendered h2,
+  .item-detail .lead-rendered h3,
+  .item-detail .lead-rendered h4 {
+    font-size: 14.5px; font-weight: 600;
+    margin: 14px 0 6px;
+    text-transform: none; letter-spacing: 0; color: var(--text-primary);
+  }
+  .item-detail .lead-rendered ul,
+  .item-detail .lead-rendered ol { margin: 0 0 12px 22px; padding: 0; }
+  .item-detail .lead-rendered code {
+    background: var(--surface-alt, #f4f4f5); border-radius: 4px;
+    padding: 1px 5px; font-size: 0.92em;
+    font-family: var(--font-mono);
+  }
+  .item-detail .lead-rendered pre {
+    background: #1e1e2e; color: #cdd6f4;
+    border-radius: 8px; padding: 12px 14px;
+    font-family: var(--font-mono); font-size: 12.5px;
+    overflow-x: auto; margin: 8px 0 14px;
+  }
+  .item-detail .lead-rendered pre code {
+    background: transparent; padding: 0; color: inherit;
+  }
+  .item-detail .lead-rendered a { color: var(--primary); text-decoration: none; }
+  .item-detail .lead-rendered a:hover { text-decoration: underline; }
+
+  /* Spacing between the new rich-content panels — same vertical rhythm
+     as the existing .section blocks below. */
+  .item-detail .section-block { margin-top: 24px; }
+
+  /* Use-cases grid — 3-column on wide, 2 on tablet, 1 on phone. */
+  .item-detail .use-cases-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+  @media (max-width: 1100px) {
+    .item-detail .use-cases-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 700px) {
+    .item-detail .use-cases-grid { grid-template-columns: 1fr; }
+  }
+  .item-detail .use-case-card {
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px;
+    background: var(--surface-alt, #fafafa);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .item-detail .use-case-card h3 {
+    margin: 0; font-size: 13.5px; font-weight: 600;
+    color: var(--text-primary); letter-spacing: 0;
+    text-transform: none;
+  }
+  .item-detail .use-case-card p {
+    margin: 0; font-size: 12.5px; line-height: 1.5;
+    color: var(--text-secondary);
+  }
+  .item-detail .use-case-prompt {
+    margin: 4px 0 0;
+    background: #1e1e2e; color: #a6e3a1;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: var(--font-mono); font-size: 12px;
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* Sample interaction — Claude Code Catppuccin Mocha dark transcript.
+     Identical visual treatment as plugin-detail's sample block: one dark
+     panel, monospace user row with green `>` prompt, sans-serif assistant
+     body with markdown formatting. */
+  .item-detail .sample-interaction {
+    background: #1e1e2e;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .item-detail .sample-user,
+  .item-detail .sample-assistant { padding: 14px 18px; }
+  .item-detail .sample-user {
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.015);
+  }
+  .item-detail .sample-label {
+    /* visually-hidden — `>` prefix is the speaker indicator */
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0);
+    white-space: nowrap; border: 0;
+  }
+  .item-detail .sample-user > div:last-child {
+    font-family: var(--font-mono);
+    color: #cdd6f4;
+    font-size: 13.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .item-detail .sample-user > div:last-child::before {
+    content: "> ";
+    color: #a6e3a1; font-weight: 700;
+    user-select: none;
+  }
+  .item-detail .sample-assistant-body {
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+    color: #cdd6f4;
+    font-size: 13.5px; line-height: 1.65;
+  }
+  .item-detail .sample-assistant-body > *:first-child { margin-top: 0; }
+  .item-detail .sample-assistant-body > *:last-child { margin-bottom: 0; }
+  .item-detail .sample-assistant-body p { margin: 0 0 10px; }
+  .item-detail .sample-assistant-body strong { color: #fab387; }
+  .item-detail .sample-assistant-body em { color: #f9e2af; font-style: italic; }
+  .item-detail .sample-assistant-body code {
+    background: rgba(255,255,255,0.06);
+    color: #f5c2e7;
+    border-radius: 4px; padding: 1px 5px;
+    font-size: 0.92em; font-family: var(--font-mono);
+  }
+  .item-detail .sample-assistant-body pre {
+    background: #181825;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5;
+    color: #cdd6f4;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  .item-detail .sample-assistant-body pre code {
+    background: transparent; padding: 0; color: inherit;
+  }
+  .item-detail .sample-assistant-body ul,
+  .item-detail .sample-assistant-body ol { margin: 0 0 10px 22px; padding: 0; }
+  .item-detail .sample-assistant-body li { margin: 2px 0; }
+  .item-detail .sample-assistant-body a {
+    color: #89b4fa; text-decoration: none;
+  }
+  .item-detail .sample-assistant-body a:hover { text-decoration: underline; }
+  .item-detail .sample-assistant-body blockquote {
+    border-left: 3px solid #585b70;
+    margin: 8px 0; padding: 4px 0 4px 12px;
+    color: #bac2de;
+  }
+  .item-detail .sample-assistant-body h2,
+  .item-detail .sample-assistant-body h3,
+  .item-detail .sample-assistant-body h4 {
+    color: #cdd6f4;
+    font-size: 14px; font-weight: 600;
+    margin: 12px 0 6px;
+    text-transform: none; letter-spacing: 0;
   }
 
   .item-detail .details dl { margin: 0; }
@@ -556,9 +770,18 @@
       <span id="crumb-loading">Loading…</span>
     </div>
     <div class="head">
-      <div class="photo" id="hero-photo">{{ 'SK' if kind == 'skill' else 'AG' }}</div>
+      <div class="hero-window" id="hero-photo" aria-hidden="true">
+        <div class="hero-window-titlebar">
+          <span class="hwdot red"></span>
+          <span class="hwdot yellow"></span>
+          <span class="hwdot green"></span>
+          <span class="hero-window-label" id="hero-window-label">{{ inner_name or item_name or plugin_name }}</span>
+        </div>
+        <div class="hero-window-body" id="hero-window-body">{{ 'SK' if kind == 'skill' else 'AG' }}</div>
+      </div>
       <div class="meta">
         <h1 id="hero-name">{{ inner_name or item_name or plugin_name }}</h1>
+        <div class="hero-tagline" id="hero-tagline" hidden></div>
         <div class="meta-row" id="hero-meta-row"></div>
         <div class="badges" id="hero-badges">
           <span class="type-badge">{{ kind }}</span>
@@ -571,6 +794,7 @@
          #hero-actions); stack-hint stacks below as a glass card. -->
     <div class="actions">
       <div class="actions-row" id="hero-actions"></div>
+      <div class="helper" id="hero-helper" hidden></div>
       <div class="stack-hint" id="stack-hint" hidden>
         <div class="head">
           <span class="title" id="stack-hint-title">✓ Added to your stack</span>
@@ -605,6 +829,29 @@
         <div class="row"><dt>Type</dt><dd>{{ kind | capitalize }}</dd></div>
       </dl>
     </aside>
+  </div>
+
+  <!-- Use cases — populated from marketplace-metadata.json use_cases[].
+       Hidden until the curator has supplied at least one card. -->
+  <div class="panel section-block" id="panel-use-cases" hidden>
+    <h2>When to use it</h2>
+    <div class="use-cases-grid" id="panel-use-cases-grid"></div>
+  </div>
+
+  <!-- Sample interaction — Claude Code-style dark transcript panel. -->
+  <div class="panel section-block" id="panel-sample" hidden>
+    <h2>Example</h2>
+    <div class="sample-interaction">
+      <div class="sample-user"><span class="sample-label">You</span><div id="sample-user"></div></div>
+      <div class="sample-assistant"><span class="sample-label">Claude</span><div id="sample-assistant" class="sample-assistant-body"></div></div>
+    </div>
+  </div>
+
+  <!-- When-to-use disambiguation: rendered markdown ("Use X for Y, see Z
+       for the alternative…"). Hidden until populated. -->
+  <div class="panel section-block" id="panel-when-to-use" hidden>
+    <h2>When to use this</h2>
+    <div class="lead" id="when-to-use-body"></div>
   </div>
 
   <div class="section" id="docs-section" hidden>
@@ -709,12 +956,12 @@
   const d = await res.json();
 
   // ── Title resolution per source ─────────────────────────────────────
-  // Curated: name from frontmatter (d.name).
-  // Flea standalone skill/agent reuses PluginDetailResponse — d.plugin_name
-  // is the entity name; manifest_name is the suffixed `<name>-by-<username>`.
-  const heroTitle = source === 'curated'
-    ? (d.name || innerName)
-    : (d.plugin_name || '');
+  // Curated: marketplace-metadata.json `display_name` wins, else frontmatter `name`.
+  // Flea standalone skill/agent reuses PluginDetailResponse — `display_name`
+  // populated by the same on-demand parser path, otherwise `plugin_name`
+  // (the entity name; manifest_name is the suffixed `<name>-by-<username>`).
+  const heroTitle = d.display_name
+    || (source === 'curated' ? (d.name || innerName) : (d.plugin_name || ''));
 
   document.title = `${heroTitle} — Marketplace`;
 
@@ -739,16 +986,22 @@
   // ── Hero name ──────────────────────────────────────────────────────
   document.getElementById('hero-name').textContent = heroTitle;
 
+  // Hero window — macOS-style frame around the cover. The titlebar label
+  // carries the skill/agent name (heroTitle); the body holds the cover
+  // photo (or a placeholder gradient + 'SK'/'AG' initials when no cover).
+  const labelEl = document.getElementById('hero-window-label');
+  if (labelEl) labelEl.textContent = heroTitle;
+
   // Cover photo — flea may have one; curated v32 may also have one when
-  // agnes-metadata.json sub-tree references a skill/agent cover via either
-  // an internal path (resolved to /asset/) or an external URL.
+  // marketplace-metadata.json sub-tree references a skill/agent cover via
+  // either an internal path (resolved to /asset/) or an external URL.
   if (d.cover_photo_url) {
-    const heroPhoto = document.getElementById('hero-photo');
-    // Initials fallback already lives inside #hero-photo (rendered by the
-    // server-side template as 'SK' / 'AG'). Capture before swapping so a
-    // 404 on the cover restores the original glyph.
-    const initials = heroPhoto.textContent || (kind === 'skill' ? 'SK' : 'AG');
-    heroPhoto.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
+    const bodyEl = document.getElementById('hero-window-body');
+    // Initials fallback already lives inside #hero-window-body (rendered by
+    // the server-side template as 'SK' / 'AG'). Capture before swapping so
+    // a 404 on the cover restores the original glyph.
+    const initials = bodyEl.textContent || (kind === 'skill' ? 'SK' : 'AG');
+    bodyEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
         onerror="this.parentElement.classList.add('photo-failed');
                  this.parentElement.textContent=this.dataset.fallback;"
         data-fallback="${esc(initials)}">`;
@@ -768,19 +1021,35 @@
   // the slash invocation. Curated skills/agents live inside a parent
   // plugin, so Claude Code namespaces them as /<plugin>:<inner-name>.
   const invBlock = document.getElementById('invocation-block');
-  let invokeCmd = null;
-  if (source === 'flea' && d.manifest_name) {
-    invokeCmd = d.manifest_name;
+  // Invocation resolution:
+  //   1. marketplace-metadata.json `invocation` (curator-provided literal —
+  //      may include args like "/my-plugin:tool <your question>",
+  //      and may start with @ for agent invocations). Used verbatim.
+  //   2. Computed `<manifest_name>:<inner_name>` (legacy behaviour) —
+  //      prefixed with "/" at display + copy time.
+  let invokeText = null;        // what the chip displays (after the "/" prompt)
+  let invokeCopyText = null;    // what gets put in the clipboard on Copy
+  if (d.invocation) {
+    // Curator override. Hide the hardcoded "/" prompt so the curator's
+    // string is shown literally (covering both / and @ forms cleanly).
+    const promptEl = document.querySelector('#invocation .prompt');
+    if (promptEl) promptEl.hidden = true;
+    invokeText = d.invocation;
+    invokeCopyText = d.invocation;
+  } else if (source === 'flea' && d.manifest_name) {
+    invokeText = d.manifest_name;
+    invokeCopyText = '/' + d.manifest_name;
   } else if (source === 'curated' && d.manifest_name && (d.name || innerName)) {
-    invokeCmd = `${d.manifest_name}:${d.name || innerName}`;
+    invokeText = `${d.manifest_name}:${d.name || innerName}`;
+    invokeCopyText = '/' + invokeText;
   }
-  if (invokeCmd) {
-    document.getElementById('invocation-cmd').textContent = invokeCmd;
+  if (invokeText) {
+    document.getElementById('invocation-cmd').textContent = invokeText;
     invBlock.hidden = false;
     const copyBtn = document.getElementById('invocation-copy');
     copyBtn.addEventListener('click', async () => {
       try {
-        await navigator.clipboard.writeText('/' + invokeCmd);
+        await navigator.clipboard.writeText(invokeCopyText);
         const orig = copyBtn.textContent;
         copyBtn.classList.add('copied');
         copyBtn.textContent = 'Copied';
@@ -874,12 +1143,16 @@
   }
 
   if (source === 'curated') {
-    actions.innerHTML = `
-      <a class="btn" href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">Open parent plugin →</a>
-      <div class="helper">
-        This ${esc(kind === 'skill' ? 'skill' : 'agent')} is part of <strong>${esc(pluginName)}</strong>.<br>
-        Add the bundle to your stack to use it.
-      </div>`;
+    // Button alone in the actions-row (the row is flex-direction: row;
+    // putting the helper inside it would lay them side-by-side). The
+    // helper sits in #hero-helper, a sibling under the actions-row, so
+    // the outer .actions flex-column stacks them: button → helper.
+    actions.innerHTML = `<a class="btn primary" href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">Open parent plugin →</a>`;
+    const helperEl = document.getElementById('hero-helper');
+    helperEl.innerHTML = `
+      This ${esc(kind === 'skill' ? 'skill' : 'agent')} is part of <strong>${esc(pluginName)}</strong>.<br>
+      Add the bundle to your stack to use it.`;
+    helperEl.hidden = false;
   } else {
     // v32+ quarantine: when the entity is non-approved (only owner +
     // admin land here — server-side gate 404s anyone else), render
@@ -930,8 +1203,66 @@
     bindInstallActions();
   }
 
-  // ── Description (plain text — no markdown rendering, parity with flea) ─
-  document.getElementById('description-body').textContent = d.description || '';
+  // ── Hero tagline (marketplace-metadata.json :: tagline) ────────────
+  // Optional 1-line value prop sitting under the h1. Stays hidden when
+  // the curator hasn't filled it; the meta-row below still shows the
+  // "by author · updated date" line so the hero never collapses.
+  const heroTaglineEl = document.getElementById('hero-tagline');
+  if (heroTaglineEl && d.tagline) {
+    heroTaglineEl.textContent = d.tagline;
+    heroTaglineEl.hidden = false;
+  }
+
+  // ── Description ────────────────────────────────────────────────────
+  // When the curator authored a rich markdown body in marketplace-metadata.json,
+  // the API renders + sanitizes it server-side and ships as
+  // `description_long_html`. We inject as HTML. Falling back to the
+  // 1-line frontmatter `description` preserves the historical render path
+  // for skills/agents whose curator hasn't filled the new field yet.
+  const descEl = document.getElementById('description-body');
+  if (d.description_long_html && d.description_long_html.trim()) {
+    descEl.innerHTML = d.description_long_html;
+    descEl.classList.add('lead-rendered');
+  } else {
+    descEl.textContent = d.description || '';
+  }
+
+  // ── Use cases (marketplace-metadata.json :: use_cases[]) ───────────
+  // One card per entry. Hidden until populated.
+  const useCasesPanel = document.getElementById('panel-use-cases');
+  const useCasesGrid = document.getElementById('panel-use-cases-grid');
+  if (useCasesPanel && useCasesGrid && Array.isArray(d.use_cases) && d.use_cases.length) {
+    useCasesGrid.innerHTML = d.use_cases.map(uc => `
+      <div class="use-case-card">
+        <h3>${esc(uc.title)}</h3>
+        <p>${esc(uc.description)}</p>
+        <pre class="use-case-prompt"><code>${esc(uc.prompt)}</code></pre>
+      </div>
+    `).join('');
+    useCasesPanel.hidden = false;
+  }
+
+  // ── Sample interaction (marketplace-metadata.json :: sample_interaction) ─
+  // Claude Code-style dark transcript. Assistant body was rendered +
+  // sanitized server-side; we inject as HTML.
+  const samplePanel = document.getElementById('panel-sample');
+  if (samplePanel && d.sample_interaction
+      && d.sample_interaction.user && d.sample_interaction.assistant_html) {
+    document.getElementById('sample-user').textContent = d.sample_interaction.user;
+    document.getElementById('sample-assistant').innerHTML = d.sample_interaction.assistant_html;
+    samplePanel.hidden = false;
+  }
+
+  // ── When to use this (marketplace-metadata.json :: when_to_use) ────
+  // Markdown disambiguation against alternative skills/agents
+  // ("Use this for X; for Y, see /other-skill"). Rendered server-side.
+  const whenPanel = document.getElementById('panel-when-to-use');
+  const whenBody = document.getElementById('when-to-use-body');
+  if (whenPanel && whenBody && d.when_to_use_html && d.when_to_use_html.trim()) {
+    whenBody.innerHTML = d.when_to_use_html;
+    whenBody.classList.add('lead-rendered');
+    whenPanel.hidden = false;
+  }
 
   // ── Details sidebar — skip rows whose value is missing. The
   // `owner_todo` placeholder for the Curator row stays as a deliberate
@@ -964,7 +1295,7 @@
 
   // ── Docs section ────────────────────────────────────────────────
   // Flea has always populated `d.docs`. v32 added the same field for curated
-  // skill/agent inner detail, sourced from agnes-metadata.json's per-skill
+  // skill/agent inner detail, sourced from marketplace-metadata.json's per-skill
   // sub-tree. Both surface here through a single render path — file rows
   // for internal-cached docs, link rows for external ones.
   if (Array.isArray(d.docs) && d.docs.length) {
@@ -983,7 +1314,7 @@
       </li>`).join('');
   }
 
-  // ── v32: demo video for skill / agent (from agnes-metadata sub-tree) ──
+  // ── v32: demo video for skill / agent (from marketplace-metadata sub-tree) ──
   // Same auto-embed logic as the parent plugin detail page: YouTube /
   // Vimeo are embedded; raw .mp4/.webm/.ogg are inlined as <video>; anything
   // else falls back to a "Watch on external site" link.

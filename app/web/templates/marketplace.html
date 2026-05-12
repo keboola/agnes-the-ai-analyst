@@ -468,7 +468,7 @@
   <!-- Filter row: categories -->
   <div class="mp-filter-row" id="mp-cat-row"></div>
 
-  <!-- Type filter (Flea-only) -->
+  <!-- Type filter (Flea + My — both surface skill/agent/plugin items) -->
   <div class="mp-type-row" id="mp-type-row" hidden>
     <button class="pill is-active" data-type="">All</button>
     <button class="pill" data-type="skill">Skills</button>
@@ -600,7 +600,7 @@ function renderGrid(items) {
     card.className = 'mp-card' + (it.installed ? ' is-installed' : '');
     card.href = it.detail_url;
     // Cover photo with broken-image fallback. When the <img> 404s (e.g. an
-    // agnes-metadata.json `cover_photo` references a file the curator forgot
+    // marketplace-metadata.json `cover_photo` references a file the curator forgot
     // to commit, or an external mirror failed), browsers paint their default
     // broken-image icon — which looks worse than the gradient placeholder we
     // render when no cover_photo_url is set at all. The `onerror` swaps the
@@ -669,6 +669,16 @@ function renderGrid(items) {
     const verFmt = it.version ? `v${esc(it.version)}` : '';
     const catBadge = it.category ? `<span class="cat-badge">${esc(it.category)}</span>` : '';
 
+    // Rich-content fallback chain:
+    // - card name uses display_name (curator-friendly) when set; falls back
+    //   to the raw `it.name` (plugin id from marketplace.json) otherwise.
+    // - card description uses tagline (1-line punchy value prop) when set;
+    //   falls back to the marketplace.json `description` (often verbose
+    //   technical copy, clamped to 2 lines by CSS line-clamp).
+    // Both fields come from marketplace-metadata.json — curated only;
+    // flea entities don't have a metadata layer yet.
+    const cardName = it.display_name || it.name;
+    const cardDesc = it.tagline || it.description || '';
     card.innerHTML = `
       ${quarantineBadge}
       ${photoMarkup}
@@ -678,9 +688,9 @@ function renderGrid(items) {
           <span class="type-badge" data-type="${esc(it.type)}">${esc(it.type)}</span>
           ${catBadge}
         </div>
-        <div class="name">${esc(it.name)}</div>
+        <div class="name">${esc(cardName)}</div>
         <div class="by">${ownerLine}</div>
-        <div class="desc">${esc(it.description || '')}</div>
+        <div class="desc">${esc(cardDesc)}</div>
       </div>
       <div class="footer">
         <span class="added">${addedFmt ? 'Added ' + addedFmt : ''}</span>
@@ -807,7 +817,10 @@ async function fetchOne(tab) {
   });
   if (state.q) params.set('q', state.q);
   if (state.category) params.set('category', state.category);
-  if (tab === 'flea' && state.type) params.set('type', state.type);
+  // My stack also surfaces skill/agent/plugin entries (curated subscriptions +
+  // flea installs), so the type filter is meaningful there too. Curated
+  // browse only lists plugins, so we still skip the param for that tab.
+  if ((tab === 'flea' || tab === 'my') && state.type) params.set('type', state.type);
   try {
     const res = await fetch('/api/marketplace/items?' + params);
     if (!res.ok) return { items: [], total: 0 };
@@ -835,8 +848,11 @@ function setTab(tab) {
   document.querySelectorAll('[data-show-on]').forEach(el => {
     el.hidden = el.dataset.showOn !== tab;
   });
-  document.getElementById('mp-type-row').hidden = (tab !== 'flea');
-  document.getElementById('mp-cat-row').hidden = (tab === 'my');
+  // Category + type filters now show on both flea and my tabs (my surfaces
+  // a mix of plugin/skill/agent entries the user has installed). Curated
+  // browse only lists plugins, so type filter stays hidden there.
+  document.getElementById('mp-type-row').hidden = (tab === 'curated');
+  document.getElementById('mp-cat-row').hidden = false;
   // Type filter pills always reset to 'All' on tab switch.
   document.querySelectorAll('#mp-type-row .pill').forEach(p => {
     p.classList.toggle('is-active', !p.dataset.type);
@@ -911,8 +927,9 @@ document.getElementById('mp-scope-flea').addEventListener('change', () => {
   document.querySelectorAll('[data-show-on]').forEach(el => {
     el.hidden = el.dataset.showOn !== state.tab;
   });
-  document.getElementById('mp-type-row').hidden = (state.tab !== 'flea');
-  document.getElementById('mp-cat-row').hidden = (state.tab === 'my');
+  // Same visibility rule as setTab() — see comment there.
+  document.getElementById('mp-type-row').hidden = (state.tab === 'curated');
+  document.getElementById('mp-cat-row').hidden = false;
   document.querySelectorAll('#mp-type-row .pill').forEach(p => {
     p.classList.toggle('is-active', (p.dataset.type || null) === state.type);
   });

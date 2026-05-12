@@ -386,13 +386,13 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     raw             JSON,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp,
-    -- v37: enrichment from upstream `.claude-plugin/agnes-metadata.json`.
+    -- v37: enrichment from upstream `.claude-plugin/marketplace-metadata.json`.
     -- `cover_photo_url` and `video_url` are stored as already-resolved served
     -- URLs (internal asset endpoint, mirrored cache endpoint, or pass-through
     -- external URL). `doc_links` is a JSON array of `{name, url, kind}` where
     -- `kind ∈ {internal, mirrored, external}` so the frontend can pick the
     -- right icon without re-resolving. NULL = upstream marketplace shipped no
-    -- agnes-metadata.json (or shipped one without an entry for this plugin).
+    -- marketplace-metadata.json (or shipped one without an entry for this plugin).
     cover_photo_url VARCHAR,
     video_url       VARCHAR,
     doc_links       JSON,
@@ -2646,7 +2646,7 @@ def _v30_to_v31_migrate(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("DROP TABLE session_extraction_state")
 
 
-# v37: curated marketplace enrichment from `.claude-plugin/agnes-metadata.json`
+# v37: curated marketplace enrichment from `.claude-plugin/marketplace-metadata.json`
 # plus mandatory curator identity on `marketplace_registry`. See the file-level
 # `_SYSTEM_SCHEMA` block for the column-level commentary; the migration is
 # pure ADD COLUMN IF NOT EXISTS so it is idempotent against a fresh install

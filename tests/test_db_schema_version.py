@@ -51,7 +51,7 @@ def test_schema_version_is_37():
     #            enforced application-side (DuckDB ADD CHECK on existing
     #            column not supported).
     # v36 → v37: curated marketplace enrichment from
-    #            `.claude-plugin/agnes-metadata.json` plus mandatory curator
+    #            `.claude-plugin/marketplace-metadata.json` plus mandatory curator
     #            identity on marketplace_registry. Adds curator_name +
     #            curator_email to marketplace_registry, and
     #            cover_photo_url + video_url + doc_links to

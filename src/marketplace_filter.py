@@ -206,8 +206,8 @@ def is_agnes_only_path(rel_parts: tuple[str, ...]) -> bool:
 
     * any segment named ``.agnes`` — convention dir for cover photos and
       docs that should NEVER reach the synth Claude Code marketplace,
-    * file named ``agnes-metadata.json`` at any depth (typically lives at
-      ``.claude-plugin/agnes-metadata.json`` at the repo root, but this
+    * file named ``marketplace-metadata.json`` at any depth (typically lives at
+      ``.claude-plugin/marketplace-metadata.json`` at the repo root, but this
       catches it wherever it appears).
 
     Used by both the synth ZIP/git tree assembly path and the ETag
@@ -218,7 +218,7 @@ def is_agnes_only_path(rel_parts: tuple[str, ...]) -> bool:
         return False
     if any(part == ".agnes" for part in rel_parts):
         return True
-    if rel_parts[-1] == "agnes-metadata.json":
+    if rel_parts[-1] == "marketplace-metadata.json":
         return True
     return False
 
@@ -227,7 +227,7 @@ def _bundle_files(bundle_dirs: list[Path]) -> list[tuple[str, Path]]:
     """Return [(relpath_in_bundle, abs_path)] for every file across the bundle
     sources, dropping each per-entity ``.claude-plugin/`` content (the bundle
     has its own synth plugin.json) AND any Agnes-only file (``.agnes/**`` or
-    ``agnes-metadata.json``) so the served Claude Code marketplace stays
+    ``marketplace-metadata.json``) so the served Claude Code marketplace stays
     clean of Agnes-side enrichment."""
     out: list[tuple[str, Path]] = []
     for src in bundle_dirs:

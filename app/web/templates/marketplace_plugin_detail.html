@@ -36,30 +36,71 @@
 
   .plugin-detail .hero-head {
     display: grid;
-    grid-template-columns: 160px minmax(0, 1fr) 300px;
+    grid-template-columns: 380px minmax(0, 1fr) 300px;
     gap: 22px;
     align-items: start;
   }
   @media (max-width: 1100px) {
-    .plugin-detail .hero-head { grid-template-columns: 160px minmax(0, 1fr); }
+    .plugin-detail .hero-head { grid-template-columns: 380px minmax(0, 1fr); }
   }
   @media (max-width: 720px) {
     .plugin-detail .hero-head {
       grid-template-columns: 1fr;
     }
   }
-  .plugin-detail .photo {
-    width: 160px; height: 160px;
-    border-radius: 14px;
-    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
-    border: 1px solid rgba(255,255,255,0.18);
-    display: flex; align-items: center; justify-content: center;
+  /* Hero window — macOS-style frame around the cover photo. The body has
+     aspect-ratio 715/310 so curator-uploaded covers never crop to a
+     square. Titlebar shows 3 traffic-light dots + the plugin's
+     manifest_name as a centered label. When cover_photo_url is missing
+     (or the image 404s), the body falls back to a translucent gradient
+     with the plugin's initials — same placeholder feel as before. */
+  .plugin-detail .hero-window {
+    width: 380px;
+    background: #1e293b;
+    border-radius: 10px;
     overflow: hidden;
-    color: #fff; font-size: 44px; font-weight: 700;
-    letter-spacing: 1px;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.40),
+                0 2px 6px rgba(0, 0, 0, 0.18);
+    flex-shrink: 0;
+    align-self: start;
+  }
+  .plugin-detail .hero-window-titlebar {
+    background: linear-gradient(180deg, #2a3445 0%, #1e293b 100%);
+    height: 26px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.25);
+  }
+  .plugin-detail .hwdot {
+    width: 11px; height: 11px; border-radius: 50%;
+    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
     flex-shrink: 0;
   }
-  .plugin-detail .photo img { width: 100%; height: 100%; object-fit: cover; }
+  .plugin-detail .hwdot.red    { background: #ff5f56; }
+  .plugin-detail .hwdot.yellow { background: #ffbd2e; }
+  .plugin-detail .hwdot.green  { background: #27c93f; }
+  .plugin-detail .hero-window-label {
+    margin: 0 auto;
+    /* mirror the dots' left footprint (~46px) on the right so the
+       label lands optically centered, not visually offset by the dots */
+    padding-right: 46px;
+    font-size: 10.5px; color: rgba(255, 255, 255, 0.55);
+    font-family: var(--font-mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%;
+  }
+  .plugin-detail .hero-window-body {
+    aspect-ratio: 715 / 310;
+    overflow: hidden;
+    background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 44px; font-weight: 700; letter-spacing: 1px;
+  }
+  .plugin-detail .hero-window-body img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+  }
+
   .plugin-detail .meta { min-width: 0; }
   .plugin-detail h1 {
     margin: 0 0 6px; font-size: 28px; font-weight: 700;
@@ -184,9 +225,10 @@
   /* Glass-on-gradient: lives inside the hero, sitting under the action
      row in the third grid column. Translucent white over the blue
      gradient reads as "elevated tile of the same hero" — no white-on-
-     white card insertion, no layout-shift below the hero (the photo
-     column is 160px and the action+hint stack stays under that, so
-     toggling the hint visibility doesn't grow the hero in practice). */
+     white card insertion, no layout-shift below the hero (the hero
+     window's titlebar + 715:310 body run taller than the action+hint
+     stack, so toggling the hint visibility doesn't grow the hero in
+     practice). */
   .plugin-detail .stack-hint {
     padding: 10px 12px;
     background: rgba(255, 255, 255, 0.14);
@@ -270,10 +312,12 @@
     align-items: stretch;
   }
 
-  /* Spacing between the bottom panels (video / docs / internal structure).
-     The hero-row has its own margin-bottom; subsequent stacked panels need
-     equivalent breathing room or they collide visually (~2px between
-     bordered cards looks like a render bug). */
+  /* Spacing between the bottom panels (use-cases / sample / video / docs /
+     internal structure). The hero-row has its own margin-bottom; subsequent
+     stacked panels need equivalent breathing room or they collide visually
+     (~2px between bordered cards looks like a render bug). */
+  .plugin-detail #panel-use-cases,
+  .plugin-detail #panel-sample,
   .plugin-detail #panel-video,
   .plugin-detail #panel-docs,
   .plugin-detail .structure {
@@ -294,6 +338,191 @@
     color: var(--text-secondary);
   }
   .plugin-detail .lead { font-size: 14.5px; line-height: 1.65; color: var(--text-primary); white-space: pre-wrap; }
+  /* `.lead-rendered` switches the lead block from plain-text mode (which
+     uses `white-space: pre-wrap` so plain `description` line breaks survive)
+     to HTML mode (markdown-rendered body where paragraph breaks come from
+     `<p>` tags, not whitespace). pre-wrap would otherwise turn the gap
+     between two `<p>` blocks into stacked blank lines. */
+  .plugin-detail .lead-rendered { white-space: normal; }
+  .plugin-detail .lead-rendered > *:first-child { margin-top: 0; }
+  .plugin-detail .lead-rendered > *:last-child { margin-bottom: 0; }
+  .plugin-detail .lead-rendered p { margin: 0 0 12px; }
+  .plugin-detail .lead-rendered h2,
+  .plugin-detail .lead-rendered h3,
+  .plugin-detail .lead-rendered h4 {
+    /* Scoped overrides — the panel already provides an `<h2>` for the
+       section title; markdown headings nested inside the body shouldn't
+       inherit the uppercase / letter-spaced style of the section h2. */
+    font-size: 14.5px; font-weight: 600;
+    margin: 14px 0 6px;
+    text-transform: none; letter-spacing: 0; color: var(--text-primary);
+  }
+  .plugin-detail .lead-rendered ul,
+  .plugin-detail .lead-rendered ol { margin: 0 0 12px 22px; padding: 0; }
+  .plugin-detail .lead-rendered code {
+    background: var(--surface-alt, #f4f4f5); border-radius: 4px;
+    padding: 1px 5px; font-size: 0.92em;
+    font-family: var(--font-mono);
+  }
+  .plugin-detail .lead-rendered pre {
+    background: #1e1e2e; color: #cdd6f4;
+    border-radius: 8px; padding: 12px 14px;
+    font-family: var(--font-mono); font-size: 12.5px;
+    overflow-x: auto; margin: 8px 0 14px;
+  }
+  .plugin-detail .lead-rendered pre code {
+    background: transparent; padding: 0; color: inherit;
+  }
+  .plugin-detail .lead-rendered a { color: var(--primary); text-decoration: none; }
+  .plugin-detail .lead-rendered a:hover { text-decoration: underline; }
+
+  /* Use-cases grid — 3-column on wide, 2 on tablet, 1 on phone. Each card
+     has title, short description, and the literal slash-prompt the user
+     would paste into Claude Code. */
+  .plugin-detail .use-cases-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+  @media (max-width: 1100px) {
+    .plugin-detail .use-cases-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 700px) {
+    .plugin-detail .use-cases-grid { grid-template-columns: 1fr; }
+  }
+  .plugin-detail .use-case-card {
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px;
+    background: var(--surface-alt, #fafafa);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .plugin-detail .use-case-card h3 {
+    margin: 0; font-size: 13.5px; font-weight: 600;
+    color: var(--text-primary); letter-spacing: 0;
+    text-transform: none;
+  }
+  .plugin-detail .use-case-card p {
+    margin: 0; font-size: 12.5px; line-height: 1.5;
+    color: var(--text-secondary);
+  }
+  .plugin-detail .use-case-prompt {
+    margin: 4px 0 0;
+    background: #1e1e2e; color: #a6e3a1;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: var(--font-mono); font-size: 12px;
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* Sample interaction — Claude Code transcript styling. Single dark
+     Catppuccin Mocha panel splits the user prompt from Claude's response
+     with a thin separator; same visual language as the .invocation chip
+     elsewhere so the curated detail page reads as "this is what you'll
+     get inside Claude Code", not "this is a generic chat app". */
+  .plugin-detail .sample-interaction {
+    background: #1e1e2e;                     /* mocha base */
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .plugin-detail .sample-user,
+  .plugin-detail .sample-assistant {
+    padding: 14px 18px;
+  }
+  .plugin-detail .sample-user {
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.015);    /* a hair lighter — separates rows */
+  }
+  .plugin-detail .sample-label {
+    /* Hidden in the Claude-Code transcript styling. The `>` green prompt
+     * indicator on the user row + the bare prose body on the assistant
+     * row are the same visual cues a real Claude Code session uses to
+     * tell who's speaking — labels would add chrome the original
+     * doesn't have. The markup stays for accessibility (screen readers
+     * read the inline text) but is visually collapsed.
+     */
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0);
+    white-space: nowrap; border: 0;
+  }
+  /* User prompt — monospace, leading `>` green prompt glyph. Reads like
+     a literal shell-input line the curator could copy-paste verbatim. */
+  .plugin-detail .sample-user > div:last-child {
+    font-family: var(--font-mono);
+    color: #cdd6f4;                          /* mocha text */
+    font-size: 13.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .plugin-detail .sample-user > div:last-child::before {
+    content: "> ";
+    color: #a6e3a1;                          /* mocha green */
+    font-weight: 700;
+    user-select: none;
+  }
+  /* Claude's response — sans-serif prose (Claude doesn't reply in mono),
+     markdown body lives inside. Inline code keeps the mono treatment so
+     code mentions still read as code. */
+  .plugin-detail .sample-assistant-body {
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+    color: #cdd6f4;
+    font-size: 13.5px; line-height: 1.65;
+  }
+  .plugin-detail .sample-assistant-body > *:first-child { margin-top: 0; }
+  .plugin-detail .sample-assistant-body > *:last-child { margin-bottom: 0; }
+  .plugin-detail .sample-assistant-body p { margin: 0 0 10px; }
+  .plugin-detail .sample-assistant-body strong { color: #fab387; }   /* mocha peach */
+  .plugin-detail .sample-assistant-body em { color: #f9e2af; font-style: italic; } /* mocha yellow */
+  .plugin-detail .sample-assistant-body code {
+    background: rgba(255,255,255,0.06);
+    color: #f5c2e7;                          /* mocha pink */
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 0.92em;
+    font-family: var(--font-mono);
+  }
+  .plugin-detail .sample-assistant-body pre {
+    background: #181825;                     /* mocha mantle — darker nested */
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5;
+    color: #cdd6f4;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  .plugin-detail .sample-assistant-body pre code {
+    background: transparent; padding: 0;
+    color: inherit;
+  }
+  .plugin-detail .sample-assistant-body ul,
+  .plugin-detail .sample-assistant-body ol {
+    margin: 0 0 10px 22px; padding: 0;
+  }
+  .plugin-detail .sample-assistant-body li { margin: 2px 0; }
+  .plugin-detail .sample-assistant-body a {
+    color: #89b4fa;                          /* mocha blue */
+    text-decoration: none;
+  }
+  .plugin-detail .sample-assistant-body a:hover { text-decoration: underline; }
+  .plugin-detail .sample-assistant-body blockquote {
+    border-left: 3px solid #585b70;          /* mocha surface2 */
+    margin: 8px 0;
+    padding: 4px 0 4px 12px;
+    color: #bac2de;                          /* mocha subtext1 */
+  }
+  .plugin-detail .sample-assistant-body h2,
+  .plugin-detail .sample-assistant-body h3,
+  .plugin-detail .sample-assistant-body h4 {
+    color: #cdd6f4;
+    font-size: 14px; font-weight: 600;
+    margin: 12px 0 6px;
+    text-transform: none; letter-spacing: 0;
+  }
   .plugin-detail .details dl { margin: 0; }
   .plugin-detail .details .row {
     display: grid; grid-template-columns: max-content 1fr; gap: 12px;
@@ -368,7 +597,7 @@
     transform: translateY(-1px);
   }
   .plugin-detail .inner-card .photo {
-    width: 100%; height: 78px;
+    width: 100%; aspect-ratio: 715 / 310;
     display: flex; align-items: center; justify-content: center;
     background: linear-gradient(135deg, var(--primary-light) 0%, #fce7f3 100%);
     color: var(--primary);
@@ -571,7 +800,15 @@
       <span id="crumb-name">{{ plugin_name }}</span>
     </div>
     <div class="hero-head">
-      <div class="photo" id="hero-photo" aria-hidden="true">PL</div>
+      <div class="hero-window" id="hero-photo" aria-hidden="true">
+        <div class="hero-window-titlebar">
+          <span class="hwdot red"></span>
+          <span class="hwdot yellow"></span>
+          <span class="hwdot green"></span>
+          <span class="hero-window-label" id="hero-window-label">{{ plugin_name }}</span>
+        </div>
+        <div class="hero-window-body" id="hero-window-body">PL</div>
+      </div>
       <div class="meta">
         <h1 id="hero-name">{{ plugin_name }}</h1>
         <div class="tagline" id="hero-tagline">Loading…</div>
@@ -581,8 +818,8 @@
     </div>
     <!-- Actions absolutely anchored at the hero's top-right corner with
          the post-action hint card stacked below them. Both stay inside
-         the hero gradient — the hero's natural height (160px photo)
-         contains them without overflow. -->
+         the hero gradient — the hero's natural height (window titlebar
+         + 715:310 body ≈ 191px) contains them without overflow. -->
     <div class="actions">
       <div class="actions-row">
         <button class="btn-install" id="install-btn" type="button" hidden>+ Add to my stack</button>
@@ -615,9 +852,26 @@
     </div>
   </div>
 
+  <!-- Use cases — populated from marketplace-metadata.json use_cases[]. Hidden
+       until the curator has supplied at least one card. -->
+  <div class="panel" id="panel-use-cases" hidden>
+    <h2>When to use it</h2>
+    <div class="use-cases-grid" id="panel-use-cases-grid"></div>
+  </div>
+
+  <!-- Sample interaction — single user/assistant Q&A from
+       marketplace-metadata.json sample_interaction. Hidden until populated. -->
+  <div class="panel" id="panel-sample" hidden>
+    <h2>Example</h2>
+    <div class="sample-interaction">
+      <div class="sample-user"><span class="sample-label">You</span><div id="sample-user"></div></div>
+      <div class="sample-assistant"><span class="sample-label">Claude</span><div id="sample-assistant" class="sample-assistant-body"></div></div>
+    </div>
+  </div>
+
   <!-- v32: video + doc_links section. Both blocks stay hidden until populated
        so the layout collapses gracefully when an upstream marketplace ships
-       no agnes-metadata.json. Doc icons differentiate internal-cached files
+       no marketplace-metadata.json. Doc icons differentiate internal-cached files
        (📄) from external links (🔗) so the user knows what's a click away. -->
   <div class="panel" id="panel-video" hidden>
     <h2>Demo video</h2>
@@ -700,13 +954,26 @@
   const d = await res.json();
 
   // ── Hero ────────────────────────────────────────────────────────
+  // Display name resolution priority:
+  //   1. marketplace-metadata.json `display_name` (curator-friendly label)
+  //   2. .claude-plugin/plugin.json `name` (manifest_name — the value
+  //      Claude Code uses for slash-command namespacing)
+  //   3. URL path's plugin_name (technical id, last-resort fallback)
+  // Tagline falls back to marketplace.json description (verbose tech text)
+  // when the curator hasn't filled the friendly tagline yet — preserves
+  // the historical hero look for un-enriched plugins.
+  const heroTitle = d.display_name || d.manifest_name || d.plugin_name;
   document.getElementById('crumb-mid').textContent =
     d.source === 'curated' ? (d.marketplace_name || d.marketplace_id) : 'Flea Market';
-  document.getElementById('crumb-name').textContent = d.manifest_name || d.plugin_name;
-  document.title = `${d.manifest_name || d.plugin_name} — Marketplace`;
+  document.getElementById('crumb-name').textContent = heroTitle;
+  document.title = `${heroTitle} — Marketplace`;
 
-  document.getElementById('hero-name').textContent = d.manifest_name || d.plugin_name;
-  document.getElementById('hero-tagline').textContent = d.description || '';
+  document.getElementById('hero-name').textContent = heroTitle;
+  document.getElementById('hero-tagline').textContent = d.tagline || d.description || '';
+  // Window titlebar label mirrors the h1 — keeps the mac-window framing
+  // consistent with whichever name the user actually sees as the title.
+  const heroWindowLabel = document.getElementById('hero-window-label');
+  if (heroWindowLabel) heroWindowLabel.textContent = heroTitle;
 
   const curator = document.getElementById('hero-curator');
   if (d.source === 'curated') {
@@ -733,21 +1000,26 @@
   if (d.updated_at) pillBits.push(`<span class="pill muted">Updated ${esc(fmtRelative(d.updated_at))}</span>`);
   pills.innerHTML = pillBits.join('');
 
-  // Cover photo
-  const photoEl = document.getElementById('hero-photo');
+  // Hero window — macOS-style frame around the cover photo. The titlebar
+  // label carries the plugin's manifest_name; the body holds the cover
+  // photo (or a placeholder gradient + initials when no cover is set).
+  const labelEl = document.getElementById('hero-window-label');
+  if (labelEl) labelEl.textContent = d.manifest_name || d.plugin_name;
+
+  const bodyEl = document.getElementById('hero-window-body');
   if (d.cover_photo_url) {
     // Same fallback pattern as the marketplace card grid — when the cover
     // 404s (missing internal file, or external mirror failed and the
     // pass-through URL is dead), restore the initials placeholder so the
     // hero looks identical to the no-cover case rather than showing the
     // browser's broken-image icon.
-    const initials = photoEl.textContent || 'PL';
-    photoEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
+    const initials = bodyEl.textContent || 'PL';
+    bodyEl.innerHTML = `<img src="${esc(d.cover_photo_url)}" alt=""
         onerror="this.parentElement.classList.add('photo-failed');
                  this.parentElement.textContent=this.dataset.fallback;"
         data-fallback="${esc(initials)}">`;
   } else {
-    photoEl.textContent = 'PL';
+    bodyEl.textContent = 'PL';
   }
 
   // Three-element install state: install button (off-state CTA), status
@@ -888,14 +1160,49 @@
   });
 
   // ── What it does ────────────────────────────────────────────────
+  // When the curator authored a rich markdown body in marketplace-metadata.json,
+  // the API renders + sanitizes it server-side and ships it in
+  // `description_long_html`. We inject as HTML. Falling back to the plain
+  // marketplace.json `description` preserves the historical render path for
+  // plugins whose curator hasn't filled the new field yet.
   const lead = document.getElementById('lead-text');
-  if (d.description && d.description.trim()) {
+  if (d.description_long_html && d.description_long_html.trim()) {
+    lead.innerHTML = d.description_long_html;
+    lead.classList.add('lead-rendered');
+  } else if (d.description && d.description.trim()) {
     lead.textContent = d.description;
   } else {
     document.getElementById('panel-what').hidden = true;
   }
 
-  // ── v32: demo video (agnes-metadata.json :: video_url) ─────────
+  // ── Kdy to použiju (Use cases) ──────────────────────────────────
+  // marketplace-metadata.json :: use_cases[] — one card per entry. Hidden
+  // until populated; un-enriched plugins skip this section entirely.
+  const useCasesEl = document.getElementById('panel-use-cases-grid');
+  const useCasesPanel = document.getElementById('panel-use-cases');
+  if (useCasesEl && Array.isArray(d.use_cases) && d.use_cases.length) {
+    useCasesEl.innerHTML = d.use_cases.map(uc => `
+      <div class="use-case-card">
+        <h3>${esc(uc.title)}</h3>
+        <p>${esc(uc.description)}</p>
+        <pre class="use-case-prompt"><code>${esc(uc.prompt)}</code></pre>
+      </div>
+    `).join('');
+    useCasesPanel.hidden = false;
+  }
+
+  // ── Ukázka konverzace (Sample interaction) ──────────────────────
+  // marketplace-metadata.json :: sample_interaction — {user, assistant_html}.
+  // Assistant body was rendered + sanitized server-side; we inject as HTML.
+  const sampleEl = document.getElementById('panel-sample');
+  if (sampleEl && d.sample_interaction
+      && d.sample_interaction.user && d.sample_interaction.assistant_html) {
+    document.getElementById('sample-user').textContent = d.sample_interaction.user;
+    document.getElementById('sample-assistant').innerHTML = d.sample_interaction.assistant_html;
+    sampleEl.hidden = false;
+  }
+
+  // ── v32: demo video (marketplace-metadata.json :: video_url) ─────────
   // Detection logic lives in the shared partial so item_detail.html and
   // this page stay in lockstep on YouTube nocookie / Vimeo / mp4 / link
   // fallback handling.
@@ -905,7 +1212,7 @@
     document.getElementById('panel-video').hidden = false;
   }
 
-  // ── v32: doc_links (agnes-metadata.json :: doc_links[]) ────────
+  // ── v32: doc_links (marketplace-metadata.json :: doc_links[]) ────────
   // The user contract: every entry in this list is a real downloadable
   // document Agnes can serve (PDF / Markdown / plain text). Sync pipeline
   // already dropped HTML pages, 404s, SSRF-blocked URLs, and any internal
@@ -962,7 +1269,7 @@
   // ── Internal structure ─────────────────────────────────────────
   function buildCardSection(title, items, type) {
     if (!items || !items.length) return '';
-    // Inner cards render the agnes-metadata cover photo when present
+    // Inner cards render the marketplace-metadata cover photo when present
     // (mirrored OK for external, file exists for internal); otherwise the
     // initials fall through ("SK" / "AG") on the colored gradient. Same
     // onerror fallback as the top-level cards so a missing file doesn't

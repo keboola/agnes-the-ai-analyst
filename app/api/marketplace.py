@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -91,6 +92,13 @@ class MarketplaceItem(BaseModel):
     # v39: drives the "Required" pill on the curated browse cards. Only
     # set on curated items (flea/store entities are never system).
     is_system: bool = False
+    # Rich-content fields from marketplace-metadata.json (plugin-level only
+    # for now; skill/agent rich content lands in a later phase). Frontend
+    # falls back to `name` / `description` when these are missing, so the
+    # card renders identically to pre-enrichment behaviour for any plugin
+    # whose curator hasn't filled the new fields yet.
+    display_name: Optional[str] = None
+    tagline: Optional[str] = None
 
 
 class ItemListResponse(BaseModel):
@@ -114,7 +122,7 @@ class InnerItemSummary(BaseModel):
     name: str
     description: Optional[str] = None
     detail_url: Optional[str] = None  # nested detail for skill/agent only
-    # v32: agnes-metadata-driven cover photo for the skill/agent card on the
+    # v32: marketplace-metadata-driven cover photo for the skill/agent card on the
     # parent plugin detail page. Already in served-URL form (internal /asset/
     # endpoint, mirrored /mirrored/ endpoint, or pass-through external URL).
     # None → frontend renders initials placeholder ("SK" / "AG").
@@ -152,6 +160,28 @@ class DocEntry(BaseModel):
     url: str
 
 
+class UseCase(BaseModel):
+    """One "When to use it" example from marketplace-metadata.json.
+    Curator-authored: friendly title + 1-2-sentence description + the
+    literal prompt the user would paste into Claude Code."""
+    title: str
+    description: str
+    prompt: str
+
+
+class SampleInteraction(BaseModel):
+    """Example dialog shown in the "Sample interaction" section.
+
+    ``assistant`` is markdown — the API pre-renders to safe HTML in
+    ``assistant_html`` so the template can inject without a client-side
+    markdown lib. ``assistant`` stays as the source for copy-paste / future
+    re-rendering needs.
+    """
+    user: str
+    assistant: str
+    assistant_html: str
+
+
 class PluginDetailResponse(BaseModel):
     """Unified detail response for a plugin (curated *or* flea).
 
@@ -173,7 +203,7 @@ class PluginDetailResponse(BaseModel):
     curator_email: Optional[str] = None         # curated only — surfaced for "contact curator"
     owner_display: Optional[str] = None         # flea: users.name → email → owner_username
     homepage: Optional[str] = None
-    cover_photo_url: Optional[str] = None       # /api/store/.../photo for flea, agnes-metadata for curated
+    cover_photo_url: Optional[str] = None       # /api/store/.../photo for flea, marketplace-metadata for curated
     video_url: Optional[str] = None             # v32: external (YouTube/Vimeo/Loom) embed URL
     bundle_size: Optional[int] = None           # bytes; None when unknown
     install_count: int = 0                      # flea only; curated leaves at 0
@@ -204,6 +234,22 @@ class PluginDetailResponse(BaseModel):
     # detail page. The same flag travels via /api/marketplace/items so
     # the browse cards can show a "Required" pill.
     is_system: bool = False
+    # Rich-content fields from marketplace-metadata.json (plugin-level, curated
+    # only — flea entities don't have a metadata layer). All optional; UI
+    # sections render only when populated.
+    #
+    # `display_name` overrides the technical `manifest_name` on the hero h1
+    # and window titlebar. `tagline` is the friendly subtitle (replacing
+    # `description` as the hero summary on listing cards + hero).
+    #
+    # `description_long_html` is server-side rendered + sanitized markdown
+    # (see app/markdown_render.render_safe). It powers the "What it does"
+    # panel; the raw `description` from marketplace.json is the fallback.
+    display_name: Optional[str] = None
+    tagline: Optional[str] = None
+    description_long_html: Optional[str] = None
+    use_cases: List[UseCase] = []
+    sample_interaction: Optional[SampleInteraction] = None
 
 
 # Legacy alias kept so any unmigrated import continues to resolve. The new
@@ -232,7 +278,7 @@ class InnerDetailResponse(BaseModel):
     manifest_name: str = ""
     bundle_size: Optional[int] = None
     files: List[FileEntry] = []
-    # v32: per-skill / per-agent enrichment from agnes-metadata.json sub-tree.
+    # v32: per-skill / per-agent enrichment from marketplace-metadata.json sub-tree.
     # Read at request time from the cloned working tree (not cached in DB) so
     # curators can update one inner asset without paying the cost of a full
     # plugin-cache rewrite. Three-typed cover URL layout matches plugin
@@ -241,6 +287,25 @@ class InnerDetailResponse(BaseModel):
     cover_photo_url: Optional[str] = None
     video_url: Optional[str] = None
     docs: List[DocEntry] = []
+    # Rich user-facing fields (parity with plugin-level rich content from
+    # the 2026-05-12 redesign). All optional — UI hides each section when
+    # the corresponding field is absent.
+    #
+    # `category` on the response is curator-override-OR-parent-fallback:
+    # the API hands back the parent plugin's category when the skill/agent
+    # didn't opt into its own. The override happens in the inner-detail
+    # handler before the response leaves the API.
+    #
+    # `invocation`: curator-provided literal command string ("…&lt;arg&gt;"
+    # forms welcome). When absent, the template falls back to its computed
+    # "<manifest_name>:<inner_name>" string.
+    display_name: Optional[str] = None
+    tagline: Optional[str] = None
+    description_long_html: Optional[str] = None
+    use_cases: List[UseCase] = []
+    sample_interaction: Optional[SampleInteraction] = None
+    when_to_use_html: Optional[str] = None
+    invocation: Optional[str] = None
 
 
 class InstallActionResponse(BaseModel):
@@ -361,6 +426,11 @@ def _curated_to_item(
     # is the human accountable for the plugin's presence in this Agnes
     # instance; upstream author belongs in the plugin source repo.
     owner = meta["curator_name"] or OWNER_TODO_PLACEHOLDER
+    # Lazy enrichment read for the listing card — cached per (marketplace_id,
+    # mtime) so a page of 24 plugins from the same marketplace triggers ONE
+    # disk read, not 24. Empty dict when curator hasn't filled the fields →
+    # listing card falls back to raw name + marketplace.json description.
+    enrichment = _curated_plugin_enrichment(marketplace_id, plugin_name)
     return MarketplaceItem(
         id=f"curated-{marketplace_id}/{plugin_name}",
         source="curated",
@@ -380,6 +450,8 @@ def _curated_to_item(
         marketplace_name=meta["name"],
         detail_url=_curated_detail_url(marketplace_id, plugin_name),
         is_system=bool(plugin_row.get("is_system")),
+        display_name=enrichment.get("display_name"),
+        tagline=enrichment.get("tagline"),
     )
 
 
@@ -515,7 +587,7 @@ async def list_items(
     marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
 
     # Pull the enriched rows the Curated tab uses (cover_photo_url, video_url,
-    # category override, doc_links from agnes-metadata.json) so the My Stack
+    # category override, doc_links from marketplace-metadata.json) so the My Stack
     # cards look identical to the curated cards the user just clicked
     # "+ Add to my stack" on. ``resolve_allowed_plugins`` reads only the
     # upstream marketplace.json, which doesn't carry those columns; without
@@ -541,7 +613,7 @@ async def list_items(
             # Fallback: plugin in RBAC + subscribed but not yet ingested into
             # marketplace_plugins (rare race — granted before the first sync
             # cycle runs). Build the bare shape from the on-disk manifest so
-            # the card still renders, just without agnes-metadata enrichment;
+            # the card still renders, just without marketplace-metadata enrichment;
             # cover falls through to the gradient placeholder until the next
             # sync.
             author = p["raw"].get("author")
@@ -617,11 +689,17 @@ async def list_categories(
         else:  # my — direct read mirroring the items endpoint's `my` branch.
             granted = resolve_allowed_plugins(conn, user)
             subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
-            for p in granted:
-                if (p["marketplace_id"], p["original_name"]) not in subs:
-                    continue
-                cat = (p["raw"].get("category") or "").strip() or "Other"
-                counts[cat] = counts.get(cat, 0) + 1
+            # Curated plugins are always type='plugin'. When the type filter
+            # is set to skill/agent, those rows won't show in the items grid
+            # (filtered out by the items endpoint at line 579), so they must
+            # not contribute to the category counts either — otherwise the
+            # pill counts overstate what the user will actually see.
+            if type is None or type == "plugin":
+                for p in granted:
+                    if (p["marketplace_id"], p["original_name"]) not in subs:
+                        continue
+                    cat = (p["raw"].get("category") or "").strip() or "Other"
+                    counts[cat] = counts.get(cat, 0) + 1
             for row in UserStoreInstallsRepository(conn).list_for_user(user["id"]):
                 if type and row.get("type") != type:
                     continue
@@ -943,14 +1021,12 @@ async def curated_detail(
     skills = _list_inner_skills(plugin_root)
     agents = _list_inner_agents(plugin_root)
 
-    # v32: enrich each skill/agent card with its agnes-metadata cover photo
+    # v32: enrich each skill/agent card with its marketplace-metadata cover photo
     # so the inner cards on the plugin detail page render the real image
-    # instead of just initials. Read agnes-metadata + mirror manifest once
-    # (cached by the helpers) and reuse for all inner items in the plugin.
-    from src.marketplace_metadata import read_agnes_metadata as _read_md
-    inner_metadata = _read_md(
-        Path(get_marketplaces_dir()) / marketplace_id,
-    )
+    # instead of just initials. Read marketplace-metadata + mirror manifest once
+    # (mtime cache makes the metadata read free on cache hit) and reuse for
+    # all inner items in the plugin.
+    inner_metadata = _read_metadata_cached(marketplace_id)
     inner_manifest = _load_mirror_manifest(marketplace_id)
 
     for s in skills:
@@ -982,7 +1058,7 @@ async def curated_detail(
         except (ValueError, TypeError):
             raw = {}
 
-    # v32: cover, video, and doc_links come from `agnes-metadata.json` via the
+    # v32: cover, video, and doc_links come from `marketplace-metadata.json` via the
     # sync pipeline (`src/marketplace.py::_refresh_plugin_cache`) — already in
     # served-URL form when written to the DB. We pass them through the
     # response model unchanged. Curator name + email come from the marketplace
@@ -998,6 +1074,13 @@ async def curated_detail(
                 doc_link_entries.append(
                     DocEntry(name=str(link["name"]), url=str(link["url"]))
                 )
+
+    # Plugin-level rich content (display_name, tagline, description_long_html,
+    # use_cases, sample_interaction) — on-demand read from the working tree's
+    # marketplace-metadata.json so curator edits land at next page refresh
+    # without a sync cycle. Empty dict when curator hasn't filled any of the
+    # new fields → PluginDetailResponse renders the historical fallback shape.
+    enrichment = _curated_plugin_enrichment(marketplace_id, plugin_name)
 
     return PluginDetailResponse(
         source="curated",
@@ -1025,6 +1108,7 @@ async def curated_detail(
         files=_walk_files(plugin_root),
         docs=doc_link_entries,
         is_system=bool(plugin_row.get("is_system")),
+        **enrichment,
     )
 
 
@@ -1342,18 +1426,56 @@ def _resolve_external_via_mirror(
     return mirrored_url(marketplace_id, plugin_name, rest)
 
 
+def _safe_use_case(raw: Any) -> Optional[UseCase]:
+    """Build a ``UseCase`` from curator JSON, skipping malformed entries.
+
+    Curator-authored input — a missing or empty ``title`` / ``description`` /
+    ``prompt`` returns ``None`` so the caller drops the card instead of
+    500-ing the whole detail page on Pydantic's required-field validation.
+    """
+    if not isinstance(raw, dict):
+        return None
+    title = raw.get("title")
+    description = raw.get("description")
+    prompt = raw.get("prompt")
+    if not (title and description and prompt):
+        return None
+    return UseCase(title=title, description=description, prompt=prompt)
+
+
+def _safe_sample_interaction(raw: Any) -> Optional[SampleInteraction]:
+    """Build a ``SampleInteraction`` from curator JSON, skipping malformed input.
+
+    Same rationale as :func:`_safe_use_case` — partial curator JSON should
+    silently drop the section, not crash the endpoint.
+    """
+    from app.markdown_render import render_safe
+
+    if not isinstance(raw, dict):
+        return None
+    user = raw.get("user")
+    assistant = raw.get("assistant")
+    if not (user and assistant):
+        return None
+    return SampleInteraction(
+        user=user,
+        assistant=assistant,
+        assistant_html=render_safe(assistant),
+    )
+
+
 def _curated_inner_enrichment(
     marketplace_id: str,
     plugin_name: str,
     kind: str,
     inner_name: str,
 ) -> Dict[str, Any]:
-    """Load agnes-metadata.json sub-tree for a single skill/agent.
+    """Load marketplace-metadata.json sub-tree for a single skill/agent.
 
-    Lives here (not in the sync pipeline) so curators can update agnes-metadata
+    Lives here (not in the sync pipeline) so curators can update marketplace-metadata
     on a working tree and see the change at the next page refresh, without
     waiting for a full plugin-cache rewrite. Read on every inner-detail
-    request — agnes-metadata.json is small enough that disk hit cost is
+    request — marketplace-metadata.json is small enough that disk hit cost is
     negligible compared to the SKILL.md / agent.md frontmatter parse the
     endpoint already does.
 
@@ -1369,13 +1491,14 @@ def _curated_inner_enrichment(
     ``cover_photo_url`` (resolved served URL or None),
     ``video_url`` (str or None), ``docs`` (list of DocEntry).
     """
-    from src.marketplace_metadata import (
-        read_agnes_metadata,
-        resolve_inner_metadata,
-    )
+    from src.marketplace_metadata import resolve_inner_metadata
 
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
-    metadata = read_agnes_metadata(repo_root)
+    # Route through the mtime cache so skill / agent detail hits don't
+    # re-parse the JSON on every request. Plugin listing already shares
+    # this cache, so opening 5 inner-detail pages on a marketplace whose
+    # metadata file hasn't changed = 0 disk reads beyond the first.
+    metadata = _read_metadata_cached(marketplace_id)
     section_kind = "skills" if kind == "skill" else "agents"
     resolved = resolve_inner_metadata(metadata, plugin_name, section_kind, inner_name)
     if not resolved:
@@ -1422,11 +1545,153 @@ def _curated_inner_enrichment(
                 continue
             docs.append(DocEntry(name=link.name, url=served))
 
-    return {
+    from app.markdown_render import render_safe
+
+    out: Dict[str, Any] = {
         "cover_photo_url": cover_url,
         "video_url": resolved.get("video_url"),
         "docs": docs,
     }
+    # Rich user-facing fields — same shape as the plugin-level enrichment.
+    # Presence check (``in``) rather than truthy check so the resolver's
+    # contract is respected: if the resolver decided to include a key,
+    # the API propagates it. Future falsy-but-valid fields (e.g. a bool
+    # ``featured: false`` or numeric ``priority: 0``) inherit correctly
+    # instead of silently falling back to the parent — the trap @cvrysanek
+    # flagged in the multi-persona review. String fields stay truthy-
+    # guarded by the resolver itself, so today's behaviour is unchanged.
+    if "display_name" in resolved:
+        out["display_name"] = resolved["display_name"]
+    if "tagline" in resolved:
+        out["tagline"] = resolved["tagline"]
+    # Per-item category override — caller merges with the parent plugin's
+    # category, preferring the override when set.
+    if "category" in resolved:
+        out["category"] = resolved["category"]
+    if "description" in resolved:
+        out["description_long_html"] = render_safe(resolved["description"])
+    if "when_to_use" in resolved:
+        out["when_to_use_html"] = render_safe(resolved["when_to_use"])
+    if "invocation" in resolved:
+        out["invocation"] = resolved["invocation"]
+
+    use_cases_raw = resolved.get("use_cases") or []
+    if use_cases_raw:
+        cards = [_safe_use_case(uc) for uc in use_cases_raw]
+        cards = [c for c in cards if c is not None]
+        if cards:
+            out["use_cases"] = cards
+    sample = _safe_sample_interaction(resolved.get("sample_interaction"))
+    if sample is not None:
+        out["sample_interaction"] = sample
+    return out
+
+
+# Module-level cache for marketplace-metadata.json reads. Keyed by
+# ``(marketplace_id, mtime_ns)`` so a curator's `git push` (which updates
+# the file's mtime after the next sync's `git pull`) implicitly invalidates
+# the cached parse. The 24-plugin listing endpoint reads from the same
+# marketplace's metadata 24 times per page; without this cache that's 24
+# disk reads + JSON parses per request. With cache: 1.
+#
+# OrderedDict + popitem(last=False) on overflow gives us a bounded LRU
+# without a third-party dependency. Earlier versions used a per-marketplace
+# eviction predicate that only swept stale entries for the CURRENT marketplace
+# — at N>100 distinct marketplaces the inner predicate matched zero entries,
+# so the cap silently failed and memory grew linearly. The bounded LRU here
+# guarantees the dict size never exceeds _PLUGIN_METADATA_CACHE_MAX.
+_PLUGIN_METADATA_CACHE_MAX = 256
+_PLUGIN_METADATA_CACHE: "OrderedDict[Tuple[str, int], Dict[str, Any]]" = OrderedDict()
+
+
+def _read_metadata_cached(marketplace_id: str) -> Dict[str, Any]:
+    """Return the parsed marketplace-metadata.json for a given marketplace.
+
+    Cached by mtime so curator edits land at next request without explicit
+    invalidation. Missing / malformed files degrade to ``{}`` (delegated to
+    :func:`src.marketplace_metadata.read_marketplace_metadata` which already
+    swallows OSError / JSONDecodeError). Cache is bounded LRU; the oldest
+    entry is dropped when the cap is reached.
+    """
+    from src.marketplace_metadata import (
+        MARKETPLACE_METADATA_REL,
+        read_marketplace_metadata,
+    )
+    repo_root = Path(get_marketplaces_dir()) / marketplace_id
+    metadata_path = repo_root / MARKETPLACE_METADATA_REL
+    try:
+        mtime_ns = metadata_path.stat().st_mtime_ns
+    except OSError:
+        # File doesn't exist or unreadable — read_marketplace_metadata handles
+        # the same case below; we just skip the cache lookup.
+        return read_marketplace_metadata(repo_root)
+    key = (marketplace_id, mtime_ns)
+    cached = _PLUGIN_METADATA_CACHE.get(key)
+    if cached is not None:
+        # Touch the entry so the LRU bookkeeping treats it as recently used.
+        _PLUGIN_METADATA_CACHE.move_to_end(key)
+        return cached
+    parsed = read_marketplace_metadata(repo_root)
+    _PLUGIN_METADATA_CACHE[key] = parsed
+    # Bounded LRU: drop oldest entries until we're back under the cap.
+    while len(_PLUGIN_METADATA_CACHE) > _PLUGIN_METADATA_CACHE_MAX:
+        _PLUGIN_METADATA_CACHE.popitem(last=False)
+    return parsed
+
+
+def _curated_plugin_enrichment(
+    marketplace_id: str,
+    plugin_name: str,
+) -> Dict[str, Any]:
+    """Load plugin-level rich content from marketplace-metadata.json.
+
+    Returns a dict shaped for direct merge into ``PluginDetailResponse``:
+    ``display_name``, ``tagline``, ``description_long_html``, ``use_cases``,
+    ``sample_interaction`` — any subset of those keys may be missing when
+    the curator hasn't filled the corresponding field.
+
+    Markdown is rendered to safe HTML here (via
+    :func:`app.markdown_render.render_safe`) so the template can inject the
+    body with ``{{ x | safe }}`` without a client-side markdown library.
+
+    This is the plugin-level analogue of ``_curated_inner_enrichment`` — both
+    read on demand from the working tree so curator edits don't need a full
+    sync cycle to land in the UI. The other persisted plugin-level fields
+    (cover_photo_url, video_url, category, doc_links) continue to flow via
+    ``marketplace_plugins`` rows written at sync time — only the NEW rich
+    fields are read on-demand here.
+    """
+    from app.markdown_render import render_safe
+    from src.marketplace_metadata import resolve_plugin_metadata
+
+    metadata = _read_metadata_cached(marketplace_id)
+    resolved = resolve_plugin_metadata(metadata, plugin_name)
+    if not resolved:
+        return {}
+
+    out: Dict[str, Any] = {}
+    # Presence check (`in`) so future falsy-but-valid resolver fields
+    # (bool / int / "" with explicit-empty semantics) survive — see the
+    # parallel comment in `_curated_inner_enrichment` for the trap rationale.
+    if "display_name" in resolved:
+        out["display_name"] = resolved["display_name"]
+    if "tagline" in resolved:
+        out["tagline"] = resolved["tagline"]
+    if "description" in resolved:
+        out["description_long_html"] = render_safe(resolved["description"])
+
+    use_cases_raw = resolved.get("use_cases") or []
+    if use_cases_raw:
+        cards = [_safe_use_case(uc) for uc in use_cases_raw]
+        cards = [c for c in cards if c is not None]
+        if cards:
+            out["use_cases"] = cards
+
+    sample = _safe_sample_interaction(resolved.get("sample_interaction"))
+    if sample is not None:
+        out["sample_interaction"] = sample
+
+    return out
 
 
 def _curated_inner_cover(
@@ -1447,9 +1712,10 @@ def _curated_inner_cover(
     from src.marketplace_metadata import resolve_inner_metadata
 
     if metadata is None:
-        from src.marketplace_metadata import read_agnes_metadata
-        repo_root = Path(get_marketplaces_dir()) / marketplace_id
-        metadata = read_agnes_metadata(repo_root)
+        # Route through the mtime cache; this helper gets called once per
+        # inner item on the parent-plugin's skills/agents card list, so
+        # cache miss only happens on the first card.
+        metadata = _read_metadata_cached(marketplace_id)
     if manifest is None:
         manifest = _load_mirror_manifest(marketplace_id)
 
@@ -1498,6 +1764,13 @@ async def curated_skill_detail(
     enrichment = _curated_inner_enrichment(
         marketplace_id, plugin_name, "skill", skill_name,
     )
+    # Merge parent fallback fields with curator overrides BEFORE unpacking
+    # — Python function-call `**a, **b` with overlapping keys raises
+    # TypeError, it doesn't merge like a literal dict does. Today only
+    # `category` overlaps (both parent + enrichment may set it), but the
+    # explicit merge keeps the unpack future-proof against any new field
+    # added to both layers.
+    merged = {**parent, **enrichment}
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
@@ -1508,8 +1781,7 @@ async def curated_skill_detail(
         relpath=relpath,
         bundle_size=_bundle_size(skill_dir),
         files=_walk_files(skill_dir),
-        **parent,
-        **enrichment,
+        **merged,
     )
 
 
@@ -1544,6 +1816,10 @@ async def curated_agent_detail(
     enrichment = _curated_inner_enrichment(
         marketplace_id, plugin_name, "agent", agent_name,
     )
+    # See curated_skill_detail above — explicit merge avoids the
+    # TypeError that `**parent, **enrichment` raises when both supply
+    # an overlapping key (e.g. `category`).
+    merged = {**parent, **enrichment}
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
@@ -1554,8 +1830,7 @@ async def curated_agent_detail(
         relpath=relpath,
         bundle_size=agent_size,
         files=[FileEntry(path=f"{agent_name}.md", size=agent_size)],
-        **parent,
-        **enrichment,
+        **merged,
     )
 
 
@@ -1564,7 +1839,7 @@ async def curated_agent_detail(
 # ---------------------------------------------------------------------------
 #
 # Three sibling endpoints that serve the binary content referenced from
-# `agnes-metadata.json`. All three:
+# `marketplace-metadata.json`. All three:
 #
 #   * are gated by `require_resource_access(MARKETPLACE_PLUGIN, "{mp}/{plugin}")`
 #     so a user without RBAC can't side-load assets even with a direct URL,
@@ -1625,7 +1900,7 @@ async def curated_asset(
     ``.agnes/cover.png`` or ``plugins/foo/icon.png``.
 
     **Image-only by contract.** The endpoint is the source of cover photos
-    referenced from ``agnes-metadata.json`` and from inner skill / agent
+    referenced from ``marketplace-metadata.json`` and from inner skill / agent
     cards. A curator who could land an arbitrary file in the cloned repo
     (HTML, JS, SVG with inline ``<script>``) would otherwise have a
     same-origin XSS via this endpoint, since the response shares the
@@ -1693,7 +1968,7 @@ async def curated_doc(
     Same path-traversal guard as ``/asset/``. Adds an allowlist check — the
     doc endpoint refuses to serve a file whose extension isn't in the
     documented PDF / Markdown / plain text set (HTTP 415). Defense-in-depth
-    even though the agnes-metadata parser already rejects out-of-allowlist
+    even though the marketplace-metadata parser already rejects out-of-allowlist
     extensions during the doc_link parse — a curator who edits the working
     tree directly (or whose JSON survived parsing because of a generic
     extension match elsewhere) shouldn't be able to land a .docx through
