@@ -57,6 +57,7 @@
             <div class="app-nav-menu-panel" id="adminNavPanel" role="menu" hidden>
                 <div class="app-nav-menu-section">Activity Center</div>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" role="menuitem" href="/admin/activity">Audit log</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/audit') %}is-active{% endif %}" role="menuitem" href="/admin/audit">Audit trail</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') %}is-active{% endif %}" role="menuitem" href="/admin/telemetry">Telemetry</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/sessions') %}is-active{% endif %}" role="menuitem" href="/admin/sessions">Sessions</a>
 
@@ -70,7 +71,6 @@
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/sync') %}is-active{% endif %}" role="menuitem" href="/admin/sync">Sync</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/metrics') %}is-active{% endif %}" role="menuitem" href="/admin/metrics">Metrics</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/audit') %}is-active{% endif %}" role="menuitem" href="/admin/audit">Audit log</a>
 
                 {# "Agent Experience" groups everything the admin curates
                    for what an analyst's AI agent sees / can do: which
