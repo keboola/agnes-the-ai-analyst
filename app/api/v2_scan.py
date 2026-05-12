@@ -267,7 +267,7 @@ def scan_estimate_endpoint(
                 action="snapshot.estimate",
                 resource=resource,
                 params={"duration_ms": int((time.monotonic() - t0) * 1000),
-                        "error": str(exc)},
+                        "error": str(exc)[:200]},
                 result=f"error.{status_code}",
                 client_kind="cli",
             )
@@ -483,7 +483,7 @@ def scan_endpoint(
                 action="snapshot.create",
                 resource=resource,
                 params={"duration_ms": int((time.monotonic() - t0) * 1000),
-                        "error": str(exc)},
+                        "error": str(exc)[:200]},
                 result=f"error.{status_code}",
                 client_kind="cli",
             )

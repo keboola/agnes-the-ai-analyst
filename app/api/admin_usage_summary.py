@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from app.api.activity import _should_audit
 from src.repositories.audit import AuditRepository
 
 router = APIRouter(prefix="/api/admin/usage", tags=["admin-usage"])
@@ -152,16 +153,18 @@ def usage_summary(
             })
         slow_actions = sorted(slow_list, key=lambda x: x["p95"], reverse=True)[:10]
 
-    try:
-        AuditRepository(conn).log(
-            user_id=user.get("id"),
-            action="usage.summary",
-            params={"window": window},
-            result="success",
-            client_kind="web",
-        )
-    except Exception:
-        logger.exception("audit_log write failed for usage.summary; continuing")
+    actor_id = user.get("id") or "anonymous"
+    if _should_audit(actor_id, {"endpoint": "usage.summary", "window": window}):
+        try:
+            AuditRepository(conn).log(
+                user_id=actor_id,
+                action="usage.summary",
+                params={"window": window},
+                result="success",
+                client_kind="web",
+            )
+        except Exception:
+            logger.exception("audit_log write failed for usage.summary; continuing")
 
     return {
         "window": window,
