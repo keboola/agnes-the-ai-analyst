@@ -33,8 +33,14 @@ def _handle_error(resp, context: str) -> None:
 @app.command()
 def export(
     format: str = typer.Option("csv", "--format", help="csv|json|parquet"),
-    since: Optional[str] = typer.Option(None, "--since"),
-    until: Optional[str] = typer.Option(None, "--until"),
+    since: Optional[str] = typer.Option(
+        None, "--since",
+        help="ISO date or datetime, e.g. '2026-01-01' or '2026-05-01T00:00:00Z'."
+    ),
+    until: Optional[str] = typer.Option(
+        None, "--until",
+        help="ISO date or datetime (exclusive upper bound)."
+    ),
     user: Optional[str] = typer.Option(None, "--user"),
     source: Optional[str] = typer.Option(None, "--source"),
     out: Optional[Path] = typer.Option(None, "--out", help="Write to file; else stdout."),

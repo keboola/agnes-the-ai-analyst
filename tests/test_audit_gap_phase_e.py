@@ -661,3 +661,71 @@ class TestErrorMessageCapping:
         params = _get_last_audit_params("snapshot.create")
         error_msg = params.get("error", "")
         assert len(error_msg) <= 200, f"error message length {len(error_msg)} exceeds 200"
+
+
+# ---------------------------------------------------------------------------
+# client_kind detection: PAT auth → 'cli', session JWT → 'web'
+# ---------------------------------------------------------------------------
+
+class TestClientKindDetection:
+    """PAT-authenticated requests must produce client_kind='cli' in audit_log;
+    interactive session JWTs must produce 'web'."""
+
+    def _mint_pat_for_admin(self, seeded_app) -> str:
+        """Return a PAT bearer token for admin1 by creating a DB record + JWT directly."""
+        import hashlib
+        import uuid
+        from app.auth.jwt import create_access_token
+        from src.db import get_system_db
+
+        jti = uuid.uuid4().hex
+        raw_jwt = create_access_token(
+            user_id="admin1", email="admin@test.com", typ="pat", token_id=jti, omit_exp=True
+        )
+        token_hash = hashlib.sha256(raw_jwt.encode()).hexdigest()
+        conn = get_system_db()
+        conn.execute(
+            """INSERT INTO personal_access_tokens
+               (id, user_id, name, prefix, token_hash, created_at, revoked_at, expires_at, last_used_at, last_used_ip)
+               VALUES (?, 'admin1', 'test-pat', 'tst_', ?, now(), NULL, NULL, NULL, NULL)""",
+            [jti, token_hash],
+        )
+        conn.close()
+        return raw_jwt
+
+    def test_pat_auth_sets_client_kind_cli(self, seeded_app):
+        """Sync trigger via PAT → client_kind='cli' in audit_log."""
+        pat_token = self._mint_pat_for_admin(seeded_app)
+        pat_headers = {"Authorization": f"Bearer {pat_token}"}
+
+        conn = get_system_db()
+        conn.execute("DELETE FROM audit_log WHERE action='sync.trigger'")
+        conn.close()
+
+        resp = seeded_app["client"].post("/api/sync/trigger", headers=pat_headers)
+        assert resp.status_code in (200, 202, 409)
+
+        conn = get_system_db()
+        row = conn.execute(
+            "SELECT client_kind FROM audit_log WHERE action='sync.trigger' ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        assert row is not None, "audit_log row was not written"
+        assert row[0] == "cli", f"expected client_kind='cli', got {row[0]!r}"
+
+    def test_session_jwt_sets_client_kind_web(self, seeded_app, admin_user):
+        """Sync trigger via session JWT → client_kind='web' in audit_log."""
+        conn = get_system_db()
+        conn.execute("DELETE FROM audit_log WHERE action='sync.trigger'")
+        conn.close()
+
+        resp = seeded_app["client"].post("/api/sync/trigger", headers=admin_user)
+        assert resp.status_code in (200, 202, 409)
+
+        conn = get_system_db()
+        row = conn.execute(
+            "SELECT client_kind FROM audit_log WHERE action='sync.trigger' ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        assert row is not None, "audit_log row was not written"
+        assert row[0] == "web", f"expected client_kind='web', got {row[0]!r}"

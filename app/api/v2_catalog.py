@@ -10,6 +10,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
+from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
 from src.repositories.audit import AuditRepository
@@ -319,7 +320,7 @@ def catalog(
                     "duration_ms": int((time.monotonic() - t0) * 1000),
                 },
                 result="success",
-                client_kind="cli",  # catalog is primarily CLI-driven (agnes catalog)
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed for catalog.list; continuing")
@@ -332,7 +333,7 @@ def catalog(
                 resource="catalog",
                 params={"error": str(exc)[:200], "duration_ms": int((time.monotonic() - t0) * 1000)},
                 result=f"error.{type(exc).__name__}",
-                client_kind="cli",
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed on error path for catalog.list; continuing")

@@ -38,6 +38,9 @@
                 </svg>
             </button>
             <div class="app-nav-menu-panel" id="adminNavPanel" role="menu" hidden>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" role="menuitem" href="/admin/activity">Activity</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/usage') %}is-active{% endif %}" role="menuitem" href="/admin/usage">Usage</a>
+                <hr class="admin-menu-separator" />
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" role="menuitem" href="/admin/tokens">Tokens</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">Users</a>
@@ -49,8 +52,6 @@
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Agent Setup Prompt</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Agent Workspace Prompt</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/scheduler-runs') %}is-active{% endif %}" role="menuitem" href="/admin/scheduler-runs">Scheduler runs</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" role="menuitem" href="/admin/activity">Activity</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/usage') %}is-active{% endif %}" role="menuitem" href="/admin/usage">Usage</a>
             </div>
         </div>
         {% endif %}

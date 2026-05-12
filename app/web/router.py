@@ -977,6 +977,19 @@ async def admin_activity(
         since=now - timedelta(hours=24),
         limit=50,
     )
+    # Resolve user_id → email for display in the User column.
+    user_ids = {r["user_id"] for r in timeline if r.get("user_id")}
+    if user_ids:
+        user_emails = {
+            row[0]: row[1] for row in conn.execute(
+                f"SELECT id, email FROM users WHERE id IN ({','.join('?' * len(user_ids))})",
+                list(user_ids),
+            ).fetchall()
+        }
+    else:
+        user_emails = {}
+    for r in timeline:
+        r["user_email"] = user_emails.get(r.get("user_id")) or None
     sync_rows = sync_repo.list_recent(since=now - timedelta(hours=24), limit=100)
     health = _compute_health(conn, now)
 

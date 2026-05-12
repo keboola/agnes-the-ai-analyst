@@ -9,6 +9,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
+from src.audit_helpers import client_kind_from_user
 from src.identifier_validation import _SAFE_QUOTED_IDENTIFIER
 from src.rbac import can_access_table
 from src.repositories.audit import AuditRepository
@@ -53,7 +54,7 @@ async def check_access(
                         "duration_ms": int((time.monotonic() - t0) * 1000),
                         "error": "invalid_table_id"},
                 result="error.404",
-                client_kind="cli",
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed for data.access_check (invalid id); continuing")
@@ -69,7 +70,7 @@ async def check_access(
                 "duration_ms": int((time.monotonic() - t0) * 1000),
             },
             result="success" if granted else "error.403",
-            client_kind="cli",  # check-access is called by Caddy on every parquet download (CLI flow)
+            client_kind=client_kind_from_user(user),
         )
     except Exception:
         logger.exception("audit_log write failed for data.access_check; continuing")
@@ -137,7 +138,7 @@ async def download_table(
             resource=f"table:{table_id}"[:256],
             params={"bytes": stat.st_size, "format": "parquet"},
             result="success",
-            client_kind="cli",
+            client_kind=client_kind_from_user(user),
         )
     except Exception:
         logger.exception("audit_log write failed for data.download; continuing")

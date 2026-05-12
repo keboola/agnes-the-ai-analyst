@@ -214,6 +214,10 @@ async def get_current_user(
     user, reason = resolve_token_to_user(conn, token, request)
     if user:
         _attach_admin_flag(user, conn)
+        # Propagate token kind so audit helpers can tag client_kind correctly.
+        payload = verify_token(token) or {}
+        if payload.get("typ") == "pat":
+            user["token_type"] = "pat"
         return _stash_user(request, user)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

@@ -15,6 +15,7 @@ import duckdb
 from app.auth.access import is_user_admin
 from app.auth.dependencies import get_current_user, _get_db
 from app.instance_config import get_value
+from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.rbac import get_accessible_tables
 from src.repositories.table_registry import TableRegistryRepository
@@ -399,7 +400,7 @@ def execute_query(
                     "duration_ms": int((time.monotonic() - _t0) * 1000),
                 },
                 result="success",
-                client_kind="cli",  # query endpoint is predominantly CLI-driven (agnes query)
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed for %s; continuing", _action)
@@ -417,7 +418,7 @@ def execute_query(
                         "error": str(exc.detail)[:200],
                         "duration_ms": int((time.monotonic() - _t0) * 1000)},
                 result=f"error.{exc.status_code}",
-                client_kind="cli",
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed for query (error path); continuing")
@@ -447,7 +448,7 @@ def execute_query(
                         "error": msg[:200],
                         "duration_ms": int((time.monotonic() - _t0) * 1000)},
                 result="error.400",
-                client_kind="cli",
+                client_kind=client_kind_from_user(user),
             )
         except Exception:
             logger.exception("audit_log write failed for query (exception path); continuing")
