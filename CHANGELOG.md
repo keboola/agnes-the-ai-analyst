@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.53.4] — 2026-05-12
+
+### Fixed
+
+- **Analyst CLI install (`uv tool install <wheel>`) no longer fails with `urllib3 / kbcstorage` resolver conflict on a clean machine.** From 0.53.3, every fresh `/setup` walkthrough hit `kbcstorage<=0.9.5 → urllib3<2.0.0` vs the wheel METADATA's `urllib3>=2.7.0` security pin and resolved to `unsatisfiable`. The `[tool.uv] override-dependencies = ["urllib3>=2.7.0"]` workaround that masked the conflict in workspace installs (Dockerfile, dev) does NOT propagate to the wheel — wheel METADATA is plain PEP 621 `Requires-Dist`, and a fresh resolver context (`uv tool install <wheel-url>`) never sees the override. Fix: `kbcstorage` moved out of `[project] dependencies` into `[project.optional-dependencies] server`, since it is server-side-only (`connectors/keboola/client.py` callers — admin endpoints, server connectors, integration tests; no CLI import path). Server install picks it up via the Dockerfile's `uv pip install --system --no-cache ".[server]"`; CI installs `.[dev,server]` so the workspace tests still cover the kbcstorage path. Analyst CLI wheel METADATA now lists `kbcstorage>=0.9.0; extra == 'server'` (gated) — `uv tool install` resolves cleanly.
+
+### Internal
+
+- **New CI lane `cli-wheel-clean-install` in `.github/workflows/ci.yml`** builds the wheel via `uv build` and installs it into a fresh `python:3.13-slim` container with `uv tool install`, asserting `agnes --version` works AND that `kbcstorage` is absent from the CLI venv. Catches the "wheel METADATA conflicts with transitive deps under fresh resolver" regression class — exactly what `[tool.uv] override-dependencies` does NOT protect against. Without this lane, the previous regression slipped through every existing test (workspace overrides masked the conflict in pytest) and only surfaced on the next analyst's first install.
+
 ## [0.53.3] — 2026-05-12
 
 Hygiene round closing #244 + #252 + clearing 5 Dependabot urllib3 advisories. (Originally cut as 0.53.2 — bumped to 0.53.3 after #264 / #268 landed as 0.53.2 in parallel.)

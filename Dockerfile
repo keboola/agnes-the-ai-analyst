@@ -56,8 +56,10 @@ RUN mkdir -p /opt/agnes-host && \
 # Build wheel artifact (served at /cli/download)
 RUN uv build --wheel --out-dir /app/dist
 
-# Install production dependencies from pyproject.toml
-RUN uv pip install --system --no-cache .
+# Install production dependencies from pyproject.toml. The `[server]` extra
+# pulls in connectors-only deps (kbcstorage) that the CLI wheel deliberately
+# omits — see [project.optional-dependencies].server in pyproject.toml.
+RUN uv pip install --system --no-cache ".[server]"
 
 # Run as non-root user for container hardening (C13).
 # uid/gid pinned to 999 so host-side chown in startup-script.sh.tpl can match
