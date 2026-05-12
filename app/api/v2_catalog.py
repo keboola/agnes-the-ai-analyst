@@ -307,19 +307,33 @@ def catalog(
     # traffic. Mirrors the Tier 1 conversion of /api/query, /api/v2/scan,
     # /api/v2/sample, /api/v2/schema — Devin Review on PR #188.
     t0 = time.monotonic()
-    result = build_catalog(conn, user)
     try:
-        AuditRepository(conn).log(
-            user_id=user.get("id"),
-            action="catalog.list",
-            resource="catalog",
-            params={
-                "rows_returned": len(result.get("tables", [])),
-                "duration_ms": int((time.monotonic() - t0) * 1000),
-            },
-            result="success",
-            client_kind="cli",  # catalog is primarily CLI-driven (agnes catalog)
-        )
-    except Exception:
-        logger.exception("audit_log write failed for catalog.list; continuing")
-    return result
+        result = build_catalog(conn, user)
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="catalog.list",
+                resource="catalog",
+                params={
+                    "rows_returned": len(result.get("tables", [])),
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                },
+                result="success",
+                client_kind="cli",  # catalog is primarily CLI-driven (agnes catalog)
+            )
+        except Exception:
+            logger.exception("audit_log write failed for catalog.list; continuing")
+        return result
+    except Exception as exc:
+        try:
+            AuditRepository(conn).log(
+                user_id=user.get("id"),
+                action="catalog.list",
+                resource="catalog",
+                params={"error": str(exc)[:200], "duration_ms": int((time.monotonic() - t0) * 1000)},
+                result=f"error.{type(exc).__name__}",
+                client_kind="cli",
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for catalog.list; continuing")
+        raise
