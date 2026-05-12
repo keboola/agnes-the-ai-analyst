@@ -143,12 +143,17 @@ Not supported in M1. The register endpoint rejects any `source_table` containing
 
 ### Hybrid Queries
 
-For queries that JOIN local data with BigQuery results:
+Server-side only. Admins can POST `{sql, register_bq: {alias: bq_sql}}` to
+`/api/query/hybrid` (`app/api/query_hybrid.py`); the BigQuery sub-queries
+run server-side, where BQ credentials live, and the join runs against the
+server's local parquet views in a single DuckDB session.
 
-```bash
-agnes query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.date" \
-         --register-bq "traffic=SELECT date, SUM(views) as views FROM dataset.web GROUP BY 1"
-```
+Analysts who need to combine a local table with a remote one should
+`agnes snapshot create` a filtered slice of the remote table and join it
+locally, or run the join server-side via `agnes query --remote`. The
+earlier `agnes query --register-bq` flag (which ran in-process on the
+caller's machine) was removed because it required local BigQuery
+credentials that analysts don't have.
 
 ## Jira Connector
 

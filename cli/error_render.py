@@ -1,8 +1,7 @@
 """Shared CLI renderer for HTTP error responses.
 
-Three CLI paths surface BigQuery / guardrail / RBAC typed errors today:
+Two CLI paths surface BigQuery / guardrail / RBAC typed errors today:
 - ``agnes query --remote`` (POST /api/query)
-- ``agnes query --register-bq`` (RemoteQueryEngine wrapping BqAccessError)
 - ``agnes snapshot create`` / ``agnes schema`` etc. (cli.v2_client wrappers around v2 endpoints)
 
 All three previously flattened the structured ``detail`` JSON to a

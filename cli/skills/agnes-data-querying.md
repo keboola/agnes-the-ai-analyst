@@ -30,8 +30,7 @@ Tables in `agnes catalog` have a `query_mode`:
 
 For **remote tables**, you MUST either:
 1. `agnes snapshot create` a filtered subset → query the local snapshot (preferred), OR
-2. `agnes query --remote` for one-shot server-side execution, OR
-3. `agnes query --register-bq` for hybrid joins (rare; see docs)
+2. `agnes query --remote` for one-shot server-side execution
 
 ## The `agnes snapshot create` workflow (preferred for remote tables)
 
