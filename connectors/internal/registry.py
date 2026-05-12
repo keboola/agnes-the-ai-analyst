@@ -58,10 +58,12 @@ def ensure_internal_tables_registered(conn: duckdb.DuckDBPyConnection) -> None:
                 description=table.description,
                 source_type="internal",
                 # `bucket` is the grouping key /catalog uses for accordion
-                # categories — setting "agnes" puts the three internal
-                # tables under one labelled section on the Data Packages
-                # page instead of falling into the catch-all "default".
-                bucket="agnes",
+                # category headers — displayed verbatim, so a more
+                # readable string than the lowercase "agnes" goes
+                # straight onto the page. The three internal tables
+                # land under "Agnes Internal" on Data Packages instead
+                # of the catch-all "default".
+                bucket="Agnes Internal",
                 source_table=table.source_table,
                 query_mode="internal",
                 profile_after_sync=False,
