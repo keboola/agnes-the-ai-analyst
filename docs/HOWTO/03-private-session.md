@@ -29,6 +29,11 @@ The CLI statusline shows 🔒 when the current session is marked private.
 - It does **not** prevent your queries from going through the server (remote queries still execute server-side). It only controls JSONL upload.
 - It does **not** affect other analysts' sessions.
 
+> **Important — `mark-private` is not retroactive.**
+> - It prevents the **current** session from being uploaded by `agnes push`.
+> - It does **not** remove previously-uploaded sessions from the server. Once a session reaches the server, the `UsageProcessor` will extract its events and admins can access it via `/admin/users/<id>/sessions`.
+> - If you need to redact a previously-uploaded session, contact your operator — they can delete the JSONL from `${SESSION_DATA_DIR}/<user>/` **and** run `agnes admin usage reprocess` to wipe extracted events.
+
 ## When to use it
 
 - You're exploring sensitive business data and don't want the tool-call trace logged.

@@ -205,25 +205,24 @@ def download_all_sessions(
     total_bytes = 0
     file_count = 0
 
-    def _generate():
-        nonlocal total_bytes, file_count
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for p in jsonl_files:
-                data = p.read_bytes()
-                zf.writestr(p.name, data)
-                total_bytes += len(data)
-                file_count += 1
-        buf.seek(0)
-        yield buf.read()
-
     # We need total_bytes and file_count for the audit row, but we also need
     # to stream.  For session files (typically < a few MB each) we build the
     # ZIP in memory first so we can measure the totals, then yield it.
     # If the corpus grows into GB territory, revisit with SpooledTemporaryFile.
+    user_dir_resolved = user_dir.resolve()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for p in jsonl_files:
+            # Guard against symlinks pointing outside the user's session directory.
+            try:
+                p.resolve().relative_to(user_dir_resolved)
+            except ValueError:
+                logger.warning(
+                    "download_all_sessions: skipping symlink escape: %s -> %s",
+                    p,
+                    p.resolve(),
+                )
+                continue
             data = p.read_bytes()
             zf.writestr(p.name, data)
             total_bytes += len(data)
