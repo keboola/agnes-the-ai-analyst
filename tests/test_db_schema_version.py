@@ -13,7 +13,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_40():
+def test_schema_version_is_42():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -77,19 +77,17 @@ def test_schema_version_is_40():
     # v39 → v40: persistent BigQuery metadata cache. Adds
     #            bq_metadata_cache(table_id PK, rows, size_bytes,
     #            partition_by, clustered_by, refreshed_at, error_at,
-    #            error_msg). Replaces the in-memory per-request BQ fetch
-    #            that GET /api/v2/catalog used to do — populated by a
-    #            scheduler-driven refresh job
-    #            (SCHEDULER_BQ_METADATA_REFRESH_INTERVAL, default 4 h)
-    #            and the catalog endpoint reads it without calling BQ
-    #            at request time.
-    # v40 → v41 (this PR): Activity Center schema — audit_log gains
-    #            params_before (JSON), client_ip (VARCHAR), client_kind
-    #            (VARCHAR), correlation_id (VARCHAR). Three indices on
-    #            (timestamp), (user_id, timestamp), (action, timestamp)
-    #            added to keep Activity Center timeline queries under
-    #            100ms at 100k+ rows.
-    assert SCHEMA_VERSION == 41
+    #            error_msg).
+    # v40 → v41: Activity Center schema — audit_log gains params_before
+    #            (JSON), client_ip (VARCHAR), client_kind (VARCHAR),
+    #            correlation_id (VARCHAR). Three indices on (timestamp),
+    #            (user_id, timestamp), (action, timestamp).
+    # v41 → v42 (this PR): platform telemetry schema — 7 new usage_*
+    #            tables: usage_events (per-event log), usage_session_summary
+    #            (per-session aggregate), usage_tool_daily + usage_plugin_daily
+    #            (daily rollups), usage_attribution_skills/agents/commands
+    #            (plugin manifest attribution). 10 indices for fast queries.
+    assert SCHEMA_VERSION == 42
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
