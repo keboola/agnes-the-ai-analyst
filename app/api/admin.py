@@ -3408,6 +3408,17 @@ def run_session_processor(
     job_error: Optional[Exception] = None
     try:
         stats = _run_processor(job_conn, proc)
+        # Rebuild daily rollups after a successful usage run so the
+        # marketplace / admin dashboards see fresh aggregates. Runs on the
+        # same connection while it's still open; incremental (last-7-days)
+        # so it's cheap. Kept here (not in runner.py) to stay
+        # processor-agnostic at the framework level.
+        if processor == "usage" and stats.get("errors", 0) == 0:
+            from services.session_processors.usage_lib import rebuild_rollups
+            try:
+                rebuild_rollups(job_conn)
+            except Exception as rollup_exc:
+                logger.warning("usage rollup rebuild failed: %s", rollup_exc)
     except Exception as e:
         # Capture and re-raise after audit so an unhandled runner error
         # (DuckDB lock, network blip, unexpected SDK type) still leaves a

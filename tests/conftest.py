@@ -343,6 +343,38 @@ from tests.fixtures.analyst_bootstrap import (  # noqa: E402,F401
 
 
 @pytest.fixture
+def conn_with_usage_schema_and_attribution(tmp_path, monkeypatch):
+    """DuckDB conn at v41 with attribution rows seeded for fixture skills/agents/commands."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import src.db as db_module
+    db_module._system_db_conn = None
+    db_module._system_db_path = None
+    c = db_module.get_system_db()
+    # Seed attribution rows the fixtures reference
+    c.execute(
+        "INSERT OR IGNORE INTO usage_attribution_skills (source, ref_id, skill_name)"
+        " VALUES ('curated', 'mp/plug', 'my-skill')"
+    )
+    c.execute(
+        "INSERT OR IGNORE INTO usage_attribution_skills (source, ref_id, skill_name)"
+        " VALUES ('flea', 'entity-1', 'flea-skill')"
+    )
+    c.execute(
+        "INSERT OR IGNORE INTO usage_attribution_agents (source, ref_id, agent_name)"
+        " VALUES ('curated', 'mp/plug', 'my-agent')"
+    )
+    c.execute(
+        "INSERT OR IGNORE INTO usage_attribution_commands (source, ref_id, command_name)"
+        " VALUES ('curated', 'mp/plug', 'compound:debug')"
+    )
+    yield c
+    try:
+        c.close()
+    except Exception:
+        pass
+
+
+@pytest.fixture
 def bq_instance(monkeypatch):
     """Force instance.yaml to look like a BigQuery deployment for the
     duration of one test. Patches the cached load_instance_config so
