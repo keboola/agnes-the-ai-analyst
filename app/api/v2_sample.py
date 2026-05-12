@@ -172,7 +172,7 @@ def sample(
                 action="catalog.sample",
                 resource=resource,
                 params={"duration_ms": int((time.monotonic() - t0) * 1000),
-                        "error": str(exc)},
+                        "error": str(exc)[:200]},
                 result=f"error.{status_code}",
                 client_kind="cli",
             )
