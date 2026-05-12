@@ -13,7 +13,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_40():
+def test_schema_version_is_41():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -81,7 +81,12 @@ def test_schema_version_is_40():
     #            on (timestamp), (user_id, timestamp), (action, timestamp)
     #            added to keep Activity Center timeline queries under 100ms
     #            at 100k+ rows.
-    assert SCHEMA_VERSION == 40
+    # v40 → v41: platform telemetry schema — 7 new usage_* tables:
+    #            usage_events (per-event log), usage_session_summary
+    #            (per-session aggregate), usage_tool_daily + usage_plugin_daily
+    #            (daily rollups), usage_attribution_skills/agents/commands
+    #            (plugin manifest attribution). 10 indices for fast queries.
+    assert SCHEMA_VERSION == 41
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

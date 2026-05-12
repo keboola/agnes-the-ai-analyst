@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -644,6 +644,106 @@ CREATE INDEX IF NOT EXISTS idx_store_submissions_entity ON store_submissions(ent
 -- (reproduced with N=2 against 3 rows during /admin/store/submissions
 -- paging). Submissions table is admin-only and bounded by upload
 -- volume, so the index buys little; dropping it sidesteps the bug.
+
+-- v41: usage telemetry tables — per-event log, per-session aggregate,
+-- daily rollups, and attribution tables for skills/agents/commands.
+CREATE TABLE IF NOT EXISTS usage_events (
+    id                  VARCHAR PRIMARY KEY,
+    session_id          VARCHAR NOT NULL,
+    session_file        VARCHAR NOT NULL,
+    username            VARCHAR NOT NULL,
+    event_uuid          VARCHAR,
+    parent_uuid         VARCHAR,
+    event_type          VARCHAR NOT NULL,
+    tool_name           VARCHAR,
+    skill_name          VARCHAR,
+    subagent_type       VARCHAR,
+    command_name        VARCHAR,
+    is_error            BOOLEAN DEFAULT FALSE,
+    source              VARCHAR NOT NULL,
+    ref_id              VARCHAR,
+    model               VARCHAR,
+    cwd                 VARCHAR,
+    occurred_at         TIMESTAMP NOT NULL,
+    processor_version   INTEGER NOT NULL,
+    extracted_at        TIMESTAMP DEFAULT current_timestamp,
+    friction_tags       JSON
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_session ON usage_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_usage_events_user_time ON usage_events(username, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_tool ON usage_events(tool_name);
+CREATE INDEX IF NOT EXISTS idx_usage_events_skill ON usage_events(skill_name);
+CREATE INDEX IF NOT EXISTS idx_usage_events_ref ON usage_events(source, ref_id);
+
+CREATE TABLE IF NOT EXISTS usage_session_summary (
+    session_file        VARCHAR PRIMARY KEY,
+    session_id          VARCHAR,
+    username            VARCHAR NOT NULL,
+    started_at          TIMESTAMP,
+    ended_at            TIMESTAMP,
+    active_seconds      INTEGER,
+    wall_seconds        INTEGER,
+    user_messages       INTEGER DEFAULT 0,
+    assistant_messages  INTEGER DEFAULT 0,
+    tool_calls          INTEGER DEFAULT 0,
+    tool_errors         INTEGER DEFAULT 0,
+    skill_invocations   INTEGER DEFAULT 0,
+    subagent_dispatches INTEGER DEFAULT 0,
+    mcp_calls           INTEGER DEFAULT 0,
+    slash_commands      INTEGER DEFAULT 0,
+    distinct_tools      INTEGER DEFAULT 0,
+    distinct_skills     INTEGER DEFAULT 0,
+    primary_model       VARCHAR,
+    processor_version   INTEGER NOT NULL,
+    extracted_at        TIMESTAMP DEFAULT current_timestamp
+);
+CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username);
+CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at);
+
+CREATE TABLE IF NOT EXISTS usage_tool_daily (
+    day                 DATE NOT NULL,
+    tool_name           VARCHAR NOT NULL,
+    source              VARCHAR NOT NULL,
+    invocations         INTEGER DEFAULT 0,
+    error_count         INTEGER DEFAULT 0,
+    distinct_users      INTEGER DEFAULT 0,
+    distinct_sessions   INTEGER DEFAULT 0,
+    PRIMARY KEY (day, tool_name, source)
+);
+
+CREATE TABLE IF NOT EXISTS usage_plugin_daily (
+    day                 DATE NOT NULL,
+    source              VARCHAR NOT NULL,
+    ref_id              VARCHAR NOT NULL,
+    invocations         INTEGER DEFAULT 0,
+    distinct_users      INTEGER DEFAULT 0,
+    distinct_sessions   INTEGER DEFAULT 0,
+    PRIMARY KEY (day, source, ref_id)
+);
+
+CREATE TABLE IF NOT EXISTS usage_attribution_skills (
+    source       VARCHAR NOT NULL,
+    ref_id       VARCHAR NOT NULL,
+    skill_name   VARCHAR NOT NULL,
+    PRIMARY KEY (source, ref_id, skill_name)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_attr_skill_lookup ON usage_attribution_skills(skill_name);
+
+CREATE TABLE IF NOT EXISTS usage_attribution_agents (
+    source       VARCHAR NOT NULL,
+    ref_id       VARCHAR NOT NULL,
+    agent_name   VARCHAR NOT NULL,
+    PRIMARY KEY (source, ref_id, agent_name)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_attr_agent_lookup ON usage_attribution_agents(agent_name);
+
+CREATE TABLE IF NOT EXISTS usage_attribution_commands (
+    source       VARCHAR NOT NULL,
+    ref_id       VARCHAR NOT NULL,
+    command_name VARCHAR NOT NULL,
+    PRIMARY KEY (source, ref_id, command_name)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_attr_command_lookup ON usage_attribution_commands(command_name);
 """
 
 
@@ -2525,6 +2625,128 @@ def _v39_to_v40(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action_time ON audit_log(action, timestamp)")
 
 
+def _v40_to_v41(conn: duckdb.DuckDBPyConnection) -> None:
+    """v41: 7 new usage_* tables for platform telemetry.
+
+    - usage_events: per-event log (tool_use, slash_command, subagent, mcp_call)
+      extracted from session JSONLs.
+    - usage_session_summary: per-session aggregate keyed by session_file.
+    - usage_tool_daily / usage_plugin_daily: daily rollups for fast marketplace
+      queries.
+    - usage_attribution_skills / _agents / _commands: skill/agent/command
+      attribution exploded from plugin manifests; composite PKs allow the same
+      name to appear in two different plugins.
+
+    All CREATE TABLE/INDEX statements are IF NOT EXISTS — safe to re-run.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_events (
+            id                  VARCHAR PRIMARY KEY,
+            session_id          VARCHAR NOT NULL,
+            session_file        VARCHAR NOT NULL,
+            username            VARCHAR NOT NULL,
+            event_uuid          VARCHAR,
+            parent_uuid         VARCHAR,
+            event_type          VARCHAR NOT NULL,
+            tool_name           VARCHAR,
+            skill_name          VARCHAR,
+            subagent_type       VARCHAR,
+            command_name        VARCHAR,
+            is_error            BOOLEAN DEFAULT FALSE,
+            source              VARCHAR NOT NULL,
+            ref_id              VARCHAR,
+            model               VARCHAR,
+            cwd                 VARCHAR,
+            occurred_at         TIMESTAMP NOT NULL,
+            processor_version   INTEGER NOT NULL,
+            extracted_at        TIMESTAMP DEFAULT current_timestamp,
+            friction_tags       JSON
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_session_summary (
+            session_file        VARCHAR PRIMARY KEY,
+            session_id          VARCHAR,
+            username            VARCHAR NOT NULL,
+            started_at          TIMESTAMP,
+            ended_at            TIMESTAMP,
+            active_seconds      INTEGER,
+            wall_seconds        INTEGER,
+            user_messages       INTEGER DEFAULT 0,
+            assistant_messages  INTEGER DEFAULT 0,
+            tool_calls          INTEGER DEFAULT 0,
+            tool_errors         INTEGER DEFAULT 0,
+            skill_invocations   INTEGER DEFAULT 0,
+            subagent_dispatches INTEGER DEFAULT 0,
+            mcp_calls           INTEGER DEFAULT 0,
+            slash_commands      INTEGER DEFAULT 0,
+            distinct_tools      INTEGER DEFAULT 0,
+            distinct_skills     INTEGER DEFAULT 0,
+            primary_model       VARCHAR,
+            processor_version   INTEGER NOT NULL,
+            extracted_at        TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_tool_daily (
+            day                 DATE NOT NULL,
+            tool_name           VARCHAR NOT NULL,
+            source              VARCHAR NOT NULL,
+            invocations         INTEGER DEFAULT 0,
+            error_count         INTEGER DEFAULT 0,
+            distinct_users      INTEGER DEFAULT 0,
+            distinct_sessions   INTEGER DEFAULT 0,
+            PRIMARY KEY (day, tool_name, source)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_plugin_daily (
+            day                 DATE NOT NULL,
+            source              VARCHAR NOT NULL,
+            ref_id              VARCHAR NOT NULL,
+            invocations         INTEGER DEFAULT 0,
+            distinct_users      INTEGER DEFAULT 0,
+            distinct_sessions   INTEGER DEFAULT 0,
+            PRIMARY KEY (day, source, ref_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_attribution_skills (
+            source       VARCHAR NOT NULL,
+            ref_id       VARCHAR NOT NULL,
+            skill_name   VARCHAR NOT NULL,
+            PRIMARY KEY (source, ref_id, skill_name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_attribution_agents (
+            source       VARCHAR NOT NULL,
+            ref_id       VARCHAR NOT NULL,
+            agent_name   VARCHAR NOT NULL,
+            PRIMARY KEY (source, ref_id, agent_name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_attribution_commands (
+            source       VARCHAR NOT NULL,
+            ref_id       VARCHAR NOT NULL,
+            command_name VARCHAR NOT NULL,
+            PRIMARY KEY (source, ref_id, command_name)
+        )
+    """)
+    # Indices — created after all tables so the batch can be re-run safely.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_session ON usage_events(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user_time ON usage_events(username, occurred_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_tool ON usage_events(tool_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_skill ON usage_events(skill_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_ref ON usage_events(source, ref_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_skill_lookup ON usage_attribution_skills(skill_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_agent_lookup ON usage_attribution_agents(agent_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_command_lookup ON usage_attribution_commands(command_name)")
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -2791,6 +3013,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # tests). Create them here explicitly for fresh installs; the
             # upgrade path uses _v39_to_v40 below.
             _v39_to_v40(conn)
+            # v41 usage_* tables + indices. _SYSTEM_SCHEMA already creates them
+            # via IF NOT EXISTS, so this is a safe no-op for fresh installs;
+            # mirrors the established pattern for the upgrade path below.
+            _v40_to_v41(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -2925,6 +3151,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 40:
                 _v39_to_v40(conn)
+            if current < 41:
+                _v40_to_v41(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
