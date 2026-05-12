@@ -106,6 +106,23 @@ def activity_timeline(
         limit=limit,
     )
 
+    # Enrich rows with users.email + users.name so the UI can render a
+    # readable label (`name <email>`) instead of an opaque UUID. One small
+    # IN(...) query per page; users table is small. Skipped when the page
+    # carries no audit rows that reference a user.
+    user_ids = list({r["user_id"] for r in rows if r.get("user_id")})
+    if user_ids:
+        placeholders = ",".join("?" for _ in user_ids)
+        rows_lookup = conn.execute(
+            f"SELECT id, email, name FROM users WHERE id IN ({placeholders})",
+            user_ids,
+        ).fetchall()
+        info = {row[0]: {"email": row[1], "name": row[2]} for row in rows_lookup}
+        for r in rows:
+            extra = info.get(r.get("user_id")) or {}
+            r["user_email"] = extra.get("email")
+            r["user_name"] = extra.get("name")
+
     _audit_read(conn, user, "timeline", {
         "since_minutes": since_minutes,
         "user_id": user_id, "action_prefix": action_prefix,

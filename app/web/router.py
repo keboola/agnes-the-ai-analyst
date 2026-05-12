@@ -1513,16 +1513,16 @@ async def admin_user_detail_page(
 @router.get("/admin/usage", response_class=HTMLResponse)
 async def admin_usage_page(
     request: Request,
-    window: str = "7d",
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Usage summary page — admin-only telemetry overview."""
-    if window not in ("7d", "30d", "all"):
-        window = "7d"
-    from app.api.admin_usage_summary import usage_summary
-    data = usage_summary(window=window, user=user, conn=conn)
-    ctx = _build_context(request, user=user, **data)
+    """Interactive Usage page — filter / group-by / search on usage_events.
+
+    All data loads client-side from /api/admin/usage/* (facets, kpis, query)
+    so the page state lives in the URL and the server doesn't preload a
+    fixed window's snapshot. The old static `?window=7d|30d|all` is gone
+    — the JS uses `since_minutes` in the query string instead.
+    """
+    ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_usage.html", ctx)
 
 

@@ -103,11 +103,18 @@ def test_summary_window_validation(seeded_app, admin_user):
 
 
 def test_admin_usage_page_renders(seeded_app, admin_user):
-    """/admin/usage HTML page renders successfully."""
+    """/admin/usage HTML page renders the interactive shell.
+
+    Data loads client-side from /api/admin/usage/{facets,kpis,query}, so the
+    server-rendered HTML asserts only the structural anchors the JS needs
+    to attach to. The old static `Top 10 tools` block is replaced by the
+    Group by + filter bar pattern.
+    """
     resp = seeded_app["client"].get("/admin/usage", headers=admin_user)
     assert resp.status_code == 200
-    assert "Top 10 tools" in resp.text
-    assert "DAU" in resp.text
+    assert "obs-page" in resp.text
+    assert 'id="u-groupby"' in resp.text
+    assert "Distinct users" in resp.text
 
 
 def test_admin_usage_page_admin_only(seeded_app, analyst_user):

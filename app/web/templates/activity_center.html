@@ -282,6 +282,8 @@
 .obs-table tbody tr:hover { background: var(--obs-soft); }
 .obs-table tbody tr.is-selected { background: #eff6ff; }
 .obs-time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--obs-muted); }
+.obs-user-primary { color: var(--obs-fg); }
+.obs-user-id { color: var(--obs-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .obs-action-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .obs-dur-cell { text-align: right; font-variant-numeric: tabular-nums; color: var(--obs-muted); }
 .obs-result-ok { color: var(--obs-ok); background: var(--obs-ok-bg); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
@@ -570,8 +572,21 @@
     };
     tr.appendChild(td('obs-time', escapeHtml(formatTime(r.timestamp))));
 
-    const userLabel = r.user_id ? truncMiddle(r.user_id, 14) : '—';
-    tr.appendChild(td('', escapeHtml(userLabel)));
+    // User cell: prefer "name (id-prefix)" or "email (id-prefix)" when the
+    // server enriched the row from the users table; fall back to a truncated
+    // id when the user has been deleted or the row belongs to a system actor.
+    let userHtml = '—';
+    if (r.user_id) {
+      const idPrefix = r.user_id.slice(0, 8) + '…';
+      const primary = r.user_name || r.user_email;
+      if (primary) {
+        userHtml = '<span class="obs-user-primary">' + escapeHtml(primary)
+                 + '</span> <span class="obs-user-id">(' + escapeHtml(idPrefix) + ')</span>';
+      } else {
+        userHtml = '<code title="' + escapeHtml(r.user_id) + '">' + escapeHtml(idPrefix) + '</code>';
+      }
+    }
+    tr.appendChild(td('', userHtml));
 
     const src = r._source || 'other';
     tr.appendChild(td('', '<span class="obs-source-pill is-' + src + '">' + escapeHtml(src) + '</span>'));
