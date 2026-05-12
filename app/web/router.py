@@ -804,6 +804,7 @@ async def catalog(
 
         user_id = user.get("id", "")
         tables = []
+        internal_tables = []
         for tc in registered:
             table_id = tc.get("id", "")
             if not can_access(user_id, ResourceType.TABLE.value, table_id, conn):
@@ -813,6 +814,7 @@ async def catalog(
                 "name": tc.get("name", ""),
                 "description": tc.get("description", ""),
                 "dataset": tc.get("bucket"),
+                "source_type": tc.get("source_type") or "",
                 "sync_strategy": tc.get("sync_strategy", "full_refresh"),
                 "query_mode": tc.get("query_mode", "local"),
                 "profile": all_profiles.get(table_id),
@@ -823,12 +825,21 @@ async def catalog(
                     table_data["last_sync"] = state.get("last_sync")
                     table_data["rows"] = state.get("rows")
                     break
-            tables.append(table_data)
+            # Agnes internal tables (agnes_sessions / agnes_telemetry /
+            # agnes_audit) render in a dedicated card on /catalog rather
+            # than under "Core Business Data" — they're system tables,
+            # not business data, but analysts should still discover them
+            # for `agnes query` so they need to live on the catalog page.
+            if tc.get("source_type") == "internal":
+                internal_tables.append(table_data)
+            else:
+                tables.append(table_data)
     except Exception as e:
         tables = []
+        internal_tables = []
         logger.warning(f"Could not load catalog: {e}")
 
-    # Build data_stats for catalog template
+    # Build data_stats for catalog template (business-data card header)
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
     data_stats = {
         "total_tables": len(all_states),
@@ -838,19 +849,28 @@ async def catalog(
         "last_updated": max((s.get("last_sync") for s in all_states if s.get("last_sync")), default=None),
     }
 
-    # Build categories from tables
+    # Build business-data categories from `tables` (excludes internal).
     categories = {}
     for t in tables:
         ds = t.get("dataset") or "default"
         if ds not in categories:
             categories[ds] = {"name": ds, "tables": []}
         categories[ds]["tables"].append(t)
-
-    # Add count to each category (template expects .count)
     catalog_data = []
     for cat in categories.values():
         cat["count"] = len(cat["tables"])
         catalog_data.append(cat)
+
+    # Internal-tables card. Single flat list — the three rows already
+    # share one category ("Agnes Internal"), so no accordion grouping is
+    # useful. Template renders them as a plain list under their own card.
+    internal_card = None
+    if internal_tables:
+        internal_card = {
+            "name": "Agnes Internal",
+            "count": len(internal_tables),
+            "tables": internal_tables,
+        }
 
     ctx = _build_context(
         request, user=user,
@@ -860,6 +880,7 @@ async def catalog(
         data_stats=data_stats,
         categories=catalog_data,
         catalog_data=catalog_data,
+        internal_card=internal_card,
         metrics_data=[],
         sync_states=all_states,
         folder_mapping={},
