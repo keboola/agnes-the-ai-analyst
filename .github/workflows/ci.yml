@@ -55,29 +55,38 @@ jobs:
       - name: Build wheel
         run: uv build --wheel --out-dir dist
 
+      - name: Write CLI install assertion script
+        run: |
+          cat > /tmp/smoke.py <<'PY'
+          import sys, urllib3
+          try:
+              import kbcstorage  # noqa: F401
+              sys.exit("REGRESSION: kbcstorage leaked into the CLI wheel — should be in [server] extra only")
+          except ImportError:
+              pass
+          maj, minor = (int(x) for x in urllib3.__version__.split(".")[:2])
+          assert (maj, minor) >= (2, 7), f"urllib3 too old: {urllib3.__version__}"
+          print(f"OK: kbcstorage absent, urllib3 {urllib3.__version__}")
+          PY
+
       - name: Smoke install in fresh python:3.13-slim
         run: |
-          docker run --rm -v "$PWD/dist:/wheels:ro" python:3.13-slim bash -c '
-            set -euo pipefail
-            apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
-            curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
-            export PATH="$HOME/.local/bin:$PATH"
-            WHEEL=$(ls /wheels/agnes_the_ai_analyst-*-py3-none-any.whl | head -1)
-            uv tool install --force "$WHEEL"
-            agnes --version
-            agnes --help > /dev/null
-            agnes catalog --help > /dev/null
-            python3 -c "
-            try:
-                import kbcstorage
-                raise SystemExit(\"REGRESSION: kbcstorage leaked into the CLI wheel — should be in [server] extra only\")
-            except ImportError:
-                pass
-            import urllib3
-            assert tuple(int(x) for x in urllib3.__version__.split(\".\")[:2]) >= (2, 7), urllib3.__version__
-            print(\"OK: kbcstorage absent, urllib3\", urllib3.__version__)
-            "
-          '
+          docker run --rm \
+            -v "$PWD/dist:/wheels:ro" \
+            -v /tmp/smoke.py:/smoke.py:ro \
+            python:3.13-slim bash -c '
+              set -euo pipefail
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
+              curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+              export PATH="$HOME/.local/bin:$PATH"
+              WHEEL=$(ls /wheels/agnes_the_ai_analyst-*-py3-none-any.whl | head -1)
+              uv tool install --force "$WHEEL"
+              agnes --version
+              agnes --help > /dev/null
+              agnes catalog --help > /dev/null
+              # Run the assertion in the same venv uv tool created
+              "$HOME/.local/share/uv/tools/agnes-the-ai-analyst/bin/python" /smoke.py
+            '
 
   docker-build:
     runs-on: ubuntu-latest
