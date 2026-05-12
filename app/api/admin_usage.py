@@ -2,7 +2,7 @@
 
 Phase C.1: GET /api/admin/usage/export — stream telemetry export as csv|json|parquet
 Phase C.3: POST /api/admin/usage/ask  — LLM Text-to-SQL over usage_* tables
-Phase C.4 (future): POST /api/admin/usage/reprocess, POST /api/admin/usage/prune
+Phase C.4: POST /api/admin/usage/reprocess, POST /api/admin/usage/prune
 
 All endpoints admin-only. Export writes one audit_log row per call.
 """
@@ -330,3 +330,106 @@ def ask_usage(
         "llm_ms": llm_ms,
         "exec_ms": exec_ms,
     }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/admin/usage/reprocess — force re-extraction (Phase C.4)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/reprocess")
+def reprocess_usage(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Force re-extraction of all sessions for the usage processor.
+
+    DELETEs:
+      - session_processor_state WHERE processor_name='usage'
+        (so the next scheduler tick re-scans every JSONL)
+      - usage_events
+      - usage_session_summary
+      - usage_tool_daily
+      - usage_plugin_daily
+
+    Verification processor's state untouched (composite PK isolates each processor).
+    Audit-logged with deleted-row counts.
+    """
+    counts = {}
+    try:
+        conn.execute("BEGIN")
+        n_state = conn.execute(
+            "DELETE FROM session_processor_state WHERE processor_name = 'usage' RETURNING 1"
+        ).fetchall()
+        counts["state_rows"] = len(n_state)
+        n_events = conn.execute("DELETE FROM usage_events RETURNING 1").fetchall()
+        counts["events"] = len(n_events)
+        n_sum = conn.execute("DELETE FROM usage_session_summary RETURNING 1").fetchall()
+        counts["summaries"] = len(n_sum)
+        n_tool = conn.execute("DELETE FROM usage_tool_daily RETURNING 1").fetchall()
+        counts["tool_daily"] = len(n_tool)
+        n_plugin = conn.execute("DELETE FROM usage_plugin_daily RETURNING 1").fetchall()
+        counts["plugin_daily"] = len(n_plugin)
+        conn.execute("COMMIT")
+    except Exception as e:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        logger.exception("reprocess failed")
+        raise HTTPException(status_code=500, detail=f"reprocess failed: {e}")
+
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("id"),
+            action="usage.reprocess",
+            params=counts,
+            result="success",
+        )
+    except Exception:
+        logger.exception("audit_log write failed for usage.reprocess; continuing")
+
+    return {"status": "ok", "deleted": counts}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/admin/usage/prune — retention-based event pruning (Phase C.4)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/prune")
+def prune_usage(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Delete usage_events older than USAGE_EVENTS_RETENTION_DAYS.
+
+    Default retention: env var unset or ``0`` → no pruning (forever).
+    Daily rollup tables untouched — they're tiny and lossy-by-design.
+    """
+    retention = int(os.environ.get("USAGE_EVENTS_RETENTION_DAYS", "0") or 0)
+    if retention <= 0:
+        return {"status": "skipped", "reason": "USAGE_EVENTS_RETENTION_DAYS unset or 0"}
+    try:
+        before = conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]
+        conn.execute(
+            "DELETE FROM usage_events WHERE occurred_at < CURRENT_DATE - INTERVAL (?) DAY",
+            [retention],
+        )
+        after = conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]
+        deleted = before - after
+    except Exception as e:
+        logger.exception("prune failed")
+        raise HTTPException(status_code=500, detail=f"prune failed: {e}")
+
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("id"),
+            action="usage.prune",
+            params={"retention_days": retention, "deleted": deleted, "remaining": after},
+            result="success",
+        )
+    except Exception:
+        logger.exception("audit_log write failed for usage.prune; continuing")
+
+    return {"status": "ok", "retention_days": retention, "deleted": deleted, "remaining": after}
