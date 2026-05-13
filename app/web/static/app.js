@@ -35,7 +35,33 @@
         });
     }
 
+    // Toast helper — paired with .toast / .toast-container CSS in style-custom.css.
+    // Usage: window.appToast({kind: "success", msg: "Saved", timeout: 4000})
+    function ensureToastContainer() {
+        var c = document.getElementById("appToastContainer");
+        if (c) return c;
+        c = document.createElement("div");
+        c.id = "appToastContainer";
+        c.className = "toast-container";
+        document.body.appendChild(c);
+        return c;
+    }
+    function appToast(opts) {
+        opts = opts || {};
+        var kind = opts.kind || "info";
+        var msg = String(opts.msg || "");
+        var timeout = opts.timeout == null ? 4000 : opts.timeout;
+        var el = document.createElement("div");
+        el.className = "toast is-" + kind;
+        el.textContent = msg;
+        el.addEventListener("click", function () { el.remove(); });
+        ensureToastContainer().appendChild(el);
+        if (timeout > 0) setTimeout(function () { el.remove(); }, timeout);
+        return el;
+    }
+
     window.appUI = { wireDropdown: wireDropdown };
+    window.appToast = appToast;
 
     // Auto-wire the two dropdowns shipped from _app_header.html.
     function init() {
