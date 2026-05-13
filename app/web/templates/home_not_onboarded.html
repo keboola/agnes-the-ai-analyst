@@ -1543,6 +1543,13 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
        `instance.overview` yaml field via get_instance_overview()
        (`AGNES_INSTANCE_OVERVIEW` env override). Empty value hides the
        whole section, keeping the OSS vendor-neutral. #}
+    {# Overview is operator-owned reference content, not per-user
+       chrome — no dismiss button on purpose. A one-time per-device
+       hide would mean returning users who wanted to re-read the
+       privacy posture / telemetry policy can't get back to it
+       without clearing localStorage. The whole section is opt-in at
+       the operator level (empty yaml → section absent), which is
+       the right axis of control. #}
     {% if config.INSTANCE_OVERVIEW %}
     <section class="home-overview">
         <h2>Overview</h2>

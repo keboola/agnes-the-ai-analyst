@@ -362,7 +362,11 @@ def test_overview_section_renders_when_yaml_set(fresh_db, monkeypatch):
     """Setting `AGNES_INSTANCE_OVERVIEW` env (mirrors
     instance.overview yaml) injects raw HTML into the Overview section
     via the same `| safe` filter as news_intro. The marker text must
-    appear inside the rendered section wrapper."""
+    appear inside the rendered section wrapper. Overview deliberately
+    has NO dismiss button — it's operator-owned reference content
+    (privacy posture, telemetry policy, product framing), and a
+    per-device hide would leave returning users unable to re-read
+    it without clearing localStorage."""
     monkeypatch.setenv("AGNES_INSTANCE_OVERVIEW", "<p>OVERVIEW_TEST_MARKER</p>")
     from src.db import get_system_db, close_system_db
 
@@ -375,6 +379,9 @@ def test_overview_section_renders_when_yaml_set(fresh_db, monkeypatch):
     body = _client().get("/home", cookies={"access_token": sess}).text
     assert '<section class="home-overview">' in body
     assert "OVERVIEW_TEST_MARKER" in body
+    # Overview must NOT carry a dismiss key — content stays
+    # reachable on every visit so users can re-read it.
+    assert 'data-dismiss-key="agnes_home_overview_dismissed"' not in body
 
 
 def test_overview_section_hidden_when_yaml_empty(fresh_db, monkeypatch):
