@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.3] — 2026-05-13
+
 ### Added
 - `AGNES_DEFAULT_SYNC_SCHEDULE` env var (consumed by `app/api/sync.py:_run_materialized_pass`) sets the platform-wide fallback `sync_schedule` for registry rows that don't pin their own value. Lets a deployment dial cadence down to `daily 03:00` without having to PUT every row. Per-table `sync_schedule` still wins; literal `every 1h` is the floor if neither is set (matches OSS-historical behaviour).
 
