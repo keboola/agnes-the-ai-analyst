@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.2] — 2026-05-13
+
 ### Added
 
 - **Admin-configurable flea-market content guardrail thresholds.**
