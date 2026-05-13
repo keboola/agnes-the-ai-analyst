@@ -225,7 +225,12 @@
     color: inherit;
     transition: border-color 0.15s, background 0.15s;
 }
-.home-mock .home-usage-item:hover {
+/* Hover affordance only on the anchor variants (VS Code, Claude
+   Desktop). The Terminal tile renders as a plain <div> — the setup
+   hero above already covers the terminal install path, so a
+   click-through from here would round-trip to content the user just
+   scrolled past. */
+.home-mock a.home-usage-item:hover {
     border-color: var(--hp-primary);
     background: var(--hp-primary-light);
 }
@@ -1567,11 +1572,16 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
             <p>Same workspace, three surfaces. Pick whichever fits your flow — all three share the same plugins, data access, and credentials.</p>
         </header>
         <div class="home-usage-grid">
-            <a class="home-usage-item" href="/setup">
+            {# Terminal tile is informational — the setup hero above already
+               walks through the Claude Code CLI install, so a click-through
+               here would round-trip back to content the user just scrolled
+               past. Rendered as a non-anchor div; hover/cursor styles only
+               apply to the anchor variants below. #}
+            <div class="home-usage-item">
                 <span class="ico" aria-hidden="true">&#x2328;&#xFE0F;</span>
                 <strong>Terminal</strong>
                 <span>Default. Run <code>claude</code> from any project under <code>~/{{ workspace_dir }}</code>. Lowest overhead, fastest feedback loop.</span>
-            </a>
+            </div>
             <a class="home-usage-item" href="/setup-advanced#vscode">
                 <span class="ico" aria-hidden="true">&#x1F4D1;</span>
                 <strong>VS Code</strong>
