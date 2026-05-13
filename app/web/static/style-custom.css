@@ -2158,22 +2158,43 @@ a.app-header-logo:focus-visible {
     border: 2px solid var(--border, #e5e7eb);
 }
 
+/* Top-nav entries. Both <a class="app-nav-link"> and
+   <button class="app-nav-link app-nav-menu-trigger"> share this rule
+   so the Admin dropdown trigger renders identical to its siblings —
+   same font, color, padding, hover, active state. The button-element
+   resets (background/border/font-family) flow from here, so
+   .app-nav-menu-trigger no longer needs to strip <button> chrome
+   separately. */
 .app-nav-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font-size: 13px;
     font-weight: 500;
+    font-family: inherit;
     color: var(--text-secondary, #6b7280);
     text-decoration: none;
     padding: 6px 12px;
     border-radius: 8px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    line-height: 1.2;
     transition: all 0.15s ease;
 }
 .app-nav-link:hover {
     color: var(--text-primary, #111827);
     background: var(--border-light, #f3f4f6);
 }
-.app-nav-link.is-active {
-    color: var(--primary, #6366f1);
-    background: var(--primary-light, #eef2ff);
+.app-nav-link.is-active,
+.app-nav-link[aria-expanded="true"] {
+    color: var(--primary, #0073D1);
+    background: var(--primary-light, rgba(0, 115, 209, 0.1));
+}
+.app-nav-link:focus { outline: none; }
+.app-nav-link:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.25);
 }
 
 .app-btn-logout {
@@ -2235,24 +2256,9 @@ a.app-header-logo:focus-visible {
 
 /* ── Admin nav dropdown — same vocabulary as user menu, scoped under nav links ── */
 .app-nav-menu { position: relative; display: inline-flex; }
-.app-nav-menu-trigger {
-    display: inline-flex; align-items: center; gap: 4px;
-    background: none;
-    /* Strip the default <button> chrome — the .app-nav-link class above
-       supplies the visual; the button element only carries semantics. */
-    border: 0;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-}
-.app-nav-menu-trigger:focus { outline: none; }
-.app-nav-menu-trigger:focus-visible {
-    outline: 2px solid var(--primary, #0073D1);
-    outline-offset: 2px;
-}
-.app-nav-menu-trigger[aria-expanded="true"] {
-    background: var(--border-light, #f3f4f6);
-}
+/* .app-nav-menu-trigger styling flows entirely from .app-nav-link above.
+   The trigger class is kept in markup as a hook for app.js dropdown
+   wiring and for targeting the chevron rotation below. */
 .app-nav-menu-chevron { color: currentColor; transition: transform 0.15s ease; }
 .app-nav-menu-trigger[aria-expanded="true"] .app-nav-menu-chevron { transform: rotate(180deg); }
 .app-nav-menu-panel {

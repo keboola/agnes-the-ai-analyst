@@ -119,29 +119,5 @@
         </div>
     </div>
 </header>
-<script>
-// Generic toggle pattern — used by both the user menu and the Admin nav dropdown.
-function _wireDropdown(triggerId, panelId) {
-    var trigger = document.getElementById(triggerId);
-    var panel = document.getElementById(panelId);
-    if (!trigger || !panel) return;
-    function setOpen(open) {
-        trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
-        if (open) { panel.removeAttribute('hidden'); }
-        else { panel.setAttribute('hidden', ''); }
-    }
-    trigger.addEventListener('click', function(e) {
-        e.stopPropagation();
-        setOpen(trigger.getAttribute('aria-expanded') !== 'true');
-    });
-    document.addEventListener('click', function(e) {
-        if (!panel.contains(e.target) && e.target !== trigger) setOpen(false);
-    });
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') { setOpen(false); trigger.focus(); }
-    });
-}
-_wireDropdown('userMenuTrigger', 'userMenuPanel');
-_wireDropdown('adminNavTrigger', 'adminNavPanel');
-</script>
+{# Dropdown wiring moved to app/web/static/app.js (loaded by base.html). #}
 {% endif %}
