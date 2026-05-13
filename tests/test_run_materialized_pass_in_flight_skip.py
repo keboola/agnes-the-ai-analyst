@@ -41,6 +41,60 @@ def fake_registry_with_one_materialized(monkeypatch, tmp_path):
     return state
 
 
+def test_default_schedule_falls_through_env_then_every_1h(
+    monkeypatch, fake_registry_with_one_materialized,
+):
+    """Per-table ``sync_schedule=None`` → fall through to
+    ``AGNES_DEFAULT_SYNC_SCHEDULE`` env (operator deployment override) →
+    fall through to literal ``every 1h`` (OSS-historical default).
+    Test the THREE branches:
+
+      1. Per-table schedule wins over env.
+      2. Env wins when per-table is None.
+      3. ``every 1h`` is the floor — env unset + per-table None.
+
+    Branch (2) is the operator knob for ``daily 03:00`` deployments
+    (data freshness budget once-per-day; the hourly default
+    over-fetches Snowflake on every Keboola export-async cycle)."""
+    captured = {}
+
+    def fake_is_due(schedule, last_iso, now=None):
+        captured["schedule"] = schedule
+        return False  # short-circuit the dispatcher
+
+    monkeypatch.setattr("app.api.sync.is_table_due", fake_is_due)
+
+    # Case 3: env unset, per-table None → "every 1h"
+    monkeypatch.delenv("AGNES_DEFAULT_SYNC_SCHEDULE", raising=False)
+    _run_materialized_pass(MagicMock(), MagicMock())
+    assert captured["schedule"] == "every 1h", captured
+
+    # Case 2: env set, per-table None → env value
+    monkeypatch.setenv("AGNES_DEFAULT_SYNC_SCHEDULE", "daily 03:00")
+    _run_materialized_pass(MagicMock(), MagicMock())
+    assert captured["schedule"] == "daily 03:00", captured
+
+    # Case 1: per-table schedule wins over env. (Mutate fixture's row.)
+    fake_registry_with_one_materialized  # ensure fixture is loaded
+    import app.api.sync as _sm
+    # The fixture's _Repo.list_all returns a captured list; reach into
+    # its closure isn't easy. Easier: monkeypatch list_all directly.
+    pinned_rows = [{
+        "id": "in_flight_t", "name": "in_flight_t",
+        "query_mode": "materialized", "source_type": "bigquery",
+        "source_query": "SELECT 1",
+        "sync_schedule": "every 30m",  # explicit per-table
+    }]
+
+    class _RepoWithSched:
+        def __init__(self, conn): pass
+        def list_all(self): return pinned_rows
+
+    monkeypatch.setattr(_sm, "TableRegistryRepository", _RepoWithSched)
+    _run_materialized_pass(MagicMock(), MagicMock())
+    assert captured["schedule"] == "every 30m", captured
+
+
 def test_in_flight_recorded_as_skipped_not_error(fake_registry_with_one_materialized):
     state = fake_registry_with_one_materialized
 

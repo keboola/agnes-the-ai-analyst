@@ -41,6 +41,26 @@ router = APIRouter(prefix="/api/sync", tags=["sync"])
 # something bypasses the handler).
 _sync_lock = threading.Lock()
 
+# Race-protection: the trigger handler returns 200 BEFORE the background task
+# acquires ``_sync_lock``. In that ~few-hundred-ms gap, ``/api/sync/status``
+# would honestly report ``locked=False`` — and the host-side
+# ``agnes-auto-upgrade.sh`` defer probe (which polls this endpoint) would
+# proceed with ``docker compose up -d`` and SIGKILL the still-spawning
+# extractor / materialized worker. Mid-sync container kill is the exact
+# class of corruption the WAL replay auto-recovery is meant to be a
+# safety net for, not a routine occurrence.
+#
+# Fix: stamp the trigger time alongside the lock. ``/api/sync/status`` also
+# returns ``locked=True`` for ``_TRIGGER_HOLD_SEC`` seconds after the most
+# recent trigger, even if the background task hasn't yet acquired the lock.
+# The window is short enough that an operator-issued ``/api/sync/trigger``
+# followed by an immediate ``GET /api/sync/status`` is consistent
+# (locked=True), but long enough to cover the schedule → background-task
+# spawn latency. Defense in depth: the real lock still gates the
+# extractor subprocess.
+_TRIGGER_HOLD_SEC = 30
+_recent_trigger_at: float = 0.0  # monotonic clock; 0 = never triggered
+
 
 def _file_hash(path: Path) -> str:
     if not path.exists():
@@ -164,7 +184,17 @@ def _run_materialized_pass(
 
         last = state.get_last_sync(ref_name)
         last_iso = last.isoformat() if last else None
-        schedule = row.get("sync_schedule") or "every 1h"
+        # Per-table schedule wins; fall through to AGNES_DEFAULT_SYNC_SCHEDULE
+        # (operator override), then to ``every 1h`` (OSS-historical default).
+        # The env knob lets a deployment dial down the platform-wide refresh
+        # cadence without having to PUT every registry row — useful when
+        # data freshness budget is "once per day" and the hourly default
+        # over-fetches.
+        schedule = (
+            row.get("sync_schedule")
+            or os.environ.get("AGNES_DEFAULT_SYNC_SCHEDULE", "").strip()
+            or "every 1h"
+        )
         if not is_table_due(schedule, last_iso):
             summary["skipped"].append({"table": ref_name, "reason": "due_check"})
             continue
@@ -785,10 +815,19 @@ async def sync_status():
 
     Returns:
         ``{"locked": bool}`` — True if `_sync_lock` is currently held by
-        a `_run_sync` invocation. The host script defers the upgrade
-        when this is True and retries on the next 5-min cron tick.
+        a `_run_sync` invocation, OR a sync was triggered within the
+        last ``_TRIGGER_HOLD_SEC`` seconds (so the FastAPI background
+        task hasn't yet acquired the lock). Without the trigger-hold
+        window, an auto-upgrade probe firing in the gap between the
+        trigger handler's 200 response and the background task's
+        ``_sync_lock.acquire()`` would see ``locked=False`` and proceed
+        with ``up -d`` — killing the just-spawning extractor.
     """
-    return {"locked": _sync_lock.locked()}
+    locked = _sync_lock.locked()
+    if not locked and _recent_trigger_at:
+        # Monotonic deadline; clock skew / DST jumps don't matter.
+        locked = (time.monotonic() - _recent_trigger_at) < _TRIGGER_HOLD_SEC
+    return {"locked": locked}
 
 
 # ---- Trigger ----
@@ -870,6 +909,12 @@ async def trigger_sync(
             detail="sync_already_in_progress",
         )
     _t0 = time.monotonic()
+    # Stamp the trigger time so `/api/sync/status` reports locked=True
+    # for the next ``_TRIGGER_HOLD_SEC`` even though the background
+    # task hasn't yet acquired ``_sync_lock``. Closes the race window
+    # the host-side ``agnes-auto-upgrade.sh`` defer probe was hitting.
+    global _recent_trigger_at
+    _recent_trigger_at = _t0
     background_tasks.add_task(_run_sync, tables)
     try:
         from src.db import get_system_db

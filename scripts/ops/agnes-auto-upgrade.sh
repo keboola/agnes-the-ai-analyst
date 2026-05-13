@@ -176,7 +176,15 @@ if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
             IMAGE_UIDGID=$(docker run --rm --entrypoint cat "$IMAGE" /etc/passwd 2>/dev/null \
                 | awk -F: -v u="${IMAGE_USER%%:*}" '$1==u || $3==u {print $3":"$4; exit}')
             if [ -n "$IMAGE_UIDGID" ]; then
-                for d in "$STATE_DIR" /data/extracts /data/analytics; do
+                # /data/tmp is the default ``AGNES_TEMP_DIR`` from
+                # docker-compose.yml — Snowflake-UNLOAD slice staging
+                # and CSV intermediates land here. Without an explicit
+                # mkdir + chown, the runtime user can't create it
+                # under a root-owned ``/data`` (the data disk's root
+                # comes up root-owned on first mount). ``mkdir -p``
+                # is idempotent so existing dirs survive.
+                mkdir -p /data/tmp 2>/dev/null || true
+                for d in "$STATE_DIR" /data/extracts /data/analytics /data/tmp; do
                     [ -d "$d" ] && chown -R "$IMAGE_UIDGID" "$d" 2>/dev/null || true
                 done
             fi
