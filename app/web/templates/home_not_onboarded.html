@@ -24,6 +24,7 @@
 .home-mock * { box-sizing: border-box; }
 
 .home-mock .install-hero {
+    position: relative;
     background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
     color: white;
     border-radius: 16px;
@@ -31,6 +32,51 @@
     margin-bottom: 22px;
     box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
 }
+.home-mock .install-hero-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.14);
+    color: white;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+}
+.home-mock .install-hero-close:hover,
+.home-mock .install-hero-close:focus-visible {
+    background: rgba(255, 255, 255, 0.28);
+    outline: none;
+}
+.home-mock .offboard-strip {
+    margin: 0 0 22px;
+    padding: 10px 14px;
+    border: 1px solid var(--hp-border);
+    border-radius: 10px;
+    background: var(--hp-border-light);
+    color: var(--hp-text-secondary);
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.home-mock .offboard-strip button {
+    border: 1px solid var(--hp-border);
+    background: white;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 13px;
+    cursor: pointer;
+}
+.home-mock .offboard-strip button:hover { background: var(--hp-border-light); }
 .home-mock .install-hero .eyebrow {
     font-size: 11px;
     font-weight: 600;
@@ -1154,29 +1200,22 @@
 
     {% set display_name = (user.name or (user.email or "").split("@")[0] or "there") %}
 
+    {# Install-hero renders only for not-onboarded users. Once `agnes init`
+       POSTs /api/me/onboarded (or the user clicks the in-hero X) the hero
+       disappears entirely — the rest of /home (connector tiles, news,
+       etc.) stays. Offboarding escape hatch moved to a discrete strip
+       below; see `.offboard-strip`. #}
+    {% if not onboarded %}
     <div class="install-hero">
-        {% if onboarded %}
-        <div class="eyebrow">Welcome back, {{ display_name }} — your workspace is ready</div>
-        <h1>You're set up — keep this page handy</h1>
-        <p class="lead">
-            Your local {{ instance_brand }} install is confirmed. The steps below stay useful for <strong>adding another machine</strong>, <strong>connecting more services</strong>, or <strong>turning on auto-accept mode</strong>. Skip whatever you don't need; nothing here re-runs unless you click it.
-        </p>
-        {% else %}
+        <button type="button" class="install-hero-close" id="installHeroClose"
+                data-target-source="self_acknowledged_x"
+                aria-label="I'm already set up — close this setup hero">&times;</button>
         <div class="eyebrow">Welcome, {{ display_name }} — let's get you set up</div>
         <h1>Connect Claude Code on your machine to your team's data</h1>
         <p class="lead">
             {{ instance_brand }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>. Everything it installs lives in your home folder (<code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/{{ workspace_dir }}</code>) and can be removed in one command.
         </p>
-        {% endif %}
 
-        {% if onboarded %}
-        <div class="install-done" role="status" aria-live="polite">
-            <span class="check" aria-hidden="true">&#x2705;</span>
-            <span><strong>Steps 1–4 done</strong> — Claude Code installed, auto-mode set, workspace folder created, {{ instance_brand }} ready in <code>~/{{ workspace_dir }}</code>. The full install steps stay one click away under the offboard control below.</span>
-        </div>
-        {% endif %}
-
-        {% if not onboarded %}
         <div class="install-block">
             <div class="label">Step 1 — install Claude Code</div>
             <div class="os-tabs" role="tablist" aria-label="Operating system">
@@ -1281,53 +1320,45 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
             </details>
 
         </div>
-        {% endif %}
 
         {# P1-6 — auto-detect badge is the PRIMARY affordance after the
            install-script copy: agnes-init's first POST to
            /api/me/onboarded flips state automatically and the page
            reloads. The manual "Mark me as onboarded" button below it
            stays as a fallback when auto-flip never lands. #}
-        {% if not onboarded %}
         <div class="auto-detect-badge" role="status" aria-live="polite">
             <span class="pulse" aria-hidden="true"></span>
             <span>Waiting for your first <code>agnes pull</code> — auto-detects within ~30 s of the setup script finishing.</span>
         </div>
-        {% endif %}
 
-        {# Self-mark control lives inside the blue hero in both states.
-           When onboarded, the install steps above are hidden so this is
-           the only thing rendered below the lead paragraph. #}
+        {# Self-mark fallback for the auto-flip. The hero's X close button
+           does the same thing more visibly; both target the not-onboarded
+           → onboarded direction. The onboarded → offboarded variant lives
+           below the hero (.offboard-strip) so it stays reachable once the
+           hero is gone. #}
         <div class="self-mark">
-            {% if onboarded %}
-            Wiped your workspace or want the full setup view back?
-            <button id="self-mark-btn" type="button"
-                    data-target-onboarded="false"
-                    data-target-source="self_unmark">Mark me as offboarded</button>
-            {% else %}
             Already set this up?
             <button id="self-mark-btn" type="button"
                     data-target-onboarded="true"
                     data-target-source="self_acknowledged">Mark me as onboarded</button>
-            {% endif %}
             <span id="self-mark-status" class="status" role="status" aria-live="polite"></span>
         </div>
-
-        {% if onboarded %}
-        {# User-controlled minimize toggle for Connect-your-tools.
-           Default OFF (section renders flat). State persists in
-           localStorage so the choice is per-device. The agnes-init
-           auto-flip of users.onboarded never triggers a collapse on
-           its own — only an explicit click here does. The auto-mode
-           block used to be a peer collapsible (`step3`); it now lives
-           inside the install-hero as Step 2 and is not collapsible. #}
-        <div class="setup-minimize">
-            <button id="setupMinimizeToggle" type="button" aria-pressed="false">
-                Minimize setup view
-            </button>
-        </div>
-        {% endif %}
     </div>
+    {% endif %}
+
+    {% if onboarded %}
+    {# Offboarding escape hatch shown only after the hero has disappeared.
+       Lets the analyst (e.g. after wiping ~/FoundryAI) flip the
+       users.onboarded boolean back to false so the full install hero
+       renders again on next reload. Discrete by design — onboarded
+       users land on /home expecting the nav hub, not a setup screen. #}
+    <div class="offboard-strip">
+        <span>Workspace ready — wiped it and need the full setup view back?</span>
+        <button id="offboard-btn" type="button"
+                data-target-source="self_unmark">Mark me as offboarded</button>
+        <span id="offboard-status" class="status" role="status" aria-live="polite"></span>
+    </div>
+    {% endif %}
 
     {# Auto-mode card used to live here as a `<details>` reference block;
        moved into the install-hero as the new Step 2 so users enable it
@@ -1638,16 +1669,13 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
         });
     }
 
-    var btn = document.getElementById('self-mark-btn');
-    var status = document.getElementById('self-mark-status');
-    if (!btn) return;
-    btn.addEventListener('click', function () {
-        // Direction comes from data-attrs the template sets per render —
-        // onboarded view → flip to FALSE (offboard), not-onboarded → flip to TRUE.
-        var targetOnboarded = btn.getAttribute('data-target-onboarded') === 'true';
-        var targetSource = btn.getAttribute('data-target-source') || 'self_acknowledged';
-        btn.disabled = true;
-        status.textContent = targetOnboarded ? 'Marking…' : 'Resetting…';
+    // Shared poster for /api/me/onboarded — reused by every UI surface
+    // that flips users.onboarded (in-hero X close, "Mark me as onboarded"
+    // fallback button, the offboard strip). Reloads on success so the
+    // template re-renders with the new state.
+    function postOnboarded(triggerBtn, statusEl, targetOnboarded, targetSource) {
+        if (triggerBtn) triggerBtn.disabled = true;
+        if (statusEl) statusEl.textContent = targetOnboarded ? 'Marking…' : 'Resetting…';
         fetch('/api/me/onboarded', {
             method: 'POST',
             credentials: 'same-origin',
@@ -1655,17 +1683,59 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
             body: JSON.stringify({ source: targetSource, onboarded: targetOnboarded }),
         }).then(function (resp) {
             if (resp.ok) {
-                status.textContent = 'Done. Reloading…';
+                if (statusEl) statusEl.textContent = 'Done. Reloading…';
                 window.location.reload();
             } else {
-                status.textContent = 'Failed (' + resp.status + '). Try again.';
-                btn.disabled = false;
+                if (statusEl) statusEl.textContent = 'Failed (' + resp.status + '). Try again.';
+                if (triggerBtn) triggerBtn.disabled = false;
             }
         }).catch(function () {
-            status.textContent = 'Network error. Try again.';
-            btn.disabled = false;
+            if (statusEl) statusEl.textContent = 'Network error. Try again.';
+            if (triggerBtn) triggerBtn.disabled = false;
         });
-    });
+    }
+
+    // "Mark me as onboarded" fallback button inside the hero (rendered
+    // only when not-onboarded — the X close button is the primary path).
+    var btn = document.getElementById('self-mark-btn');
+    var status = document.getElementById('self-mark-status');
+    if (btn) {
+        btn.addEventListener('click', function () {
+            postOnboarded(
+                btn, status, true,
+                btn.getAttribute('data-target-source') || 'self_acknowledged'
+            );
+        });
+    }
+
+    // Hero X close — confirm first so a stray click doesn't flip state.
+    var heroClose = document.getElementById('installHeroClose');
+    if (heroClose) {
+        heroClose.addEventListener('click', function () {
+            var ok = window.confirm(
+                "Are you already onboarded? Closing this will mark your account as onboarded " +
+                "and hide the setup steps. You can revert later from the strip below the hero."
+            );
+            if (!ok) return;
+            postOnboarded(
+                heroClose, status, true,
+                heroClose.getAttribute('data-target-source') || 'self_acknowledged_x'
+            );
+        });
+    }
+
+    // Offboarding strip — only rendered when onboarded. Flips back to
+    // the install hero on next reload.
+    var offBtn = document.getElementById('offboard-btn');
+    var offStatus = document.getElementById('offboard-status');
+    if (offBtn) {
+        offBtn.addEventListener('click', function () {
+            postOnboarded(
+                offBtn, offStatus, false,
+                offBtn.getAttribute('data-target-source') || 'self_unmark'
+            );
+        });
+    }
 
     // ── Minimize-setup toggle ────────────────────────────────────────
     // Default OFF: sections render flat (no <summary> visible).
