@@ -541,6 +541,141 @@ When a PR lands the only `[Unreleased]` content (or is the last in a queue of in
 
 **Acceptable standalone release-cut** (rare): only when `[Unreleased]` accumulated bullets from MULTIPLE already-merged PRs AND no further behavior-change PR is queued — i.e. the cut is the only outstanding work and there's no PR to attach it to.
 
+## Release workflow — concrete recipe
+
+The rule above tells you WHAT to ship in a release-cut. This recipe tells you HOW to land one end-to-end without tripping on the operational quirks. Follow it linearly the first few times; once you've internalized the steps the order matters less, but the **non-obvious gotchas at the end** never go away.
+
+### Happy path (8 steps)
+
+```bash
+# 1. Branch from a fresh checkout. iCloud Drive worktrees randomly hang
+#    on git operations — use a fresh shallow clone in /tmp instead.
+cd /tmp && git clone --depth 50 --branch main \
+  https://github.com/keboola/agnes-the-ai-analyst.git agnes-<topic>
+cd agnes-<topic> && git checkout -b zs/<branch-name>
+
+# 2. Make the change + tests. Run the AREA pytest while iterating
+#    (e.g. `pytest tests/test_X.py -p no:xdist -q`).
+
+# 3. Add a CHANGELOG bullet under [Unreleased].
+#    Group: Added | Changed | Fixed | Removed | Internal
+#    Mark BREAKING with **BREAKING** prefix.
+
+# 4. Commit the change(s). Multiple logical commits OK; release-cut
+#    will be a SEPARATE last commit (next step). DO NOT bundle the
+#    release-cut into the same commit as the change — it pollutes
+#    the SHA that auto-close keywords reference and makes revert
+#    targeted at the change-only difficult.
+
+# 5. Run the full pytest suite locally:
+#    `pytest tests/ -p no:xdist -q` (or `-n auto` if xdist works).
+#    Pre-existing fails (e.g. test_readers_in_pre_init_dir under
+#    subprocess timeout) are OK to ignore; verify by reverting your
+#    diff and reproducing on bare main.
+
+# 6. Release-cut commit (LAST commit on the PR per the rule above):
+#    - Bump pyproject.toml: version = "X.Y.Z"
+#    - Rename `## [Unreleased]` → `## [X.Y.Z] — YYYY-MM-DD`
+#    - Add a fresh empty `## [Unreleased]` line above
+#    Commit message: `release: X.Y.Z — <one-line summary>`
+
+# 7. Push branch + open PR + enable auto-merge SQUASH:
+#    git push -u origin HEAD
+#    gh pr create --repo keboola/agnes-the-ai-analyst \
+#      --head <branch> --title "<...>" --body "<...>"
+#    gh pr merge <N> --repo keboola/agnes-the-ai-analyst \
+#      --squash --auto --delete-branch
+
+# 8. After auto-merge fires (poll or `Monitor`):
+#    git fetch origin --tags
+#    git tag vX.Y.Z <merge-sha>
+#    git push origin vX.Y.Z
+#    gh release create vX.Y.Z --repo keboola/agnes-the-ai-analyst \
+#      --title "vX.Y.Z — <...>" --notes "<copy-paste from CHANGELOG>"
+```
+
+### Picking the next version
+
+`pyproject.toml`'s current `version` is the **next-release target** (post-cut from the previous release). Pre-1.0 we patch-bump for everything that doesn't break operator-facing APIs:
+
+- `instance.yaml` schema additions, new env vars, new endpoints → patch (e.g. 0.54.3 → 0.54.4)
+- New CLI subcommands, BREAKING removals, schema migrations → still patch within the current 0.5x cycle (no minor bumps cut today)
+- The CHANGELOG `**BREAKING**` marker is what operators grep for; the version number is secondary
+
+Always check `git tag -l "v0.X*"` before naming — if `v0.54.0` is already tagged, the next one is `v0.54.1`, even if `pyproject.toml` still says `0.54.0` from a stale post-cut commit (we've shipped that race before).
+
+### Authoring expectations on the PR
+
+- **Self-PRs** (you're both author and reviewer): GitHub forbids self-approve. If branch protection requires N approving reviews (we don't today — `required_approving_review_count = 0`), you need someone else to approve. With our current 0-review setup, self-PRs can still merge automatically once required CI passes.
+- **Other people's PRs you're taking over**: dismiss any prior CHANGES_REQUESTED reviews (yours or someone else's) before auto-merge can fire. `gh pr review <N> --approve --body "..."` after pushing your fixes.
+- **Devin Review**: not a required check today; runs in parallel and posts a comment. Don't wait on it for merge unless the human reviewer explicitly asks.
+
+### CI quirks you WILL hit
+
+- **`gh pr checks` glosses CANCELLED as `fail`.** When you force-push (rebase, amend), GitHub auto-cancels the in-flight `Release` workflow run on the older SHA. Those cancelled jobs show up as "fail" in the PR's check summary and tab forever, even after newer runs succeed. **Look at the conclusion column, not just the count.** Rule of thumb: if the same check name appears with both `pass` and `fail` rows, the `fail` row is from an older auto-cancelled SHA. Verify with `gh api repos/keboola/agnes-the-ai-analyst/commits/<sha>/check-runs` — the raw API distinguishes `cancelled` from `failure` truthfully.
+- **Branch protection's "strict" mode caches cancelled `test` as blocking** even after newer `test` runs succeed. Symptom: `mergeable_state: blocked` despite all required checks green on the latest SHA. Fix: re-run the cancelled `Release` workflow run (`gh run rerun <run-id>`); once its `test` job lands as success, the block clears. We've hit this on PRs #273, #281, #285, #286.
+- **Required checks** (per branch protection): `test` + `docker-build` only. Other workflows (`cli-wheel-clean-install`, `build-and-push`, `Release`-pipeline, Devin Review) are advisory — green/red doesn't gate merge.
+- **`enforce_admins: true`** in branch protection means `--admin` flag on `gh pr merge` does NOT bypass. Don't try; just fix the underlying block.
+
+### Recovery when something derails
+
+- **Force-pushed and lost auto-merge?** GitHub *usually* preserves auto-merge across force-pushes for the same PR; if it cleared, just re-run `gh pr merge <N> --squash --auto --delete-branch`.
+- **Release-cut commit forgot to land?** That's the failure mode the "Release-cut belongs to the PR" rule prevents. If it happens anyway: open a follow-on PR with ONLY the release-cut commit, ship it, and write up why in your post-mortem comment.
+- **Wrong version number tagged?** `git tag -d vX.Y.Z && git push --delete origin vX.Y.Z` then re-tag against the right SHA. Update the GitHub Release if you already created it.
+
+## Issue economy — fix or close, don't spawn
+
+**The default reaction to "I noticed something while doing X" is NOT "let me file an issue." The default is one of: fix it now, close as moot after audit, or leave a `TODO` in the touching diff.**
+
+This codebase has accumulated issues that turn out to be:
+- Already fixed in a different PR but the issue stayed open
+- Stale (the code structure that motivated them is gone)
+- Phantom (the symptom described doesn't actually fire on current main)
+- Trivially fixable in 5 minutes inside the PR you're already in
+
+Filing follow-up issues for these wastes everyone's attention. Issue count grows, signal-to-noise drops, real bugs sit alongside obsolete tickets, and the next person triaging asks "what's actually live here?" Quoting one observed pattern from this repo: a takeover-review PR found 3 "LOW hygiene items," filed them as a follow-up issue, then a week later the same author (me) closed the issue moot after a deeper audit showed the production callers already handled the problem correctly. Net contribution: 1 distracting issue + 2 round-trips of context-switching, zero behavior change.
+
+### Mandatory checks BEFORE filing any follow-up issue
+
+1. **Is the underlying claim still true on main?** Audit the code paths the issue describes. Issues from > 2 weeks ago routinely cite line numbers that have moved, function names that were renamed, and call sites that were deleted in unrelated work. If the underlying premise is gone → **close the parent, don't file a child**.
+2. **Could you fix it in the PR you're already in (≤ 30 min, ≤ 1 file)?** If yes, just fix it. Bundle into a separate commit so the diff stays reviewable; the release-cut already gives you the version-bump vehicle. **Filing a follow-up "to keep this PR focused" is almost always wrong** — the focus argument trades 5 minutes of additional review now for an indefinite-future round-trip later.
+3. **Is the fix a single-file change with obvious tests?** Same as #2 — fix it, don't file.
+4. **If you're filing because the work needs design discussion** (interface choice, multi-file refactor, performance tradeoff) — fine, file with sufficient context that the next person can act without re-deriving. Include: code anchors with line numbers, exact reproduction steps, what you considered and rejected, and the design questions the next author needs to answer.
+
+### Audit-first reflex when investigating an existing issue
+
+Before writing ANY code on an open issue, **verify the symptom on current main**:
+
+- Reproduce the bug locally (or in a fresh clone of main). If you can't reproduce, the issue is probably stale — close with comment explaining what you found.
+- Grep for the cited line numbers / function names. If they've moved, the issue's code anchors are stale; either update them or close.
+- Check git log + recent merges — the issue may already be fixed by a PR that landed after the issue was filed but didn't reference it.
+
+When the audit shows the issue is moot, **close it with a closing comment that documents the audit** (what you grepped, what you checked, why the symptom doesn't fire today). Future readers seeing the closed issue need to know it was deliberately closed after audit, not abandoned.
+
+### Patterns to avoid
+
+- **"Found a small thing while reviewing — let me file an issue"** without checking whether it's a 5-minute fix you could do in this PR.
+- **"Sub-agent flagged 3 LOW findings — let me file an issue"** without checking which of them are still valid post-audit.
+- **"The issue says X is broken — let me build a fix"** without first verifying X is actually broken on current main.
+- **"This deserves a follow-up issue"** when the residual is a single-line cleanup.
+- **Filing two issues to close one** (e.g. closing #163 by filing #287 and #288 — net +1 open).
+
+### Acceptable filing scenarios
+
+- Multi-file refactor with design questions the current PR can't resolve.
+- Production behavior change that needs operator coordination (e.g. requires a config rollout before code can be enabled).
+- Cross-team work where ownership is unclear and the issue is the way to flag it.
+- Bugs you can repro but the fix would balloon the current PR's scope ≥ 3×.
+
+### Acceptable closing scenarios (close, don't fix)
+
+- Audit shows the symptom doesn't fire on current main (phantom issue).
+- Underlying code structure was deleted in unrelated work (stale issue).
+- Resolved by a PR that didn't reference the issue number (close with link to the PR + commit).
+- Original author indicates the requirement changed (idea-level issues).
+
+When in doubt: **fix it, or close it**. Filing is the third choice, not the first.
+
 ## Run tests before every push — non-negotiable
 
 **Before `git push`, run the full pytest suite locally.** CI runs the same command (`.github/workflows/ci.yml:29` → `pytest tests/ -v --tb=short -n auto`); a failure that surfaces in CI was discoverable in 90 seconds locally. Pushing first and watching CI fail wastes operator time, slows the PR, and trains everyone to ignore CI badges.
