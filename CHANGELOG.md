@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.1] — 2026-05-13
+
 ### Added
 - `agnes marketplace search` — unified search across Curated and Flea Market; RBAC-filtered server-side, supports `--source`, `--type`, `--sort`, `--query`, `--json`
 - `agnes marketplace detail <id>` — full detail view for any marketplace item (curated: `marketplace_id/plugin_name`, flea: UUID)
