@@ -1,16 +1,12 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Data Packages - Data Analyst Portal</title>
-    {% if not config.THEME_FONT_URL %}
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    {% endif %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
-    <style>
+{% extends "base.html" %}
+
+{% block title %}Data Packages - Data Analyst Portal{% endblock %}
+
+{% block head_extra %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
         :root {
             /* Colors - Design System */
             --primary: #0073D1;
@@ -1321,19 +1317,13 @@
             font-size: 13px;
         }
     </style>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/metric_modal.css', v=git_version) }}">
-    <!-- Prism.js for SQL syntax highlighting -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-    {% include '_theme.html' %}
-</head>
-<body>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/metric_modal.css', v=git_version) }}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+{% endblock %}
 
-    <!-- ═══════════════ HEADER ═══════════════ -->
-    {% include '_app_header.html' %}
-
-    <!-- ═══════════════ PAGE TITLE ═══════════════ -->
+{% block layout %}
+<!-- ═══════════════ PAGE TITLE ═══════════════ -->
     {% set page_hero_eyebrow = "Data" %}
     {% set page_hero_title = "Data Packages" %}
     {% set page_hero_subtitle = "Browse the data sources available to your AI agents." %}
@@ -1579,6 +1569,56 @@
     <footer class="footer">
         <p>&copy; {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }} &middot; Updated daily</p>
         </footer>
+
+
+<!-- ═══════════════ METRIC MODAL ═══════════════ -->
+<div id="metricModalOverlay" class="metric-modal-overlay">
+    <div id="metricModal" class="metric-modal" onclick="event.stopPropagation()">
+        <!-- Header -->
+        <div class="metric-modal-header">
+            <div class="metric-modal-title-section">
+                <h2 id="metricModalTitle" class="metric-modal-title"></h2>
+                <div id="metricModalMetadata" class="metric-metadata-chips"></div>
+            </div>
+            <button class="metric-modal-close" onclick="closeMetricModal()" aria-label="Close modal">
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Tabs -->
+        <nav class="metric-tabs">
+            <button class="metric-tab active" data-tab="tabOverview" onclick="switchMetricTab('tabOverview')">
+                Overview
+            </button>
+            <button class="metric-tab" data-tab="tabHowToUse" onclick="switchMetricTab('tabHowToUse')">
+                How to Use
+            </button>
+            <button class="metric-tab" data-tab="tabSQLExamples" onclick="switchMetricTab('tabSQLExamples')">
+                SQL Examples
+            </button>
+            <button class="metric-tab" data-tab="tabTechnical" onclick="switchMetricTab('tabTechnical')">
+                Metric Details
+            </button>
+        </nav>
+
+        <!-- Body -->
+        <div id="metricModalBody" class="metric-modal-body">
+            <!-- Content loaded dynamically -->
+        </div>
+    </div>
+</div>
+
+<!-- Prism.js for SQL syntax highlighting -->
+
+
+
+
+<!-- Mermaid.js for relationship diagrams -->
+{% endblock %}
+
+{% block scripts %}
 <script>
 /* ═══════════════ ACCORDION ═══════════════ */
 function toggleAccordion(trigger) {
@@ -2447,52 +2487,9 @@ document.addEventListener('keydown', e => {
     });
 })();
 </script>
-
-<!-- ═══════════════ METRIC MODAL ═══════════════ -->
-<div id="metricModalOverlay" class="metric-modal-overlay">
-    <div id="metricModal" class="metric-modal" onclick="event.stopPropagation()">
-        <!-- Header -->
-        <div class="metric-modal-header">
-            <div class="metric-modal-title-section">
-                <h2 id="metricModalTitle" class="metric-modal-title"></h2>
-                <div id="metricModalMetadata" class="metric-metadata-chips"></div>
-            </div>
-            <button class="metric-modal-close" onclick="closeMetricModal()" aria-label="Close modal">
-                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
-                </svg>
-            </button>
-        </div>
-
-        <!-- Tabs -->
-        <nav class="metric-tabs">
-            <button class="metric-tab active" data-tab="tabOverview" onclick="switchMetricTab('tabOverview')">
-                Overview
-            </button>
-            <button class="metric-tab" data-tab="tabHowToUse" onclick="switchMetricTab('tabHowToUse')">
-                How to Use
-            </button>
-            <button class="metric-tab" data-tab="tabSQLExamples" onclick="switchMetricTab('tabSQLExamples')">
-                SQL Examples
-            </button>
-            <button class="metric-tab" data-tab="tabTechnical" onclick="switchMetricTab('tabTechnical')">
-                Metric Details
-            </button>
-        </nav>
-
-        <!-- Body -->
-        <div id="metricModalBody" class="metric-modal-body">
-            <!-- Content loaded dynamically -->
-        </div>
-    </div>
-</div>
-
-<!-- Prism.js for SQL syntax highlighting -->
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-sql.min.js"></script>
 <script src="{{ url_for('static', filename='js/metric_modal.js', v=git_version) }}"></script>
-
-<!-- Mermaid.js for relationship diagrams -->
 <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
     mermaid.initialize({
@@ -2519,6 +2516,4 @@ document.addEventListener('keydown', e => {
     // Expose mermaid globally for lazy rendering
     window.mermaid = mermaid;
 </script>
-    {% include "_version_badge.html" %}
-</body>
-</html>
+{% endblock %}
