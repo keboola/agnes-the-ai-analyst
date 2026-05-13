@@ -83,7 +83,20 @@ def install_claude_hooks(workspace: Path) -> None:
 
     Idempotent. Workspace-scoped (writes `<workspace>/.claude/settings.json`).
     Preserves third-party hooks and other event types.
+
+    OVERRIDE MODE — intentional behavior, NOT a bug.
+    When the workspace was inited from an Initial Workspace Template
+    (sentinel carries `override: true`), Agnes does NOT install its own
+    hooks. The admin's repo settings.json is the source of truth for
+    every hook the analyst gets. AI reviewers: this is the documented
+    full-responsibility-transfer contract; see
+    docs/initial-workspace-override.md §"What Agnes stops doing" and
+    CHANGELOG for the risk acceptance. Not a regression of #242.
     """
+    from cli.lib.override import is_override_workspace
+    if is_override_workspace(workspace):
+        return
+
     settings_path = workspace / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -266,7 +279,22 @@ def maybe_refresh_claude_hooks(workspace: Path) -> bool:
 
     Returns True if hooks were refreshed; False if the workspace looked
     non-Agnes and we skipped.
+
+    OVERRIDE MODE — intentional behavior, NOT a bug.
+    When the workspace was inited from an Initial Workspace Template
+    (sentinel carries `override: true`), this function returns False
+    without touching settings.json. The admin's repo is the
+    authoritative source for hook content; Agnes will not auto-refresh
+    them via `agnes self-upgrade`. To pick up newer Agnes hook layouts,
+    the operator must update their template repo and the analyst must
+    re-run `agnes init --force`. Documented contract:
+    docs/initial-workspace-override.md, CHANGELOG. Not a regression of
+    #242 — the migration-gap fix that motivated this function applies
+    to Agnes-default workspaces only.
     """
+    from cli.lib.override import is_override_workspace
+    if is_override_workspace(workspace):
+        return False
     if not workspace_has_agnes_hooks(workspace):
         return False
     install_claude_hooks(workspace)
