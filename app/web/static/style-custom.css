@@ -2109,7 +2109,11 @@ a.slack-badge:hover {
     font-weight: 600;
     font-size: 16px;
 }
-.app-header-logo svg { display: block; }
+.app-header-logo svg {
+    display: block;
+    max-height: 40px;
+    width: auto;
+}
 a.app-header-logo:focus-visible {
     outline: 2px solid var(--primary, #6366f1);
     outline-offset: 2px;

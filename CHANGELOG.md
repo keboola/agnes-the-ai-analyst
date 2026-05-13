@@ -10,6 +10,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.6] — 2026-05-13
+
+### Changed
+
+- Header brand: removed the small uppercase subtitle line that
+  rendered below the brand on every authed page. `instance.subtitle`
+  still surfaces in the CLAUDE.md preamble and the init welcome
+  template ("Operated by …") — only the web header chrome is
+  affected.
+- Header brand: wired `instance.logo_svg` (yaml) /
+  `AGNES_INSTANCE_LOGO_SVG` (env) into the brand slot via a new
+  `get_instance_logo_svg()` helper in `app/instance_config.py`.
+  Previously the yaml field was documented in
+  `config/instance.yaml.example` and the template already supported
+  inline SVG via `config.LOGO_SVG | safe`, but the router
+  hard-coded `LOGO_SVG = ""` — operators can now drop inline SVG
+  markup into their `instance.yaml` and have it appear in the
+  header. `instance.name` continues to drive browser titles and
+  page headings; the two fields are independent.
+- Header brand: clamped `.app-header-logo svg` to `max-height: 40px;
+  width: auto;` (was just `display: block;`) so any operator's
+  `logo_svg` scales via its viewBox to fit the 72px-tall header
+  without per-asset width/height edits.
+
 ## [0.54.5] — 2026-05-13
 
 ### Internal
