@@ -632,72 +632,108 @@ const ERROR_MESSAGES = {
   not_owner: 'You don\'t own this entity, so you can\'t change it.',
 };
 
+function _renderManifestIssues(lines, manifest) {
+  const issues = (manifest && manifest.issues) || [];
+  for (const m of issues.slice(0, 5)) {
+    lines.push('• manifest: ' + m);
+  }
+  if (issues.length > 5) lines.push('  …and ' + (issues.length - 5) + ' more.');
+}
+
+function _renderContentIssues(lines, content) {
+  const issues = (content && content.issues) || [];
+  if (!issues.length) return;
+  // Plain-language labels — match the server-side rendering in
+  // _content_findings.html so the wording stays consistent.
+  const FIELD_LABEL = {
+    'frontmatter.description': 'Description (top of the file, after `description:`)',
+    'plugin.json.description': 'Description (in `.claude-plugin/plugin.json`)',
+    'description': 'Description (on the upload form)',
+    'body': 'Content (rest of the file after the description line)',
+  };
+  const CODE_LABEL = {
+    'empty': 'is missing',
+    'too_short': 'is too short',
+    'low_word_count': 'needs more distinct words',
+    'placeholder_text': 'still has placeholder text (TODO, template, etc.)',
+    'body_too_short': 'is too short',
+  };
+  const COMPONENT_LABEL = {
+    'skill': 'skill', 'agent': 'agent', 'plugin': 'plugin',
+    'command': 'command', 'submission': 'description',
+  };
+  lines.push('');
+  lines.push('What needs fixing:');
+  for (const issue of issues.slice(0, 6)) {
+    const comp = COMPONENT_LABEL[issue.component_type] || 'component';
+    const fieldLabel = FIELD_LABEL[issue.field] || issue.field || 'description';
+    const codeLabel = CODE_LABEL[issue.code] || (issue.code || 'issue').replace(/_/g, ' ');
+    const where = issue.component_type === 'submission'
+      ? 'Description on the upload form'
+      : (comp.charAt(0).toUpperCase() + comp.slice(1))
+        + (issue.name ? ' — ' + issue.name : '');
+    lines.push('• ' + where);
+    lines.push('    ' + fieldLabel + ' ' + codeLabel + '.');
+    if (issue.hint) lines.push('    ' + issue.hint);
+  }
+  if (issues.length > 6) {
+    lines.push('  …and ' + (issues.length - 6) + ' more.');
+  }
+}
+
+function _renderSecurityFindings(lines, staticSecurity) {
+  const findings = (staticSecurity && staticSecurity.findings) || [];
+  for (const f of findings.slice(0, 5)) {
+    const where = (f.file || '?') + ':' + (f.line || '?');
+    lines.push('• ' + where + ' — ' + (f.reason || f.category || 'security finding'));
+  }
+  if (findings.length > 5) lines.push('  …and ' + (findings.length - 5) + ' more.');
+}
+
 function humanizeError(detail) {
   if (!detail) return 'Something went wrong. Please try again.';
 
-  // Structured detail (FastAPI wraps the dict at .detail). Two shapes:
-  //   {code: "submission_blocked", submission_id, checks: {...}}    — guardrails
-  //   {code: "quota_exceeded", limit, blocked_in_last_24h, hint}     — quota
-  // Drop the bare ``Upload failed: [object Object]`` fallback.
+  // Structured detail (FastAPI wraps the dict at .detail). Shapes:
+  //   {code: "validation_failed", checks: {manifest, content, quality}}  — manifest/content fail
+  //   {code: "security_blocked",  checks: {static_security}}              — static_scan deny-list hit
+  //   {code: "submission_blocked", entity_id, checks: {...}}              — legacy, kept for back-compat
+  //   {code: "quota_exceeded", limit, blocked_in_last_24h, hint}          — LLM-tier spam quota
   if (typeof detail === 'object') {
     const code = detail.code || '';
+    const checks = detail.checks || {};
+
+    if (code === 'validation_failed') {
+      const lines = ['Bundle needs fixing before it can be submitted.'];
+      _renderManifestIssues(lines, checks.manifest);
+      _renderContentIssues(lines, checks.content);
+      lines.push('');
+      lines.push('Fix the issues above and try again. Nothing was uploaded.');
+      lines.push('See /store/examples for full before/after examples (opens in new tab).');
+      return lines.join('\n');
+    }
+
+    if (code === 'security_blocked') {
+      const lines = ['Upload blocked: security review found risky patterns in the bundle.'];
+      _renderSecurityFindings(lines, checks.static_security);
+      lines.push('');
+      lines.push('Nothing was uploaded. Remove the flagged code or secrets and try again.');
+      lines.push('If a finding is a false positive, contact your administrator.');
+      return lines.join('\n');
+    }
+
     if (code === 'submission_blocked') {
+      // Legacy server response (pre-cutover). Render same payload shape
+      // so refreshed pages on an older deploy still get a usable banner.
       const lines = ['Upload blocked by automated checks.'];
-      const checks = detail.checks || {};
-      const inline = (checks.static_security && checks.static_security.findings) || [];
-      for (const f of inline.slice(0, 5)) {
-        const where = (f.file || '?') + ':' + (f.line || '?');
-        lines.push('• ' + where + ' — ' + (f.reason || f.category || 'security finding'));
-      }
-      if (inline.length > 5) lines.push('  …and ' + (inline.length - 5) + ' more.');
-      const manifestIssues = (checks.manifest && checks.manifest.issues) || [];
-      for (const m of manifestIssues.slice(0, 3)) {
-        lines.push('• manifest: ' + m);
-      }
-      const contentIssues = (checks.content && checks.content.issues) || [];
-      if (contentIssues.length) {
-        // Plain-language labels — match the server-side rendering in
-        // _content_findings.html so the wording stays consistent.
-        const FIELD_LABEL = {
-          'frontmatter.description': 'Description (top of the file, after `description:`)',
-          'plugin.json.description': 'Description (in `.claude-plugin/plugin.json`)',
-          'description': 'Description (on the upload form)',
-          'body': 'Content (rest of the file after the description line)',
-        };
-        const CODE_LABEL = {
-          'empty': 'is missing',
-          'too_short': 'is too short',
-          'low_word_count': 'needs more distinct words',
-          'placeholder_text': 'still has placeholder text (TODO, template, etc.)',
-          'body_too_short': 'is too short',
-        };
-        const COMPONENT_LABEL = {
-          'skill': 'skill', 'agent': 'agent', 'plugin': 'plugin',
-          'command': 'command', 'submission': 'description',
-        };
-        lines.push('');
-        lines.push('What needs fixing:');
-        for (const issue of contentIssues.slice(0, 6)) {
-          const comp = COMPONENT_LABEL[issue.component_type] || 'component';
-          const fieldLabel = FIELD_LABEL[issue.field] || issue.field || 'description';
-          const codeLabel = CODE_LABEL[issue.code] || (issue.code || 'issue').replace(/_/g, ' ');
-          const where = issue.component_type === 'submission'
-            ? 'Description on the upload form'
-            : (comp.charAt(0).toUpperCase() + comp.slice(1))
-              + (issue.name ? ' — ' + issue.name : '');
-          lines.push('• ' + where);
-          lines.push('    ' + fieldLabel + ' ' + codeLabel + '.');
-          if (issue.hint) lines.push('    ' + issue.hint);
-        }
-        if (contentIssues.length > 6) {
-          lines.push('  …and ' + (contentIssues.length - 6) + ' more.');
-        }
-      }
+      _renderSecurityFindings(lines, checks.static_security);
+      _renderManifestIssues(lines, checks.manifest);
+      _renderContentIssues(lines, checks.content);
       lines.push('');
       lines.push('Fix the issues above and re-upload as a new version.');
       lines.push('See /store/examples for full before/after examples (opens in new tab).');
       return lines.join('\n');
     }
+
     if (code === 'quota_exceeded') {
       return 'Upload blocked: too many rejected uploads in the last 24 hours '
         + '(' + (detail.blocked_in_last_24h || '?') + '/' + (detail.limit || '?') + '). '
@@ -761,6 +797,11 @@ function showError(msg, {showExamplesLink = false} = {}) {
   bannerText.textContent = msg;
   banner.hidden = false;
   bannerActions.hidden = !showExamplesLink;
+  // Scroll the banner into view — the Finish button lives at the bottom
+  // of step 2, so a rejection banner that flips on at the top is
+  // off-screen on a tall form. Submitter needs to SEE the issues to
+  // act on them.
+  banner.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 function clearBanner() { banner.hidden = true; bannerActions.hidden = true; }
 
@@ -1059,8 +1100,13 @@ finishBtn.addEventListener('click', async () => {
   if (!name) { showError('Name is required.'); return; }
 
   function isContentBlock(detail) {
-    return detail && detail.code === 'submission_blocked'
-      && detail.checks && detail.checks.content
+    if (!detail || !detail.checks) return false;
+    // Show the "see examples" link when content-tier issues are the
+    // dominant fix needed — both new + legacy codes can carry them.
+    const isFixable = detail.code === 'validation_failed'
+      || detail.code === 'submission_blocked';
+    return isFixable
+      && detail.checks.content
       && (detail.checks.content.issues || []).length > 0;
   }
   const type = document.querySelector('input[name=type]:checked').value;
@@ -1087,24 +1133,28 @@ finishBtn.addEventListener('click', async () => {
       window.location = `/marketplace/flea/${encodeURIComponent(entity.id)}`;
       return;
     }
-    // Inline-blocked uploads (422 with submission_blocked) now persist
-    // the entity at visibility=hidden so admins can rescan/override and
-    // submitters can see the full quarantine banner. Redirect to the
-    // detail page when the response carries an entity_id — same UX as
-    // a successful upload, just landing on a banner instead of an
-    // approved card.
+    // Inline failures (validation_failed / security_blocked) are hard
+    // rejections — no entity row, no bundle on disk. Render the banner
+    // inline and stay on step 2 so the submitter can fix and retry.
+    //
+    // The legacy ``submission_blocked`` branch is retained for one
+    // release cycle. Older deploys may still emit it with an
+    // ``entity_id`` pointing at a hidden row; redirect to the detail
+    // page so the existing quarantine banner UX still works. Fresh
+    // deploys never hit this branch.
     let msg = 'Upload failed.';
     let showLink = false;
     try {
       const j = await res.json();
-      const eid = j && j.detail && j.detail.entity_id;
-      if (eid && j.detail.code === 'submission_blocked') {
+      const detail = j && j.detail;
+      const eid = detail && detail.entity_id;
+      if (eid && detail.code === 'submission_blocked') {
         window.location = `/marketplace/flea/${encodeURIComponent(eid)}`;
         return;
       }
-      if (j.detail) {
-        msg = humanizeError(j.detail);
-        showLink = isContentBlock(j.detail);
+      if (detail) {
+        msg = humanizeError(detail);
+        showLink = isContentBlock(detail);
       }
     } catch(_) {}
     showError(msg, {showExamplesLink: showLink});

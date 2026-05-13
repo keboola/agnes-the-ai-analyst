@@ -188,6 +188,7 @@ function showError(msg) {
   banner.className = 'banner error';
   bannerText.textContent = msg;
   banner.hidden = false;
+  banner.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 function clearBanner() { banner.hidden = true; }
 
@@ -195,12 +196,53 @@ function humanizeError(detail) {
   if (!detail) return 'Save failed.';
   if (typeof detail === 'object') {
     const code = detail.code || '';
-    if (code === 'submission_blocked') {
-      const lines = ['New version blocked by automated checks.'];
-      const inline = (detail.checks?.static_security?.findings) || [];
-      for (const f of inline.slice(0, 5)) {
+    const checks = detail.checks || {};
+
+    function appendFindings(lines, payload) {
+      const findings = (payload?.findings) || [];
+      for (const f of findings.slice(0, 5)) {
         lines.push('• ' + (f.file || '?') + ':' + (f.line || '?') + ' — ' + (f.reason || f.category || ''));
       }
+      if (findings.length > 5) lines.push('  …and ' + (findings.length - 5) + ' more.');
+    }
+    function appendManifest(lines, payload) {
+      const issues = (payload?.issues) || [];
+      for (const m of issues.slice(0, 5)) lines.push('• manifest: ' + m);
+      if (issues.length > 5) lines.push('  …and ' + (issues.length - 5) + ' more.');
+    }
+    function appendContent(lines, payload) {
+      const issues = (payload?.issues) || [];
+      for (const i of issues.slice(0, 5)) {
+        const where = i.component_type === 'submission'
+          ? 'Description on the form'
+          : ((i.component_type || 'component') + (i.name ? ' — ' + i.name : ''));
+        const code = (i.code || '').replace(/_/g, ' ');
+        lines.push('• ' + where + ' — ' + (i.field || 'description') + ' ' + code);
+      }
+      if (issues.length > 5) lines.push('  …and ' + (issues.length - 5) + ' more.');
+    }
+
+    if (code === 'validation_failed') {
+      const lines = ['New version needs fixing before it can be saved.'];
+      appendManifest(lines, checks.manifest);
+      appendContent(lines, checks.content);
+      lines.push('');
+      lines.push('Fix the issues above and try again. The previous version is still live.');
+      return lines.join('\n');
+    }
+    if (code === 'security_blocked') {
+      const lines = ['Save blocked: security review found risky patterns in the new bundle.'];
+      appendFindings(lines, checks.static_security);
+      lines.push('');
+      lines.push('Remove the flagged code/secrets and try again. The previous version stays live.');
+      return lines.join('\n');
+    }
+    if (code === 'submission_blocked') {
+      // Legacy server response (pre-cutover) — kept for one release.
+      const lines = ['New version blocked by automated checks.'];
+      appendFindings(lines, checks.static_security);
+      appendManifest(lines, checks.manifest);
+      appendContent(lines, checks.content);
       lines.push('');
       lines.push('Fix the issues and re-upload, or open the detail page to see the full report.');
       return lines.join('\n');

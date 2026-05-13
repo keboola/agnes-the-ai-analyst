@@ -124,9 +124,10 @@ class TestPutAtomicity:
             files={"file": ("evil.zip", evil_zip, "application/zip")},
             cookies=owner_cookies,
         )
-        # Inline-blocked uploads return 422 with a structured detail.
+        # Static-security failures hard-reject with the security_blocked
+        # code — no submission row, no version dir, no DB writes.
         assert u.status_code == 422, u.text
-        assert u.json()["detail"]["code"] == "submission_blocked"
+        assert u.json()["detail"]["code"] == "security_blocked"
 
         after_hash = _hash_tree(plugin_dir)
         assert after_hash == before_hash, (
