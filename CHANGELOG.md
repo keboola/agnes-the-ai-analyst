@@ -14,11 +14,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
-- Header brand: removed the small uppercase subtitle line that
-  rendered below the brand on every authed page. `instance.subtitle`
-  still surfaces in the CLAUDE.md preamble and the init welcome
-  template ("Operated by …") — only the web header chrome is
-  affected.
 - Header brand: wired `instance.logo_svg` (yaml) /
   `AGNES_INSTANCE_LOGO_SVG` (env) into the brand slot via a new
   `get_instance_logo_svg()` helper in `app/instance_config.py`.
