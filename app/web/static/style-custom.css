@@ -82,6 +82,17 @@
     --width-narrow: 800px;
     --width-app: 1280px;
     --width-wide: 1400px;
+
+    /* Legacy token aliases — keep absorbed style.css rules rendering
+       until Task 16 cleanup. Each legacy name maps onto its modern
+       equivalent so every absorbed selector resolves to a real value
+       instead of falling back to `unset`. */
+    --bg: var(--background);
+    --card-bg: var(--surface);
+    --text: var(--text-primary);
+    --text-light: var(--text-secondary);
+    --secondary: var(--text-secondary);
+    --radius: var(--radius-lg);
 }
 
 * {
@@ -3719,3 +3730,85 @@ a.news-cta:hover { background: #0056A3; }
     margin-bottom: 16px;
 }
 .format-guide .back-link:hover { color: var(--primary, #6366f1); }
+
+/* =====================================================
+   Canonical button family (Task 4)
+   .btn + .btn-primary | .btn-secondary | .btn-ghost | .btn-danger
+                       + .btn-sm | .btn-lg
+
+   Base .btn, .btn-primary, .btn-secondary, .btn-sm come from the
+   absorbed style.css block above (no change needed — they already use
+   the new tokens via the legacy-alias layer). This section appends
+   selector-list aliases for legacy class names (.btn-primary-v2,
+   .btn-secondary-v2, .btn-ghost-v2, .modal-btn) and defines the new
+   variants (.btn-ghost, .btn-danger, .btn-lg) that the legacy stylesheet
+   didn't ship.
+
+   Aliases removed in Task 16 once templates migrate to canonical names.
+   Cascade-order note: this section is the LAST in the file, so it wins
+   over both the absorbed legacy rules AND any earlier v2-suffixed rules
+   (e.g. .btn-primary-v2 hover color in the absorbed block). Adding
+   per-page <style> overrides will still beat this on equal-specificity
+   selectors due to source order — Tasks 8–14 strip those.
+   ===================================================== */
+
+.btn-primary,
+.btn-primary-v2,
+.modal-btn.primary {
+    background-color: var(--primary);
+    color: #fff;
+    border: 1px solid var(--primary);
+    transition: all 0.15s ease;
+}
+.btn-primary:hover,
+.btn-primary-v2:hover,
+.modal-btn.primary:hover {
+    background-color: var(--primary-dark);
+    border-color: var(--primary-dark);
+    box-shadow: 0 2px 8px rgba(0, 115, 209, 0.3);
+}
+
+.btn-secondary,
+.btn-secondary-v2,
+.modal-btn:not(.primary):not(.danger) {
+    background-color: var(--surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+}
+.btn-secondary:hover,
+.btn-secondary-v2:hover,
+.modal-btn:not(.primary):not(.danger):hover {
+    background-color: var(--border-light);
+}
+
+.btn-ghost,
+.btn-ghost-v2 {
+    background-color: transparent;
+    color: var(--text-secondary);
+    border: 1px solid transparent;
+}
+.btn-ghost:hover,
+.btn-ghost-v2:hover {
+    background-color: var(--border-light);
+    color: var(--text-primary);
+}
+
+.btn-danger,
+.modal-btn.danger {
+    background-color: #fff;
+    color: var(--error);
+    border: 1px solid var(--error);
+}
+.btn-danger:hover,
+.modal-btn.danger:hover {
+    background-color: var(--error);
+    color: #fff;
+}
+
+.btn-lg { padding: 12px 20px; font-size: var(--text-md); }
+
+.btn:disabled,
+.btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+
+.btn:focus { outline: none; }
+.btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
