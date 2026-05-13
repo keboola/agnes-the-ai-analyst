@@ -154,6 +154,13 @@ def _normalize_content_quality(value: Any) -> Dict[str, Any]:
     safe-by-default-on-empty stance is intentional: hard blocking is
     the mechanical tier's job; the LLM tier is the substantive
     judgement layer.
+
+    The verdict is treated as an aggregate of the evidence: if the
+    model said `fail` with empty issues we downgrade to `pass` (no
+    visible reason to block); if it said `pass` with non-empty issues
+    we promote to `fail` (defense in depth — a compromised or
+    prompt-injected model that flipped the verdict without zeroing the
+    issues would otherwise sneak through). #277 LOW #2.
     """
     if not isinstance(value, dict):
         return {"verdict": "pass", "issues": []}
@@ -176,6 +183,13 @@ def _normalize_content_quality(value: Any) -> Dict[str, Any]:
     # pass — we'd otherwise block a submission with no rendered reason.
     if verdict == "fail" and not issues:
         verdict = "pass"
+    # Symmetric defense: if the model emitted issues but said pass,
+    # promote to fail. The verdict must aggregate the evidence; a
+    # compromised or prompt-injected model that flips the verdict
+    # without zeroing the issues list would otherwise sneak through.
+    # Issue #277 LOW finding #2.
+    if verdict == "pass" and issues:
+        verdict = "fail"
     return {"verdict": verdict, "issues": issues}
 
 

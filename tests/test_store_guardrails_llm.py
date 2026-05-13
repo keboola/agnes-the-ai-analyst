@@ -448,3 +448,47 @@ class TestReviewBundleErrorTransport:
             assert SYSTEM_PROMPT not in user_payload, (
                 "SYSTEM_PROMPT must NOT be inlined into user content"
             )
+
+
+class TestNormalizeContentQualityVerdict:
+    """The verdict is an aggregate of the evidence — both directions
+    of the asymmetry collapsed in #277 LOW #2."""
+
+    def test_fail_with_no_issues_downgrades_to_pass(self):
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        result = _normalize_content_quality({"verdict": "fail", "issues": []})
+        assert result["verdict"] == "pass"
+        assert result["issues"] == []
+
+    def test_pass_with_issues_promoted_to_fail(self):
+        # The #277 LOW #2 fix.
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        result = _normalize_content_quality({
+            "verdict": "pass",
+            "issues": [{
+                "file": "skills/foo/SKILL.md",
+                "field": "frontmatter.description",
+                "issue": "vague",
+                "hint": "be specific",
+            }],
+        })
+        assert result["verdict"] == "fail"
+        assert len(result["issues"]) == 1
+        assert result["issues"][0]["issue"] == "vague"
+
+    def test_aligned_pass_with_no_issues_stays_pass(self):
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        assert _normalize_content_quality({"verdict": "pass", "issues": []})["verdict"] == "pass"
+
+    def test_aligned_fail_with_issues_stays_fail(self):
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        assert _normalize_content_quality({
+            "verdict": "fail",
+            "issues": [{"file": "x.md", "field": "f", "issue": "i", "hint": "h"}],
+        })["verdict"] == "fail"
+
+    def test_malformed_value_returns_safe_pass(self):
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        assert _normalize_content_quality(None) == {"verdict": "pass", "issues": []}
+        assert _normalize_content_quality("garbage") == {"verdict": "pass", "issues": []}
+        assert _normalize_content_quality(42) == {"verdict": "pass", "issues": []}
