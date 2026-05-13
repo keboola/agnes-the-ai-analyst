@@ -1,16 +1,12 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Corporate Memory Admin - Data Analyst Portal</title>
-    {% if not config.THEME_FONT_URL %}
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    {% endif %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
-    <style>
+{% extends "base.html" %}
+
+{% block title %}Corporate Memory Admin - Data Analyst Portal{% endblock %}
+
+{% block head_extra %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
         /* Corporate Memory Admin - Design System Styles */
         .container-memory {
             max-width: 1000px;
@@ -801,13 +797,10 @@
             }
         }
     </style>
-    {% include '_theme.html' %}
-</head>
-<body>
-    <!-- Header (outside container so it spans full viewport, matching dashboard) -->
-    {% include '_app_header.html' %}
+{% endblock %}
 
-    <div class="container-memory">
+{% block layout %}
+<div class="container-memory">
         <!-- Stats Bar -->
         <div class="stats-bar">
             <div class="stat-item highlight">
@@ -1109,8 +1102,10 @@
 
     <!-- Toast notification -->
     <div id="toast" class="toast"></div>
+{% endblock %}
 
-    <script>
+{% block scripts %}
+<script>
     // Configuration passed from server
     const GROUPS = {{ groups | tojson }};
     const GOVERNANCE_MODE = {{ governance_mode | tojson }};
@@ -2184,6 +2179,4 @@
 
     loadReviewQueue(1);
     </script>
-    {% include "_version_badge.html" %}
-</body>
-</html>
+{% endblock %}
