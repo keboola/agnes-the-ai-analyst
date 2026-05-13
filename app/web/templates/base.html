@@ -11,7 +11,7 @@
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' %}
 </head>
-<body>
+<body {% block body_attrs %}{% endblock %}>
     {% include '_app_header.html' %}
 
     {# `layout` block: pages opt out of the narrow .container wrap by overriding
