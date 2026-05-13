@@ -278,6 +278,23 @@ def get_instance_brand() -> str:
     return value or "Agnes"
 
 
+def get_instance_logo_svg() -> str:
+    """Raw inline ``<svg>`` markup rendered into the header brand slot
+    (``_app_header.html``). When non-empty, replaces the text brand in
+    the header — typical use is a lockup that already contains the
+    brand wordmark. When empty, the header falls back to
+    :func:`get_instance_name` as text.
+
+    Resolution: ``AGNES_INSTANCE_LOGO_SVG`` env > ``instance.logo_svg``
+    YAML > ``""``. Mirrors :func:`get_instance_brand` so Terraform env
+    overrides work the same way.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_LOGO_SVG")
+    if raw is None:
+        raw = get_value("instance", "logo_svg", default="")
+    return (raw or "").strip()
+
+
 def get_workspace_dir_name() -> str:
     """Filesystem-safe folder name for the analyst's local workspace
     (``~/<workspace_dir_name>``). Defaults to :func:`get_instance_brand`

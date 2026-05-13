@@ -75,11 +75,14 @@ def test_home_not_onboarded_user_sees_setup_view(fresh_db):
 
 
 def test_home_onboarded_user_sees_nav_hub(fresh_db):
-    """A TRUE-onboarded user gets the post-onboarding view, identifiable by
-    the 'Welcome back' hero, the 'Step 1 & Step 2 done' completion badge,
-    the offboard control, and the absence of the inline Step 1 / Step 2
-    install commands. Step 3 (auto-mode), connectors, and the rest stay
-    visible — they remain useful after onboarding."""
+    """A TRUE-onboarded user gets the post-onboarding view: the blue
+    install-hero is gone entirely (no welcome banner, no completion
+    badge, no inline step commands), the offboard escape strip is the
+    only setup-flow remnant rendered, and the rest of /home (connector
+    tiles, news, etc.) stays. PR #289 collapsed the dual-state hero
+    into a single not-onboarded-only render — pre-PR the onboarded
+    branch reused the same `.install-hero` shell with welcome copy
+    and a "Steps 1–4 done" badge."""
     from src.db import get_system_db, close_system_db
 
     conn = get_system_db()
@@ -93,13 +96,11 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
     body = resp.text
-    assert "Welcome back" in body
-    # Banner copy updated when the explicit "create workspace folder"
-    # step was inserted between auto-mode and install-Agnes — completion
-    # badge now spans Steps 1-4 (install Claude Code, auto-mode, mkdir
-    # workspace, install Agnes from Claude Code).
-    assert "Steps 1&#8211;4 done" in body or "Steps 1–4 done" in body
-    assert "Mark me as offboarded" in body  # offboard control visible
+    # Install hero entirely absent for onboarded users.
+    assert '<div class="install-hero">' not in body
+    # Offboard escape strip + its button replace the in-hero self-mark control.
+    assert '<div class="offboard-strip">' in body
+    assert "Mark me as offboarded" in body
     # All four inline install-blocks are hidden post-onboarding — the
     # labels rendered inside the install-block divs go away.
     assert "Step 1 — install Claude Code" not in body
@@ -152,37 +153,30 @@ def test_connectors_render_flat_when_onboarded_by_default(fresh_db):
     assert 'class="home-mock"\n' in body or '<div class="home-mock">' in body
 
 
-def test_minimize_toggle_visible_only_when_onboarded(fresh_db):
-    """The "Minimize setup view" toggle markup is rendered for onboarded
-    users (so they can opt into the collapsed view) and absent for
-    not-onboarded users (where the install steps already dominate)."""
+def test_minimize_toggle_no_longer_rendered(fresh_db):
+    """The "Minimize setup view" toggle used to live inside the
+    onboarded-branch of the install-hero. PR #289 hides the hero
+    entirely once `users.onboarded=true`, so the minimize toggle
+    has no rendering site anymore — verify the markup is absent
+    from both states. (The localStorage `agnes_home_setup_minimized`
+    flag and its applyMinimize() JS handler stay in the page so a
+    stale flag from a pre-PR session no-ops cleanly.)"""
     from src.db import get_system_db, close_system_db
 
-    # Not-onboarded → no toggle button.
-    conn = get_system_db()
-    try:
-        _, sess = _make_user_and_session(conn, onboarded=False)
-    finally:
-        conn.close()
-        close_system_db()
-    c = _client()
-    resp = c.get("/home", cookies={"access_token": sess})
-    assert resp.status_code == 200
-    assert '<button id="setupMinimizeToggle"' not in resp.text
-    assert 'class="setup-minimize"' not in resp.text
-
-    # Onboarded → toggle button rendered inside the install-hero.
-    conn = get_system_db()
-    try:
-        _, sess2 = _make_user_and_session(conn, email="b@example.com", onboarded=True)
-    finally:
-        conn.close()
-        close_system_db()
-    c2 = _client()
-    resp2 = c2.get("/home", cookies={"access_token": sess2})
-    assert resp2.status_code == 200
-    assert '<button id="setupMinimizeToggle"' in resp2.text
-    assert 'class="setup-minimize"' in resp2.text
+    for onboarded in (False, True):
+        conn = get_system_db()
+        try:
+            _, sess = _make_user_and_session(
+                conn, email=f"user-{onboarded}@example.com", onboarded=onboarded
+            )
+        finally:
+            conn.close()
+            close_system_db()
+        c = _client()
+        resp = c.get("/home", cookies={"access_token": sess})
+        assert resp.status_code == 200
+        assert '<button id="setupMinimizeToggle"' not in resp.text
+        assert 'class="setup-minimize"' not in resp.text
 
 
 def test_home_no_auto_transition_after_post_until_reload(fresh_db):
@@ -213,7 +207,9 @@ def test_home_no_auto_transition_after_post_until_reload(fresh_db):
     assert flip.status_code == 200
 
     post = c.get("/home", cookies={"access_token": sess})
-    assert "Welcome back" in post.text  # nav hub view
+    # PR #289: hero disappears entirely; offboard strip is the
+    # only setup-flow remnant. Use either as the nav-hub view marker.
+    assert '<div class="offboard-strip">' in post.text
     assert 'class="install-block"' not in post.text
 
 

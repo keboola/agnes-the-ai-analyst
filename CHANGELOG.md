@@ -10,6 +10,42 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.6] — 2026-05-13
+
+### Changed
+
+- Header brand: wired `instance.logo_svg` (yaml) /
+  `AGNES_INSTANCE_LOGO_SVG` (env) into the brand slot via a new
+  `get_instance_logo_svg()` helper in `app/instance_config.py`.
+  Previously the yaml field was documented in
+  `config/instance.yaml.example` and the template already supported
+  inline SVG via `config.LOGO_SVG | safe`, but the router
+  hard-coded `LOGO_SVG = ""` — operators can now drop inline SVG
+  markup into their `instance.yaml` and have it appear in the
+  header. `instance.name` continues to drive browser titles and
+  page headings; the two fields are independent.
+- Header brand: clamped `.app-header-logo svg` to `max-height: 40px;
+  width: auto;` (was just `display: block;`) so any operator's
+  `logo_svg` scales via its viewBox to fit the 72px-tall header
+  without per-asset width/height edits.
+- Header subtitle: empty `instance.subtitle` now renders nothing
+  (the whole `<span class="app-header-subtitle">` is skipped)
+  instead of falling back to the literal placeholder string
+  "Data Analyst Portal". Operators who leave the field unset get a
+  clean header instead of a stray hardcoded label.
+- `/home` install-hero now disappears entirely once the user is
+  onboarded (`users.onboarded=true`, set by `agnes init`'s POST to
+  `/api/me/onboarded` or by an explicit click). Pre-fix the hero
+  kept rendering a "Welcome back — you're set up" variant that
+  visually outweighed the actual nav hub. Adds a close (×) button
+  in the top-right of the hero — confirms with a `window.confirm()`
+  dialog asking the user to acknowledge onboarding before flipping
+  state, so a stray click won't hide the setup steps. The
+  offboarding escape hatch (previously living inside the hero's
+  onboarded branch) moves to a discrete strip below — visible only
+  when onboarded, so analysts who wipe `~/{{ workspace_dir }}` can
+  flip back without digging through settings.
+
 ## [0.54.5] — 2026-05-13
 
 ### Internal
