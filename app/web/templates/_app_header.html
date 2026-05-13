@@ -119,5 +119,12 @@
         </div>
     </div>
 </header>
-{# Dropdown wiring moved to app/web/static/app.js (loaded by base.html). #}
+{# Dropdown wiring lives in app/web/static/app.js. The script tag sits
+   here (in the shared header partial) instead of base.html so EVERY
+   page that includes _app_header.html — including standalone pages
+   like catalog.html / corporate_memory*.html / install.html /
+   admin_tables.html that don't extend base.html — gets the JS loaded
+   automatically. Defer keeps it non-blocking; placed after the header
+   markup so DOM is ready by the time the IIFE runs init(). #}
+<script src="{{ static_url('app.js') }}" defer></script>
 {% endif %}

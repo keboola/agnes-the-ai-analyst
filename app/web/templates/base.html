@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
-    <script src="{{ static_url('app.js') }}" defer></script>
+    {# app.js loaded by _app_header.html itself so standalone pages
+       (catalog, corporate-memory, install, admin_tables) that don't
+       extend base.html also get the nav-dropdown wiring. #}
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' %}
 </head>

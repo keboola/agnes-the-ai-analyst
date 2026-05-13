@@ -3989,7 +3989,14 @@ textarea.form-input {
    admin section reads as one product instead of a patchwork. */
 .page-header--hero {
     padding: 28px 32px 24px;
-    margin: 0 0 var(--space-5);
+    margin: var(--space-5) auto;
+    /* Self-constrain to the canonical app width so the gradient stays
+       visually balanced even on standalone pages (catalog, corporate-memory,
+       install, dashboard) that don't wrap content in `.container`. On
+       templates that DO use `.container` (admin pages), the parent's
+       max-width is the same or tighter, so this is a no-op there. */
+    max-width: var(--width-app);
+    box-sizing: border-box;
     background: linear-gradient(135deg, var(--primary), var(--primary-dark));
     color: #fff;
     border-radius: 14px;
