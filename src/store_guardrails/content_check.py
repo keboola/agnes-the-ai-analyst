@@ -51,7 +51,7 @@ def _min_desc_chars() -> int:
     try:
         from app.instance_config import get_guardrails_min_description_chars
         return get_guardrails_min_description_chars()
-    except Exception:
+    except ImportError:
         return _DEFAULT_MIN_DESC_CHARS
 
 
@@ -59,7 +59,7 @@ def _min_command_desc_chars() -> int:
     try:
         from app.instance_config import get_guardrails_min_command_description_chars
         return get_guardrails_min_command_description_chars()
-    except Exception:
+    except ImportError:
         return _DEFAULT_MIN_COMMAND_DESC_CHARS
 
 
@@ -67,7 +67,7 @@ def _min_distinct_words() -> int:
     try:
         from app.instance_config import get_guardrails_min_distinct_words
         return get_guardrails_min_distinct_words()
-    except Exception:
+    except ImportError:
         return _DEFAULT_MIN_DISTINCT_WORDS
 
 
@@ -75,7 +75,7 @@ def _min_body_chars() -> int:
     try:
         from app.instance_config import get_guardrails_min_body_chars
         return get_guardrails_min_body_chars()
-    except Exception:
+    except ImportError:
         return _DEFAULT_MIN_BODY_CHARS
 
 # Case-insensitive substring matches that mark an unfilled template.

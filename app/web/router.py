@@ -1150,7 +1150,7 @@ async def install_redirect(request: Request):
 # ---------------------------------------------------------------------------
 
 
-def _guardrail_thresholds() -> dict:
+def _guardrail_thresholds() -> dict[str, int]:
     """Live admin-configurable thresholds surfaced into the upload UI.
 
     Each render reads the current value so the disclosure / counter /

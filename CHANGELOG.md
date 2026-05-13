@@ -10,6 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Admin-configurable flea-market content guardrail thresholds.**
+  `/admin/server-config` gains a new **Flea-market guardrails** section
+  exposing nine knobs: `min_description_chars` (default 60),
+  `min_command_description_chars` (default 25), `min_distinct_words`
+  (default 5), `min_body_chars` (default 200), `enabled` (master
+  kill-switch), `review_model` (haiku / sonnet / opus),
+  `blocked_quota_per_day` (default 50), `blocked_bundle_ttl_days`
+  (default 30), `stuck_review_grace_seconds` (default 1800). Each
+  field carries an operator-facing hint string. The four mechanical
+  floors are read from `app.instance_config` on every inline check,
+  so a `/admin/server-config` PATCH takes effect on the next request
+  without restarting uvicorn. `/store/new` (live char counter +
+  disclosure copy) and `/store/examples` (the "Why these limits"
+  table) render the configured values via a small
+  `_guardrail_thresholds()` helper threaded into the route context.
+  Defaults are unchanged — instances that don't set
+  `guardrails.*` keep the original PR #276 bar.
+
 ## [0.54.1] — 2026-05-13
 
 ### Added

@@ -382,8 +382,8 @@
             </p>
             <p><strong>The bar:</strong></p>
             <ul>
-              <li>Each description ≥ <strong>{{ guardrail.min_description_chars }} characters</strong> (commands ≥ {{ guardrail.min_command_description_chars }}). Aim for one complete sentence — too short and the assistant can't tell when to use it.</li>
-              <li>At least {{ guardrail.min_distinct_words }} distinct words</li>
+              <li>Each description ≥ <strong>{{ guardrail.min_description_chars|default(60) }} characters</strong> (commands ≥ {{ guardrail.min_command_description_chars|default(25) }}). Aim for one complete sentence — too short and the assistant can't tell when to use it.</li>
+              <li>At least {{ guardrail.min_distinct_words|default(5) }} distinct words</li>
               <li>No <code>TODO</code> / <code>TBD</code> / template placeholders</li>
               <li>Action-oriented, names the trigger condition</li>
             </ul>
@@ -479,8 +479,8 @@
             </p>
             <p><strong>The bar:</strong></p>
             <ul>
-              <li>Each description ≥ <strong>{{ guardrail.min_description_chars }} characters</strong> (commands ≥ {{ guardrail.min_command_description_chars }}). Aim for one complete sentence — too short and the assistant can't tell when to use it.</li>
-              <li>At least {{ guardrail.min_distinct_words }} distinct words</li>
+              <li>Each description ≥ <strong>{{ guardrail.min_description_chars|default(60) }} characters</strong> (commands ≥ {{ guardrail.min_command_description_chars|default(25) }}). Aim for one complete sentence — too short and the assistant can't tell when to use it.</li>
+              <li>At least {{ guardrail.min_distinct_words|default(5) }} distinct words</li>
               <li>No <code>TODO</code> / <code>TBD</code> / template placeholders</li>
               <li>Action-oriented, names the trigger condition</li>
             </ul>
@@ -915,9 +915,10 @@ function renderDocs() {
   });
 }
 
-// Description char counter — turns green at the 30-char threshold so the
-// submitter gets immediate feedback that they're past the floor. The
-// server is the source of truth; this is purely UX.
+// Description char counter — turns green at the configured floor so the
+// submitter gets immediate feedback that they're past the bar. The server
+// is the source of truth; this is purely UX. Floor is operator-configurable
+// via /admin/server-config (default 60).
 const DESC_MIN = {{ guardrail.min_description_chars|default(60) }};  // Live config from /admin/server-config
 const descField = document.getElementById('description');
 const descCounter = document.getElementById('desc-counter');
