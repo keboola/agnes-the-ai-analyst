@@ -631,9 +631,29 @@ async def dashboard(
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
     datasets = get_datasets()
 
-    # Stats
-    total_tables = len(all_states)
+    # Stats. `total_tables` counts REGISTERED business tables, not synced
+    # ones (a registry of 30 with 0 ever synced would otherwise render as
+    # "0"). Internal source_type tables (agnes_*) live in their own card on
+    # /catalog and are excluded from the headline counter. Columns + size
+    # come from sync_state, which is the canonical source for "what's
+    # actually on disk locally".
+    total_tables = conn.execute(
+        "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
+    ).fetchone()[0]
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
+    total_columns = sum(s.get("columns", 0) or 0 for s in all_states)
+    total_size_bytes = sum(s.get("file_size_bytes", 0) or 0 for s in all_states)
+
+    def _fmt_bytes(n: int) -> str:
+        # Human-readable size with one decimal once we cross MB. Matches
+        # how /admin/tables and /catalog format byte counters elsewhere.
+        if n <= 0:
+            return "0 MB"
+        for unit, divisor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
+            if n >= divisor:
+                value = n / divisor
+                return f"{value:.1f} {unit}" if unit != "KB" else f"{int(value)} {unit}"
+        return f"{n} B"
 
     # Build user_info object expected by dashboard template
     is_admin = is_user_admin(user["id"], conn)
@@ -666,12 +686,14 @@ async def dashboard(
         data_stats={
             "tables": total_tables,
             "total_tables": total_tables,
-            "columns": 0,
+            "columns": total_columns,
             "rows_display": f"{total_rows:,}" if total_rows else "0",
-            "size_display": "0 MB",
-            "unstructured_display": "0 MB",
+            "size_display": _fmt_bytes(total_size_bytes),
             "total_rows": total_rows,
-            "last_updated": None,
+            "last_updated": max(
+                (s.get("last_sync") for s in all_states if s.get("last_sync")),
+                default=None,
+            ),
             "remote_tables": 0,
             "local_tables": total_tables,
         },
