@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.resource_types import ResourceType
+from app.secrets import persist_overlay_token
 from src.marketplace import (
     MarketplaceNotFound,
     delete_marketplace_dir,
@@ -169,8 +170,13 @@ class SystemFlagResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Token persistence — mirrors app/api/admin.py::configure_instance
+# Token env-var naming
 # ---------------------------------------------------------------------------
+#
+# Read-modify-write of `.env_overlay` lives in `app.secrets.persist_overlay_token`
+# (single shared helper with a process-wide lock). Multiple admins clicking
+# Save in /admin/marketplaces + /admin/server-config concurrently must not
+# corrupt the overlay file.
 
 
 def _token_env_name(slug: str) -> str:
@@ -180,43 +186,6 @@ def _token_env_name(slug: str) -> str:
     """
     normalized = slug.upper().replace("-", "_")
     return f"AGNES_MARKETPLACE_{normalized}_TOKEN"
-
-
-def _persist_token(env_name: str, value: str) -> None:
-    """Write (or update) a single key in ``${STATE_DIR}/.env_overlay`` and ``os.environ``.
-
-    Path resolution matches ``app/main.py``'s startup-time read; without
-    this alignment, marketplace PATs persisted under the flat-mount
-    layout (``STATE_DIR=/data-state``) would land at
-    ``/data/state/.env_overlay`` while the app reads from
-    ``/data-state/.env_overlay``, silently dropping the token on the
-    next restart.
-    """
-    from app.secrets import _state_dir
-    overlay_path = _state_dir() / ".env_overlay"
-    overlay_path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing: dict[str, str] = {}
-    if overlay_path.exists():
-        for line in overlay_path.read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                existing[k.strip()] = v.strip()
-
-    if value:
-        existing[env_name] = value
-        os.environ[env_name] = value
-    else:
-        existing.pop(env_name, None)
-        os.environ.pop(env_name, None)
-
-    overlay_path.write_text(
-        "\n".join(f"{k}={v}" for k, v in existing.items()) + ("\n" if existing else "")
-    )
-    try:
-        overlay_path.chmod(0o600)
-    except OSError:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +279,7 @@ async def create_marketplace(
     token_env: Optional[str] = None
     if payload.token:
         token_env = _token_env_name(slug)
-        _persist_token(token_env, payload.token)
+        persist_overlay_token(token_env, payload.token)
 
     repo.register(
         id=slug,
@@ -394,12 +363,12 @@ async def update_marketplace(
         # None = untouched; "" = clear token_env binding; non-empty = rotate.
         if payload.token == "":
             if updated["token_env"]:
-                _persist_token(updated["token_env"], "")
+                persist_overlay_token(updated["token_env"], "")
             updated["token_env"] = None
             changed["token"] = "cleared"
         else:
             env_name = _token_env_name(marketplace_id)
-            _persist_token(env_name, payload.token)
+            persist_overlay_token(env_name, payload.token)
             updated["token_env"] = env_name
             changed["token"] = "rotated"
 
@@ -449,7 +418,7 @@ async def delete_marketplace(
     # Also clear any overlay token binding so a re-created marketplace of the
     # same slug doesn't accidentally inherit the old PAT.
     if existing.get("token_env"):
-        _persist_token(existing["token_env"], "")
+        persist_overlay_token(existing["token_env"], "")
 
     repo.unregister(marketplace_id)
     # Drop cached plugin rows and any resource grants that reference plugins
