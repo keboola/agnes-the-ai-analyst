@@ -300,3 +300,47 @@ class TestAgentsWalkerSkipsNonAgentFiles:
         # Only the real agent should appear; _NOTES.md is filtered out.
         assert ("agent", "agents/reviewer.md") in types_files
         assert ("agent", "agents/_NOTES.md") not in types_files
+
+
+class TestSkillsWalkerSkipsNonMd:
+    """Skills walker should not visit assets / scripts / data files
+    under skills/ — only SKILL.md. The pre-#277 walker used
+    rglob("*") and stat()d every file just to filter by name; the
+    fix uses rglob("*.md") to push the filter into the glob. Pin
+    the contract here so a regression to rglob("*") is loud."""
+
+    def test_assets_and_scripts_under_skill_dir_are_ignored(self, plugin_dir):
+        # Real skill + a bunch of non-.md siblings
+        _write_skill(plugin_dir)  # creates skills/test-skill/SKILL.md
+        skill_dir = plugin_dir / "skills" / "test-skill"
+        (skill_dir / "assets").mkdir()
+        (skill_dir / "assets" / "cover.png").write_bytes(b"fake png")
+        (skill_dir / "assets" / "data.json").write_text('{"k": "v"}')
+        (skill_dir / "scripts").mkdir()
+        (skill_dir / "scripts" / "run.sh").write_text("#!/bin/sh\necho ok\n")
+        rows = summarize_components(plugin_dir)
+        # Exactly one skill component, no false positives from siblings.
+        skill_rows = [r for r in rows if r["type"] == "skill"]
+        assert len(skill_rows) == 1, skill_rows
+        # No row references a non-md file path.
+        for r in rows:
+            assert not r["file"].endswith(".png"), r
+            assert not r["file"].endswith(".json"), r
+            assert not r["file"].endswith(".sh"), r
+
+    def test_skills_walker_uses_md_glob_not_star(self):
+        """Pin the glob pattern: a regression to rglob('*') would walk
+        every asset / script / data file just to filter by name.
+        Source-level pinning works for this kind of "use this glob,
+        not that glob" contract — the functional test above passes
+        with either glob, so we also assert the literal pattern."""
+        import inspect
+
+        from src.store_guardrails import content_check as _cc
+
+        src = inspect.getsource(_cc._iter_components)
+        # The skills section must use the .md filter at the glob layer.
+        assert 'rglob("*.md")' in src or "rglob('*.md')" in src, (
+            "skills walker must filter at the glob layer "
+            "(rglob('*.md')) — not stat() every asset under skills/"
+        )

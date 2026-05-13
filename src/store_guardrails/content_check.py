@@ -284,9 +284,14 @@ def _iter_components(plugin_dir: Path):
         }
 
     # Skills: skills/<suffixed>/SKILL.md (case-insensitive).
+    # Filter at the glob layer (rglob("*.md")) rather than walking every
+    # asset / script / data file under skills/ just to discard by name —
+    # mirrors the agents + commands walkers below. The name-level
+    # `.lower() != "skill.md"` filter survives because Linux globs are
+    # case-sensitive and macOS HFS+ users may write `Skill.md`.
     skills_root = plugin_dir / "skills"
     if skills_root.is_dir():
-        for skill_md in sorted(skills_root.rglob("*")):
+        for skill_md in sorted(skills_root.rglob("*.md")):
             if not skill_md.is_file():
                 continue
             if skill_md.name.lower() != "skill.md":
