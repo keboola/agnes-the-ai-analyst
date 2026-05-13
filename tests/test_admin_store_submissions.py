@@ -86,6 +86,102 @@ def _make_eval_skill_zip(skill_name: str = "bad") -> bytes:
     return buf.getvalue()
 
 
+def _seed_quarantined_entity(
+    user_id: str,
+    user_email: str,
+    skill_name: str = "quarantined",
+    description: str = "Description seeded for tests — long enough to pass content checks.",
+    *,
+    status: str = "blocked_llm",
+    static_findings=None,
+    llm_summary: str = "test stub finding",
+):
+    """Seed a hidden flea entity + matching submission row + on-disk
+    bundle, mimicking the post-LLM-review-blocked state.
+
+    Inline failures (manifest, static-security, content) are now
+    hard-rejected upstream and never create DB rows. Tests that
+    previously triggered the v30 ``submission_blocked`` path by
+    uploading a bad bundle must seed the quarantined state directly
+    via this helper. The default status is ``blocked_llm`` — the only
+    status path that still creates a hidden+pending entity.
+
+    Returns ``(entity_id, submission_id)``.
+    """
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+    from src.store_naming import suffixed_name
+    import uuid as _uuid
+
+    entity_id = _uuid.uuid4().hex
+    username = user_email.split("@")[0]
+
+    store_dir = get_store_dir()
+    entity_dir = store_dir / entity_id
+    plugin_root = entity_dir / "plugin"
+    skill_subdir = plugin_root / "skills" / suffixed_name(skill_name, username)
+    skill_subdir.mkdir(parents=True, exist_ok=True)
+    skill_md = skill_subdir / "SKILL.md"
+    skill_md.write_text(
+        f"---\nname: {suffixed_name(skill_name, username)}\n"
+        f"description: {description}\n---\n\n"
+        + ("Body content. " * 30),
+    )
+    run_sh = skill_subdir / "run.sh"
+    run_sh.write_text("#!/bin/sh\neval $1\n")
+    # v1 seed dir so the version download / restore endpoints find it.
+    v1_plugin = entity_dir / "versions" / "v1" / "plugin"
+    v1_plugin.parent.mkdir(parents=True, exist_ok=True)
+    import shutil as _shutil
+    _shutil.copytree(plugin_root, v1_plugin)
+
+    # Mirror the InlineResult.to_response_dict() shape that the runner
+    # would have produced. Static findings are surfaced verbatim in the
+    # quarantine banner template (_quarantine_banner.html).
+    findings = static_findings if static_findings is not None else [
+        {"file": "run.sh", "line": 2, "category": "code_exec",
+         "severity": "high",
+         "reason": "shell eval expanding a variable",
+         "snippet": "eval $1"},
+    ]
+    inline_checks = {
+        "manifest": {"status": "pass", "issues": []},
+        "static_security": {"status": "fail", "findings": findings},
+        "content": {"status": "pass", "issues": []},
+        "quality": {"status": "pass", "issues": []},
+    }
+
+    conn = get_system_db()
+    StoreEntitiesRepository(conn).create(
+        id=entity_id,
+        owner_user_id=user_id,
+        owner_username=username,
+        type="skill",
+        name=skill_name,
+        description=description,
+        category=None,
+        version="1.0.0",
+        file_size=512,
+        visibility_status="hidden",
+    )
+    sub_id = StoreSubmissionsRepository(conn).create(
+        submitter_id=user_id,
+        submitter_email=user_email,
+        type="skill",
+        name=skill_name,
+        version="1.0.0",
+        status=status,
+        entity_id=entity_id,
+        inline_checks=inline_checks,
+        llm_findings={"risk_level": "high", "summary": llm_summary,
+                      "findings": findings},
+        file_size=512,
+        bundle_sha256="0" * 64,
+    )
+    conn.close()
+    return entity_id, sub_id
+
+
 # ---------------------------------------------------------------------------
 # /api/admin/store/submissions — listing
 # ---------------------------------------------------------------------------
@@ -97,36 +193,119 @@ class TestAdminListing:
         r = web_client.get("/api/admin/store/submissions", cookies=user_cookies)
         assert r.status_code == 403
 
-    def test_admin_sees_blocked_inline_submission(self, web_client):
-        # Bad upload from a regular user → inline-blocked → submission row.
-        _, user_cookies = _create_user(web_client, "u@x.com")
+    def test_security_upload_creates_no_submission_row(self, web_client):
+        """Static-security findings are hard-rejected — no submission row,
+        no entity row, no bundle on disk. Replaces the v30 contract
+        where inline failures landed in admin's queue at
+        ``blocked_inline``.
+        """
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        user_id, user_cookies = _create_user(web_client, "u@x.com")
         c = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_eval_skill_zip("bad"), "application/zip")},
             data={"type": "skill"}, cookies=user_cookies,
         )
         assert c.status_code == 422
-        # 422 detail must include both submission_id AND entity_id so
-        # the upload-page JS can redirect the submitter to the detail
-        # page (same UX as a successful upload — they land on the
-        # quarantine banner instead of staying stuck on /store/new).
         detail = c.json()["detail"]
-        assert detail["code"] == "submission_blocked"
-        assert detail["submission_id"]
-        assert detail["entity_id"], (
-            "422 body must carry entity_id so the uploader can be "
-            "redirected to /marketplace/flea/{entity_id}"
-        )
+        assert detail["code"] == "security_blocked"
+        # Findings are exposed inline so the wizard banner can render them.
+        assert detail["checks"]["static_security"]["status"] == "fail"
+        assert detail["checks"]["static_security"]["findings"]
+        # No DB rows, no quarantined entity for the submitter to inspect.
+        assert "submission_id" not in detail
+        assert "entity_id" not in detail
 
+        conn = get_system_db()
+        items, _total = StoreSubmissionsRepository(conn).list_for_admin(
+            submitter_id=user_id,
+        )
+        assert items == []
+        ent_items, _ = StoreEntitiesRepository(conn).list(owner_user_id=user_id)
+        assert ent_items == []
+        conn.close()
+
+        # Admin queue is empty: no row was ever created.
         _, admin_cookies = _create_admin(web_client)
         r = web_client.get(
-            "/api/admin/store/submissions?status=blocked_inline",
-            cookies=admin_cookies,
+            "/api/admin/store/submissions", cookies=admin_cookies,
         )
         assert r.status_code == 200
-        body = r.json()
-        assert body["total"] >= 1
-        assert any(s["status"] == "blocked_inline" for s in body["items"])
+        items = r.json()["items"]
+        assert not any(s["submitter_id"] == user_id for s in items), (
+            "security_blocked upload must not surface in admin queue"
+        )
+
+    def test_security_upload_emits_audit_log_entry(self, web_client):
+        """A static-security rejection writes one ``store.upload.security_blocked``
+        audit_log row carrying the findings + sha256 + size. That row is
+        the *only* trace of the attempt; admin can grep audit_log for
+        repeated offenders.
+        """
+        from src.repositories.audit import AuditRepository
+
+        user_id, user_cookies = _create_user(web_client, "spammer@x.com")
+        c = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_eval_skill_zip("audit"), "application/zip")},
+            data={"type": "skill"}, cookies=user_cookies,
+        )
+        assert c.status_code == 422
+        assert c.json()["detail"]["code"] == "security_blocked"
+
+        conn = get_system_db()
+        rows, _cursor = AuditRepository(conn).query(
+            user_id=user_id, action="store.upload.security_blocked",
+            limit=10,
+        )
+        conn.close()
+        assert len(rows) == 1
+        params = rows[0].get("params") or {}
+        if isinstance(params, str):
+            params = json.loads(params)
+        assert params.get("finding_count", 0) >= 1
+        assert params.get("bundle_sha256")
+        assert params.get("submitter_email") == "spammer@x.com"
+
+    def test_validation_failure_creates_no_audit_trail(self, web_client):
+        """A bundle that fails manifest validation (missing SKILL.md) is
+        a fixable user error — no submission row, no entity row, and
+        NO audit_log entry. The submitter just sees the wizard banner.
+        """
+        from src.repositories.audit import AuditRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        # Skill ZIP without the required SKILL.md — manifest_check fails.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("broken/notes.md", "no manifest here\n")
+        bad_zip = buf.getvalue()
+
+        user_id, user_cookies = _create_user(web_client, "validation@x.com")
+        c = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", bad_zip, "application/zip")},
+            data={"type": "skill"}, cookies=user_cookies,
+        )
+        assert c.status_code == 422
+        # zip_missing_skill_md fires at metadata-extract (pre-bake), so
+        # the response is a plain ``detail: "zip_missing_skill_md"`` —
+        # but the contract under test is "no DB rows, no audit trail",
+        # which is what we assert below.
+        conn = get_system_db()
+        items, _total = StoreSubmissionsRepository(conn).list_for_admin(
+            submitter_id=user_id,
+        )
+        assert items == []
+        rows, _cursor = AuditRepository(conn).query(
+            user_id=user_id, action_prefix="store.upload.", limit=10,
+        )
+        conn.close()
+        assert rows == [], (
+            "validation-tier rejection must not write audit_log entries"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -135,48 +314,6 @@ class TestAdminListing:
 
 
 class TestAdminOverride:
-    def test_override_inline_blocked_publishes_entity(self, web_client):
-        """v30: inline-blocked submissions now persist the bundle + entity
-        row at visibility=hidden, so override flips them to approved
-        identically to blocked_llm."""
-        from src.repositories.store_entities import StoreEntitiesRepository
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-
-        _, user_cookies = _create_user(web_client, "u@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("bad"), "application/zip")},
-            data={"type": "skill"}, cookies=user_cookies,
-        )
-        assert c.status_code == 422
-        sub_id = c.json()["detail"]["submission_id"]
-
-        # Confirm v30 invariants: submission carries entity_id + sha + size,
-        # entity row exists at visibility=hidden.
-        conn = get_system_db()
-        sub = StoreSubmissionsRepository(conn).get(sub_id)
-        assert sub["entity_id"] is not None
-        assert sub["bundle_sha256"] and len(sub["bundle_sha256"]) == 64
-        assert sub["file_size"] and sub["file_size"] > 0
-        ent = StoreEntitiesRepository(conn).get(sub["entity_id"])
-        assert ent and ent["visibility_status"] == "hidden"
-        conn.close()
-
-        _, admin_cookies = _create_admin(web_client)
-        r = web_client.post(
-            f"/api/admin/store/submissions/{sub_id}/override",
-            json={"reason": "false positive — internal-only"},
-            cookies=admin_cookies,
-        )
-        assert r.status_code == 200, r.text
-
-        conn = get_system_db()
-        sub = StoreSubmissionsRepository(conn).get(sub_id)
-        assert sub["status"] == "overridden"
-        ent = StoreEntitiesRepository(conn).get(sub["entity_id"])
-        assert ent["visibility_status"] == "approved"
-        conn.close()
-
     def test_override_blocked_llm_publishes_entity(self, web_client):
         """Manually stage a blocked_llm row + entity, then override — the
         entity must flip to visibility_status='approved' and the
@@ -594,15 +731,13 @@ class TestAdminRescan:
 
 class TestAdminBundleDownload:
     def test_download_returns_zip(self, web_client):
-        """Live blocked bundle is downloadable as a fresh ZIP."""
-        _, user_cookies = _create_user(web_client, "u@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("dl"), "application/zip")},
-            data={"type": "skill"}, cookies=user_cookies,
+        """Live blocked-LLM bundle is downloadable as a fresh ZIP. Inline
+        rejections no longer persist bundles, so this exercises the LLM
+        path via the seed helper."""
+        user_id, _ = _create_user(web_client, "u@x.com")
+        _entity_id, sub_id = _seed_quarantined_entity(
+            user_id, "u@x.com", skill_name="dl",
         )
-        assert c.status_code == 422
-        sub_id = c.json()["detail"]["submission_id"]
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.get(
@@ -612,8 +747,6 @@ class TestAdminBundleDownload:
         assert r.status_code == 200
         assert r.headers["content-type"] == "application/zip"
         assert "attachment" in r.headers["content-disposition"]
-        # Body is a valid ZIP
-        import io, zipfile
         with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
             assert any("SKILL.md" in n for n in zf.namelist())
             assert any("run.sh" in n for n in zf.namelist())
@@ -709,56 +842,74 @@ class TestAdminSortBySize:
 
 class TestQuota:
     def test_quota_blocks_after_threshold(self, web_client, monkeypatch):
-        # Tiny quota for the test.
-        monkeypatch.setenv("AGNES_QUOTA_DUMMY", "1")  # noop, just to use monkeypatch
+        """Quota gate triggers on the LLM-tier reject count. Inline
+        failures no longer create rows, so the quota is seeded via
+        the repo (mimicking two prior blocked_llm verdicts in the
+        last 24h). The third upload is gated upstream by 429."""
         from app import instance_config as ic
+        from src.repositories.store_submissions import StoreSubmissionsRepository
         monkeypatch.setattr(ic, "get_guardrails_blocked_quota_per_day", lambda: 2)
 
-        _, user_cookies = _create_user(web_client, "spammer@x.com")
-
-        # First two bad uploads land as blocked_inline 422, third hits quota 429.
+        user_id, user_cookies = _create_user(web_client, "spammer@x.com")
+        conn = get_system_db()
+        repo = StoreSubmissionsRepository(conn)
         for i in range(2):
-            r = web_client.post(
-                "/api/store/entities",
-                files={"file": ("s.zip", _make_eval_skill_zip(f"bad{i}"), "application/zip")},
-                data={"type": "skill"}, cookies=user_cookies,
+            repo.create(
+                submitter_id=user_id, submitter_email="spammer@x.com",
+                type="skill", name=f"seed-{i}", version="1.0.0",
+                status="blocked_llm", entity_id=None,
             )
-            assert r.status_code == 422, f"upload {i}: {r.status_code} {r.text}"
+        conn.close()
 
+        # Third upload — any clean ZIP would do; expect 429 before the
+        # guardrail pipeline runs.
         r = web_client.post(
             "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("bad-3"), "application/zip")},
+            files={"file": ("s.zip", _make_skill_zip("clean-after-quota"), "application/zip")},
             data={"type": "skill"}, cookies=user_cookies,
         )
-        assert r.status_code == 429
+        assert r.status_code == 429, r.text
         body = r.json()["detail"]
         assert body["code"] == "quota_exceeded"
         assert body["limit"] == 2
 
     def test_quota_disabled_with_zero(self, web_client, monkeypatch):
+        """quota=0 disables the gate entirely. Seed many blocked_llm
+        rows; clean uploads still succeed."""
         from app import instance_config as ic
+        from src.repositories.store_submissions import StoreSubmissionsRepository
         monkeypatch.setattr(ic, "get_guardrails_blocked_quota_per_day", lambda: 0)
 
-        _, user_cookies = _create_user(web_client, "trusted@x.com")
-        for i in range(3):
-            r = web_client.post(
-                "/api/store/entities",
-                files={"file": ("s.zip", _make_eval_skill_zip(f"q{i}"), "application/zip")},
-                data={"type": "skill"}, cookies=user_cookies,
+        user_id, user_cookies = _create_user(web_client, "trusted@x.com")
+        conn = get_system_db()
+        for i in range(5):
+            StoreSubmissionsRepository(conn).create(
+                submitter_id=user_id, submitter_email="trusted@x.com",
+                type="skill", name=f"history-{i}", version="1.0.0",
+                status="blocked_llm", entity_id=None,
             )
-            assert r.status_code == 422, f"upload {i}"
+        conn.close()
+
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("clean-zero-quota"), "application/zip")},
+            data={"type": "skill"}, cookies=user_cookies,
+        )
+        # Clean upload — passes inline guardrails. With ANTHROPIC_API_KEY
+        # absent in tests the guardrail pipeline auto-disables so the
+        # entity lands at ``approved`` (201). Anything other than 429 is
+        # the quota-disabled outcome we care about.
+        assert r.status_code != 429, r.text
 
     def test_quota_counter_includes_blocked_llm_and_review_error(self, web_client):
-        """#9 — pre-fix the counter only counted blocked_inline. A
-        submitter triggering ten blocked_llm verdicts was unbounded.
-        Post-fix: counter includes blocked_inline + blocked_llm +
-        review_error so all three reject states share the cap."""
+        """The counter narrows to ``blocked_llm`` + ``review_error`` —
+        inline failures no longer create rows. Legacy ``blocked_inline``
+        rows from pre-cutover instances are intentionally excluded
+        (kept in DB as historical audit, not counted toward the live
+        quota)."""
         from datetime import datetime, timezone, timedelta
         from src.repositories.store_submissions import StoreSubmissionsRepository
 
-        # Seed three blocked submissions of different types directly via
-        # the repo so we don't depend on triggering each verdict path
-        # through the API (LLM mocking is involved).
         _, user_cookies = _create_user(web_client, "spammer-9@x.com")
         conn = get_system_db()
         repo = StoreSubmissionsRepository(conn)
@@ -772,8 +923,8 @@ class TestQuota:
         since = datetime.now(timezone.utc) - timedelta(hours=24)
         count = repo.count_blocked_for_submitter_since("spammer-9", since)
         conn.close()
-        assert count == 3, (
-            f"counter must include all three reject states; got {count}"
+        assert count == 2, (
+            f"counter must skip legacy blocked_inline; got {count}"
         )
 
 
@@ -784,21 +935,10 @@ class TestQuota:
 
 class TestQuarantineGates:
     def test_owner_cannot_delete_quarantined(self, web_client):
-        """Owner trying to DELETE their own blocked_inline entity must
-        be refused — admin investigates first."""
-        _, user_cookies = _create_user(web_client, "u@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("q1"), "application/zip")},
-            data={"type": "skill"}, cookies=user_cookies,
-        )
-        eid = c.json()["detail"]["submission_id"]
-        # The submission row carries entity_id; fetch it.
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        sub = StoreSubmissionsRepository(conn).get(eid)
-        entity_id = sub["entity_id"]
-        conn.close()
+        """Owner trying to DELETE their own quarantined (blocked_llm)
+        entity must be refused — admin investigates first."""
+        user_id, user_cookies = _create_user(web_client, "u@x.com")
+        entity_id, _sub_id = _seed_quarantined_entity(user_id, "u@x.com", "q1")
 
         r = web_client.delete(
             f"/api/store/entities/{entity_id}", cookies=user_cookies,
@@ -808,17 +948,8 @@ class TestQuarantineGates:
         assert body["code"] == "quarantined_owner_cannot_delete"
 
     def test_admin_can_delete_quarantined(self, web_client):
-        _, user_cookies = _create_user(web_client, "u@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("q2"), "application/zip")},
-            data={"type": "skill"}, cookies=user_cookies,
-        )
-        sid = c.json()["detail"]["submission_id"]
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        entity_id = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
+        user_id, _ = _create_user(web_client, "u@x.com")
+        entity_id, _sub_id = _seed_quarantined_entity(user_id, "u@x.com", "q2")
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.delete(
@@ -831,36 +962,22 @@ class TestQuarantineGates:
         404 — same as if the entity didn't exist (no leak via 403).
         Covers every ``_enforce_visibility`` caller in app/api/store.py
         + the marketplace flea detail."""
-        _, owner_cookies = _create_user(web_client, "owner@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("q3"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
-        )
-        sid = c.json()["detail"]["submission_id"]
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        entity_id = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
+        owner_id, _ = _create_user(web_client, "owner@x.com")
+        entity_id, _sub_id = _seed_quarantined_entity(owner_id, "owner@x.com", "q3")
 
         _, intruder_cookies = _create_user(web_client, "snoop@x.com")
-        # Detail
         r = web_client.get(
             f"/api/store/entities/{entity_id}", cookies=intruder_cookies,
         )
         assert r.status_code == 404, "detail must 404 for non-owner"
-        # Files listing
         r = web_client.get(
             f"/api/store/entities/{entity_id}/files", cookies=intruder_cookies,
         )
         assert r.status_code == 404, "files must 404 for non-owner"
-        # Photo (404 even when no photo uploaded — we want no leak via
-        # status code differences anyway)
         r = web_client.get(
             f"/api/store/entities/{entity_id}/photo", cookies=intruder_cookies,
         )
         assert r.status_code == 404, "photo must 404 for non-owner"
-        # Docs sub-path
         r = web_client.get(
             f"/api/store/entities/{entity_id}/docs/anything.md",
             cookies=intruder_cookies,
@@ -872,17 +989,10 @@ class TestQuarantineGates:
         (`/api/store/entities`) must NOT see another user's quarantined
         entry. Mirrors the marketplace-items coverage but on the
         store-namespaced listing."""
-        _, owner_cookies = _create_user(web_client, "qowner@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("q-list"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+        owner_id, owner_cookies = _create_user(web_client, "qowner@x.com")
+        entity_id, _sub_id = _seed_quarantined_entity(
+            owner_id, "qowner@x.com", "q-list",
         )
-        sid = c.json()["detail"]["submission_id"]
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        entity_id = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
 
         _, intruder_cookies = _create_user(web_client, "qsnoop@x.com")
         r = web_client.get("/api/store/entities", cookies=intruder_cookies)
@@ -893,8 +1003,6 @@ class TestQuarantineGates:
             "in /api/store/entities listing"
         )
 
-        # Owner sees own entry on the same listing (auto-include via
-        # include_owner_id widening).
         r = web_client.get("/api/store/entities", cookies=owner_cookies)
         owner_ids = {it["id"] for it in r.json().get("items", [])}
         assert entity_id in owner_ids, (
@@ -902,17 +1010,8 @@ class TestQuarantineGates:
         )
 
     def test_owner_can_view_their_quarantined_entity(self, web_client):
-        _, owner_cookies = _create_user(web_client, "owner@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("q4"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
-        )
-        sid = c.json()["detail"]["submission_id"]
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        entity_id = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
+        owner_id, owner_cookies = _create_user(web_client, "owner@x.com")
+        entity_id, _sub_id = _seed_quarantined_entity(owner_id, "owner@x.com", "q4")
 
         r = web_client.get(
             f"/api/store/entities/{entity_id}", cookies=owner_cookies,
@@ -921,17 +1020,8 @@ class TestQuarantineGates:
 
     def test_install_quarantined_refused_for_non_admin(self, web_client):
         """Even owner cannot add their own quarantined item to my-stack."""
-        _, owner_cookies = _create_user(web_client, "owner@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("q5"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
-        )
-        sid = c.json()["detail"]["submission_id"]
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        entity_id = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
+        owner_id, owner_cookies = _create_user(web_client, "owner@x.com")
+        entity_id, _sub_id = _seed_quarantined_entity(owner_id, "owner@x.com", "q5")
 
         r = web_client.post(
             f"/api/store/entities/{entity_id}/install", cookies=owner_cookies,
@@ -950,22 +1040,12 @@ class TestMarketplaceFleaConsolidation:
         """Random non-owner non-admin pasting an entity_id into
         /marketplace/flea/{id} gets 404 — same policy as the now-deleted
         /store/{id}."""
-        _, owner_cookies = _create_user(web_client, "owner@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("c1"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
-        )
-        sid = c.json()["detail"]["submission_id"]
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        eid = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
+        owner_id, _ = _create_user(web_client, "owner@x.com")
+        eid, _sub_id = _seed_quarantined_entity(owner_id, "owner@x.com", "c1")
 
         _, intruder_cookies = _create_user(web_client, "snoop@x.com")
         r = web_client.get(f"/marketplace/flea/{eid}", cookies=intruder_cookies)
         assert r.status_code == 404
-        # API equivalent
         r = web_client.get(f"/api/marketplace/flea/{eid}/detail", cookies=intruder_cookies)
         assert r.status_code == 404
 
@@ -973,31 +1053,32 @@ class TestMarketplaceFleaConsolidation:
         """Owner landing on /marketplace/flea/{id} sees the quarantine
         banner with the failure summary AND the actual finding details
         — not just a generic "Quarantined" header."""
-        _, owner_cookies = _create_user(web_client, "owner@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("c2"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
+        owner_id, owner_cookies = _create_user(web_client, "owner@x.com")
+        eid, _sub_id = _seed_quarantined_entity(
+            owner_id, "owner@x.com", "c2",
+            llm_summary="reviewer flagged the bash eval",
+            static_findings=[
+                {"file": "run.sh", "line": 2, "severity": "high",
+                 "category": "code_exec",
+                 "reason": "shell eval expanding a variable",
+                 "explanation": "shell eval expanding a variable",
+                 "snippet": "eval $1"},
+            ],
         )
-        sid = c.json()["detail"]["submission_id"]
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        eid = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
 
         r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
         assert r.status_code == 200
         body = r.text
-        # Banner partial rendered.
         assert "vis-banner" in body
         assert "Quarantined" in body
-        # Concrete reason — the eval-shell rule was the offender; banner
-        # must surface the finding details so the submitter knows WHY.
-        assert "security:" in body, (
-            "banner missing static_security findings list — user sees "
-            "'Quarantined' label but no actionable reason"
+        # blocked_llm path renders the LLM verdict summary + per-finding
+        # list. Banner must surface BOTH so the submitter knows WHY
+        # without having to ping an admin.
+        assert "Security findings" in body, (
+            "banner missing 'Security findings' section"
         )
         assert "run.sh" in body, "banner missing path of offending file"
+        assert "shell eval" in body, "banner missing reviewer summary"
 
     def test_review_error_banner_shows_error_detail(self, web_client):
         """#review_error — banner must surface the underlying error
@@ -1060,17 +1141,8 @@ class TestMarketplaceFleaConsolidation:
     def test_marketplace_listing_includes_owner_quarantined(self, web_client):
         """Submitter sees their own non-approved entries in the
         /api/marketplace/items?tab=flea grid; non-owner does not."""
-        _, owner_cookies = _create_user(web_client, "owner@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("c4"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
-        )
-        sid = c.json()["detail"]["submission_id"]
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        eid = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
+        owner_id, owner_cookies = _create_user(web_client, "owner@x.com")
+        eid, _sub_id = _seed_quarantined_entity(owner_id, "owner@x.com", "c4")
 
         # Owner — their own quarantined card surfaces with is_viewer_owner=True.
         r = web_client.get("/api/marketplace/items?tab=flea", cookies=owner_cookies)
@@ -1356,17 +1428,8 @@ class TestArchiveSoftDelete:
 
     def test_owner_cannot_archive_quarantined(self, web_client):
         """Owner Delete on quarantined still refused (existing v32 policy)."""
-        _, user_cookies = _create_user(web_client, "u@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("q-arch"), "application/zip")},
-            data={"type": "skill"}, cookies=user_cookies,
-        )
-        sid = c.json()["detail"]["submission_id"]
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        conn = get_system_db()
-        eid = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
+        user_id, user_cookies = _create_user(web_client, "u@x.com")
+        eid, _sub_id = _seed_quarantined_entity(user_id, "u@x.com", "q-arch")
 
         r = web_client.delete(f"/api/store/entities/{eid}", cookies=user_cookies)
         assert r.status_code == 403
@@ -1376,17 +1439,8 @@ class TestArchiveSoftDelete:
         """Admin can archive a quarantined entity (separate from override
         + hard-delete paths — admin keeps full control)."""
         from src.repositories.store_entities import StoreEntitiesRepository
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        _, user_cookies = _create_user(web_client, "u@x.com")
-        c = web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("q-arch2"), "application/zip")},
-            data={"type": "skill"}, cookies=user_cookies,
-        )
-        sid = c.json()["detail"]["submission_id"]
-        conn = get_system_db()
-        eid = StoreSubmissionsRepository(conn).get(sid)["entity_id"]
-        conn.close()
+        user_id, _ = _create_user(web_client, "u@x.com")
+        eid, _sub_id = _seed_quarantined_entity(user_id, "u@x.com", "q-arch2")
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.delete(f"/api/store/entities/{eid}", cookies=admin_cookies)
@@ -1400,14 +1454,9 @@ class TestArchiveSoftDelete:
     def test_owners_endpoint_filters_quarantined_for_non_admin(self, web_client):
         """A user with only quarantined uploads must NOT appear in the
         public /api/store/owners dropdown."""
-        _, user_cookies = _create_user(web_client, "spammer@x.com")
-        web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("only-bad"), "application/zip")},
-            data={"type": "skill"}, cookies=user_cookies,
-        )
+        user_id, _ = _create_user(web_client, "spammer@x.com")
+        _seed_quarantined_entity(user_id, "spammer@x.com", "only-bad")
 
-        # Different non-admin viewing owners.
         _, other_cookies = _create_user(web_client, "other@x.com")
         r = web_client.get("/api/store/owners", cookies=other_cookies)
         assert r.status_code == 200
@@ -1420,33 +1469,21 @@ class TestArchiveSoftDelete:
         marketplace.py (drift risk against repo); this test locks the
         parity with marketplace items so a future change to the repo
         clause that misses the inline copy gets caught."""
-        # Owner uploads ONE bad skill (lands at visibility=hidden).
-        _, owner_cookies = _create_user(web_client, "qcat-owner@x.com")
-        web_client.post(
-            "/api/store/entities",
-            files={"file": ("s.zip", _make_eval_skill_zip("qcat"), "application/zip")},
-            data={"type": "skill"}, cookies=owner_cookies,
-        )
+        owner_id, owner_cookies = _create_user(web_client, "qcat-owner@x.com")
+        _seed_quarantined_entity(owner_id, "qcat-owner@x.com", "qcat")
 
-        # Different non-admin user. Categories listing must NOT count
-        # the quarantined entry in any bucket.
         _, snoop_cookies = _create_user(web_client, "qcat-snoop@x.com")
         r = web_client.get(
             "/api/marketplace/categories?tab=flea", cookies=snoop_cookies,
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        # Response shape is `{"items": [{name, count, icon_key}, …]}`.
-        # Non-owner non-admin must see 0 total since no approved entries
-        # exist for this fresh user.
         total = sum(c.get("count", 0) for c in body.get("items", []))
         assert total == 0, (
             "non-owner saw quarantined entry counted in /categories: "
             f"{body}"
         )
 
-        # Owner sees own entry counted (predicate widens to include
-        # owner's non-archived non-approved entries).
         r = web_client.get(
             "/api/marketplace/categories?tab=flea", cookies=owner_cookies,
         )

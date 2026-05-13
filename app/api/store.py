@@ -233,6 +233,96 @@ def _audit(
         pass
 
 
+def _reject_inline_or_continue(
+    *,
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    inline: InlineResult,
+    bundle_meta: Any,
+    cleanup_paths: List[Path],
+    type_: str,
+    name: str,
+    context: str,
+) -> None:
+    """Hard-reject sync guardrail failures; return None on pass.
+
+    Two tiers, aligned to the *nature* of the failure rather than the
+    synchronicity of the check:
+
+    * **Validation tier** — ``manifest_check`` and ``content_check``
+      failures are fixable-by-submitter mistakes (missing files, bad
+      name regex, description too short). Return 422 ``validation_failed``
+      with no DB writes and no audit trail; the upload wizard surfaces
+      a banner and the submitter retries. Matches the
+      ``/api/store/entities/preview`` step: invalid input → 4xx with
+      no side effects.
+
+    * **Security tier** — ``static_scan`` failures are deny-list regex
+      hits (eval, leaked tokens, reverse-shell idioms). Return 422
+      ``security_blocked`` with no DB writes, but emit one ``audit_log``
+      row tagged ``store.upload.security_blocked`` carrying the
+      findings + SHA256 + size. Forensically interesting; the audit
+      row is the *only* trace.
+
+    Quality is never blocking (``status='warn'`` max — checked elsewhere).
+
+    Validation failures shadow security failures: if the bundle's
+    manifest is broken, the submitter sees only the manifest issues
+    (no security findings). This stops attackers from enumerating the
+    static_scan rule set by submitting bundles with adversarial bytes
+    inside otherwise-malformed manifests.
+    """
+    validation_fail = (
+        inline.manifest.get("status") != "pass"
+        or inline.content.get("status") != "pass"
+    )
+    if validation_fail:
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "validation_failed",
+                "checks": {
+                    "manifest": inline.manifest,
+                    "content": inline.content,
+                    "quality": inline.quality,
+                },
+            },
+        )
+
+    if inline.static_security.get("status") != "pass":
+        findings = inline.static_security.get("findings") or []
+        try:
+            AuditRepository(conn).log(
+                user_id=user["id"],
+                action="store.upload.security_blocked",
+                resource=f"store_upload:{bundle_meta.sha256}",
+                params={
+                    "context": context,
+                    "type": type_,
+                    "name": name,
+                    "findings": findings,
+                    "finding_count": len(findings),
+                    "file_size": bundle_meta.file_size,
+                    "bundle_sha256": bundle_meta.sha256,
+                    "submitter_email": user.get("email"),
+                },
+                result="blocked",
+            )
+        except Exception:
+            pass
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "security_blocked",
+                "checks": {"static_security": inline.static_security},
+            },
+        )
+
+
 def _schedule_llm_review(
     background_tasks: BackgroundTasks,
     submission_id: str,
@@ -1164,81 +1254,27 @@ async def create_entity(
 
         # ---- Guardrail pipeline ------------------------------------------
         #
-        # Inline checks (manifest, static security, quality+templating)
-        # run synchronously against the BAKED plugin tree.
-        #
-        # On fail (v30): we KEEP the bundle on disk, create the entity
-        # row at ``visibility_status='hidden'`` (invisible in flea
-        # browse + served marketplace), persist the submission with
-        # entity_id + sha + size. Admin can Rescan / Override /
-        # Download from /admin/store/submissions. The 30-day TTL job
-        # purges bundle bytes later but keeps the audit row.
-        #
-        # On pass: create the entity in 'pending' visibility, schedule
-        # the (slow) LLM review on BackgroundTasks. Entity only
-        # becomes visible after the review approves it (or admin
-        # overrides). See docs/STORE_GUARDRAILS.md.
+        # Inline checks (manifest, content, static-security, quality)
+        # run synchronously against the BAKED plugin tree. Failure is
+        # hard-rejected — no entity row, no submission row, no bundle on
+        # disk. Quarantine + admin rescan apply ONLY to the async LLM
+        # path (see runner.run_llm_review). See docs/STORE_GUARDRAILS.md.
         from src.store_guardrails.bundle_meta import compute_bundle_meta
         bundle_meta = compute_bundle_meta(plugin_dir)
         inline = run_inline_checks(
             plugin_dir, type_=type, description=final_description,
         )
+        _reject_inline_or_continue(
+            conn=conn,
+            user=user,
+            inline=inline,
+            bundle_meta=bundle_meta,
+            cleanup_paths=[_entity_dir(entity_id)],
+            type_=type,
+            name=final_name,
+            context="create",
+        )
         subs_repo = StoreSubmissionsRepository(conn)
-        if not inline.passed:
-            # Persist the bundle on disk so admins can Rescan/Download.
-            # No rmtree here — TTL purge owns deletion now.
-            photo_rel = await _save_photo(photo, entity_id) if photo else None
-            doc_rels = await _save_docs(docs, entity_id)
-            repo.create(
-                id=entity_id,
-                owner_user_id=user["id"],
-                owner_username=username,
-                type=type,
-                name=final_name,
-                description=final_description,
-                category=category,
-                version=version,
-                photo_path=photo_rel,
-                video_url=video_url,
-                doc_paths=doc_rels,
-                file_size=file_size,
-                visibility_status="hidden",
-            )
-            sub_id = subs_repo.create(
-                submitter_id=user["id"],
-                submitter_email=user.get("email"),
-                type=type,
-                name=final_name,
-                version=version,
-                status="blocked_inline",
-                entity_id=entity_id,
-                inline_checks=inline.to_response_dict(),
-                file_size=bundle_meta.file_size,
-                bundle_sha256=bundle_meta.sha256,
-            )
-            _audit(
-                conn, user["id"], "store.submission.blocked_inline",
-                sub_id, {
-                    "type": type, "name": final_name,
-                    "entity_id": entity_id,
-                    "manifest": inline.manifest.get("status"),
-                    "static_security": inline.static_security.get("status"),
-                    "static_findings": len(inline.static_security.get("findings") or []),
-                    "content": inline.content.get("status"),
-                    "content_issues": len(inline.content.get("issues") or []),
-                    "sha256": bundle_meta.sha256,
-                    "file_size": bundle_meta.file_size,
-                },
-            )
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "submission_blocked",
-                    "submission_id": sub_id,
-                    "entity_id": entity_id,
-                    "checks": inline.to_response_dict(),
-                },
-            )
 
         guardrails_on = get_guardrails_enabled()
         # When the pipeline is disabled (local dev / no ANTHROPIC_API_KEY)
@@ -1473,46 +1509,23 @@ async def update_entity(
                 description=description if description is not None
                             else entity.get("description"),
             )
-            if not inline_after_update.passed:
-                # Compute the rejected bundle's sha+size BEFORE the
-                # staging dir is removed so the submission row carries
-                # forensics about what was tried.
-                from src.store_guardrails.bundle_meta import compute_bundle_meta
-                rejected_meta = compute_bundle_meta(staging_plugin)
-                # Live tree was never touched — no rollback work to do.
-                # The `finally` below cleans the staging dir.
-                subs_repo = StoreSubmissionsRepository(conn)
-                sub_id = subs_repo.create(
-                    submitter_id=user["id"],
-                    submitter_email=user.get("email"),
-                    type=entity["type"],
-                    name=entity["name"],
-                    version=new_version,
-                    status="blocked_inline",
-                    entity_id=entity_id,
-                    inline_checks=inline_after_update.to_response_dict(),
-                    file_size=rejected_meta.file_size,
-                    bundle_sha256=rejected_meta.sha256,
-                )
-                _audit(
-                    conn, user["id"], "store.submission.blocked_inline",
-                    sub_id, {"entity_id": entity_id, "on": "update",
-                             "manifest": inline_after_update.manifest.get("status"),
-                             "static_security": inline_after_update.static_security.get("status"),
-                             "content": inline_after_update.content.get("status"),
-                             "content_issues": len(inline_after_update.content.get("issues") or []),
-                             "sha256": rejected_meta.sha256,
-                             "file_size": rejected_meta.file_size},
-                )
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "code": "submission_blocked",
-                        "submission_id": sub_id,
-                        "entity_id": entity_id,
-                        "checks": inline_after_update.to_response_dict(),
-                    },
-                )
+            from src.store_guardrails.bundle_meta import compute_bundle_meta
+            staging_meta = compute_bundle_meta(staging_plugin)
+            # Hard-reject on inline failure. _reject_inline_or_continue
+            # cleans the staged version dir (no live state to roll back —
+            # the live ``plugin/`` tree was never touched) and raises 422
+            # with code=validation_failed or code=security_blocked. The
+            # outer `finally` still wipes `scratch` regardless.
+            _reject_inline_or_continue(
+                conn=conn,
+                user=user,
+                inline=inline_after_update,
+                bundle_meta=staging_meta,
+                cleanup_paths=[version_root],
+                type_=entity["type"],
+                name=entity["name"],
+                context="update",
+            )
 
             # Checks passed — but DO NOT swap live yet. Live ``plugin/``
             # keeps serving the prior approved version to existing
@@ -1529,18 +1542,11 @@ async def update_entity(
             # accepted submission is implicitly approved.
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
-            # The version dir IS the source of truth — don't remove it
-            # on failure paths. But if the bundle was rejected before
-            # the swap (failed inline check raised 422), the version
-            # dir is incomplete: the row hasn't been bumped yet, the
-            # bytes are blocked-only forensics. Decision: keep the
-            # version dir for the admin to download via the
-            # submission's bundle download endpoint, but mark the
-            # row's version_history WITHOUT this incomplete entry
-            # (we never called append_version on the failed path).
-            # The version dir at versions/v<N+1>/plugin/ stays orphan
-            # on disk linked from the submission row's hash — admin
-            # can still inspect.
+            # Inline-fail cleanup is owned by _reject_inline_or_continue
+            # (rmtrees the staged version dir before raising). The
+            # backup_plugin orphan check below covers the historical
+            # swap path that no longer triggers here, kept defensively
+            # in case a future refactor reintroduces an atomic swap.
             if backup_plugin is not None and backup_plugin.exists():
                 logger.error(
                     "PUT version-swap left orphan backup at %s — "
@@ -1837,48 +1843,28 @@ async def restore_version(
         type_=entity["type"],
         description=entity.get("description"),
     )
-    if not inline.passed:
-        from src.store_guardrails.bundle_meta import compute_bundle_meta
-        rejected_meta = compute_bundle_meta(target_plugin)
-        subs_repo = StoreSubmissionsRepository(conn)
-        sub_id = subs_repo.create(
-            submitter_id=user["id"],
-            submitter_email=user.get("email"),
-            type=entity["type"],
-            name=entity["name"],
-            version=new_version,
-            status="blocked_inline",
-            entity_id=entity_id,
-            inline_checks=inline.to_response_dict(),
-            file_size=rejected_meta.file_size,
-            bundle_sha256=rejected_meta.sha256,
-        )
-        _audit(
-            conn, user["id"], "store.submission.blocked_inline",
-            sub_id,
-            {"entity_id": entity_id, "on": "restore",
-             "restored_from_version_no": version_no,
-             "sha256": rejected_meta.sha256,
-             "file_size": rejected_meta.file_size},
-        )
-        # Live tree untouched. Version dir kept for forensic download.
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "submission_blocked",
-                "submission_id": sub_id,
-                "entity_id": entity_id,
-                "checks": inline.to_response_dict(),
-            },
-        )
+    from src.store_guardrails.bundle_meta import compute_bundle_meta
+    target_meta = compute_bundle_meta(target_plugin)
+    # Hard-reject on inline failure. Wipe the staged version dir
+    # entirely — live tree untouched, no entity/submission row to
+    # create. The submitter sees the structured 422 and either fixes
+    # the source version (rare) or restores a different version.
+    _reject_inline_or_continue(
+        conn=conn,
+        user=user,
+        inline=inline,
+        bundle_meta=target_meta,
+        cleanup_paths=[target_root],
+        type_=entity["type"],
+        name=entity["name"],
+        context="restore",
+    )
 
     # Inline checks passed. DO NOT swap live yet — same invariant as
     # the PUT edit path: existing installers keep getting the prior
     # approved version through the LLM review window. Promotion (live
     # swap + version_no/version/file_size bump) waits on LLM approval.
     guardrails_on = get_guardrails_enabled()
-    from src.store_guardrails.bundle_meta import compute_bundle_meta
-    accepted_meta = compute_bundle_meta(target_plugin)
     subs_repo = StoreSubmissionsRepository(conn)
     sub_id = subs_repo.create(
         submitter_id=user["id"],
@@ -1889,14 +1875,14 @@ async def restore_version(
         status="approved" if not guardrails_on else "pending_llm",
         entity_id=entity_id,
         inline_checks=inline.to_response_dict(),
-        file_size=accepted_meta.file_size,
-        bundle_sha256=accepted_meta.sha256,
+        file_size=target_meta.file_size,
+        bundle_sha256=target_meta.sha256,
     )
     appended_n = repo.append_version_history(
         entity_id,
         version_hash=new_version,
-        sha256=accepted_meta.sha256,
-        size=accepted_meta.file_size,
+        sha256=target_meta.sha256,
+        size=target_meta.file_size,
         submission_id=sub_id,
         created_by=user["id"],
     )

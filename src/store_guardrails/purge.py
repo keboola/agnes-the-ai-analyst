@@ -30,8 +30,13 @@ logger = logging.getLogger(__name__)
 # serve the user, but admins can still want it for forensics. Excludes
 # `approved` (live entity, never purge), `overridden` (admin already
 # decided to publish), and `pending_*` (still in review).
+#
+# `blocked_inline` was removed when inline failures became hard-rejects
+# (no submission row, no bundle persisted). Legacy `blocked_inline` rows
+# from pre-cutover instances stay on disk indefinitely; reachable via
+# audit_log lookups but no longer swept here. Re-add to the tuple if a
+# one-shot legacy-cleanup pass is wanted.
 TERMINAL_BLOCKED_STATUSES = (
-    "blocked_inline",
     "blocked_llm",
     "review_error",
 )

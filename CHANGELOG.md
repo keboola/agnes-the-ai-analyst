@@ -10,6 +10,45 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.8] — 2026-05-13
+
+### Changed
+
+- **BREAKING** Store upload — inline guardrail failures now hard-reject
+  before any DB row, bundle, photo, or doc is persisted. Two tiers:
+  - **Validation tier** (manifest + content checks) returns 422 with
+    `code='validation_failed'` and the corresponding `checks` payload.
+    Pure schema / description-quality issues a submitter fixes in seconds;
+    no audit trail.
+  - **Security tier** (static-security deny-list) returns 422 with
+    `code='security_blocked'` and writes a single `audit_log` row tagged
+    `store.upload.security_blocked` carrying the findings + SHA256 + size.
+    Forensic-only trace; no entity row, no submission row, no bundle on disk.
+  Quarantine + admin rescan/override now apply ONLY to the async LLM
+  review path (`blocked_llm` / `review_error`). The legacy
+  `submission_blocked` response code is no longer emitted; the wizard +
+  edit + restore frontends still understand it for one release as a
+  fallback for stale clients hitting an older deploy.
+- Spam-quota counter (`count_blocked_for_submitter_since`) narrows to
+  `blocked_llm` + `review_error` rows. Inline failures no longer create
+  rows so they don't contribute. Slowapi rate limit + audit-log
+  visibility cover HTTP-level abuse on the inline path.
+- Admin queue (`/admin/store/submissions`) — the "Needs review" filter
+  chip drops `blocked_inline` from its status set. Legacy `blocked_inline`
+  rows from instances that ran the v30 contract remain reachable via the
+  "All" tab (historical audit). Bundle-purge job (`purge.py`) likewise
+  stops covering `blocked_inline`; legacy rows linger but the live
+  contract no longer needs the sweep.
+
+### Internal
+
+- New `_reject_inline_or_continue` helper in `app/api/store.py`
+  centralises the two-tier rejection across `create_entity`,
+  `update_entity`, and `restore_version`.
+- New `_seed_quarantined_entity` test helper replaces the older
+  `_make_eval_skill_zip`-driven setup for tests that need an entity in
+  the hidden + blocked_llm state.
+
 ## [0.54.7] — 2026-05-13
 
 ### Added
