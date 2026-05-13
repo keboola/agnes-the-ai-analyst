@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.9] — 2026-05-13
+
 ### Added
 - **Initial Workspace Template** — admin-configurable per-instance override for the `agnes init` analyst workspace skeleton. Configure on `/admin/server-config` → "Initial Workspace Template" section: link a Git repo (HTTPS, optional branch, optional PAT for private repos). Server clones manually via "Sync now" into `${DATA_DIR}/initial-workspace/`. **Repo layout convention**: only the contents of a top-level `workspace/` subdirectory are shipped to analysts; anything else at the repo root (README, LICENSE, CI configs) stays in the repo and is never delivered. Sync fails strictly when the repo has no `workspace/` subdirectory at root. When configured, `agnes init` downloads a zip of `workspace/` content and extracts it into the analyst's workspace, fully bypassing Agnes-default `CLAUDE.md`, `.claude/settings.json`, hooks, slash commands, `CLAUDE.local.md` stub, and `AGNES_WORKSPACE.md`. Admin's repo is authoritative. `--force` shows a typed-YES confirmation listing files-to-overwrite vs files-to-create before extracting. See `docs/initial-workspace-override.md` for the full responsibility-transfer contract and required hooks the admin's repo must ship for `agnes pull` / `agnes push` to keep working.
 - New endpoints: `GET/POST/DELETE /api/admin/initial-workspace`, `POST /api/admin/initial-workspace/sync` (admin); `GET /api/initial-workspace`, `GET /api/initial-workspace.zip`, `POST /api/initial-workspace/applied` (PAT-authed analyst).
