@@ -138,3 +138,38 @@ def test_user_payload_is_not_a_system_prompt_concatenation():
         )
     finally:
         shutil.rmtree(plugin, ignore_errors=True)
+
+
+class TestSystemPromptIgnoreRuleScope:
+    """The IGNORE-as-benign rule for placeholder tokens must NOT
+    exempt the surrounding text from review. Pre-#277 LOW #3 the
+    rule was loose enough that a submitter could bank on it
+    (`{{IGNORE_ABOVE}}`). The tightened paragraph spells out that
+    the placeholder tokens themselves are exempt but the text in
+    or around them is still bundle content under the
+    trust-boundary rule."""
+
+    def test_system_prompt_distinguishes_token_from_surrounding_text(self):
+        from src.store_guardrails.prompts import SYSTEM_PROMPT
+        # Tokens themselves are still exempt — the new tighter phrase
+        # uses "placeholder TOKENS themselves" or similar.
+        assert "placeholder TOKENS" in SYSTEM_PROMPT or \
+               "placeholder tokens themselves" in SYSTEM_PROMPT.lower()
+        # The crucial new clause: surrounding text is NOT exempt.
+        # Match case-insensitively so a future copy-edit ("Do not"
+        # vs "do NOT") doesn't break the contract — the substantive
+        # claim is the "NOT exempt" intent, not the casing.
+        assert "not exempt" in SYSTEM_PROMPT.lower()
+        # The concrete attack shape called out so the model has a
+        # canonical negative example to anchor against.
+        assert "ignore_above" in SYSTEM_PROMPT.lower() or \
+               "IGNORE THE FOLLOWING" in SYSTEM_PROMPT
+
+    def test_trust_boundary_paragraph_still_present(self):
+        # Must not have accidentally deleted the trust-boundary
+        # paragraph above (line ~27) while editing the IGNORE
+        # paragraph below it. The <bundle>...</bundle> anchor
+        # must survive any edit to the IGNORE rule.
+        from src.store_guardrails.prompts import SYSTEM_PROMPT
+        assert "<bundle>" in SYSTEM_PROMPT
+        assert "</bundle>" in SYSTEM_PROMPT
