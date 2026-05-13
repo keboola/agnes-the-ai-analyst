@@ -222,6 +222,10 @@ const SECTION_META = {
     title: "Materialize",
     help: "Concurrency safety net for the materialize path. Controls the file-lock TTL used to detect and reclaim stale locks from hard-killed processes.",
   },
+  guardrails: {
+    title: "Flea-market guardrails",
+    help: "Per-component content quality thresholds for store uploads. Lower the min-* knobs to relax the bar; raise to push submitters toward longer, more useful descriptions. The LLM tier (review_model + enabled) governs the second-stage substantive review.",
+  },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 

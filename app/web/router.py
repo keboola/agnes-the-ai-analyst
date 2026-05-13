@@ -1150,6 +1150,27 @@ async def install_redirect(request: Request):
 # ---------------------------------------------------------------------------
 
 
+def _guardrail_thresholds() -> dict:
+    """Live admin-configurable thresholds surfaced into the upload UI.
+
+    Each render reads the current value so the disclosure / counter /
+    examples-table copy stays in lock-step with the
+    /admin/server-config patch — no app restart required.
+    """
+    from app.instance_config import (
+        get_guardrails_min_body_chars,
+        get_guardrails_min_command_description_chars,
+        get_guardrails_min_description_chars,
+        get_guardrails_min_distinct_words,
+    )
+    return {
+        "min_description_chars": get_guardrails_min_description_chars(),
+        "min_command_description_chars": get_guardrails_min_command_description_chars(),
+        "min_distinct_words": get_guardrails_min_distinct_words(),
+        "min_body_chars": get_guardrails_min_body_chars(),
+    }
+
+
 @router.get("/store/new", response_class=HTMLResponse)
 async def store_new(
     request: Request,
@@ -1157,7 +1178,11 @@ async def store_new(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from src.store_categories import STORE_CATEGORIES
-    ctx = _build_context(request, user=user, categories=list(STORE_CATEGORIES))
+    ctx = _build_context(
+        request, user=user,
+        categories=list(STORE_CATEGORIES),
+        guardrail=_guardrail_thresholds(),
+    )
     return templates.TemplateResponse(request, "store_upload.html", ctx)
 
 
@@ -1173,7 +1198,7 @@ async def store_examples(
     whose bundle failed review can see what 'good' looks like
     side-by-side with the rule that bit them.
     """
-    ctx = _build_context(request, user=user)
+    ctx = _build_context(request, user=user, guardrail=_guardrail_thresholds())
     return templates.TemplateResponse(request, "store_examples.html", ctx)
 
 

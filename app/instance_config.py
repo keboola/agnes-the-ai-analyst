@@ -449,6 +449,62 @@ def get_guardrails_stuck_review_grace_seconds() -> int:
         return 1800
 
 
+def get_guardrails_min_description_chars() -> int:
+    """Minimum character floor for skill / agent / plugin descriptions.
+
+    Reads ``guardrails.min_description_chars`` (default 60). Set the
+    floor low (e.g. 30) to relax the inline content check; set high
+    (e.g. 120) to push submitters closer to the Claude-skill-ecosystem
+    norm of 150–220 chars per description.
+    """
+    val = get_value("guardrails", "min_description_chars", default=60)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 60
+
+
+def get_guardrails_min_command_description_chars() -> int:
+    """Minimum character floor for slash-command descriptions.
+
+    Reads ``guardrails.min_command_description_chars`` (default 25).
+    Commands are typically one-verb actions — kept tighter than skills.
+    """
+    val = get_value("guardrails", "min_command_description_chars", default=25)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 25
+
+
+def get_guardrails_min_distinct_words() -> int:
+    """Minimum distinct-word count for any description string.
+
+    Reads ``guardrails.min_distinct_words`` (default 5). Defends against
+    "padding hits the char count but says nothing" cases like
+    `"description description description description"`.
+    """
+    val = get_value("guardrails", "min_distinct_words", default=5)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 5
+
+
+def get_guardrails_min_body_chars() -> int:
+    """Minimum body-content floor for skill / agent files.
+
+    Reads ``guardrails.min_body_chars`` (default 200). Body = the
+    markdown after the YAML frontmatter. 200 chars is a "one paragraph"
+    floor that catches stubs; real skill bodies run 500–2000 chars.
+    """
+    val = get_value("guardrails", "min_body_chars", default=200)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 200
+
+
 def get_guardrails_enabled() -> bool:
     """Master kill-switch for the guardrail pipeline.
 
