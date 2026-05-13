@@ -858,10 +858,15 @@ async def catalog(
         internal_tables = []
         logger.warning(f"Could not load catalog: {e}")
 
-    # Build data_stats for catalog template (business-data card header)
+    # Build data_stats for catalog template (business-data card header).
+    # `total_tables` must count REGISTERED business tables, not just
+    # synced ones — a registry of 30 tables with 0 ever synced would
+    # otherwise render as "0 tables" on the Core Business Data card.
+    # `internal` source_type tables render in their own card; exclude
+    # them here so the Core counter doesn't double-count system tables.
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
     data_stats = {
-        "total_tables": len(all_states),
+        "total_tables": len(tables),
         "total_rows": total_rows,
         "total_columns": 0,
         "total_size": sum(s.get("file_size_bytes", 0) or 0 for s in all_states),
