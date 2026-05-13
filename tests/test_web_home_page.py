@@ -329,3 +329,73 @@ def test_home_renders_connector_prompts_from_shared_module(fresh_db):
             f"the home tile and setup script will paste different text. "
             f"len(home)={len(actual)} len(module)={len(expected)}"
         )
+
+
+# ── Getting Started + Overview + Usage modes (PR #289 home additions) ────
+
+
+def test_getting_started_card_renders_on_home(fresh_db):
+    """The dismissible Getting Started card sits between the install
+    hero and the connector tiles. Both rows must be present and point
+    at /setup and /setup-advanced respectively. State-independent:
+    renders for both onboarded and not-onboarded users (per-device
+    localStorage dismiss is the only off switch)."""
+    from src.db import get_system_db, close_system_db
+
+    for onboarded in (False, True):
+        conn = get_system_db()
+        try:
+            _, sess = _make_user_and_session(
+                conn, email=f"gs-{onboarded}@example.com", onboarded=onboarded
+            )
+        finally:
+            conn.close()
+            close_system_db()
+        body = _client().get("/home", cookies={"access_token": sess}).text
+        assert '<section class="home-getting-started"' in body
+        assert 'data-dismiss-key="agnes_home_gs_dismissed"' in body
+        assert 'class="home-gs-item" href="/setup"' in body
+        assert 'class="home-gs-item" href="/setup-advanced"' in body
+
+
+def test_overview_section_renders_when_yaml_set(fresh_db, monkeypatch):
+    """Setting `AGNES_INSTANCE_OVERVIEW` env (mirrors
+    instance.overview yaml) injects raw HTML into the Overview section
+    via the same `| safe` filter as news_intro. The marker text must
+    appear inside the rendered section wrapper. Overview deliberately
+    has NO dismiss button — it's operator-owned reference content
+    (privacy posture, telemetry policy, product framing), and a
+    per-device hide would leave returning users unable to re-read
+    it without clearing localStorage."""
+    monkeypatch.setenv("AGNES_INSTANCE_OVERVIEW", "<p>OVERVIEW_TEST_MARKER</p>")
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert '<section class="home-overview">' in body
+    assert "OVERVIEW_TEST_MARKER" in body
+    # Overview must NOT carry a dismiss key — content stays
+    # reachable on every visit so users can re-read it.
+    assert 'data-dismiss-key="agnes_home_overview_dismissed"' not in body
+
+
+def test_overview_section_hidden_when_yaml_empty(fresh_db, monkeypatch):
+    """Default empty `instance.overview` (no env override) hides the
+    section entirely so the OSS ships without a stray empty
+    Overview placeholder."""
+    monkeypatch.delenv("AGNES_INSTANCE_OVERVIEW", raising=False)
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert '<section class="home-overview">' not in body

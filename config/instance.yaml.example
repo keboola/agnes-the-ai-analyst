@@ -36,6 +36,14 @@ instance:
   #                                  # `name` above still drives browser <title> text and page
   #                                  # headings — keep it populated. Env override:
   #                                  # AGNES_INSTANCE_LOGO_SVG.
+  # overview: |                      # Operator-authored Overview body rendered in the new
+  #   <p>Free-form HTML — paragraphs, links, lists.</p>
+  #                                  # Overview section on /home (between Getting Started and
+  #                                  # Usage modes). Use for product framing, privacy posture,
+  #                                  # what-data-flows summary — operator-specific copy stays
+  #                                  # out of the OSS this way. HTML in, HTML out (same `| safe`
+  #                                  # filter as news_intro). Empty/unset = section hidden.
+  #                                  # Env override: AGNES_INSTANCE_OVERVIEW.
   # sync_interval: "1 hour"          # Cadence shown in analyst CLAUDE.md (e.g., "1 hour", "30 minutes", "daily")
   # admin_email: "ops@acme.com"      # Operator contact shown on /home GWS connector tile as
                                      # an "Email admin" mailto button (analysts whose operator

@@ -10,6 +10,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.7] — 2026-05-13
+
+### Added
+
+- `instance.overview` yaml field (env override
+  `AGNES_INSTANCE_OVERVIEW`) — operator-authored HTML body rendered in
+  the new Overview section on `/home`. HTML in, HTML out via the same
+  `| safe` filter as `news_intro`. Empty default hides the section,
+  keeping the OSS vendor-neutral.
+- `/home` Getting Started card — dismissible, two clickable rows
+  linking to `/setup` (install) and `/setup-advanced` (deeper
+  reference). Per-device dismiss via localStorage key
+  `agnes_home_gs_dismissed`. Generic `.home-card-close[data-dismiss-key]`
+  + `<section>` pattern — drop-in for any future dismissible card.
+- `/home` Usage modes section — three OSS-shipped tiles (Terminal /
+  VS Code / Claude Desktop · claude.ai) explaining each surface and
+  linking to the relevant `/setup-advanced` anchors.
+- `setup_advanced.html` `#claude-app` section anchored by the Usage
+  modes tile — covers the marketplace registration paths (git
+  smart-HTTP + ZIP fallback) and when to prefer the terminal anyway.
+
+### Changed
+
+- `/home` legacy `.advanced-pointer` row (the "Going deeper —
+  Advanced setup" link that sat above the news section) removed —
+  the same link now lives in the new Getting Started card. Supporting
+  `.advanced-pointer` CSS stays in place as dead style to keep the
+  diff focused.
+
 ## [0.54.6] — 2026-05-13
 
 ### Changed
