@@ -202,8 +202,9 @@ async def lifespan(app):
         get_posthog().shutdown()
     except Exception:
         logger.exception("PostHog shutdown failed")
-    from src.db import close_system_db
+    from src.db import close_analytics_db, close_system_db
     close_system_db()
+    close_analytics_db()
 
 
 def _is_truthy_env(name: str) -> bool:
