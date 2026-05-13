@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.9] — 2026-05-13
+
+### Added
+- **Initial Workspace Template** — admin-configurable per-instance override for the `agnes init` analyst workspace skeleton. Configure on `/admin/server-config` → "Initial Workspace Template" section: link a Git repo (HTTPS, optional branch, optional PAT for private repos). Server clones manually via "Sync now" into `${DATA_DIR}/initial-workspace/`. **Repo layout convention**: only the contents of a top-level `workspace/` subdirectory are shipped to analysts; anything else at the repo root (README, LICENSE, CI configs) stays in the repo and is never delivered. Sync fails strictly when the repo has no `workspace/` subdirectory at root. When configured, `agnes init` downloads a zip of `workspace/` content and extracts it into the analyst's workspace, fully bypassing Agnes-default `CLAUDE.md`, `.claude/settings.json`, hooks, slash commands, `CLAUDE.local.md` stub, and `AGNES_WORKSPACE.md`. Admin's repo is authoritative. `--force` shows a typed-YES confirmation listing files-to-overwrite vs files-to-create before extracting. See `docs/initial-workspace-override.md` for the full responsibility-transfer contract and required hooks the admin's repo must ship for `agnes pull` / `agnes push` to keep working.
+- New endpoints: `GET/POST/DELETE /api/admin/initial-workspace`, `POST /api/admin/initial-workspace/sync` (admin); `GET /api/initial-workspace`, `GET /api/initial-workspace.zip`, `POST /api/initial-workspace/applied` (PAT-authed analyst).
+- New audit-log actions: `initial_workspace.register`, `initial_workspace.sync`, `initial_workspace.sync_failed`, `initial_workspace.delete`, `initial_workspace.fetch_started` (server-authored, anchors the trail), `initial_workspace.applied` (CLI-authored, best-effort confirmation).
+
+### Internal — risk-accepted by design (see Initial Workspace Template feature)
+- `cli/lib/hooks.py::maybe_refresh_claude_hooks` deliberately no-ops when the workspace sentinel carries `override: true`. Future Agnes hook fixes will NOT auto-propagate to override workspaces via `agnes self-upgrade`; admin owns hook freshness in their template repo. Not a regression of #242 (the migration-gap fix that motivated the function applies to Agnes-default workspaces only).
+- `cli/lib/hooks.py::install_claude_hooks` and `cli/lib/commands.py::install_claude_commands` short-circuit on override workspaces. Admin's repo `settings.json` and `.claude/commands/` are the source of truth.
+- `agnes init --force` on override workspaces does NOT back up `CLAUDE.md` (no `CLAUDE.md.bak.<timestamp>` file). Source of truth is the admin's Git repo; recovery is `git log` / `git checkout`. Not a regression of #164.
+- `.claude/CLAUDE.local.md` IS overwritten by override extraction when the admin's repo includes it. The default-mode "never overwrite CLAUDE.local.md" promise is a default-mode promise; override mode hands full file-level control to admin. Documented.
+- `cli/lib/override.py::is_override_workspace` is the single source of truth for the override gate — every CLI surface that writes into `.claude/` calls it before touching the workspace. Avoids per-feature drift.
+- `app/api/marketplaces.py::_persist_token` removed; both marketplaces and the new initial-workspace endpoint now route through the shared `app/secrets.py::persist_overlay_token` helper, which wraps the `.env_overlay` read-modify-write in a process-wide `threading.Lock`. Closes a pre-existing race where two concurrent `/admin/marketplaces` Save clicks could clobber each other's PATs on the overlay file.
+
 ## [0.54.8] — 2026-05-13
 
 ### Changed
@@ -163,7 +178,6 @@ Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
   `_guardrail_thresholds()` helper threaded into the route context.
   Defaults are unchanged — instances that don't set
   `guardrails.*` keep the original PR #276 bar.
-
 ## [0.54.1] — 2026-05-13
 
 ### Added

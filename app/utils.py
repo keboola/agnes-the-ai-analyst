@@ -26,6 +26,21 @@ def get_marketplace_cache_dir() -> Path:
     return get_data_dir() / "marketplace-cache"
 
 
+def get_initial_workspace_dir() -> Path:
+    """Path where the admin-configured Initial Workspace Template is cloned.
+
+    Singleton (one per instance) — admin registers the repo via
+    /admin/server-config → "Initial Workspace Template" section. Used by
+    ``src.initial_workspace`` to clone/fetch and to serve via
+    ``/api/initial-workspace.zip``. Layout:
+
+        ${DATA_DIR}/initial-workspace/      ← git working copy
+            .git/                            ← present on disk, excluded from zip
+            CLAUDE.md, .claude/, ...         ← analyst workspace content
+    """
+    return get_data_dir() / "initial-workspace"
+
+
 def get_store_dir() -> Path:
     """Root for community-uploaded Store entities.
 
