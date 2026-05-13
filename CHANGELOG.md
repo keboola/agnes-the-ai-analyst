@@ -28,6 +28,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   width: auto;` (was just `display: block;`) so any operator's
   `logo_svg` scales via its viewBox to fit the 72px-tall header
   without per-asset width/height edits.
+- Header subtitle: empty `instance.subtitle` now renders nothing
+  (the whole `<span class="app-header-subtitle">` is skipped)
+  instead of falling back to the literal placeholder string
+  "Data Analyst Portal". Operators who leave the field unset get a
+  clean header instead of a stray hardcoded label.
 
 ## [0.54.5] — 2026-05-13
 
