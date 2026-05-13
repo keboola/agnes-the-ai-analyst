@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.8] — 2026-05-13
+
 ### Changed
 
 - **BREAKING** Store upload — inline guardrail failures now hard-reject
