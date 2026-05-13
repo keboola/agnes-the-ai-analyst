@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- `AGNES_DEFAULT_SYNC_SCHEDULE` env var (consumed by `app/api/sync.py:_run_materialized_pass`) sets the platform-wide fallback `sync_schedule` for registry rows that don't pin their own value. Lets a deployment dial cadence down to `daily 03:00` without having to PUT every row. Per-table `sync_schedule` still wins; literal `every 1h` is the floor if neither is set (matches OSS-historical behaviour).
+
+### Fixed
+- `GET /api/sync/status` no longer reports `locked=false` during the ~few-hundred-ms window between the trigger handler's 200 response and the background task's `_sync_lock.acquire()`. The handler now stamps `_recent_trigger_at`, and the status endpoint returns `locked=true` for `_TRIGGER_HOLD_SEC` (=30s) after the most recent trigger. Pre-fix, host-side `agnes-auto-upgrade.sh` defer probe firing in that window saw an honest `locked=false` and proceeded with `docker compose up -d`, SIGKILLing the just-spawning extractor / materialized worker. Observed on agnes-dev: 3 mid-sync container kills in 30 min until the trigger-hold window closed the gap.
+- `scripts/ops/agnes-auto-upgrade.sh`: the post-upgrade chown loop now includes `/data/tmp` (the default `AGNES_TEMP_DIR` set in `docker-compose.yml`) and `mkdir -p`'s it first. Pre-fix the runtime user (`uid 999`) couldn't create `/data/tmp` under a root-owned data-disk root, so tempfiles silently fell back to the boot disk's overlayfs `/tmp` — defeating the whole point of routing slice staging onto the dedicated data volume.
+
 ## [0.54.2] — 2026-05-13
 
 ### Added
