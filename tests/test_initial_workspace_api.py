@@ -66,7 +66,7 @@ def fake_remote(tmp_path: Path):
     workspace = work / "workspace"
     workspace.mkdir()
     (workspace / "CLAUDE.md").write_text(
-        "# Custom Workspace\n\nGroupon-specific rules.\n", encoding="utf-8"
+        "# Custom Workspace\n\nInternal rules.\n", encoding="utf-8"
     )
     (workspace / ".claude").mkdir()
     (workspace / ".claude" / "settings.json").write_text(
@@ -413,14 +413,20 @@ def test_admin_get_initial_workspace_not_configured(web_client):
 
 
 def test_admin_endpoints_require_admin(web_client):
-    """Non-admin user gets 403 on any admin endpoint."""
+    """Non-admin user gets 403 on every admin endpoint — all four verbs.
+    A future refactor that drops `Depends(require_admin)` from one
+    endpoint must fail here (otherwise we'd silently expose the
+    write/delete paths to any analyst with a PAT)."""
     headers = _make_user(web_client)
-    for path in (
-        "/api/admin/initial-workspace",
-        "/api/admin/initial-workspace/sync",
-    ):
-        r = web_client.get(path, headers=headers) if "sync" not in path else web_client.post(path, headers=headers)
-        assert r.status_code == 403, f"{path}: {r.status_code} {r.text}"
+    cases = [
+        ("GET",    "/api/admin/initial-workspace",      None),
+        ("POST",   "/api/admin/initial-workspace",      {"url": "https://example.com/x.git"}),
+        ("DELETE", "/api/admin/initial-workspace",      None),
+        ("POST",   "/api/admin/initial-workspace/sync", None),
+    ]
+    for method, path, body in cases:
+        r = web_client.request(method, path, headers=headers, json=body)
+        assert r.status_code == 403, f"{method} {path}: {r.status_code} {r.text}"
 
 
 def test_admin_post_writes_yaml_section(web_client, fake_remote):

@@ -431,13 +431,13 @@ def test_init_override_extracts_and_writes_extended_sentinel(tmp_path, monkeypat
     """
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
     zip_bytes = _make_zip({
-        "CLAUDE.md": b"# Custom Groupon Workspace\n",
+        "CLAUDE.md": b"# Custom Acme Workspace\n",
         "docs/handbook.md": b"# Handbook\n",
     })
     status = {
         "configured": True,
         "synced": True,
-        "template_source": "https://github.com/groupon/template",
+        "template_source": "https://github.com/acme/template",
         "template_sha": "abc123",
         "synced_at": "2026-05-13T10:00:00Z",
         "files": ["CLAUDE.md", "docs/handbook.md"],
@@ -455,7 +455,7 @@ def test_init_override_extracts_and_writes_extended_sentinel(tmp_path, monkeypat
     ])
     assert result.exit_code == 0, result.output
     # Admin's CLAUDE.md wins, NOT /api/welcome default
-    assert (tmp_path / "CLAUDE.md").read_text() == "# Custom Groupon Workspace\n"
+    assert (tmp_path / "CLAUDE.md").read_text() == "# Custom Acme Workspace\n"
     # File only in template repo appeared
     assert (tmp_path / "docs" / "handbook.md").read_text() == "# Handbook\n"
     # Agnes-default files NOT created by Agnes:
@@ -465,7 +465,7 @@ def test_init_override_extracts_and_writes_extended_sentinel(tmp_path, monkeypat
     # Sentinel carries override metadata
     sentinel = (tmp_path / ".claude" / "init-complete").read_text()
     assert "override: true" in sentinel
-    assert "template_source: https://github.com/groupon/template" in sentinel
+    assert "template_source: https://github.com/acme/template" in sentinel
     assert "template_sha: abc123" in sentinel
 
 
@@ -475,7 +475,7 @@ def test_init_override_exits_when_synced_false(tmp_path, monkeypatch):
     status = {
         "configured": True,
         "synced": False,
-        "template_source": "https://github.com/groupon/template",
+        "template_source": "https://github.com/acme/template",
     }
     api_get = _build_api_get(initial_workspace_status=status)
     monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
@@ -504,7 +504,7 @@ def test_init_override_force_with_YES_proceeds(tmp_path, monkeypatch):
     status = {
         "configured": True,
         "synced": True,
-        "template_source": "https://github.com/groupon/template",
+        "template_source": "https://github.com/acme/template",
         "template_sha": "new123",
         "synced_at": "2026-05-13T10:00:00Z",
         "files": ["CLAUDE.md"],
@@ -565,7 +565,7 @@ def test_init_override_existing_workspace_no_force_exits_partial_state(tmp_path,
     """Re-init override workspace WITHOUT --force → existing partial_state path."""
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
     _write_sentinel(tmp_path, "override: true\ntemplate_sha: old\n")
-    (tmp_path / "CLAUDE.md").write_text("groupon content\n")
+    (tmp_path / "CLAUDE.md").write_text("acme content\n")
 
     status = {
         "configured": True,
@@ -587,4 +587,4 @@ def test_init_override_existing_workspace_no_force_exits_partial_state(tmp_path,
     assert result.exit_code == 1
     assert "partial_state" in (result.output + str(result.stderr_bytes or b""))
     # CLAUDE.md untouched
-    assert (tmp_path / "CLAUDE.md").read_text() == "groupon content\n"
+    assert (tmp_path / "CLAUDE.md").read_text() == "acme content\n"
