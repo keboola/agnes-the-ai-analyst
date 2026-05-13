@@ -411,7 +411,12 @@ def _entity_to_response(
     conn: duckdb.DuckDBPyConnection, entity: dict
 ) -> StoreEntityResponse:
     photo_url = (
-        f"/api/store/entities/{entity['id']}/photo" if entity.get("photo_path") else None
+        # ``?v=`` cache-busting fingerprint via ``version_no`` (schema v37
+        # monotonic counter, bumps on every re-upload). Pairs with the
+        # ``Cache-Control: public, max-age=2592000, immutable`` header
+        # served by ``get_entity_photo``.
+        f"/api/store/entities/{entity['id']}/photo?v={entity.get('version_no', 1)}"
+        if entity.get("photo_path") else None
     )
     return StoreEntityResponse(
         id=entity["id"],
@@ -1043,17 +1048,33 @@ async def list_entity_files(
 @router.get("/entities/{entity_id}/photo")
 async def get_entity_photo(
     entity_id: str,
-    user: dict = Depends(get_current_user),
+    _user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """Serve a flea-market entity's cover photo.
+
+    **Auth model: login-only, no per-entity visibility check.** Cover
+    photos are uploader-designed showcase images — they exist to be seen
+    and carry no PII / source / secrets. The previous
+    ``_enforce_visibility`` check serialized every request through a DB
+    join (same ``_system_db_lock`` rationale as
+    ``app/api/marketplace.py:curated_asset``). Login still required.
+
+    Cache: bytes change exactly when ``store_entities.version_no`` bumps,
+    and listing endpoints append ``?v=<version_no>`` to the photo URL,
+    so a 30-day ``immutable`` cache is safe — a re-upload generates a
+    new URL fingerprint that the browser refetches.
+    """
     entity = StoreEntitiesRepository(conn).get(entity_id)
     if not entity or not entity.get("photo_path"):
         raise HTTPException(status_code=404, detail="photo_not_found")
-    _enforce_visibility(entity, user, conn)
     abs_path = _entity_dir(entity_id) / entity["photo_path"]
     if not abs_path.is_file():
         raise HTTPException(status_code=404, detail="photo_not_found")
-    return FileResponse(abs_path)
+    return FileResponse(
+        abs_path,
+        headers={"Cache-Control": "public, max-age=2592000, immutable"},
+    )
 
 
 @router.get("/entities/{entity_id}/docs/{filename}")
