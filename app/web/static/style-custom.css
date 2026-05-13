@@ -3812,3 +3812,124 @@ a.news-cta:hover { background: #0056A3; }
 
 .btn:focus { outline: none; }
 .btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* =====================================================
+   Canonical form controls (Task 5)
+   .search-input | .filter-bar | .filter-pill | .form-input
+
+   Selector-list aliases for legacy per-page classes (.users-search,
+   .marketplaces-search, .kb-search, .filters-card, .pill) so existing
+   markup keeps rendering until migration tasks swap them out.
+   ===================================================== */
+
+.search-input,
+.users-search,
+.marketplaces-search,
+.kb-search,
+.filter-bar input[type="search"],
+.filter-bar input[type="text"],
+.filter-bar select {
+    height: 36px;
+    padding: 0 var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.search-input::placeholder,
+.users-search::placeholder,
+.marketplaces-search::placeholder,
+.kb-search::placeholder,
+.filter-bar input::placeholder { color: var(--text-muted); }
+
+.search-input:focus,
+.users-search:focus,
+.marketplaces-search:focus,
+.kb-search:focus,
+.filter-bar input:focus,
+.filter-bar select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+.filter-bar,
+.filters-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: var(--space-4);
+}
+
+.filter-bar > .search-input,
+.filters-card > .search-input { flex: 1 1 240px; min-width: 200px; }
+
+.filter-pill {
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+    text-decoration: none;
+}
+
+.filter-pill:hover {
+    background: var(--border-light);
+    color: var(--text-primary);
+}
+
+.filter-pill.is-active,
+.filter-pill[aria-pressed="true"] {
+    background: var(--primary-light);
+    color: var(--primary);
+    border-color: var(--primary);
+}
+
+/* Form input — sibling of .search-input for forms (multi-line capable). */
+.form-input,
+input.form-input,
+select.form-input,
+textarea.form-input {
+    width: 100%;
+    min-height: 36px;
+    padding: var(--space-2) var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+textarea.form-input {
+    min-height: 96px;
+    resize: vertical;
+    font-family: var(--font-mono);
+    line-height: 1.5;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+.form-input::placeholder { color: var(--text-muted); }
