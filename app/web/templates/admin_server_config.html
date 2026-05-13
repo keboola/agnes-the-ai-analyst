@@ -172,6 +172,114 @@
 
   <div id="cfg-loading" class="cfg-loading">Loading current configuration…</div>
   <div id="cfg-sections" hidden></div>
+
+  <!--
+    Initial Workspace Template — admin-configurable per-instance override
+    for `agnes init` analyst workspace. Lives on this page but is NOT part
+    of the generic instance.yaml form save (data routes through dedicated
+    /api/admin/initial-workspace endpoints because of PAT handling).
+    See docs/initial-workspace-override.md for the full responsibility-
+    transfer contract.
+
+    Visual shape matches the other .cfg-section blocks on this page
+    (header / section-body / section-actions) so the page reads as one
+    cohesive panel.
+  -->
+  <section class="cfg-section" id="iw-section">
+    <header>
+      <div>
+        <h3>Initial Workspace Template</h3>
+        <div class="section-help">
+          Optional. Replace the default <code>agnes init</code> workspace
+          skeleton with content from your own Git repo. When set, Agnes
+          ships <strong>none</strong> of its own files — your repo is
+          authoritative for CLAUDE.md, hooks, slash commands, settings,
+          and folder layout. See <code>docs/initial-workspace-override.md</code>
+          for the full responsibility-transfer contract.
+        </div>
+      </div>
+    </header>
+    <div class="section-body" id="iw-body">
+      <div id="iw-loading" class="cfg-loading">Loading…</div>
+    </div>
+    <div class="section-actions" id="iw-actions" hidden></div>
+  </section>
+</div>
+
+<!-- Initial Workspace Template — register / edit modal.
+
+     Form fields use a dedicated stacked layout (.iw-form-field) — NOT the
+     page-level .cfg-field grid (which is 220px label / 1fr value, designed
+     for the wide section body, not a 480px modal). Inside the modal,
+     stacking label-above-input is the standard for narrow forms. -->
+<div class="modal-backdrop" id="iw-modal" role="dialog" aria-modal="true" aria-labelledby="iw-modal-title">
+  <style>
+    .iw-form-field { display: block; margin-bottom: 14px; }
+    .iw-form-field label {
+      display: block; font-size: 13px; font-weight: 500;
+      color: var(--text-primary, #111827); margin-bottom: 4px;
+    }
+    .iw-form-field label .iw-optional {
+      font-weight: 400; font-size: 11px; color: var(--text-secondary, #9ca3af);
+      margin-left: 4px;
+    }
+    .iw-form-field input {
+      width: 100%; box-sizing: border-box;
+      padding: 8px 10px; border-radius: 6px;
+      border: 1px solid var(--border, #e5e7eb);
+      background: var(--surface, #fff); font-size: 13px;
+      font-family: inherit;
+    }
+    .iw-form-field input:focus {
+      outline: none; border-color: var(--primary, #6366f1);
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+    }
+    .iw-form-field .field-help {
+      font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 4px;
+    }
+  </style>
+  <div class="modal-card" style="max-width: 480px;">
+    <h3 id="iw-modal-title">Link to Template Repository</h3>
+    <p class="sub" id="iw-modal-sub">Register a Git repo whose contents will replace the default <code>agnes init</code> workspace skeleton.</p>
+
+    <div class="iw-form-field">
+      <label for="iw-url">Repository URL (HTTPS)</label>
+      <input type="text" id="iw-url" placeholder="https://github.com/your-org/agnes-workspace-template" autocomplete="off">
+      <div class="field-help">Must be <code>https://</code>. Public repo or PAT-authed private.</div>
+    </div>
+
+    <div class="iw-form-field">
+      <label for="iw-branch">Branch <span class="iw-optional">(optional)</span></label>
+      <input type="text" id="iw-branch" placeholder="main" autocomplete="off">
+      <div class="field-help">Leave empty to track the remote's default branch.</div>
+    </div>
+
+    <div class="iw-form-field">
+      <label for="iw-token">GitHub PAT <span class="iw-optional">(optional)</span></label>
+      <input type="password" id="iw-token" placeholder="ghp_••• (leave blank to keep existing)" autocomplete="off">
+      <div class="field-help">
+        Required only for private repos. Stored at <code>.env_overlay</code>
+        (chmod 600), never in the YAML overlay. Leave blank to keep an
+        existing PAT; type a value to rotate.
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="cfg-btn" data-close-modal="iw-modal">Cancel</button>
+      <button class="cfg-btn primary" id="iw-modal-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Initial Workspace Template — sync result modal -->
+<div class="modal-backdrop" id="iw-sync-modal" role="dialog" aria-modal="true" aria-labelledby="iw-sync-title">
+  <div class="modal-card" style="max-width: 520px;">
+    <h3 id="iw-sync-title">Sync result</h3>
+    <div id="iw-sync-body" class="diff-list" style="background: var(--border-light, #f9fafb);"></div>
+    <div class="modal-actions">
+      <button class="cfg-btn primary" data-close-modal="iw-sync-modal">Close</button>
+    </div>
+  </div>
 </div>
 
 <!-- Danger-zone confirmation modal -->
@@ -1141,5 +1249,206 @@ async function loadConfig() {
 }
 
 loadConfig();
+
+// ════════════════════════════════════════════════════════════════════════
+// Initial Workspace Template — dedicated lifecycle (NOT part of generic
+// instance.yaml form save). Data routes through /api/admin/initial-workspace
+// because of PAT routing to .env_overlay.
+// ════════════════════════════════════════════════════════════════════════
+
+const IW_API = "/api/admin/initial-workspace";
+
+async function iwLoad() {
+  const body = document.getElementById("iw-body");
+  const actions = document.getElementById("iw-actions");
+  body.innerHTML = '<div class="cfg-loading">Loading…</div>';
+  actions.hidden = true;
+  actions.innerHTML = "";
+  try {
+    const r = await fetch(IW_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    iwRender(data);
+  } catch (e) {
+    body.innerHTML = `<div class="cfg-loading">Failed to load: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function iwRender(data) {
+  const body = document.getElementById("iw-body");
+  const actions = document.getElementById("iw-actions");
+  if (!data.configured) {
+    // Empty state — mirror the bootstrap-textarea pattern used by other
+    // sections when they have no data yet: friendly explanation in the
+    // body, primary action in the section-actions footer.
+    body.innerHTML = `
+      <div class="section-help" style="font-size: 13px;">
+        No template repository linked. Click <strong>Link to Template Repository</strong>
+        to register one. The repo's contents will replace the default
+        <code>agnes init</code> workspace skeleton for every analyst on this instance.
+      </div>
+    `;
+    actions.innerHTML = `<button class="cfg-btn primary" id="iw-register-btn">Link to Template Repository</button>`;
+    actions.hidden = false;
+    document.getElementById("iw-register-btn").addEventListener("click", () => {
+      iwOpenModal(/* editing */ false, null);
+    });
+    return;
+  }
+  // Configured — render label/value pairs using the same .cfg-field grid
+  // layout the other sections use, so the panel reads as part of the page.
+  const syncedAt = data.last_synced_at
+    ? new Date(data.last_synced_at).toLocaleString()
+    : "never";
+  const sha = data.last_commit_sha
+    ? `<code>${escHtml(data.last_commit_sha.slice(0, 10))}</code>`
+    : '<span style="color: var(--text-secondary, #9ca3af);">never synced</span>';
+  const tokenLine = data.has_token
+    ? '<span class="secret-pill" style="background:#dcfce7;color:#166534;border-color:#86efac;">PAT set</span>'
+    : '<span class="secret-pill" style="background:#f3f4f6;color:#6b7280;">no PAT</span>';
+  const lastError = data.last_error
+    ? `<div class="cfg-field"><label>Last sync error</label><div><div class="cfg-banner error is-visible" style="margin:0;">${escHtml(data.last_error)}</div></div></div>`
+    : "";
+  body.innerHTML = `
+    <div class="cfg-field">
+      <label>Repository URL</label>
+      <div><code>${escHtml(data.url)}</code></div>
+    </div>
+    <div class="cfg-field">
+      <label>Branch</label>
+      <div>${data.branch ? `<code>${escHtml(data.branch)}</code>` : '<span style="color: var(--text-secondary, #9ca3af);">(remote default)</span>'}</div>
+    </div>
+    <div class="cfg-field">
+      <label>GitHub PAT</label>
+      <div>${tokenLine}</div>
+    </div>
+    <div class="cfg-field">
+      <label>Last sync</label>
+      <div>${escHtml(syncedAt)} · commit ${sha} · ${data.file_count} file(s)</div>
+    </div>
+    ${lastError}
+  `;
+  // Download button uses the same analyst-facing endpoint so what the
+  // admin downloads is byte-identical to what `agnes init` extracts on
+  // an analyst's laptop. Disabled (rendered as a faded button) when not
+  // synced — endpoint would return 503. Browser session cookie carries
+  // auth (get_current_user accepts cookie + Bearer).
+  const downloadBtn = data.last_commit_sha
+    ? `<a class="cfg-btn" id="iw-download-btn" href="/api/initial-workspace.zip" download="initial-workspace.zip">Download zip</a>`
+    : `<button class="cfg-btn" disabled title="No synced commit yet — click Sync now first">Download zip</button>`;
+  actions.innerHTML = `
+    <button class="cfg-btn primary" id="iw-sync-btn">Sync now</button>
+    ${downloadBtn}
+    <button class="cfg-btn" id="iw-edit-btn">Edit</button>
+    <button class="cfg-btn danger" id="iw-delete-btn">Delete</button>
+  `;
+  actions.hidden = false;
+  document.getElementById("iw-sync-btn").addEventListener("click", iwSync);
+  document.getElementById("iw-edit-btn").addEventListener("click", () => {
+    iwOpenModal(/* editing */ true, data);
+  });
+  document.getElementById("iw-delete-btn").addEventListener("click", iwDelete);
+}
+
+function iwOpenModal(editing, data) {
+  document.getElementById("iw-modal-title").textContent =
+    editing ? "Edit Template Repository" : "Link to Template Repository";
+  document.getElementById("iw-url").value = (editing && data) ? (data.url || "") : "";
+  document.getElementById("iw-branch").value = (editing && data) ? (data.branch || "") : "";
+  document.getElementById("iw-token").value = "";  // Never prefill PAT
+  openModal("iw-modal");
+}
+
+async function iwSave() {
+  const url = document.getElementById("iw-url").value.trim();
+  const branch = document.getElementById("iw-branch").value.trim();
+  const token = document.getElementById("iw-token").value;
+  if (!url) {
+    showBanner("Repository URL is required.", "error");
+    return;
+  }
+  const body = { url };
+  if (branch) body.branch = branch;
+  // Only include token when admin typed one — empty string means "leave existing alone"
+  if (token) body.token = token;
+  try {
+    const r = await fetch(IW_API, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const detail = (data && data.detail) ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)) : r.statusText;
+      showBanner("Save failed: " + detail, "error");
+      return;
+    }
+    closeModal("iw-modal");
+    showBanner("Initial Workspace Template saved. Click 'Sync now' to fetch the repo.", "success");
+    iwLoad();
+  } catch (e) {
+    showBanner("Save failed: " + e.message, "error");
+  }
+}
+
+async function iwSync() {
+  const btn = document.getElementById("iw-sync-btn");
+  btn.disabled = true;
+  btn.textContent = "Syncing…";
+  try {
+    const r = await fetch(IW_API + "/sync", {
+      method: "POST", credentials: "include",
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const detail = (data && data.detail) ? data.detail : { kind: "unknown", message: r.statusText };
+      const msg = (typeof detail === "string")
+        ? detail
+        : (detail.message || detail.kind || "Unknown error");
+      const kind = (typeof detail === "object") ? (detail.kind || "") : "";
+      document.getElementById("iw-sync-body").innerHTML =
+        `<div class="diff-row" style="color: #b91c1c;"><strong>Sync failed${kind ? " (" + escHtml(kind) + ")" : ""}:</strong><br>${escHtml(msg)}</div>`;
+      openModal("iw-sync-modal");
+      return;
+    }
+    document.getElementById("iw-sync-body").innerHTML =
+      `<div class="diff-row"><strong>Action:</strong> ${escHtml(data.action)}</div>
+       <div class="diff-row"><strong>Commit:</strong> <code>${escHtml(data.commit_sha)}</code></div>
+       <div class="diff-row"><strong>Files:</strong> ${data.file_count}</div>
+       <div class="diff-row"><strong>Path:</strong> <code>${escHtml(data.path)}</code></div>`;
+    openModal("iw-sync-modal");
+  } catch (e) {
+    document.getElementById("iw-sync-body").innerHTML =
+      `<div class="diff-row" style="color: #b91c1c;"><strong>Sync failed:</strong><br>${escHtml(e.message)}</div>`;
+    openModal("iw-sync-modal");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Sync now";
+    iwLoad();
+  }
+}
+
+async function iwDelete() {
+  if (!confirm("Remove Initial Workspace Template? This restores the default `agnes init` flow. The on-disk working copy is also wiped.")) {
+    return;
+  }
+  try {
+    const r = await fetch(IW_API + "?purge=true", {
+      method: "DELETE", credentials: "include",
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      showBanner("Delete failed: " + (data.detail || r.statusText), "error");
+      return;
+    }
+    showBanner("Initial Workspace Template removed.", "success");
+    iwLoad();
+  } catch (e) {
+    showBanner("Delete failed: " + e.message, "error");
+  }
+}
+
+document.getElementById("iw-modal-save").addEventListener("click", iwSave);
+iwLoad();
 </script>
 {% endblock %}
