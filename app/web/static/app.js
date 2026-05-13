@@ -20,12 +20,20 @@
                 panel.setAttribute("hidden", "");
             }
         }
-        trigger.addEventListener("click", function (e) {
-            e.stopPropagation();
+        trigger.addEventListener("click", function () {
+            // No stopPropagation — let the click bubble to the document
+            // handler so any OTHER open dropdown's handler can close
+            // itself ("only one menu open at a time" behaviour).
             setOpen(trigger.getAttribute("aria-expanded") !== "true");
         });
         document.addEventListener("click", function (e) {
-            if (!panel.contains(e.target) && e.target !== trigger) setOpen(false);
+            // Use trigger.contains(target) instead of strict equality —
+            // clicking the chevron <svg> inside the button reports the
+            // svg / path as e.target, which would otherwise trip the
+            // close branch immediately after opening.
+            if (!panel.contains(e.target) && !trigger.contains(e.target)) {
+                setOpen(false);
+            }
         });
         document.addEventListener("keydown", function (e) {
             if (e.key === "Escape") {
