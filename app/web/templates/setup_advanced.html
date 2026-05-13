@@ -291,6 +291,7 @@
         <h2>On this page</h2>
         <ol>
             <li><a href="#vscode">VS Code as your workspace</a></li>
+            <li><a href="#claude-app">Claude Desktop &amp; claude.ai</a></li>
             <li><a href="#workspace">~/{{ workspace_dir }} workspace anatomy</a></li>
             <li><a href="#projects">Project workflows</a></li>
             <li><a href="#plugins">Recommended plugins</a></li>
@@ -321,6 +322,21 @@
             <li><kbd>Cmd</kbd>+<kbd>K</kbd> <kbd>Z</kbd> — Zen Mode (fullscreen, no chrome)</li>
             <li><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> — command palette (everything VS Code can do)</li>
         </ul>
+    </section>
+
+    <section class="ad-section" id="claude-app">
+        <h2>1b. Claude Desktop &amp; claude.ai</h2>
+        <p class="ad-lead">{{ instance_brand }}'s plugin marketplace also works from Claude Desktop and claude.ai — same plugins, same RBAC, no terminal required. Useful when you're already inside Claude for chat and want one-click access to your team's curated tools.</p>
+
+        <p>Two channels share the same RBAC-filtered marketplace feed:</p>
+        <ul>
+            <li><strong>Git smart-HTTP</strong> — preferred. Register once with <code>/plugin marketplace add</code>; Claude owns the clone/fetch cycle from then on.</li>
+            <li><strong>ZIP download</strong> — fallback for environments where the git path can't reach the server (private-CA TLS, restrictive proxies). A SessionStart hook unpacks the served bundle into <code>./marketplace/</code> on each session start.</li>
+        </ul>
+
+        <p>The exact registration commands (URL, PAT, hook setup) are baked into the clipboard payload at <a href="/setup">/setup</a> — that page detects your platform and chooses the right channel automatically. The setup script also installs the bundled hooks that keep the marketplace + session telemetry in sync between Claude Desktop and the central catalog.</p>
+
+        <p class="ad-lead" style="margin-top: 14px;">When to prefer the terminal anyway: large refactors, anything that touches files outside of <code>~/{{ workspace_dir }}</code>, or workflows that need Claude Code's CLI-only features (auto-mode, YOLO, custom hooks). Claude Desktop and claude.ai are best for short-form chat with read-only / well-scoped tools.</p>
     </section>
 
     <section class="ad-section" id="workspace">

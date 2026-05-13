@@ -101,6 +101,150 @@
 }
 .home-mock .install-hero .lead strong { font-weight: 600; }
 
+/* ── Getting Started + Overview + Usage modes (added in PR #289) ───
+   Three new content cards rendered between the install-hero and the
+   connector tiles. Getting Started + Usage modes ship in OSS;
+   Overview body comes from instance.overview yaml (operator-owned),
+   hidden when unset. Generic dismiss pattern: any element with
+   `<button class="home-card-close" data-dismiss-key="...">` gets
+   per-device localStorage dismissibility for free. */
+
+.home-mock .home-getting-started,
+.home-mock .home-overview,
+.home-mock .home-usage {
+    position: relative;
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 22px 24px;
+    margin-bottom: 18px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+.home-mock .home-getting-started > header h2,
+.home-mock .home-overview > h2,
+.home-mock .home-usage > header h2 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    color: var(--hp-text-primary);
+}
+.home-mock .home-getting-started > header p,
+.home-mock .home-usage > header p {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    margin: 0 0 14px;
+}
+
+.home-mock .home-card-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--hp-text-muted);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.home-mock .home-card-close:hover,
+.home-mock .home-card-close:focus-visible {
+    background: var(--hp-border-light);
+    color: var(--hp-text-primary);
+    outline: none;
+}
+
+.home-mock .home-gs-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--hp-border);
+    border-radius: 10px;
+    text-decoration: none;
+    color: inherit;
+    margin-top: 8px;
+    transition: border-color 0.15s, background 0.15s;
+}
+.home-mock .home-gs-item:hover {
+    border-color: var(--hp-primary);
+    background: var(--hp-primary-light);
+}
+.home-mock .home-gs-item .ico {
+    font-size: 20px;
+    flex: 0 0 24px;
+    text-align: center;
+}
+.home-mock .home-gs-item .text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.home-mock .home-gs-item .text strong {
+    font-weight: 600;
+    color: var(--hp-text-primary);
+}
+.home-mock .home-gs-item .text .desc {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+}
+.home-mock .home-gs-item .arrow {
+    color: var(--hp-text-muted);
+    font-size: 16px;
+}
+
+.home-mock .home-overview-body {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--hp-text-primary);
+}
+.home-mock .home-overview-body p { margin: 0 0 10px; }
+.home-mock .home-overview-body p:last-child { margin-bottom: 0; }
+.home-mock .home-overview-body a { color: var(--hp-primary); }
+
+.home-mock .home-usage-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.home-mock .home-usage-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px;
+    border: 1px solid var(--hp-border);
+    border-radius: 10px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s, background 0.15s;
+}
+.home-mock .home-usage-item:hover {
+    border-color: var(--hp-primary);
+    background: var(--hp-primary-light);
+}
+.home-mock .home-usage-item .ico { font-size: 20px; }
+.home-mock .home-usage-item strong { font-weight: 600; }
+.home-mock .home-usage-item span {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    line-height: 1.5;
+}
+.home-mock .home-usage-foot {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    margin: 0;
+}
+@media (max-width: 720px) {
+    .home-mock .home-usage-grid { grid-template-columns: 1fr; }
+}
+
 .home-mock .what-is {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -1365,6 +1509,76 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
        BEFORE Step 3's install runs ~20 commands. Gated by the same
        `home_automode.show` flag at the call site. #}
 
+    {# Getting Started card — dismissible per-device via localStorage.
+       Two clickable rows pointing at the install flow (/setup) and the
+       deeper reference (/setup-advanced). Subsumes the legacy
+       `.advanced-pointer` row that used to sit above the news section. #}
+    <section class="home-getting-started" id="homeGettingStarted">
+        <button type="button" class="home-card-close"
+                data-dismiss-key="agnes_home_gs_dismissed"
+                aria-label="Dismiss Getting Started">&times;</button>
+        <header>
+            <h2>Getting Started</h2>
+            <p>Two quick next steps to get the most out of {{ instance_brand }}.</p>
+        </header>
+        <a class="home-gs-item" href="/setup">
+            <span class="ico" aria-hidden="true">&#x1F680;</span>
+            <div class="text">
+                <strong>Setup {{ instance_brand }} in your Claude Code</strong>
+                <span class="desc">One-time install: copies a setup script to your clipboard, paste into Claude Code, done in ~10 minutes.</span>
+            </div>
+            <span class="arrow" aria-hidden="true">&rarr;</span>
+        </a>
+        <a class="home-gs-item" href="/setup-advanced">
+            <span class="ico" aria-hidden="true">&#x1F6E0;&#xFE0F;</span>
+            <div class="text">
+                <strong>Go deeper into your AI workspace</strong>
+                <span class="desc">VS Code layout, recommended plugins, multi-model second opinions, custom skills + rules + hooks, project workflows.</span>
+            </div>
+            <span class="arrow" aria-hidden="true">&rarr;</span>
+        </a>
+    </section>
+
+    {# Overview section — operator-owned, opt-in. Body comes from the
+       `instance.overview` yaml field via get_instance_overview()
+       (`AGNES_INSTANCE_OVERVIEW` env override). Empty value hides the
+       whole section, keeping the OSS vendor-neutral. #}
+    {% if config.INSTANCE_OVERVIEW %}
+    <section class="home-overview">
+        <h2>Overview</h2>
+        <div class="home-overview-body">{{ config.INSTANCE_OVERVIEW | safe }}</div>
+    </section>
+    {% endif %}
+
+    {# Usage modes — Terminal / VS Code / Claude Desktop · claude.ai.
+       Generic OSS-shipped copy linking to /setup and to /setup-advanced
+       anchors. Helps onboarded users find the right surface once they
+       know which workflow fits them. #}
+    <section class="home-usage">
+        <header>
+            <h2>Where you can use {{ instance_brand }}</h2>
+            <p>Same workspace, three surfaces. Pick whichever fits your flow — all three share the same plugins, data access, and credentials.</p>
+        </header>
+        <div class="home-usage-grid">
+            <a class="home-usage-item" href="/setup">
+                <span class="ico" aria-hidden="true">&#x2328;&#xFE0F;</span>
+                <strong>Terminal</strong>
+                <span>Default. Run <code>claude</code> from any project under <code>~/{{ workspace_dir }}</code>. Lowest overhead, fastest feedback loop.</span>
+            </a>
+            <a class="home-usage-item" href="/setup-advanced#vscode">
+                <span class="ico" aria-hidden="true">&#x1F4D1;</span>
+                <strong>VS Code</strong>
+                <span>Split-terminal layout — conversation on one side, diffs and tool output on the other. See <em>Go deeper</em> for the recommended layout.</span>
+            </a>
+            <a class="home-usage-item" href="/setup-advanced#claude-app">
+                <span class="ico" aria-hidden="true">&#x1F4BB;</span>
+                <strong>Claude Desktop / claude.ai</strong>
+                <span>Connect this {{ instance_brand }} instance's plugin marketplace to your Claude Desktop or claude.ai account — same plugins, no terminal required.</span>
+            </a>
+        </div>
+        <p class="home-usage-foot">For the deepest integration, create every project under <code>~/{{ workspace_dir }}</code> — existing or new. The bundled plugin keeps each project in sync with the central catalog automatically.</p>
+    </section>
+
     <details class="setup-collapsible" data-section="connectors" open>
         <summary>
             <span class="ico" aria-hidden="true">&#x1F517;</span>
@@ -1492,14 +1706,10 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
         {% endif %}
     </div>
 
-    <a class="advanced-pointer" href="/setup-advanced">
-        <span class="ico">&#x1F6E0;&#xFE0F;</span>
-        <div class="advanced-pointer-text">
-            <strong>Going deeper — Advanced setup</strong>
-            VS Code split-terminal layout, recommended Claude Code plugins (with copy-able install commands), multi-model second opinions (Codex + Gemini), custom skills + rules + hooks, project workflows, plan tier guidance.
-        </div>
-        <span class="arrow">&rarr;</span>
-    </a>
+    {# Legacy `.advanced-pointer` row removed — same link now lives in
+       the Getting Started card at the top of /home. `.advanced-pointer`
+       CSS (~line 721) is harmless dead style; left in place to keep
+       this diff focused. #}
 
     {% if news_intro %}
     <section class="home-news">
@@ -1778,6 +1988,29 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
             applyMinimize(nowOn);
         });
     }
+
+    // ── Generic dismiss-card handler ─────────────────────────────────
+    // Any `<button class="home-card-close" data-dismiss-key="...">`
+    // inside a `<section>` becomes dismissible: clicking sets the
+    // localStorage key to '1' and hides the section; on next page
+    // load the section starts hidden if the key is set. Used by the
+    // Getting Started card; future dismissible cards drop in with
+    // zero per-card JS.
+    document.querySelectorAll('.home-card-close[data-dismiss-key]').forEach(function (btn) {
+        var key = btn.getAttribute('data-dismiss-key');
+        var section = btn.closest('section');
+        if (!section || !key) return;
+        try {
+            if (localStorage.getItem(key) === '1') {
+                section.hidden = true;
+                return;
+            }
+        } catch (e) { /* private-mode: render visible, no-op */ }
+        btn.addEventListener('click', function () {
+            try { localStorage.setItem(key, '1'); } catch (e) { /* ignore */ }
+            section.hidden = true;
+        });
+    });
 })();
 </script>
 {% endblock %}

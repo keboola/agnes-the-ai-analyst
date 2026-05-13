@@ -295,6 +295,22 @@ def get_instance_logo_svg() -> str:
     return (raw or "").strip()
 
 
+def get_instance_overview() -> str:
+    """Operator-authored Overview body rendered on ``/home``. Markdown is
+    NOT auto-converted — operators paste HTML (matches the existing
+    ``news_intro`` ``| safe`` filter). Empty default = section hidden,
+    keeping the OSS vendor-neutral when an instance ships without
+    operator-specific framing.
+
+    Resolution: ``AGNES_INSTANCE_OVERVIEW`` env > ``instance.overview``
+    YAML > ``""``. Mirrors :func:`get_instance_logo_svg`.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_OVERVIEW")
+    if raw is None:
+        raw = get_value("instance", "overview", default="")
+    return (raw or "").strip()
+
+
 def get_workspace_dir_name() -> str:
     """Filesystem-safe folder name for the analyst's local workspace
     (``~/<workspace_dir_name>``). Defaults to :func:`get_instance_brand`
