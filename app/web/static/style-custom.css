@@ -3739,8 +3739,7 @@ a.news-cta:hover { background: #0056A3; }
    Base .btn, .btn-primary, .btn-secondary, .btn-sm come from the
    absorbed style.css block above (no change needed — they already use
    the new tokens via the legacy-alias layer). This section appends
-   selector-list aliases for legacy class names (.btn-primary-v2,
-   .btn-secondary-v2, .btn-ghost-v2, .modal-btn) and defines the new
+   selector-list aliases for legacy class names (   .btn-secondary-v2, .btn-ghost-v2, .modal-btn) and defines the new
    variants (.btn-ghost, .btn-danger, .btn-lg) that the legacy stylesheet
    didn't ship.
 
@@ -3752,9 +3751,7 @@ a.news-cta:hover { background: #0056A3; }
    selectors due to source order — Tasks 8–14 strip those.
    ===================================================== */
 
-.btn-primary,
-.btn-primary-v2,
-.modal-btn.primary {
+.btn-primary {
     background-color: var(--primary);
     color: #fff;
     border: 1px solid var(--primary);
@@ -3768,9 +3765,7 @@ a.news-cta:hover { background: #0056A3; }
     box-shadow: 0 2px 8px rgba(0, 115, 209, 0.3);
 }
 
-.btn-secondary,
-.btn-secondary-v2,
-.modal-btn:not(.primary):not(.danger) {
+.btn-secondary {
     background-color: var(--surface);
     color: var(--text-primary);
     border: 1px solid var(--border);
@@ -3781,8 +3776,7 @@ a.news-cta:hover { background: #0056A3; }
     background-color: var(--border-light);
 }
 
-.btn-ghost,
-.btn-ghost-v2 {
+.btn-ghost {
     background-color: transparent;
     color: var(--text-secondary);
     border: 1px solid transparent;
@@ -3793,8 +3787,7 @@ a.news-cta:hover { background: #0056A3; }
     color: var(--text-primary);
 }
 
-.btn-danger,
-.modal-btn.danger {
+.btn-danger {
     background-color: #fff;
     color: var(--error);
     border: 1px solid var(--error);
@@ -3817,15 +3810,11 @@ a.news-cta:hover { background: #0056A3; }
    Canonical form controls (Task 5)
    .search-input | .filter-bar | .filter-pill | .form-input
 
-   Selector-list aliases for legacy per-page classes (.users-search,
-   .marketplaces-search, .kb-search, .filters-card, .pill) so existing
+   Selector-list aliases for legacy per-page classes (   .marketplaces-search, .kb-search, .filters-card, .pill) so existing
    markup keeps rendering until migration tasks swap them out.
    ===================================================== */
 
 .search-input,
-.users-search,
-.marketplaces-search,
-.kb-search,
 .filter-bar input[type="search"],
 .filter-bar input[type="text"],
 .filter-bar select {
@@ -3857,8 +3846,7 @@ a.news-cta:hover { background: #0056A3; }
     box-shadow: var(--focus-ring);
 }
 
-.filter-bar,
-.filters-card {
+.filter-bar {
     display: flex;
     align-items: center;
     gap: var(--space-2);
@@ -4046,16 +4034,11 @@ textarea.form-input {
    Data display + feedback primitives (Task 7)
    .data-table (+ --compact) | .empty-state | .toast | .stat-card
 
-   Selector-list aliases for legacy per-page tables (.users-table,
-   .gp-table, .marketplaces-table, .audit-table) so existing markup
+   Selector-list aliases for legacy per-page tables (   .gp-table, .marketplaces-table, .audit-table) so existing markup
    keeps rendering until migration tasks swap them out.
    ===================================================== */
 
 .data-table,
-.users-table,
-.gp-table,
-.marketplaces-table,
-.audit-table,
 .ad-table,
 .ea-table,
 .md-table,
@@ -4079,10 +4062,6 @@ textarea.form-input {
 }
 
 .data-table thead,
-.users-table thead,
-.gp-table thead,
-.marketplaces-table thead,
-.audit-table thead,
 .ad-table thead,
 .ea-table thead,
 .md-table thead,
@@ -4100,10 +4079,6 @@ textarea.form-input {
 }
 
 .data-table th,
-.users-table th,
-.gp-table th,
-.marketplaces-table th,
-.audit-table th,
 .ad-table th,
 .ea-table th,
 .md-table th,
@@ -4128,10 +4103,6 @@ textarea.form-input {
 }
 
 .data-table td,
-.users-table td,
-.gp-table td,
-.marketplaces-table td,
-.audit-table td,
 .ad-table td,
 .ea-table td,
 .md-table td,
@@ -4153,10 +4124,6 @@ textarea.form-input {
 }
 
 .data-table tbody tr:last-child td,
-.users-table tbody tr:last-child td,
-.gp-table tbody tr:last-child td,
-.marketplaces-table tbody tr:last-child td,
-.audit-table tbody tr:last-child td,
 .ad-table tbody tr:last-child td,
 .ea-table tbody tr:last-child td,
 .md-table tbody tr:last-child td,
@@ -4174,10 +4141,6 @@ textarea.form-input {
 }
 
 .data-table tbody tr:hover,
-.users-table tbody tr:hover,
-.gp-table tbody tr:hover,
-.marketplaces-table tbody tr:hover,
-.audit-table tbody tr:hover,
 .ad-table tbody tr:hover,
 .ea-table tbody tr:hover,
 .md-table tbody tr:hover,
