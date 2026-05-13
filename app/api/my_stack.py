@@ -3,7 +3,7 @@
 Provides:
 
   * ``GET  /api/my-stack``                                 — combined view
-  * ``PUT  /api/my-stack/curated/{marketplace_id}/{plugin}`` — toggle opt-out
+  * ``PUT  /api/my-stack/curated/{marketplace_id}/{plugin}`` — toggle subscription
 
 Used by the ``agnes my-stack`` CLI subcommand. The web page that historically
 backed these endpoints (``/my-ai-stack``) was removed in favor of
@@ -113,8 +113,8 @@ async def get_my_stack(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Combined view of admin-curated plugins (with current opt-out state)
-    and Store entities the caller has installed.
+    """Combined view of curated plugins the caller can subscribe to
+    and Store entities they have installed.
     """
     granted = resolve_allowed_plugins(conn, user)
     # Model B (v28+): explicit subscriptions decide what's enabled.
@@ -199,7 +199,7 @@ async def toggle_curated(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Toggle subscribe/unsubscribe for a single admin-granted plugin.
+    """Toggle subscribe/unsubscribe for a single curated plugin.
 
     UI thinks in terms of *enabled* (default off in Model B). v28+ the
     repository stores *subscribed* rows (presence = enabled in served set);

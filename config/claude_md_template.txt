@@ -82,22 +82,61 @@ and `agnes init` will overwrite local edits — put personal notes into
 `null` for `remote` rows. When `null`, treat the table as potentially large
 and use `agnes snapshot create --estimate` to size-check before fetching.
 
-{% if marketplaces -%}
-## Agnes Marketplace — plugins available to you
+## Agnes Marketplace — discovering and managing skills, agents, plugins
 
-These plugins reach Claude Code through the per-user **`agnes`** marketplace
-served by this server (an aggregated, RBAC-filtered view of the upstream
-marketplaces below). When you install or invoke one of these plugins inside
-Claude Code, address it as `<plugin>@agnes` regardless of which upstream it
-came from — e.g. `claude plugin install <plugin>@agnes`. The
-`agnes refresh-marketplace` command (run by the SessionStart hook every
-session) keeps the local clone in sync.
+The marketplace has two sections:
 
-Upstream marketplaces folded into your `agnes` view:
-{% for mp in marketplaces -%}
-- **{{ mp.name }}** ({{ mp.slug }}): {{ mp.plugins | map(attribute="name") | join(", ") }}
-{% endfor %}
-{% endif -%}
+- **Curated** — vetted by your org; admins control RBAC visibility
+- **Flea Market** — open community uploads anyone can publish (admin-approved)
+
+When the user asks "is there a skill/agent for X?" or "what's available for Y?",
+**always check the marketplace** before assuming nothing exists — new items are
+published continuously and your training data does not cover them. Never
+enumerate from memory; the CLI is the source of truth for what exists and
+what's in your stack.
+
+### Discovery
+
+```
+# Search across Curated + Flea Market (RBAC-filtered server-side)
+agnes marketplace search -q "pdf"
+agnes marketplace search --type skill           # restrict by type
+agnes marketplace search --source curated       # restrict by source
+agnes marketplace search --json                 # machine-readable for scripts
+
+# Full details — use cases, contents, install command, examples
+agnes marketplace detail <id>
+agnes marketplace detail --json <id>            # raw payload
+```
+
+ID format:
+- Curated → `marketplace_id/plugin_name` (contains `/`)
+- Flea Market → UUID (no `/`)
+
+### Managing your stack
+
+```
+# What's currently in my stack? (authoritative — read live, do not cache)
+agnes my-stack show
+
+# Add or remove (works for both Curated and Flea Market by ID)
+agnes marketplace add <id>
+agnes marketplace remove <id>
+```
+
+After `add` / `remove`, the user must run `/update-agnes-plugins` inside
+Claude Code to apply the change to the running session — no restart needed.
+
+### Notes on behaviour
+
+- System plugins (admin-pinned) cannot be removed — the API returns 409.
+- Flea Market items must be admin-approved before they're installable.
+- Skills and agents from the Flea Market are bundled into a synthetic plugin
+  when served to Claude Code; you invoke them the same way as plugin-shipped
+  skills.
+- Plugins served to Claude Code are addressed as `<plugin>@agnes`
+  (e.g. `claude plugin install <plugin>@agnes`). The SessionStart hook runs
+  `agnes refresh-marketplace --check` to detect upstream changes.
 
 ## Remote Queries (BigQuery) — when data isn't on the laptop
 

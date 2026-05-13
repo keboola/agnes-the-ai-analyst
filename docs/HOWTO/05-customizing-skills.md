@@ -1,31 +1,53 @@
 # Customising your skills
 
-Agnes serves a curated set of Claude Code skills (plugins) through your instance's marketplace. You can extend your personal stack in two ways: installing from the curated/flea tabs, and uploading your own.
+Agnes serves a curated set of Claude Code skills, agents, and plugins through your instance's marketplace. You can extend your personal stack in two ways: adding items from the Curated and Flea Market tabs, and uploading your own.
 
 ---
 
-## Surface 1: Installing from the marketplace
+## Surface 1: Discovering and adding from the marketplace
+
+You have two paths: the web UI at `/marketplace`, or the `agnes marketplace` CLI from any workspace.
 
 ### Curated tab (admin-managed)
 
-Your admin has registered one or more git repos as marketplaces. The plugins from those repos appear on the **Curated** tab at `/marketplace`.
+Your admin has registered one or more git repos as marketplaces. The plugins from those repos appear on the **Curated** tab at `/marketplace` (only those visible to your RBAC groups).
 
-- Browse and install plugins from the curated tab.
-- After installing, sync your local Claude Code marketplace:
-  ```bash
-  agnes refresh-marketplace --quiet
-  ```
-  This is also wired to run automatically at `SessionStart` (via the hook `agnes init` installs).
-- To see what's in your current stack:
-  ```bash
-  agnes my-stack
-  ```
-- The **Most Popular** section (top of `/marketplace`) shows the 8 most-invoked plugins over the last 30 days — a quick signal for what your teammates find useful.
+- The **Most Popular** section (top of `/marketplace`) shows the 8 most-invoked plugins over the last 30 days.
 - Sort options: **Recent** (default), **Most used (30d)**, **Trending (week-over-week)**.
 
 ### Flea tab (community uploads)
 
-The **Flea** tab shows plugins uploaded by any analyst on the instance, after admin approval. Browse and install the same way as curated plugins.
+The **Flea Market** tab shows skills, agents, and plugins uploaded by any analyst on the instance, after admin approval.
+
+### Using the CLI
+
+```bash
+# Search across Curated + Flea Market
+agnes marketplace search -q "pdf"
+agnes marketplace search --type skill --source curated
+
+# Full detail — use cases, contents, examples
+agnes marketplace detail <id>
+
+# Add to / remove from your stack
+agnes marketplace add <id>
+agnes marketplace remove <id>
+
+# What's currently in my stack?
+agnes my-stack show
+```
+
+ID format: curated items are `marketplace_id/plugin_name`, Flea items are UUIDs.
+
+### Applying changes to Claude Code
+
+After `add` / `remove`, run inside Claude Code:
+
+```
+/update-agnes-plugins
+```
+
+That installs/updates/removes the corresponding plugins in your local Claude Code session. The `SessionStart` hook detects pending updates automatically and surfaces a hint, so you can wait for the next session if you prefer.
 
 ---
 
@@ -68,22 +90,28 @@ Once approved, the plugin appears on the Flea tab and becomes installable by oth
 ### After approval
 
 ```bash
-# Sync your local marketplace to pick up the new plugin
-agnes refresh-marketplace
+# Add it to your stack (or do it from the Flea tab on the web)
+agnes marketplace add <entity-id>
 
 # Verify it's in your stack
-agnes my-stack
+agnes my-stack show
 ```
+
+Then run `/update-agnes-plugins` inside Claude Code to install/activate the bundle.
 
 ---
 
-## Opt-outs
+## Removing items from your stack
 
-If a plugin appears in your marketplace feed (curated or flea) but you don't want it:
-- Uninstall from the `/marketplace` UI — this records a `user_plugin_optouts` row.
-- The opted-out plugin will no longer appear in your served ZIP or git feed.
+If you no longer want a plugin/skill/agent in your stack:
 
-This is per-user, per-plugin. Your admin's grants are unaffected.
+```bash
+agnes marketplace remove <id>
+```
+
+Or click "Remove from stack" on the marketplace detail page in the web UI.
+
+System plugins (admin-pinned for the org) cannot be removed — the API returns 409. Your admin's RBAC grants are unaffected by your own add/remove choices.
 
 ---
 

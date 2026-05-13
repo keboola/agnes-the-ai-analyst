@@ -1,7 +1,7 @@
-"""`agnes my-stack {show,toggle}` — per-user marketplace composition view.
+"""`agnes my-stack show` — read-only view of the user's current marketplace stack.
 
-Reads ``GET /api/my-stack`` and writes
-``PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}`` opt-out flips.
+Reads ``GET /api/my-stack``. To add or remove items use
+``agnes marketplace add/remove``.
 """
 
 from __future__ import annotations
@@ -11,16 +11,16 @@ from typing import Optional
 
 import typer
 
-from cli.v2_client import V2ClientError, api_get_json, api_put_json
+from cli.v2_client import V2ClientError, api_get_json
 
-my_stack_app = typer.Typer(help="Per-user marketplace composition (curated grants + Store installs)")
+my_stack_app = typer.Typer(help="Show your current marketplace stack (use 'agnes marketplace' to add/remove)")
 
 
 @my_stack_app.command("show")
 def show_stack(
     json_out: bool = typer.Option(False, "--json"),
 ):
-    """Show admin-granted plugins (with opt-out state) and your Store installs."""
+    """Show curated plugins available to subscribe to and your Flea Market installs."""
     try:
         body = api_get_json("/api/my-stack")
     except V2ClientError as e:
@@ -31,14 +31,14 @@ def show_stack(
         return
     curated = body.get("curated", [])
     store = body.get("store", [])
-    typer.echo(f"Curated (admin-granted): {len(curated)}")
+    typer.echo(f"Curated plugins: {len(curated)}")
     for p in curated:
         flag = "✓" if p["enabled"] else "✗"
         typer.echo(
             f"  [{flag}] {p['marketplace_id']}/{p['plugin_name']:24s} "
             f"manifest={p['manifest_name']} v{p.get('version') or '?'}"
         )
-    typer.echo(f"\nFrom Store: {len(store)}")
+    typer.echo(f"\nFrom Flea Market: {len(store)}")
     for it in store:
         typer.echo(
             f"  [{it['type']:6s}] {it['name']:24s} by {it['owner_username']:20s} "
@@ -46,23 +46,3 @@ def show_stack(
         )
 
 
-@my_stack_app.command("toggle")
-def toggle(
-    marketplace_id: str = typer.Argument(...),
-    plugin_name: str = typer.Argument(...),
-    on: bool = typer.Option(False, "--on", help="Subscribe (add to served set)"),
-    off: bool = typer.Option(False, "--off", help="Unsubscribe (remove from served set)"),
-):
-    """Subscribe or unsubscribe from a curated plugin."""
-    if on == off:
-        typer.echo("Pass exactly one of --on / --off.", err=True)
-        raise typer.Exit(2)
-    enabled = bool(on)
-    path = f"/api/my-stack/curated/{marketplace_id}/{plugin_name}"
-    try:
-        api_put_json(path, {"enabled": enabled})
-    except V2ClientError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1)
-    state = "ENABLED" if enabled else "DISABLED"
-    typer.echo(f"{marketplace_id}/{plugin_name}: {state}")
