@@ -209,12 +209,12 @@
 <div class="users-page">
   <div class="users-toolbar">
     <h2 class="users-title">Users</h2>
-    <input id="user-search" type="search" class="users-search" placeholder="Filter by email or name…" autocomplete="off">
-    <button class="modal-btn primary" id="open-create-btn">+ Add user</button>
+    <input id="user-search" type="search" class="search-input" placeholder="Filter by email or name…" autocomplete="off">
+    <button class="btn btn-primary" id="open-create-btn">+ Add user</button>
   </div>
 
-  <div class="users-table-wrap">
-    <table class="users-table" id="users-table">
+  <div class="data-table-wrap">
+    <table class="data-table" id="users-table">
       <thead>
         <tr>
           <th>User</th>
@@ -254,8 +254,8 @@
       Send invitation link (generates setup token, emails it if transport is configured)
     </label>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="create-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-create-btn">Create</button>
+      <button class="btn btn-secondary" data-close-modal="create-modal">Cancel</button>
+      <button class="btn btn-primary" id="confirm-create-btn">Create</button>
     </div>
   </div>
 </div>
@@ -268,8 +268,8 @@
     <label for="setpwd-input">New password (min 8 chars)</label>
     <input id="setpwd-input" type="password" autocomplete="new-password">
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="setpwd-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-setpwd-btn">Set password</button>
+      <button class="btn btn-secondary" data-close-modal="setpwd-modal">Cancel</button>
+      <button class="btn btn-primary" id="confirm-setpwd-btn">Set password</button>
     </div>
   </div>
 </div>
@@ -285,7 +285,7 @@
       <button class="copy-btn" id="reset-copy-btn">Copy</button>
     </div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="reset-modal">Done</button>
+      <button class="btn btn-primary" data-close-modal="reset-modal">Done</button>
     </div>
   </div>
 </div>
@@ -301,7 +301,7 @@
       <button class="copy-btn" id="invite-copy-btn">Copy</button>
     </div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="invite-modal">Done</button>
+      <button class="btn btn-primary" data-close-modal="invite-modal">Done</button>
     </div>
   </div>
 </div>
@@ -312,8 +312,8 @@
     <h3 id="confirm-title">Are you sure?</h3>
     <p class="sub" id="confirm-text"></p>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="modal-btn danger" id="confirm-ok-btn">Confirm</button>
+      <button class="btn btn-secondary" data-close-modal="confirm-modal">Cancel</button>
+      <button class="btn btn-danger" id="confirm-ok-btn">Confirm</button>
     </div>
   </div>
 </div>

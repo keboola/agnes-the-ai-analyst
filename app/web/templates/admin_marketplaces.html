@@ -261,16 +261,16 @@
 <div class="marketplaces-page">
   <div class="marketplaces-toolbar">
     <h2 class="marketplaces-title">Curated Marketplaces</h2>
-    <input id="mp-search" type="search" class="marketplaces-search" placeholder="Filter by slug, name, or URL…" autocomplete="off">
+    <input id="mp-search" type="search" class="search-input" placeholder="Filter by slug, name, or URL…" autocomplete="off">
     <a class="icon-btn" href="/marketplace/format-guide" target="_blank" rel="noopener"
        title="Open the marketplace-metadata.json format guide in a new tab">
       Format guide →
     </a>
-    <button class="modal-btn primary" id="open-create-btn">+ Add marketplace</button>
+    <button class="btn btn-primary" id="open-create-btn">+ Add marketplace</button>
   </div>
 
-  <div class="marketplaces-table-wrap">
-    <table class="marketplaces-table" id="marketplaces-table">
+  <div class="data-table-wrap">
+    <table class="data-table" id="marketplaces-table">
       <thead>
         <tr>
           <th>Marketplace</th>
@@ -328,8 +328,8 @@
     <div class="help">Stored in <code>$DATA_DIR/state/.env_overlay</code> (chmod 600) on the data volume. Never written to the database or committed to git.</div>
 
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="create-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-create-btn">Register</button>
+      <button class="btn btn-secondary" data-close-modal="create-modal">Cancel</button>
+      <button class="btn btn-primary" id="confirm-create-btn">Register</button>
     </div>
   </div>
 </div>
@@ -368,8 +368,8 @@
     </div>
 
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="edit-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-edit-btn">Save</button>
+      <button class="btn btn-secondary" data-close-modal="edit-modal">Cancel</button>
+      <button class="btn btn-primary" id="confirm-edit-btn">Save</button>
     </div>
   </div>
 </div>
@@ -381,7 +381,7 @@
     <p class="sub" id="sync-target"></p>
     <div id="sync-result-body" class="sync-result"></div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="sync-modal">Close</button>
+      <button class="btn btn-primary" data-close-modal="sync-modal">Close</button>
     </div>
   </div>
 </div>
@@ -393,7 +393,7 @@
     <p class="sub" id="details-sub"></p>
     <div id="details-body" class="plugin-list"></div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="details-modal">Close</button>
+      <button class="btn btn-primary" data-close-modal="details-modal">Close</button>
     </div>
   </div>
 </div>
@@ -407,8 +407,8 @@
       <input id="confirm-purge" type="checkbox" checked> Also delete the working copy from disk
     </label>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="modal-btn danger" id="confirm-ok-btn">Delete</button>
+      <button class="btn btn-secondary" data-close-modal="confirm-modal">Cancel</button>
+      <button class="btn btn-danger" id="confirm-ok-btn">Delete</button>
     </div>
   </div>
 </div>
@@ -424,8 +424,8 @@
     <p class="sub" id="system-confirm-plugin" style="margin: 0 0 14px; font-size: 13px; color: var(--text-primary, #111827); font-weight: 500;"></p>
     <div id="system-confirm-body" style="font-size: 13px; line-height: 1.55; color: var(--text-secondary, #374151);"></div>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="system-confirm-modal">Cancel</button>
-      <button class="modal-btn warning" id="system-confirm-ok-btn">Confirm</button>
+      <button class="btn btn-secondary" data-close-modal="system-confirm-modal">Cancel</button>
+      <button class="btn btn-secondary warning" id="system-confirm-ok-btn">Confirm</button>
     </div>
   </div>
 </div>
