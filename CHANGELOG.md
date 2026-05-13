@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.5] — 2026-05-13
+
+### Internal
+
+- **`get_analytics_db()` is a singleton — mirrors `get_system_db()`** (#163). Pre-fix the function opened a fresh `duckdb.connect()` on every call; most callers don't `.close()` the returned handle, so each leaked connection held a WAL ref + FD until GC kicked in. Under load this manifested as "too many open files" or DuckDB lock contention on the analytics DB. Singleton + cursor-per-call (matches the system-DB pattern) keeps one underlying connection alive while letting callers safely close the cursor handle. New `close_analytics_db()` mirrors `close_system_db()` (best-effort CHECKPOINT then close); both are wired into the FastAPI shutdown hook in `app/main.py`. `get_analytics_db_readonly()` deliberately stays per-call — each invocation re-ATTACHes extract.duckdb files into a fresh read-only context. 5 tests in `tests/test_analytics_db_singleton.py` pin the contract: cache, cursor-close-safe, DATA_DIR-change reopen, thread safety (16 concurrent calls share the singleton), close + reopen.
+
 ## [0.54.4] — 2026-05-13
 
 Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).

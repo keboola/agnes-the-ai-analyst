@@ -804,6 +804,18 @@ _system_db_lock = threading.Lock()
 _system_db_conn: duckdb.DuckDBPyConnection | None = None
 _system_db_path: str | None = None
 
+# Mirror the system-DB singleton pattern for the analytics DB. Pre-#163,
+# `get_analytics_db()` opened a fresh `duckdb.connect()` on every call —
+# most callers don't `.close()` the returned handle, so each leaked
+# connection held a WAL ref + FD until GC kicked in. Under load this
+# manifested as "too many open files" or DuckDB lock contention on the
+# analytics DB. Singleton + cursor-per-call (mirrors `get_system_db()`
+# above) means callers that close the cursor only close the cursor —
+# the underlying connection stays.
+_analytics_db_lock = threading.Lock()
+_analytics_db_conn: duckdb.DuckDBPyConnection | None = None
+_analytics_db_path: str | None = None
+
 
 def _get_data_dir() -> Path:
     return Path(os.environ.get("DATA_DIR", "./data"))
@@ -905,10 +917,34 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
 
 
 def get_analytics_db() -> duckdb.DuckDBPyConnection:
-    """Get a connection to the analytics database (parquet views)."""
-    db_path = _get_data_dir() / "analytics" / "server.duckdb"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return _maybe_instrument(duckdb.connect(str(db_path)), "analytics")
+    """Get a connection to the analytics database (parquet views).
+
+    Singleton — mirrors `get_system_db()` above. Returns a cursor on the
+    shared connection so callers can `.close()` the handle without
+    closing the underlying connection. Re-opens transparently when
+    `DATA_DIR` changes (test fixtures that swap data dirs across cases).
+
+    Pre-#163 this opened a fresh connection on every call and most
+    callers leaked it; see the rationale block at the module-level
+    `_analytics_db_*` globals. `get_analytics_db_readonly()` deliberately
+    stays per-call because each invocation re-ATTACHes extract.duckdb
+    files into a fresh read-only context.
+    """
+    global _analytics_db_conn, _analytics_db_path
+    db_path = str(_get_data_dir() / "analytics" / "server.duckdb")
+
+    with _analytics_db_lock:
+        if _analytics_db_conn is None or _analytics_db_path != db_path:
+            # Close stale connection if DATA_DIR changed (test fixtures)
+            if _analytics_db_conn is not None:
+                try:
+                    _analytics_db_conn.close()
+                except Exception:
+                    pass
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            _analytics_db_conn = duckdb.connect(db_path)
+            _analytics_db_path = db_path
+        return _maybe_instrument(_analytics_db_conn.cursor(), "analytics")
 
 
 def _reattach_remote_extensions(
@@ -3355,3 +3391,28 @@ def close_system_db() -> None:
             logger.debug("close_system_db: close raised (%s); ignoring", exc)
         _system_db_conn = None
         _system_db_path = None
+
+
+def close_analytics_db() -> None:
+    """Close the shared analytics DB connection. Called on app shutdown.
+
+    Mirrors `close_system_db()` above (best-effort CHECKPOINT then
+    close, swallow exceptions). Analytics DB is the parquet-views layer;
+    a dirty WAL on it is less consequential than on the system DB
+    (read-only views can be rebuilt by the orchestrator on next start)
+    but the CHECKPOINT keeps the file on-disk clean for any operator
+    poking at it with the duckdb CLI.
+    """
+    global _analytics_db_conn, _analytics_db_path
+    if _analytics_db_conn:
+        try:
+            _analytics_db_conn.execute("CHECKPOINT")
+            logger.debug("close_analytics_db: CHECKPOINT ok")
+        except Exception as exc:
+            logger.warning("close_analytics_db: CHECKPOINT failed (%s); proceeding to close", exc)
+        try:
+            _analytics_db_conn.close()
+        except Exception as exc:
+            logger.debug("close_analytics_db: close raised (%s); ignoring", exc)
+        _analytics_db_conn = None
+        _analytics_db_path = None
