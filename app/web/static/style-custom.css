@@ -4055,7 +4055,20 @@ textarea.form-input {
 .users-table,
 .gp-table,
 .marketplaces-table,
-.audit-table {
+.audit-table,
+.ad-table,
+.ea-table,
+.md-table,
+.members-table,
+.obs-table,
+.overview-stats-table,
+.registry-table,
+.sample-table,
+.sched-table,
+.sess-table,
+.sub-table,
+.subs-table,
+.ud-table {
     width: 100%;
     border-collapse: collapse;
     background: var(--surface);
@@ -4069,7 +4082,20 @@ textarea.form-input {
 .users-table thead,
 .gp-table thead,
 .marketplaces-table thead,
-.audit-table thead {
+.audit-table thead,
+.ad-table thead,
+.ea-table thead,
+.md-table thead,
+.members-table thead,
+.obs-table thead,
+.overview-stats-table thead,
+.registry-table thead,
+.sample-table thead,
+.sched-table thead,
+.sess-table thead,
+.sub-table thead,
+.subs-table thead,
+.ud-table thead {
     background: var(--border-light);
 }
 
@@ -4077,7 +4103,20 @@ textarea.form-input {
 .users-table th,
 .gp-table th,
 .marketplaces-table th,
-.audit-table th {
+.audit-table th,
+.ad-table th,
+.ea-table th,
+.md-table th,
+.members-table th,
+.obs-table th,
+.overview-stats-table th,
+.registry-table th,
+.sample-table th,
+.sched-table th,
+.sess-table th,
+.sub-table th,
+.subs-table th,
+.ud-table th {
     padding: var(--space-3) var(--space-4);
     text-align: left;
     font-size: var(--text-xs);
@@ -4092,7 +4131,20 @@ textarea.form-input {
 .users-table td,
 .gp-table td,
 .marketplaces-table td,
-.audit-table td {
+.audit-table td,
+.ad-table td,
+.ea-table td,
+.md-table td,
+.members-table td,
+.obs-table td,
+.overview-stats-table td,
+.registry-table td,
+.sample-table td,
+.sched-table td,
+.sess-table td,
+.sub-table td,
+.subs-table td,
+.ud-table td {
     padding: var(--space-3) var(--space-4);
     font-size: var(--text-sm);
     color: var(--text-primary);
@@ -4104,7 +4156,20 @@ textarea.form-input {
 .users-table tbody tr:last-child td,
 .gp-table tbody tr:last-child td,
 .marketplaces-table tbody tr:last-child td,
-.audit-table tbody tr:last-child td {
+.audit-table tbody tr:last-child td,
+.ad-table tbody tr:last-child td,
+.ea-table tbody tr:last-child td,
+.md-table tbody tr:last-child td,
+.members-table tbody tr:last-child td,
+.obs-table tbody tr:last-child td,
+.overview-stats-table tbody tr:last-child td,
+.registry-table tbody tr:last-child td,
+.sample-table tbody tr:last-child td,
+.sched-table tbody tr:last-child td,
+.sess-table tbody tr:last-child td,
+.sub-table tbody tr:last-child td,
+.subs-table tbody tr:last-child td,
+.ud-table tbody tr:last-child td {
     border-bottom: none;
 }
 
@@ -4112,7 +4177,20 @@ textarea.form-input {
 .users-table tbody tr:hover,
 .gp-table tbody tr:hover,
 .marketplaces-table tbody tr:hover,
-.audit-table tbody tr:hover {
+.audit-table tbody tr:hover,
+.ad-table tbody tr:hover,
+.ea-table tbody tr:hover,
+.md-table tbody tr:hover,
+.members-table tbody tr:hover,
+.obs-table tbody tr:hover,
+.overview-stats-table tbody tr:hover,
+.registry-table tbody tr:hover,
+.sample-table tbody tr:hover,
+.sched-table tbody tr:hover,
+.sess-table tbody tr:hover,
+.sub-table tbody tr:hover,
+.subs-table tbody tr:hover,
+.ud-table tbody tr:hover {
     background: var(--border-light);
 }
 
