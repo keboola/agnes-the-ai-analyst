@@ -21,7 +21,7 @@ dependencies = [
     # Authentication
     "PyJWT>=2.8.0",
     "itsdangerous>=2.1.0",
-    "authlib>=1.6.11",
+    "authlib>=1.6.12",
     "argon2-cffi>=23.1.0",
     # HTTP client. `h2` enables HTTP/2 multiplexing for the persistent
     # CLI client used by `agnes pull` (one TCP connection serves N
