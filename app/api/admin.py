@@ -258,6 +258,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "desktop",
     "corporate_memory",
     "materialize",
+    "guardrails",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -700,6 +701,100 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "Default 86400 (24 h). Min 60, max 604800 (7 days). "
                 "Lower only if you know materializes never exceed the new value "
                 "and your host regularly hard-kills processes."
+            ),
+        },
+    },
+    "guardrails": {
+        "min_description_chars": {
+            "kind": "int",
+            "default": 60,
+            "hint": (
+                "Minimum character floor for skill / agent / plugin "
+                "descriptions on flea-market uploads (the inline content "
+                "guardrail). Real-world Claude skill descriptions cluster "
+                "150–220 chars; the default 60 is the bottom of the bar "
+                "to catch placeholders. Bump to 100+ to push submitters "
+                "closer to the ecosystem norm. Min 1."
+            ),
+        },
+        "min_command_description_chars": {
+            "kind": "int",
+            "default": 25,
+            "hint": (
+                "Minimum character floor for slash-command descriptions. "
+                "Tighter than skills because commands are one-verb "
+                "actions (\"run tests\", \"format code\"). Default 25. Min 1."
+            ),
+        },
+        "min_distinct_words": {
+            "kind": "int",
+            "default": 5,
+            "hint": (
+                "Minimum number of DISTINCT words in any description "
+                "string. Defends against padding-only descriptions like "
+                "\"description description description\" that hit the "
+                "character count but say nothing. Default 5. Min 1."
+            ),
+        },
+        "min_body_chars": {
+            "kind": "int",
+            "default": 200,
+            "hint": (
+                "Minimum body-content floor for skill / agent files "
+                "(the markdown after the YAML frontmatter). Real skill "
+                "bodies run 500–2000 chars; the default 200 is a "
+                "\"one paragraph\" floor that catches stubs. Min 1."
+            ),
+        },
+        "enabled": {
+            "kind": "bool",
+            "default": True,
+            "hint": (
+                "Master kill-switch for the LLM guardrail tier. When "
+                "False (or when ANTHROPIC_API_KEY / LLM_API_KEY is "
+                "absent), uploads still run the inline mechanical "
+                "checks but skip the LLM security + content-quality "
+                "review and auto-approve. Default True."
+            ),
+        },
+        "review_model": {
+            "kind": "select",
+            "default": "haiku",
+            "options": ["haiku", "sonnet", "opus"],
+            "hint": (
+                "Anthropic model tier for the LLM security + content "
+                "review. Haiku is the cheapest and fastest; Sonnet / "
+                "Opus catch subtler prompt-injection + vague descriptions "
+                "at proportionally higher per-upload cost."
+            ),
+        },
+        "blocked_quota_per_day": {
+            "kind": "int",
+            "default": 50,
+            "hint": (
+                "Per-submitter cap on `blocked_inline` rows in the "
+                "trailing 24h. Bounds the worst case where a bot loops "
+                "on malformed ZIPs. 0 disables the quota. Default 50."
+            ),
+        },
+        "blocked_bundle_ttl_days": {
+            "kind": "int",
+            "default": 30,
+            "hint": (
+                "How many days to keep a blocked bundle's bytes on disk. "
+                "The submission row + sha256 + size always survive; only "
+                "the bytes get removed. 0 disables the purge entirely. "
+                "Default 30."
+            ),
+        },
+        "stuck_review_grace_seconds": {
+            "kind": "int",
+            "default": 1800,
+            "hint": (
+                "How long a submission may stay at `status='pending_llm'` "
+                "before the reaper flips it to `review_error`. Default "
+                "1800 (30 min) comfortably exceeds Sonnet / Opus p99 "
+                "wall time. 0 disables the reaper."
             ),
         },
     },

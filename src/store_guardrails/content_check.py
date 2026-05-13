@@ -32,16 +32,51 @@ from ._frontmatter import frontmatter_body_offset, parse_frontmatter
 # Criteria constants
 # ---------------------------------------------------------------------------
 
-# Hard floors. Rationale: 60 chars + 5 distinct words is the bottom of
-# ecosystem norms (npm 60-120, Docker Hub 100, VS Code 120, GitHub
-# 80-200) and well below real Claude/Anthropic skill examples (mean
-# ~190 chars, range 159-224 across superpowers / compound-engineering
-# / octo skill packs). The 60-char floor catches the obvious "didn't
+# Hard-floor defaults. Calibrated against real ecosystem norms (Claude
+# skill packs cluster 150–220 chars per description; npm / Docker Hub /
+# VS Code 100–120). 60 chars + 5 distinct words catches the "didn't
 # bother" cases; the LLM tier judges substantive quality on top.
-_MIN_DESC_CHARS = 60
-_MIN_COMMAND_DESC_CHARS = 25
-_MIN_DISTINCT_WORDS = 5
-_MIN_BODY_CHARS = 200
+#
+# Defaults are overridable via `instance.yaml.guardrails.*` keys —
+# operators tune the floor without code changes. Resolution helpers
+# below read the live config on every call so /admin/server-config
+# patches take effect on the next request (no app restart needed).
+_DEFAULT_MIN_DESC_CHARS = 60
+_DEFAULT_MIN_COMMAND_DESC_CHARS = 25
+_DEFAULT_MIN_DISTINCT_WORDS = 5
+_DEFAULT_MIN_BODY_CHARS = 200
+
+
+def _min_desc_chars() -> int:
+    try:
+        from app.instance_config import get_guardrails_min_description_chars
+        return get_guardrails_min_description_chars()
+    except ImportError:
+        return _DEFAULT_MIN_DESC_CHARS
+
+
+def _min_command_desc_chars() -> int:
+    try:
+        from app.instance_config import get_guardrails_min_command_description_chars
+        return get_guardrails_min_command_description_chars()
+    except ImportError:
+        return _DEFAULT_MIN_COMMAND_DESC_CHARS
+
+
+def _min_distinct_words() -> int:
+    try:
+        from app.instance_config import get_guardrails_min_distinct_words
+        return get_guardrails_min_distinct_words()
+    except ImportError:
+        return _DEFAULT_MIN_DISTINCT_WORDS
+
+
+def _min_body_chars() -> int:
+    try:
+        from app.instance_config import get_guardrails_min_body_chars
+        return get_guardrails_min_body_chars()
+    except ImportError:
+        return _DEFAULT_MIN_BODY_CHARS
 
 # Case-insensitive substring matches that mark an unfilled template.
 _PLACEHOLDER_PHRASES = (
@@ -201,7 +236,7 @@ def check_submission_description(description: Optional[str]) -> Dict[str, Any]:
     single synthetic ``file`` = ``<submission>``.
     """
     issues = _evaluate_description_string(
-        description, min_chars=_MIN_DESC_CHARS,
+        description, min_chars=_min_desc_chars(),
         component_kind="submission",
     )
     if issues:
@@ -326,7 +361,7 @@ def _read_text(p: Path) -> str:
 def _evaluate(comp: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Return the issue list for one component (empty when it passes)."""
     type_ = comp["type"]
-    min_chars = _MIN_COMMAND_DESC_CHARS if type_ == "command" else _MIN_DESC_CHARS
+    min_chars = _min_command_desc_chars() if type_ == "command" else _min_desc_chars()
 
     issues = _evaluate_description_string(
         comp.get("description"),
@@ -344,12 +379,12 @@ def _evaluate(comp: Dict[str, Any]) -> List[Dict[str, Any]]:
     # commands often legitimately have a one-line body).
     if type_ in {"skill", "agent"}:
         body = (comp.get("body") or "").strip()
-        if len(body) < _MIN_BODY_CHARS:
+        if len(body) < _min_body_chars():
             issues.append({
                 "file": comp["file"],
                 "field": "body",
                 "code": "body_too_short",
-                "hint": _hint_for(type_, "body_too_short", min_chars=_MIN_BODY_CHARS),
+                "hint": _hint_for(type_, "body_too_short", min_chars=_min_body_chars()),
                 "name": comp.get("name"),
                 "component_type": type_,
             })
@@ -413,7 +448,7 @@ def _evaluate_description_string(
         for t in raw.split()
     ]
     distinct = {t for t in tokens if t}
-    if len(distinct) < _MIN_DISTINCT_WORDS:
+    if len(distinct) < _min_distinct_words():
         return [{
             "code": "low_word_count",
             "hint": _hint_for(component_kind, "low_word_count"),
