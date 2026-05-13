@@ -45,15 +45,10 @@
 </style>
 
 <div class="sched-page page-shell">
-  <h1 class="sched-title">Scheduler runs</h1>
-  <p class="sched-help">
-    Last 200 audited scheduler-driven admin actions, newest first.
-    Tracked actions: {% for a in actions %}<code>{{ a }}</code>{% if not loop.last %} {% endif %}{% endfor %}.
-    Failed ticks (HTTP 401, network errors) live only in the scheduler container's
-    stdout — <code>docker logs agnes-scheduler-1</code>. Set <code>SCHEDULER_API_TOKEN</code>
-    in <code>.env</code> if you see no rows here.
-  </p>
-
+  {% set page_hero_eyebrow = "Server" %}
+  {% set page_hero_title = "Scheduler runs" %}
+  {% set page_hero_subtitle = "Recent extractor + materialized + cache-warmup runs from the scheduler." %}
+  {% include "_page_hero.html" %}
   <div class="sched-table-wrap">
     {% if rows %}
     <table class="sched-table">

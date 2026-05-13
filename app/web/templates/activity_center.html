@@ -7,8 +7,10 @@
   <!-- TOP BAR --------------------------------------------------------- -->
   <header class="obs-topbar">
     <div class="obs-topbar-left">
-      <h1 class="obs-title">Audit log</h1>
-      <p class="obs-subtitle">Server-side actions performed against Agnes. Also available locally for analysis. For Claude Code tool / skill telemetry, see <a href="/admin/telemetry">Telemetry</a>.</p>
+      {% set page_hero_eyebrow = "Activity Center" %}
+      {% set page_hero_title = "Audit log" %}
+      {% set page_hero_subtitle = "Every admin and user-mutating action — RBAC writes, sync triggers, marketplace edits, …" %}
+      {% include "_page_hero.html" %}
       <div class="obs-narrative" id="obs-narrative">Loading…</div>
     </div>
     <div class="obs-topbar-right">

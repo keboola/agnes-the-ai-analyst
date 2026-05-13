@@ -260,7 +260,10 @@
 
 <div class="marketplaces-page">
   <div class="marketplaces-toolbar">
-    <h2 class="marketplaces-title">Curated Marketplaces</h2>
+    {% set page_hero_eyebrow = "Agent Experience" %}
+    {% set page_hero_title = "Curated Marketplaces" %}
+    {% set page_hero_subtitle = "Admin-managed git repos cloned nightly. Synced plugins surface in the Claude Code marketplace feed." %}
+    {% include "_page_hero.html" %}
     <input id="mp-search" type="search" class="search-input" placeholder="Filter by slug, name, or URL…" autocomplete="off">
     <a class="icon-btn" href="/marketplace/format-guide" target="_blank" rel="noopener"
        title="Open the marketplace-metadata.json format guide in a new tab">

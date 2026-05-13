@@ -153,9 +153,10 @@
 <div class="gp-page">
   <div class="gp-toolbar">
     <div>
-      <h2 class="gp-title">Groups</h2>
-      <p class="gp-sub">Named buckets that hold members and resource grants.
-        Manage who has access to what on <a href="/admin/access">Resource access</a>.</p>
+      {% set page_hero_eyebrow = "Users & Access" %}
+      {% set page_hero_title = "Groups" %}
+      {% set page_hero_subtitle = "Named groups + members. Resource access lives on the Resource access page." %}
+      {% include "_page_hero.html" %}
     </div>
     <div style="display:flex; gap:10px; align-items:center;">
       <input id="search" type="search" class="gp-search" placeholder="Filter by name or description…" autocomplete="off">

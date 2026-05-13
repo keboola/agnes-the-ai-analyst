@@ -3983,18 +3983,49 @@ textarea.form-input {
 }
 
 /* Hero variant — gradient background, larger title, light eyebrow.
-   Used by /marketplace, /store, /admin/tokens, /profile (and others
-   that already have a hero-style top section). */
+   Tuned to match the look of admin_tokens.html's per-page .tokens-hero
+   (which analysts already liked): tighter padding, 14px radius, soft
+   blue glow shadow. Applied across all primary-content pages so the
+   admin section reads as one product instead of a patchwork. */
 .page-header--hero {
-    padding: var(--space-7) var(--space-6);
+    padding: 28px 32px 24px;
+    margin: 0 0 var(--space-5);
     background: linear-gradient(135deg, var(--primary), var(--primary-dark));
     color: #fff;
-    border-radius: var(--radius-xl);
-    margin-bottom: var(--space-6);
+    border-radius: 14px;
+    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+    position: relative;
 }
-.page-header--hero .page-header__title { font-size: 28px; color: #fff; }
-.page-header--hero .page-header__subtitle { color: rgba(255, 255, 255, 0.85); }
-.page-header--hero .page-header__eyebrow { color: rgba(255, 255, 255, 0.75); }
+.page-header--hero .page-header__main { color: inherit; }
+.page-header--hero .page-header__title {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: #fff;
+    margin: 0 0 6px;
+}
+.page-header--hero .page-header__subtitle {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 13.5px;
+    margin: 6px 0 0;
+    max-width: 720px;
+}
+.page-header--hero .page-header__eyebrow {
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin: 0 0 6px;
+}
+.page-header--hero .page-header__actions a,
+.page-header--hero .page-header__actions button {
+    color: #fff;
+}
+@media (max-width: 640px) {
+    .page-header--hero { padding: 24px 20px 20px; border-radius: 12px; }
+    .page-header--hero .page-header__title { font-size: 22px; }
+}
 
 /* Compact variant — for dense admin index pages that have many controls
    already and don't need vertical generosity. Smaller title, tighter

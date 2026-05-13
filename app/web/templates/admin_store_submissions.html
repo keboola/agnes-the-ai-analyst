@@ -166,17 +166,10 @@
 {%- endmacro %}
 
 <div class="subs-page page-shell">
-  <h1 class="subs-title">Store submissions</h1>
-  <p class="subs-help">
-    Every upload to <code>/api/store/entities</code> writes one row here. Inline
-    checks (manifest, static security, quality+templating) run synchronously;
-    the LLM security review runs in the background and flips
-    <code>pending_llm → approved</code> or <code>blocked_llm</code>. Click a
-    row to see the full check breakdown. Override a blocked submission to
-    force-publish (audit trail captured), retry a <code>review_error</code>,
-    or delete spam outright. See <code>docs/STORE_GUARDRAILS.md</code>.
-  </p>
-
+  {% set page_hero_eyebrow = "Agent Experience" %}
+  {% set page_hero_title = "Flea Submissions" %}
+  {% set page_hero_subtitle = "Plugin / skill / agent submissions awaiting review." %}
+  {% include "_page_hero.html" %}
   <form class="subs-form" method="get" action="/admin/store/submissions">
     {# Preserve status filter when submitting other filters. #}
     {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}

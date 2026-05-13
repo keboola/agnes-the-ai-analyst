@@ -336,9 +336,10 @@
 <div class="ax-page">
   <div class="ax-toolbar">
     <div>
-      <h2 class="ax-title">Resource access</h2>
-      <p class="ax-sub">Pick a group on the left, check resources on the right to grant access.
-        Manage groups and members on <a href="/admin/groups">Groups</a>.</p>
+      {% set page_hero_eyebrow = "Users & Access" %}
+      {% set page_hero_title = "Resource access" %}
+      {% set page_hero_subtitle = "Pick a group on the left, check resources on the right to grant access. Manage groups and members on <a href=&quot;/admin/groups&quot; style=&quot;color:#fff;text-decoration:underline;&quot;>Groups</a>." %}
+      {% include "_page_hero.html" %}
     </div>
   </div>
 

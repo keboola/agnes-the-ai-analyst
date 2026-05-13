@@ -208,7 +208,10 @@
 
 <div class="users-page">
   <div class="users-toolbar">
-    <h2 class="users-title">Users</h2>
+    {% set page_hero_eyebrow = "Users & Access" %}
+    {% set page_hero_title = "Users" %}
+    {% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
+    {% include "_page_hero.html" %}
     <input id="user-search" type="search" class="search-input" placeholder="Filter by email or name…" autocomplete="off">
     <button class="btn btn-primary" id="open-create-btn">+ Add user</button>
   </div>

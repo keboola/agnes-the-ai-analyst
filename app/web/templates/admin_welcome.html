@@ -214,8 +214,10 @@
 <div class="welcome-page">
   <div class="welcome-toolbar">
     <div>
-      <h2 class="welcome-title">Init Prompt</h2>
-      <p class="welcome-sub">The bash setup script shown on <code>/setup</code> and copied by the dashboard CTA.</p>
+      {% set page_hero_eyebrow = "Agent Experience" %}
+      {% set page_hero_title = "Init Prompt" %}
+      {% set page_hero_subtitle = "Welcome shown to analysts at <code style=&quot;color:#fff;background:rgba(255,255,255,0.15);padding:1px 6px;border-radius:4px&quot;>agnes init</code>. Overrides the OSS default." %}
+      {% include "_page_hero.html" %}
     </div>
     <div id="status-chip">
       {% if is_override %}
