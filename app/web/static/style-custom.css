@@ -120,10 +120,21 @@ body {
    ===================================================== */
 
 .container {
-    max-width: 800px;
+    /* Canonical page-shell width. Bumped from the legacy 800px (which
+       was a relic of single-form login pages) to --width-app (1280px)
+       — generous enough for admin dashboards, dense tables, and
+       catalog grids without feeling wasteful at 1440-1600px screens.
+       Pages that genuinely need narrower line-length (setup wizards,
+       single-form flows) opt in via .container--narrow. */
+    max-width: var(--width-app);
     margin: 0 auto;
-    padding: 24px 20px;
+    padding: var(--space-6) var(--space-5);
 }
+
+/* Width modifiers — opt-in alternatives to the default page shell. */
+.container--narrow { max-width: var(--width-narrow); }   /* 800px — long-form reading, setup flows */
+.container--wide   { max-width: var(--width-wide); }     /* 1400px — admin index lists, marketplace grids */
+.container--full   { max-width: none; padding-left: var(--space-4); padding-right: var(--space-4); }
 
 /* Dashboard */
 .dashboard h2 {
