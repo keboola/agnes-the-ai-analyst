@@ -10,6 +10,45 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- Web UI design system unified: single stylesheet (`style-custom.css`),
+  canonical primitives for buttons, form controls, page headers, tables,
+  empty states, toasts, and stat cards. Top-nav Admin entry now shares
+  styling 1:1 with sibling links (font, color, padding, hover, active
+  state) — previously a `<button class="app-nav-menu-trigger">` reset
+  inherited font + color away from the sibling `<a class="app-nav-link">`
+  rules. Inline dropdown JS extracted from `_app_header.html` into
+  `app/web/static/app.js` (also hosts `window.appToast({kind, msg, timeout})`
+  for the new toast primitive).
+- `static_url()` template helper now appends `?v=<file_mtime>` to
+  `/static/<path>` so CSS/JS edits auto-invalidate browser + proxy caches
+  on redeploy without operator intervention.
+
+### Removed
+- `app/web/static/style.css` — content folded into `style-custom.css` so
+  the web UI ships from a single stylesheet. Legacy classes
+  (`.btn-primary-v2`, `.btn-secondary-v2`, `.btn-ghost-v2`, `.modal-btn`,
+  `.users-table`, `.gp-table`, `.marketplaces-table`, `.audit-table`,
+  `.users-search`, `.marketplaces-search`, `.kb-search`, `.filters-card`)
+  removed from templates and CSS; 8 admin templates migrated to canonical
+  primitives. Operators on older builds who served the file directly will
+  hit a 404 — re-run the deploy so the index renders against
+  `style-custom.css` only.
+
+### Internal
+- New `tests/test_design_system_contract.py` (9 invariants): single
+  `:root` block, no template references the deleted `style.css`,
+  canonical primitives declared, no deprecated class names in templates,
+  `app.js` loaded by `base.html` only. Plus 3 helper-level unit tests for
+  the class-attribute tokenizer (multi-line attrs, Jinja-conditional
+  fragments, false-positive prose).
+- `.data-table` selector list extended to cover 13 bespoke `-table`
+  classes (`.ad-table`, `.ea-table`, `.md-table`, `.members-table`,
+  `.obs-table`, `.overview-stats-table`, `.registry-table`,
+  `.sample-table`, `.sched-table`, `.sess-table`, `.sub-table`,
+  `.subs-table`, `.ud-table`) so tables in 12 untouched templates render
+  with the same baseline chrome.
+
 ## [0.54.3] — 2026-05-13
 
 ### Added
