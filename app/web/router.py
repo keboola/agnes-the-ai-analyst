@@ -91,13 +91,15 @@ class _SafeEncoder(_json.JSONEncoder):
 templates.env.policies["json.dumps_function"] = lambda obj, **kw: _json.dumps(obj, cls=_SafeEncoder, **kw)
 
 
-def _humanbytes(value) -> str:
+def _humanbytes(value, precision: int = 2) -> str:
     """Render a byte count as the largest binary-prefixed unit it fits in.
 
-    Below 1 KiB → integer bytes; otherwise two decimal places of KB / MB / GB
-    (binary, 1024-based). Used by the Store detail template; intentionally
-    permissive about input type so missing / undefined values render as
-    ``0 B`` rather than crashing the page.
+    Below 1 KiB → integer bytes; otherwise ``precision`` decimal places of
+    KB / MB / GB / TB (binary, 1024-based). Used by the Store detail
+    template (default 2-decimal precision for fine-grained file sizes) and
+    by the /dashboard stat tiles (1-decimal precision for headline numbers).
+    Intentionally permissive about input type so missing / undefined values
+    render as ``0 B`` rather than crashing the page.
     """
     try:
         n = int(value or 0)
@@ -107,12 +109,15 @@ def _humanbytes(value) -> str:
         return f"{n} B"
     kb = n / 1024
     if kb < 1024:
-        return f"{kb:.2f} KB"
+        return f"{kb:.{precision}f} KB"
     mb = kb / 1024
     if mb < 1024:
-        return f"{mb:.2f} MB"
+        return f"{mb:.{precision}f} MB"
     gb = mb / 1024
-    return f"{gb:.2f} GB"
+    if gb < 1024:
+        return f"{gb:.{precision}f} GB"
+    tb = gb / 1024
+    return f"{tb:.{precision}f} TB"
 
 
 templates.env.filters["humanbytes"] = _humanbytes
@@ -644,17 +649,6 @@ async def dashboard(
     total_columns = sum(s.get("columns", 0) or 0 for s in all_states)
     total_size_bytes = sum(s.get("file_size_bytes", 0) or 0 for s in all_states)
 
-    def _fmt_bytes(n: int) -> str:
-        # Human-readable size with one decimal once we cross MB. Matches
-        # how /admin/tables and /catalog format byte counters elsewhere.
-        if n <= 0:
-            return "0 MB"
-        for unit, divisor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
-            if n >= divisor:
-                value = n / divisor
-                return f"{value:.1f} {unit}" if unit != "KB" else f"{int(value)} {unit}"
-        return f"{n} B"
-
     # Build user_info object expected by dashboard template
     is_admin = is_user_admin(user["id"], conn)
 
@@ -688,7 +682,7 @@ async def dashboard(
             "total_tables": total_tables,
             "columns": total_columns,
             "rows_display": f"{total_rows:,}" if total_rows else "0",
-            "size_display": _fmt_bytes(total_size_bytes),
+            "size_display": _humanbytes(total_size_bytes, precision=1) if total_size_bytes else "0 MB",
             "total_rows": total_rows,
             "last_updated": max(
                 (s.get("last_sync") for s in all_states if s.get("last_sync")),

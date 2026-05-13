@@ -10,38 +10,7 @@
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }
-  .marketplaces-title { margin: 0; font-size: 22px; font-weight: 600; }
-  .marketplaces-search {
-    flex: 1; max-width: 360px;
-    padding: 8px 12px 8px 36px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
-    font-size: 13px;
-    background: var(--surface, #fff) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 12px center;
-  }
-  .marketplaces-search:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
 
-  .marketplaces-table-wrap {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    overflow-x: auto;
-  }
-  .marketplaces-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .marketplaces-table thead th {
-    text-align: left; padding: 12px 16px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .marketplaces-table tbody td {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: middle;
-  }
-  .marketplaces-table tbody tr:last-child td { border-bottom: none; }
-  .marketplaces-table tbody tr:hover { background: var(--border-light, #fafafa); }
 
   .mp-cell { display: flex; align-items: center; gap: 10px; }
   .mp-avatar {
@@ -135,16 +104,6 @@
   .modal-card textarea { min-height: 60px; resize: vertical; }
   .modal-card input:focus, .modal-card textarea:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-  .modal-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; transition: all 0.15s;
-  }
-  .modal-btn:hover { background: var(--border-light, #f9fafb); }
-  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .modal-btn.primary:hover { filter: brightness(1.05); }
-  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
-  .modal-btn.danger:hover { filter: brightness(1.05); }
 
   .sync-result {
     margin: 12px 0;
@@ -235,10 +194,6 @@
 
   /* Amber primary modal action — pairs with the system-confirm modal so
      the OK button matches the trigger button's visual weight. */
-  .modal-btn.warning {
-    background: #f59e0b; color: #fff; border-color: #d97706;
-  }
-  .modal-btn.warning:hover { filter: brightness(1.06); }
 
   /* Toast */
   .toast-stack {
