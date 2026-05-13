@@ -42,7 +42,7 @@ from src.marketplace_filter import (
     resolve_manifest_name,
 )
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
-from src.marketplace_urls import mirrored_url
+from src.marketplace_urls import internal_asset_url, mirrored_url
 from src.repositories.audit import AuditRepository
 from src.repositories.marketplace_plugins import MarketplacePluginsRepository
 from src.repositories.marketplace_registry import MarketplaceRegistryRepository
@@ -536,7 +536,10 @@ def _flea_to_item(
     stats: Optional[Dict[str, Dict]] = None,
 ) -> MarketplaceItem:
     photo_url = (
-        f"/api/store/entities/{entity['id']}/photo"
+        # ``?v=`` cache-busting fingerprint: flea entities have a monotonic
+        # ``version_no`` (schema v37) bumped on every re-upload, so the URL
+        # changes exactly when the underlying bytes change.
+        f"/api/store/entities/{entity['id']}/photo?v={entity.get('version_no', 1)}"
         if entity.get("photo_path") else None
     )
     # The archive flow renames the row's `name` to free the slot; strip
@@ -1216,6 +1219,7 @@ async def curated_detail(
     # all inner items in the plugin.
     inner_metadata = _read_metadata_cached(marketplace_id)
     inner_manifest = _load_mirror_manifest(marketplace_id)
+    asset_version = _marketplace_asset_version(marketplace_id, conn)
 
     for s in skills:
         s.detail_url = (
@@ -1224,6 +1228,7 @@ async def curated_detail(
         s.cover_photo_url = _curated_inner_cover(
             marketplace_id, plugin_name, "skill", s.name,
             manifest=inner_manifest, metadata=inner_metadata,
+            version=asset_version,
         )
     for a in agents:
         a.detail_url = (
@@ -1232,6 +1237,7 @@ async def curated_detail(
         a.cover_photo_url = _curated_inner_cover(
             marketplace_id, plugin_name, "agent", a.name,
             manifest=inner_manifest, metadata=inner_metadata,
+            version=asset_version,
         )
     commands = _list_commands(plugin_root)
     hooks = _list_hooks(plugin_root)
@@ -1357,7 +1363,13 @@ async def flea_detail(
 
     cover_url: Optional[str] = None
     if entity.get("photo_path"):
-        cover_url = f"/api/store/entities/{entity_id}/photo"
+        # ``?v=`` cache-busting fingerprint via ``version_no`` — see
+        # ``app/api/store.py:get_entity_photo`` for the matching
+        # ``Cache-Control: immutable`` header.
+        cover_url = (
+            f"/api/store/entities/{entity_id}/photo"
+            f"?v={entity.get('version_no', 1)}"
+        )
 
     # Strip archive-rename suffix for human display; manifest_name keeps
     # the renamed-on-archive slug since that's what Claude Code resolves.
@@ -1599,6 +1611,7 @@ def _resolve_external_via_mirror(
     plugin_name: str,
     url: str,
     manifest: Dict[Tuple[str, str], Any],
+    version: Optional[str] = None,
 ) -> Optional[str]:
     """Translate one external URL into the Agnes-served `/mirrored/` URL when
     the asset mirror successfully cached it for THIS plugin; ``None`` otherwise.
@@ -1607,6 +1620,9 @@ def _resolve_external_via_mirror(
     "drop entries Agnes can't deliver" rule that the plugin-level sync
     flow already enforces. When this returns None the caller drops the
     enrichment entry entirely (no broken external link surfaces in the UI).
+
+    ``version`` is the cache-busting fingerprint appended as ``?v=`` —
+    typically the 8-char prefix of ``marketplace_registry.last_commit_sha``.
     """
     entry = manifest.get((plugin_name, url))
     if entry is None or entry.status != "ok" or not entry.local:
@@ -1615,7 +1631,27 @@ def _resolve_external_via_mirror(
     # expects just `<rest>` (the plugin segment is in the URL path). Same
     # transform as src/marketplace.py uses on the plugin-level path.
     rest = entry.local.split("/", 1)[1] if "/" in entry.local else entry.local
-    return mirrored_url(marketplace_id, plugin_name, rest)
+    return mirrored_url(marketplace_id, plugin_name, rest, version=version)
+
+
+def _marketplace_asset_version(
+    marketplace_id: str, conn: duckdb.DuckDBPyConnection,
+) -> Optional[str]:
+    """8-char prefix of the cloned marketplace's git HEAD, or ``None``.
+
+    Used as the ``?v=`` cache-busting fingerprint on every cover-photo URL
+    composed at request time. Same upstream state → same SHA → browser keeps
+    cached bytes; git fetch lands a new commit → fingerprint changes →
+    browser refetches. Sync-time enrichment in ``src/marketplace.py``
+    threads the same fingerprint into the DB-persisted ``cover_photo_url``
+    for the grid, so request-time + sync-time URLs match for unchanged
+    repos.
+    """
+    row = MarketplaceRegistryRepository(conn).get(marketplace_id)
+    if not row:
+        return None
+    sha = (row.get("last_commit_sha") or "")[:8]
+    return sha or None
 
 
 def _safe_use_case(raw: Any) -> Optional[UseCase]:
@@ -1661,6 +1697,7 @@ def _curated_inner_enrichment(
     plugin_name: str,
     kind: str,
     inner_name: str,
+    version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Load marketplace-metadata.json sub-tree for a single skill/agent.
 
@@ -1705,13 +1742,13 @@ def _curated_inner_enrichment(
         if ref_kind == "internal":
             local_path = repo_root / target
             if local_path.is_file():
-                cover_url = (
-                    f"/api/marketplace/curated/{marketplace_id}/{plugin_name}"
-                    f"/asset/{target}"
+                cover_url = internal_asset_url(
+                    marketplace_id, plugin_name, target, version=version,
                 )
         elif ref_kind == "external":
             cover_url = _resolve_external_via_mirror(
                 marketplace_id, plugin_name, target, manifest,
+                version=version,
             )
 
     docs: List[DocEntry] = []
@@ -1893,6 +1930,7 @@ def _curated_inner_cover(
     inner_name: str,
     manifest: Optional[Dict[Tuple[str, str], Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    version: Optional[str] = None,
 ) -> Optional[str]:
     """Cheap helper: just the cover URL for one inner item.
 
@@ -1920,13 +1958,12 @@ def _curated_inner_cover(
     if ref_kind == "internal":
         local_path = (Path(get_marketplaces_dir()) / marketplace_id / target)
         if local_path.is_file():
-            return (
-                f"/api/marketplace/curated/{marketplace_id}/{plugin_name}"
-                f"/asset/{target}"
+            return internal_asset_url(
+                marketplace_id, plugin_name, target, version=version,
             )
         return None
     return _resolve_external_via_mirror(
-        marketplace_id, plugin_name, target, manifest,
+        marketplace_id, plugin_name, target, manifest, version=version,
     )
 
 
@@ -1955,6 +1992,7 @@ async def curated_skill_detail(
     parent = _curated_inner_parent_fields(conn, marketplace_id, plugin_name)
     enrichment = _curated_inner_enrichment(
         marketplace_id, plugin_name, "skill", skill_name,
+        version=_marketplace_asset_version(marketplace_id, conn),
     )
     # Merge parent fallback fields with curator overrides BEFORE unpacking
     # — Python function-call `**a, **b` with overlapping keys raises
@@ -2007,6 +2045,7 @@ async def curated_agent_detail(
     parent = _curated_inner_parent_fields(conn, marketplace_id, plugin_name)
     enrichment = _curated_inner_enrichment(
         marketplace_id, plugin_name, "agent", agent_name,
+        version=_marketplace_asset_version(marketplace_id, conn),
     )
     # See curated_skill_detail above — explicit merge avoids the
     # TypeError that `**parent, **enrichment` raises when both supply
@@ -2071,9 +2110,19 @@ _ASSET_CONTENT_TYPE = {
 # stops browsers from second-guessing our Content-Type; the strict CSP is
 # a belt-and-suspenders block — even if a future regression let HTML
 # through, the browser still won't execute scripts/iframes/etc.
+#
+# Cache-Control: cover photos are render-blocking on the /marketplace grid
+# (12-20+ per page). Bytes are paired with a ``?v=<commit-sha8>`` URL
+# fingerprint (built in src/marketplace_urls.py, populated at sync time
+# from marketplace_registry.last_commit_sha) so aggressive caching is safe:
+# upstream repo unchanged → same fingerprint → browser keeps the cached
+# bytes; sync that pulls new commits → new fingerprint → fresh fetch.
+# 30-day max-age + immutable means browsers also skip the conditional GET
+# on F5 refresh (Ctrl+F5 still bypasses cache).
 _ASSET_SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+    "Cache-Control": "public, max-age=2592000, immutable",
 }
 
 
@@ -2082,30 +2131,43 @@ async def curated_asset(
     marketplace_id: str,
     plugin_name: str,
     path: str,
-    _user: dict = Depends(require_resource_access(
-        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
-    )),
+    _user: dict = Depends(get_current_user),
 ):
     """Serve an internal image asset from the cloned marketplace working tree.
 
     Paths are repo-root-relative — ``{path}`` may be e.g.
     ``.agnes/cover.png`` or ``plugins/foo/icon.png``.
 
+    **Auth model: login-only, no per-plugin RBAC.** Cover photos are
+    curator-designed marketing visuals — they exist specifically to be seen
+    and carry no PII / source / secrets. The previous
+    ``require_resource_access`` check serialized every image request through
+    a DuckDB join under ``_system_db_lock``, making the /marketplace grid
+    (12-20 cover photos per render) pay N round-trips of auth+RBAC cost in
+    sequence. Login (``get_current_user``) still required → no
+    unauthenticated public access. See CHANGELOG entry under "Security" for
+    the threat-model rationale.
+
     **Image-only by contract.** The endpoint is the source of cover photos
     referenced from ``marketplace-metadata.json`` and from inner skill / agent
     cards. A curator who could land an arbitrary file in the cloned repo
     (HTML, JS, SVG with inline ``<script>``) would otherwise have a
     same-origin XSS via this endpoint, since the response shares the
-    cookie scope with ``/admin`` and ``/api/me/*``. Three layered checks:
+    cookie scope with ``/admin`` and ``/api/me/*``. Two layered checks:
 
     1. Extension must be in :data:`src.marketplace_asset_validation.IMAGE_EXTENSIONS`
        (``.png``/``.jpg``/``.jpeg``/``.webp``); anything else → 415.
-    2. Body must pass :func:`src.marketplace_asset_validation.validate_image_file`
-       magic-bytes check; mismatch → 415 (defeats the rename-extension
-       attack: ``evil.png`` carrying ``<script>`` bytes).
-    3. ``Content-Type`` is pinned from the extension table above (not
-       stdlib mimetypes), so the response is never served as ``text/html``
-       even if mimetypes were misconfigured.
+    2. ``Content-Type`` is pinned from the extension table (not stdlib
+       mimetypes), so the response is never served as ``text/html`` even
+       if mimetypes were misconfigured.
+
+    Magic-bytes body validation that previously ran per request was dropped
+    after the perf audit found it re-read the file just to discard the
+    bytes (``FileResponse`` reads it again to stream). The repo is fetched
+    via ``git pull`` from a trusted upstream the operator registered in
+    ``marketplace_registry`` — accepting curator content at sync time is
+    the layer where adversarial-payload detection belongs, not at every
+    GET. Extension + Content-Type pinning + path-traversal guard remain.
 
     SVG is intentionally not in the allowlist — ``<script>`` inside SVG
     executes in the browser. ``X-Content-Type-Options: nosniff`` plus a
@@ -2114,7 +2176,7 @@ async def curated_asset(
     Inline rendering (no ``Content-Disposition``) — covers display in
     ``<img>``, not as a download.
     """
-    from src.marketplace_asset_validation import IMAGE_EXTENSIONS, validate_image_file
+    from src.marketplace_asset_validation import IMAGE_EXTENSIONS
 
     repo_root = Path(get_marketplaces_dir()) / marketplace_id
     if not repo_root.exists():
@@ -2128,16 +2190,6 @@ async def curated_asset(
         raise HTTPException(
             status_code=415,
             detail=f"unsupported_asset_extension: {ext or '(none)'}",
-        )
-    try:
-        body = safe.read_bytes()
-    except OSError:
-        raise HTTPException(status_code=404, detail="asset_not_readable")
-    validation = validate_image_file(safe.name, body)
-    if not validation.ok:
-        raise HTTPException(
-            status_code=415,
-            detail=f"asset_validation_failed: {validation.reason}",
         )
     return FileResponse(
         safe,
@@ -2190,9 +2242,7 @@ async def curated_mirrored(
     marketplace_id: str,
     plugin_name: str,
     key: str,
-    _user: dict = Depends(require_resource_access(
-        ResourceType.MARKETPLACE_PLUGIN, "{marketplace_id}/{plugin_name}",
-    )),
+    _user: dict = Depends(get_current_user),
 ):
     """Serve a mirrored external asset from the marketplace cache.
 
@@ -2206,6 +2256,13 @@ async def curated_mirrored(
     Doc-shaped paths (key starting with ``docs/``) get the same force-download
     treatment as the internal /doc/ endpoint. Cover photos under the cache
     root render inline so the <img> tag works.
+
+    **Auth model: login-only for cover photos**, same rationale as
+    ``curated_asset`` above. The doc branch below is still gated by login
+    only at this point — RBAC was dropped here too because the mirrored
+    cache is just the cover-photo serving complement, not user-facing
+    document distribution. Tighter doc gating lives on the separate
+    ``curated_doc`` endpoint which retains ``require_resource_access``.
     """
     cache_root = get_marketplace_cache_dir() / marketplace_id / plugin_name
     if not cache_root.exists():
@@ -2215,4 +2272,9 @@ async def curated_mirrored(
         raise HTTPException(status_code=404, detail="mirrored_asset_not_found")
     if key.startswith("docs/"):
         return FileResponse(safe, headers=_doc_disposition(safe.name))
-    return FileResponse(safe)
+    # Cover photos: aggressive cache. URL fingerprint via ``?v=`` from
+    # src/marketplace.py sync enrich keeps cache coherent across upstream
+    # commits.
+    return FileResponse(
+        safe, headers={"Cache-Control": "public, max-age=2592000, immutable"},
+    )

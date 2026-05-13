@@ -155,7 +155,12 @@ async def get_my_stack(
     from src.store_naming import strip_archive_suffix
     for row in installs:
         photo_url = (
-            f"/api/store/entities/{row['id']}/photo" if row.get("photo_path") else None
+            # ``?v=`` cache-busting fingerprint via ``version_no`` — see
+            # ``app/api/store.py:get_entity_photo`` for the cache-header
+            # contract. Bumps on every re-upload, so the URL refresh
+            # forces a browser refetch exactly when the bytes change.
+            f"/api/store/entities/{row['id']}/photo?v={row.get('version_no', 1)}"
+            if row.get("photo_path") else None
         )
         # Display name strips the archive-rename suffix so the user
         # sees their installed plugin's original label even after the
