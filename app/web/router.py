@@ -39,6 +39,25 @@ def _resolved_home_route() -> str:
     return get_home_route()
 
 
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _static_url(path: str) -> str:
+    """Build /static/<path> with a cache-buster query string.
+
+    Appends ``?v=<file_mtime_int>`` so a redeploy that changes a CSS/JS file
+    invalidates browser + proxy caches without operator intervention.
+    Missing files return the bare URL — FastAPI's StaticFiles will surface
+    the 404 normally. Cheap (one ``os.stat`` per template variable use).
+    """
+    full = _STATIC_DIR / path
+    try:
+        v = int(full.stat().st_mtime)
+        return f"/static/{path}?v={v}"
+    except OSError:
+        return f"/static/{path}"
+
+
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["web"])
 
@@ -433,7 +452,7 @@ def _build_context(
         "config": ConfigProxy,
         "user": _flex(user) if user else _FlexDict(),
         "now": datetime.now,
-        "static_url": lambda path: f"/static/{path}",
+        "static_url": _static_url,
         # Flask compatibility shims for templates
         "get_flashed_messages": lambda **kwargs: [],
         "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
