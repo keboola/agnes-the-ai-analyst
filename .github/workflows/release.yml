@@ -47,39 +47,9 @@ jobs:
     # Skip the `create` event for tags — those are owned by keboola-deploy.yml
     # and shouldn't double-build here. Branch creates DO run.
     if: github.event_name != 'create' || github.event.ref_type == 'branch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install dependencies
-        run: uv pip install --system ".[dev,server]"
-
-      - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check . || true
-        continue-on-error: true  # Don't block on pre-existing lint issues; can tighten later
-
-      - name: Type check with mypy
-        run: |
-          pip install mypy
-          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
-        continue-on-error: true  # Don't block on mypy initially, can tighten later
-
-      - name: Run tests
-        # `-n auto` parallelises across runner CPU cores; matches ci.yml.
-        # Single-threaded was taking 15-20 min and frequently tripping
-        # branch-protection waits on the parallel CI workflow.
-        run: pytest tests/ -v --tb=short -n auto
-        env:
-          TESTING: "1"
+    uses: ./.github/workflows/_test.yml
+    with:
+      pytest-args: "-v --tb=short -n auto"
 
   build-and-push:
     needs: test
