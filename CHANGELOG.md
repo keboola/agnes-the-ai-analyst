@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.12] — 2026-05-14
+
+### Fixed
+- **Usage processor now extracts user-typed slash invocations.** Claude Code
+  records `/foo` and `/plugin:name` slash commands as
+  `<command-name>/foo</command-name>` XML tags embedded in user message
+  content; the previous `^\s*/<name>` regex in `iter_events` only matched
+  raw `/foo` prefixes, which never appear in real session jsonls. Result on
+  production: `usage_events.command_name` and
+  `usage_session_summary.slash_commands` stayed NULL/0 for every actually-typed
+  slash invocation (`/clear`, `/exit`, `/plugin`, `/model`, plugin commands of
+  the form `/plugin:name`). Replaced with a `<command-name>` tag scan;
+  `USAGE_PROCESSOR_VERSION` bumps 2 → 3. Operators wanting to rewrite
+  historical rows under the new logic call `POST /api/admin/usage/reprocess`
+  (CLI: `agnes admin telemetry reprocess`). Implicit Skill tool_use
+  extraction (LLM-decided invocations) is unchanged.
+
 ## [0.54.11] — 2026-05-14
 
 ### Changed
