@@ -28,6 +28,13 @@ from app.instance_config import (
     get_instance_logo_svg, get_instance_overview,
 )
 from app.web.connector_prompts import all_connector_prompts
+from app.api.me_debug import (
+    require_debug_auth_enabled,
+    _read_session_token,
+    _decoded_claims,
+    _token_fingerprint,
+    _last_sync_summary,
+)
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.knowledge import KnowledgeRepository
@@ -2157,13 +2164,84 @@ async def profile_page(
         else:
             m["display_name"] = m["name"]
 
+    # Session-diagnostics context (formerly the /me/debug page). The
+    # troubleshooting section renders the caller's OWN decoded JWT +
+    # Google-sync snapshot — their own data, no debug gate on the read.
+    _SENSITIVE_USER_COLUMNS = ("password_hash", "setup_token", "reset_token")
+    user_record_safe = {
+        k: v for k, v in user.items() if k not in _SENSITIVE_USER_COLUMNS
+    }
+    raw_token = _read_session_token(request)
+
     ctx = _build_context(
         request,
         user=user,
         memberships=memberships,
         is_admin=is_user_admin(user["id"], conn),
+        user_record=user_record_safe,
+        claims=_decoded_claims(raw_token),
+        token_fingerprint=_token_fingerprint(raw_token),
+        sync_summary=_last_sync_summary(user["id"], conn),
+        # Display-only — keep original case (no .lower()), unlike the
+        # refetch-groups handler below which lowercases for set comparison.
+        google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),
     )
     return templates.TemplateResponse(request, "profile.html", ctx)
+
+
+@router.post("/me/profile/refetch-groups", name="me_profile_refetch_groups")
+async def me_profile_refetch_groups(
+    _: None = Depends(require_debug_auth_enabled),
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Re-issue ``fetch_user_groups`` for the current user and return a
+    dry-run diff against the cached ``user_group_members`` snapshot,
+    writing nothing. Gated behind AGNES_DEBUG_AUTH — a dry-run admin
+    debug action, not user-facing content."""
+    from app.auth.group_sync import fetch_user_groups
+
+    fetched = fetch_user_groups(user["email"])
+    soft_failed = fetched is None
+    fetched_list = list(fetched) if fetched else []
+
+    prefix = os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip().lower()
+    if prefix:
+        relevant = [g.lower() for g in fetched_list if g.lower().startswith(prefix)]
+    else:
+        relevant = [g.lower() for g in fetched_list]
+
+    has_ext = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'user_groups' AND column_name = 'external_id'"
+    ).fetchone()
+    select_ext = "g.external_id" if has_ext else "NULL"
+    current_rows = conn.execute(
+        f"""SELECT g.name, {select_ext} AS external_id
+              FROM user_group_members m
+              JOIN user_groups g ON g.id = m.group_id
+             WHERE m.user_id = ? AND m.source = 'google_sync'
+             ORDER BY g.name""",
+        [user["id"]],
+    ).fetchall()
+    current_external_ids = {r[1].lower() for r in current_rows if r[1]}
+    current_names = [r[0] for r in current_rows]
+
+    fetched_set = set(relevant)
+    would_add = sorted(fetched_set - current_external_ids)
+    would_remove = sorted(current_external_ids - fetched_set) if has_ext else []
+
+    return {
+        "soft_failed": soft_failed,
+        "prefix": prefix or None,
+        "fetched": fetched_list,
+        "fetched_relevant": relevant,
+        "current_names": current_names,
+        "current_external_ids": sorted(current_external_ids),
+        "would_add": would_add,
+        "would_remove": would_remove,
+        "applied": False,
+    }
 
 
 @router.get("/profile/sessions", response_class=HTMLResponse)
