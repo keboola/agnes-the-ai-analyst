@@ -1,8 +1,8 @@
 """Single entry point for BigQuery access — config resolution, client construction,
 DuckDB-extension session, and Google-API error translation.
 
-See docs/superpowers/specs/2026-04-29-issue-134-bq-access-unify-design.md for the
-full design rationale.
+See docs/archive/superpowers/specs/2026-04-29-issue-134-bq-access-unify-design.md
+for the full design rationale.
 """
 from __future__ import annotations
 
