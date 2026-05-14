@@ -260,15 +260,20 @@ def test_confirmation_whitespace_yes_returns_true(monkeypatch):
 # ===========================================================================
 
 
-def test_install_claude_hooks_noop_on_override(tmp_path):
-    """install_claude_hooks short-circuits when override sentinel present."""
+def test_install_claude_hooks_runs_regardless_of_sentinel(tmp_path):
+    """install_claude_hooks no longer consults the override sentinel
+    directly — that check moved to its init-time call site in
+    `cli/commands/init.py`. The writer itself runs unconditionally so
+    runtime callers (`maybe_refresh_claude_hooks`) can use it on
+    override workspaces too."""
     from cli.lib.hooks import install_claude_hooks
 
     _write_sentinel(tmp_path, "override: true\n")
     install_claude_hooks(tmp_path)
-    # Should NOT have created settings.json or modified anything in .claude/
     settings = tmp_path / ".claude" / "settings.json"
-    assert not settings.exists()
+    assert settings.exists()
+    cfg = json.loads(settings.read_text())
+    assert "hooks" in cfg
 
 
 def test_install_claude_hooks_runs_on_default_workspace(tmp_path):
@@ -282,43 +287,56 @@ def test_install_claude_hooks_runs_on_default_workspace(tmp_path):
     assert "hooks" in cfg
 
 
-def test_maybe_refresh_claude_hooks_noop_on_override(tmp_path):
-    """maybe_refresh_claude_hooks returns False on override workspace
-    even when the workspace LOOKS like an Agnes workspace (has agnes hooks)."""
+def test_maybe_refresh_claude_hooks_runs_regardless_of_sentinel(tmp_path):
+    """Runtime hook migration ignores the override sentinel — analysts
+    in admin-templated workspaces still pick up new Agnes hook layouts
+    via `agnes self-upgrade`. Admin custom hooks (commands NOT matching
+    `_OUR_COMMAND_MARKERS`) survive the refresh untouched."""
     from cli.lib.hooks import maybe_refresh_claude_hooks
 
-    # First write some agnes-looking hooks so workspace_has_agnes_hooks True
+    # Seed an Agnes-looking workspace with one Agnes-managed hook (gets
+    # replaced) and one foreign hook (must survive).
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps({
         "hooks": {
             "SessionStart": [
-                {"hooks": [{"type": "command", "command": "agnes pull --quiet"}]}
+                {"hooks": [{"type": "command", "command": "agnes pull --quiet"}]},
+                {"hooks": [{"type": "command", "command": "echo admin-custom-hook"}]},
             ]
         }
     }))
-    # Override sentinel — should now short-circuit the refresh
     _write_sentinel(tmp_path, "override: true\n")
 
-    assert maybe_refresh_claude_hooks(tmp_path) is False
-    # Verify settings.json wasn't rewritten with the Agnes default hooks
+    assert maybe_refresh_claude_hooks(tmp_path) is True
     cfg = json.loads(settings_path.read_text())
     cmds = [
         h["command"]
         for entry in cfg["hooks"]["SessionStart"]
         for h in entry["hooks"]
     ]
-    # Original single command intact — no capture-session / refresh-marketplace added
-    assert cmds == ["agnes pull --quiet"]
+    # Foreign admin hook preserved (no Agnes substring → not matched by
+    # `_OUR_COMMAND_MARKERS`, so `_replace_or_add` leaves it).
+    assert "echo admin-custom-hook" in cmds
+    # Agnes hooks rewritten to current default layout (capture-session,
+    # self-upgrade+pull chain, refresh-marketplace --check).
+    assert any("agnes capture-session" in c for c in cmds)
+    assert any("agnes refresh-marketplace --check" in c for c in cmds)
 
 
-def test_install_claude_commands_noop_on_override(tmp_path):
+def test_install_claude_commands_runs_regardless_of_sentinel(tmp_path):
+    """install_claude_commands no longer consults the override sentinel
+    directly — init-time skip lives in `cli/commands/init.py`. The
+    writer itself runs unconditionally."""
     from cli.lib.commands import install_claude_commands
 
     _write_sentinel(tmp_path, "override: true\n")
     install_claude_commands(tmp_path)
     commands_dir = tmp_path / ".claude" / "commands"
-    assert not commands_dir.exists() or list(commands_dir.iterdir()) == []
+    assert commands_dir.exists()
+    assert list(commands_dir.iterdir()), (
+        "expected at least one managed slash command file to be written"
+    )
 
 
 # ===========================================================================
