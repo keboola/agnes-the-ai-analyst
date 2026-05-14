@@ -123,7 +123,11 @@
             {% if s.summary %}{{ '{:,}'.format(s.summary.tokens_total) }}{% endif %}
           </td>
           <td class="num">
-            {% if verif and verif.items_extracted is not none %}{{ verif.items_extracted }}{% endif %}
+            {# Always render a number — 0 when verification hasn't run yet
+               OR has run with zero claims extracted. The Verification
+               badge column already encodes pending-vs-processed; this
+               column just shows the count. #}
+            {{ verif.items_extracted if (verif and verif.items_extracted is not none) else 0 }}
           </td>
           <td>
             <a class="dl-link" href="/profile/sessions/{{ s.name }}" download>Download</a>

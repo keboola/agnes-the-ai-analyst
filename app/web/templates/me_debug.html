@@ -345,7 +345,10 @@ refetchBtn.addEventListener("click", async () => {
   const table = document.getElementById('pat-table');
   const tbody = document.getElementById('pat-rows');
   try {
-    const r = await fetch('/api/tokens', { credentials: 'same-origin' });
+    // PAT list endpoint is mounted at /auth/tokens (APIRouter prefix in
+    // app/api/tokens.py:18), NOT /api/tokens — same router serves the
+    // /tokens page UI's fetches.
+    const r = await fetch('/auth/tokens', { credentials: 'same-origin' });
     if (!r.ok) {
       status.textContent = 'Could not load tokens (HTTP ' + r.status + ').';
       return;

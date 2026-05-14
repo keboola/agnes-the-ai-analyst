@@ -276,8 +276,13 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
             }
             for (const r of data.rows) {
                 const procs = r.processors || {};
-                const verifItems = procs.verification && procs.verification.items_extracted !== null
-                    ? procs.verification.items_extracted : null;
+                // Items extracted: render 0 (not blank) when verification
+                // hasn't run OR ran and found nothing. User-facing the
+                // distinction matters less than always showing a number;
+                // the Verification badge column already tells the user
+                // whether the processor has run on this session.
+                const verifItems = procs.verification && procs.verification.items_extracted != null
+                    ? procs.verification.items_extracted : 0;
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td>${fmtTimestamp(r.uploaded_at)}</td>
@@ -288,7 +293,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
                     <td class="num">${fmtNum(r.user_messages)}</td>
                     <td class="num">${fmtNum(r.tool_calls)}</td>
                     <td class="num">${fmtNum(r.tokens_total)}</td>
-                    <td class="num">${verifItems !== null ? fmtNum(verifItems) : ''}</td>
+                    <td class="num">${fmtNum(verifItems)}</td>
                 `;
                 tbody.appendChild(tr);
             }
