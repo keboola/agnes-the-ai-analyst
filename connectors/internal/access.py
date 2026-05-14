@@ -67,16 +67,16 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
     InternalTable(
         registry_id="agnes_sessions",
         source_table="usage_session_summary",
-        filter_column="username",
-        filter_kind="username",
+        filter_column="user_id",
+        filter_kind="user_id",
         display_name="Agnes sessions",
         description="Claude Code sessions. Also available locally for analysis.",
     ),
     InternalTable(
         registry_id="agnes_telemetry",
         source_table="usage_events",
-        filter_column="username",
-        filter_kind="username",
+        filter_column="user_id",
+        filter_kind="user_id",
         display_name="Agnes telemetry events",
         description="Tool and skill invocations from Claude Code. Also available locally for analysis.",
     ),
@@ -140,35 +140,18 @@ def _filter_value(user: dict[str, Any], kind: str) -> str:
 def build_filter_clause(table: InternalTable, user: dict[str, Any], is_admin: bool) -> str:
     """Return the WHERE clause for one internal table.
 
-    Admins get an empty string (unscoped view). Everyone else gets
+    Admins get an empty string (unscoped view). Everyone else get
     ``WHERE <col> = '<value>'`` where value has been regex-validated.
 
-    For ``filter_kind='username'`` the clause matches **both** the
-    email local-part and the ``users.id`` UUID.  Two code paths feed
-    ``/data/user_sessions/<dir>/``:
-
-      * The **session collector** writes under the OS username (= email
-        local-part in current deployments).
-      * The **upload API** (``POST /api/upload/sessions``) writes under
-        ``user["id"]`` — a UUID.
-
-    The session pipeline uses the directory name verbatim as the
-    ``username`` column in ``usage_session_summary`` / ``usage_events``,
-    so either value can appear.  An OR filter covers both conventions
-    and guarantees a non-admin never sees another user's rows
-    regardless of how the session was ingested.
+    Both ``agnes_sessions`` and ``agnes_telemetry`` now filter on the
+    ``user_id`` column (stable UUID) instead of ``username`` (email
+    local-part, which can change). The ``user_id`` column is populated
+    by the session pipeline's ``resolve_user_id()`` at processing time.
     """
     if is_admin:
         return ""
     value = _filter_value(user, table.filter_kind)
-    # value is regex-validated to ``[A-Za-z0-9._@:-]`` so single-quote
-    # escape is unnecessary; double single-quote anyway for defense-in-depth.
     safe = value.replace("'", "''")
-    if table.filter_kind == "username":
-        uid = (user or {}).get("id", "") or ""
-        if uid and _USER_ID_RE.match(uid) and uid != value:
-            safe_uid = uid.replace("'", "''")
-            return f"WHERE ({table.filter_column} = '{safe}' OR {table.filter_column} = '{safe_uid}')"
     return f"WHERE {table.filter_column} = '{safe}'"
 
 

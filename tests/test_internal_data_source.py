@@ -55,13 +55,13 @@ def system_db(tmp_path, monkeypatch):
     # Seed a couple of canonical rows for the RBAC checks.
     conn.execute(
         "INSERT INTO usage_session_summary "
-        "(session_file, session_id, username, tool_calls, tool_errors, processor_version) VALUES "
-        "('alice/s1.jsonl', 's-a-1', 'alice', 10, 1, 1)"
+        "(session_file, session_id, username, user_id, tool_calls, tool_errors, processor_version) VALUES "
+        "('alice/s1.jsonl', 's-a-1', 'alice', 'alice-uuid', 10, 1, 1)"
     )
     conn.execute(
         "INSERT INTO usage_session_summary "
-        "(session_file, session_id, username, tool_calls, tool_errors, processor_version) VALUES "
-        "('bob/s2.jsonl',   's-b-1', 'bob',   20, 0, 1)"
+        "(session_file, session_id, username, user_id, tool_calls, tool_errors, processor_version) VALUES "
+        "('bob/s2.jsonl',   's-b-1', 'bob', 'bob-uuid',   20, 0, 1)"
     )
     conn.execute(
         "INSERT INTO audit_log (id, user_id, action, result) VALUES "
@@ -109,27 +109,12 @@ def test_filter_clause_admin_is_empty():
     assert build_filter_clause(table, {"email": "admin@x", "id": "admin-uuid"}, True) == ""
 
 
-def test_filter_clause_non_admin_scopes_to_username():
+def test_filter_clause_non_admin_scopes_to_user_id():
+    """agnes_sessions now filters on user_id (stable UUID) rather than
+    the username column (email local-part, which can change)."""
     table = INTERNAL_TABLES_BY_ID["agnes_sessions"]
     clause = build_filter_clause(table, {"email": "alice@example.com", "id": "alice-uuid"}, False)
-    assert "username = 'alice'" in clause
-    # Upload API stores sessions under user_id, so the filter also
-    # matches the UUID to cover both ingestion paths.
-    assert "username = 'alice-uuid'" in clause
-
-
-def test_filter_clause_non_admin_username_matches_user_id():
-    """When user_id differs from the email local-part, the OR filter
-    ensures sessions uploaded via the API (stored under user_id) are
-    also visible to the owner."""
-    table = INTERNAL_TABLES_BY_ID["agnes_sessions"]
-    clause = build_filter_clause(
-        table,
-        {"email": "alice@example.com", "id": "550e8400-e29b-41d4-a716-446655440000"},
-        False,
-    )
-    assert "username = 'alice'" in clause
-    assert "username = '550e8400-e29b-41d4-a716-446655440000'" in clause
+    assert clause == "WHERE user_id = 'alice-uuid'"
 
 
 def test_filter_clause_non_admin_scopes_audit_to_user_id():
@@ -142,12 +127,12 @@ def test_filter_clause_non_admin_scopes_audit_to_user_id():
     assert clause == "WHERE user_id = 'alice-uuid'"
 
 
-def test_filter_clause_rejects_unsafe_username():
+def test_filter_clause_rejects_unsafe_user_id():
     table = INTERNAL_TABLES_BY_ID["agnes_sessions"]
     with pytest.raises(InternalAccessError):
         build_filter_clause(
             table,
-            {"email": "alice'; DROP TABLE--@example.com", "id": "x"},
+            {"email": "alice@example.com", "id": "'; DROP TABLE--"},
             False,
         )
 
@@ -181,15 +166,16 @@ def test_non_admin_sees_only_own_sessions(system_db):
 
 def test_non_admin_sees_sessions_uploaded_via_api(system_db):
     """Sessions uploaded via POST /api/upload/sessions are stored under
-    user_id (UUID) — the pipeline uses that as 'username'. The OR filter
-    must surface these rows for the matching user."""
+    user_id (UUID) by the pipeline. The user_id filter covers both
+    ingestion paths (collector and upload API) because the pipeline
+    resolves the stable user_id for every session at processing time."""
     from src.db import get_system_db
 
     conn = get_system_db()
     conn.execute(
         "INSERT INTO usage_session_summary "
-        "(session_file, session_id, username, tool_calls, tool_errors, processor_version) VALUES "
-        "('550e8400-uuid/api.jsonl', 's-api-1', '550e8400-uuid', 5, 0, 1)"
+        "(session_file, session_id, username, user_id, tool_calls, tool_errors, processor_version) VALUES "
+        "('550e8400-uuid/api.jsonl', 's-api-1', '550e8400-uuid', '550e8400-uuid', 5, 0, 1)"
     )
     db_path = str(_get_state_dir() / "system.duckdb")
     _, rows, _ = execute_internal_query(
@@ -198,11 +184,27 @@ def test_non_admin_sees_sessions_uploaded_via_api(system_db):
         is_admin=False,
         sql="SELECT username, session_id FROM agnes_sessions ORDER BY session_id",
     )
-    # alice should see both her email-local-part rows AND her UUID rows
-    assert ("alice", "s-a-1") in rows
+    # alice should see both her collector row (user_id='alice-uuid' from
+    # fixture — won't match '550e8400-uuid') and her upload-API row
+    # (user_id='550e8400-uuid').
     assert ("550e8400-uuid", "s-api-1") in rows
     # bob's rows must NOT appear
     assert all(r[0] != "bob" for r in rows)
+
+
+def test_email_change_does_not_affect_visibility(system_db):
+    """If alice changes her email from alice@example.com to
+    alice.new@example.com, her sessions should still be visible
+    because the filter uses the stable user_id, not the email."""
+    db_path = str(_get_state_dir() / "system.duckdb")
+    # Query with a different email but the same user_id.
+    _, rows, _ = execute_internal_query(
+        db_path,
+        {"email": "alice.new@example.com", "id": "alice-uuid"},
+        is_admin=False,
+        sql="SELECT username, session_id FROM agnes_sessions",
+    )
+    assert rows == [("alice", "s-a-1")]
 
 
 def test_non_admin_sees_only_own_audit_rows(system_db):
