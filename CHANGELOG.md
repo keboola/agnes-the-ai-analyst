@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.10] — 2026-05-14
+
 ### Changed
 - Web UI design system unified: single stylesheet (`style-custom.css`),
   canonical primitives for buttons, form controls, page headers, tables,
