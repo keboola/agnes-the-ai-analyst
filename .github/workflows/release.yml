@@ -43,46 +43,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    # Skip the `create` event for tags — those are owned by keboola-deploy.yml
-    # and shouldn't double-build here. Branch creates DO run.
-    if: github.event_name != 'create' || github.event.ref_type == 'branch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install dependencies
-        run: uv pip install --system ".[dev,server]"
-
-      - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check . || true
-        continue-on-error: true  # Don't block on pre-existing lint issues; can tighten later
-
-      - name: Type check with mypy
-        run: |
-          pip install mypy
-          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
-        continue-on-error: true  # Don't block on mypy initially, can tighten later
-
-      - name: Run tests
-        # `-n auto` parallelises across runner CPU cores; matches ci.yml.
-        # Single-threaded was taking 15-20 min and frequently tripping
-        # branch-protection waits on the parallel CI workflow.
-        run: pytest tests/ -v --tb=short -n auto
-        env:
-          TESTING: "1"
-
+  # Tests + lint live in `ci.yml` (the sharded `test-shard` matrix and the
+  # `lint` job). `release.yml` is the image-build pipeline only — it no
+  # longer re-runs the suite, which previously meant the full ~10 min test
+  # job ran twice on every push to main/feature branches. Branch protection
+  # (`test` + `docker-build`, both from `ci.yml`) guards what reaches
+  # `main`; `build-and-push` is gated by its own `if:` below.
   build-and-push:
-    needs: test
     # Publish on:
     #   - any push (main → :stable-* / non-main → :dev-* + :dev-<slug>);
     #   - branch creation (a fresh branch off main with no extra commits
