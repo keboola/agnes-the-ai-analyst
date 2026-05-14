@@ -440,7 +440,7 @@
       </button>
     </div>
     <div class="mp-actions">
-      <a class="btn btn-secondary" data-actions-for="curated" href="/marketplace/guide/curated">Submit a plugin</a>
+      <a class="btn btn-secondary" data-actions-for="curated" href="/marketplace/guide/curated">Submit a skill or plugin</a>
       <!-- Flea has a self-service +Upload button below — no second
            "how to" CTA needed. Anyone uploads via the form directly. -->
       <a class="btn btn-primary" data-actions-for="flea" href="/store/new" hidden>+ Upload</a>
@@ -779,7 +779,7 @@ function fillEmptyState() {
   if (state.tab === 'curated') {
     t.textContent = 'No curated plugins available.';
     b.textContent = 'Ask your admin to grant your group access.';
-    c.innerHTML = `<a href="/marketplace/guide/curated">Submit a plugin →</a>`;
+    c.innerHTML = `<a href="/marketplace/guide/curated">Submit a skill or plugin →</a>`;
   } else if (state.tab === 'flea') {
     t.textContent = 'No community entities yet.';
     b.textContent = 'Be the first to share something.';
