@@ -2072,20 +2072,6 @@ async def admin_workspace_prompt_page(
 
 
 
-@router.get("/tokens", response_class=HTMLResponse)
-async def my_tokens_page(
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    """My tokens — ANY signed-in user (incl. admins' own).
-
-    Always shows the user's own PATs. Create + reveal + revoke-own flow.
-    Admins who need the org-wide view go to /admin/tokens.
-    """
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "my_tokens.html", ctx)
-
-
 @router.get("/admin/tokens", response_class=HTMLResponse)
 async def admin_tokens_page(
     request: Request,

@@ -155,19 +155,23 @@ class TestWebUISmoke:
         assert ">Tokens<" in body
 
     def test_profile_renders_account_details(self, web_client, admin_cookie):
-        """/me/profile renders a real profile page with email + tokens link.
+        """/me/profile renders a real profile page with email + inline PAT section.
 
         v12 changes: role-pill is replaced by an Admin-pill driven by Admin
         user_group membership; ``session.google_groups`` is gone (the
         OAuth callback writes Workspace memberships into
         ``user_group_members`` instead), so the "No Google groups available"
         empty state is no longer rendered.
+        Task 3: /tokens link removed; PAT management is now inline on this page.
         """
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         assert "admin@test.com" in body
-        assert 'href="/tokens"' in body
+        assert 'href="/tokens"' not in body
+        # Inline PAT section is present
+        assert "Personal Authentication Tokens" in body
+        assert 'id="new-token-btn"' in body
         # Session & troubleshooting partial is included — a broken
         # {% include %} or missing template var would drop this string.
         assert "User record" in body
