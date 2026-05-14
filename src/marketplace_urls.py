@@ -24,11 +24,27 @@ from __future__ import annotations
 _ROUTE_PREFIX = "/api/marketplace/curated"
 
 
-def internal_asset_url(slug: str, plugin_name: str, path: str) -> str:
+def _with_version(base: str, version: str | None) -> str:
+    """Append ``?v=<version>`` for cache-busting when a version is supplied.
+
+    The endpoint itself ignores the query string — the version exists only
+    to push the URL into a new browser-cache bucket whenever the underlying
+    asset is known to have changed (i.e. the cloned marketplace repo's git
+    HEAD moved, per ``marketplace_registry.last_commit_sha``). Same source
+    state → same version → browser keeps the cached bytes.
+    """
+    return f"{base}?v={version}" if version else base
+
+
+def internal_asset_url(
+    slug: str, plugin_name: str, path: str, version: str | None = None,
+) -> str:
     """Served URL for an internal asset (cover photo, icon, …) inside the
     cloned marketplace working tree.
     """
-    return f"{_ROUTE_PREFIX}/{slug}/{plugin_name}/asset/{path}"
+    return _with_version(
+        f"{_ROUTE_PREFIX}/{slug}/{plugin_name}/asset/{path}", version,
+    )
 
 
 def internal_doc_url(slug: str, plugin_name: str, path: str) -> str:
@@ -36,7 +52,9 @@ def internal_doc_url(slug: str, plugin_name: str, path: str) -> str:
     return f"{_ROUTE_PREFIX}/{slug}/{plugin_name}/doc/{path}"
 
 
-def mirrored_url(slug: str, plugin_name: str, key: str) -> str:
+def mirrored_url(
+    slug: str, plugin_name: str, key: str, version: str | None = None,
+) -> str:
     """Served URL for an external asset that has been mirrored to the cache.
 
     ``key`` is the cache-relative path minus the leading ``<plugin>/``
@@ -44,4 +62,6 @@ def mirrored_url(slug: str, plugin_name: str, key: str) -> str:
     key). See ``app/api/marketplace.py:curated_mirrored`` for the
     consumer side.
     """
-    return f"{_ROUTE_PREFIX}/{slug}/{plugin_name}/mirrored/{key}"
+    return _with_version(
+        f"{_ROUTE_PREFIX}/{slug}/{plugin_name}/mirrored/{key}", version,
+    )

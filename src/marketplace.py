@@ -157,7 +157,7 @@ def read_plugins(slug: str) -> List[Dict[str, Any]]:
     return [p for p in plugins if isinstance(p, dict) and p.get("name")]
 
 
-def _refresh_plugin_cache(slug: str) -> int:
+def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:
     """Reload plugins from disk into marketplace_plugins. Returns plugin count.
 
     Failures here are logged but never re-raised: the primary sync result
@@ -191,6 +191,13 @@ def _refresh_plugin_cache(slug: str) -> int:
         mirrored_url,
     )
     from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+
+    # Cache-busting fingerprint baked into every served cover-photo URL.
+    # 8 hex chars from the cloned repo's git HEAD — same upstream state →
+    # same version → browser keeps cached bytes; git fetch landing a new
+    # commit → new version → browser refetches. See
+    # ``src/marketplace_urls.py:_with_version`` for the URL shape.
+    asset_version = (commit_sha or "")[:8] or None
 
     try:
         plugins = read_plugins(slug)
@@ -236,8 +243,10 @@ def _refresh_plugin_cache(slug: str) -> int:
                     # The local relpath is already in the right shape.
                     served_url_for[(plugin_name, url)] = mirrored_url(
                         slug, entry.plugin_name, entry.local.split("/", 1)[1],
+                        version=asset_version,
                     ) if "/" in entry.local else mirrored_url(
                         slug, entry.plugin_name, entry.local,
+                        version=asset_version,
                     )
                 else:
                     # Failed / rejected → fall back to the original URL so the
@@ -322,7 +331,7 @@ def _refresh_plugin_cache(slug: str) -> int:
                 local_path = repo_root / target
                 if local_path.is_file():
                     merged["cover_photo_url"] = internal_asset_url(
-                        slug, name, target,
+                        slug, name, target, version=asset_version,
                     )
                 else:
                     logger.info(
@@ -434,7 +443,9 @@ def sync_one(marketplace_id: str) -> Dict[str, Any]:
                     commit_sha=result["commit"],
                     synced_at=datetime.now(timezone.utc),
                 )
-                result["plugin_count"] = _refresh_plugin_cache(marketplace_id)
+                result["plugin_count"] = _refresh_plugin_cache(
+                    marketplace_id, commit_sha=result["commit"],
+                )
                 return result
             except (RuntimeError, ValueError) as e:
                 repo.update_sync_status(
@@ -483,7 +494,9 @@ def sync_marketplaces() -> Dict[str, Any]:
                     )
                 finally:
                     conn.close()
-                result["plugin_count"] = _refresh_plugin_cache(slug)
+                result["plugin_count"] = _refresh_plugin_cache(
+                    slug, commit_sha=result["commit"],
+                )
                 synced.append(result)
             except (RuntimeError, ValueError) as e:
                 err = {"id": slug, "error": str(e)}

@@ -497,8 +497,14 @@
     </div>
   </div>
 
-  <!-- Filter row: categories + sort -->
-  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px;">
+  <!-- Filter row: categories + sort.
+       margin-bottom matches the original `.mp-filter-row { margin-bottom: 12px }`
+       so the Curated tab (where `.mp-type-row` is hidden) keeps healthy spacing
+       between the filter row and the card grid below. The Flea/My tab's
+       `.mp-type-row` adds its own 24px on top, totalling ~36px which is fine
+       visually. Pre-restoration this was 4px, leaving the Curated tab with
+       only 4px between filters and cards. -->
+  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
     <div class="mp-filter-row" id="mp-cat-row" style="margin-bottom:0; flex:1 1 auto;"></div>
     <select class="mp-sort-select" id="mp-sort-select" title="Sort by">
       <option value="recent">Recent</option>

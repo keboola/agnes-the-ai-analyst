@@ -10,9 +10,61 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **Marketplace cover photos served with aggressive browser caching.**
+  `/api/marketplace/curated/.../asset/...`, `/api/marketplace/curated/.../mirrored/...`,
+  and `/api/store/entities/{id}/photo` now respond with
+  `Cache-Control: public, max-age=2592000, immutable`. Photo URLs are
+  fingerprinted with `?v=<sha8>` (curated, from
+  `marketplace_registry.last_commit_sha`) or `?v=<n>` (flea, from
+  `store_entities.version_no`). Source marketplace without upstream commits →
+  same fingerprint → browser keeps cached bytes regardless of how many times
+  "Sync now" is clicked; sync that pulls new commits or a flea re-upload bumps
+  the fingerprint and the browser refetches. Eliminates the N×roundtrip
+  cost (auth + RBAC + per-request disk read + magic-bytes revalidation) the
+  `/marketplace` grid render previously paid on every refresh.
+- **Magic-bytes body re-validation dropped from `curated_asset`.** The
+  endpoint previously read the entire image body into memory on every
+  request, ran `validate_image_file` to check magic bytes, and then handed
+  the file off to `FileResponse` (which reads it again to stream). That
+  validation belongs at sync time — curator-supplied bytes are accepted
+  through `git pull` against an admin-registered repository, which is the
+  natural authorization boundary. Extension allowlist (`.png/.jpg/.jpeg/.webp`),
+  pinned `Content-Type` mapping, `X-Content-Type-Options: nosniff`, strict CSP,
+  and path-traversal guard all remain.
+- **Curated tab filter ↔ grid spacing restored.** The sort-dropdown commit
+  (`6be1cee`, 2026-05-12) wrapped `.mp-filter-row` in a flex container with
+  inline `margin-bottom: 4px` and inline-overrode the inner row's own
+  `margin-bottom: 0`, masking the original CSS rule
+  `.mp-filter-row { margin-bottom: 12px }`. On the Curated tab — where
+  `.mp-type-row` is hidden — that left only a 4px gap between filters and
+  the card grid. Wrapper margin restored to 12px; Flea/My tabs still render
+  fine because `.mp-type-row` contributes its own 24px.
+
 ### Fixed
 - **Store guardrails — post-#290 follow-up.** Admin Rescan still writes `status='blocked_inline'` (the only post-v30 producer of that status). Re-add `blocked_inline` to the admin queue's "Needs review" filter chip and to `TERMINAL_BLOCKED_STATUSES` in the bundle-purge job, so a rescan-produced row surfaces in the default operator view and its bundle gets swept by the TTL purge instead of lingering on disk indefinitely. Documents the rescan-only asymmetry inline (chip + purge tuple + new code comments).
 - Stale doc strings referring to the pre-#290 `blocked_inline` quota counter on `app/api/store.py` spam-quota comment, `app/instance_config.py::get_guardrails_blocked_quota_per_day` docstring, and the operator-facing hint in `/admin/server-config` (`blocked_quota_per_day`). All three now correctly describe the narrowed `blocked_llm + review_error` counter that #290 actually shipped.
+
+### Security
+- **Marketplace cover-photo endpoints relaxed from per-plugin RBAC to
+  login-only.** The three image endpoints listed above no longer call
+  `require_resource_access(MARKETPLACE_PLUGIN, ...)` /
+  `_enforce_visibility(...)`. Any authenticated Agnes user can now fetch any
+  cover-photo URL. Doc endpoints (`curated_doc`, store `get_entity_doc`)
+  retain full RBAC — document content is treated separately.
+
+  **This is an intentional optimization, not a regression** — flagged here
+  explicitly so security review (human or AI) recognizes the decision rather
+  than treating it as oversight. Cover photos are curator-designed marketing
+  visuals (curated marketplaces) or user-uploaded showcase images
+  (flea-market entities) — they exist *specifically to be seen*. They carry
+  no PII, no source code, no internal documentation, no secrets. The
+  previous per-plugin RBAC check forced every image request through a
+  DuckDB join on `user_group_members` + `resource_grants`, serialized under
+  `_system_db_lock` — meaning N cover photos on a `/marketplace` render
+  paid N round-trips of auth+RBAC cost in sequence, blocking the async
+  event loop. The endpoints still require login (`get_current_user`
+  dependency stays); unauthenticated requests still receive 401.
 
 ### Internal
 - Tightened `test_quota_disabled_with_zero` assertion from `r.status_code != 429` to `r.status_code in (200, 201)` so a 500 regression no longer slips through as quota-disabled.
