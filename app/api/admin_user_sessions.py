@@ -97,6 +97,8 @@ def list_user_sessions(
     # ------------------------------------------------------------------
     # Pull processed rows from usage_session_summary
     # ------------------------------------------------------------------
+    # Match on both user_id (stable, v45+) and username (legacy) so the
+    # admin view shows sessions from both ingestion paths and pre-v45 rows.
     try:
         rows_db = conn.execute(
             """
@@ -105,19 +107,27 @@ def list_user_sessions(
                 active_seconds, wall_seconds,
                 tool_calls, tool_errors, primary_model
             FROM usage_session_summary
-            WHERE username = ?
+            WHERE user_id = ? OR username = ?
             ORDER BY started_at DESC NULLS LAST
             """,
-            [username],
+            [user_id, username],
         ).fetchall()
     except Exception:
         rows_db = []
 
     processed_files: dict[str, dict] = {}
     if rows_db:
-        cols = ["session_file", "session_id", "started_at", "ended_at",
-                "active_seconds", "wall_seconds", "tool_calls", "tool_errors",
-                "primary_model"]
+        cols = [
+            "session_file",
+            "session_id",
+            "started_at",
+            "ended_at",
+            "active_seconds",
+            "wall_seconds",
+            "tool_calls",
+            "tool_errors",
+            "primary_model",
+        ]
         for r in rows_db:
             d = dict(zip(cols, r))
             # Normalise timestamps to ISO strings
@@ -144,18 +154,20 @@ def list_user_sessions(
                 # Try to extract a session_id from the filename: the collector
                 # names files like "<session_id>.jsonl" or "sess-<id>.jsonl".
                 sid = p.stem
-                all_rows.append({
-                    "session_file": fname,
-                    "session_id": sid,
-                    "started_at": mtime.isoformat(),
-                    "ended_at": None,
-                    "active_seconds": None,
-                    "wall_seconds": None,
-                    "tool_calls": 0,
-                    "tool_errors": 0,
-                    "primary_model": None,
-                    "processed": False,
-                })
+                all_rows.append(
+                    {
+                        "session_file": fname,
+                        "session_id": sid,
+                        "started_at": mtime.isoformat(),
+                        "ended_at": None,
+                        "active_seconds": None,
+                        "wall_seconds": None,
+                        "tool_calls": 0,
+                        "tool_errors": 0,
+                        "primary_model": None,
+                        "processed": False,
+                    }
+                )
 
     # Sort: processed (have started_at) first then unprocessed, both newest-first
     def _sort_key(r: dict):
@@ -165,7 +177,7 @@ def list_user_sessions(
     all_rows.sort(key=_sort_key, reverse=True)
 
     total = len(all_rows)
-    page = all_rows[offset: offset + limit]
+    page = all_rows[offset : offset + limit]
 
     return {
         "rows": page,
@@ -351,7 +363,7 @@ def list_user_activity(
     audit_repo = AuditRepository(conn)
     rows, _ = audit_repo.query(user_id=user_id, limit=limit + offset)
     # Apply offset via slicing — cursor-based pagination is per-page only
-    rows = rows[offset: offset + limit]
+    rows = rows[offset : offset + limit]
 
     # Normalise timestamps to ISO strings and decode JSON params
     for r in rows:
@@ -366,9 +378,7 @@ def list_user_activity(
             except (ValueError, TypeError):
                 pass
 
-    total = conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]
-    ).fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]).fetchone()[0]
 
     try:
         AuditRepository(conn).log(

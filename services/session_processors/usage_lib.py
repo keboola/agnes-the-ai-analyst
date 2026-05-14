@@ -40,30 +40,48 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterator
 
-USAGE_PROCESSOR_VERSION = 2
+USAGE_PROCESSOR_VERSION = 3
 
-BUILTIN_TOOLS = frozenset({
-    "Bash", "Read", "Edit", "Write", "Grep", "Glob", "TodoWrite",
-    "Task", "Agent", "NotebookEdit", "WebFetch", "WebSearch", "ExitPlanMode",
-    "LS",  # also built-in
-})
+BUILTIN_TOOLS = frozenset(
+    {
+        "Bash",
+        "Read",
+        "Edit",
+        "Write",
+        "Grep",
+        "Glob",
+        "TodoWrite",
+        "Task",
+        "Agent",
+        "NotebookEdit",
+        "WebFetch",
+        "WebSearch",
+        "ExitPlanMode",
+        "LS",  # also built-in
+    }
+)
 
 # Slash commands: "/something" or "/namespace:something" at start of user text
 SLASH_RE = re.compile(r"^\s*/([A-Za-z][\w:-]*)")
 
 # Event types to skip entirely
-_SKIP_TYPES = frozenset({
-    "system", "summary", "file-history-snapshot",
-    "queue-operation", "progress",
-})
+_SKIP_TYPES = frozenset(
+    {
+        "system",
+        "summary",
+        "file-history-snapshot",
+        "queue-operation",
+        "progress",
+    }
+)
 
 
 @dataclass(frozen=True)
 class ParsedEvent:
     event_uuid: str | None
     parent_uuid: str | None
-    tool_id: str | None        # tool_use 'id' (tu_xxx) from message.content item; None for slash_command
-    event_type: str            # 'tool_use' | 'slash_command' | 'subagent' | 'mcp_call'
+    tool_id: str | None  # tool_use 'id' (tu_xxx) from message.content item; None for slash_command
+    event_type: str  # 'tool_use' | 'slash_command' | 'subagent' | 'mcp_call'
     tool_name: str | None
     skill_name: str | None
     subagent_type: str | None
@@ -196,9 +214,7 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
                 text_parts = [content]
             elif isinstance(content, list):
                 text_parts = [
-                    item.get("text", "")
-                    for item in content
-                    if isinstance(item, dict) and item.get("type") == "text"
+                    item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"
                 ]
             else:
                 text_parts = []
@@ -233,7 +249,7 @@ class AttributionLookup:
     """
 
     def __init__(self, conn):
-        self._skills: dict[str, tuple[str, str]] = {}     # name -> (source, ref_id)
+        self._skills: dict[str, tuple[str, str]] = {}  # name -> (source, ref_id)
         self._agents: dict[str, tuple[str, str]] = {}
         self._commands: dict[str, tuple[str, str]] = {}
 
@@ -365,9 +381,7 @@ def compute_summary(turns: list[dict], events: list[dict]) -> dict:
 
     started_at = min(timestamps) if timestamps else None
     ended_at = max(timestamps) if timestamps else None
-    wall_seconds = (
-        int((ended_at - started_at).total_seconds()) if started_at and ended_at else 0
-    )
+    wall_seconds = int((ended_at - started_at).total_seconds()) if started_at and ended_at else 0
     active_seconds = compute_active_seconds(timestamps)
 
     # Aggregate counts from events

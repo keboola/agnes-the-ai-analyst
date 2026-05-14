@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 45
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -723,13 +723,15 @@ CREATE TABLE IF NOT EXISTS usage_events (
     occurred_at         TIMESTAMP NOT NULL,
     processor_version   INTEGER NOT NULL,
     extracted_at        TIMESTAMP DEFAULT current_timestamp,
-    friction_tags       JSON
+    friction_tags       JSON,
+    user_id             VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_session ON usage_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_time ON usage_events(username, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_usage_events_tool ON usage_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_usage_events_skill ON usage_events(skill_name);
 CREATE INDEX IF NOT EXISTS idx_usage_events_ref ON usage_events(source, ref_id);
+CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id);
 
 CREATE TABLE IF NOT EXISTS usage_session_summary (
     session_file        VARCHAR PRIMARY KEY,
@@ -760,10 +762,12 @@ CREATE TABLE IF NOT EXISTS usage_session_summary (
     input_tokens          BIGINT DEFAULT 0,
     output_tokens         BIGINT DEFAULT 0,
     cache_read_tokens     BIGINT DEFAULT 0,
-    cache_creation_tokens BIGINT DEFAULT 0
+    cache_creation_tokens BIGINT DEFAULT 0,
+    user_id               VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username);
 CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at);
+CREATE INDEX IF NOT EXISTS idx_usage_session_user_id ON usage_session_summary(user_id);
 
 CREATE TABLE IF NOT EXISTS usage_tool_daily (
     day                 DATE NOT NULL,
@@ -881,15 +885,16 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         snapshot = Path(db_path).parent / "system.duckdb.pre-migrate"
         if not snapshot.exists():
             logger.error(
-                "WAL replay failed and no pre-migrate snapshot at %s — "
-                "manual recovery required.", snapshot,
+                "WAL replay failed and no pre-migrate snapshot at %s — manual recovery required.",
+                snapshot,
             )
             raise
         wal_path = Path(db_path + ".wal")
         logger.warning(
             "WAL replay failed (%s) — auto-restoring from pre-migrate "
             "snapshot %s. The migration ladder will re-run on this start.",
-            msg.split("\n", 1)[0][:200], snapshot,
+            msg.split("\n", 1)[0][:200],
+            snapshot,
         )
         # Move (not copy) the broken DB aside so an operator can post-
         # mortem if needed. The pre-migrate snapshot becomes the new
@@ -961,9 +966,7 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
         return _maybe_instrument(_analytics_db_conn.cursor(), "analytics")
 
 
-def _reattach_remote_extensions(
-    conn: duckdb.DuckDBPyConnection, extracts_dir: Path
-) -> None:
+def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: Path) -> None:
     """Re-LOAD DuckDB extensions listed in _remote_attach tables of each extract.duckdb.
 
     Called from get_analytics_db_readonly() after ATTACHing extract.duckdb files so
@@ -974,9 +977,7 @@ def _reattach_remote_extensions(
         return
 
     try:
-        attached_dbs = {
-            r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()
-        }
+        attached_dbs = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
     except Exception:
         return
 
@@ -1013,9 +1014,7 @@ def _reattach_remote_extensions(
 
         # Refresh attached list before processing each source's rows
         try:
-            attached_dbs = {
-                r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()
-            }
+            attached_dbs = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
         except Exception:
             pass
 
@@ -1042,7 +1041,8 @@ def _reattach_remote_extensions(
                     "query-path remote_attach: extension %r not in allowlist; "
                     "refusing to LOAD/ATTACH for source %s. Override via "
                     "AGNES_REMOTE_ATTACH_EXTENSIONS if intended.",
-                    extension, alias,
+                    extension,
+                    alias,
                 )
                 continue
             if token_env and not is_token_env_allowed(token_env):
@@ -1050,7 +1050,8 @@ def _reattach_remote_extensions(
                     "query-path remote_attach: token_env %r not in allowlist; "
                     "refusing for source %s. Override via "
                     "AGNES_REMOTE_ATTACH_TOKEN_ENVS if intended.",
-                    token_env, alias,
+                    token_env,
+                    alias,
                 )
                 continue
             if alias in attached_dbs:
@@ -1081,25 +1082,20 @@ def _reattach_remote_extensions(
                     except BQMetadataAuthError as e:
                         logger.error(
                             "Failed to fetch BQ metadata token for %s: %s — skipping ATTACH",
-                            alias, e,
+                            alias,
+                            e,
                         )
                         continue
                     escaped = escape_sql_string_literal(bq_token)
                     secret_name = f"bq_secret_{alias}"
-                    conn.execute(
-                        f"CREATE OR REPLACE SECRET {secret_name} "
-                        f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
-                    )
+                    conn.execute(f"CREATE OR REPLACE SECRET {secret_name} (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
                     from connectors.bigquery.access import apply_bq_session_settings
+
                     apply_bq_session_settings(conn)
-                    conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
-                    )
+                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                 elif token:
                     escaped_token = escape_sql_string_literal(token)
-                    conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
-                    )
+                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
                     # Apply BQ session settings on every BQ-extension attach,
                     # not only the metadata-token branch above. Previously the
                     # token-based branch fell through without setting
@@ -1107,13 +1103,13 @@ def _reattach_remote_extensions(
                     # in place and causing "remote query timeout" surprises.
                     if extension == "bigquery":
                         from connectors.bigquery.access import apply_bq_session_settings
+
                         apply_bq_session_settings(conn)
                 else:
-                    conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
-                    )
+                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                     if extension == "bigquery":
                         from connectors.bigquery.access import apply_bq_session_settings
+
                         apply_bq_session_settings(conn)
                 attached_dbs.add(alias)
                 logger.debug("Re-attached remote source %s via %s extension", alias, extension)
@@ -1434,8 +1430,7 @@ _V16_TO_V17_MIGRATIONS = [
         PRIMARY KEY (item_a_id, item_b_id, relation_type)
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_knowledge_item_relations_resolved "
-    "ON knowledge_item_relations(resolved)",
+    "CREATE INDEX IF NOT EXISTS idx_knowledge_item_relations_resolved ON knowledge_item_relations(resolved)",
 ]
 
 
@@ -1458,14 +1453,15 @@ _V19_TO_V20_MIGRATIONS = [
 # first so implies references resolve cleanly when expand_implies does BFS.
 _CORE_ROLES_SEED = [
     # (key, display_name, description, implies)
-    ("core.viewer", "Viewer",
-     "Read-only access to permitted datasets.", []),
-    ("core.analyst", "Analyst",
-     "Default user role; query data, run analyses.", ["core.viewer"]),
-    ("core.km_admin", "Knowledge-management admin",
-     "Manages metric definitions and column metadata.", ["core.analyst"]),
-    ("core.admin", "Administrator",
-     "Full system access; bypasses dataset_permissions.", ["core.km_admin"]),
+    ("core.viewer", "Viewer", "Read-only access to permitted datasets.", []),
+    ("core.analyst", "Analyst", "Default user role; query data, run analyses.", ["core.viewer"]),
+    (
+        "core.km_admin",
+        "Knowledge-management admin",
+        "Manages metric definitions and column metadata.",
+        ["core.analyst"],
+    ),
+    ("core.admin", "Administrator", "Full system access; bypasses dataset_permissions.", ["core.km_admin"]),
 ]
 
 # Maps the legacy users.role string values onto core.* keys for the v8→v9
@@ -1486,10 +1482,8 @@ SYSTEM_EVERYONE_GROUP = "Everyone"
 # app.auth.access (admin short-circuit) and the OAuth callback (default
 # Everyone membership for new users); changing them is a breaking change.
 _SYSTEM_GROUPS_SEED = [
-    (SYSTEM_ADMIN_GROUP,
-     "System: full access to all data and admin actions"),
-    (SYSTEM_EVERYONE_GROUP,
-     "System: default group every user is implicitly a member of"),
+    (SYSTEM_ADMIN_GROUP, "System: full access to all data and admin actions"),
+    (SYSTEM_EVERYONE_GROUP, "System: default group every user is implicitly a member of"),
 ]
 
 
@@ -1505,9 +1499,7 @@ def _seed_system_groups(conn: duckdb.DuckDBPyConnection) -> None:
     import uuid as _uuid
 
     for name, description in _SYSTEM_GROUPS_SEED:
-        existing = conn.execute(
-            "SELECT id, is_system FROM user_groups WHERE name = ?", [name]
-        ).fetchone()
+        existing = conn.execute("SELECT id, is_system FROM user_groups WHERE name = ?", [name]).fetchone()
         if existing is None:
             conn.execute(
                 """INSERT INTO user_groups (id, name, description, is_system, created_by)
@@ -1549,9 +1541,7 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     try:
         _seed_system_groups(conn)
 
-        admin_group_id = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()[0]
+        admin_group_id = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
         everyone_group_id = conn.execute(
             "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]
         ).fetchone()[0]
@@ -1560,16 +1550,14 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         # column having been physically dropped already (re-run safety) and of
         # malformed JSON (caught row-by-row, skipped silently).
         has_groups_col = conn.execute(
-            "SELECT 1 FROM information_schema.columns "
-            "WHERE table_name = 'users' AND column_name = 'groups'"
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'groups'"
         ).fetchone()
         if has_groups_col:
-            rows = conn.execute(
-                "SELECT id, groups FROM users WHERE groups IS NOT NULL"
-            ).fetchall()
+            rows = conn.execute("SELECT id, groups FROM users WHERE groups IS NOT NULL").fetchall()
             for user_id, groups_json in rows:
                 try:
                     import json as _json
+
                     names = _json.loads(groups_json) if isinstance(groups_json, str) else (groups_json or [])
                 except (ValueError, TypeError):
                     names = []
@@ -1579,7 +1567,8 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                     if not isinstance(name, str) or not name.strip():
                         continue
                     group_row = conn.execute(
-                        "SELECT id FROM user_groups WHERE name = ?", [name],
+                        "SELECT id FROM user_groups WHERE name = ?",
+                        [name],
                     ).fetchone()
                     if not group_row:
                         continue
@@ -1592,9 +1581,9 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                         )
                     except duckdb.ConstraintException:
                         logger.debug(
-                            "v13 backfill step 2 (google_sync): skipped "
-                            "insert for user=%s group=%s — already present",
-                            user_id, name,
+                            "v13 backfill step 2 (google_sync): skipped insert for user=%s group=%s — already present",
+                            user_id,
+                            name,
                         )
 
         # 3. core.admin grants → Admin membership. Tolerant of either table being
@@ -1670,7 +1659,8 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                     logger.debug(
                         "v13 backfill step 5 (resource_grants): skipped "
                         "insert for group=%s resource=%s — already migrated",
-                        group_id, resource_id,
+                        group_id,
+                        resource_id,
                     )
 
         # Audit: log any non-core capability grants before dropping the
@@ -1695,7 +1685,8 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                     "If this role was registered via register_internal_role(), "
                     "the affected users need to be re-added to an "
                     "appropriate user_group post-upgrade.",
-                    cnt, role_key,
+                    cnt,
+                    role_key,
                 )
 
         # 6. Drop legacy tables in FK-correct order: dependent tables first.
@@ -1754,8 +1745,7 @@ def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     ).fetchone()[0]
     if orphan_members:
         logger.warning(
-            "v14 migration: dropping %d orphan user_group_members rows "
-            "(group_id pointed at a deleted user_groups.id)",
+            "v14 migration: dropping %d orphan user_group_members rows (group_id pointed at a deleted user_groups.id)",
             orphan_members,
         )
     if orphan_grants:
@@ -1778,9 +1768,7 @@ def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         )
 
         # user_group_members rebuild
-        conn.execute(
-            "ALTER TABLE user_group_members RENAME TO user_group_members_v13_pre"
-        )
+        conn.execute("ALTER TABLE user_group_members RENAME TO user_group_members_v13_pre")
         conn.execute(
             """CREATE TABLE user_group_members (
                 user_id   VARCHAR NOT NULL,
@@ -1800,9 +1788,7 @@ def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute("DROP TABLE user_group_members_v13_pre")
 
         # resource_grants rebuild
-        conn.execute(
-            "ALTER TABLE resource_grants RENAME TO resource_grants_v13_pre"
-        )
+        conn.execute("ALTER TABLE resource_grants RENAME TO resource_grants_v13_pre")
         conn.execute(
             """CREATE TABLE resource_grants (
                 id            VARCHAR PRIMARY KEY,
@@ -1913,11 +1899,13 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     `primary_key`) still migrate cleanly. Wrapped in BEGIN/COMMIT;
     on error ROLLBACK and the outer caller skips the schema_version bump.
     """
+
     def _existing_cols(table: str) -> set[str]:
         return {
-            r[0] for r in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = ?", [table],
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                [table],
             ).fetchall()
         }
 
@@ -1951,26 +1939,29 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                 )"""
             )
             users_target_cols = [
-                "id", "email", "name", "password_hash",
-                "setup_token", "setup_token_created",
-                "reset_token", "reset_token_created",
-                "active", "deactivated_at", "deactivated_by",
-                "created_at", "updated_at",
+                "id",
+                "email",
+                "name",
+                "password_hash",
+                "setup_token",
+                "setup_token_created",
+                "reset_token",
+                "reset_token_created",
+                "active",
+                "deactivated_at",
+                "deactivated_by",
+                "created_at",
+                "updated_at",
             ]
             old_users_cols = _existing_cols("users_v18_pre")
             common = [c for c in users_target_cols if c in old_users_cols]
             col_list = ", ".join(common)
-            conn.execute(
-                f"INSERT INTO users ({col_list}) "
-                f"SELECT {col_list} FROM users_v18_pre"
-            )
+            conn.execute(f"INSERT INTO users ({col_list}) SELECT {col_list} FROM users_v18_pre")
             conn.execute("DROP TABLE users_v18_pre")
 
         # 4: rebuild table_registry without `is_public` column.
         if "is_public" in _existing_cols("table_registry"):
-            conn.execute(
-                "ALTER TABLE table_registry RENAME TO table_registry_v18_pre"
-            )
+            conn.execute("ALTER TABLE table_registry RENAME TO table_registry_v18_pre")
             conn.execute(
                 """CREATE TABLE table_registry (
                     id VARCHAR PRIMARY KEY,
@@ -1990,18 +1981,25 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                 )"""
             )
             registry_target_cols = [
-                "id", "name", "source_type", "bucket", "source_table",
-                "sync_strategy", "query_mode", "sync_schedule",
-                "profile_after_sync", "primary_key", "folder",
-                "description", "registered_by", "registered_at",
+                "id",
+                "name",
+                "source_type",
+                "bucket",
+                "source_table",
+                "sync_strategy",
+                "query_mode",
+                "sync_schedule",
+                "profile_after_sync",
+                "primary_key",
+                "folder",
+                "description",
+                "registered_by",
+                "registered_at",
             ]
             old_registry_cols = _existing_cols("table_registry_v18_pre")
             common = [c for c in registry_target_cols if c in old_registry_cols]
             col_list = ", ".join(common)
-            conn.execute(
-                f"INSERT INTO table_registry ({col_list}) "
-                f"SELECT {col_list} FROM table_registry_v18_pre"
-            )
+            conn.execute(f"INSERT INTO table_registry ({col_list}) SELECT {col_list} FROM table_registry_v18_pre")
             conn.execute("DROP TABLE table_registry_v18_pre")
 
         conn.execute("COMMIT")
@@ -2025,9 +2023,7 @@ def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
     import uuid as _uuid
 
     for key, display_name, description, implies in _CORE_ROLES_SEED:
-        existing = conn.execute(
-            "SELECT id FROM internal_roles WHERE key = ?", [key]
-        ).fetchone()
+        existing = conn.execute("SELECT id FROM internal_roles WHERE key = ?", [key]).fetchone()
         implies_json = _json.dumps(implies)
         if existing:
             conn.execute(
@@ -2059,25 +2055,21 @@ def _backfill_users_role_to_grants(conn: duckdb.DuckDBPyConnection) -> None:
     # Verify users.role column still exists (we may be re-running after a
     # half-applied migration); skip silently if it's already gone.
     has_role_col = conn.execute(
-        "SELECT 1 FROM information_schema.columns "
-        "WHERE table_name = 'users' AND column_name = 'role'"
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'role'"
     ).fetchone()
     if not has_role_col:
         return
 
-    rows = conn.execute(
-        "SELECT id, role FROM users WHERE role IS NOT NULL"
-    ).fetchall()
+    rows = conn.execute("SELECT id, role FROM users WHERE role IS NOT NULL").fetchall()
     backfilled = 0
     for user_id, role_str in rows:
         role_key = _LEGACY_ROLE_TO_CORE_KEY.get(role_str, "core.viewer")
-        role_row = conn.execute(
-            "SELECT id FROM internal_roles WHERE key = ?", [role_key]
-        ).fetchone()
+        role_row = conn.execute("SELECT id FROM internal_roles WHERE key = ?", [role_key]).fetchone()
         if not role_row:
             logger.warning(
                 "v9 backfill: core role %s missing — skipping user %s",
-                role_key, user_id,
+                role_key,
+                user_id,
             )
             continue
         try:
@@ -2363,8 +2355,7 @@ def _v28_to_v29_finalize(conn) -> None:
     are gone after the first run and the seed INSERTs use ON CONFLICT.
     """
     has_welcome = conn.execute(
-        "SELECT 1 FROM information_schema.tables "
-        "WHERE table_schema = 'main' AND table_name = 'welcome_template'"
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'main' AND table_name = 'welcome_template'"
     ).fetchone()
     if has_welcome:
         conn.execute(
@@ -2375,8 +2366,7 @@ def _v28_to_v29_finalize(conn) -> None:
         conn.execute("DROP TABLE welcome_template")
 
     has_claude_md = conn.execute(
-        "SELECT 1 FROM information_schema.tables "
-        "WHERE table_schema = 'main' AND table_name = 'claude_md_template'"
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'main' AND table_name = 'claude_md_template'"
     ).fetchone()
     if has_claude_md:
         conn.execute(
@@ -2391,8 +2381,7 @@ def _v28_to_v29_finalize(conn) -> None:
     # operators) or via a prior migration run (idempotent re-execution).
     for key in ("welcome", "claude_md", "home"):
         conn.execute(
-            "INSERT INTO instance_templates (key, content) VALUES (?, NULL) "
-            "ON CONFLICT (key) DO NOTHING",
+            "INSERT INTO instance_templates (key, content) VALUES (?, NULL) ON CONFLICT (key) DO NOTHING",
             [key],
         )
 
@@ -2531,15 +2520,12 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
     The audit columns (``archived_at``, ``archived_by``) ship first
     behind ``IF NOT EXISTS`` so they're safe in all three states.
     """
-    conn.execute(
-        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP"
-    )
-    conn.execute(
-        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR"
-    )
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR")
 
     cols = {
-        r[0] for r in conn.execute(
+        r[0]
+        for r in conn.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_name = 'store_entities' "
             "  AND column_name IN ('visibility_status', '_vis_v35')"
@@ -2553,18 +2539,10 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
         # in v36 (DuckDB ALTER COLUMN supports SET NOT NULL / SET DEFAULT
         # but not ADD CHECK on an existing column). Value-list enforcement
         # is application-side via VALID_VISIBILITY in StoreEntitiesRepository.
-        conn.execute(
-            "ALTER TABLE store_entities ADD COLUMN _vis_v35 VARCHAR"
-        )
-        conn.execute(
-            "UPDATE store_entities SET _vis_v35 = visibility_status"
-        )
-        conn.execute(
-            "ALTER TABLE store_entities DROP COLUMN visibility_status"
-        )
-        conn.execute(
-            "ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status"
-        )
+        conn.execute("ALTER TABLE store_entities ADD COLUMN _vis_v35 VARCHAR")
+        conn.execute("UPDATE store_entities SET _vis_v35 = visibility_status")
+        conn.execute("ALTER TABLE store_entities DROP COLUMN visibility_status")
+        conn.execute("ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status")
     elif has_temp and not has_vis:
         # Partial-rebuild recovery — prior attempt dropped visibility_status
         # but the RENAME never landed. Data is already in _vis_v35 from
@@ -2573,19 +2551,14 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
             "v34→v35 detected partial-rebuild state (visibility_status "
             "missing, _vis_v35 present); recovering via RENAME"
         )
-        conn.execute(
-            "ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status"
-        )
+        conn.execute("ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status")
     elif has_vis and has_temp:
         # Both present — earlier rebuild aborted before the DROP.
         # visibility_status holds the canonical values; drop the temp.
         logger.warning(
-            "v34→v35 detected partial-rebuild state (both visibility_status "
-            "and _vis_v35 present); dropping the temp"
+            "v34→v35 detected partial-rebuild state (both visibility_status and _vis_v35 present); dropping the temp"
         )
-        conn.execute(
-            "ALTER TABLE store_entities DROP COLUMN _vis_v35"
-        )
+        conn.execute("ALTER TABLE store_entities DROP COLUMN _vis_v35")
     # else: neither column is present, which means store_entities itself
     # is at a shape ahead of v34. _SYSTEM_SCHEMA above already created
     # the post-v35 shape; nothing to do here.
@@ -2894,10 +2867,7 @@ def _v42_to_v43(conn: duckdb.DuckDBPyConnection) -> None:
             UNIQUE (user_id, name)
         )
     """)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_obs_views_user "
-        "ON user_observability_views(user_id, created_at)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_obs_views_user ON user_observability_views(user_id, created_at)")
 
 
 def _v43_to_v44(conn: duckdb.DuckDBPyConnection) -> None:
@@ -2915,19 +2885,35 @@ def _v43_to_v44(conn: duckdb.DuckDBPyConnection) -> None:
     from 1 → 2 in the same release, which the session-pipeline
     reprocess loop uses to invalidate stale summaries.
     """
-    conn.execute(
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pull_at TIMESTAMP"
-    )
+    conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pull_at TIMESTAMP")
     for col in (
         "input_tokens",
         "output_tokens",
         "cache_read_tokens",
         "cache_creation_tokens",
     ):
-        conn.execute(
-            f"ALTER TABLE usage_session_summary "
-            f"ADD COLUMN IF NOT EXISTS {col} BIGINT DEFAULT 0"
-        )
+        conn.execute(f"ALTER TABLE usage_session_summary ADD COLUMN IF NOT EXISTS {col} BIGINT DEFAULT 0")
+
+
+def _v44_to_v45(conn: duckdb.DuckDBPyConnection) -> None:
+    """v45: add user_id column to usage tables for stable RBAC filtering.
+
+    The ``username`` column in ``usage_session_summary`` / ``usage_events``
+    stores the directory name from the session-data path, which is either
+    an email local-part (session collector) or a UUID (upload API). Email
+    local-parts are unstable — they change when users rename. ``user_id``
+    is the stable identity and becomes the authoritative RBAC filter
+    column for the ``agnes_sessions`` / ``agnes_telemetry`` aliases.
+
+    Backfill: the UsageProcessor populates ``user_id`` on every
+    (re)process run. Existing rows get backfilled when
+    ``USAGE_PROCESSOR_VERSION`` bumps, which triggers the session-pipeline
+    reprocess loop.
+    """
+    conn.execute("ALTER TABLE usage_session_summary ADD COLUMN IF NOT EXISTS user_id VARCHAR")
+    conn.execute("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS user_id VARCHAR")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user_id ON usage_session_summary(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id)")
 
 
 _V33_TO_V34_MIGRATIONS = [
@@ -3049,8 +3035,10 @@ def _replace_for_v24(project_id: str):
     function-form replacement is the defensive idiom — it makes the
     intent explicit and removes the dependency on re.sub's replacement-
     string escaping rules."""
+
     def _repl(m):
         return f"`{project_id}.{m.group(1)}.{m.group(2)}`"
+
     return _repl
 
 
@@ -3059,6 +3047,7 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
 
     try:
         from app.instance_config import get_value
+
         project_id = get_value("data_source", "bigquery", "project", default="") or ""
     except Exception:
         project_id = ""
@@ -3092,7 +3081,7 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise RuntimeError(
             f"v24 migration cannot complete: {len(rows)} materialized "
             f"BigQuery row(s) need their source_query rewritten from "
-            f"DuckDB-flavor `bq.\"ds\".\"tbl\"` to BQ-native "
+            f'DuckDB-flavor `bq."ds"."tbl"` to BQ-native '
             f"`<project>.ds.tbl`, but `data_source.bigquery.project` is "
             f"not configured. Set it via /admin/server-config (or "
             f"`instance.yaml: data_source.bigquery.project`) and restart "
@@ -3113,7 +3102,8 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                     [new_sq, row_id],
                 )
                 logger.info(
-                    "v24 migration: rewrote source_query for row %r", row_id,
+                    "v24 migration: rewrote source_query for row %r",
+                    row_id,
                 )
         conn.execute("COMMIT")
     except Exception:
@@ -3179,16 +3169,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 [SCHEMA_VERSION],
             )
             # v22 setup_banner row (kept as compat per CLAUDE.md schema notes).
-            conn.execute(
-                "INSERT INTO setup_banner (id, content) VALUES (1, NULL) "
-                "ON CONFLICT (id) DO NOTHING"
-            )
+            conn.execute("INSERT INTO setup_banner (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING")
             # v26 instance_templates seed — three canonical keys with NULL
             # content (operator override absent → render OSS default).
             for key in ("welcome", "claude_md", "home"):
                 conn.execute(
-                    "INSERT INTO instance_templates (key, content) VALUES (?, NULL) "
-                    "ON CONFLICT (key) DO NOTHING",
+                    "INSERT INTO instance_templates (key, content) VALUES (?, NULL) ON CONFLICT (key) DO NOTHING",
                     [key],
                 )
             # v41 audit_log indices: _SYSTEM_SCHEMA omits CREATE INDEX to
@@ -3207,6 +3193,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # them on fresh installs (no-op ALTERs); kept here for the
             # ladder's chronological readability.
             _v43_to_v44(conn)
+            # v45 user_id column on usage tables. _SYSTEM_SCHEMA declares
+            # the columns for fresh installs; migration adds them for
+            # existing DBs. No-op on fresh.
+            _v44_to_v45(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3248,8 +3238,7 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 # Skip UPDATE if the column never existed (e.g. test fixtures
                 # starting from v2/v3 with a hand-crafted minimal users table).
                 has_role_col = conn.execute(
-                    "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_name = 'users' AND column_name = 'role'"
+                    "SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'role'"
                 ).fetchone()
                 if has_role_col:
                     conn.execute("UPDATE users SET role = NULL")
@@ -3350,6 +3339,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v42_to_v43(conn)
             if current < 44:
                 _v43_to_v44(conn)
+            if current < 45:
+                _v44_to_v45(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
@@ -3383,7 +3374,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     "this process before any container restart is the "
                     "safe path; otherwise, the next start may need to "
                     "restore from %s.",
-                    e, _get_state_dir() / "system.duckdb.pre-migrate",
+                    e,
+                    _get_state_dir() / "system.duckdb.pre-migrate",
                 )
 
     # Always run the system-groups seed when the DB is on a version this binary

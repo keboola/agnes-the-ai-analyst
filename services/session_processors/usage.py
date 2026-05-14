@@ -32,6 +32,8 @@ class UsageProcessor:
         username: str,
         session_key: str,
         conn: duckdb.DuckDBPyConnection,
+        *,
+        user_id: str | None = None,
     ) -> ProcessorResult:
         turns = parse_jsonl(session_path)
         events = list(iter_events(turns))
@@ -63,6 +65,7 @@ class UsageProcessor:
                     "session_id": session_id,
                     "session_file": session_key,
                     "username": username,
+                    "user_id": user_id,
                     "event_uuid": e.event_uuid,
                     "parent_uuid": e.parent_uuid,
                     "event_type": e.event_type,
@@ -83,6 +86,7 @@ class UsageProcessor:
         summary = compute_summary(turns, rows)
         summary["session_file"] = session_key
         summary["username"] = username
+        summary["user_id"] = user_id
         # Override session_id with the resolved one
         if not summary.get("session_id"):
             summary["session_id"] = session_id
