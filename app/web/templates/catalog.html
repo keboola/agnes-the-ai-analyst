@@ -1332,7 +1332,13 @@
     <!-- ═══════════════ SOURCE CARDS ═══════════════ -->
     <div class="source-cards">
 
-        <!-- ── Card 1: Core Business Data ── -->
+        {# ── Data Packages: one source-card per bucket ─────────────────────
+           Previously all buckets were nested as accordions under a single
+           "Core Business Data" wrapper card. Each bucket is now its own
+           top-level Data Package card, matching the page hero title and
+           the bucket grain of the table_registry. The Internal and
+           Business Metrics cards below follow the same flat-list pattern. #}
+        {% for category in catalog_data %}
         <div class="source-card">
             <div class="source-card-header">
                 <div class="source-card-left">
@@ -1346,63 +1352,48 @@
                         </svg>
                     </div>
                     <div class="source-card-info">
-                        <div class="source-card-name">Core Business Data</div>
-                        <div class="source-card-desc">Core business data from internal systems</div>
-                        <div class="source-card-meta">
-                            {{ data_stats.total_tables or data_stats.tables }} tables &middot; ~{{ data_stats.rows_display }} rows total
-                            {% if data_stats.last_updated %}
-                            &middot; Synced {{ data_stats.last_updated }}
-                            {% endif %}
-                        </div>
+                        <div class="source-card-name">{{ category.name }}</div>
+                        <div class="source-card-meta">{{ category.count }} table{{ 's' if category.count != 1 else '' }}</div>
                     </div>
                 </div>
             </div>
 
-            {% for category in catalog_data %}
-            <div class="accordion-category">
-                <button class="accordion-trigger" onclick="toggleAccordion(this)">
-                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="9 18 15 12 9 6"/>
-                    </svg>
-                    {{ category.name }}
-                    <span class="accordion-count">{{ category.count }} tables</span>
-                </button>
-                <div class="accordion-content">
-                    {% for table in category.tables %}
-                    <div class="table-row" {% if table.query_mode != 'remote' %}onclick="openProfiler('{{ table.name }}')"{% endif %}>
-                        <div class="table-row-left">
-                            <div class="table-row-name">
-                                {{ table.name }}
-                                {% if table.query_mode == 'remote' %}
-                                <span class="query-mode-badge live">Live</span>
-                                {% else %}
-                                <span class="query-mode-badge local">Local</span>
-                                {% endif %}
-                            </div>
-                            <div class="table-row-desc">{{ table.description }}</div>
-                            <div class="table-sync-info">
-                                {% if table.query_mode == 'remote' %}
-                                <span class="live-dot"></span> Queried directly from BigQuery
-                                {% elif table.last_sync %}
-                                Synced {{ table.last_sync }}
-                                {% endif %}
-                            </div>
+            {# Plain list — tables shown directly; no accordion since the card IS the package. #}
+            <div class="accordion-content expanded" style="display: block;">
+                {% for table in category.tables %}
+                <div class="table-row" {% if table.query_mode != 'remote' %}onclick="openProfiler('{{ table.name }}')"{% endif %}>
+                    <div class="table-row-left">
+                        <div class="table-row-name">
+                            {{ table.name }}
+                            {% if table.query_mode == 'remote' %}
+                            <span class="query-mode-badge live">Live</span>
+                            {% else %}
+                            <span class="query-mode-badge local">Local</span>
+                            {% endif %}
                         </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge{{ ' large' if table.rows_large }}">{{ table.rows_display }}</span>
-                            {% if table.query_mode != 'remote' %}
-                            <span class="profile-link">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-                                Profile
-                            </span>
+                        <div class="table-row-desc">{{ table.description }}</div>
+                        <div class="table-sync-info">
+                            {% if table.query_mode == 'remote' %}
+                            <span class="live-dot"></span> Queried directly from BigQuery
+                            {% elif table.last_sync %}
+                            Synced {{ table.last_sync }}
                             {% endif %}
                         </div>
                     </div>
-                    {% endfor %}
+                    <div class="table-row-right">
+                        <span class="rows-badge{{ ' large' if table.rows_large }}">{{ table.rows_display }}</span>
+                        {% if table.query_mode != 'remote' %}
+                        <span class="profile-link">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                            Profile
+                        </span>
+                        {% endif %}
+                    </div>
                 </div>
+                {% endfor %}
             </div>
-            {% endfor %}
         </div>
+        {% endfor %}
 
         {# ── Card: Agnes Internal ─────────────────────────────────────────
            Renders the three system tables (agnes_sessions / agnes_telemetry /
