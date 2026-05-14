@@ -1,4 +1,5 @@
 """v41 → v42 migration: 7 new usage_* tables for telemetry."""
+
 import duckdb
 import pytest
 from src.db import _ensure_schema as init_database, SCHEMA_VERSION
@@ -10,18 +11,25 @@ def test_schema_version_is_42():
     # constant. Test name preserved for git-blame continuity; the
     # version-pinned tests in test_db_schema_version.py and
     # test_home_stats.py carry the v44 commentary.
-    assert SCHEMA_VERSION == 44
+    assert SCHEMA_VERSION == 45
 
 
 def test_v42_tables_exist_after_init(tmp_path):
     db_path = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(db_path))
     init_database(conn)
-    tables = {row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()}
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()
+    }
     for tbl in [
-        "usage_events", "usage_session_summary",
-        "usage_tool_daily", "usage_plugin_daily",
-        "usage_attribution_skills", "usage_attribution_agents", "usage_attribution_commands",
+        "usage_events",
+        "usage_session_summary",
+        "usage_tool_daily",
+        "usage_plugin_daily",
+        "usage_attribution_skills",
+        "usage_attribution_agents",
+        "usage_attribution_commands",
     ]:
         assert tbl in tables, f"missing table {tbl}"
     conn.close()
@@ -31,12 +39,21 @@ def test_v42_indices_exist(tmp_path):
     db_path = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(db_path))
     init_database(conn)
-    idx_names = {row[0] for row in conn.execute("SELECT index_name FROM duckdb_indexes WHERE table_name LIKE 'usage_%'").fetchall()}
+    idx_names = {
+        row[0]
+        for row in conn.execute("SELECT index_name FROM duckdb_indexes WHERE table_name LIKE 'usage_%'").fetchall()
+    }
     for idx in [
-        "idx_usage_events_session", "idx_usage_events_user_time", "idx_usage_events_tool",
-        "idx_usage_events_skill", "idx_usage_events_ref",
-        "idx_usage_session_user", "idx_usage_session_started",
-        "idx_usage_attr_skill_lookup", "idx_usage_attr_agent_lookup", "idx_usage_attr_command_lookup",
+        "idx_usage_events_session",
+        "idx_usage_events_user_time",
+        "idx_usage_events_tool",
+        "idx_usage_events_skill",
+        "idx_usage_events_ref",
+        "idx_usage_session_user",
+        "idx_usage_session_started",
+        "idx_usage_attr_skill_lookup",
+        "idx_usage_attr_agent_lookup",
+        "idx_usage_attr_command_lookup",
     ]:
         assert idx in idx_names, f"missing index {idx}"
     conn.close()
@@ -51,7 +68,7 @@ def test_v41_to_v42_is_idempotent(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 44
+    assert v == 45
     conn.close()
 
 
@@ -72,15 +89,20 @@ def test_v41_db_upgrades_cleanly(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 44
+    assert v == 45
     # All 7 new v41 tables exist after the v40→v41 upgrade
-    tables = {row[0] for row in conn.execute(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
-    ).fetchall()}
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()
+    }
     for tbl in [
-        "usage_events", "usage_session_summary",
-        "usage_tool_daily", "usage_plugin_daily",
-        "usage_attribution_skills", "usage_attribution_agents", "usage_attribution_commands",
+        "usage_events",
+        "usage_session_summary",
+        "usage_tool_daily",
+        "usage_plugin_daily",
+        "usage_attribution_skills",
+        "usage_attribution_agents",
+        "usage_attribution_commands",
     ]:
         assert tbl in tables, f"missing table {tbl} after v40→v41 upgrade"
     conn.close()
@@ -99,7 +121,7 @@ def test_v30_db_ladders_all_the_way_up(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 44
+    assert v == 45
     cnt = conn.execute("SELECT COUNT(*) FROM audit_log WHERE id='vintage'").fetchone()[0]
     assert cnt == 1
     # New v41 table exists

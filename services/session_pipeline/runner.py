@@ -25,6 +25,43 @@ from src.repositories.session_processor_state import SessionProcessorStateReposi
 
 logger = logging.getLogger(__name__)
 
+
+def resolve_user_id(
+    conn: duckdb.DuckDBPyConnection,
+    username: str,
+) -> str | None:
+    """Map a session-directory name to the stable ``users.id`` UUID.
+
+    Two conventions exist for the directory name under
+    ``/data/user_sessions/``:
+
+    * **Session collector** writes under the OS username, which in
+      current deployments equals the email local-part (e.g. ``alice``).
+    * **Upload API** writes under ``user["id"]`` — a UUID.
+
+    Resolution order:
+    1. Exact match on ``users.id`` (covers the UUID path).
+    2. Email local-part match: ``users.email LIKE '<username>@%'``.
+       If multiple users share the same local-part (different domains),
+       we pick the one most recently updated.
+    3. Fallback: return ``None`` (orphaned / deleted user).
+    """
+    row = conn.execute(
+        "SELECT id FROM users WHERE id = ?",
+        [username],
+    ).fetchone()
+    if row:
+        return row[0]
+    escaped = username.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    row = conn.execute(
+        "SELECT id FROM users WHERE email LIKE ? || '@%' ESCAPE '\\' ORDER BY updated_at DESC NULLS LAST LIMIT 1",
+        [escaped],
+    ).fetchone()
+    if row:
+        return row[0]
+    return None
+
+
 DEFAULT_SESSION_DATA_DIR = Path(os.environ.get("SESSION_DATA_DIR", "/data/user_sessions"))
 
 
@@ -60,6 +97,11 @@ def run_processor(
         logger.info("No sessions to process for processor=%s", processor.name)
         return stats
 
+    # Pre-resolve user_id per directory name so each processor can
+    # store the stable identity. Cache avoids repeated DB lookups when
+    # one user has many sessions.
+    _uid_cache: dict[str, str | None] = {}
+
     for username, jsonl_path in candidates:
         session_key = f"{username}/{jsonl_path.name}"
         try:
@@ -67,7 +109,9 @@ def run_processor(
         except Exception as e:
             logger.warning(
                 "Cannot hash %s for processor=%s: %s",
-                session_key, processor.name, e,
+                session_key,
+                processor.name,
+                e,
             )
             stats["errors"] += 1
             stats["errors_detail"].append({"session": session_key, "error": str(e)})
@@ -82,12 +126,23 @@ def run_processor(
             stats["skipped"] += 1
             continue
 
+        if username not in _uid_cache:
+            _uid_cache[username] = resolve_user_id(conn, username)
+        resolved_uid = _uid_cache[username]
+
         try:
-            result = processor.process_session(jsonl_path, username, session_key, conn)
+            result = processor.process_session(
+                jsonl_path,
+                username,
+                session_key,
+                conn,
+                user_id=resolved_uid,
+            )
         except Exception as e:
             logger.exception(
                 "Processor %s failed on %s — leaving state unwritten for retry",
-                processor.name, session_key,
+                processor.name,
+                session_key,
             )
             stats["errors"] += 1
             stats["errors_detail"].append({"session": session_key, "error": str(e)})
@@ -101,7 +156,8 @@ def run_processor(
             # cause the same session to be retried forever.
             logger.warning(
                 "Processor %s returned non-ProcessorResult on %s; coercing to empty result",
-                processor.name, session_key,
+                processor.name,
+                session_key,
             )
             result = ProcessorResult(items_count=0)
 

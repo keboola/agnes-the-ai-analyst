@@ -84,9 +84,7 @@ def _username_for_stats(user: dict) -> str:
     return email.split("@")[0] if "@" in email else email
 
 
-def compute_home_stats(
-    conn: duckdb.DuckDBPyConnection, user: dict, window: str = "24h"
-) -> dict:
+def compute_home_stats(conn: duckdb.DuckDBPyConnection, user: dict, window: str = "24h") -> dict:
     """Pure helper that returns the home-stats payload for the given user.
 
     Shared by the HTTP endpoint and the /home Jinja handler (server-side
@@ -101,9 +99,13 @@ def compute_home_stats(
         interval = _WINDOW_INTERVALS["24h"]
 
     username = _username_for_stats(user)
+    uid = user.get("id") or ""
 
     # f-string interpolates only the validated interval literal above;
     # all user-controlled input flows through bound parameters.
+    # Match on both user_id (stable, populated by v45 pipeline) and
+    # username (legacy rows before v45 backfill) so stats are complete
+    # during the transition period.
     sql = f"""
         WITH win AS (
             SELECT current_timestamp - {interval} AS since
@@ -117,12 +119,13 @@ def compute_home_stats(
                 COALESCE(SUM(cache_read_tokens), 0)      AS cache_read,
                 COALESCE(SUM(cache_creation_tokens), 0)  AS cache_creation
             FROM usage_session_summary, win
-            WHERE username = ? AND started_at >= win.since
+            WHERE (user_id = ? OR username = ?)
+              AND started_at >= win.since
         ),
         proj AS (
             SELECT COUNT(DISTINCT cwd) AS projects
             FROM usage_events, win
-            WHERE username = ?
+            WHERE (user_id = ? OR username = ?)
               AND cwd IS NOT NULL
               AND occurred_at >= win.since
         ),
@@ -137,7 +140,7 @@ def compute_home_stats(
             proj.projects
         FROM u, sess, proj
     """
-    row = conn.execute(sql, [username, username, user["id"]]).fetchone()
+    row = conn.execute(sql, [uid, username, uid, username, uid]).fetchone()
 
     if row is None:
         return {
@@ -146,15 +149,16 @@ def compute_home_stats(
             "sessions": 0,
             "prompts": 0,
             "tokens": {
-                "input": 0, "output": 0,
-                "cache_read": 0, "cache_creation": 0,
+                "input": 0,
+                "output": 0,
+                "cache_read": 0,
+                "cache_creation": 0,
                 "total": 0,
             },
             "projects": 0,
         }
 
-    (last_pull_at, sessions, prompts,
-     input_t, output_t, cache_read, cache_creation, projects) = row
+    (last_pull_at, sessions, prompts, input_t, output_t, cache_read, cache_creation, projects) = row
     return {
         "window": window,
         "last_pull_at": last_pull_at.isoformat() if last_pull_at else None,
@@ -165,8 +169,7 @@ def compute_home_stats(
             "output": int(output_t or 0),
             "cache_read": int(cache_read or 0),
             "cache_creation": int(cache_creation or 0),
-            "total": int((input_t or 0) + (output_t or 0)
-                         + (cache_read or 0) + (cache_creation or 0)),
+            "total": int((input_t or 0) + (output_t or 0) + (cache_read or 0) + (cache_creation or 0)),
         },
         "projects": int(projects or 0),
     }

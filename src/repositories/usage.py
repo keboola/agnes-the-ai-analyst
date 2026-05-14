@@ -16,15 +16,31 @@ class UsageRepository:
         if not rows:
             return 0
         cols = [
-            "id", "session_id", "session_file", "username", "event_uuid", "parent_uuid",
-            "event_type", "tool_name", "skill_name", "subagent_type", "command_name",
-            "is_error", "source", "ref_id", "model", "cwd", "occurred_at", "processor_version",
+            "id",
+            "session_id",
+            "session_file",
+            "username",
+            "event_uuid",
+            "parent_uuid",
+            "event_type",
+            "tool_name",
+            "skill_name",
+            "subagent_type",
+            "command_name",
+            "is_error",
+            "source",
+            "ref_id",
+            "model",
+            "cwd",
+            "occurred_at",
+            "processor_version",
+            "user_id",
         ]
         placeholders = ",".join("?" for _ in cols)
         sql = f"INSERT OR IGNORE INTO usage_events ({','.join(cols)}) VALUES ({placeholders})"
-        self.conn.executemany(sql, [
-            [r.get(c) if c != "processor_version" else processor_version for c in cols] for r in rows
-        ])
+        self.conn.executemany(
+            sql, [[r.get(c) if c != "processor_version" else processor_version for c in cols] for r in rows]
+        )
         return len(rows)
 
     def upsert_summary(self, summary: dict, *, processor_version: int) -> None:
@@ -37,8 +53,8 @@ class UsageRepository:
                  tool_calls, tool_errors, skill_invocations, subagent_dispatches,
                  mcp_calls, slash_commands, distinct_tools, distinct_skills,
                  primary_model, input_tokens, output_tokens, cache_read_tokens,
-                 cache_creation_tokens, processor_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cache_creation_tokens, processor_version, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 summary["session_file"],
@@ -64,18 +80,15 @@ class UsageRepository:
                 summary.get("cache_read_tokens", 0),
                 summary.get("cache_creation_tokens", 0),
                 processor_version,
+                summary.get("user_id"),
             ],
         )
 
     def purge_for_session(self, session_file: str) -> int:
         """DELETE events + summary for one session — used on reprocess."""
-        r = self.conn.execute(
-            "DELETE FROM usage_events WHERE session_file = ?", [session_file]
-        )
+        r = self.conn.execute("DELETE FROM usage_events WHERE session_file = ?", [session_file])
         events_deleted = r.rowcount if r.rowcount else 0
-        self.conn.execute(
-            "DELETE FROM usage_session_summary WHERE session_file = ?", [session_file]
-        )
+        self.conn.execute("DELETE FROM usage_session_summary WHERE session_file = ?", [session_file])
         return events_deleted
 
     def delete_older_than(self, days: int) -> int:
