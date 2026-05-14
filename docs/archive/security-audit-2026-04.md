@@ -1,5 +1,10 @@
 # Security audit — Agnes AI Data Analyst
 
+> **Archived.** This is a point-in-time audit snapshot. Findings have been
+> triaged and addressed in subsequent releases — check `CHANGELOG.md` (search
+> for the relevant file/endpoint) for the fixes that landed since 2026-04-22.
+> Kept for historical reference; not a live tracker.
+
 **Date:** 2026-04-22
 **Branch audited:** `main` at commit `cbb7733`
 **Method:** parallel review passes over four scope areas — (1) secrets/SQLi/authz/SSRF, (2) auth flows & route wiring, (3) templates & UI wiring/XSS, (4) data layer & config & dead code. Findings deduped across the passes, severities adjusted to real-world exploitability.

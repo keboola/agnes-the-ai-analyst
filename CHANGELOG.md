@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- Documentation tree cleaned up and consolidated. `CLAUDE.md` rewritten (708 → ~320 lines): the four overlapping release sections, the stale `v1→v35` DuckDB schema history, and the marketplace endpoint internals moved out to focused docs; preachy process sections tightened. New `docs/RELEASING.md` (release process + deploy workflows + CI quirks, with `RELEASE_TEMPLATE.md` folded in as an appendix) and `docs/marketplace.md` (marketplace ingestion + re-serving internals). Historical planning artifacts (`docs/superpowers/`, 52 files) and dated one-off docs (`HACKATHON.md`, `pd-ps-comments.md`, `security-audit-2026-04.md`, `future/NOTIFICATIONS.md`) moved under `docs/archive/`. New `docs/README.md` documentation index organized by audience, linked from `README.md` and `CLAUDE.md`. Removed the `docs/auto-install.md` stub. Fixed dangling doc links in `connectors/jira/README.md` and `dev_docs/README.md`, and repointed code/doc references to the archived paths (or dropped the pointer where the target was already a dead reference on `main`). Added a root `AGENTS.md` pointing to `CLAUDE.md` as the single source of truth for any AI coding agent, and `CLAUDE.local.md` to `.gitignore`.
+
 ## [0.54.14] — 2026-05-14
 
 ### Changed
