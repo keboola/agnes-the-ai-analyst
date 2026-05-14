@@ -4,9 +4,7 @@ The orchestrator reads `_remote_attach` rows that connectors write into their
 `extract.duckdb`, then calls `INSTALL`, `LOAD`, and `ATTACH` based on those
 values. Treating the connector as adversarial (compromised image, supply-chain,
 malicious fork) means the orchestrator picks **what** can be installed and
-**which** env vars can be referenced — not the connector. See
-`docs/superpowers/plans/2026-04-27-issue-81-trust-boundary.md` for the full
-threat model.
+**which** env vars can be referenced — not the connector.
 """
 
 from __future__ import annotations

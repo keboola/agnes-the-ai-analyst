@@ -433,7 +433,7 @@ if not hmac.compare_digest(signature, expected):
 
 ## Schema Reference
 
-See [docs/jira_schema.md](jira_schema.md) for detailed table schemas and example queries.
+The Jira tables and their columns are described in [`docs/DATA_SOURCES.md`](../../docs/DATA_SOURCES.md). At runtime, inspect the live schema with `agnes schema <table>` and `agnes describe <table>`.
 
 ## Historical Backfill
 
