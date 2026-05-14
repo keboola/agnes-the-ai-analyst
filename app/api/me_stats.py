@@ -43,13 +43,22 @@ router = APIRouter(prefix="/api/me/stats", tags=["me"])
 
 
 def _username_for_stats(user: dict) -> str:
-    """Email local-part → filesystem username, mirroring the rule in
-    ``app.api.me._username_for_stats``. Kept inline so this module
-    has no cross-import dependency on ``me.py``; if the mapping
-    evolves both copies update.
+    """Return the key that ``usage_session_summary.username`` holds for
+    sessions uploaded by *user*.
+
+    Production convention: ``app/api/upload.py`` writes JSONLs under
+    ``${DATA_DIR}/user_sessions/<user_id>/``; the session-pipeline
+    runner uses the directory name as the ``username`` column when
+    extracting summaries. ``/profile/sessions`` (now redirected to
+    /me/activity) reads the same dir keyed by ``user_id``. The column
+    is historically named ``username`` but its current contents are
+    user_ids — return the matching lookup key.
+
+    v45 schema added a separate ``user_id`` column for RBAC purposes
+    (#293); reading from the legacy ``username`` column still works
+    because it carries the user_id value as the runner-written key.
     """
-    email: str = user.get("email", "") or ""
-    return email.split("@")[0] if "@" in email else email
+    return user["id"]
 
 
 def _session_data_dir() -> Path:
@@ -135,7 +144,12 @@ def list_self_sessions(
             + int(d.get("cache_creation_tokens") or 0)
         )
         d["processed"] = True
-        processed[d["session_file"]] = d
+        # Dedup key: BASENAME of ``session_file``. The session-pipeline
+        # runner writes ``session_file = f"{username}/{filename}"`` while
+        # the filesystem scan below walks bare filenames. Keying by
+        # basename makes both views agree without normalizing the stored
+        # column.
+        processed[Path(d["session_file"]).name] = d
 
     all_rows: list[dict] = list(processed.values())
     if user_dir.is_dir():
