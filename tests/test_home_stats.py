@@ -1,4 +1,5 @@
-"""Homepage status frame — schema v44, endpoint shapes, manifest stamp.
+"""Homepage status frame — schema v44, endpoint shapes, manifest stamp,
+operator visibility flag.
 
 Covers:
 - v44 ALTERs land users.last_pull_at + 4 token columns idempotently on
@@ -6,6 +7,8 @@ Covers:
 - compute_home_stats returns the right counters for 24h vs 7d windows
   and clamps unknown windows to 24h.
 - GET /api/sync/manifest bumps users.last_pull_at as a side effect.
+- get_home_status_frame_visibility honors the env var + yaml override
+  and defaults true.
 """
 from __future__ import annotations
 
@@ -284,3 +287,33 @@ def test_sync_manifest_bumps_last_pull_at(stats_conn, monkeypatch, tmp_path):
     # about is "the column flipped from NULL", which is what the home
     # status card reads.
     assert row[0] is not None
+
+
+# ---------------------------------------------------------------------------
+# Operator visibility flag — get_home_status_frame_visibility
+# ---------------------------------------------------------------------------
+
+
+def test_status_frame_default_is_visible(monkeypatch):
+    """Absent both env var and yaml entry, the flag returns True."""
+    monkeypatch.delenv("AGNES_HOME_SHOW_STATUS_FRAME", raising=False)
+    from app.instance_config import get_home_status_frame_visibility
+    assert get_home_status_frame_visibility() is True
+
+
+def test_status_frame_env_var_off(monkeypatch):
+    """AGNES_HOME_SHOW_STATUS_FRAME=0 hides the frame."""
+    monkeypatch.setenv("AGNES_HOME_SHOW_STATUS_FRAME", "0")
+    from app.instance_config import get_home_status_frame_visibility
+    assert get_home_status_frame_visibility() is False
+
+
+def test_status_frame_env_var_falsey_values(monkeypatch):
+    """Each of {0, false, no, off, ''} hides the frame; anything else shows."""
+    from app.instance_config import get_home_status_frame_visibility
+    for val in ("0", "false", "False", "FALSE", "no", "off", ""):
+        monkeypatch.setenv("AGNES_HOME_SHOW_STATUS_FRAME", val)
+        assert get_home_status_frame_visibility() is False, f"{val!r} should hide"
+    for val in ("1", "true", "yes", "on", "anything"):
+        monkeypatch.setenv("AGNES_HOME_SHOW_STATUS_FRAME", val)
+        assert get_home_status_frame_visibility() is True, f"{val!r} should show"
