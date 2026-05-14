@@ -249,6 +249,36 @@
       </div>
     </div>
   </section>
+
+  {# Personal Authentication Tokens — formerly /tokens "My tokens".
+     Listing-only here; full create/revoke surface stays at /tokens.
+     The explicit "NOT LLM tokens" subtitle disambiguates from the LLM
+     token counters that the /me/activity Tokens tab and /home status
+     frame surface — operators were conflating the two. #}
+  <section class="md-section">
+    <div class="md-section-head">
+      <h2>Personal Authentication Tokens</h2>
+      <span class="sub">Bearer tokens for the API + CLI (`agnes` commands). NOT LLM tokens.</span>
+    </div>
+    <div class="md-section-body">
+      <p style="font-size:12.5px;color:#6b7280;margin:0 0 12px;">
+        Each PAT authenticates one machine or one CLI install against
+        this server. Create / revoke at
+        <a href="/tokens"><code>/tokens</code></a>.
+      </p>
+      <div id="pat-status" style="font-size:12px;color:#6b7280;margin-bottom:8px;">Loading…</div>
+      <table id="pat-table" hidden style="width:100%;border-collapse:collapse;font-size:12.5px;">
+        <thead><tr style="text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;">
+          <th style="padding:8px 10px;border-bottom:1px solid #e5e7eb;">Name</th>
+          <th style="padding:8px 10px;border-bottom:1px solid #e5e7eb;">Prefix</th>
+          <th style="padding:8px 10px;border-bottom:1px solid #e5e7eb;">Scopes</th>
+          <th style="padding:8px 10px;border-bottom:1px solid #e5e7eb;">Created</th>
+          <th style="padding:8px 10px;border-bottom:1px solid #e5e7eb;">Last used</th>
+        </tr></thead>
+        <tbody id="pat-rows"></tbody>
+      </table>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -291,5 +321,49 @@ refetchBtn.addEventListener("click", async () => {
     refetchBtn.disabled = false;
   }
 });
+
+// Personal Authentication Tokens — read-only list. The PAT router
+// prefix is /auth/tokens (see app/api/tokens.py:18); same endpoint
+// powers the /tokens page UI.
+(async function loadPATs() {
+  const status = document.getElementById('pat-status');
+  const table = document.getElementById('pat-table');
+  const tbody = document.getElementById('pat-rows');
+  try {
+    const r = await fetch('/auth/tokens', { credentials: 'same-origin' });
+    if (!r.ok) {
+      status.textContent = 'Could not load tokens (HTTP ' + r.status + ').';
+      return;
+    }
+    const tokens = await r.json();
+    if (!Array.isArray(tokens) || tokens.length === 0) {
+      status.textContent = 'No personal authentication tokens. Create one at /tokens.';
+      return;
+    }
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s == null ? '' : String(s);
+      return d.innerHTML;
+    }
+    function fmt(iso) {
+      if (!iso) return '<span style="color:#9ca3af;">—</span>';
+      const d = new Date(iso);
+      return esc(d.toLocaleString());
+    }
+    tbody.innerHTML = tokens.map(t => `
+      <tr>
+        <td style="padding:8px 10px;border-bottom:1px solid #f3f4f6;">${esc(t.name)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f3f4f6;"><code>${esc(t.prefix)}…</code></td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f3f4f6;">${esc(t.scopes || '—')}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f3f4f6;">${fmt(t.created_at)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f3f4f6;">${fmt(t.last_used_at)}</td>
+      </tr>
+    `).join('');
+    status.hidden = true;
+    table.hidden = false;
+  } catch (e) {
+    status.textContent = 'Network error loading tokens: ' + (e.message || e);
+  }
+})();
 </script>
 {% endblock %}
