@@ -1539,7 +1539,7 @@ async def marketplace_guide_curated(
 ):
     ctx = _build_context(
         request, user=user,
-        guide_title="Submit a plugin to Curated Marketplace",
+        guide_title="Submit a skill or plugin to Curated Marketplace",
         guide_kind="curated",
     )
     return templates.TemplateResponse(request, "marketplace_guide.html", ctx)

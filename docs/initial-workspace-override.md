@@ -162,20 +162,24 @@ it's admin territory and never reaches the analyst anyway.
 
 ## What Agnes stops doing when override is active
 
-This is the **full responsibility transfer**. When the
+Override is an **init-time** contract. When the
 `initial_workspace:` section is configured AND synced, `agnes init`
-runs the override flow and bypasses every default-mode workspace write:
+runs the override flow and bypasses every default-mode workspace
+write — admin's template is the source of truth for the INITIAL
+`.claude/` contents. Subsequent runtime CLI commands keep updating
+the workspace as on a default install.
+
+### Init-time skip (admin's template wins)
 
 | Default behavior                                                       | Override behavior                                                                 |
 |------------------------------------------------------------------------|-----------------------------------------------------------------------------------|
 | `CLAUDE.md` fetched from `/api/welcome` (server-rendered Jinja2)       | `CLAUDE.md` comes verbatim from your repo (no Jinja2, no RBAC filtering)          |
 | `.claude/settings.json` seeded with `{model: sonnet, permissions: …}`  | Whatever your repo ships (or no file at all)                                      |
-| `install_claude_hooks(workspace)` installs SessionStart/End/statusLine | Your repo's `settings.json` is the source of truth; Agnes installs nothing        |
-| `install_claude_commands(workspace)` installs `/update-agnes-plugins` + `/agnes-private` | Your repo controls `.claude/commands/`                                          |
+| `install_claude_hooks(workspace)` installs SessionStart/End/statusLine | Your repo's `settings.json` is the source of truth at init time; Agnes installs nothing during `agnes init` |
+| `install_claude_commands(workspace)` installs `/update-agnes-plugins` + `/agnes-private` | Your repo controls `.claude/commands/` at init time                            |
 | `.claude/CLAUDE.local.md` stub written if absent                       | If your repo ships one, that wins; otherwise the file simply doesn't exist        |
 | `AGNES_WORKSPACE.md` rendered from `config/agnes_workspace_template.txt` | Your repo controls (or doesn't ship at all)                                       |
 | `--force` backs up `CLAUDE.md` to `CLAUDE.md.bak.<timestamp>`          | **No backup.** Source of truth is your Git repo; recovery is `git log` / `git checkout`.|
-| `agnes self-upgrade` auto-refreshes hooks via `maybe_refresh_claude_hooks` | No auto-refresh. Future Agnes hook changes do NOT propagate; admin updates the repo and runs `agnes init --force` to pick them up. |
 
 The remaining `agnes init` steps **still run** — they are data-plane
 concerns, not workspace-skeleton concerns:
@@ -183,9 +187,31 @@ concerns, not workspace-skeleton concerns:
 - **PAT verification** against `/api/catalog/tables`.
 - **`agnes pull`** of the parquets, DuckDB views, and corporate-memory
   rules under `server/parquet/`, `user/duckdb/`, `.claude/rules/`.
-- **Completion sentinel** at `.claude/init-complete` — but written with
+- **Completion sentinel** at `.claude/init-complete` — written with
   extended fields (`override: true`, `template_source`, `template_sha`)
-  so future Agnes CLI invocations know not to auto-refresh hooks.
+  so future `agnes init` (re-)runs detect the override and skip the
+  default seeding block.
+
+### Runtime CLI keeps working (Agnes stays in sync)
+
+Runtime commands — anything the analyst invokes *after* init — ignore
+the sentinel and update workspace `.claude/` content normally. This is
+a documented contract, not an implementation detail. Concretely:
+
+| Runtime path                                                           | Behavior on override workspace                                                    |
+|------------------------------------------------------------------------|-----------------------------------------------------------------------------------|
+| `agnes self-upgrade` → `maybe_refresh_claude_hooks`                    | **Refreshes Agnes hook entries** in `.claude/settings.json` so analysts pick up new hook layouts (e.g. new SessionStart entries). Your custom hooks — anything whose command does NOT match `_OUR_COMMAND_MARKERS` in `cli/lib/hooks.py` — fall through unchanged. |
+| `agnes refresh-marketplace` → `_enable_plugins_in_workspace_settings`  | **Writes `enabledPlugins` map** for the user's curated stack (`"<plugin>@agnes": true`). Stack is the source of truth — locally `claude plugin disable`-d plugins that remain in the stack get re-enabled. To permanently exclude, remove from stack via `agnes marketplace remove`. |
+| Future runtime CLI commands that need to update `.claude/`             | Treat override sentinel as non-existent. Same contract.                           |
+
+Practical implication for you (the operator): ship your template with
+the INITIAL `.claude/` skeleton you want. You do NOT need to ship
+`enabledPlugins`, nor do you need to keep `settings.json` Agnes hook
+entries permanently frozen at one revision — Agnes will keep them
+current via `agnes self-upgrade`. If you want to add custom commands
+to a Session hook, just include them in your repo's `settings.json`
+under an entry whose command does NOT contain any of the
+`_OUR_COMMAND_MARKERS` substrings; runtime refresh leaves it alone.
 
 ## What you (the operator) must include in your repo
 
