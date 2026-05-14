@@ -258,7 +258,7 @@ _URL_MAP = {
     "dashboard": "/dashboard",
     "catalog": "/catalog",
     "corporate_memory": "/corporate-memory",
-    "corporate_memory_admin": "/corporate-memory/admin",
+    "corporate_memory_admin": "/admin/corporate-memory",
     "activity_center": "/activity-center",
     "admin_activity": "/admin/activity",
     "index": "/",
@@ -963,26 +963,24 @@ async def catalog(
 @router.get("/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory(
     request: Request,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Corporate Memory web view — admin-only.
+    """Curated Memory web view — any authenticated user.
 
-    The page route gates on ``require_admin``; non-admin users see 403.
-    The Memory nav link in `_app_header.html` and the corporate-memory
-    widget on `/dashboard` are correspondingly hidden behind
-    ``{% if session.user.is_admin %}`` guards (defence in depth — the
-    backend is the authoritative gate).
+    This is the analyst-facing read surface for shared organizational
+    knowledge: it lists ``approved`` / ``mandatory`` items plus the
+    caller's own contributions, and sits in the primary nav next to
+    Data Packages. The admin review queue (pending items, contradictions,
+    duplicates) lives separately at ``/admin/corporate-memory`` behind
+    ``require_admin``.
 
-    **Asymmetry**: the underlying ``/api/memory/*`` endpoints stay on
-    ``get_current_user`` (not ``require_admin``). CLI / agent flows that
-    POST a knowledge item or read ``/api/memory`` keep working for any
-    authenticated user. The gating here is web-UI-only — the API is the
-    surface the agent rails care about (`agnes` CLI, knowledge-extract
-    pipeline), and locking it down would break the corporate-memory
-    feature outright. Operators who want to relax the web-UI gate can
-    either grant Admin to those users or revert this route to
-    ``get_current_user`` in their fork.
+    Gating matches the underlying ``/api/memory/*`` endpoints, which
+    already run on ``get_current_user`` — CLI / agent flows that POST a
+    knowledge item or read ``/api/memory`` work for any authenticated
+    user, so the web view does too. Admin-only affordances on this page
+    (the pending-review banner) stay gated server-side: ``is_admin_view``
+    zeroes ``pending_review_count`` for non-admins.
     """
     repo = KnowledgeRepository(conn)
     items = repo.list_items(statuses=["approved", "mandatory"], limit=100)
@@ -1006,7 +1004,7 @@ async def corporate_memory(
 
     # #176: surface the pending review queue to admins. Without this the
     # main page silently filtered status='pending' items and operators had
-    # no breadcrumb to /corporate-memory/admin.
+    # no breadcrumb to /admin/corporate-memory.
     pending_count = sum(1 for i in all_items if i.get("status") == "pending")
 
     # "My contributions" — items the caller authored. Personal items are
@@ -1044,12 +1042,18 @@ async def corporate_memory(
     return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
 
-@router.get("/corporate-memory/admin", response_class=HTMLResponse)
+@router.get("/admin/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory_admin(
     request: Request,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """Curated Memory review queue — admin-only.
+
+    The governance surface paired with the user-facing ``/corporate-memory``
+    page: pending items awaiting review, contradictions, duplicate
+    candidates, and the audit trail. Reached from the Admin nav dropdown.
+    """
     repo = KnowledgeRepository(conn)
     pending = repo.list_items(statuses=["pending"], limit=100)
     all_items = repo.list_items(limit=10000)
@@ -1059,7 +1063,7 @@ async def corporate_memory_admin(
         status_counts[s] = status_counts.get(s, 0) + 1
 
     # Contradictions tab is server-rendered (no JS fetch on this tab — see
-    # corporate_memory_admin.html). Fetch the unresolved set and enrich each
+    # admin_corporate_memory.html). Fetch the unresolved set and enrich each
     # entry with the title/sensitivity of both sides so the template doesn't
     # need to re-query per row.
     contradictions = repo.list_contradictions(resolved=False)
@@ -1117,7 +1121,7 @@ async def corporate_memory_admin(
         contradictions=contradictions,
         audit_entries=[],
     )
-    return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
+    return templates.TemplateResponse(request, "admin_corporate_memory.html", ctx)
 
 
 @router.get("/activity-center")

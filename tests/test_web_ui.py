@@ -78,6 +78,13 @@ class TestWebUISmoke:
         resp = web_client.get("/corporate-memory", cookies=admin_cookie)
         assert resp.status_code == 200
 
+    def test_analyst_can_access_corporate_memory(self, web_client, analyst_cookie):
+        """Curated Memory is user-facing (get_current_user) — non-admins
+        reach it. The admin review queue is separate at
+        /admin/corporate-memory."""
+        resp = web_client.get("/corporate-memory", cookies=analyst_cookie)
+        assert resp.status_code == 200
+
     def test_activity_center(self, web_client, admin_cookie):
         resp = web_client.get("/activity-center", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -361,7 +368,7 @@ class TestAdminRoleGuards:
         assert resp.status_code == 200
 
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
-        resp = web_client.get("/corporate-memory/admin", cookies=analyst_cookie)
+        resp = web_client.get("/admin/corporate-memory", cookies=analyst_cookie)
         assert resp.status_code == 403
 
     def test_admin_agent_prompt_page_admin_only(self, web_client, admin_cookie, analyst_cookie):

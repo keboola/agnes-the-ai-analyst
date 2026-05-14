@@ -11779,9 +11779,10 @@
         ]
       }
     },
-    "/corporate-memory/admin": {
+    "/admin/corporate-memory": {
       "get": {
-        "operationId": "corporate_memory_admin_corporate_memory_admin_get",
+        "description": "Curated Memory review queue \u2014 admin-only.\n\nThe governance surface paired with the user-facing ``/corporate-memory``\npage: pending items awaiting review, contradictions, duplicate\ncandidates, and the audit trail. Reached from the Admin nav dropdown.",
+        "operationId": "corporate_memory_admin_admin_corporate_memory_get",
         "parameters": [
           {
             "in": "header",

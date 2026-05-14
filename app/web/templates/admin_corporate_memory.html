@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Corporate Memory Admin - Data Analyst Portal{% endblock %}
+{% block title %}Memory Review - Data Analyst Portal{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -9,7 +9,7 @@
 <style>
         /* Corporate Memory Admin - Design System Styles */
         .container-memory {
-            max-width: 1000px;
+            max-width: var(--width-app);
             margin: 0 auto;
             padding: var(--space-6);
         }
@@ -800,6 +800,10 @@
 {% endblock %}
 
 {% block layout %}
+    {% set page_hero_eyebrow = "Agent Experience" %}
+    {% set page_hero_title = "Memory Review" %}
+    {% set page_hero_subtitle = "Review pending knowledge items from analyst sessions — approve, mandate, or reject — and resolve contradictions and duplicate candidates. Approved items flow to the user-facing <a href=\"/corporate-memory\" style=\"color:inherit;text-decoration:underline;\">Curated Memory</a> page." %}
+    {% include "_page_hero.html" %}
 <div class="container-memory">
         <!-- Stats Bar -->
         <div class="stats-bar">

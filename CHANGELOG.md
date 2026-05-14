@@ -10,6 +10,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- "Curated Memory" now sits in the primary navigation next to Data
+  Packages, visible to every authenticated user.
+
+### Changed
+- **BREAKING (UI):** the Curated Memory admin review queue moved from
+  `/corporate-memory/admin` to `/admin/corporate-memory` — no redirect.
+  It is now reached from the Admin nav dropdown ("Memory Review").
+- `/corporate-memory` (Curated Memory) is no longer admin-only — the
+  route runs on `get_current_user`, matching the already-open
+  `/api/memory/*` endpoints. The pending-review banner stays admin-only
+  (suppressed server-side for non-admins).
+- Both Curated Memory pages now render the shared `_page_hero.html`
+  header band instead of bespoke per-page chrome, matching catalog /
+  me-activity / admin pages.
+
+### Internal
+- `corporate_memory_admin.html` renamed to `admin_corporate_memory.html`
+  to match the `admin_*` template convention; dropped dead `.ck-topbar` /
+  `.page-header` inline CSS (the latter collided with the design-system
+  `.page-header--hero` selector).
+
 ## [0.54.15] — 2026-05-14
 
 ### Added

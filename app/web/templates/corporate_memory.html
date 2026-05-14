@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Curated Memory — Admin{% endblock %}
+{% block title %}Curated Memory{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -9,54 +9,16 @@
 <style>
         /* Corporate Memory Page - Design System Styles */
         .container-memory {
-            max-width: 1000px;
+            max-width: var(--width-app);
             margin: 0 auto;
             padding: var(--space-6);
         }
 
-        /* Top bar — matches the .obs-topbar look used on /admin/activity,
-           /admin/telemetry, /admin/sessions. Kept under a `ck-` prefix here
-           because the rest of the page still uses its own design tokens;
-           when the obs-* classes are lifted to style-custom.css we'll
-           drop the duplication. */
-        .ck-topbar {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 24px;
-            padding: 12px 0 20px;
-            border-bottom: 1px solid var(--border, #e5e7eb);
-            margin-bottom: 16px;
-        }
-        .ck-title {
-            margin: 0 0 4px 0;
-            font-size: 22px;
-            font-weight: 600;
-            color: var(--text-primary, #111827);
-        }
-        .ck-subtitle {
-            margin: 0;
-            color: var(--text-secondary, #6b7280);
-            font-size: 13px;
-            max-width: 720px;
-            line-height: 1.5;
-        }
-        .ck-subtitle code {
-            background: var(--border-light, #f3f4f6);
-            padding: 1px 6px;
-            border-radius: 4px;
-            font-size: 12px;
-        }
-
-        /* Header */
-        .page-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding-bottom: var(--space-5);
-            border-bottom: 1px solid var(--border);
-            margin-bottom: var(--space-6);
-        }
+        /* Page title is the shared `_page_hero.html` partial (blue hero
+           band), same as catalog / me-activity / admin pages. The old
+           bespoke `.ck-topbar` / `.page-header` rules lived here and
+           are gone — `.page-header` in particular collided with the
+           design-system `.page-header--hero` selector. */
 
         .header-left {
             display: flex;
@@ -592,24 +554,11 @@
 {% endblock %}
 
 {% block layout %}
+    {% set page_hero_eyebrow = "Knowledge" %}
+    {% set page_hero_title = "Curated Memory" %}
+    {% set page_hero_subtitle = "Approved and mandated knowledge distilled from analyst sessions — the shared organizational memory your AI agents pull at runtime via <code>/api/memory/*</code>." %}
+    {% include "_page_hero.html" %}
 <div class="container-memory">
-        {# Match the obs-page header pattern used by /admin/activity,
-           /admin/telemetry and /admin/sessions so admins see one
-           consistent visual chrome across the Activity Center + Agent
-           Experience groups. Styles inlined for now; the obs-* class
-           set isn't promoted to a shared stylesheet yet (one page over
-           four already; lift on next iteration). #}
-        <header class="ck-topbar">
-            <div>
-                <h1 class="ck-title">Curated Memory</h1>
-                <p class="ck-subtitle">
-                    Knowledge items extracted from analyst sessions by the verification
-                    processor. Admin reviews pending entries and approves, mandates or
-                    rejects them; approved items become shared organizational knowledge
-                    that AI agents pull at runtime via <code>/api/memory/*</code>.
-                </p>
-            </div>
-        </header>
 
         {% if pending_review_count and pending_review_count > 0 %}
         <!-- Admin-only review-queue banner (#176). Hidden when 0; non-admins
@@ -624,7 +573,7 @@
             <span>
                 <strong>{{ pending_review_count }} pending item{{ 's' if pending_review_count != 1 else '' }}</strong>
                 awaiting review —
-                <a href="/corporate-memory/admin" style="color: #854d0e; text-decoration: underline; font-weight: var(--font-medium);">review them at /corporate-memory/admin</a>
+                <a href="/admin/corporate-memory" style="color: #854d0e; text-decoration: underline; font-weight: var(--font-medium);">review them at /admin/corporate-memory</a>
             </span>
         </div>
         {% endif %}

@@ -11,7 +11,7 @@
     <div class="app-header-right">
         {% set _path = request.url.path %}
         {% set _home = home_route or '/dashboard' %}
-        {# Primary nav: Home → Marketplace → Data Packages → Memory.
+        {# Primary nav: Home → Marketplace → Data Packages → Curated Memory.
            Activity Center moved into the Admin dropdown — its content
            is per-team adoption analytics that only admins consume in
            practice (the route still allows any authed user for
@@ -24,20 +24,21 @@
         <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Home</a>
         <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
         <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog">Data Packages</a>
+        {# Curated Memory is the analyst-facing read surface for shared
+           organizational knowledge — not admin-gated (the route runs on
+           get_current_user, same as the /api/memory/* endpoints), so it
+           sits in the primary nav next to Data Packages, visible to all
+           authenticated users. The admin review queue is separate:
+           /admin/corporate-memory, in the Admin dropdown below. #}
+        <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory">Curated Memory</a>
 
-        {# Memory + Admin menu: both admin-only. Backend gates the routes
-           themselves via require_admin (see app/web/router.py for
-           /corporate-memory + /corporate-memory/admin + /admin/*), so
-           hiding the links is purely a visibility tidy-up — non-admins
-           who deep-link still get a 403 from the route handler. Single
-           guard wraps both for clarity. #}
+        {# Admin menu: admin-only. Backend gates the routes via
+           require_admin (see app/web/router.py for /admin/*, including
+           /admin/corporate-memory), so hiding the links is purely a
+           visibility tidy-up — non-admins who deep-link still get a 403
+           from the route handler. #}
         {% if session.user.is_admin %}
-        {# "Memory" link moved into the Admin dropdown's Agent Experience
-           section (parallel to Curated Marketplaces / Flea Submissions /
-           Prompts). The primary nav no longer carries an admin-only
-           entry — primary nav stays consistently visible to all
-           authenticated users. #}
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/corporate-memory') %}
+        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/corporate-memory') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
@@ -77,7 +78,7 @@
                    template injected into each workspace. #}
                 <div class="app-nav-menu-section">Agent Experience</div>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/corporate-memory">Curated Memory</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Memory Review</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Init Prompt</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Workspace Prompt</a>
@@ -117,11 +118,10 @@
     </div>
 </header>
 {# Dropdown wiring lives in app/web/static/app.js. The script tag sits
-   here (in the shared header partial) instead of base.html so EVERY
-   page that includes _app_header.html — including standalone pages
-   like catalog.html / corporate_memory*.html / install.html /
-   admin_tables.html that don't extend base.html — gets the JS loaded
-   automatically. Defer keeps it non-blocking; placed after the header
-   markup so DOM is ready by the time the IIFE runs init(). #}
+   here (in the shared header partial) instead of base.html so any page
+   that includes _app_header.html directly — e.g. admin_tables.html,
+   which doesn't extend base.html — still gets the JS loaded. Defer
+   keeps it non-blocking; placed after the header markup so the DOM is
+   ready by the time the IIFE runs init(). #}
 <script src="{{ static_url('app.js') }}" defer></script>
 {% endif %}

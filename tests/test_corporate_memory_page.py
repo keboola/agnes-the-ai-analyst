@@ -3,13 +3,16 @@
 The page used to filter `status IN ('approved','mandatory')` with no hint
 that a `pending` review queue exists. Operators who configured
 `approval_mode='review_queue'` saw an empty page after every collection
-run and had no breadcrumb to /corporate-memory/admin. Closes one of
+run and had no breadcrumb to /admin/corporate-memory. Closes one of
 five defects in #176.
 
 Contract:
+- /corporate-memory is user-facing (get_current_user) — any authenticated
+  user can read it.
 - Admins see a banner when count(*) WHERE status='pending' > 0,
-  with a link to /corporate-memory/admin.
-- Non-admins see no change to the page.
+  with a link to the admin review queue at /admin/corporate-memory.
+- Non-admins reach the page but the pending banner is suppressed
+  server-side (`pending_review_count` zeroed for non-admins).
 """
 
 from __future__ import annotations
@@ -45,7 +48,7 @@ class TestPendingBannerForAdmins:
         body = resp.text
         # Banner must mention the pending count and link to the admin queue.
         assert "pending" in body.lower()
-        assert "/corporate-memory/admin" in body
+        assert "/admin/corporate-memory" in body
 
     def test_admin_no_banner_when_no_pending(self, seeded_app):
         # Default seed has zero pending items.
@@ -59,22 +62,26 @@ class TestPendingBannerForAdmins:
         assert "awaiting review" not in body.lower()
 
 
-class TestNonAdminBlocked:
-    def test_analyst_gets_403_on_corporate_memory(self, seeded_app):
-        """Corporate Memory is admin-only — both the nav link and the
-        widget are hidden for non-admin in the templates, and the route
-        itself rejects with 403. Banner-leakage to non-admin is moot
-        because the whole page is gated."""
+class TestNonAdminAccess:
+    def test_analyst_can_access_corporate_memory(self, seeded_app):
+        """Curated Memory is user-facing — the route runs on
+        get_current_user (parity with the /api/memory/* endpoints), so
+        any authenticated analyst can read the page. The pending-review
+        banner is the only admin-only affordance and is suppressed
+        server-side: `pending_review_count` is zeroed for non-admins."""
         _seed_pending_item("p_no_admin_1")
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
         resp = c.get("/corporate-memory", headers=_auth(token))
-        assert resp.status_code == 403
+        assert resp.status_code == 200
+        # Admin-only pending banner must not leak to non-admins, even
+        # though a pending item exists.
+        assert "awaiting review" not in resp.text.lower()
 
 
 class TestAdminGroupsContract:
     def test_admin_page_renders_groups_as_array_not_dict(self, seeded_app):
-        """`/corporate-memory/admin` must serialize `groups` as a JS array
+        """`/admin/corporate-memory` must serialize `groups` as a JS array
         of `{name, members_count}` rows. Earlier the route passed the
         `corporate_memory.groups` YAML config (a dict, default `{}`),
         so `GROUPS.map(...)` inside `renderItemCard` threw
@@ -86,7 +93,7 @@ class TestAdminGroupsContract:
         _seed_pending_item("groups_shape_1")
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
-        resp = c.get("/corporate-memory/admin", headers=_auth(token))
+        resp = c.get("/admin/corporate-memory", headers=_auth(token))
         assert resp.status_code == 200
         body = resp.text
         # JS literal must be an array — even when empty it is `[]`, never `{}`.
