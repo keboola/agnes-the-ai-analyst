@@ -422,6 +422,19 @@ class TestAdminRoleGuards:
         assert r.status_code == 200
         assert b"My activity" in r.content
 
+    def test_me_activity_hero_renders_strong_email_unescaped(self, web_client, analyst_cookie):
+        """Regression: the /me/activity hero subtitle embeds the user's email
+        in <strong> tags. Building it via `~` concatenation with a Markup
+        operand (`user.email | e`) made Jinja2's markup_join escape the
+        literal tags too, so the page showed literal "<strong>...</strong>"
+        text. The subtitle must render real <strong> HTML while still
+        escaping the email itself."""
+        r = web_client.get("/me/activity", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 200
+        body = r.text
+        assert "activity for <strong>analyst@test.com</strong>." in body
+        assert "activity for &lt;strong&gt;" not in body
+
     def test_profile_session_download_returns_file_for_owner(self, web_client, analyst_cookie, tmp_path, monkeypatch):
         """Authenticated owner can fetch their own jsonl with proper Content-Disposition."""
         # The seeded analyst is "analyst1" (per conftest.seeded_app).
