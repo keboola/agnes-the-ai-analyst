@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.16] — 2026-05-14
+
 ### Fixed
 - Store submit-flow wizard buttons were missing the `.btn` base class —
   Next / Back / Finish on `/store/new` and Save on `/store/edit/<id>`
