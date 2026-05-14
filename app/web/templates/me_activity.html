@@ -17,6 +17,11 @@
 
 {% block content %}
 <style>
+/* Page-specific styles only. Tables use the canonical .data-table, stat
+   tiles use .stat-card, paginate buttons use .btn — all from
+   style-custom.css (design-system pass, v0.54.10). What remains here is
+   genuinely page-specific: panel show/hide, the token chart, the sessions
+   help text, pipeline badges, and the download link. */
 .activity-page { max-width: 1280px; margin: 0 auto; padding: 24px 24px 64px; }
 
 .stats-panel { display: none; }
@@ -25,42 +30,18 @@
 .stats-error { color: #b91c1c; padding: 24px 0; }
 .stats-empty { color: var(--hp-text-muted, #6b7280); padding: 24px 0; }
 
-table.stats-table {
-    width: 100%; border-collapse: collapse; font-size: 13px;
-    font-variant-numeric: tabular-nums;
-}
-table.stats-table th, table.stats-table td {
-    padding: 8px 10px; border-bottom: 1px solid var(--hp-border-light, rgba(0,0,0,0.07));
-    text-align: left; vertical-align: top;
-}
-table.stats-table th { font-weight: 600; color: var(--hp-text-muted, #6b7280); font-size: 11.5px;
-    text-transform: uppercase; letter-spacing: 0.04em; }
-table.stats-table td.num { text-align: right; }
-table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
+/* Canonical .data-table is left-aligned; numeric columns opt into
+   right-alignment per-page via .num (matches the pre-migration look). */
+.data-table th.num, .data-table td.num { text-align: right; }
 
+/* Layout-only wrappers — the tiles/buttons inside are canonical. */
 .stats-paginate {
     display: flex; gap: 8px; justify-content: flex-end; padding: 12px 0;
 }
-.stats-paginate button {
-    padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
-    border: 1px solid var(--hp-border-light, rgba(0,0,0,0.12)); border-radius: 6px;
-    background: #fff;
-}
-.stats-paginate button:disabled { opacity: 0.4; cursor: not-allowed; }
-
 .stats-overview {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;
 }
 @media (max-width: 720px) { .stats-overview { grid-template-columns: repeat(2, 1fr); } }
-.stats-overview .card {
-    padding: 12px; border-radius: 8px;
-    background: var(--hp-stat-bg, rgba(0,0,0,0.025));
-}
-.stats-overview .lbl {
-    font-size: 11px; color: var(--hp-text-muted, #6b7280);
-    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;
-}
-.stats-overview .val { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .tok-chart { width: 100%; height: 160px; margin: 8px 0 16px; }
 .tok-chart rect { fill: var(--hp-accent, #2563eb); opacity: 0.85; }
@@ -125,7 +106,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         </p>
         <div class="stats-loading" data-state="loading">Loading sessions…</div>
         <div data-state="ready" hidden>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>Started</th><th>Model</th>
                     <th class="num">Prompts</th><th class="num">Tools</th>
@@ -136,8 +117,8 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
                 <tbody data-rows></tbody>
             </table>
             <div class="stats-paginate">
-                <button type="button" data-action="prev">‹ Prev</button>
-                <button type="button" data-action="next">Next ›</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-action="prev">‹ Prev</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-action="next">Next ›</button>
             </div>
         </div>
     </section>
@@ -146,15 +127,15 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         <div class="stats-loading" data-state="loading">Loading token usage…</div>
         <div data-state="ready" hidden>
             <div class="stats-overview">
-                <div class="card"><div class="lbl">Input</div><div class="val" data-tok-total="input">—</div></div>
-                <div class="card"><div class="lbl">Output</div><div class="val" data-tok-total="output">—</div></div>
-                <div class="card"><div class="lbl">Cache read</div><div class="val" data-tok-total="cache_read">—</div></div>
-                <div class="card"><div class="lbl">Cache creation</div><div class="val" data-tok-total="cache_creation">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Input</div><div class="stat-card__value" data-tok-total="input">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Output</div><div class="stat-card__value" data-tok-total="output">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Cache read</div><div class="stat-card__value" data-tok-total="cache_read">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Cache creation</div><div class="stat-card__value" data-tok-total="cache_creation">—</div></div>
             </div>
             <svg class="tok-chart" data-tok-chart viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
 
             <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">By model</h3>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>Model</th><th class="num">Sessions</th>
                     <th class="num">Input</th><th class="num">Output</th>
@@ -164,7 +145,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
             </table>
 
             <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">Top sessions</h3>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>Started</th><th>Model</th>
                     <th class="num">Input</th><th class="num">Output</th>
@@ -178,7 +159,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
     <section class="stats-panel" id="panel-queries" role="tabpanel" aria-labelledby="tab-queries">
         <div class="stats-loading" data-state="loading">Loading queries…</div>
         <div data-state="ready" hidden>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>When</th><th>Action</th><th>Resource</th>
                     <th>Result</th><th class="num">Duration (ms)</th>
@@ -186,7 +167,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
                 <tbody data-rows></tbody>
             </table>
             <div class="stats-paginate">
-                <button type="button" data-action="next">Older ›</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-action="next">Older ›</button>
             </div>
         </div>
     </section>
@@ -195,12 +176,12 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         <div class="stats-loading" data-state="loading">Loading sync activity…</div>
         <div data-state="ready" hidden>
             <div class="stats-overview" style="grid-template-columns: 1fr;">
-                <div class="card">
-                    <div class="lbl">Your last <code>agnes pull</code></div>
-                    <div class="val" data-sync-last-pull>—</div>
+                <div class="stat-card">
+                    <div class="stat-card__label">Your last <code>agnes pull</code></div>
+                    <div class="stat-card__value" data-sync-last-pull>—</div>
                 </div>
             </div>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>When</th><th>Action</th><th>Source</th>
                     <th>Result</th>

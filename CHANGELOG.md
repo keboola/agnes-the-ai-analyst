@@ -10,6 +10,38 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- New `/me/activity` page consolidating per-analyst usage analytics into
+  one place: four tabs — Sessions, Token usage, Data access, Sync
+  activity. The Sessions tab merges what used to be split across two
+  pages: usage metrics (model, prompts, tools, tokens) plus pipeline
+  status (pending/processed/extracted), items-extracted count, and the
+  session download link, all in one table.
+- `GET /api/me/stats/sessions` response now includes `pipeline_status`,
+  `items_extracted`, and `download_url` per row (joined from
+  `session_processor_state` and the `user_sessions/` filesystem).
+
+### Changed
+- `/me/stats` and `/profile/sessions` are consolidated into
+  `/me/activity`. Both old URLs now 301-redirect — `/me/stats` →
+  `/me/activity`, `/profile/sessions` → `/me/activity?tab=sessions`. The
+  `/profile/sessions/{filename}` download endpoint is unchanged.
+- Top-nav "Stats" link removed (it was a personal page sitting among
+  global links); the user menu now reads Profile → My activity → My
+  tokens. `/profile` (identity, groups, RBAC) and `/tokens` (PAT
+  management) are unchanged.
+
+### Removed
+- `me_stats.html` and `profile_sessions.html` templates — their routes
+  now redirect to `/me/activity`.
+
+### Internal
+- `me_activity.html` uses the canonical design-system primitives
+  (`.data-table`, `.stat-card`, `.btn`) from the v0.54.10 design pass
+  rather than bespoke per-page table/card/button CSS. `stats-table` is
+  added to the design-system contract test's deprecated-class list to
+  prevent regressions.
+
 ## [0.54.11] — 2026-05-14
 
 ### Changed
