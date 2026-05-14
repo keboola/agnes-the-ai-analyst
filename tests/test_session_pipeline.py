@@ -17,11 +17,10 @@ import json
 from pathlib import Path
 
 import duckdb
-import pytest
 
 from services.session_pipeline.contract import ProcessorResult
 from services.session_pipeline.lib import compute_file_hash, parse_jsonl
-from services.session_pipeline.runner import run_processor
+from services.session_pipeline.runner import resolve_user_id, run_processor
 from src.repositories.session_processor_state import SessionProcessorStateRepository
 
 
@@ -29,6 +28,7 @@ def _fresh_db(tmp_path, monkeypatch) -> duckdb.DuckDBPyConnection:
     """Same idiom as tests/test_corporate_memory_v1.py — fresh schema in tmp_path."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import src.db as db_module
+
     db_module._system_db_conn = None
     db_module._system_db_path = None
     return db_module.get_system_db()
@@ -38,12 +38,15 @@ def _fresh_db(tmp_path, monkeypatch) -> duckdb.DuckDBPyConnection:
 # parse_jsonl
 # ---------------------------------------------------------------------------
 
+
 class TestParseJsonl:
     def test_parses_well_formed_lines(self, tmp_path):
         f = tmp_path / "session.jsonl"
         f.write_text(
-            json.dumps({"role": "user", "content": "hi"}) + "\n"
-            + json.dumps({"role": "assistant", "content": "hello"}) + "\n"
+            json.dumps({"role": "user", "content": "hi"})
+            + "\n"
+            + json.dumps({"role": "assistant", "content": "hello"})
+            + "\n"
         )
         turns = parse_jsonl(f)
         assert len(turns) == 2
@@ -55,9 +58,11 @@ class TestParseJsonl:
         a single corrupt row mustn't abort processing of the rest."""
         f = tmp_path / "session.jsonl"
         f.write_text(
-            json.dumps({"role": "user", "content": "ok"}) + "\n"
+            json.dumps({"role": "user", "content": "ok"})
+            + "\n"
             + "this is not json\n"
-            + json.dumps({"role": "assistant", "content": "still ok"}) + "\n"
+            + json.dumps({"role": "assistant", "content": "still ok"})
+            + "\n"
         )
         turns = parse_jsonl(f)
         assert len(turns) == 2
@@ -66,11 +71,7 @@ class TestParseJsonl:
 
     def test_skips_blank_lines(self, tmp_path):
         f = tmp_path / "session.jsonl"
-        f.write_text(
-            "\n"
-            + json.dumps({"role": "user", "content": "x"}) + "\n"
-            + "   \n"
-        )
+        f.write_text("\n" + json.dumps({"role": "user", "content": "x"}) + "\n" + "   \n")
         turns = parse_jsonl(f)
         assert len(turns) == 1
 
@@ -78,6 +79,7 @@ class TestParseJsonl:
 # ---------------------------------------------------------------------------
 # compute_file_hash
 # ---------------------------------------------------------------------------
+
 
 class TestComputeFileHash:
     def test_deterministic(self, tmp_path):
@@ -95,8 +97,75 @@ class TestComputeFileHash:
 
 
 # ---------------------------------------------------------------------------
+# resolve_user_id
+# ---------------------------------------------------------------------------
+
+
+class TestResolveUserId:
+    """Unit tests for the linchpin identity-resolution function."""
+
+    @staticmethod
+    def _seed_users(conn: duckdb.DuckDBPyConnection, rows: list[tuple[str, str, str | None]]) -> None:
+        for uid, email, updated_at in rows:
+            conn.execute(
+                "INSERT INTO users (id, email, updated_at) VALUES (?, ?, ?)",
+                [uid, email, updated_at],
+            )
+
+    def test_exact_uuid_match(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        self._seed_users(conn, [("uuid-aaa", "alice@example.com", "2026-01-01")])
+        assert resolve_user_id(conn, "uuid-aaa") == "uuid-aaa"
+        conn.close()
+
+    def test_email_local_part_match(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        self._seed_users(conn, [("uuid-bbb", "bob@example.com", "2026-01-01")])
+        assert resolve_user_id(conn, "bob") == "uuid-bbb"
+        conn.close()
+
+    def test_null_fallback_for_unknown(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        self._seed_users(conn, [("uuid-aaa", "alice@example.com", "2026-01-01")])
+        assert resolve_user_id(conn, "nobody") is None
+        conn.close()
+
+    def test_tiebreak_picks_most_recently_updated(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        self._seed_users(
+            conn,
+            [
+                ("uuid-old", "zara@old.com", "2025-01-01"),
+                ("uuid-new", "zara@new.com", "2026-06-01"),
+            ],
+        )
+        assert resolve_user_id(conn, "zara") == "uuid-new"
+        conn.close()
+
+    def test_underscore_not_treated_as_wildcard(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        self._seed_users(
+            conn,
+            [
+                ("uuid-alice", "alicexsmith@example.com", "2026-01-01"),
+                ("uuid-real", "alice_smith@example.com", "2025-01-01"),
+            ],
+        )
+        # "alice_smith" must match only the literal underscore email
+        assert resolve_user_id(conn, "alice_smith") == "uuid-real"
+        conn.close()
+
+    def test_uuid_branch_takes_priority_over_email(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        self._seed_users(conn, [("uuid-aaa", "uuid-aaa@example.com", "2026-01-01")])
+        assert resolve_user_id(conn, "uuid-aaa") == "uuid-aaa"
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # SessionProcessorStateRepository
 # ---------------------------------------------------------------------------
+
 
 class TestSessionProcessorStateRepository:
     def test_unprocessed_when_empty(self, tmp_path, monkeypatch):
@@ -175,7 +244,6 @@ class TestSessionProcessorStateRepository:
         every scheduler tick."""
         import os
         import time
-        from datetime import datetime, timezone
 
         conn = _fresh_db(tmp_path, monkeypatch)
         sessions = tmp_path / "sessions"
@@ -233,6 +301,7 @@ class TestSessionProcessorStateRepository:
 # run_processor
 # ---------------------------------------------------------------------------
 
+
 class _FakeProcessor:
     """Test double that records its calls and is configurable per behavior."""
 
@@ -249,7 +318,7 @@ class _FakeProcessor:
         self.raise_on_session = raise_on_session
         self.calls: list[str] = []
 
-    def process_session(self, session_path: Path, username: str, session_key: str, conn):
+    def process_session(self, session_path: Path, username: str, session_key: str, conn, **kwargs: object):
         self.calls.append(session_key)
         if self.raise_on_session is not None and session_key == self.raise_on_session:
             raise RuntimeError("simulated processor failure")
@@ -385,6 +454,7 @@ class TestRunProcessor:
         class _BadReturn:
             name = "bad"
             cadence_minutes = 1
+
             def process_session(self, *a, **kw):
                 return None  # type: ignore[return-value]
 
@@ -397,6 +467,7 @@ class TestRunProcessor:
 # ---------------------------------------------------------------------------
 # v29 migration — verification rows preserved, old table dropped
 # ---------------------------------------------------------------------------
+
 
 class TestV29Migration:
     """Exercise the v28 → v29 migration directly. Builds a v28 schema (using
@@ -426,6 +497,7 @@ class TestV29Migration:
         # Run v29 migration steps via the helper (which conditionally copies
         # from the legacy table when present).
         from src.db import _v30_to_v31_migrate
+
         _v30_to_v31_migrate(conn)
 
         # New table has the row tagged with processor_name='verification'.
@@ -437,7 +509,8 @@ class TestV29Migration:
 
         # Old table is gone.
         existing = {
-            r[0] for r in conn.execute(
+            r[0]
+            for r in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
             ).fetchall()
         }
@@ -477,10 +550,12 @@ class TestV29Migration:
         )
 
         from src.db import _v30_to_v31_migrate
+
         _v30_to_v31_migrate(conn)
 
         existing = {
-            r[0] for r in conn.execute(
+            r[0]
+            for r in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
             ).fetchall()
         }

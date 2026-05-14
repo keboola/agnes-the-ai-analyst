@@ -131,23 +131,13 @@ def run_processor(
         resolved_uid = _uid_cache[username]
 
         try:
-            try:
-                result = processor.process_session(
-                    jsonl_path,
-                    username,
-                    session_key,
-                    conn,
-                    user_id=resolved_uid,
-                )
-            except TypeError as te:
-                if "user_id" not in str(te):
-                    raise
-                result = processor.process_session(
-                    jsonl_path,
-                    username,
-                    session_key,
-                    conn,
-                )
+            result = processor.process_session(
+                jsonl_path,
+                username,
+                session_key,
+                conn,
+                user_id=resolved_uid,
+            )
         except Exception as e:
             logger.exception(
                 "Processor %s failed on %s — leaving state unwritten for retry",

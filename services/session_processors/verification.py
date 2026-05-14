@@ -42,6 +42,7 @@ class VerificationProcessor:
         username: str,
         session_key: str,
         conn: duckdb.DuckDBPyConnection,
+        **kwargs: object,
     ) -> ProcessorResult:
         repo = KnowledgeRepository(conn)
         session_id = f"session-{session_path.stem}-{username}"
@@ -126,7 +127,8 @@ class VerificationProcessor:
             except Exception as e:
                 logger.warning(
                     "Duplicate-candidate detection failed for %s: %s",
-                    item_id, e,
+                    item_id,
+                    e,
                 )
 
             # Run contradiction detection inline. Failure of the LLM
@@ -140,12 +142,15 @@ class VerificationProcessor:
             except Exception as e:
                 logger.warning(
                     "Unexpected error during contradiction check for %s: %s",
-                    item_id, e,
+                    item_id,
+                    e,
                 )
 
         logger.info(
             "Processed %s: %d verifications, %d items created",
-            session_key, len(verifications), items_created,
+            session_key,
+            len(verifications),
+            items_created,
         )
         return ProcessorResult(items_count=items_created)
 
