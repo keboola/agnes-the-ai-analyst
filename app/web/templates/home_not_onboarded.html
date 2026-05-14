@@ -1392,6 +1392,12 @@
 
 <div class="home-mock">
 
+    {# Homepage status frame — five counters with 24h/7d toggle.
+       Rendered above the install-hero / offboard-strip so onboarded
+       and not-onboarded users both see it. Zeros are an honest signal
+       for first-day analysts. #}
+    {% include "_home_stats.html" %}
+
     {% set display_name = (user.name or (user.email or "").split("@")[0] or "there") %}
 
     {# Install-hero renders only for not-onboarded users. Once `agnes init`

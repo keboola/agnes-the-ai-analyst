@@ -693,6 +693,14 @@ async def home_page(
     news = NewsTemplateRepository(conn).get_current_published()
     news_intro = news["intro"] if (news and news.get("intro")) else ""
 
+    # SSR the homepage status frame (Last sync, Sessions, Prompts, Tokens,
+    # Projects) for the default 24h window. The same payload is exposed
+    # via GET /api/me/home-stats?window= for the window toggle (24h/7d)
+    # so the initial paint has no spinner and the JS only fires when the
+    # analyst clicks.
+    from app.api.me import compute_home_stats
+    home_stats = compute_home_stats(conn, user, "24h")
+
     # Single template renders both states. The post-onboarding view keeps
     # the install-steps + connector prompts + auto-mode card visible —
     # they stay relevant for adding a second machine, a missing connector,
@@ -706,6 +714,7 @@ async def home_page(
         onboarded=onboarded,
         is_admin=is_user_admin(user["id"], conn),
         news_intro=news_intro,
+        home_stats=home_stats,
     )
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 

@@ -798,7 +798,25 @@ async def sync_manifest(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Return hash-based manifest of all synced data, filtered per user."""
+    """Return hash-based manifest of all synced data, filtered per user.
+
+    Side-effect: stamps ``users.last_pull_at`` so the /home status frame
+    can show when the analyst last pulled. This GET is the canonical
+    "I am about to sync" signal — agnes pull hits it first, then
+    downloads parquets whose hash changed. UI bumps (manifest browsed in
+    a browser session) also count; cheap and accurate enough for a
+    homepage card.
+    """
+    try:
+        conn.execute(
+            "UPDATE users SET last_pull_at = current_timestamp WHERE id = ?",
+            [user["id"]],
+        )
+    except Exception:
+        # Never block a pull because the stamp UPDATE hit a transient
+        # issue (locked WAL, partial migration window). The manifest
+        # itself is the load-bearing payload.
+        pass
     return _build_manifest_for_user(conn, user)
 
 
