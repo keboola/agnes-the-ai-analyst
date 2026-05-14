@@ -16,7 +16,7 @@ requesting review:
    click the analyst tile and copy the paste prompt.
 4. Paste into Claude Code and let it run. `tree -a /tmp/test-analyst-1` and
    compare with the expected tree from the design spec
-   (`docs/superpowers/specs/2026-05-04-clean-analyst-bootstrap-design.md` §5.2).
+   (`docs/archive/superpowers/specs/2026-05-04-clean-analyst-bootstrap-design.md` §5.2).
 5. `claude` in that folder. Three queries:
    - "What tables can I see?"
    - "SELECT count(\*) FROM <t>" (a table from the catalog)
