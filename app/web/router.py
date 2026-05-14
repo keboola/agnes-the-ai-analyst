@@ -2099,7 +2099,7 @@ async def admin_tokens_page(
 ):
     """Admin — list of ALL tokens for incident response + offboarding.
 
-    Admin-only. No create form here (admins mint their own PATs via /tokens).
+    Admin-only. No create form here (admins mint their own PATs via /me/profile).
     URL param ?user=<email> pre-fills the owner filter (deep-link from
     /admin/users "Tokens" action).
     """
