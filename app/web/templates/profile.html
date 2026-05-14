@@ -63,6 +63,17 @@
     letter-spacing: 0.4px;
     color: var(--text-secondary, #6b7280);
   }
+  /* <details>-based section header: <summary> is phrasing-only, so the
+     header text sits directly in it (no nested <h3>). Mirror the
+     .section-card h3 look. */
+  details.section-card > summary {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+    cursor: pointer;
+  }
 
   .account-grid {
     display: grid;
@@ -295,6 +306,11 @@
       </div>
     </div>
   </section>
+
+  <details class="section-card" aria-label="Session and troubleshooting">
+    <summary>Session &amp; troubleshooting</summary>
+    {% include "_profile_troubleshooting.html" %}
+  </details>
 </div>
 
 <script>
