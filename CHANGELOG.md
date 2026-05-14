@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.14] — 2026-05-14
+
 ### Changed
 - **Marketplace submission surfaces — clearer CTA + fuller guides
   (#308).** The curated-tab action-row CTA now reads "Submit a skill
