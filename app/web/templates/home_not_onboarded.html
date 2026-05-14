@@ -352,47 +352,6 @@
     margin-bottom: 22px;
 }
 
-.home-mock .connector-tiles {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 16px;
-    margin-bottom: 26px;
-}
-.home-mock .connector-tile {
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-radius: 12px;
-    padding: 20px 22px;
-    display: flex;
-    flex-direction: column;
-}
-.home-mock .connector-tile .ico {
-    font-size: 24px;
-    margin-bottom: 10px;
-    line-height: 1;
-}
-.home-mock .connector-tile .ttl {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--hp-text-primary);
-    margin-bottom: 6px;
-}
-.home-mock .connector-tile .desc {
-    font-size: 13px;
-    color: var(--hp-text-secondary);
-    line-height: 1.55;
-    margin-bottom: 14px;
-    flex: 1;
-}
-.home-mock .connector-tile .connector-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.home-mock .connector-tile .connector-copy {
-    align-self: flex-start;
-}
-
 .home-mock .install-block {
     background: rgba(15, 23, 42, 0.55);
     border: 1px solid rgba(255, 255, 255, 0.10);
@@ -648,8 +607,7 @@
 }
 .home-mock .card-list .step-text { flex: 1; line-height: 1.55; }
 .home-mock .card-list .step-text strong { display: block; margin-bottom: 2px; }
-.home-mock .card-list .step-text code,
-.home-mock .card-mini-cmd code {
+.home-mock .card-list .step-text code {
     font-family: var(--hp-font-mono);
     font-size: 11.5px;
     background: var(--hp-border-light);
@@ -657,72 +615,6 @@
     border-radius: 3px;
     color: var(--hp-text-primary);
 }
-
-.home-mock .card-mini-cmd {
-    margin-top: 6px;
-    padding: 8px 10px;
-    background: #0F172A;
-    color: #FBBF24;
-    border-radius: 6px;
-    font-family: var(--hp-font-mono);
-    font-size: 11.5px;
-    line-height: 1.5;
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 8px;
-}
-.home-mock .card-mini-cmd code {
-    background: transparent;
-    color: inherit;
-    padding: 0;
-    flex: 1;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-.home-mock .connector-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-.home-mock .connector-head strong {
-    display: inline;
-    margin-bottom: 0;
-}
-.home-mock .connector-copy {
-    background: var(--hp-primary);
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 5px 12px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    font-family: inherit;
-    flex-shrink: 0;
-}
-.home-mock .connector-copy:hover { background: var(--hp-primary-dark); }
-.home-mock .connector-copy.copied { background: #047857; }
-.home-mock details.connector-preview {
-    margin-top: 6px;
-}
-.home-mock details.connector-preview > summary {
-    cursor: pointer;
-    list-style: none;
-    font-size: 11.5px;
-    color: var(--hp-text-secondary);
-    padding: 2px 0;
-    user-select: none;
-}
-.home-mock details.connector-preview > summary::-webkit-details-marker { display: none; }
-.home-mock details.connector-preview > summary::before {
-    content: "▸ ";
-    margin-right: 2px;
-}
-.home-mock details.connector-preview[open] > summary::before { content: "▾ "; }
-.home-mock details.connector-preview > summary:hover { color: var(--hp-text-primary); }
-.home-mock details.connector-preview .card-mini-cmd { margin-top: 6px; }
 
 .home-mock .explore-list { list-style: none; padding: 0; margin: 0; }
 .home-mock .explore-list li + li { margin-top: 8px; }
@@ -1170,84 +1062,6 @@
     font-size: 11px;
     font-family: var(--hp-font-mono);
     color: white;
-}
-
-/* P0-3 — connector card time badge ("~5 min · self-serve") and the
-   post-copy "now paste into Step 2" hint with arrow back. */
-.home-mock .connector-tile .ttl-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    margin-bottom: 6px;
-}
-.home-mock .time-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
-    flex-shrink: 0;
-}
-.home-mock .time-badge.is-warn {
-    background: #FEF3C7;
-    color: #92400E;
-}
-.home-mock .copy-next-hint {
-    font-size: 12px;
-    color: var(--hp-primary-dark);
-    background: var(--hp-primary-light);
-    padding: 6px 10px;
-    border-radius: 6px;
-    margin-top: 6px;
-    display: none;
-    align-items: center;
-    gap: 6px;
-    line-height: 1.45;
-}
-.home-mock .copy-next-hint.is-visible { display: inline-flex; }
-.home-mock .copy-next-hint code {
-    background: rgba(0, 0, 0, 0.06);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-family: var(--hp-font-mono);
-    font-size: 11px;
-}
-
-/* P1-8 — GWS gating note + Email-admin button. Yellow background
-   matches the same friction-level used by other "admin help likely"
-   surfaces (advanced setup warnings). */
-.home-mock .gating-note {
-    font-size: 12px;
-    color: #92400E;
-    background: #FEF3C7;
-    border: 1px solid #FCD34D;
-    border-radius: 6px;
-    padding: 8px 10px;
-    margin-bottom: 10px;
-    line-height: 1.5;
-}
-.home-mock .email-admin {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: white;
-    border: 1px solid var(--hp-border);
-    color: var(--hp-text-primary);
-    padding: 5px 12px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    text-decoration: none;
-    cursor: pointer;
-    align-self: flex-start;
-    margin-top: 6px;
-}
-.home-mock .email-admin:hover {
-    text-decoration: none;
-    border-color: var(--hp-primary);
-    color: var(--hp-primary-dark);
 }
 
 /* P1-6 — Auto-detect badge replaces the "Mark me as onboarded"
@@ -1787,37 +1601,6 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
         });
     }
     document.querySelectorAll('.copy-btn[data-copy-target]').forEach(wireCopy);
-
-    // P0-3 + P2-12 — Connector copy buttons. Three things on click:
-    //   1) copy the prompt (same textContent trick so closed <details>
-    //      still copies);
-    //   2) flip the button to "✓ Copied" + disabled for 8 s so the user
-    //      stops mashing it while figuring out where to paste;
-    //   3) reveal a paste hint pointing the user at Claude Code.
-    document.querySelectorAll('.connector-copy[data-copy-target]').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            var src = document.getElementById(btn.getAttribute('data-copy-target'));
-            if (!src) return;
-            var raw = src.textContent || '';
-            var connector = btn.getAttribute('data-connector') || '';
-            var hint = connector
-                ? document.querySelector('.copy-next-hint[data-hint-for="' + connector + '"]')
-                : null;
-            navigator.clipboard.writeText(raw).then(function () {
-                var orig = btn.textContent;
-                btn.classList.add('copied');
-                btn.textContent = '✓ Copied';
-                btn.disabled = true;
-                if (hint) hint.classList.add('is-visible');
-                setTimeout(function () {
-                    btn.classList.remove('copied');
-                    btn.textContent = orig;
-                    btn.disabled = false;
-                    if (hint) hint.classList.remove('is-visible');
-                }, 8000);
-            }).catch(function () { btn.textContent = 'Copy failed'; });
-        });
-    });
 
     // OS tab switching for Step 1. Flips both the command panel AND the
     // P0-1 terminal-howto body so the howto matches the active OS.

@@ -10,6 +10,79 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`agnes refresh-marketplace` now enables stack plugins in workspace
+  settings (#307).** The reconcile step previously stopped at `claude plugin
+  install --scope project`, which only writes the global plugin registry
+  (`~/.claude/plugins/installed_plugins.json`). Without a corresponding
+  entry in the workspace `.claude/settings.json` `enabledPlugins` map,
+  Claude Code treats every installed stack plugin as disabled — `/plugins`
+  hides them from the active section and their slash commands, skills,
+  and agents are unreachable. Refresh now writes
+  `"<plugin>@agnes": true` to the workspace settings file after install
+  and update, treating the user's marketplace stack as the source of
+  truth and re-enabling any plugin that a prior local `claude plugin
+  disable` had turned off.
+- **Runtime CLI commands now work on Initial Workspace Template
+  (override) workspaces (#307).** The `.claude/init-complete` sentinel
+  carrying `override: true` previously short-circuited **every**
+  Agnes writer to `.claude/`, which trapped admin-templated workspaces
+  at a stale snapshot: `agnes refresh-marketplace` couldn't write the
+  `enabledPlugins` map (the fix above stayed inert), and
+  `agnes self-upgrade`'s `maybe_refresh_claude_hooks` couldn't migrate
+  workspaces to new Agnes hook layouts. The sentinel was meant to gate
+  **init-time** skip only — let admins ship the *initial* `.claude/`
+  contents — not to lock the workspace permanently. The override check
+  moves from inside the writers
+  (`cli/lib/hooks.py::install_claude_hooks`,
+  `cli/lib/hooks.py::maybe_refresh_claude_hooks`,
+  `cli/lib/commands.py::install_claude_commands`,
+  `cli/commands/refresh_marketplace.py::_enable_plugins_in_workspace_settings`)
+  to the init-time call site that always was the right place
+  (`cli/commands/init.py::init`, `if not override_active:`). Init-time
+  behavior unchanged — `agnes init` on an override workspace still
+  defers the workspace skeleton to admin's template. Admin custom hooks
+  survive runtime refresh: Agnes only rewrites entries matching
+  `_OUR_COMMAND_MARKERS` (`agnes self-upgrade` / `agnes pull` / ...
+  substring set in `cli/lib/hooks.py`); foreign commands fall through
+  unchanged, same contract as in default workspaces. Existing override
+  workspaces auto-converge on the next `agnes self-upgrade` (which
+  fires from every SessionStart hook); no manual operator action
+  needed. Retracts the earlier *"full responsibility transfer; future
+  Agnes hook fixes will NOT auto-propagate"* contract documented in
+  the `[0.54.10]` `### Internal — risk-accepted by design` bullets —
+  that scope was wider than the feature's actual intent.
+
+### Removed
+- **`/home` connectors block dropped — the onboarding flow covers it
+  (#305).** The dedicated `<details data-section="connectors">` section
+  on `/home` (three tiles — Asana / Google Workspace / Atlassian — each
+  with a "Copy prompt" button) duplicated content the install-hero's
+  Step 4 clipboard payload already inlines via
+  `app/web/setup_instructions.py::_connectors_block`: users walking the
+  setup script visit every connector inline. The install-hero lead
+  paragraph now names the connector families so the benefit stays
+  visible before kick-off. The per-instance "Email admin" mailto CTA —
+  previously gated inside the GWS tile when an operator contact email
+  was set and GWS OAuth was unconfigured — was dropped along with the
+  block; the GWS connector setup prompt still tells the user to ask an
+  admin, but without the pre-filled per-instance contact address.
+
+### Internal
+- Post-#305 cleanup. Removed the now-orphaned `gws_oauth`,
+  `instance_admin_email`, and `connector_prompts` keys from the shared
+  `_build_context` ctx dict in `app/web/router.py` — no template
+  referenced them once the connectors block was dropped, and
+  `connector_prompts` was calling `all_connector_prompts()` on every
+  page render app-wide. Swept the dead `.connector-tile*`,
+  `.connector-copy`, `.connector-preview`, `.copy-next-hint`,
+  `.time-badge`, `.gating-note`, `.email-admin`, `.card-mini-cmd`, and
+  `.connector-head` CSS rules plus the orphaned `.connector-copy`
+  click-wiring JS from `home_not_onboarded.html`. The `.setup-collapsible`
+  minimize-mode CSS is also dead (predates #305 — the `data-section`
+  elements it styled were removed by earlier PRs) but left untouched
+  for a separate focused cleanup.
+
 ## [0.54.13] — 2026-05-14
 
 ### Security
@@ -189,47 +262,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   fine because `.mp-type-row` contributes its own 24px.
 
 ### Fixed
-- **`agnes refresh-marketplace` now enables stack plugins in workspace
-  settings.** The reconcile step previously stopped at `claude plugin
-  install --scope project`, which only writes the global plugin registry
-  (`~/.claude/plugins/installed_plugins.json`). Without a corresponding
-  entry in the workspace `.claude/settings.json` `enabledPlugins` map,
-  Claude Code treats every installed stack plugin as disabled — `/plugins`
-  hides them from the active section and their slash commands, skills,
-  and agents are unreachable. Refresh now writes
-  `"<plugin>@agnes": true` to the workspace settings file after install
-  and update, treating the user's marketplace stack as the source of
-  truth and re-enabling any plugin that a prior local `claude plugin
-  disable` had turned off.
-- **Runtime CLI commands now work on Initial Workspace Template
-  (override) workspaces.** The `.claude/init-complete` sentinel
-  carrying `override: true` previously short-circuited **every**
-  Agnes writer to `.claude/`, which trapped admin-templated workspaces
-  at a stale snapshot: `agnes refresh-marketplace` couldn't write the
-  `enabledPlugins` map (the fix above stayed inert), and
-  `agnes self-upgrade`'s `maybe_refresh_claude_hooks` couldn't migrate
-  workspaces to new Agnes hook layouts. The sentinel was meant to gate
-  **init-time** skip only — let admins ship the *initial* `.claude/`
-  contents — not to lock the workspace permanently. The override check
-  moves from inside the writers
-  (`cli/lib/hooks.py::install_claude_hooks`,
-  `cli/lib/hooks.py::maybe_refresh_claude_hooks`,
-  `cli/lib/commands.py::install_claude_commands`,
-  `cli/commands/refresh_marketplace.py::_enable_plugins_in_workspace_settings`)
-  to the init-time call site that always was the right place
-  (`cli/commands/init.py::init`, `if not override_active:`). Init-time
-  behavior unchanged — `agnes init` on an override workspace still
-  defers the workspace skeleton to admin's template. Admin custom hooks
-  survive runtime refresh: Agnes only rewrites entries matching
-  `_OUR_COMMAND_MARKERS` (`agnes self-upgrade` / `agnes pull` / ...
-  substring set in `cli/lib/hooks.py`); foreign commands fall through
-  unchanged, same contract as in default workspaces. Existing override
-  workspaces auto-converge on the next `agnes self-upgrade` (which
-  fires from every SessionStart hook); no manual operator action
-  needed. Retracts the earlier *"full responsibility transfer; future
-  Agnes hook fixes will NOT auto-propagate"* contract documented in
-  the `### Internal — risk-accepted by design` bullets immediately
-  below — that scope was wider than the feature's actual intent.
 - **Store guardrails — post-#290 follow-up.** Admin Rescan still writes `status='blocked_inline'` (the only post-v30 producer of that status). Re-add `blocked_inline` to the admin queue's "Needs review" filter chip and to `TERMINAL_BLOCKED_STATUSES` in the bundle-purge job, so a rescan-produced row surfaces in the default operator view and its bundle gets swept by the TTL purge instead of lingering on disk indefinitely. Documents the rescan-only asymmetry inline (chip + purge tuple + new code comments).
 - Stale doc strings referring to the pre-#290 `blocked_inline` quota counter on `app/api/store.py` spam-quota comment, `app/instance_config.py::get_guardrails_blocked_quota_per_day` docstring, and the operator-facing hint in `/admin/server-config` (`blocked_quota_per_day`). All three now correctly describe the narrowed `blocked_llm + review_error` counter that #290 actually shipped.
 

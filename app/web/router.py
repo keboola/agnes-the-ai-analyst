@@ -471,14 +471,6 @@ def _build_context(
         # single env flip routes the primary nav target between /home
         # (state-aware landing) and /dashboard (legacy table inventory).
         "home_route": _resolved_home_route(),
-        # Pre-configured Google Workspace CLI OAuth client for the
-        # /home connector prompt. {} when unset → template falls back
-        # to manual `gws auth setup`. See app.instance_config docstring.
-        "gws_oauth": get_gws_oauth_credentials(),
-        # Operator-facing contact email used by the /home GWS connector
-        # tile's "Email admin" mailto button. Empty string hides the
-        # button — template guards with `{% if instance_admin_email %}`.
-        "instance_admin_email": get_instance_admin_email(),
         # Branding: `instance_name` is the deploying org's display name
         # (page titles); `instance_brand` is the product name used in body
         # copy and CTAs ("Setup {brand}", "{brand} runs SELECT…"); `workspace_dir`
@@ -489,18 +481,6 @@ def _build_context(
         "instance_name": get_instance_name(),
         "instance_brand": get_instance_brand(),
         "workspace_dir": get_workspace_dir_name(),
-        # Resolved connector setup prompts — single source of truth for
-        # both the /home "Copy prompt" tiles and the main setup script
-        # (app/web/setup_instructions.py inlines them in step 9). The
-        # gws prompt branches on `gws_oauth.configured` so both surfaces
-        # render the operator-provisioned shortcut when credentials are
-        # set, and the manual GCP walkthrough when they're not.
-        "connector_prompts": all_connector_prompts(
-            gws_oauth=get_gws_oauth_credentials(),
-            instance_admin_email=get_instance_admin_email(),
-            atlassian_base_url=get_atlassian_base_url(),
-            instance_brand=get_instance_brand(),
-        ),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.
