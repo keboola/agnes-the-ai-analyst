@@ -27,9 +27,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
-import duckdb
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Internal-table registry — single source of truth
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class InternalTable:
@@ -54,10 +54,11 @@ class InternalTable:
         display_name:   human-readable name (also goes into ``table_registry.name``)
         description:    short blurb (catalog UI + ``agnes catalog`` output)
     """
+
     registry_id: str
     source_table: str
     filter_column: str
-    filter_kind: str   # 'username' | 'user_id'
+    filter_kind: str  # 'username' | 'user_id'
     display_name: str
     description: str
 
@@ -89,9 +90,7 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
     ),
 )
 
-INTERNAL_TABLES_BY_ID: dict[str, InternalTable] = {
-    t.registry_id: t for t in INTERNAL_TABLES
-}
+INTERNAL_TABLES_BY_ID: dict[str, InternalTable] = {t.registry_id: t for t in INTERNAL_TABLES}
 
 
 def is_internal_table(table_id: str) -> bool:
@@ -106,7 +105,7 @@ def is_internal_table(table_id: str) -> bool:
 # resolve to filesystem usernames with a `+`, and the session-data-dir
 # layout already supports the same character class.
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._+-]{1,200}$")
-_USER_ID_RE  = re.compile(r"^[A-Za-z0-9._@:+-]{1,200}$")
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9._@:+-]{1,200}$")
 
 
 class InternalAccessError(Exception):
@@ -128,16 +127,12 @@ def _filter_value(user: dict[str, Any], kind: str) -> str:
         email = (user or {}).get("email", "") or ""
         username = email.split("@")[0] if "@" in email else email
         if not _USERNAME_RE.match(username):
-            raise InternalAccessError(
-                f"user email {email!r} does not yield a safe username for scoping"
-            )
+            raise InternalAccessError(f"user email {email!r} does not yield a safe username for scoping")
         return username
     if kind == "user_id":
         uid = (user or {}).get("id", "") or ""
         if not _USER_ID_RE.match(uid):
-            raise InternalAccessError(
-                f"user_id {uid!r} fails the safe-identifier check"
-            )
+            raise InternalAccessError(f"user_id {uid!r} fails the safe-identifier check")
         return uid
     raise InternalAccessError(f"unknown filter_kind: {kind!r}")
 
@@ -147,6 +142,21 @@ def build_filter_clause(table: InternalTable, user: dict[str, Any], is_admin: bo
 
     Admins get an empty string (unscoped view). Everyone else gets
     ``WHERE <col> = '<value>'`` where value has been regex-validated.
+
+    For ``filter_kind='username'`` the clause matches **both** the
+    email local-part and the ``users.id`` UUID.  Two code paths feed
+    ``/data/user_sessions/<dir>/``:
+
+      * The **session collector** writes under the OS username (= email
+        local-part in current deployments).
+      * The **upload API** (``POST /api/upload/sessions``) writes under
+        ``user["id"]`` — a UUID.
+
+    The session pipeline uses the directory name verbatim as the
+    ``username`` column in ``usage_session_summary`` / ``usage_events``,
+    so either value can appear.  An OR filter covers both conventions
+    and guarantees a non-admin never sees another user's rows
+    regardless of how the session was ingested.
     """
     if is_admin:
         return ""
@@ -154,6 +164,11 @@ def build_filter_clause(table: InternalTable, user: dict[str, Any], is_admin: bo
     # value is regex-validated to ``[A-Za-z0-9._@:-]`` so single-quote
     # escape is unnecessary; double single-quote anyway for defense-in-depth.
     safe = value.replace("'", "''")
+    if table.filter_kind == "username":
+        uid = (user or {}).get("id", "") or ""
+        if uid and _USER_ID_RE.match(uid) and uid != value:
+            safe_uid = uid.replace("'", "''")
+            return f"WHERE ({table.filter_column} = '{safe}' OR {table.filter_column} = '{safe_uid}')"
     return f"WHERE {table.filter_column} = '{safe}'"
 
 
@@ -162,7 +177,7 @@ def build_filter_clause(table: InternalTable, user: dict[str, Any], is_admin: bo
 # ---------------------------------------------------------------------------
 
 _TABLE_REF_RE = re.compile(
-    r'\b(' + '|'.join(re.escape(t.registry_id) for t in INTERNAL_TABLES) + r')\b',
+    r"\b(" + "|".join(re.escape(t.registry_id) for t in INTERNAL_TABLES) + r")\b",
     re.IGNORECASE,
 )
 
@@ -175,7 +190,7 @@ _SQL_STRING_LITERAL_RE = re.compile(r"'(?:''|[^'])*'")
 # comment-wrapped table name (`/**/users/**/`) can't slip past the
 # identifier scan downstream.
 _SQL_BLOCK_COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
-_SQL_LINE_COMMENT_RE  = re.compile(r"--[^\n]*")
+_SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
 
 
 def _strip_sql_noise(sql: str) -> str:
@@ -190,9 +205,7 @@ def _strip_sql_noise(sql: str) -> str:
     return s
 
 
-_INTERNAL_ALIAS_NAMES: frozenset[str] = frozenset(
-    t.registry_id.lower() for t in INTERNAL_TABLES
-)
+_INTERNAL_ALIAS_NAMES: frozenset[str] = frozenset(t.registry_id.lower() for t in INTERNAL_TABLES)
 
 
 def _sensitive_table_reference(stripped_sql: str, conn) -> str | None:
@@ -211,10 +224,7 @@ def _sensitive_table_reference(stripped_sql: str, conn) -> str | None:
     double-quoted (`"users"`) forms both match because the bare name
     still sits between word boundaries.
     """
-    rows = conn.execute(
-        "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema = 'main'"
-    ).fetchall()
+    rows = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
     for (name,) in rows:
         if name is None:
             continue
@@ -300,17 +310,13 @@ def execute_internal_query(
         sensitive = _sensitive_table_reference(stripped, get_system_db())
         if sensitive is not None:
             raise InternalAccessError(
-                f"non-admin SQL cannot reference table {sensitive!r}; "
-                "query one of the agnes_* aliases instead"
+                f"non-admin SQL cannot reference table {sensitive!r}; query one of the agnes_* aliases instead"
             )
     cte_parts = []
     for table_id in refs:
         table = INTERNAL_TABLES_BY_ID[table_id]
         where_clause = build_filter_clause(table, user, is_admin)
-        cte_parts.append(
-            f"{table.registry_id} AS "
-            f"(SELECT * FROM {table.source_table} {where_clause})"
-        )
+        cte_parts.append(f"{table.registry_id} AS (SELECT * FROM {table.source_table} {where_clause})")
     cte_prefix = "WITH " + ", ".join(cte_parts)
     wrapped = f"{cte_prefix} SELECT * FROM ({sql}) AS _agnes_user_query"
 
@@ -332,6 +338,7 @@ def execute_internal_query(
 # Schema introspection — feeds /api/v2/schema/{id} for internal tables
 # ---------------------------------------------------------------------------
 
+
 def get_schema(system_db_path: str, table_id: str) -> list[dict]:
     """Return the underlying physical schema for an internal table.
 
@@ -349,6 +356,7 @@ def get_schema(system_db_path: str, table_id: str) -> list[dict]:
         return []
     table = INTERNAL_TABLES_BY_ID[table_id]
     from src.db import get_system_db
+
     cursor = get_system_db().cursor()
     try:
         rows = cursor.execute(
@@ -357,10 +365,7 @@ def get_schema(system_db_path: str, table_id: str) -> list[dict]:
             "WHERE table_name = ? ORDER BY ordinal_position",
             [table.source_table],
         ).fetchall()
-        return [
-            {"name": r[0], "type": r[1], "nullable": r[2] == "YES"}
-            for r in rows
-        ]
+        return [{"name": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in rows]
     finally:
         try:
             cursor.close()

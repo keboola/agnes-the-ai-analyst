@@ -12,9 +12,7 @@ Coverage:
 
 from __future__ import annotations
 
-import os
 
-import duckdb
 import pytest
 
 from connectors.internal.access import (
@@ -46,9 +44,11 @@ def system_db(tmp_path, monkeypatch):
 
     # Force close any pre-existing handle held by an earlier test.
     from src.db import close_system_db
+
     close_system_db()
 
     from src.db import get_system_db
+
     conn = get_system_db()
     _ensure_schema(conn)
     ensure_internal_tables_registered(conn)
@@ -78,6 +78,7 @@ def system_db(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Static helpers — no DB needed
 # ---------------------------------------------------------------------------
+
 
 def test_is_internal_table_recognises_canonical_ids():
     assert is_internal_table("agnes_sessions")
@@ -111,13 +112,32 @@ def test_filter_clause_admin_is_empty():
 def test_filter_clause_non_admin_scopes_to_username():
     table = INTERNAL_TABLES_BY_ID["agnes_sessions"]
     clause = build_filter_clause(table, {"email": "alice@example.com", "id": "alice-uuid"}, False)
-    assert clause == "WHERE username = 'alice'"
+    assert "username = 'alice'" in clause
+    # Upload API stores sessions under user_id, so the filter also
+    # matches the UUID to cover both ingestion paths.
+    assert "username = 'alice-uuid'" in clause
+
+
+def test_filter_clause_non_admin_username_matches_user_id():
+    """When user_id differs from the email local-part, the OR filter
+    ensures sessions uploaded via the API (stored under user_id) are
+    also visible to the owner."""
+    table = INTERNAL_TABLES_BY_ID["agnes_sessions"]
+    clause = build_filter_clause(
+        table,
+        {"email": "alice@example.com", "id": "550e8400-e29b-41d4-a716-446655440000"},
+        False,
+    )
+    assert "username = 'alice'" in clause
+    assert "username = '550e8400-e29b-41d4-a716-446655440000'" in clause
 
 
 def test_filter_clause_non_admin_scopes_audit_to_user_id():
     table = INTERNAL_TABLES_BY_ID["agnes_audit"]
     clause = build_filter_clause(
-        table, {"email": "alice@example.com", "id": "alice-uuid"}, False,
+        table,
+        {"email": "alice@example.com", "id": "alice-uuid"},
+        False,
     )
     assert clause == "WHERE user_id = 'alice-uuid'"
 
@@ -126,13 +146,16 @@ def test_filter_clause_rejects_unsafe_username():
     table = INTERNAL_TABLES_BY_ID["agnes_sessions"]
     with pytest.raises(InternalAccessError):
         build_filter_clause(
-            table, {"email": "alice'; DROP TABLE--@example.com", "id": "x"}, False,
+            table,
+            {"email": "alice'; DROP TABLE--@example.com", "id": "x"},
+            False,
         )
 
 
 # ---------------------------------------------------------------------------
 # End-to-end RBAC — runs against a real (fresh) system.duckdb
 # ---------------------------------------------------------------------------
+
 
 def test_admin_sees_every_user_session(system_db, tmp_path):
     db_path = str(_get_state_dir() / "system.duckdb")
@@ -154,6 +177,32 @@ def test_non_admin_sees_only_own_sessions(system_db):
         sql="SELECT username, session_id FROM agnes_sessions",
     )
     assert rows == [("alice", "s-a-1")]
+
+
+def test_non_admin_sees_sessions_uploaded_via_api(system_db):
+    """Sessions uploaded via POST /api/upload/sessions are stored under
+    user_id (UUID) — the pipeline uses that as 'username'. The OR filter
+    must surface these rows for the matching user."""
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    conn.execute(
+        "INSERT INTO usage_session_summary "
+        "(session_file, session_id, username, tool_calls, tool_errors, processor_version) VALUES "
+        "('550e8400-uuid/api.jsonl', 's-api-1', '550e8400-uuid', 5, 0, 1)"
+    )
+    db_path = str(_get_state_dir() / "system.duckdb")
+    _, rows, _ = execute_internal_query(
+        db_path,
+        {"email": "alice@example.com", "id": "550e8400-uuid"},
+        is_admin=False,
+        sql="SELECT username, session_id FROM agnes_sessions ORDER BY session_id",
+    )
+    # alice should see both her email-local-part rows AND her UUID rows
+    assert ("alice", "s-a-1") in rows
+    assert ("550e8400-uuid", "s-api-1") in rows
+    # bob's rows must NOT appear
+    assert all(r[0] != "bob" for r in rows)
 
 
 def test_non_admin_sees_only_own_audit_rows(system_db):
@@ -225,6 +274,7 @@ def test_execute_rejects_sql_without_internal_refs():
 # request handler layer where `is_user_admin(user)` was mis-called.
 # ---------------------------------------------------------------------------
 
+
 def _seed_internal_via_api():
     """``seeded_app`` bypasses the FastAPI lifespan, so the registry seed
     that puts agnes_sessions / agnes_telemetry / agnes_audit into
@@ -232,6 +282,7 @@ def _seed_internal_via_api():
     routes (`/api/query`, `/api/v2/sample`) can find them."""
     from src.db import get_system_db
     from connectors.internal.registry import ensure_internal_tables_registered
+
     ensure_internal_tables_registered(get_system_db())
 
 
@@ -243,6 +294,7 @@ def test_query_internal_via_api_admin_path(seeded_app, admin_user):
     """
     _seed_internal_via_api()
     from src.db import get_system_db
+
     conn = get_system_db()
     conn.execute(
         "INSERT INTO usage_session_summary "
@@ -286,6 +338,7 @@ def test_sample_internal_via_api_admin_path(seeded_app, admin_user):
 # literal to enter the privileged code path. Both vectors flagged in the
 # round-2 review (PR #278 R2 finding #1).
 # ---------------------------------------------------------------------------
+
 
 def test_string_literal_alone_does_not_route_internal(system_db):
     """A SQL with `agnes_sessions` only inside a string literal should not
