@@ -40,7 +40,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterator
 
-USAGE_PROCESSOR_VERSION = 3
+# v4: #293 added the user_id column to usage tables — bump forces the
+# session-pipeline reprocess loop to backfill user_id on existing rows.
+# (v3 was #303's <command-name> slash extraction.)
+USAGE_PROCESSOR_VERSION = 4
 
 BUILTIN_TOOLS = frozenset(
     {
