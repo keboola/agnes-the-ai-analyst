@@ -433,9 +433,9 @@ def _build_context(
         server_host = request.url.netloc
         ca_pem = _read_agnes_ca_pem()
 
-        # Connector prompts wired through so step 9 inlines the same text
-        # the /home tiles render. all_connector_prompts() reads operator
-        # GWS OAuth config so the GCP-frictionless branch fires when the
+        # Connector prompts wired through so the setup script's connector
+        # step inlines them. all_connector_prompts() reads operator GWS
+        # OAuth config so the GCP-frictionless branch fires when the
         # admin has provisioned a shared client_id+secret.
         _connector_prompts = all_connector_prompts(
             gws_oauth=get_gws_oauth_credentials(),
