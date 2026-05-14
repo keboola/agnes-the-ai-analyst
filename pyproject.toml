@@ -137,6 +137,10 @@ dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
     "pytest-xdist>=3.0.0",
+    # pytest-split shards the suite across parallel CI jobs (`--splits N
+    # --group K`); see the `test-shard` matrix in `.github/workflows/ci.yml`.
+    # Balanced by the committed `.test_durations` file.
+    "pytest-split>=0.9.0",
     "faker>=24.0.0",
     # jsonschema validates the corporate-memory extraction-tool golden fixtures
     # under tests/test_corporate_memory_v1.py (extraction.json, correction.json,
@@ -167,6 +171,7 @@ dev-dependencies = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
     "pytest-xdist>=3.0.0",
+    "pytest-split>=0.9.0",
     "faker>=24.0.0",
     "anthropic>=0.30.0",
     "openai>=1.30.0",
