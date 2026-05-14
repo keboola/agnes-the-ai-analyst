@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.11] — 2026-05-14
+
 ### Changed
 - Catalog page: each `catalog_data` bucket now renders as its own
   top-level Data Package card instead of being nested as a collapsible
