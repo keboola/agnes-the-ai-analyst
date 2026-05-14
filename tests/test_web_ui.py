@@ -100,44 +100,57 @@ class TestWebUISmoke:
         body = resp.text
         # Shared header chrome
         assert "app-header" in body
-        # Nav: "My tokens" (own) is in the user-menu dropdown; admin Tokens
-        # entry (and Tables, Users, Groups, Resource access, Server config)
-        # lives in the Admin dropdown.
-        assert 'href="/tokens"' in body
-        assert 'href="/admin/tokens"' in body
+        # User-self nav post-consolidation: Profile + My Stats + Auth debug.
+        # Personal Authentication Tokens list lives on Auth debug; the old
+        # "My tokens" entry was removed. /tokens (create/revoke) still
+        # works via the link inside the Auth debug body, not the nav.
         assert 'href="/profile"' in body
+        assert 'href="/me/stats"' in body
+        assert 'href="/me/debug"' in body
+        # Admin dropdown still carries the cross-user PAT admin entry.
+        assert 'href="/admin/tokens"' in body
         assert 'href="/admin/users"' in body
         # v12 modern UI markers — Role column was replaced by Groups chips,
         # so role-pill is gone. Confirm-modal pattern is shared by both.
         assert 'class="users-page"' in body
         assert 'id="confirm-modal"' in body
 
-    def test_nav_shows_tokens_link_for_non_admin(self, web_client, analyst_cookie):
-        """Non-admins see 'My tokens' + 'Profile' user-menu links — no admin Tokens entry."""
+    def test_nav_shows_user_self_links_for_non_admin(self, web_client, analyst_cookie):
+        """Non-admins see Profile + My Stats + Auth debug user-menu links —
+        no admin Tokens entry. 'My tokens' was retired from the nav when
+        the Personal Authentication Tokens list moved onto Auth debug."""
         resp = web_client.get("/dashboard", cookies=analyst_cookie)
         assert resp.status_code in (200, 302)
         if resp.status_code == 302:
             # Dashboard may redirect in some flows; follow it for nav check.
             resp = web_client.get(resp.headers["location"], cookies=analyst_cookie)
         body = resp.text
-        assert 'href="/tokens"' in body
         assert 'href="/profile"' in body
-        assert ">My tokens<" in body
         assert ">Profile<" in body
+        assert 'href="/me/stats"' in body
+        assert ">My Stats<" in body
+        assert 'href="/me/debug"' in body
+        assert ">Auth debug<" in body
+        # Retired entries must not surface.
+        assert ">My tokens<" not in body
+        assert ">My sessions<" not in body
         # Non-admins must NOT see the admin Tokens link inside the Admin dropdown.
         assert 'href="/admin/tokens"' not in body
 
-    def test_nav_shows_all_tokens_link_for_admin(self, web_client, admin_cookie):
-        """Admins see the 'My tokens' user-menu link and the admin Tokens entry inside the Admin dropdown."""
+    def test_nav_shows_admin_dropdown_for_admin(self, web_client, admin_cookie):
+        """Admins see the same user-self menu + the Admin dropdown with
+        cross-user Tokens / Tables / Users entries."""
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code in (200, 302)
         if resp.status_code == 302:
             resp = web_client.get(resp.headers["location"], cookies=admin_cookie)
         body = resp.text
-        assert 'href="/tokens"' in body
+        # User-self menu — same as non-admin.
+        assert 'href="/me/stats"' in body
+        assert 'href="/me/debug"' in body
+        assert ">My tokens<" not in body
+        # Admin dropdown — Tables / Tokens / Users / Groups / Resource access / Server config.
         assert 'href="/admin/tokens"' in body
-        assert ">My tokens<" in body
-        # Admin dropdown now lists Tables / Tokens / Users / Groups / Resource access / Server config.
         assert 'href="/admin/tables"' in body
         assert ">Tables<" in body
         assert ">Tokens<" in body
