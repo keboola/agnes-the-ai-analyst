@@ -731,7 +731,10 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_user_time ON usage_events(username, 
 CREATE INDEX IF NOT EXISTS idx_usage_events_tool ON usage_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_usage_events_skill ON usage_events(skill_name);
 CREATE INDEX IF NOT EXISTS idx_usage_events_ref ON usage_events(source, ref_id);
-CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id);
+-- idx_usage_events_user_id is created by _v44_to_v45, not here: _SYSTEM_SCHEMA
+-- runs before the migration ladder, and CREATE TABLE IF NOT EXISTS won't add
+-- user_id to a pre-v45 usage_events, so an index on it would fail to bind.
+-- Same pattern as the v41 audit_log indices below.
 
 CREATE TABLE IF NOT EXISTS usage_session_summary (
     session_file        VARCHAR PRIMARY KEY,
@@ -767,7 +770,8 @@ CREATE TABLE IF NOT EXISTS usage_session_summary (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username);
 CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at);
-CREATE INDEX IF NOT EXISTS idx_usage_session_user_id ON usage_session_summary(user_id);
+-- idx_usage_session_user_id is created by _v44_to_v45, not here — see the
+-- note on idx_usage_events_user_id above.
 
 CREATE TABLE IF NOT EXISTS usage_tool_daily (
     day                 DATE NOT NULL,
