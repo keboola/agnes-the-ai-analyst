@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **Marketplace submission surfaces — clearer CTA + fuller guides
+  (#308).** The curated-tab action-row CTA now reads "Submit a skill
+  or plugin" (was "Submit a plugin") — skills are first-class on the
+  curated shelf — with the same wording mirrored in the empty-state
+  JS and the route titles so the surfaces can't drift. The curated
+  guide (`/marketplace/guide/curated`) grows from a 4-line stub into
+  a 3-step walkthrough of the Named Curator handoff plus a
+  `.guide-fastpath` callout pointing lighter submissions at the Flea
+  Market; the flea guide (`/marketplace/guide/flea`) grows from a
+  3-line stub into a 4-step walkthrough of the `/store/new`
+  self-serve flow and its automated guardrails (manifest,
+  content-quality, and prompt-injection scans).
+
 ### Fixed
 - **`agnes refresh-marketplace` now enables stack plugins in workspace
   settings (#307).** The reconcile step previously stopped at `claude plugin
