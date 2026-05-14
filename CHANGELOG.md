@@ -26,10 +26,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `/me/activity`. Both old URLs now 301-redirect — `/me/stats` →
   `/me/activity`, `/profile/sessions` → `/me/activity?tab=sessions`. The
   `/profile/sessions/{filename}` download endpoint is unchanged.
-- Top-nav "Stats" link removed (it was a personal page sitting among
-  global links); the user menu now reads Profile → My activity → My
-  tokens. `/profile` (identity, groups, RBAC) and `/tokens` (PAT
-  management) are unchanged.
+- `/profile` is renamed to `/me/profile` and absorbs the former
+  `/me/debug` (session diagnostics) and `/tokens` (Personal
+  Authentication Token management) pages: one account page with
+  Account, Group memberships, Effective access, Personal
+  Authentication Tokens, and a collapsible Session & troubleshooting
+  section. The user menu is now Profile → My activity. Top-nav "Stats"
+  was already removed; "My tokens" and "Auth debug" menu entries are
+  retired. `/admin/tokens`, the `/auth/tokens` API, and `/api/me/profile`
+  are unchanged.
 
 ### Fixed
 - `/me/activity` page hero subtitle now escapes `user.email` before
@@ -40,6 +45,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 - `me_stats.html` and `profile_sessions.html` templates — their routes
   now redirect to `/me/activity`.
+- `/profile`, `/me/debug`, and `/tokens` routes and their templates
+  (`me_debug.html`, `my_tokens.html`) — no redirects; all internal
+  links were repointed to `/me/profile`. The `/me/debug/refetch-groups`
+  POST moved to `/me/profile/refetch-groups` (still gated behind
+  `AGNES_DEBUG_AUTH`).
 
 ### Internal
 - `me_activity.html` uses the canonical design-system primitives
