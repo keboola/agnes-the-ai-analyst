@@ -110,11 +110,11 @@ def test_filter_clause_admin_is_empty():
 
 
 def test_filter_clause_non_admin_scopes_to_user_id():
-    """agnes_sessions now filters on user_id (stable UUID) rather than
-    the username column (email local-part, which can change)."""
+    """agnes_sessions filters on user_id with OR username fallback for
+    pre-backfill rows."""
     table = INTERNAL_TABLES_BY_ID["agnes_sessions"]
     clause = build_filter_clause(table, {"email": "alice@example.com", "id": "alice-uuid"}, False)
-    assert clause == "WHERE user_id = 'alice-uuid'"
+    assert clause == "WHERE (user_id = 'alice-uuid' OR username = 'alice')"
 
 
 def test_filter_clause_non_admin_scopes_audit_to_user_id():

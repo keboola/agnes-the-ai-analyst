@@ -52,9 +52,10 @@ def resolve_user_id(
     ).fetchone()
     if row:
         return row[0]
+    escaped = username.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     row = conn.execute(
-        "SELECT id FROM users WHERE email LIKE ? || '@%' ORDER BY updated_at DESC NULLS LAST LIMIT 1",
-        [username],
+        "SELECT id FROM users WHERE email LIKE ? || '@%' ESCAPE '\\' ORDER BY updated_at DESC NULLS LAST LIMIT 1",
+        [escaped],
     ).fetchone()
     if row:
         return row[0]
@@ -138,8 +139,9 @@ def run_processor(
                     conn,
                     user_id=resolved_uid,
                 )
-            except TypeError:
-                # Processor doesn't accept user_id kwarg — fall back.
+            except TypeError as te:
+                if "user_id" not in str(te):
+                    raise
                 result = processor.process_session(
                     jsonl_path,
                     username,
