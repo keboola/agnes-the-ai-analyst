@@ -87,100 +87,44 @@ def list_self_sessions(
 ) -> dict:
     """Paginated session list for the calling user.
 
-    Joins ``usage_session_summary`` (processed=true) with a filesystem
-    scan of un-processed JSONL so a session appears immediately even
-    before the UsageProcessor runs. Mirrors the admin
-    ``list_user_sessions`` projection plus the v44 token columns —
-    the Stats tab renders one row per session with totals on the
-    right.
+    Backed by ``app.api._session_view.get_user_sessions_view`` — the
+    shared helper that ``/profile/sessions`` and the admin per-user
+    sessions endpoint also call. The Stats-tab projection flattens
+    ``summary`` (usage_session_summary aggregates) onto the row for
+    table rendering, and exposes per-processor status via
+    ``processors`` so the UI can show both ``usage`` and
+    ``verification`` state without duplicating the FS+DB join.
     """
-    username = _username_for_stats(user)
-    user_dir = _session_data_dir() / username
+    from app.api._session_view import get_user_sessions_view
+    user_id = user["id"]
+    all_view = get_user_sessions_view(conn, user_id)
 
-    try:
-        rows_db = conn.execute(
-            """
-            SELECT
-                session_file, session_id, started_at, ended_at,
-                active_seconds, wall_seconds,
-                user_messages, tool_calls, tool_errors,
-                input_tokens, output_tokens,
-                cache_read_tokens, cache_creation_tokens,
-                primary_model
-            FROM usage_session_summary
-            WHERE username = ?
-            ORDER BY started_at DESC NULLS LAST
-            """,
-            [username],
-        ).fetchall()
-    except Exception:
-        # usage_session_summary may not exist on a partially-migrated DB.
-        # Fall back to filesystem-only listing rather than 500.
-        rows_db = []
+    rows: list[dict] = []
+    for v in all_view:
+        s = v.get("summary") or {}
+        rows.append({
+            "session_file": v["session_file"],
+            "name": v["name"],
+            "uploaded_at": v["uploaded_at"].isoformat()
+                if hasattr(v["uploaded_at"], "isoformat") else v["uploaded_at"],
+            "size_kb": v["size_kb"],
+            "processed": "usage" in v["processors"],
+            "processors": v["processors"],
+            # Flattened summary fields — None / 0 when usage hasn't run.
+            "primary_model": s.get("primary_model"),
+            "started_at": s.get("started_at"),
+            "ended_at": s.get("ended_at"),
+            "user_messages": int(s.get("user_messages") or 0),
+            "tool_calls": int(s.get("tool_calls") or 0),
+            "input_tokens": int(s.get("input_tokens") or 0),
+            "output_tokens": int(s.get("output_tokens") or 0),
+            "cache_read_tokens": int(s.get("cache_read_tokens") or 0),
+            "cache_creation_tokens": int(s.get("cache_creation_tokens") or 0),
+            "tokens_total": int(s.get("tokens_total") or 0),
+        })
 
-    cols = [
-        "session_file", "session_id", "started_at", "ended_at",
-        "active_seconds", "wall_seconds",
-        "user_messages", "tool_calls", "tool_errors",
-        "input_tokens", "output_tokens",
-        "cache_read_tokens", "cache_creation_tokens",
-        "primary_model",
-    ]
-    # Dedup key: BASENAME of `session_file`. The session-pipeline runner
-    # writes ``session_file = f"{username}/{filename}"`` while the
-    # filesystem scan below walks bare filenames. Keying by basename
-    # makes both views agree without normalizing the stored column.
-    processed: dict[str, dict] = {}
-    for r in rows_db:
-        d = dict(zip(cols, r))
-        for k in ("started_at", "ended_at"):
-            v = d.get(k)
-            if v is not None and hasattr(v, "isoformat"):
-                d[k] = v.isoformat()
-        d["tokens_total"] = (
-            int(d.get("input_tokens") or 0)
-            + int(d.get("output_tokens") or 0)
-            + int(d.get("cache_read_tokens") or 0)
-            + int(d.get("cache_creation_tokens") or 0)
-        )
-        d["processed"] = True
-        processed[Path(d["session_file"]).name] = d
-
-    all_rows: list[dict] = list(processed.values())
-    if user_dir.is_dir():
-        for p in sorted(
-            user_dir.glob("*.jsonl"),
-            key=lambda x: x.stat().st_mtime,
-            reverse=True,
-        ):
-            if p.name in processed:
-                continue
-            mtime = datetime.fromtimestamp(p.stat().st_mtime).isoformat()
-            all_rows.append({
-                "session_file": p.name,
-                "session_id": p.stem,
-                "started_at": mtime,
-                "ended_at": None,
-                "active_seconds": 0,
-                "wall_seconds": 0,
-                "user_messages": 0,
-                "tool_calls": 0,
-                "tool_errors": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cache_read_tokens": 0,
-                "cache_creation_tokens": 0,
-                "tokens_total": 0,
-                "primary_model": None,
-                "processed": False,
-            })
-
-    all_rows.sort(
-        key=lambda r: r.get("started_at") or "",
-        reverse=True,
-    )
-    total = len(all_rows)
-    page = all_rows[offset : offset + limit]
+    total = len(rows)
+    page = rows[offset : offset + limit]
     return {
         "total": total,
         "offset": offset,

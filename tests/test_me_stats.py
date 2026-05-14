@@ -65,17 +65,33 @@ def _seed_session(conn, *, sf, username, started_sql, model="claude-opus-4-7",
 # ---------------------------------------------------------------------------
 
 
+def _drop_jsonl(tmp_path, user_id, name, content="{}"):
+    """Production-shape FS layout: ${DATA_DIR}/user_sessions/<user_id>/<name>"""
+    d = tmp_path / "user_sessions" / user_id
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text(content + "\n")
+    return p
+
+
 def test_sessions_endpoint_scopes_to_caller(stats_conn, tmp_path, monkeypatch):
-    """User A's sessions endpoint must not return user B's rows."""
-    # Point session-fs scan at an empty dir so unprocessed-jsonl path is no-op.
-    monkeypatch.setenv("AGNES_SESSION_DATA_DIR", str(tmp_path / "noop"))
+    """User A's sessions endpoint must not return user B's rows.
+
+    Shared helper is FS-driven: it joins each ``${DATA_DIR}/user_sessions/
+    <user_id>/*.jsonl`` against DB processor state + usage aggregates.
+    Tests must drop the files on disk under the matching layout, not
+    just seed DB rows.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
     _seed_user(stats_conn, uid="ua", email="alice@example.com")
     _seed_user(stats_conn, uid="ub", email="bob@example.com")
-    _seed_session(stats_conn, sf="a1.jsonl", username="ua",
+    _drop_jsonl(tmp_path, "ua", "a1.jsonl")
+    _drop_jsonl(tmp_path, "ub", "b1.jsonl")
+    _seed_session(stats_conn, sf="ua/a1.jsonl", username="ua",
                   started_sql="current_timestamp - INTERVAL 1 HOUR",
                   user_messages=4, input_tokens=100, output_tokens=50)
-    _seed_session(stats_conn, sf="b1.jsonl", username="ub",
+    _seed_session(stats_conn, sf="ub/b1.jsonl", username="ub",
                   started_sql="current_timestamp - INTERVAL 1 HOUR",
                   user_messages=9, input_tokens=999, output_tokens=999)
 
@@ -86,16 +102,20 @@ def test_sessions_endpoint_scopes_to_caller(stats_conn, tmp_path, monkeypatch):
         conn=stats_conn,
     )
     assert res_a["total"] == 1
-    assert res_a["rows"][0]["session_file"] == "a1.jsonl"
+    assert res_a["rows"][0]["name"] == "a1.jsonl"
     assert res_a["rows"][0]["user_messages"] == 4
     assert res_a["rows"][0]["tokens_total"] == 150
+    assert res_a["rows"][0]["processed"] is False  # no usage processor row
+    # processors dict is empty until session_processor_state has rows.
+    assert res_a["rows"][0]["processors"] == {}
 
 
 def test_sessions_endpoint_pagination(stats_conn, tmp_path, monkeypatch):
-    monkeypatch.setenv("AGNES_SESSION_DATA_DIR", str(tmp_path / "noop"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     _seed_user(stats_conn, uid="ua", email="alice@example.com")
     for i in range(5):
-        _seed_session(stats_conn, sf=f"s{i}.jsonl", username="ua",
+        _drop_jsonl(tmp_path, "ua", f"s{i}.jsonl")
+        _seed_session(stats_conn, sf=f"ua/s{i}.jsonl", username="ua",
                       started_sql=f"current_timestamp - INTERVAL {i} HOUR",
                       user_messages=i)
 
@@ -112,6 +132,36 @@ def test_sessions_endpoint_pagination(stats_conn, tmp_path, monkeypatch):
     assert len(page1["rows"]) == 2
     assert len(page2["rows"]) == 2
     assert page1["rows"][0]["session_file"] != page2["rows"][0]["session_file"]
+
+
+def test_sessions_endpoint_surfaces_processor_state(stats_conn, tmp_path, monkeypatch):
+    """`processors` dict shows EACH processor row independently. Verification
+    can have run without usage and vice versa."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _seed_user(stats_conn, uid="ua", email="alice@example.com")
+    _drop_jsonl(tmp_path, "ua", "x.jsonl")
+
+    # Verification processor has run; usage has NOT.
+    stats_conn.execute(
+        """
+        INSERT INTO session_processor_state
+          (processor_name, session_file, username, processed_at,
+           items_extracted, file_hash)
+        VALUES ('verification', 'ua/x.jsonl', 'ua',
+                current_timestamp, 3, 'h1')
+        """
+    )
+
+    from app.api.me_stats import list_self_sessions
+    res = list_self_sessions(
+        limit=50, offset=0,
+        user={"id": "ua", "email": "alice@example.com"}, conn=stats_conn,
+    )
+    procs = res["rows"][0]["processors"]
+    assert "verification" in procs
+    assert procs["verification"]["items_extracted"] == 3
+    assert "usage" not in procs  # usage still pending
+    assert res["rows"][0]["processed"] is False  # usage hasn't run
 
 
 # ---------------------------------------------------------------------------

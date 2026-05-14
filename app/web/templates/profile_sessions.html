@@ -64,15 +64,20 @@
 <div class="sess-page">
   <h1 class="sess-title">My sessions</h1>
   <p class="sess-help">
-    Sessions you uploaded via <code>agnes push</code> from your Claude Code workspace, with
-    extraction status from the verification processor's rows in <code>session_processor_state</code>.
+    Sessions you uploaded via <code>agnes push</code> from your Claude Code
+    workspace. Two independent processors run on each file:
+    <strong>Usage</strong> (5min cadence — token / prompt / tool counts
+    that drive <a href="/me/stats">/me/stats</a> and the
+    <a href="/home">/home</a> status frame) and <strong>Verification</strong>
+    (15min cadence — LLM-driven extraction of factual claims for
+    <a href="/corporate-memory">corporate memory</a>).
     <br>
-    <strong>Items extracted = 0</strong> means the verification detector ran successfully
-    but the LLM didn't find anything worth tracking in that session — that's expected for
-    sessions that are mostly tool calls or coding without confident factual claims.
-    <br>
-    <em>Pending</em> means the file is on disk but the scheduler hasn't processed it yet
-    (next verification-detector tick: every 15 min by default).
+    <em>Pending</em> means the file is on disk but the named processor
+    hasn't run yet. The two are independent — usage often shows
+    "processed" before verification does. <strong>Items extracted = 0</strong>
+    means the verification detector ran successfully but the LLM didn't
+    find anything worth tracking — that's expected for sessions that are
+    mostly tool calls or coding without confident factual claims.
   </p>
 
   <div class="sess-table-wrap">
@@ -83,32 +88,42 @@
           <th>Session file</th>
           <th>Uploaded</th>
           <th class="num">Size</th>
-          <th>Status</th>
-          <th>Processed</th>
+          <th>Usage<br><span style="font-weight:400;font-size:11px;color:#6b7280;">(5min cadence)</span></th>
+          <th>Verification<br><span style="font-weight:400;font-size:11px;color:#6b7280;">(15min cadence)</span></th>
+          <th class="num">Tokens</th>
           <th class="num">Items extracted</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
         {% for s in sessions %}
+        {% set usage = s.processors.get('usage') %}
+        {% set verif = s.processors.get('verification') %}
         <tr>
           <td class="name">{{ s.name }}</td>
           <td class="ts">{{ s.uploaded_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}</td>
           <td class="num">{{ s.size_kb }} kB</td>
           <td>
-            {% if not s.is_processed %}
-              <span class="badge badge-pending">pending</span>
-            {% elif s.items_extracted and s.items_extracted > 0 %}
-              <span class="badge badge-extracted">extracted</span>
+            {% if usage %}
+              <span class="badge badge-processed" title="{{ usage.processed_at }}">processed</span>
             {% else %}
-              <span class="badge badge-processed">processed</span>
+              <span class="badge badge-pending">pending</span>
             {% endif %}
           </td>
-          <td class="ts">
-            {% if s.processed_at %}{{ s.processed_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}{% endif %}
+          <td>
+            {% if verif and verif.items_extracted and verif.items_extracted > 0 %}
+              <span class="badge badge-extracted" title="{{ verif.processed_at }}">extracted</span>
+            {% elif verif %}
+              <span class="badge badge-processed" title="{{ verif.processed_at }}">processed</span>
+            {% else %}
+              <span class="badge badge-pending">pending</span>
+            {% endif %}
           </td>
           <td class="num">
-            {% if s.items_extracted is not none %}{{ s.items_extracted }}{% endif %}
+            {% if s.summary %}{{ '{:,}'.format(s.summary.tokens_total) }}{% endif %}
+          </td>
+          <td class="num">
+            {% if verif and verif.items_extracted is not none %}{{ verif.items_extracted }}{% endif %}
           </td>
           <td>
             <a class="dl-link" href="/profile/sessions/{{ s.name }}" download>Download</a>

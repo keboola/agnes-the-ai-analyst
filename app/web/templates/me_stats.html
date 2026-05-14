@@ -111,7 +111,8 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         <div data-state="ready" hidden>
             <table class="stats-table">
                 <thead><tr>
-                    <th>Started</th><th>Model</th>
+                    <th>Uploaded</th><th>File</th><th>Model</th>
+                    <th>Usage</th><th>Verification</th>
                     <th class="num">Prompts</th><th class="num">Tools</th>
                     <th class="num">Tokens</th>
                 </tr></thead>
@@ -253,13 +254,21 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
             const tbody = panel.querySelector('[data-rows]');
             tbody.innerHTML = '';
             if (data.rows.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="stats-empty">No sessions yet — start Claude Code in a workspace and they\'ll appear here.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="stats-empty">No sessions yet — start Claude Code in a workspace and they\'ll appear here.</td></tr>';
+            }
+            function badge(state) {
+                if (!state) return '<span style="color:#9ca3af;">pending</span>';
+                return `<span style="color:#059669;" title="${state.processed_at||''}">processed</span>`;
             }
             for (const r of data.rows) {
+                const procs = r.processors || {};
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${fmtTimestamp(r.started_at)}</td>
-                    <td>${r.primary_model || '<em style="color:#9ca3af;">unprocessed</em>'}</td>
+                    <td>${fmtTimestamp(r.uploaded_at)}</td>
+                    <td><code style="font-size:11px;">${r.name}</code></td>
+                    <td>${r.primary_model || '<em style="color:#9ca3af;">—</em>'}</td>
+                    <td>${badge(procs.usage)}</td>
+                    <td>${badge(procs.verification)}</td>
                     <td class="num">${fmtNum(r.user_messages)}</td>
                     <td class="num">${fmtNum(r.tool_calls)}</td>
                     <td class="num">${fmtNum(r.tokens_total)}</td>

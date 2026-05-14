@@ -2125,74 +2125,24 @@ async def profile_sessions_page(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """User-self-view of own uploaded sessions and their extraction state.
+    """User-self-view of own uploaded sessions, per-processor state, and
+    usage aggregates.
 
-    Walks `${DATA_DIR}/user_sessions/<user_id>/*.jsonl` for the caller's
-    own user_id, joins each file against the verification processor's
-    rows in `session_processor_state` to surface processed_at + items_extracted,
-    and renders a table. Items_extracted = 0 means the verification processor
-    ran but the LLM found no claims worth tracking — that's the documented
-    "no items" outcome; it does NOT mean the pipeline is broken.
+    Backed by ``app.api._session_view.get_user_sessions_view`` — the
+    shared helper that /me/stats and /admin/users/{id}/sessions also
+    call. Two processors run independently against each session
+    (verification @ 15min, usage @ 5min); the row's ``processors``
+    dict carries whichever have completed. ``summary`` is the
+    usage_session_summary aggregate (tokens / prompts / tools) when
+    the usage processor has run, ``None`` otherwise.
     """
-    import pathlib
+    from app.api._session_view import get_user_sessions_view
     user_id = user["id"]
-    data_dir = pathlib.Path(os.environ.get("DATA_DIR", "/data"))
-    user_sessions_dir = data_dir / "user_sessions" / user_id
-
-    files = []
-    if user_sessions_dir.is_dir():
-        # Stat once per file with OSError tolerance, THEN sort. The previous
-        # `sorted(..., key=lambda p: p.stat().st_mtime)` raised on any
-        # transient stat failure (race with delete, permission flicker) and
-        # 500-ed the whole page (Devin Review on #179).
-        statted = []
-        for jsonl in user_sessions_dir.glob("*.jsonl"):
-            try:
-                stat = jsonl.stat()
-            except OSError:
-                continue
-            statted.append((jsonl, stat))
-        statted.sort(key=lambda pair: pair[1].st_mtime, reverse=True)
-        for jsonl, stat in statted:
-            files.append({
-                "name": jsonl.name,
-                "size_bytes": stat.st_size,
-                "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-            })
-
-    state_map: dict = {}
-    if files:
-        keys = [f"{user_id}/{f['name']}" for f in files]
-        placeholders = ",".join("?" for _ in keys)
-        rows = conn.execute(
-            f"""SELECT session_file, processed_at, items_extracted, file_hash
-                FROM session_processor_state
-                WHERE processor_name = 'verification'
-                  AND session_file IN ({placeholders})""",
-            keys,
-        ).fetchall()
-        cols = [d[0] for d in conn.description]
-        for row in rows:
-            d = dict(zip(cols, row))
-            state_map[d["session_file"]] = d
-
-    rows_view = []
-    for f in files:
-        key = f"{user_id}/{f['name']}"
-        state = state_map.get(key)
-        rows_view.append({
-            "name": f["name"],
-            "size_kb": round(f["size_bytes"] / 1024, 1),
-            "uploaded_at": f["mtime"],
-            "processed_at": state["processed_at"] if state else None,
-            "items_extracted": state["items_extracted"] if state else None,
-            "is_processed": state is not None,
-        })
-
+    sessions = get_user_sessions_view(conn, user_id)
     ctx = _build_context(
         request,
         user=user,
-        sessions=rows_view,
+        sessions=sessions,
         user_id=user_id,
     )
     return templates.TemplateResponse(request, "profile_sessions.html", ctx)
