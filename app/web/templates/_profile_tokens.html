@@ -1,96 +1,67 @@
-{% extends "base.html" %}
-{% block title %}My tokens — {{ config.INSTANCE_NAME }}{% endblock %}
-
-{% block content %}
 <style>
   /* ─────────────────────────────────────────────────────────────────────────
-     /tokens — "My tokens" view for ANY signed-in user (incl. admins' own).
-     Card-stack layout; no admin stat strip; no owner column; create + reveal
-     + revoke-own flow.
+     _profile_tokens.html — "Personal Authentication Tokens" section on
+     /me/profile. Ported from the standalone /tokens page (my_tokens.html).
+     No body > .container override — container width is set by profile.html.
      ───────────────────────────────────────────────────────────────────────── */
 
-  /* Full-bleed: the parent `.container` in base.html caps width at 800px.
-     Break out of it so the tokens UI spans the viewport like /dashboard does.
-     Technique: override base.html's `.container` max-width on this page only. */
-  body > .container { max-width: 1280px; }
-  .tokens-page {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 28px 8px 48px;
-    box-sizing: border-box;
-    font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
-  }
-  @media (max-width: 720px) {
-    .tokens-page { padding: 20px 0 32px; }
-  }
+  /* .tokens-section layout/width is owned by profile.html (.section-card). */
 
-  /* ── Hero ──────────────────────────────────────────────────────────────── */
-  .tokens-hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
-    border-radius: 14px;
-    padding: 28px 32px 24px;
-    margin-bottom: 20px;
-    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
-    color: #fff;
-    position: relative;
-  }
-  .tokens-hero .hero-top {
+  /* Section header row: title + New-token button side by side */
+  .tokens-section-header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
   }
-  .tokens-hero .hero-text { min-width: 0; }
+  .tokens-section-header h3 {
+    /* Override .section-card h3 uppercase caps for this section */
+    text-transform: none;
+    letter-spacing: normal;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary, #1A253C);
+    margin: 0;
+  }
+  .tokens-section-subtitle {
+    font-size: 12.5px;
+    color: var(--text-secondary, #6b7280);
+    margin: 2px 0 0;
+    line-height: 1.45;
+  }
+  .tokens-section-title-block { min-width: 0; }
+
+  /* ── New-token action button ──────────────────────────────────────────── */
   .hero-action-btn {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    height: 38px;
-    padding: 0 16px;
+    height: 34px;
+    padding: 0 14px;
     border-radius: 8px;
-    background: #fff;
-    color: #0056A3;
+    background: #0073D1;
+    color: #fff;
     font-size: 13px;
     font-weight: 600;
     font-family: inherit;
     border: none;
     cursor: pointer;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.10);
     transition: all 0.15s ease;
     flex-shrink: 0;
   }
   .hero-action-btn:hover {
-    background: #f8fafc;
+    background: #0056A3;
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14);
+    box-shadow: 0 4px 12px rgba(0, 115, 209, 0.25);
   }
   .hero-action-btn:focus-visible {
-    outline: 2px solid #fff;
+    outline: 2px solid #0073D1;
     outline-offset: 3px;
   }
   .hero-action-btn svg { width: 14px; height: 14px; }
-  .tokens-hero .hero-eyebrow {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: rgba(255, 255, 255, 0.75);
-    margin-bottom: 8px;
-  }
-  .tokens-hero .tokens-title {
-    font-size: 28px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    margin: 0 0 6px;
-    color: #fff;
-  }
-  .tokens-hero .tokens-subtitle {
-    font-size: 14px;
-    font-weight: 400;
-    color: rgba(255, 255, 255, 0.9);
-    margin: 0;
-    line-height: 1.5;
-  }
 
   /* ── Toolbar ───────────────────────────────────────────────────────────── */
   .toolbar {
@@ -462,6 +433,7 @@
     font-weight: 700;
     color: var(--text-primary, #1A253C);
     letter-spacing: -0.01em;
+    text-transform: none;
   }
   .modal-card p.sub {
     margin: 0 0 18px;
@@ -634,12 +606,6 @@
 
   /* ── Responsive ────────────────────────────────────────────────────────── */
   @media (max-width: 720px) {
-    .tokens-page { padding: 20px 16px 32px; }
-    .tokens-hero { padding: 24px 20px 20px; }
-    .tokens-hero .tokens-title { font-size: 22px; }
-    .tokens-hero .hero-top { flex-direction: column; align-items: stretch; }
-    .hero-action-btn { align-self: flex-start; }
-
     .token-card {
       flex-direction: column;
       align-items: stretch;
@@ -661,24 +627,21 @@
   }
 </style>
 
-<div class="tokens-page" data-is-admin="false" data-view="my">
-  <!-- ═════════ HERO ═════════ -->
-  <section class="tokens-hero" aria-labelledby="tokens-title">
-    <div class="hero-top">
-      <div class="hero-text">
-        <div class="hero-eyebrow">Your account</div>
-        <h2 class="tokens-title" id="tokens-title">My tokens</h2>
-        <p class="tokens-subtitle">Long-lived tokens for CLI and headless clients.</p>
-      </div>
-      <button type="button" class="hero-action-btn" id="new-token-btn" aria-haspopup="dialog" aria-controls="create-modal">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <line x1="12" y1="5" x2="12" y2="19"></line>
-          <line x1="5" y1="12" x2="19" y2="12"></line>
-        </svg>
-        New token
-      </button>
+<div class="tokens-section section-card" data-is-admin="false" data-view="my">
+  <!-- ═════════ SECTION HEADER ═════════ -->
+  <div class="tokens-section-header">
+    <div class="tokens-section-title-block">
+      <h3 id="pat-section-title">Personal Authentication Tokens</h3>
+      <p class="tokens-section-subtitle">Bearer tokens for the API + CLI (the <code>agnes</code> commands). NOT LLM tokens — create / revoke here; the LLM token counters live on /me/activity.</p>
     </div>
-  </section>
+    <button type="button" class="hero-action-btn" id="new-token-btn" aria-haspopup="dialog" aria-controls="create-modal">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </svg>
+      New token
+    </button>
+  </div>
 
   <!-- ═════════ NEW-TOKEN REVEAL ═════════ -->
   <div class="reveal-banner" id="reveal-banner" role="region" aria-live="polite" aria-label="Newly created token">
@@ -756,7 +719,7 @@
 
   <!-- ═════════ LIST ═════════ -->
   <div id="tokens-loading" class="tokens-loading">Loading tokens&hellip;</div>
-  <ul class="tokens-list" id="tokens-list" role="list" aria-labelledby="tokens-title"></ul>
+  <ul class="tokens-list" id="tokens-list" role="list" aria-labelledby="pat-section-title"></ul>
   <div id="tokens-empty" class="tokens-empty" style="display:none;">
     <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="8" cy="15" r="4"></circle>
@@ -818,7 +781,7 @@
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
 <script>
-// My tokens — user's OWN PATs (non-admin or admin-own view).
+// Personal Authentication Tokens — user's OWN PATs on /me/profile.
 const API_LIST   = "/auth/tokens";
 const API_REVOKE = (id) => `/auth/tokens/${encodeURIComponent(id)}`;
 const API_CREATE = "/auth/tokens";
@@ -1253,4 +1216,3 @@ document.getElementById("clear-filters-toolbar").addEventListener("click", clear
 
 loadTokens();
 </script>
-{% endblock %}
