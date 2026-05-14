@@ -27,8 +27,6 @@
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
   }
-  .welcome-title { margin: 0; font-size: 22px; font-weight: 600; }
-  .welcome-sub { color: var(--text-secondary, #6b7280); font-size: 13px; margin-top: 4px; margin-bottom: 0; }
 
   .origin-chip {
     display: inline-block;
@@ -188,12 +186,6 @@
   .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
   .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-  .modal-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer;
-  }
-  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
 
   /* Toast stack */
   .toast-stack {
@@ -214,8 +206,10 @@
 <div class="welcome-page">
   <div class="welcome-toolbar">
     <div>
-      <h2 class="welcome-title">Workspace Prompt</h2>
-      <p class="welcome-sub">Customize the <code>CLAUDE.md</code> Claude Code reads when it opens the analyst workspace.</p>
+      {% set page_hero_eyebrow = "Agent Experience" %}
+      {% set page_hero_title = "Workspace Prompt" %}
+      {% set page_hero_subtitle = "CLAUDE.md template injected into each analyst workspace. Overrides the OSS default." %}
+      {% include "_page_hero.html" %}
     </div>
     <div id="status-chip">
       {% if is_override %}
@@ -314,8 +308,8 @@
     <h3 id="reset-modal-title">Reset to default?</h3>
     <p class="sub">Your override will be permanently removed. The rich default CLAUDE.md briefing will be written to analyst workspaces instead. This cannot be undone.</p>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="reset-modal">Cancel</button>
-      <button class="modal-btn danger" id="reset-confirm-btn">Reset</button>
+      <button class="btn btn-secondary" data-close-modal="reset-modal">Cancel</button>
+      <button class="btn btn-danger" id="reset-confirm-btn">Reset</button>
     </div>
   </div>
 </div>

@@ -1,16 +1,12 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Curated Memory — Admin</title>
-    {% if not config.THEME_FONT_URL %}
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    {% endif %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
-    <style>
+{% extends "base.html" %}
+
+{% block title %}Curated Memory — Admin{% endblock %}
+
+{% block head_extra %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
         /* Corporate Memory Page - Design System Styles */
         .container-memory {
             max-width: 1000px;
@@ -593,13 +589,10 @@
             }
         }
     </style>
-    {% include '_theme.html' %}
-</head>
-<body>
-    <!-- Header (outside container so it spans full viewport, matching dashboard) -->
-    {% include '_app_header.html' %}
+{% endblock %}
 
-    <div class="container-memory">
+{% block layout %}
+<div class="container-memory">
         {# Match the obs-page header pattern used by /admin/activity,
            /admin/telemetry and /admin/sessions so admins see one
            consistent visual chrome across the Activity Center + Agent
@@ -826,8 +819,10 @@
         </div>
         {% endif %}
     </div>
+{% endblock %}
 
-    <script>
+{% block scripts %}
+<script>
     // Store user votes locally for UI updates
     let userVotes = {{ user_votes | tojson }};
     let currentPage = {{ knowledge.page }};
@@ -1108,6 +1103,4 @@
         }
     }
     </script>
-    {% include "_version_badge.html" %}
-</body>
-</html>
+{% endblock %}

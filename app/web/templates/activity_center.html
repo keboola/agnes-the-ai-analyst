@@ -7,8 +7,10 @@
   <!-- TOP BAR --------------------------------------------------------- -->
   <header class="obs-topbar">
     <div class="obs-topbar-left">
-      <h1 class="obs-title">Audit log</h1>
-      <p class="obs-subtitle">Server-side actions performed against Agnes. Also available locally for analysis. For Claude Code tool / skill telemetry, see <a href="/admin/telemetry">Telemetry</a>.</p>
+      {% set page_hero_eyebrow = "Activity Center" %}
+      {% set page_hero_title = "Audit log" %}
+      {% set page_hero_subtitle = "Every admin and user-mutating action — RBAC writes, sync triggers, marketplace edits, …" %}
+      {% include "_page_hero.html" %}
       <div class="obs-narrative" id="obs-narrative">Loading…</div>
     </div>
     <div class="obs-topbar-right">
@@ -156,10 +158,6 @@
   margin-bottom: 16px;
 }
 .obs-topbar-left { flex: 1; min-width: 0; }
-.obs-title { margin: 0 0 4px 0; font-size: 22px; font-weight: 600; color: var(--obs-fg); }
-.obs-subtitle { margin: 0 0 10px; color: var(--obs-muted); font-size: 13px; max-width: 720px; }
-.obs-subtitle a { color: var(--obs-link); text-decoration: none; border-bottom: 1px dashed currentColor; }
-.obs-subtitle a:hover { border-bottom-style: solid; }
 .obs-narrative { font-size: 16px; color: var(--obs-fg); line-height: 1.45; }
 .obs-narrative b { font-weight: 600; }
 .obs-narrative a { color: var(--obs-link); text-decoration: none; border-bottom: 1px dashed transparent; cursor: pointer; }

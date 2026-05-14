@@ -17,12 +17,6 @@
   }
   .ud-back:hover { color: var(--text-primary, #111827); }
   .ud-title-block { flex: 1; }
-  .ud-title { font-size: 22px; font-weight: 600; margin: 0; }
-  .ud-subtitle {
-    font-size: 13px; color: var(--text-secondary, #6b7280);
-    font-family: var(--font-mono, ui-monospace, monospace);
-    margin-top: 2px;
-  }
   .ud-status-pill {
     display: inline-block; padding: 3px 10px; border-radius: 999px;
     font-size: 11px; font-weight: 600;
@@ -218,12 +212,10 @@
   <div class="ud-header">
     <a href="/admin/users" class="ud-back">← Back to users</a>
     <div class="ud-title-block">
-      <h1 class="ud-title">
-        {{ target_user.name or target_user.email }}
-        <span id="status-pill" class="ud-status-pill"
-              style="display:none; vertical-align: middle; margin-left: 8px;"></span>
-      </h1>
-      <div class="ud-subtitle">{{ target_user.email }} · id {{ target_user.id[:8] }}…</div>
+      {% set page_hero_eyebrow = "Users & Access" %}
+      {% set page_hero_title = "User detail" %}
+      {% set page_hero_subtitle = "Account, group memberships, sessions, and activity for one user." %}
+      {% include "_page_hero.html" %}
     </div>
   </div>
 

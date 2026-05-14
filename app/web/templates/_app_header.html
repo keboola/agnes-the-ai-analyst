@@ -120,29 +120,12 @@
         </div>
     </div>
 </header>
-<script>
-// Generic toggle pattern — used by both the user menu and the Admin nav dropdown.
-function _wireDropdown(triggerId, panelId) {
-    var trigger = document.getElementById(triggerId);
-    var panel = document.getElementById(panelId);
-    if (!trigger || !panel) return;
-    function setOpen(open) {
-        trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
-        if (open) { panel.removeAttribute('hidden'); }
-        else { panel.setAttribute('hidden', ''); }
-    }
-    trigger.addEventListener('click', function(e) {
-        e.stopPropagation();
-        setOpen(trigger.getAttribute('aria-expanded') !== 'true');
-    });
-    document.addEventListener('click', function(e) {
-        if (!panel.contains(e.target) && e.target !== trigger) setOpen(false);
-    });
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') { setOpen(false); trigger.focus(); }
-    });
-}
-_wireDropdown('userMenuTrigger', 'userMenuPanel');
-_wireDropdown('adminNavTrigger', 'adminNavPanel');
-</script>
+{# Dropdown wiring lives in app/web/static/app.js. The script tag sits
+   here (in the shared header partial) instead of base.html so EVERY
+   page that includes _app_header.html — including standalone pages
+   like catalog.html / corporate_memory*.html / install.html /
+   admin_tables.html that don't extend base.html — gets the JS loaded
+   automatically. Defer keeps it non-blocking; placed after the header
+   markup so DOM is ready by the time the IIFE runs init(). #}
+<script src="{{ static_url('app.js') }}" defer></script>
 {% endif %}

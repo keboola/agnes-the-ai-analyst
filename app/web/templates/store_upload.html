@@ -178,36 +178,8 @@
   }
   .doc-add:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
 
-  /* ── Buttons (mirror /setup primary CTA) ───────────────────────── */
+  /* ── Buttons ───────────────────────────────────────────────────── */
   .actions { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
-  .btn-primary {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-family: var(--font-primary, inherit);
-    font-size: 14px; font-weight: 600; color: #fff;
-    background: var(--primary, #0073D1); border: none;
-    border-radius: 8px; padding: 11px 22px; cursor: pointer;
-    transition: all 0.15s ease;
-  }
-  .btn-primary:hover {
-    background: var(--primary-dark, #0056A3);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 14px rgba(0, 115, 209, 0.25);
-  }
-  .btn-primary:disabled { opacity: 0.7; cursor: wait; transform: none; box-shadow: none; }
-  .btn-secondary {
-    appearance: none; padding: 10px 18px;
-    border: 1px solid var(--border, #d1d5db); background: #fff;
-    color: var(--text-secondary, #6b7280); border-radius: 8px;
-    font-size: 14px; font-weight: 500; cursor: pointer;
-    font-family: var(--font-primary, inherit);
-    transition: all 0.15s ease;
-  }
-  .btn-secondary:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
-  .btn-link {
-    color: var(--text-secondary, #6b7280); text-decoration: none;
-    font-size: 13px; padding: 10px 8px;
-  }
-  .btn-link:hover { color: var(--text-primary, #111827); }
 
   /* ── Status banner ─────────────────────────────────────────────── */
   /* `display: flex` on .banner overrides the user-agent default for the
@@ -447,7 +419,7 @@
 
         <div class="actions">
           <button type="button" class="btn-primary" id="next-btn">Next →</button>
-          <a href="/marketplace?tab=flea" class="btn-link">Cancel</a>
+          <a href="/marketplace?tab=flea" class="btn btn-secondary">Cancel</a>
         </div>
       </div>
     </div>

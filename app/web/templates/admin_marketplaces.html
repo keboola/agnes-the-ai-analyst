@@ -10,38 +10,7 @@
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }
-  .marketplaces-title { margin: 0; font-size: 22px; font-weight: 600; }
-  .marketplaces-search {
-    flex: 1; max-width: 360px;
-    padding: 8px 12px 8px 36px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
-    font-size: 13px;
-    background: var(--surface, #fff) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 12px center;
-  }
-  .marketplaces-search:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
 
-  .marketplaces-table-wrap {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    overflow-x: auto;
-  }
-  .marketplaces-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .marketplaces-table thead th {
-    text-align: left; padding: 12px 16px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .marketplaces-table tbody td {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: middle;
-  }
-  .marketplaces-table tbody tr:last-child td { border-bottom: none; }
-  .marketplaces-table tbody tr:hover { background: var(--border-light, #fafafa); }
 
   .mp-cell { display: flex; align-items: center; gap: 10px; }
   .mp-avatar {
@@ -135,16 +104,6 @@
   .modal-card textarea { min-height: 60px; resize: vertical; }
   .modal-card input:focus, .modal-card textarea:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-  .modal-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; transition: all 0.15s;
-  }
-  .modal-btn:hover { background: var(--border-light, #f9fafb); }
-  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .modal-btn.primary:hover { filter: brightness(1.05); }
-  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
-  .modal-btn.danger:hover { filter: brightness(1.05); }
 
   .sync-result {
     margin: 12px 0;
@@ -235,10 +194,6 @@
 
   /* Amber primary modal action — pairs with the system-confirm modal so
      the OK button matches the trigger button's visual weight. */
-  .modal-btn.warning {
-    background: #f59e0b; color: #fff; border-color: #d97706;
-  }
-  .modal-btn.warning:hover { filter: brightness(1.06); }
 
   /* Toast */
   .toast-stack {
@@ -260,17 +215,20 @@
 
 <div class="marketplaces-page">
   <div class="marketplaces-toolbar">
-    <h2 class="marketplaces-title">Curated Marketplaces</h2>
-    <input id="mp-search" type="search" class="marketplaces-search" placeholder="Filter by slug, name, or URL…" autocomplete="off">
+    {% set page_hero_eyebrow = "Agent Experience" %}
+    {% set page_hero_title = "Curated Marketplaces" %}
+    {% set page_hero_subtitle = "Admin-managed git repos cloned nightly. Synced plugins surface in the Claude Code marketplace feed." %}
+    {% include "_page_hero.html" %}
+    <input id="mp-search" type="search" class="search-input" placeholder="Filter by slug, name, or URL…" autocomplete="off">
     <a class="icon-btn" href="/marketplace/format-guide" target="_blank" rel="noopener"
        title="Open the marketplace-metadata.json format guide in a new tab">
       Format guide →
     </a>
-    <button class="modal-btn primary" id="open-create-btn">+ Add marketplace</button>
+    <button class="btn btn-primary" id="open-create-btn">+ Add marketplace</button>
   </div>
 
-  <div class="marketplaces-table-wrap">
-    <table class="marketplaces-table" id="marketplaces-table">
+  <div class="data-table-wrap">
+    <table class="data-table" id="marketplaces-table">
       <thead>
         <tr>
           <th>Marketplace</th>
@@ -328,8 +286,8 @@
     <div class="help">Stored in <code>$DATA_DIR/state/.env_overlay</code> (chmod 600) on the data volume. Never written to the database or committed to git.</div>
 
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="create-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-create-btn">Register</button>
+      <button class="btn btn-secondary" data-close-modal="create-modal">Cancel</button>
+      <button class="btn btn-primary" id="confirm-create-btn">Register</button>
     </div>
   </div>
 </div>
@@ -368,8 +326,8 @@
     </div>
 
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="edit-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-edit-btn">Save</button>
+      <button class="btn btn-secondary" data-close-modal="edit-modal">Cancel</button>
+      <button class="btn btn-primary" id="confirm-edit-btn">Save</button>
     </div>
   </div>
 </div>
@@ -381,7 +339,7 @@
     <p class="sub" id="sync-target"></p>
     <div id="sync-result-body" class="sync-result"></div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="sync-modal">Close</button>
+      <button class="btn btn-primary" data-close-modal="sync-modal">Close</button>
     </div>
   </div>
 </div>
@@ -393,7 +351,7 @@
     <p class="sub" id="details-sub"></p>
     <div id="details-body" class="plugin-list"></div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="details-modal">Close</button>
+      <button class="btn btn-primary" data-close-modal="details-modal">Close</button>
     </div>
   </div>
 </div>
@@ -407,8 +365,8 @@
       <input id="confirm-purge" type="checkbox" checked> Also delete the working copy from disk
     </label>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="modal-btn danger" id="confirm-ok-btn">Delete</button>
+      <button class="btn btn-secondary" data-close-modal="confirm-modal">Cancel</button>
+      <button class="btn btn-danger" id="confirm-ok-btn">Delete</button>
     </div>
   </div>
 </div>
@@ -424,8 +382,8 @@
     <p class="sub" id="system-confirm-plugin" style="margin: 0 0 14px; font-size: 13px; color: var(--text-primary, #111827); font-weight: 500;"></p>
     <div id="system-confirm-body" style="font-size: 13px; line-height: 1.55; color: var(--text-secondary, #374151);"></div>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="system-confirm-modal">Cancel</button>
-      <button class="modal-btn warning" id="system-confirm-ok-btn">Confirm</button>
+      <button class="btn btn-secondary" data-close-modal="system-confirm-modal">Cancel</button>
+      <button class="btn btn-warning" id="system-confirm-ok-btn">Confirm</button>
     </div>
   </div>
 </div>
@@ -683,8 +641,8 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
         <li>Operators can revoke either via <a href="/admin/access" style="color: var(--primary, #6366f1);">/admin/access</a> or by uninstalling on each user's stack.</li>
       </ul>`;
     okBtn.textContent = "Unmark system";
-    okBtn.classList.remove("warning");
-    okBtn.classList.add("primary");
+    okBtn.classList.remove("btn-warning");
+    okBtn.classList.add("btn-primary");
   } else {
     titleEl.textContent = "Mark as system plugin?";
     pluginEl.textContent = pluginName;
@@ -702,8 +660,8 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
         Unmarking later does not auto-clean the materialized grants — they stay until manually removed.
       </p>`;
     okBtn.textContent = "Mark as system";
-    okBtn.classList.remove("primary");
-    okBtn.classList.add("warning");
+    okBtn.classList.remove("btn-primary");
+    okBtn.classList.add("btn-warning");
   }
 
   // Single-shot handler — re-bind on every open so we don't leak across

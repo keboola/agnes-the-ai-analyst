@@ -1,16 +1,14 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Table Management - {{ config.INSTANCE_NAME }}</title>
-    {% if not config.THEME_FONT_URL %}
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    {% endif %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
-    <style>
+{% extends "base.html" %}
+
+{% block title %}Table Management - {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block body_attrs %}data-source-type="{{ data_source_type }}"{% endblock %}
+
+{% block head_extra %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
         :root {
             /* Colors - Design System */
             --primary: #0073D1;
@@ -860,14 +858,10 @@
             margin-bottom: 16px;
         }
     </style>
-    {% include '_theme.html' %}
-</head>
-<body data-source-type="{{ data_source_type }}">
+{% endblock %}
 
-    <!-- ═══════════════ HEADER ═══════════════ -->
-    {% include '_app_header.html' %}
-
-    <!-- ═══════════════ PAGE TITLE ═══════════════ -->
+{% block layout %}
+<!-- ═══════════════ PAGE TITLE ═══════════════ -->
     <div class="page-title">
         <h1>Table Management</h1>
         <p>Discover, register, and manage data tables from your source</p>
@@ -1763,7 +1757,10 @@
     <footer class="footer">
         <a href="{{ url_for('dashboard') }}">Back to Dashboard</a>
         </footer>
-    <script>
+{% endblock %}
+
+{% block scripts %}
+<script>
     /* ═══════════════════════════════════════════════════════════════
        Admin Tables - JavaScript
        ═══════════════════════════════════════════════════════════════ */
@@ -3558,6 +3555,4 @@
     document.addEventListener('DOMContentLoaded', cacheWarmupInit);
 
     </script>
-    {% include "_version_badge.html" %}
-</body>
-</html>
+{% endblock %}

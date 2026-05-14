@@ -10,8 +10,6 @@
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
   }
-  .gp-title { margin: 0; font-size: 22px; font-weight: 600; }
-  .gp-sub { margin: 0; font-size: 13px; color: var(--text-secondary, #6b7280); }
   .gp-search {
     padding: 8px 12px 8px 32px; min-width: 280px;
     border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
@@ -19,28 +17,6 @@
     background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
   }
 
-  .gp-table-wrap {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    overflow: hidden;
-  }
-  .gp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .gp-table thead th {
-    text-align: left; padding: 12px 16px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .gp-table tbody td {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: middle;
-  }
-  .gp-table tbody tr:last-child td { border-bottom: none; }
-  .gp-table tbody tr { cursor: pointer; }
-  .gp-table tbody tr:hover { background: var(--border-light, #fafafa); }
 
   .gp-name {
     font-weight: 500; color: var(--text-primary, #111827);
@@ -127,13 +103,6 @@
   .modal-card textarea { min-height: 60px; resize: vertical; }
 
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-  .modal-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer;
-  }
-  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .modal-btn.danger  { background: #dc2626; color: #fff; border-color: #dc2626; }
 
   .toast-stack {
     position: fixed; bottom: 24px; right: 24px; z-index: 2000;
@@ -153,9 +122,10 @@
 <div class="gp-page">
   <div class="gp-toolbar">
     <div>
-      <h2 class="gp-title">Groups</h2>
-      <p class="gp-sub">Named buckets that hold members and resource grants.
-        Manage who has access to what on <a href="/admin/access">Resource access</a>.</p>
+      {% set page_hero_eyebrow = "Users & Access" %}
+      {% set page_hero_title = "Groups" %}
+      {% set page_hero_subtitle = "Named groups + members. Resource access lives on the Resource access page." %}
+      {% include "_page_hero.html" %}
     </div>
     <div style="display:flex; gap:10px; align-items:center;">
       <input id="search" type="search" class="gp-search" placeholder="Filter by name or description…" autocomplete="off">
@@ -163,8 +133,8 @@
     </div>
   </div>
 
-  <div class="gp-table-wrap">
-    <table class="gp-table" id="groups-table">
+  <div class="data-table-wrap">
+    <table class="data-table" id="groups-table">
       <thead>
         <tr>
           <th>Name</th>
@@ -197,8 +167,8 @@
     <label for="group-desc">Description (optional)</label>
     <textarea id="group-desc" autocomplete="off"></textarea>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="group-modal">Cancel</button>
-      <button class="modal-btn primary" id="group-save-btn">Save</button>
+      <button class="btn btn-secondary" data-close-modal="group-modal">Cancel</button>
+      <button class="btn btn-primary" id="group-save-btn">Save</button>
     </div>
   </div>
 </div>
@@ -209,8 +179,8 @@
     <h3 id="confirm-title">Delete group?</h3>
     <p class="sub" id="confirm-text"></p>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="modal-btn danger" id="confirm-ok-btn">Delete</button>
+      <button class="btn btn-secondary" data-close-modal="confirm-modal">Cancel</button>
+      <button class="btn btn-danger" id="confirm-ok-btn">Delete</button>
     </div>
   </div>
 </div>

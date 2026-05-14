@@ -40,6 +40,25 @@ def _resolved_home_route() -> str:
     return get_home_route()
 
 
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _static_url(path: str) -> str:
+    """Build /static/<path> with a cache-buster query string.
+
+    Appends ``?v=<file_mtime_int>`` so a redeploy that changes a CSS/JS file
+    invalidates browser + proxy caches without operator intervention.
+    Missing files return the bare URL — FastAPI's StaticFiles will surface
+    the 404 normally. Cheap (one ``os.stat`` per template variable use).
+    """
+    full = _STATIC_DIR / path
+    try:
+        v = int(full.stat().st_mtime)
+        return f"/static/{path}?v={v}"
+    except OSError:
+        return f"/static/{path}"
+
+
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["web"])
 
@@ -73,13 +92,15 @@ class _SafeEncoder(_json.JSONEncoder):
 templates.env.policies["json.dumps_function"] = lambda obj, **kw: _json.dumps(obj, cls=_SafeEncoder, **kw)
 
 
-def _humanbytes(value) -> str:
+def _humanbytes(value, precision: int = 2) -> str:
     """Render a byte count as the largest binary-prefixed unit it fits in.
 
-    Below 1 KiB → integer bytes; otherwise two decimal places of KB / MB / GB
-    (binary, 1024-based). Used by the Store detail template; intentionally
-    permissive about input type so missing / undefined values render as
-    ``0 B`` rather than crashing the page.
+    Below 1 KiB → integer bytes; otherwise ``precision`` decimal places of
+    KB / MB / GB / TB (binary, 1024-based). Used by the Store detail
+    template (default 2-decimal precision for fine-grained file sizes) and
+    by the /dashboard stat tiles (1-decimal precision for headline numbers).
+    Intentionally permissive about input type so missing / undefined values
+    render as ``0 B`` rather than crashing the page.
     """
     try:
         n = int(value or 0)
@@ -89,12 +110,15 @@ def _humanbytes(value) -> str:
         return f"{n} B"
     kb = n / 1024
     if kb < 1024:
-        return f"{kb:.2f} KB"
+        return f"{kb:.{precision}f} KB"
     mb = kb / 1024
     if mb < 1024:
-        return f"{mb:.2f} MB"
+        return f"{mb:.{precision}f} MB"
     gb = mb / 1024
-    return f"{gb:.2f} GB"
+    if gb < 1024:
+        return f"{gb:.{precision}f} GB"
+    tb = gb / 1024
+    return f"{tb:.{precision}f} TB"
 
 
 templates.env.filters["humanbytes"] = _humanbytes
@@ -435,7 +459,7 @@ def _build_context(
         "config": ConfigProxy,
         "user": _flex(user) if user else _FlexDict(),
         "now": datetime.now,
-        "static_url": lambda path: f"/static/{path}",
+        "static_url": _static_url,
         # Flask compatibility shims for templates
         "get_flashed_messages": lambda **kwargs: [],
         "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
@@ -614,9 +638,18 @@ async def dashboard(
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
     datasets = get_datasets()
 
-    # Stats
-    total_tables = len(all_states)
+    # Stats. `total_tables` counts REGISTERED business tables, not synced
+    # ones (a registry of 30 with 0 ever synced would otherwise render as
+    # "0"). Internal source_type tables (agnes_*) live in their own card on
+    # /catalog and are excluded from the headline counter. Columns + size
+    # come from sync_state, which is the canonical source for "what's
+    # actually on disk locally".
+    total_tables = conn.execute(
+        "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
+    ).fetchone()[0]
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
+    total_columns = sum(s.get("columns", 0) or 0 for s in all_states)
+    total_size_bytes = sum(s.get("file_size_bytes", 0) or 0 for s in all_states)
 
     # Build user_info object expected by dashboard template
     is_admin = is_user_admin(user["id"], conn)
@@ -649,12 +682,14 @@ async def dashboard(
         data_stats={
             "tables": total_tables,
             "total_tables": total_tables,
-            "columns": 0,
+            "columns": total_columns,
             "rows_display": f"{total_rows:,}" if total_rows else "0",
-            "size_display": "0 MB",
-            "unstructured_display": "0 MB",
+            "size_display": _humanbytes(total_size_bytes, precision=1) if total_size_bytes else "0 MB",
             "total_rows": total_rows,
-            "last_updated": None,
+            "last_updated": max(
+                (s.get("last_sync") for s in all_states if s.get("last_sync")),
+                default=None,
+            ),
             "remote_tables": 0,
             "local_tables": total_tables,
         },
@@ -877,10 +912,15 @@ async def catalog(
         internal_tables = []
         logger.warning(f"Could not load catalog: {e}")
 
-    # Build data_stats for catalog template (business-data card header)
+    # Build data_stats for catalog template (business-data card header).
+    # `total_tables` must count REGISTERED business tables, not just
+    # synced ones — a registry of 30 tables with 0 ever synced would
+    # otherwise render as "0 tables" on the Core Business Data card.
+    # `internal` source_type tables render in their own card; exclude
+    # them here so the Core counter doesn't double-count system tables.
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
     data_stats = {
-        "total_tables": len(all_states),
+        "total_tables": len(tables),
         "total_rows": total_rows,
         "total_columns": 0,
         "total_size": sum(s.get("file_size_bytes", 0) or 0 for s in all_states),

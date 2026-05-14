@@ -220,8 +220,10 @@ document.addEventListener('DOMContentLoaded', function () {
 {% endblock %}
 
 {% block content %}
-<h1>News editor</h1>
-
+{% set page_hero_eyebrow = "Server" %}
+{% set page_hero_title = "News editor" %}
+{% set page_hero_subtitle = "Compose the news intro shown at the bottom of /home." %}
+{% include "_page_hero.html" %}
 <div class="panel">
     <h2>Currently published</h2>
     {% if news_current %}

@@ -82,6 +82,17 @@
     --width-narrow: 800px;
     --width-app: 1280px;
     --width-wide: 1400px;
+
+    /* Legacy token aliases — keep absorbed style.css rules rendering
+       until Task 16 cleanup. Each legacy name maps onto its modern
+       equivalent so every absorbed selector resolves to a real value
+       instead of falling back to `unset`. */
+    --bg: var(--background);
+    --card-bg: var(--surface);
+    --text: var(--text-primary);
+    --text-light: var(--text-secondary);
+    --secondary: var(--text-secondary);
+    --radius: var(--radius-lg);
 }
 
 * {
@@ -98,6 +109,1085 @@ body {
     line-height: 1.5;
     min-height: 100vh;
 }
+
+/* =====================================================
+   Absorbed from the deleted app/web/static/style.css.
+   Kept verbatim here so legacy classes used by login/auth
+   pages, error pages, and password-setup pages keep
+   rendering. Individual rules retire in the design-pass
+   migration tasks; final cleanup in Task 16 removes the
+   ones no template references after that sweep.
+   ===================================================== */
+
+.container {
+    /* Canonical page-shell width. Bumped from the legacy 800px (which
+       was a relic of single-form login pages) to --width-app (1280px)
+       — generous enough for admin dashboards, dense tables, and
+       catalog grids without feeling wasteful at 1440-1600px screens.
+       Pages that genuinely need narrower line-length (setup wizards,
+       single-form flows) opt in via .container--narrow. */
+    max-width: var(--width-app);
+    margin: 0 auto;
+    padding: var(--space-6) var(--space-5);
+}
+
+/* Width modifiers — opt-in alternatives to the default page shell. */
+.container--narrow { max-width: var(--width-narrow); }   /* 800px — long-form reading, setup flows */
+.container--wide   { max-width: var(--width-wide); }     /* 1400px — admin index lists, marketplace grids */
+.container--full   { max-width: none; padding-left: var(--space-4); padding-right: var(--space-4); }
+
+/* Dashboard */
+.dashboard h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-bottom: 24px;
+    color: var(--text);
+}
+
+/* Header */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 0;
+    margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+a.logo { text-decoration: none; color: inherit; display: block; }
+a.logo:hover h1 { color: var(--primary); }
+
+.logo h1 {
+    font-size: 1.375rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    letter-spacing: -0.02em;
+}
+
+.logo .subtitle {
+    font-size: 0.8125rem;
+    color: var(--text-light);
+    margin-top: 2px;
+}
+
+nav {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.875rem;
+    color: var(--text-light);
+}
+
+.avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+}
+
+/* Buttons */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 20px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-decoration: none;
+    border-radius: var(--radius);
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s, box-shadow 0.2s;
+}
+
+.btn-primary {
+    background-color: var(--primary);
+    color: white;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+.btn-primary:hover {
+    background-color: var(--primary-dark);
+    box-shadow: 0 2px 8px rgba(26, 115, 232, 0.3);
+}
+
+.btn-primary:active {
+    transform: scale(0.98);
+}
+
+.btn-secondary {
+    background-color: transparent;
+    color: var(--secondary);
+    border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+    background-color: var(--bg);
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 0.75rem;
+}
+
+.btn-google {
+    background-color: white;
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 14px 28px;
+    font-size: 1rem;
+    font-weight: 500;
+    width: 100%;
+    max-width: 280px;
+    transition: all 0.2s ease;
+}
+
+.btn-google:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    border-color: #c4c4c4;
+    background-color: #fafafa;
+}
+
+.btn-google:active {
+    transform: scale(0.98);
+}
+
+.google-icon {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+/* Cards */
+.card {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    border: 1px solid var(--border);
+}
+
+.card h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text);
+    letter-spacing: -0.01em;
+}
+
+.card p {
+    color: var(--text-light);
+    margin-bottom: 12px;
+}
+
+.card-error {
+    border-left: 4px solid var(--error);
+    background-color: #fff8f8;
+}
+
+.card-highlight {
+    border-left: 4px solid var(--primary);
+    background-color: #f8faff;
+}
+
+.card-ai {
+    border-left: 4px solid var(--success);
+    background-color: #f8fdf8;
+}
+
+/* Manual setup collapsible */
+.manual-setup {
+    margin-top: 16px;
+}
+
+.manual-setup summary {
+    cursor: pointer;
+    font-size: 0.875rem;
+    color: var(--text-light);
+    padding: 8px 0;
+}
+
+.manual-setup summary:hover {
+    color: var(--text);
+}
+
+.manual-setup .card {
+    margin-top: 12px;
+    margin-bottom: 0;
+}
+
+.card-error h3 {
+    color: var(--error);
+}
+
+.error-message {
+    color: var(--error);
+    font-weight: 500;
+}
+
+/* Info grid */
+.info-grid {
+    display: grid;
+    gap: 12px;
+}
+
+.info-item {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.info-item .label {
+    font-weight: 500;
+    min-width: 140px;
+}
+
+.info-item .value {
+    color: var(--text-light);
+}
+
+/* Badges */
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    border-radius: 4px;
+    background-color: var(--bg);
+    color: var(--text-light);
+    margin-right: 4px;
+}
+
+.badge-analyst {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+}
+
+.badge-privileged {
+    background-color: #fff3e0;
+    color: #ef6c00;
+}
+
+.badge-admin {
+    background-color: #e3f2fd;
+    color: #1565c0;
+}
+
+/* Code blocks */
+code {
+    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
+    font-size: 0.875rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.code-block {
+    background-color: #1a1a2e;
+    color: #e4e4e7;
+    padding: 14px 16px;
+    border-radius: var(--radius);
+    overflow-x: auto;
+    margin: 12px 0;
+    border: 1px solid #2d2d44;
+}
+
+.code-block code,
+.code-block pre {
+    background: transparent;
+    padding: 0;
+    font-size: 0.8125rem;
+    color: inherit;
+    line-height: 1.6;
+}
+
+.code-block pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.code-block.code-compact {
+    padding: 10px 14px;
+    margin: 6px 0;
+}
+
+/* Command rows for Quick Start */
+.command-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.command-row .command-label {
+    font-weight: 500;
+    font-size: 0.875rem;
+    min-width: 70px;
+    color: var(--text-light);
+}
+
+.command-row .code-block {
+    flex: 1;
+    margin: 0;
+}
+
+/* SSH config details/summary */
+.ssh-config-details {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.ssh-config-details summary {
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--primary);
+    padding: 4px 0;
+    user-select: none;
+}
+
+.ssh-config-details summary:hover {
+    color: var(--primary-dark);
+}
+
+.ssh-config-details[open] summary {
+    margin-bottom: 8px;
+}
+
+.ssh-config-details .help-text {
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+
+/* Forms */
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.form-group textarea {
+    width: 100%;
+    padding: 12px 14px;
+    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    resize: vertical;
+    min-height: 100px;
+    background-color: var(--card-bg);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.form-group textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.15);
+}
+
+.form-group textarea::placeholder {
+    color: #9aa0a6;
+}
+
+.help-text {
+    font-size: 0.8125rem;
+    color: var(--text-light);
+    margin-top: 8px;
+    line-height: 1.5;
+}
+
+.help-text strong {
+    color: var(--text);
+    font-weight: 500;
+}
+
+/* Flash messages */
+.flash-messages {
+    margin-bottom: 24px;
+}
+
+.flash {
+    padding: 14px 18px;
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.flash-success {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    border: 1px solid #c8e6c9;
+}
+
+.flash-error {
+    background-color: #ffebee;
+    color: #c62828;
+    border: 1px solid #ffcdd2;
+}
+
+.flash-info {
+    background-color: #e3f2fd;
+    color: #1565c0;
+    border: 1px solid #bbdefb;
+}
+
+.flash-warning {
+    background-color: #fff3e0;
+    color: #ef6c00;
+    border: 1px solid #ffe0b2;
+}
+
+/* Login page */
+.login-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 60vh;
+    padding: 20px;
+}
+
+.login-card {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 48px 40px;
+    text-align: center;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+    max-width: 640px;
+    width: 100%;
+    border: 1px solid var(--border);
+}
+
+.login-card h2 {
+    margin-bottom: 12px;
+    font-size: 1.75rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.login-description {
+    color: var(--text-light);
+    margin-bottom: 32px;
+    font-size: 1rem;
+    line-height: 1.5;
+}
+
+.login-steps {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    text-align: left;
+}
+
+.login-steps .step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.875rem;
+    color: var(--text-light);
+    padding: 6px 0;
+}
+
+.login-steps .step-num,
+.steps-horizontal .step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background-color: var(--primary);
+    color: white;
+    border-radius: 50%;
+    font-size: 0.75rem;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+/* Inline steps for compact layout */
+.steps-inline {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.steps-inline .step-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8125rem;
+    color: var(--text-light);
+}
+
+/* Form row for inline layout */
+.form-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.form-group-inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 0;
+}
+
+.form-group-inline label {
+    margin-bottom: 0;
+}
+
+/* AI hint inline */
+.ai-hint {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+    color: var(--text-light);
+}
+
+.ai-hint code {
+    display: inline;
+    font-size: 0.75rem;
+    color: var(--primary);
+}
+
+/* Manual setup compact */
+.manual-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 12px 0;
+}
+
+.manual-content code {
+    font-size: 0.75rem;
+}
+
+.manual-content .help-text {
+    margin: 0;
+    font-size: 0.75rem;
+}
+
+.login-note {
+    font-size: 0.8125rem;
+    color: var(--text-light);
+    margin-top: 12px;
+}
+
+/* Error page */
+.error-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 60vh;
+}
+
+.error-card {
+    text-align: center;
+}
+
+.error-card h2 {
+    font-size: 3rem;
+    margin-bottom: 16px;
+}
+
+.error-card p {
+    color: var(--text-light);
+    margin-bottom: 24px;
+}
+
+/* Footer */
+footer {
+    margin-top: 48px;
+    padding-top: 20px;
+    padding-bottom: 8px;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    color: var(--text-light);
+    font-size: 0.8125rem;
+}
+
+/* Username box and copy buttons */
+.username-box {
+    background: #f0f9ff;
+    border: 2px solid #0ea5e9;
+    border-radius: 8px;
+    padding: 16px;
+    margin: 16px 0;
+}
+
+.username-display {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.username-display code {
+    font-size: 20px;
+    font-weight: bold;
+    color: #0369a1;
+    background: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    flex-grow: 1;
+}
+
+.btn-copy {
+    background: #0ea5e9;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    transition: all 0.2s ease;
+}
+
+.btn-copy:hover {
+    background: #0284c7;
+}
+
+.btn-copy:active {
+    transform: scale(0.98);
+}
+
+.btn-copy.copied {
+    background: #22c55e;
+}
+
+.btn-copy-inline {
+    background: #0ea5e9;
+    color: white;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    margin-left: 8px;
+    transition: background 0.15s ease;
+}
+
+.btn-copy-inline:hover {
+    background: #0284c7;
+}
+
+.btn-copy-block {
+    background: #0ea5e9;
+    color: white;
+    border: none;
+    padding: 10px 24px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    width: 100%;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.btn-copy-block:hover {
+    background: #0284c7;
+    box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
+}
+
+.btn-copy-block:active {
+    transform: scale(0.98);
+}
+
+.btn-copy-block.copied {
+    background: #22c55e;
+}
+
+.username-preview {
+    font-size: 18px;
+    color: #64748b;
+}
+
+.info-box {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 16px;
+}
+
+.card-success {
+    border-left: 4px solid var(--success);
+    background-color: #f8fdf8;
+}
+
+.help-details {
+    margin-top: 12px;
+    font-size: 0.875rem;
+}
+
+.help-details summary {
+    cursor: pointer;
+    color: var(--primary);
+    padding: 4px 0;
+    font-weight: 500;
+}
+
+.help-details summary:hover {
+    color: var(--primary-dark);
+}
+
+.help-details ul {
+    margin-top: 8px;
+    margin-left: 20px;
+    color: var(--text-light);
+}
+
+.help-details li {
+    margin-bottom: 4px;
+}
+
+/* Claude Code Setup Card on Dashboard */
+.cc-setup-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    margin-bottom: 24px;
+}
+
+.cc-setup-card h3 {
+    color: white;
+    margin-bottom: 12px;
+}
+
+.cc-setup-card .cc-instruction {
+    color: rgba(255, 255, 255, 0.95);
+    margin-bottom: 16px;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+}
+
+.cc-setup-card .cc-helper-text {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 0.8125rem;
+    margin-top: 12px;
+    margin-bottom: 0;
+}
+
+.cc-setup-card .btn-copy-block {
+    background: white;
+    color: #667eea;
+    font-weight: 600;
+    padding: 12px 24px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    width: 100%;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.cc-setup-card .btn-copy-block:hover {
+    background: #f0f0f0;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.cc-setup-card .btn-copy-block:active {
+    transform: scale(0.98);
+}
+
+.cc-setup-card .btn-copy-block.copied {
+    background: #34a853;
+    color: white;
+}
+
+/* CLI hint in setup card */
+.cc-setup-card .cli-hint {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.cc-setup-card .cli-hint summary {
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    padding: 4px 0;
+}
+
+.cc-setup-card .cli-hint summary:hover {
+    color: white;
+}
+
+.cc-setup-card .cli-hint .cli-content {
+    margin-top: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    padding: 10px 12px;
+    border-radius: 6px;
+}
+
+.cc-setup-card .cli-hint .cli-content code {
+    display: block;
+    background: rgba(0, 0, 0, 0.2);
+    color: white;
+    padding: 8px 10px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    margin-bottom: 6px;
+}
+
+.cc-setup-card .cli-hint .cli-desc {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.75rem;
+}
+
+/* Support info banner */
+.support-info {
+    text-align: center;
+    color: var(--text-light);
+    font-size: 0.8125rem;
+    padding: 12px 16px;
+    background: #f8fafc;
+    border-radius: 6px;
+    margin-bottom: 20px;
+    border: 1px solid var(--border);
+}
+
+.support-info strong {
+    color: var(--text);
+}
+
+/* Auth tabs */
+.auth-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 24px;
+    border-bottom: 2px solid var(--border);
+}
+
+.auth-tab {
+    flex: 1;
+    padding: 12px 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--text-light);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.auth-tab:hover {
+    color: var(--text);
+}
+
+.auth-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+.auth-tab-content {
+    display: none;
+}
+
+.auth-tab-content.active {
+    display: block;
+}
+
+.tab-description {
+    color: var(--text-light);
+    font-size: 0.875rem;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.signup-note {
+    color: var(--text-light);
+    font-size: 0.8125rem;
+    text-align: center;
+    margin-top: 16px;
+}
+
+/* Login form styles */
+.login-form {
+    text-align: left;
+    margin: 24px 0;
+}
+
+.login-form .form-group {
+    margin-bottom: 16px;
+}
+
+.login-form .form-group label {
+    display: block;
+    font-weight: 500;
+    font-size: 0.875rem;
+    margin-bottom: 6px;
+    color: var(--text);
+}
+
+.login-form .form-group input {
+    width: 100%;
+    padding: 12px 14px;
+    font-size: 0.9375rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background-color: var(--card-bg);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.login-form .form-group input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.15);
+}
+
+.login-form .form-group input::placeholder {
+    color: #9aa0a6;
+}
+
+.login-form .form-hint {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-light);
+    margin-top: 4px;
+}
+
+.btn-block {
+    width: 100%;
+}
+
+.btn-link {
+    background: transparent;
+    color: var(--primary);
+    border: none;
+    padding: 8px 4px;
+    font-size: 0.875rem;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.btn-link:hover {
+    color: var(--primary-dark);
+    text-decoration: underline;
+}
+
+/* Login page links */
+.login-links {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    margin: 16px 0;
+    flex-wrap: wrap;
+}
+
+.login-links form {
+    margin: 0;
+}
+
+/* Request access form */
+.request-access-form,
+.reset-form {
+    display: inline;
+}
+
+/* Divider */
+.divider {
+    display: flex;
+    align-items: center;
+    margin: 24px 0;
+    color: var(--text-light);
+    font-size: 0.875rem;
+}
+
+.divider::before,
+.divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background-color: var(--border);
+}
+
+.divider span {
+    padding: 0 16px;
+}
+
+/* Account email display */
+.account-email {
+    background-color: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: 0.9375rem;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    .container {
+        padding: 15px;
+    }
+
+    header {
+        flex-direction: column;
+        gap: 15px;
+        text-align: center;
+    }
+
+    .info-item {
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .info-item .label {
+        min-width: auto;
+    }
+
+    .username-display {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .username-display code {
+        text-align: center;
+    }
+
+    .login-links {
+        flex-direction: column;
+        gap: 8px;
+    }
+}
+
 
 /* Container */
 .container-v2 {
@@ -2162,22 +3252,43 @@ a.app-header-logo:focus-visible {
     border: 2px solid var(--border, #e5e7eb);
 }
 
+/* Top-nav entries. Both <a class="app-nav-link"> and
+   <button class="app-nav-link app-nav-menu-trigger"> share this rule
+   so the Admin dropdown trigger renders identical to its siblings —
+   same font, color, padding, hover, active state. The button-element
+   resets (background/border/font-family) flow from here, so
+   .app-nav-menu-trigger no longer needs to strip <button> chrome
+   separately. */
 .app-nav-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font-size: 13px;
     font-weight: 500;
+    font-family: inherit;
     color: var(--text-secondary, #6b7280);
     text-decoration: none;
     padding: 6px 12px;
     border-radius: 8px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    line-height: 1.2;
     transition: all 0.15s ease;
 }
 .app-nav-link:hover {
     color: var(--text-primary, #111827);
     background: var(--border-light, #f3f4f6);
 }
-.app-nav-link.is-active {
-    color: var(--primary, #6366f1);
-    background: var(--primary-light, #eef2ff);
+.app-nav-link.is-active,
+.app-nav-link[aria-expanded="true"] {
+    color: var(--primary, #0073D1);
+    background: var(--primary-light, rgba(0, 115, 209, 0.1));
+}
+.app-nav-link:focus { outline: none; }
+.app-nav-link:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.25);
 }
 
 .app-btn-logout {
@@ -2239,24 +3350,9 @@ a.app-header-logo:focus-visible {
 
 /* ── Admin nav dropdown — same vocabulary as user menu, scoped under nav links ── */
 .app-nav-menu { position: relative; display: inline-flex; }
-.app-nav-menu-trigger {
-    display: inline-flex; align-items: center; gap: 4px;
-    background: none;
-    /* Strip the default <button> chrome — the .app-nav-link class above
-       supplies the visual; the button element only carries semantics. */
-    border: 0;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-}
-.app-nav-menu-trigger:focus { outline: none; }
-.app-nav-menu-trigger:focus-visible {
-    outline: 2px solid var(--primary, #0073D1);
-    outline-offset: 2px;
-}
-.app-nav-menu-trigger[aria-expanded="true"] {
-    background: var(--border-light, #f3f4f6);
-}
+/* .app-nav-menu-trigger styling flows entirely from .app-nav-link above.
+   The trigger class is kept in markup as a hook for app.js dropdown
+   wiring and for targeting the chevron rotation below. */
 .app-nav-menu-chevron { color: currentColor; transition: transform 0.15s ease; }
 .app-nav-menu-trigger[aria-expanded="true"] .app-nav-menu-chevron { transform: rotate(180deg); }
 .app-nav-menu-panel {
@@ -2649,3 +3745,623 @@ a.news-cta:hover { background: #0056A3; }
     margin-bottom: 16px;
 }
 .format-guide .back-link:hover { color: var(--primary, #6366f1); }
+
+/* =====================================================
+   Canonical button family (Task 4)
+   .btn + .btn-primary | .btn-secondary | .btn-ghost | .btn-danger
+                       + .btn-sm | .btn-lg
+
+   Base .btn, .btn-primary, .btn-secondary, .btn-sm come from the
+   absorbed style.css block above (no change needed — they already use
+   the new tokens via the legacy-alias layer). This section appends
+   selector-list aliases for legacy class names (   .btn-secondary-v2, .btn-ghost-v2, .modal-btn) and defines the new
+   variants (.btn-ghost, .btn-danger, .btn-lg) that the legacy stylesheet
+   didn't ship.
+
+   Aliases removed in Task 16 once templates migrate to canonical names.
+   Cascade-order note: this section is the LAST in the file, so it wins
+   over both the absorbed legacy rules AND any earlier v2-suffixed rules
+   (e.g. .btn-primary-v2 hover color in the absorbed block). Adding
+   per-page <style> overrides will still beat this on equal-specificity
+   selectors due to source order — Tasks 8–14 strip those.
+   ===================================================== */
+
+.btn-primary {
+    background-color: var(--primary);
+    color: #fff;
+    border: 1px solid var(--primary);
+    transition: all 0.15s ease;
+}
+.btn-primary:hover,
+.btn-primary-v2:hover,
+.modal-btn.primary:hover {
+    background-color: var(--primary-dark);
+    border-color: var(--primary-dark);
+    box-shadow: 0 2px 8px rgba(0, 115, 209, 0.3);
+}
+
+.btn-secondary {
+    background-color: var(--surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+}
+.btn-secondary:hover,
+.btn-secondary-v2:hover,
+.modal-btn:not(.primary):not(.danger):hover {
+    background-color: var(--border-light);
+}
+
+.btn-ghost {
+    background-color: transparent;
+    color: var(--text-secondary);
+    border: 1px solid transparent;
+}
+.btn-ghost:hover,
+.btn-ghost-v2:hover {
+    background-color: var(--border-light);
+    color: var(--text-primary);
+}
+
+.btn-danger {
+    background-color: #fff;
+    color: var(--error);
+    border: 1px solid var(--error);
+}
+.btn-danger:hover,
+.modal-btn.danger:hover {
+    background-color: var(--error);
+    color: #fff;
+}
+
+.btn-warning {
+    background: #f59e0b;
+    color: #fff;
+    border: 1px solid #d97706;
+}
+.btn-warning:hover { filter: brightness(1.06); }
+
+.btn-lg { padding: 12px 20px; font-size: var(--text-md); }
+
+.btn:disabled,
+.btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+
+.btn:focus { outline: none; }
+.btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* =====================================================
+   Canonical form controls (Task 5)
+   .search-input | .filter-bar | .filter-pill | .form-input
+
+   Selector-list aliases for legacy per-page classes (   .marketplaces-search, .kb-search, .filters-card, .pill) so existing
+   markup keeps rendering until migration tasks swap them out.
+   ===================================================== */
+
+.search-input,
+.filter-bar input[type="search"],
+.filter-bar input[type="text"],
+.filter-bar select {
+    height: 36px;
+    padding: 0 var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.search-input::placeholder,
+.users-search::placeholder,
+.marketplaces-search::placeholder,
+.kb-search::placeholder,
+.filter-bar input::placeholder { color: var(--text-muted); }
+
+.search-input:focus,
+.users-search:focus,
+.marketplaces-search:focus,
+.kb-search:focus,
+.filter-bar input:focus,
+.filter-bar select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+.filter-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: var(--space-4);
+}
+
+.filter-bar > .search-input,
+.filters-card > .search-input { flex: 1 1 240px; min-width: 200px; }
+
+.filter-pill {
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+    text-decoration: none;
+}
+
+.filter-pill:hover {
+    background: var(--border-light);
+    color: var(--text-primary);
+}
+
+.filter-pill.is-active,
+.filter-pill[aria-pressed="true"] {
+    background: var(--primary-light);
+    color: var(--primary);
+    border-color: var(--primary);
+}
+
+/* Form input — sibling of .search-input for forms (multi-line capable). */
+.form-input,
+input.form-input,
+select.form-input,
+textarea.form-input {
+    width: 100%;
+    min-height: 36px;
+    padding: var(--space-2) var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+textarea.form-input {
+    min-height: 96px;
+    resize: vertical;
+    font-family: var(--font-mono);
+    line-height: 1.5;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+.form-input::placeholder { color: var(--text-muted); }
+
+/* =====================================================
+   Page-header primitive (Task 6)
+   .page-header + __main / __title / __subtitle / __actions / __eyebrow
+   + variants: .page-header--hero | .page-header--compact
+   + .tab-strip (paired tab row for marketplace tabs etc.)
+   ===================================================== */
+
+.page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+    margin: var(--space-6) 0 var(--space-5);
+    flex-wrap: wrap;
+}
+
+.page-header__main { min-width: 0; flex: 1 1 auto; }
+
+.page-header__title {
+    margin: 0;
+    font-size: 22px;
+    font-weight: var(--font-semibold);
+    color: var(--text-primary);
+    line-height: 1.2;
+}
+
+.page-header__subtitle {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.page-header__eyebrow {
+    margin: 0 0 var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-secondary);
+}
+
+.page-header__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+
+/* Hero variant — gradient background, larger title, light eyebrow.
+   Tuned to match the look of admin_tokens.html's per-page .tokens-hero
+   (which analysts already liked): tighter padding, 14px radius, soft
+   blue glow shadow. Applied across all primary-content pages so the
+   admin section reads as one product instead of a patchwork. */
+.page-header--hero {
+    padding: 28px 32px 24px;
+    margin: var(--space-5) auto;
+    /* Self-constrain to the canonical app width so the gradient stays
+       visually balanced even on standalone pages (catalog, corporate-memory,
+       install, dashboard) that don't wrap content in `.container`. On
+       templates that DO use `.container` (admin pages), the parent's
+       max-width is the same or tighter, so this is a no-op there. */
+    max-width: var(--width-app);
+    box-sizing: border-box;
+    background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+    color: #fff;
+    border-radius: 14px;
+    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+    position: relative;
+}
+.page-header--hero .page-header__main { color: inherit; }
+.page-header--hero .page-header__title {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: #fff;
+    margin: 0 0 6px;
+}
+.page-header--hero .page-header__subtitle {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 13.5px;
+    margin: 6px 0 0;
+    max-width: 720px;
+}
+.page-header--hero .page-header__eyebrow {
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin: 0 0 6px;
+}
+.page-header--hero .page-header__actions a,
+.page-header--hero .page-header__actions button {
+    color: #fff;
+}
+@media (max-width: 640px) {
+    .page-header--hero { padding: 24px 20px 20px; border-radius: 12px; }
+    .page-header--hero .page-header__title { font-size: 22px; }
+}
+
+/* Compact variant — for dense admin index pages that have many controls
+   already and don't need vertical generosity. Smaller title, tighter
+   spacing, no border. */
+.page-header--compact {
+    margin: var(--space-4) 0 var(--space-3);
+}
+.page-header--compact .page-header__title { font-size: 18px; }
+
+/* Tab strip — the secondary row pattern used by /marketplace?tab=… and
+   similar tabbed pages. Sits below the .page-header (or inside it on
+   hero-variant pages). */
+.tab-strip {
+    display: flex;
+    gap: var(--space-1);
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--space-5);
+}
+
+.tab-strip__item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--text-secondary);
+    text-decoration: none;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    cursor: pointer;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.tab-strip__item:hover { color: var(--text-primary); }
+
+.tab-strip__item.is-active,
+.tab-strip__item[aria-selected="true"] {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+/* =====================================================
+   Data display + feedback primitives (Task 7)
+   .data-table (+ --compact) | .empty-state | .toast | .stat-card
+
+   Selector-list aliases for legacy per-page tables (   .gp-table, .marketplaces-table, .audit-table) so existing markup
+   keeps rendering until migration tasks swap them out.
+   ===================================================== */
+
+.data-table,
+.ad-table,
+.ea-table,
+.md-table,
+.members-table,
+.obs-table,
+.overview-stats-table,
+.registry-table,
+.sample-table,
+.sched-table,
+.sess-table,
+.sub-table,
+.subs-table,
+.ud-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+}
+
+.data-table thead,
+.ad-table thead,
+.ea-table thead,
+.md-table thead,
+.members-table thead,
+.obs-table thead,
+.overview-stats-table thead,
+.registry-table thead,
+.sample-table thead,
+.sched-table thead,
+.sess-table thead,
+.sub-table thead,
+.subs-table thead,
+.ud-table thead {
+    background: var(--border-light);
+}
+
+.data-table th,
+.ad-table th,
+.ea-table th,
+.md-table th,
+.members-table th,
+.obs-table th,
+.overview-stats-table th,
+.registry-table th,
+.sample-table th,
+.sched-table th,
+.sess-table th,
+.sub-table th,
+.subs-table th,
+.ud-table th {
+    padding: var(--space-3) var(--space-4);
+    text-align: left;
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.data-table td,
+.ad-table td,
+.ea-table td,
+.md-table td,
+.members-table td,
+.obs-table td,
+.overview-stats-table td,
+.registry-table td,
+.sample-table td,
+.sched-table td,
+.sess-table td,
+.sub-table td,
+.subs-table td,
+.ud-table td {
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: middle;
+}
+
+.data-table tbody tr:last-child td,
+.ad-table tbody tr:last-child td,
+.ea-table tbody tr:last-child td,
+.md-table tbody tr:last-child td,
+.members-table tbody tr:last-child td,
+.obs-table tbody tr:last-child td,
+.overview-stats-table tbody tr:last-child td,
+.registry-table tbody tr:last-child td,
+.sample-table tbody tr:last-child td,
+.sched-table tbody tr:last-child td,
+.sess-table tbody tr:last-child td,
+.sub-table tbody tr:last-child td,
+.subs-table tbody tr:last-child td,
+.ud-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.data-table tbody tr:hover,
+.ad-table tbody tr:hover,
+.ea-table tbody tr:hover,
+.md-table tbody tr:hover,
+.members-table tbody tr:hover,
+.obs-table tbody tr:hover,
+.overview-stats-table tbody tr:hover,
+.registry-table tbody tr:hover,
+.sample-table tbody tr:hover,
+.sched-table tbody tr:hover,
+.sess-table tbody tr:hover,
+.sub-table tbody tr:hover,
+.subs-table tbody tr:hover,
+.ud-table tbody tr:hover {
+    background: var(--border-light);
+}
+
+/* Compact modifier — for dense lists like /admin/activity (audit log). */
+.data-table--compact th,
+.data-table--compact td {
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-xs);
+}
+
+/* =====================================================
+   .empty-state — for "no records" / "no results" panels
+   ===================================================== */
+
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-8) var(--space-6);
+    text-align: center;
+    background: var(--surface);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    color: var(--text-secondary);
+}
+
+.empty-state__icon {
+    font-size: 32px;
+    opacity: 0.5;
+    line-height: 1;
+}
+
+.empty-state__title {
+    margin: 0;
+    font-size: var(--text-md);
+    font-weight: var(--font-medium);
+    color: var(--text-primary);
+}
+
+.empty-state__description {
+    margin: 0;
+    max-width: 480px;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+}
+
+.empty-state__actions {
+    margin-top: var(--space-3);
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+/* =====================================================
+   .toast — global notification surface
+   Paired with window.appToast({kind, msg, timeout}) in app.js
+   ===================================================== */
+
+.toast-container {
+    position: fixed;
+    right: var(--space-5);
+    bottom: var(--space-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    z-index: 9999;
+    pointer-events: none;
+}
+
+.toast {
+    pointer-events: auto;
+    min-width: 240px;
+    max-width: 360px;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-elevated);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    cursor: pointer;
+    animation: toast-in 200ms ease;
+}
+
+.toast.is-success { border-left: 3px solid var(--success); }
+.toast.is-warning { border-left: 3px solid var(--warning); }
+.toast.is-error   { border-left: 3px solid var(--error); }
+.toast.is-info    { border-left: 3px solid var(--primary); }
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* =====================================================
+   .stat-card — for dashboard metric tiles
+   ===================================================== */
+
+.stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+}
+
+.stat-card__label {
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+}
+
+.stat-card__value {
+    font-size: 28px;
+    font-weight: var(--font-semibold);
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+
+.stat-card__hint {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+}
+
+.stat-card__icon {
+    font-size: 18px;
+    opacity: 0.6;
+}
+
+/* Variant: with primary accent. */
+.stat-card--accent {
+    border-color: var(--primary);
+    background: var(--primary-light);
+}
+.stat-card--accent .stat-card__value { color: var(--primary); }
+
+/* Stat row container — gap-spaced grid for the dashboard tile row. */
+.stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: var(--space-3);
+    margin-bottom: var(--space-5);
+}

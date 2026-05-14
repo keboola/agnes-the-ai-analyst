@@ -62,20 +62,7 @@
   .gd-section-head .sub { font-size: 11px; color: var(--text-secondary, #6b7280); }
 
   /* Members table */
-  .members-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .members-table thead th {
-    text-align: left; padding: 10px 18px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .members-table tbody td {
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-  }
-  .members-table tbody tr:last-child td { border-bottom: none; }
-  .members-table tbody tr:hover { background: var(--border-light, #fafafa); }
+
   .source-meta {
     font-size: 12px; color: var(--text-secondary, #9ca3af); font-weight: 400;
   }
@@ -95,22 +82,9 @@
     border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
     font-size: 13px; background: var(--surface, #fff);
   }
-  .add-row button {
-    padding: 7px 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
-    background: var(--primary, #6366f1); color: #fff;
-    border: 1px solid var(--primary, #6366f1); cursor: pointer;
-  }
-  .add-row button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  .icon-btn {
-    padding: 5px 10px; border-radius: 6px; font-size: 12px;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; color: var(--text-primary, #111827);
-    text-decoration: none;
-  }
-  .icon-btn:hover { background: var(--border-light, #f9fafb); }
-  .icon-btn.danger { color: #b91c1c; border-color: #fecaca; }
-  .icon-btn.danger:hover { background: #fef2f2; }
+
+
 
   .gd-loading, .gd-empty {
     padding: 24px 18px; text-align: center;
@@ -134,19 +108,7 @@
   }
   .res-link:hover { filter: brightness(1.05); }
 
-  .toast-stack {
-    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
-    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
-  }
-  .toast {
-    background: #111827; color: #fff; padding: 10px 16px;
-    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
-    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
-    pointer-events: auto; max-width: 380px;
-  }
-  .toast.show { opacity: 1; transform: translateY(0); }
-  .toast.success { background: #047857; }
-  .toast.error { background: #b91c1c; }
+
 </style>
 
 <div class="gd-page"
@@ -187,8 +149,8 @@
     </div>
     {% if not target_group.is_system and not target_group.is_google_managed %}
     <div style="display:flex; gap:6px;">
-      <button class="icon-btn" id="edit-group-btn">Edit</button>
-      <button class="icon-btn danger" id="delete-group-btn">Delete</button>
+      <button class="btn btn-sm" id="edit-group-btn">Edit</button>
+      <button class="btn btn-danger btn-sm" id="delete-group-btn">Delete</button>
     </div>
     {% endif %}
   </div>
@@ -208,7 +170,7 @@
       <span class="sub" id="members-sub">Loading…</span>
     </div>
     <div id="members-loading" class="gd-loading">Loading members…</div>
-    <table class="members-table" id="members-table" style="display:none;">
+    <table class="data-table" id="members-table" style="display:none;">
       <thead><tr>
         <th>Email</th><th>Name</th><th>Origin</th>
         <th style="text-align:right">Actions</th>
@@ -219,7 +181,7 @@
     {% if not target_group.is_google_managed %}
     <div class="add-row">
       <input id="add-email" type="email" autocomplete="off" placeholder="Add user by email…">
-      <button id="add-btn" disabled>Add member</button>
+      <button class="btn btn-primary btn-sm" id="add-btn" disabled>Add member</button>
     </div>
     {% endif %}
   </section>
@@ -250,13 +212,13 @@
     <label style="display:block; font-size:12px; color:#6b7280; margin: 12px 0 6px;">Description</label>
     <textarea id="edit-desc" style="width:100%; padding:9px 12px; border:1px solid #e5e7eb; border-radius:8px; font-size:13px; box-sizing:border-box; min-height:60px;"></textarea>
     <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
-      <button class="icon-btn" id="edit-cancel-btn">Cancel</button>
-      <button class="icon-btn" style="background:#6366f1;color:#fff;border-color:#6366f1;" id="edit-save-btn">Save</button>
+      <button class="btn btn-secondary" id="edit-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="edit-save-btn">Save</button>
     </div>
   </div>
 </div>
 
-<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
 
 <script>
 const root = document.querySelector(".gd-page");
@@ -290,14 +252,7 @@ if (IS_GOOGLE_MANAGED && !MAPPED_EMAIL) {
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
-function toast(msg, kind = "") {
-  const el = document.createElement("div");
-  el.className = "toast " + kind;
-  el.textContent = msg;
-  document.getElementById("toast-stack").appendChild(el);
-  requestAnimationFrame(() => el.classList.add("show"));
-  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
-}
+function toast(msg, kind = "") { window.appToast({ kind: kind || "info", msg }); }
 
 let groupState = null;
 let members = [];

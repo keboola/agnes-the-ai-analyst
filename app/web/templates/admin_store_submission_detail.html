@@ -46,14 +46,7 @@
   .badge.archived                                             { background: #e5e7eb; color: #374151; }
   .badge.deleted                                              { background: #4b5563; color: #f3f4f6; }
 
-  table.sub-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  table.sub-table th, table.sub-table td {
-    text-align: left; padding: 6px 10px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: top;
-  }
-  table.sub-table th { color: var(--text-secondary, #6b7280); text-transform: uppercase; letter-spacing: 0.4px; font-size: 10px; }
-  table.sub-table code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  table.data-table code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
   ul.issues { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
 
   .det-summary { font-size: 14px; line-height: 1.5; margin: 8px 0 12px 0; }
@@ -76,14 +69,6 @@
   }
 
   .det-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-  .btn {
-    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border, #e5e7eb);
-    background: var(--surface, #fff); cursor: pointer;
-    font-size: 13px; font-weight: 500; color: var(--text, #111827);
-  }
-  .btn.primary { background: var(--text, #111827); color: var(--surface, #fff); border-color: var(--text, #111827); }
-  .btn.danger { color: #b91c1c; }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .empty-msg { font-size: 13px; color: var(--text-secondary, #6b7280); font-style: italic; }
 
@@ -122,18 +107,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .pending-banner .elapsed { color: #92400e; opacity: 0.7; font-variant-numeric: tabular-nums; margin-left: auto; }
 
-  /* Toast — short-lived "action queued" message after rescan/retry.
-     Fades out so admins know the request was accepted before the page
-     reloads on completion. */
-  .toast {
-    position: fixed; bottom: 24px; right: 24px;
-    background: var(--text, #111827); color: var(--surface, #fff);
-    padding: 10px 16px; border-radius: 8px;
-    font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,0.18);
-    opacity: 0; transition: opacity .25s ease;
-    z-index: 9999;
-  }
-  .toast.show { opacity: 1; }
+
 </style>
 
 <div class="det-page page-shell">
@@ -254,19 +228,19 @@
     {# Action buttons — same JSON endpoints as the list page. #}
     <div class="det-actions">
       {% if sub.status in ['blocked_inline','blocked_llm','review_error'] and sub.entity_id %}
-      <button class="btn primary" data-action="override" title="Force-publish this entity. Requires reason; recorded in audit_log.">Override + publish</button>
+      <button class="btn btn-primary" data-action="override" title="Force-publish this entity. Requires reason; recorded in audit_log.">Override + publish</button>
       {% endif %}
       {% if sub.entity_id %}
-      <button class="btn" data-action="rescan" title="Re-run all checks (inline + LLM) against the current bundle. Use after check rules change.">Rescan</button>
+      <button class="btn btn-secondary" data-action="rescan" title="Re-run all checks (inline + LLM) against the current bundle. Use after check rules change.">Rescan</button>
       {% endif %}
       {% if sub.entity_id and not sub.bundle_purged_at %}
-      <a class="btn" href="/api/admin/store/submissions/{{ sub.id }}/bundle.zip"
+      <a class="btn btn-secondary" href="/api/admin/store/submissions/{{ sub.id }}/bundle.zip"
          title="Download the on-disk bundle as a ZIP for forensic inspection. Audit-logged.">Download bundle</a>
       {% endif %}
       {% if sub.status in ['review_error','blocked_llm'] and sub.entity_id %}
-      <button class="btn" data-action="retry" title="Re-queue LLM review only (skips inline checks).">Retry LLM</button>
+      <button class="btn btn-secondary" data-action="retry" title="Re-queue LLM review only (skips inline checks).">Retry LLM</button>
       {% endif %}
-      <button class="btn danger" data-action="delete">Delete</button>
+      <button class="btn btn-danger" data-action="delete">Delete</button>
     </div>
     {# Help text: explain why override isn't shown on this row, when applicable. #}
     {% if sub.status == 'approved' %}
@@ -375,7 +349,7 @@
   <div class="det-card">
     <h2>Static security scan{{ _vchip() }} {% if ic.static_security %}<span class="badge {{ ic.static_security.status or 'pass' }}">{{ ic.static_security.status or 'pass' }}</span>{% endif %}</h2>
     {% if ic.static_security and ic.static_security.findings %}
-    <table class="sub-table">
+    <table class="data-table">
       <thead>
         <tr><th>Severity</th><th>Category</th><th>File:line</th><th>Reason</th><th>Snippet</th></tr>
       </thead>
@@ -430,7 +404,7 @@
           <p class="det-summary">{{ sub.llm_findings.summary }}</p>
         {% endif %}
         {% if sub.llm_findings.findings %}
-        <table class="sub-table">
+        <table class="data-table">
           <thead>
             <tr><th>Severity</th><th>Category</th><th>File</th><th>Explanation</th><th>Fix hint</th></tr>
           </thead>
@@ -473,18 +447,7 @@
   const subId = {{ sub.id|tojson }};
   const currentStatus = {{ sub.status|tojson }};
 
-  // Fire-and-forget toast in the bottom-right.
-  function toast(msg, ms) {
-    const el = document.createElement('div');
-    el.className = 'toast';
-    el.textContent = msg;
-    document.body.appendChild(el);
-    requestAnimationFrame(() => el.classList.add('show'));
-    setTimeout(() => {
-      el.classList.remove('show');
-      setTimeout(() => el.remove(), 300);
-    }, ms || 3500);
-  }
+  function toast(msg) { window.appToast({ kind: 'info', msg }); }
 
   // Tick the "Xs / Xm Ys" elapsed counter on the pending banner.
   function startElapsedTicker() {

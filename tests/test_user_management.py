@@ -239,7 +239,10 @@ def test_admin_users_page_renders_for_admin(app_client, fresh_db):
         cookies={"access_token": token},
     )
     assert resp.status_code == 200
-    assert 'class="users-title">Users' in resp.text
+    # /admin/users uses the canonical .page-header--hero block (Users &
+    # Access eyebrow + Users title). Legacy .users-title H2 retired.
+    assert 'class="page-header__title">Users<' in resp.text
+    assert "page-header--hero" in resp.text
 
 
 def test_admin_users_page_denies_non_admin(app_client, fresh_db):
