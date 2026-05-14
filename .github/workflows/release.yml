@@ -24,10 +24,9 @@ on:
 permissions:
   contents: write
   packages: write
-  # `issues: write` lets the smoke-test job's rollback step open a
-  # GitHub issue alerting operators when an auto-rollback fires. Without
-  # this, the `gh issue create` call hits 403 and the `|| echo` fallback
-  # silently swallows it — operators see :stable revert with no alert.
+  # issues: write — default for jobs; the rollback-on-smoke-fail job
+  # (which declares its own permissions) opens a tracking issue on
+  # smoke-test failure.
   issues: write
 
 # When a developer pushes a brand-new branch with code changes, GitHub fires
@@ -208,12 +207,10 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      # Required for the rollback step's `docker push` to GHCR. The
-      # `build-and-push` job logs in for itself; this job needs its own
-      # login since GitHub Actions tokens are scoped per-job. Without it,
-      # the rollback hits "unauthenticated: User cannot be authenticated
-      # with the token provided" and silently leaves :stable pointing at
-      # the broken image (real incident: PR #137 / 4ec5ff44).
+      # Required so `Start Agnes from built image` can pull the just-built
+      # private GHCR image. The `build-and-push` job logs in for itself;
+      # this job needs its own login since GitHub Actions tokens are scoped
+      # per-job.
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -234,44 +231,6 @@ jobs:
       - name: Run smoke tests
         run: bash scripts/smoke-test.sh http://localhost:8000
 
-      - name: Automatic rollback on failure
-        if: failure()
-        env:
-          # Required for the `gh issue create` call below — without GH_TOKEN
-          # the gh CLI fails the auth check and the issue creation falls
-          # through the `|| echo` fallback, so an operator never sees the
-          # rollback alert.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
-          VERSION="${{ needs.build-and-push.outputs.version }}"
-          DEPRECATED_TAG="deprecated-${VERSION}"
-          REPO="ghcr.io/${{ github.repository }}"
-
-          echo "Smoke test failed — initiating rollback"
-
-          # Tag the current (failed) image as :deprecated-YYYY.MM.N
-          docker pull "${REPO}:${IMAGE_TAG}"
-          docker tag "${REPO}:${IMAGE_TAG}" "${REPO}:${DEPRECATED_TAG}"
-          docker push "${REPO}:${DEPRECATED_TAG}"
-          echo "Tagged failed image as ${REPO}:${DEPRECATED_TAG}"
-
-          # Revert :stable to the previous known-good image
-          PREV_TAG=$(git tag -l "stable-*" --sort=-version:refname | head -2 | tail -1)
-          if [ -n "$PREV_TAG" ]; then
-            docker pull "${REPO}:${PREV_TAG}"
-            docker tag "${REPO}:${PREV_TAG}" "${REPO}:stable"
-            docker push "${REPO}:stable"
-            echo "Reverted :stable to ${PREV_TAG}"
-          else
-            echo "WARNING: No previous stable tag found — cannot revert :stable automatically"
-          fi
-
-          # Create a GitHub issue alerting about the failure
-          ISSUE_TITLE="Smoke test failure — rollback to ${PREV_TAG:-unknown}"
-          ISSUE_BODY="## Automatic Rollback Report\n\nThe smoke test for image \`${IMAGE_TAG}\` failed.\n\n- **Failed image**: \`${REPO}:${IMAGE_TAG}\`\n- **Deprecated tag**: \`${REPO}:${DEPRECATED_TAG}\`\n- **Rolled back to**: \`${PREV_TAG:-N/A}\`\n- **Commit**: \`${{ github.sha }}\`\n- **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nPlease investigate and fix before re-deploying."
-          gh issue create --title "$ISSUE_TITLE" --body "$(echo -e "$ISSUE_BODY")" --label "bug" || echo "Failed to create GitHub issue (gh CLI may not be available)"
-
       - name: Collect logs on failure
         if: failure()
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml logs > smoke-test-logs.txt
@@ -286,6 +245,17 @@ jobs:
       - name: Teardown
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml down -v
+
+  rollback-on-smoke-fail:
+    needs: [build-and-push, smoke-test]
+    if: failure() && needs.smoke-test.result == 'failure'
+    uses: ./.github/workflows/rollback.yml
+    with:
+      failed_image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    permissions:
+      contents: read
+      packages: write
+      issues: write
 
   # Reproduces the deploy shape that broke agnes-development on 2026-04-29:
   # the production stack uses docker-compose.host-mount.yml to bind-mount /data
