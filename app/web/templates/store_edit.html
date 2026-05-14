@@ -44,16 +44,6 @@
   }
 
   .actions { display: flex; gap: 8px; margin-top: 20px; align-items: center; }
-  .btn-primary {
-    padding: 8px 18px; border-radius: 6px; border: none;
-    background: var(--primary, #0073D1); color: white;
-    font-size: 14px; font-weight: 500; cursor: pointer;
-  }
-  .btn-primary:disabled { background: var(--border, #d1d5db); cursor: not-allowed; }
-  .btn-link {
-    padding: 8px 12px; color: var(--text-secondary, #6b7280); text-decoration: none;
-    font-size: 14px;
-  }
 
   .pending-banner {
     margin: 12px 0 16px 0; padding: 14px 18px; border-radius: 10px;
@@ -175,7 +165,7 @@
     <div class="actions">
       <button type="submit" class="btn-primary" id="save-btn"
               {% if pending_sub %}disabled{% endif %}>Save</button>
-      <a href="/marketplace/flea/{{ entity.id }}" class="btn-link">Cancel</a>
+      <a href="/marketplace/flea/{{ entity.id }}" class="btn btn-secondary">Cancel</a>
     </div>
   </form>
 </div>

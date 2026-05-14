@@ -145,22 +145,11 @@
 
   .mp-actions { display: flex; gap: 8px; align-items: center; }
   .mp-actions .btn {
-    appearance: none;
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 8px 14px;
-    border: 1px solid var(--border); background: var(--surface);
-    color: var(--text-primary); border-radius: 8px;
     font-size: 13px; font-weight: 500; cursor: pointer;
     font-family: var(--font-primary); text-decoration: none;
     transition: all 0.15s ease;
   }
-  .mp-actions .btn:hover { border-color: var(--primary); color: var(--primary); }
-  .mp-actions .btn.primary {
-    background: var(--primary); color: #fff; border-color: var(--primary);
-  }
-  .mp-actions .btn.primary:hover {
-    background: var(--primary-dark); border-color: var(--primary-dark); color: #fff;
-  }
+
 
   /* ── Info block (curated trust badge + flea open-shelf signal) ───── */
   .mp-curator-block {
@@ -451,10 +440,10 @@
       </button>
     </div>
     <div class="mp-actions">
-      <a class="btn" data-actions-for="curated" href="/marketplace/guide/curated">Submit a plugin</a>
+      <a class="btn btn-secondary" data-actions-for="curated" href="/marketplace/guide/curated">Submit a plugin</a>
       <!-- Flea has a self-service +Upload button below — no second
            "how to" CTA needed. Anyone uploads via the form directly. -->
-      <a class="btn primary" data-actions-for="flea" href="/store/new" hidden>+ Upload</a>
+      <a class="btn btn-primary" data-actions-for="flea" href="/store/new" hidden>+ Upload</a>
     </div>
   </div>
 

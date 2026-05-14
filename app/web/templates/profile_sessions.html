@@ -5,7 +5,7 @@
 <style>
   .container:has(.sess-page) { max-width: none; padding: 24px 16px; }
   .sess-page { max-width: 1200px; margin: 0 auto; padding: 0; }
-  .sess-title { margin: 0 0 8px 0; font-size: 22px; font-weight: 600; }
+
   .sess-help { color: var(--text-secondary, #6b7280); font-size: 13px; margin-bottom: 20px; line-height: 1.55; }
   .sess-help code { background: var(--border-light, #f3f4f6); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
   .sess-table-wrap {
@@ -14,22 +14,7 @@
     border-radius: 12px;
     overflow-x: auto;
   }
-  .sess-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .sess-table thead th {
-    text-align: left; padding: 12px 16px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-    white-space: nowrap;
-  }
-  .sess-table tbody td {
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: middle;
-  }
-  .sess-table tbody tr:last-child td { border-bottom: none; }
-  .sess-table tbody tr:hover { background: var(--border-light, #fafafa); }
+
   .sess-table .name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   .sess-table .ts { white-space: nowrap; color: var(--text-secondary, #6b7280); font-variant-numeric: tabular-nums; }
   .sess-table .num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -62,7 +47,10 @@
 </style>
 
 <div class="sess-page">
-  <h1 class="sess-title">My sessions</h1>
+  {% set page_hero_eyebrow = "Profile" %}
+  {% set page_hero_title = "My sessions" %}
+  {% set page_hero_subtitle = "Sessions uploaded via <code>agnes push</code> from Claude Code." %}
+  {% include "_page_hero.html" %}
   <p class="sess-help">
     Sessions you uploaded via <code>agnes push</code> from your Claude Code workspace, with
     extraction status from the verification processor's rows in <code>session_processor_state</code>.
@@ -77,7 +65,7 @@
 
   <div class="sess-table-wrap">
     {% if sessions %}
-    <table class="sess-table">
+    <table class="data-table">
       <thead>
         <tr>
           <th>Session file</th>

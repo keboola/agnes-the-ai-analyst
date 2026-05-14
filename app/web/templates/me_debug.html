@@ -48,17 +48,7 @@
   }
   .kv .v.muted { color: #9ca3af; font-style: italic; }
 
-  .md-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .md-table th, .md-table td {
-    padding: 8px 14px; text-align: left;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-  }
-  .md-table thead th {
-    background: var(--border-light, #f9fafb);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-    color: var(--text-secondary, #6b7280); font-weight: 600;
-  }
-  .md-table tbody tr:last-child td { border-bottom: none; }
+
 
   .src-chip {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
@@ -79,12 +69,7 @@
 
   .md-empty { color: #9ca3af; font-style: italic; font-size: 12px; }
 
-  .refetch-btn {
-    padding: 7px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
-    background: var(--primary, #6366f1); color: #fff;
-    border: 1px solid var(--primary, #6366f1); cursor: pointer;
-  }
-  .refetch-btn:disabled { opacity: 0.6; cursor: progress; }
+
 
   .refetch-result { margin-top: 14px; }
   .diff-add { color: #166534; }
@@ -168,7 +153,7 @@
       <span class="sub">{{ memberships|length }} row(s)</span>
     </div>
     {% if memberships %}
-    <table class="md-table">
+    <table class="data-table">
       <thead><tr>
         <th>Group</th><th>Linked to</th><th>Source</th><th>Added</th><th>Added by</th>
       </tr></thead>
@@ -202,7 +187,7 @@
       <span class="sub">Distinct {{ grants|length }} grant(s) reachable via your groups.</span>
     </div>
     {% if grants %}
-    <table class="md-table">
+    <table class="data-table">
       <thead><tr>
         <th>Resource type</th><th>Resource id</th><th>Via group</th>
       </tr></thead>
@@ -238,7 +223,7 @@
       </div>
 
       <div style="margin-top:14px;">
-        <button id="refetch-btn" class="refetch-btn" type="button">
+        <button id="refetch-btn" class="btn btn-primary btn-sm" type="button">
           Refetch from Google (dry-run)
         </button>
         <span id="refetch-status" style="margin-left:10px; font-size:12px; color:#6b7280;"></span>
