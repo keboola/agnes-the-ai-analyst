@@ -772,9 +772,12 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "kind": "int",
             "default": 50,
             "hint": (
-                "Per-submitter cap on `blocked_inline` rows in the "
-                "trailing 24h. Bounds the worst case where a bot loops "
-                "on malformed ZIPs. 0 disables the quota. Default 50."
+                "Per-submitter cap on `blocked_llm` + `review_error` "
+                "rows in the trailing 24h. Bounds the worst case where "
+                "a bot loops on bundles that survive inline checks but "
+                "trip the async LLM reviewer. Inline failures are "
+                "hard-rejected upstream (no row, not counted). 0 "
+                "disables the quota. Default 50."
             ),
         },
         "blocked_bundle_ttl_days": {

@@ -238,7 +238,7 @@ def _reject_inline_or_continue(
     conn: duckdb.DuckDBPyConnection,
     user: dict,
     inline: InlineResult,
-    bundle_meta: Any,
+    plugin_dir: Path,
     cleanup_paths: List[Path],
     type_: str,
     name: str,
@@ -292,6 +292,12 @@ def _reject_inline_or_continue(
         )
 
     if inline.static_security.get("status") != "pass":
+        # Lazy-compute bundle_meta only on the security branch. The
+        # validation branch returned above without needing the hash,
+        # so callers don't pay for compute_bundle_meta when manifest /
+        # content checks fail (the common case for honest submitters).
+        from src.store_guardrails.bundle_meta import compute_bundle_meta
+        bundle_meta = compute_bundle_meta(plugin_dir)
         findings = inline.static_security.get("findings") or []
         try:
             AuditRepository(conn).log(
@@ -311,7 +317,16 @@ def _reject_inline_or_continue(
                 result="blocked",
             )
         except Exception:
-            pass
+            # The security_blocked audit row is the ONLY forensic
+            # trace of this attempt (no DB submission row by design),
+            # so a swallowed failure here loses the signal entirely.
+            # Surface it in logs even though we keep raising the 422
+            # so the submitter still sees the same response.
+            logger.exception(
+                "Failed to write store.upload.security_blocked "
+                "audit_log entry (context=%s sha256=%s)",
+                context, bundle_meta.sha256,
+            )
         for p in cleanup_paths:
             shutil.rmtree(p, ignore_errors=True)
         raise HTTPException(
@@ -1157,8 +1172,10 @@ async def create_entity(
     # queue with noise. Cap rejected uploads per submitter per 24h;
     # operator can disable by setting the knob to 0.
     #
-    # #9 widening: counts blocked_inline + blocked_llm + review_error so
-    # a submitter triggering only LLM-blocked verdicts is bounded too.
+    # Counter narrows to blocked_llm + review_error — inline failures
+    # are hard-rejected upstream and never create rows. HTTP-level
+    # slowapi limits + the `store.upload.security_blocked` audit trail
+    # cover the inline-tier abuse path.
     #
     # Race note (#5, deferred): two parallel uploads from the same
     # submitter can both pass the SELECT before either INSERT — the cap
@@ -1259,8 +1276,6 @@ async def create_entity(
         # hard-rejected — no entity row, no submission row, no bundle on
         # disk. Quarantine + admin rescan apply ONLY to the async LLM
         # path (see runner.run_llm_review). See docs/STORE_GUARDRAILS.md.
-        from src.store_guardrails.bundle_meta import compute_bundle_meta
-        bundle_meta = compute_bundle_meta(plugin_dir)
         inline = run_inline_checks(
             plugin_dir, type_=type, description=final_description,
         )
@@ -1268,12 +1283,18 @@ async def create_entity(
             conn=conn,
             user=user,
             inline=inline,
-            bundle_meta=bundle_meta,
+            plugin_dir=plugin_dir,
             cleanup_paths=[_entity_dir(entity_id)],
             type_=type,
             name=final_name,
             context="create",
         )
+        # Compute meta after the reject gate so honest submitters whose
+        # bundles fail validation never pay for the SHA256 walk; this
+        # path only fires once we know the bundle is going to be
+        # persisted (as a submission row).
+        from src.store_guardrails.bundle_meta import compute_bundle_meta
+        bundle_meta = compute_bundle_meta(plugin_dir)
         subs_repo = StoreSubmissionsRepository(conn)
 
         guardrails_on = get_guardrails_enabled()
@@ -1509,8 +1530,6 @@ async def update_entity(
                 description=description if description is not None
                             else entity.get("description"),
             )
-            from src.store_guardrails.bundle_meta import compute_bundle_meta
-            staging_meta = compute_bundle_meta(staging_plugin)
             # Hard-reject on inline failure. _reject_inline_or_continue
             # cleans the staged version dir (no live state to roll back —
             # the live ``plugin/`` tree was never touched) and raises 422
@@ -1520,7 +1539,7 @@ async def update_entity(
                 conn=conn,
                 user=user,
                 inline=inline_after_update,
-                bundle_meta=staging_meta,
+                plugin_dir=staging_plugin,
                 cleanup_paths=[version_root],
                 type_=entity["type"],
                 name=entity["name"],
@@ -1843,8 +1862,6 @@ async def restore_version(
         type_=entity["type"],
         description=entity.get("description"),
     )
-    from src.store_guardrails.bundle_meta import compute_bundle_meta
-    target_meta = compute_bundle_meta(target_plugin)
     # Hard-reject on inline failure. Wipe the staged version dir
     # entirely — live tree untouched, no entity/submission row to
     # create. The submitter sees the structured 422 and either fixes
@@ -1853,7 +1870,7 @@ async def restore_version(
         conn=conn,
         user=user,
         inline=inline,
-        bundle_meta=target_meta,
+        plugin_dir=target_plugin,
         cleanup_paths=[target_root],
         type_=entity["type"],
         name=entity["name"],
@@ -1864,6 +1881,8 @@ async def restore_version(
     # the PUT edit path: existing installers keep getting the prior
     # approved version through the LLM review window. Promotion (live
     # swap + version_no/version/file_size bump) waits on LLM approval.
+    from src.store_guardrails.bundle_meta import compute_bundle_meta
+    target_meta = compute_bundle_meta(target_plugin)
     guardrails_on = get_guardrails_enabled()
     subs_repo = StoreSubmissionsRepository(conn)
     sub_id = subs_repo.create(
