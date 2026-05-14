@@ -45,6 +45,7 @@ DEPRECATED_CLASSES = {
     "gp-table": "data-table",
     "marketplaces-table": "data-table",
     "audit-table": "data-table",
+    "stats-table": "data-table",
     "users-search": "search-input",
     "marketplaces-search": "search-input",
     "kb-search": "search-input",
