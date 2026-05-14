@@ -278,7 +278,7 @@
                     <td class="num">${fmtNum(r.tool_calls)}</td>
                     <td class="num">${fmtNum(r.tokens_total)}</td>
                     <td>${pipelineBadge(r.pipeline_status)}</td>
-                    <td class="num">${r.items_extracted != null ? r.items_extracted : ''}</td>
+                    <td class="num">${r.items_extracted != null ? r.items_extracted : 0}</td>
                     <td>${dlCell}</td>
                 `;
                 tbody.appendChild(tr);
