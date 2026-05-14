@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.17] — 2026-05-14
+
+### Internal
+- CI/release workflow consolidation (the salvageable subset of the
+  abandoned PR #139): a reusable `_test.yml` workflow is the single
+  source of the install/lint/typecheck/pytest recipe, called by
+  `ci.yml`, `release.yml`, and `keboola-deploy.yml`. `rollback.yml`
+  extracts the smoke-test rollback into a reusable + manually
+  dispatchable workflow. `prune-dev-tags.yml` adds weekly housekeeping
+  of legacy CalVer git tags + GHCR images. `lint-workflows.yml` runs
+  `actionlint` on workflow changes. The superseded `deploy.yml` stub is
+  removed. Excludes #139's rejected pieces (Release Drafter,
+  setuptools_scm, run-number tag scheme, main-only release triggers).
+
 ## [0.54.16] — 2026-05-14
 
 ### Fixed
