@@ -269,6 +269,63 @@ class TestAdminListing:
         assert params.get("bundle_sha256")
         assert params.get("submitter_email") == "spammer@x.com"
 
+    def test_inline_validation_returns_validation_failed_code(self, web_client):
+        """A bundle that survives pre-bake but fails ``content_check``
+        (description too short) goes through ``_reject_inline_or_continue``
+        and is rejected with the new two-tier response: 422,
+        ``detail.code == 'validation_failed'``, populated
+        ``detail.checks`` shape, NO submission row, NO entity row,
+        and NO audit_log entry (validation-tier failures are
+        operator-fixable, not forensically interesting).
+
+        Distinct from ``test_validation_failure_creates_no_audit_trail``
+        below which exercises the pre-bake ``zip_missing_skill_md`` path
+        — that one fails before inline checks ever run.
+        """
+        from src.repositories.audit import AuditRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        # Valid skill layout — pre-bake parses frontmatter, layout
+        # check passes. But description is < 60 chars → content_check
+        # fires inside run_inline_checks → _reject_inline_or_continue
+        # returns validation_failed.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(
+                "tiny/SKILL.md",
+                "---\nname: tiny\ndescription: too short\n---\n\n"
+                + ("Body text. " * 50),
+            )
+        short_desc_zip = buf.getvalue()
+
+        user_id, user_cookies = _create_user(web_client, "shortdesc@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", short_desc_zip, "application/zip")},
+            data={"type": "skill"}, cookies=user_cookies,
+        )
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        assert detail["code"] == "validation_failed", detail
+        # Frontend wizard (humanizeError in store_upload.html) reads
+        # detail.checks.{manifest,content,quality} — lock the shape.
+        assert set(detail["checks"].keys()) == {"manifest", "content", "quality"}
+        assert detail["checks"]["content"]["status"] != "pass"
+
+        # Validation-tier failures must not produce DB rows or audit entries.
+        conn = get_system_db()
+        items, _total = StoreSubmissionsRepository(conn).list_for_admin(
+            submitter_id=user_id,
+        )
+        assert items == []
+        rows, _cursor = AuditRepository(conn).query(
+            user_id=user_id, action_prefix="store.upload.", limit=10,
+        )
+        conn.close()
+        assert rows == [], (
+            "validation-tier rejection must not write audit_log entries"
+        )
+
     def test_validation_failure_creates_no_audit_trail(self, web_client):
         """A bundle that fails manifest validation (missing SKILL.md) is
         a fixable user error — no submission row, no entity row, and
@@ -897,9 +954,10 @@ class TestQuota:
         )
         # Clean upload — passes inline guardrails. With ANTHROPIC_API_KEY
         # absent in tests the guardrail pipeline auto-disables so the
-        # entity lands at ``approved`` (201). Anything other than 429 is
-        # the quota-disabled outcome we care about.
-        assert r.status_code != 429, r.text
+        # entity lands at ``approved`` (201). Assert the success codes
+        # explicitly so a 500 from an unrelated regression doesn't
+        # masquerade as quota-disabled.
+        assert r.status_code in (200, 201), r.text
 
     def test_quota_counter_includes_blocked_llm_and_review_error(self, web_client):
         """The counter narrows to ``blocked_llm`` + ``review_error`` —

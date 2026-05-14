@@ -432,12 +432,16 @@ def get_guardrails_review_model() -> str:
 
 
 def get_guardrails_blocked_quota_per_day() -> int:
-    """Per-submitter cap on `blocked_inline` rows in the trailing 24h.
+    """Per-submitter cap on `blocked_llm` + `review_error` rows in the
+    trailing 24h.
 
     Defaults to 50. Set to 0 in instance.yaml to disable the quota
-    entirely (useful for trusted single-tenant deployments). Bounds the
-    worst case where a bot loops on malformed ZIPs and fills disk +
-    the admin queue with noise.
+    entirely (useful for trusted single-tenant deployments). Bounds
+    the worst case where a bot loops on bundles that pass inline
+    checks but trip the async LLM reviewer. Inline failures are
+    hard-rejected upstream (no row created) and not counted here;
+    HTTP-level rate limiting + the
+    ``store.upload.security_blocked`` audit trail cover that path.
     """
     val = get_value("guardrails", "blocked_quota_per_day", default=50)
     try:

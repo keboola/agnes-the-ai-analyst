@@ -225,11 +225,15 @@
     <a href="/admin/store/submissions{% if _common %}?{{ _common[:-1] }}{% endif %}" class="{{ 'active' if not status_filter else '' }}">All</a>
     {% set _pending = "pending_llm,pending_inline" %}
     <a href="/admin/store/submissions?{{ _common }}status={{ _pending }}" class="{{ 'active' if status_filter == _pending else '' }}">Pending</a>
-    {# 'blocked_inline' deliberately omitted — inline failures are now
-       hard-rejected upstream (no submission row created). Legacy
-       blocked_inline rows from instances that ran the v30 contract
-       remain reachable via the 'All' tab. #}
-    {% set _needs = "blocked_llm,review_error" %}
+    {# Inline failures on the upload path are hard-rejected and create
+       no rows — the only producer of `blocked_inline` post-v30 is the
+       admin Rescan flow, which re-runs inline checks against an
+       already-quarantined bundle. Include it here so an admin who
+       triggers a rescan sees the result in their default queue
+       instead of having to scroll to 'All'. Legacy `blocked_inline`
+       rows from pre-v30 instances also surface here, which is fine —
+       same actionable state. #}
+    {% set _needs = "blocked_inline,blocked_llm,review_error" %}
     <a href="/admin/store/submissions?{{ _common }}status={{ _needs }}" class="{{ 'active' if status_filter == _needs else '' }}">Needs review</a>
     <a href="/admin/store/submissions?{{ _common }}status=approved" class="{{ 'active' if status_filter == 'approved' else '' }}">Approved</a>
     <a href="/admin/store/submissions?{{ _common }}status=overridden" class="{{ 'active' if status_filter == 'overridden' else '' }}">Overridden</a>

@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Store guardrails — post-#290 follow-up.** Admin Rescan still writes `status='blocked_inline'` (the only post-v30 producer of that status). Re-add `blocked_inline` to the admin queue's "Needs review" filter chip and to `TERMINAL_BLOCKED_STATUSES` in the bundle-purge job, so a rescan-produced row surfaces in the default operator view and its bundle gets swept by the TTL purge instead of lingering on disk indefinitely. Documents the rescan-only asymmetry inline (chip + purge tuple + new code comments).
+- Stale doc strings referring to the pre-#290 `blocked_inline` quota counter on `app/api/store.py` spam-quota comment, `app/instance_config.py::get_guardrails_blocked_quota_per_day` docstring, and the operator-facing hint in `/admin/server-config` (`blocked_quota_per_day`). All three now correctly describe the narrowed `blocked_llm + review_error` counter that #290 actually shipped.
+
+### Internal
+- Tightened `test_quota_disabled_with_zero` assertion from `r.status_code != 429` to `r.status_code in (200, 201)` so a 500 regression no longer slips through as quota-disabled.
+- New positive test `test_inline_validation_returns_validation_failed_code` covering the `_reject_inline_or_continue` validation branch end-to-end (response code + checks payload shape + no-DB-write contract). Locks the frontend wizard's `detail.checks.{manifest,content,quality}` contract.
+- `_reject_inline_or_continue` now takes `plugin_dir` and lazy-computes `bundle_meta` only on the security branch; the validation branch (the common case for honest submitters) no longer pays for a SHA256 walk over the bundle on every reject.
+- Surface failures to write the `store.upload.security_blocked` audit row via `logger.exception` instead of silently swallowing — that audit row is the only forensic trace of an inline-tier security finding, and a swallowed DB error would have left no record at all.
+
 ## [0.54.9] — 2026-05-13
 
 ### Added
