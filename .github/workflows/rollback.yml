@@ -70,6 +70,9 @@ jobs:
           REPO="ghcr.io/${{ github.repository }}"
           FAILED="${{ inputs.failed_image_tag }}"
           TARGET="${{ steps.target.outputs.target }}"
+          if [[ "$FAILED" != stable-* ]]; then
+            echo "::warning::failed_image_tag '$FAILED' is not a stable-* tag — this workflow rolls back the :stable channel; the deprecated-* tag name may be non-standard."
+          fi
           # Strip the channel prefix for a backward-compatible deprecated tag name
           DEPRECATED="deprecated-${FAILED#stable-}"
 
