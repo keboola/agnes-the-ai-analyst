@@ -10,8 +10,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  test-shard:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v6
 
@@ -25,10 +29,55 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system ".[dev,server]"
 
-      - name: Run tests (parallel)
-        run: pytest tests/ -v --tb=short -n auto
+      - name: Run tests (shard ${{ matrix.group }}/4)
+        # pytest-split shards the suite across 4 parallel jobs, balanced by
+        # the committed `.test_durations` file; `-n auto` parallelises
+        # within each shard across the runner's cores. Regenerate durations
+        # with `pytest tests/ --store-durations -n auto` when the suite
+        # drifts enough that shards become uneven.
+        run: pytest tests/ -v --tb=short -n auto --splits 4 --group ${{ matrix.group }}
         env:
           TESTING: "1"
+
+  # Single required status check. Branch protection requires `test`, but the
+  # matrix above publishes `test-shard (1..4)` — this job aggregates them
+  # into one `test` result so no branch-protection change is needed.
+  test:
+    needs: test-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all test shards passed
+        run: |
+          if [ "${{ needs.test-shard.result }}" != "success" ]; then
+            echo "::error::test-shard result was '${{ needs.test-shard.result }}' — one or more shards failed"
+            exit 1
+          fi
+          echo "All 4 test shards passed."
+
+  lint:
+    # Advisory only (continue-on-error) — ruff + mypy surface issues but
+    # never gate. Split out of release.yml's old test job; runs without the
+    # full dependency install since neither tool needs it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Lint with ruff
+        run: |
+          pip install ruff
+          ruff check . || true
+        continue-on-error: true
+
+      - name: Type check with mypy
+        run: |
+          pip install mypy
+          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
+        continue-on-error: true
 
   cli-wheel-clean-install:
     # Catches the "wheel METADATA conflicts with transitive deps under fresh
