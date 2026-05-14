@@ -31,6 +31,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   tokens. `/profile` (identity, groups, RBAC) and `/tokens` (PAT
   management) are unchanged.
 
+### Fixed
+- `/me/activity` page hero subtitle now escapes `user.email` before
+  concatenating it into the `| safe`-rendered subtitle. The raw
+  concatenation bypassed Jinja2 auto-escaping — an XSS regression
+  relative to the auto-escaped `me_stats.html` on `main`.
+
 ### Removed
 - `me_stats.html` and `profile_sessions.html` templates — their routes
   now redirect to `/me/activity`.
