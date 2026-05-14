@@ -10,6 +10,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.11] — 2026-05-14
+
+### Changed
+- Catalog page: each `catalog_data` bucket now renders as its own
+  top-level Data Package card instead of being nested as a collapsible
+  accordion under a single "Core Business Data" wrapper. The page hero
+  title ("Data Packages") now describes the actual visual structure, and
+  the card grain matches the `bucket` column on `table_registry`. Tables
+  inside each package are flat-listed (no per-bucket accordion),
+  mirroring the existing `Agnes Internal` card; the `Agnes Internal` and
+  `Business Metrics` cards themselves are unchanged. Per-table sync info
+  ("Synced …" / "Queried directly from BigQuery") on each row is
+  preserved. The aggregate meta line ("N tables · ~M rows total ·
+  Synced X") on the old wrapper is dropped with no replacement — the
+  global sync timestamp is no longer shown on this page. An instance
+  with zero registered tables now renders no Data Package cards at all,
+  where the old wrapper always rendered (showing "0 tables").
+
 ## [0.54.10] — 2026-05-14
 
 ### Changed
