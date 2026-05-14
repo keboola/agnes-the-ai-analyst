@@ -24,19 +24,8 @@
 {% block content %}
 <style>
 .stats-page { max-width: 1280px; margin: 0 auto; padding: 24px 24px 64px; }
-.stats-page h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
-.stats-page .lead { color: var(--hp-text-muted, #6b7280); margin: 0 0 20px; font-size: 13px; }
 
-.stats-tabs {
-    display: flex; gap: 0; border-bottom: 1px solid var(--hp-border-light, rgba(0,0,0,0.12));
-    margin-bottom: 18px; overflow-x: auto;
-}
-.stats-tab {
-    border: 0; background: transparent; padding: 10px 16px; font: inherit; font-size: 13.5px;
-    color: var(--hp-text-muted, #6b7280); cursor: pointer; border-bottom: 2px solid transparent;
-    white-space: nowrap;
-}
-.stats-tab.is-active { color: var(--hp-text, #111); border-bottom-color: var(--hp-accent, #2563eb); }
+
 .stats-panel { display: none; }
 .stats-panel.is-active { display: block; }
 
@@ -44,42 +33,16 @@
 .stats-error { color: #b91c1c; padding: 24px 0; }
 .stats-empty { color: var(--hp-text-muted, #6b7280); padding: 24px 0; }
 
-table.stats-table {
-    width: 100%; border-collapse: collapse; font-size: 13px;
-    font-variant-numeric: tabular-nums;
-}
-table.stats-table th, table.stats-table td {
-    padding: 8px 10px; border-bottom: 1px solid var(--hp-border-light, rgba(0,0,0,0.07));
-    text-align: left; vertical-align: top;
-}
-table.stats-table th { font-weight: 600; color: var(--hp-text-muted, #6b7280); font-size: 11.5px;
-    text-transform: uppercase; letter-spacing: 0.04em; }
-table.stats-table td.num { text-align: right; }
-table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
+
 
 .stats-paginate {
     display: flex; gap: 8px; justify-content: flex-end; padding: 12px 0;
 }
-.stats-paginate button {
-    padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
-    border: 1px solid var(--hp-border-light, rgba(0,0,0,0.12)); border-radius: 6px;
-    background: #fff;
-}
-.stats-paginate button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .stats-overview {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;
 }
 @media (max-width: 720px) { .stats-overview { grid-template-columns: repeat(2, 1fr); } }
-.stats-overview .card {
-    padding: 12px; border-radius: 8px;
-    background: var(--hp-stat-bg, rgba(0,0,0,0.025));
-}
-.stats-overview .lbl {
-    font-size: 11px; color: var(--hp-text-muted, #6b7280);
-    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;
-}
-.stats-overview .val { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .tok-chart { width: 100%; height: 160px; margin: 8px 0 16px; }
 .tok-chart rect { fill: var(--hp-accent, #2563eb); opacity: 0.85; }
@@ -87,29 +50,26 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
 </style>
 
 <div class="stats-page">
-    <h1>Your Stats</h1>
-    <p class="lead">
-        Sessions, tokens, data access, and sync activity for
-        <strong>{{ user.email }}</strong>. Data covers the
-        sessions {{ instance_brand }} has processed from your Claude
-        Code transcripts.
-    </p>
+    {% set page_hero_eyebrow = "Profile" %}
+    {% set page_hero_title = "Your Stats" %}
+    {% set page_hero_subtitle = "Sessions, tokens, data access, and sync activity for <strong>" ~ user.email ~ "</strong>. Data covers the sessions " ~ instance_brand ~ " has processed from your Claude Code transcripts." %}
+    {% include "_page_hero.html" %}
 
-    <nav class="stats-tabs" role="tablist" aria-label="Stats sections">
-        <button type="button" role="tab" class="stats-tab is-active"
+    <nav class="tab-strip" role="tablist" aria-label="Stats sections">
+        <button type="button" role="tab" class="tab-strip__item is-active"
                 data-tab="sessions" aria-selected="true">Sessions</button>
-        <button type="button" role="tab" class="stats-tab"
+        <button type="button" role="tab" class="tab-strip__item"
                 data-tab="tokens" aria-selected="false">Tokens</button>
-        <button type="button" role="tab" class="stats-tab"
+        <button type="button" role="tab" class="tab-strip__item"
                 data-tab="queries" aria-selected="false">Data access</button>
-        <button type="button" role="tab" class="stats-tab"
+        <button type="button" role="tab" class="tab-strip__item"
                 data-tab="sync" aria-selected="false">Sync activity</button>
     </nav>
 
     <section class="stats-panel is-active" id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions">
         <div class="stats-loading" data-state="loading">Loading sessions…</div>
         <div data-state="ready" hidden>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>Started</th><th>Model</th>
                     <th class="num">Prompts</th><th class="num">Tools</th>
@@ -118,8 +78,8 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
                 <tbody data-rows></tbody>
             </table>
             <div class="stats-paginate">
-                <button type="button" data-action="prev">‹ Prev</button>
-                <button type="button" data-action="next">Next ›</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-action="prev">‹ Prev</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-action="next">Next ›</button>
             </div>
         </div>
     </section>
@@ -128,15 +88,15 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         <div class="stats-loading" data-state="loading">Loading tokens…</div>
         <div data-state="ready" hidden>
             <div class="stats-overview">
-                <div class="card"><div class="lbl">Input</div><div class="val" data-tok-total="input">—</div></div>
-                <div class="card"><div class="lbl">Output</div><div class="val" data-tok-total="output">—</div></div>
-                <div class="card"><div class="lbl">Cache read</div><div class="val" data-tok-total="cache_read">—</div></div>
-                <div class="card"><div class="lbl">Cache creation</div><div class="val" data-tok-total="cache_creation">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Input</div><div class="stat-card__value" data-tok-total="input">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Output</div><div class="stat-card__value" data-tok-total="output">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Cache read</div><div class="stat-card__value" data-tok-total="cache_read">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Cache creation</div><div class="stat-card__value" data-tok-total="cache_creation">—</div></div>
             </div>
             <svg class="tok-chart" data-tok-chart viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
 
             <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">By model</h3>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>Model</th><th class="num">Sessions</th>
                     <th class="num">Input</th><th class="num">Output</th>
@@ -146,7 +106,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
             </table>
 
             <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">Top sessions</h3>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>Started</th><th>Model</th>
                     <th class="num">Input</th><th class="num">Output</th>
@@ -160,7 +120,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
     <section class="stats-panel" id="panel-queries" role="tabpanel" aria-labelledby="tab-queries">
         <div class="stats-loading" data-state="loading">Loading queries…</div>
         <div data-state="ready" hidden>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>When</th><th>Action</th><th>Resource</th>
                     <th>Result</th><th class="num">Duration (ms)</th>
@@ -168,7 +128,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
                 <tbody data-rows></tbody>
             </table>
             <div class="stats-paginate">
-                <button type="button" data-action="next">Older ›</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-action="next">Older ›</button>
             </div>
         </div>
     </section>
@@ -177,12 +137,12 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         <div class="stats-loading" data-state="loading">Loading sync activity…</div>
         <div data-state="ready" hidden>
             <div class="stats-overview" style="grid-template-columns: 1fr;">
-                <div class="card">
-                    <div class="lbl">Your last <code>agnes pull</code></div>
-                    <div class="val" data-sync-last-pull>—</div>
+                <div class="stat-card">
+                    <div class="stat-card__label">Your last <code>agnes pull</code></div>
+                    <div class="stat-card__value" data-sync-last-pull>—</div>
                 </div>
             </div>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>When</th><th>Action</th><th>Source</th>
                     <th>Result</th>
@@ -438,7 +398,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
     };
 
     function activate(name) {
-        document.querySelectorAll('.stats-tab').forEach((b) => {
+        document.querySelectorAll('.tab-strip__item').forEach((b) => {
             const on = b.dataset.tab === name;
             b.classList.toggle('is-active', on);
             b.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -452,7 +412,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         }
     }
 
-    document.querySelectorAll('.stats-tab').forEach((b) => {
+    document.querySelectorAll('.tab-strip__item').forEach((b) => {
         b.addEventListener('click', () => activate(b.dataset.tab));
     });
 
