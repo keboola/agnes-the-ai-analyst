@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Store submit-flow wizard buttons were missing the `.btn` base class —
+  Next / Back / Finish on `/store/new` and Save on `/store/edit/<id>`
+  carried only the `.btn-primary` / `.btn-secondary` color modifier, so
+  they rendered with no padding, border-radius, or proper sizing
+  (~18px-tall color boxes) instead of matching their sibling Cancel
+  links. Added the `.btn` base class on all four.
+
 ## [0.54.15] — 2026-05-14
 
 ### Added
