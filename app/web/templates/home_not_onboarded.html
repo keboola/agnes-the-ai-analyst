@@ -120,7 +120,53 @@
     margin-bottom: 18px;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
 }
-.home-mock .home-getting-started > header h2,
+/* Getting Started uses <details> for native collapsed-by-default
+   behaviour. The summary owns the padding when collapsed; row layout
+   reveals on expand. Chevron rotates 90deg when open. */
+.home-mock details.home-getting-started {
+    padding: 0;
+}
+.home-mock .home-gs-summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 24px;
+    user-select: none;
+}
+.home-mock .home-gs-summary::-webkit-details-marker { display: none; }
+.home-mock .home-gs-summary-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--hp-text-primary);
+}
+.home-mock .home-gs-summary-hint {
+    flex: 1;
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+}
+.home-mock .home-gs-summary-chev {
+    font-size: 18px;
+    color: var(--hp-text-muted);
+    transition: transform 0.15s;
+}
+.home-mock details.home-getting-started[open] .home-gs-summary-chev {
+    transform: rotate(90deg);
+}
+.home-mock details.home-getting-started[open] {
+    padding-bottom: 18px;
+}
+.home-mock details.home-getting-started[open] .home-gs-item {
+    margin-left: 24px;
+    margin-right: 24px;
+}
+/* Install-hero is the scroll target for Getting Started's first row.
+   Offset the anchor jump by the 72px sticky .app-header height + a
+   bit of breathing room so the hero's eyebrow lands cleanly under
+   the header bar. */
+.home-mock .install-hero { scroll-margin-top: 88px; }
+
 .home-mock .home-overview > h2,
 .home-mock .home-usage > header h2 {
     font-size: 18px;
@@ -128,7 +174,6 @@
     margin: 0 0 6px;
     color: var(--hp-text-primary);
 }
-.home-mock .home-getting-started > header p,
 .home-mock .home-usage > header p {
     font-size: 13px;
     color: var(--hp-text-secondary);
@@ -1355,7 +1400,42 @@
        etc.) stays. Offboarding escape hatch moved to a discrete strip
        below; see `.offboard-strip`. #}
     {% if not onboarded %}
-    <div class="install-hero">
+    {# Getting Started renders FIRST in the not-onboarded flow as a
+       collapsed-by-default <details>. Click the summary to expand the
+       two-row map. First row anchors back to the install hero just
+       below (#install-hero); second row leaves the page for
+       /setup-advanced. Per-device dismiss X (data-dismiss-key) survives
+       on the generic .home-card-close handler — selector widened in JS
+       to accept <details> containers too. Disappears post-onboarding
+       alongside the hero so the in-page anchor never dangles. #}
+    <details class="home-getting-started" id="homeGettingStarted">
+        <summary class="home-gs-summary">
+            <span class="home-gs-summary-title">Getting Started</span>
+            <span class="home-gs-summary-hint">Two quick next steps — click to expand</span>
+            <span class="home-gs-summary-chev" aria-hidden="true">&rsaquo;</span>
+        </summary>
+        <button type="button" class="home-card-close"
+                data-dismiss-key="agnes_home_gs_dismissed"
+                aria-label="Dismiss Getting Started">&times;</button>
+        <a class="home-gs-item" href="#install-hero">
+            <span class="ico" aria-hidden="true">&#x1F680;</span>
+            <div class="text">
+                <strong>Setup {{ instance_brand }} in your Claude Code</strong>
+                <span class="desc">One-time install — walkthrough in the section below.</span>
+            </div>
+            <span class="arrow" aria-hidden="true">&darr;</span>
+        </a>
+        <a class="home-gs-item" href="/setup-advanced">
+            <span class="ico" aria-hidden="true">&#x1F6E0;&#xFE0F;</span>
+            <div class="text">
+                <strong>Go deeper into your AI workspace</strong>
+                <span class="desc">VS Code layout, recommended plugins, multi-model second opinions, custom skills + rules + hooks, project workflows.</span>
+            </div>
+            <span class="arrow" aria-hidden="true">&rarr;</span>
+        </a>
+    </details>
+
+    <div class="install-hero" id="install-hero">
         <button type="button" class="install-hero-close" id="installHeroClose"
                 data-target-source="self_acknowledged"
                 aria-label="I'm already set up — close this setup hero">&times;</button>
@@ -1514,35 +1594,10 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
        BEFORE Step 3's install runs ~20 commands. Gated by the same
        `home_automode.show` flag at the call site. #}
 
-    {# Getting Started card — dismissible per-device via localStorage.
-       Two clickable rows pointing at the install flow (/setup) and the
-       deeper reference (/setup-advanced). Subsumes the legacy
-       `.advanced-pointer` row that used to sit above the news section. #}
-    <section class="home-getting-started" id="homeGettingStarted">
-        <button type="button" class="home-card-close"
-                data-dismiss-key="agnes_home_gs_dismissed"
-                aria-label="Dismiss Getting Started">&times;</button>
-        <header>
-            <h2>Getting Started</h2>
-            <p>Two quick next steps to get the most out of {{ instance_brand }}.</p>
-        </header>
-        <a class="home-gs-item" href="/setup">
-            <span class="ico" aria-hidden="true">&#x1F680;</span>
-            <div class="text">
-                <strong>Setup {{ instance_brand }} in your Claude Code</strong>
-                <span class="desc">One-time install: copies a setup script to your clipboard, paste into Claude Code, done in ~10 minutes.</span>
-            </div>
-            <span class="arrow" aria-hidden="true">&rarr;</span>
-        </a>
-        <a class="home-gs-item" href="/setup-advanced">
-            <span class="ico" aria-hidden="true">&#x1F6E0;&#xFE0F;</span>
-            <div class="text">
-                <strong>Go deeper into your AI workspace</strong>
-                <span class="desc">VS Code layout, recommended plugins, multi-model second opinions, custom skills + rules + hooks, project workflows.</span>
-            </div>
-            <span class="arrow" aria-hidden="true">&rarr;</span>
-        </a>
-    </section>
+    {# Getting Started was previously rendered HERE (between the offboard
+       strip and Overview) as a full-card <section>. Moved up to render
+       BEFORE the install-hero as a collapsed-by-default <details> — see
+       the block right after `{% if not onboarded %}` near line ~1357. #}
 
     {# Overview section — operator-owned, opt-in. Body comes from the
        `instance.overview` yaml field via get_instance_overview()
@@ -2015,7 +2070,7 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
     // zero per-card JS.
     document.querySelectorAll('.home-card-close[data-dismiss-key]').forEach(function (btn) {
         var key = btn.getAttribute('data-dismiss-key');
-        var section = btn.closest('section');
+        var section = btn.closest('section, details');
         if (!section || !key) return;
         try {
             if (localStorage.getItem(key) === '1') {
