@@ -87,12 +87,25 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
 </style>
 
 <div class="stats-page">
-    <h1>Your Stats</h1>
+    <h1>My Stats</h1>
     <p class="lead">
         Sessions, tokens, data access, and sync activity for
-        <strong>{{ user.email }}</strong>. Data covers the
-        sessions {{ instance_brand }} has processed from your Claude
-        Code transcripts.
+        <strong>{{ user.email }}</strong>. Data covers the sessions
+        you uploaded via <code>agnes push</code> from your Claude Code
+        workspace. Two independent processors run on each file:
+        <strong>Usage</strong> (5min cadence — token / prompt / tool
+        counts that drive this page and the
+        <a href="/home">/home</a> status frame) and
+        <strong>Verification</strong> (15min cadence — LLM-driven
+        extraction of factual claims for
+        <a href="/corporate-memory">corporate memory</a>).
+        <em>Pending</em> on a row means the named processor hasn't run
+        yet; the two are independent — Usage often shows "processed"
+        before Verification does.
+        <strong>Items extracted = 0</strong> from Verification means
+        the LLM didn't find anything worth tracking in that session —
+        expected for sessions that are mostly tool calls or coding
+        without confident factual claims.
     </p>
 
     <nav class="stats-tabs" role="tablist" aria-label="Stats sections">
@@ -115,6 +128,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
                     <th>Usage</th><th>Verification</th>
                     <th class="num">Prompts</th><th class="num">Tools</th>
                     <th class="num">Tokens</th>
+                    <th class="num">Items extracted</th>
                 </tr></thead>
                 <tbody data-rows></tbody>
             </table>
@@ -254,7 +268,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
             const tbody = panel.querySelector('[data-rows]');
             tbody.innerHTML = '';
             if (data.rows.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="stats-empty">No sessions yet — start Claude Code in a workspace and they\'ll appear here.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" class="stats-empty">No sessions yet — start Claude Code in a workspace and they\'ll appear here.</td></tr>';
             }
             function badge(state) {
                 if (!state) return '<span style="color:#9ca3af;">pending</span>';
@@ -262,6 +276,8 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
             }
             for (const r of data.rows) {
                 const procs = r.processors || {};
+                const verifItems = procs.verification && procs.verification.items_extracted !== null
+                    ? procs.verification.items_extracted : null;
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td>${fmtTimestamp(r.uploaded_at)}</td>
@@ -272,6 +288,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
                     <td class="num">${fmtNum(r.user_messages)}</td>
                     <td class="num">${fmtNum(r.tool_calls)}</td>
                     <td class="num">${fmtNum(r.tokens_total)}</td>
+                    <td class="num">${verifItems !== null ? fmtNum(verifItems) : ''}</td>
                 `;
                 tbody.appendChild(tr);
             }

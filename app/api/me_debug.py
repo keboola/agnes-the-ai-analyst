@@ -182,10 +182,19 @@ def _last_sync_summary(
 @router.get("", response_class=HTMLResponse, name="me_debug_page")
 async def me_debug_page(
     request: Request,
-    _: None = Depends(require_debug_auth_enabled),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    # The DEBUG_AUTH_ENABLED gate that previously fronted this handler
+    # was dropped when the page absorbed the Personal Authentication
+    # Tokens list (formerly /tokens "My tokens"). PATs are a normal
+    # user-facing feature on every instance; gating behind a
+    # debug-only env var stranded analysts on instances that ship with
+    # DEBUG_AUTH_ENABLED=False. The remaining content on this page is
+    # the caller's OWN session JWT decode + group memberships — their
+    # own data is appropriate to show without a debug gate. The
+    # refetch-groups POST below keeps its gate (dry-run admin debug
+    # action, not user-facing).
     # Reuse the project's shared template-context builder so config /
     # static_url / session / theme overrides are populated the same way
     # every other HTML page gets them. Adding a debug page must not bypass

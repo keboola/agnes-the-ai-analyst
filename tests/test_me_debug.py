@@ -55,8 +55,14 @@ def _client():
 
 class TestGating:
     @pytest.mark.parametrize("flag_value", ["", "0", "false", "False", "no", "off"])
-    def test_returns_404_when_flag_off(self, fresh_db, monkeypatch, flag_value):
-        """Falsy / unset flag must yield 404 (not 403)."""
+    def test_get_returns_200_regardless_of_flag(self, fresh_db, monkeypatch, flag_value):
+        """The GET /me/debug page is now accessible to every authenticated
+        user — DEBUG_AUTH_ENABLED gate dropped when the page absorbed the
+        Personal Authentication Tokens list. The page now hosts user-facing
+        content (PATs, session-JWT decode of THE CALLER'S OWN session) that
+        every analyst needs from every instance. The POST refetch-groups
+        endpoint below retains its env-var gate (admin dry-run debug
+        action, not user-facing). See app/api/me_debug.py docstring."""
         if flag_value == "":
             monkeypatch.delenv("AGNES_DEBUG_AUTH", raising=False)
         else:
@@ -72,7 +78,7 @@ class TestGating:
 
         c = _client()
         resp = c.get("/me/debug", cookies={"access_token": sess})
-        assert resp.status_code == 404
+        assert resp.status_code == 200
 
     @pytest.mark.parametrize("flag_value", ["1", "true", "TRUE", "yes"])
     def test_returns_200_for_authed_user_when_flag_on(self, fresh_db, monkeypatch, flag_value):
