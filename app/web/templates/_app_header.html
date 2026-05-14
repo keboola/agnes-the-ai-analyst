@@ -111,10 +111,14 @@
                 </div>
                 <a class="app-user-menu-item {% if _path == '/profile' %}is-active{% endif %}" role="menuitem" href="/profile">Profile</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
-                <a class="app-user-menu-item {% if _path == '/tokens' %}is-active{% endif %}" role="menuitem" href="/tokens">My tokens</a>
-                {% if config.DEBUG_AUTH_ENABLED %}
+                {# Auth debug now hosts the Personal Authentication Tokens
+                   list (formerly /tokens "My tokens"). Un-gated from
+                   DEBUG_AUTH_ENABLED so analysts can manage PATs from
+                   the user dropdown on every instance. The session-JWT
+                   decode on the same page stays useful for everyone.
+                   /tokens (create / revoke) remains accessible via the
+                   link inside the Auth debug body. #}
                 <a class="app-user-menu-item {% if _path.startswith('/me/debug') %}is-active{% endif %}" role="menuitem" href="/me/debug">Auth debug</a>
-                {% endif %}
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
             </div>
         </div>
