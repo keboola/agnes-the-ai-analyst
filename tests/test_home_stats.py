@@ -10,6 +10,7 @@ Covers:
 - get_home_status_frame_visibility honors the env var + yaml override
   and defaults true.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -42,10 +43,7 @@ def test_v44_fresh_install_has_token_columns_and_last_pull(tmp_path):
     user_cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
     assert "last_pull_at" in user_cols
 
-    sess_cols = {
-        r[1]
-        for r in conn.execute("PRAGMA table_info(usage_session_summary)").fetchall()
-    }
+    sess_cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_session_summary)").fetchall()}
     for col in (
         "input_tokens",
         "output_tokens",
@@ -61,10 +59,7 @@ def test_v43_to_v44_upgrade_is_idempotent(tmp_path):
     db_path = tmp_path / "system.duckdb"
     conn = duckdb.connect(str(db_path))
     # Hand-roll v43-shaped tables (no last_pull_at, no token cols).
-    conn.execute(
-        "CREATE TABLE users (id VARCHAR PRIMARY KEY, email VARCHAR, "
-        "onboarded BOOLEAN DEFAULT FALSE)"
-    )
+    conn.execute("CREATE TABLE users (id VARCHAR PRIMARY KEY, email VARCHAR, onboarded BOOLEAN DEFAULT FALSE)")
     conn.execute(
         """
         CREATE TABLE usage_session_summary (
@@ -82,14 +77,8 @@ def test_v43_to_v44_upgrade_is_idempotent(tmp_path):
     _v43_to_v44(conn)
     _v43_to_v44(conn)  # idempotent
 
-    assert "last_pull_at" in {
-        r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()
-    }
-    tok_cols = {
-        r[1]
-        for r in conn.execute("PRAGMA table_info(usage_session_summary)").fetchall()
-        if "token" in r[1]
-    }
+    assert "last_pull_at" in {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    tok_cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_session_summary)").fetchall() if "token" in r[1]}
     assert tok_cols == {
         "input_tokens",
         "output_tokens",
@@ -100,7 +89,7 @@ def test_v43_to_v44_upgrade_is_idempotent(tmp_path):
 
 def test_schema_version_constant_is_44():
     """Belt + suspenders against schema_version regressions."""
-    assert SCHEMA_VERSION == 44
+    assert SCHEMA_VERSION == 45
 
 
 # ---------------------------------------------------------------------------
@@ -118,15 +107,23 @@ def stats_conn(tmp_path):
 
 def _seed_user(conn, *, uid="u1", email="alice@example.com"):
     conn.execute(
-        "INSERT INTO users (id, email, active, onboarded, last_pull_at) "
-        "VALUES (?, ?, TRUE, TRUE, current_timestamp)",
+        "INSERT INTO users (id, email, active, onboarded, last_pull_at) VALUES (?, ?, TRUE, TRUE, current_timestamp)",
         [uid, email],
     )
 
 
-def _seed_session(conn, *, session_file, username, started_sql, prompts=0,
-                  input_tokens=0, output_tokens=0,
-                  cache_read=0, cache_creation=0):
+def _seed_session(
+    conn,
+    *,
+    session_file,
+    username,
+    started_sql,
+    prompts=0,
+    input_tokens=0,
+    output_tokens=0,
+    cache_read=0,
+    cache_creation=0,
+):
     conn.execute(
         f"""
         INSERT INTO usage_session_summary
@@ -136,8 +133,7 @@ def _seed_session(conn, *, session_file, username, started_sql, prompts=0,
         VALUES (?, ?, ?, {started_sql}, current_timestamp,
                 ?, ?, ?, ?, ?, 2)
         """,
-        [session_file, session_file, username, prompts,
-         input_tokens, output_tokens, cache_read, cache_creation],
+        [session_file, session_file, username, prompts, input_tokens, output_tokens, cache_read, cache_creation],
     )
 
 
@@ -159,27 +155,60 @@ def test_compute_home_stats_24h_vs_7d_windowing(stats_conn):
     from app.api.me import compute_home_stats
 
     _seed_user(stats_conn)
-    _seed_session(stats_conn, session_file="a.jsonl", username="alice",
-                  started_sql="current_timestamp - INTERVAL 1 HOUR",
-                  prompts=5, input_tokens=100, output_tokens=50,
-                  cache_read=800, cache_creation=25)
-    _seed_session(stats_conn, session_file="b.jsonl", username="alice",
-                  started_sql="current_timestamp - INTERVAL 3 DAY",
-                  prompts=5, input_tokens=100, output_tokens=50,
-                  cache_read=800, cache_creation=25)
-    _seed_session(stats_conn, session_file="c.jsonl", username="alice",
-                  started_sql="current_timestamp - INTERVAL 30 DAY",
-                  prompts=99)
+    _seed_session(
+        stats_conn,
+        session_file="a.jsonl",
+        username="alice",
+        started_sql="current_timestamp - INTERVAL 1 HOUR",
+        prompts=5,
+        input_tokens=100,
+        output_tokens=50,
+        cache_read=800,
+        cache_creation=25,
+    )
+    _seed_session(
+        stats_conn,
+        session_file="b.jsonl",
+        username="alice",
+        started_sql="current_timestamp - INTERVAL 3 DAY",
+        prompts=5,
+        input_tokens=100,
+        output_tokens=50,
+        cache_read=800,
+        cache_creation=25,
+    )
+    _seed_session(
+        stats_conn,
+        session_file="c.jsonl",
+        username="alice",
+        started_sql="current_timestamp - INTERVAL 30 DAY",
+        prompts=99,
+    )
 
-    _seed_event(stats_conn, ev_id="e1", session_file="a.jsonl",
-                username="alice", cwd="/proj/alpha",
-                occurred_sql="current_timestamp - INTERVAL 1 HOUR")
-    _seed_event(stats_conn, ev_id="e2", session_file="a.jsonl",
-                username="alice", cwd="/proj/beta",
-                occurred_sql="current_timestamp - INTERVAL 2 HOUR")
-    _seed_event(stats_conn, ev_id="e3", session_file="b.jsonl",
-                username="alice", cwd="/proj/gamma",
-                occurred_sql="current_timestamp - INTERVAL 3 DAY")
+    _seed_event(
+        stats_conn,
+        ev_id="e1",
+        session_file="a.jsonl",
+        username="alice",
+        cwd="/proj/alpha",
+        occurred_sql="current_timestamp - INTERVAL 1 HOUR",
+    )
+    _seed_event(
+        stats_conn,
+        ev_id="e2",
+        session_file="a.jsonl",
+        username="alice",
+        cwd="/proj/beta",
+        occurred_sql="current_timestamp - INTERVAL 2 HOUR",
+    )
+    _seed_event(
+        stats_conn,
+        ev_id="e3",
+        session_file="b.jsonl",
+        username="alice",
+        cwd="/proj/gamma",
+        occurred_sql="current_timestamp - INTERVAL 3 DAY",
+    )
 
     user = {"id": "u1", "email": "alice@example.com"}
 
@@ -243,8 +272,10 @@ def test_compute_home_stats_missing_users_row_returns_zeros(stats_conn):
         "sessions": 0,
         "prompts": 0,
         "tokens": {
-            "input": 0, "output": 0,
-            "cache_read": 0, "cache_creation": 0,
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0,
             "total": 0,
         },
         "projects": 0,
@@ -267,9 +298,7 @@ def test_sync_manifest_bumps_last_pull_at(stats_conn, monkeypatch, tmp_path):
 
     _seed_user(stats_conn, uid="u_pull", email="puller@example.com")
     # Wipe seeded last_pull_at so we can detect the bump.
-    stats_conn.execute(
-        "UPDATE users SET last_pull_at = NULL WHERE id = ?", ["u_pull"]
-    )
+    stats_conn.execute("UPDATE users SET last_pull_at = NULL WHERE id = ?", ["u_pull"])
 
     asyncio.run(
         sync_manifest(
@@ -277,9 +306,7 @@ def test_sync_manifest_bumps_last_pull_at(stats_conn, monkeypatch, tmp_path):
             conn=stats_conn,
         )
     )
-    row = stats_conn.execute(
-        "SELECT last_pull_at FROM users WHERE id = ?", ["u_pull"]
-    ).fetchone()
+    row = stats_conn.execute("SELECT last_pull_at FROM users WHERE id = ?", ["u_pull"]).fetchone()
     # Don't compare against `datetime.now(utc)` — DuckDB's
     # ``current_timestamp`` returns the session's wall-clock time which
     # may be naive-local-or-utc depending on the environment, so a
@@ -298,6 +325,7 @@ def test_status_frame_default_is_visible(monkeypatch):
     """Absent both env var and yaml entry, the flag returns True."""
     monkeypatch.delenv("AGNES_HOME_SHOW_STATUS_FRAME", raising=False)
     from app.instance_config import get_home_status_frame_visibility
+
     assert get_home_status_frame_visibility() is True
 
 
@@ -305,12 +333,14 @@ def test_status_frame_env_var_off(monkeypatch):
     """AGNES_HOME_SHOW_STATUS_FRAME=0 hides the frame."""
     monkeypatch.setenv("AGNES_HOME_SHOW_STATUS_FRAME", "0")
     from app.instance_config import get_home_status_frame_visibility
+
     assert get_home_status_frame_visibility() is False
 
 
 def test_status_frame_env_var_falsey_values(monkeypatch):
     """Each of {0, false, no, off, ''} hides the frame; anything else shows."""
     from app.instance_config import get_home_status_frame_visibility
+
     for val in ("0", "false", "False", "FALSE", "no", "off", ""):
         monkeypatch.setenv("AGNES_HOME_SHOW_STATUS_FRAME", val)
         assert get_home_status_frame_visibility() is False, f"{val!r} should hide"

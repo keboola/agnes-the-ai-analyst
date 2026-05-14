@@ -8,6 +8,7 @@ The v19 step (#150) drops dataset_permissions, access_requests tables and
 users.role, table_registry.is_public columns; v20 then ALTERs the post-v19
 table_registry to add the source_query column.
 """
+
 import duckdb
 
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
@@ -98,7 +99,7 @@ def test_schema_version_is_44():
     #            output_tokens, cache_read_tokens, cache_creation_tokens).
     #            USAGE_PROCESSOR_VERSION simultaneously bumps 1→2 so the
     #            reprocess loop backfills tokens on next tick.
-    assert SCHEMA_VERSION == 44
+    assert SCHEMA_VERSION == 45
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
@@ -109,9 +110,9 @@ def test_v37_marketplace_curator_columns(tmp_path):
     _ensure_schema(conn)
 
     registry_cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'marketplace_registry'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_registry'"
         ).fetchall()
     }
     assert {"curator_name", "curator_email"} <= registry_cols, (
@@ -119,9 +120,9 @@ def test_v37_marketplace_curator_columns(tmp_path):
     )
 
     plugin_cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'marketplace_plugins'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_plugins'"
         ).fetchall()
     }
     assert {"cover_photo_url", "video_url", "doc_links"} <= plugin_cols, (
@@ -139,10 +140,7 @@ def test_v36_db_migrates_to_current(tmp_path):
 
     # Stand up a minimal v36-shape registry + plugin row, plus the
     # schema_version row that pins us to 36.
-    conn.execute(
-        "CREATE TABLE schema_version (version INTEGER, "
-        "applied_at TIMESTAMP DEFAULT current_timestamp)"
-    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
     conn.execute("INSERT INTO schema_version (version) VALUES (36)")
     conn.execute("""CREATE TABLE marketplace_registry (
         id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
@@ -161,22 +159,15 @@ def test_v36_db_migrates_to_current(tmp_path):
         PRIMARY KEY (marketplace_id, name)
     )""")
     conn.execute(
-        "INSERT INTO marketplace_registry (id, name, url) "
-        "VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
+        "INSERT INTO marketplace_registry (id, name, url) VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
     )
-    conn.execute(
-        "INSERT INTO marketplace_plugins (marketplace_id, name) "
-        "VALUES ('legacy', 'foo')"
-    )
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('legacy', 'foo')")
 
     _ensure_schema(conn)
     assert get_schema_version(conn) == SCHEMA_VERSION
 
     # v37 enrichment columns exist; existing rows preserved with NULL.
-    row = conn.execute(
-        "SELECT curator_name, curator_email FROM marketplace_registry "
-        "WHERE id = 'legacy'"
-    ).fetchone()
+    row = conn.execute("SELECT curator_name, curator_email FROM marketplace_registry WHERE id = 'legacy'").fetchone()
     assert row == (None, None)
 
     row = conn.execute(
@@ -196,27 +187,18 @@ def test_v39_adds_marketplace_plugins_is_system(tmp_path):
     _ensure_schema(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'marketplace_plugins'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_plugins'"
         ).fetchall()
     }
     assert "is_system" in cols, f"is_system missing from {cols}"
 
     # New rows default to FALSE — required so a freshly-synced plugin
     # doesn't accidentally land in everyone's stack.
-    conn.execute(
-        "INSERT INTO marketplace_registry (id, name, url) "
-        "VALUES ('m', 'M', 'https://example.com/repo.git')"
-    )
-    conn.execute(
-        "INSERT INTO marketplace_plugins (marketplace_id, name) "
-        "VALUES ('m', 'p')"
-    )
-    row = conn.execute(
-        "SELECT is_system FROM marketplace_plugins "
-        "WHERE marketplace_id = 'm' AND name = 'p'"
-    ).fetchone()
+    conn.execute("INSERT INTO marketplace_registry (id, name, url) VALUES ('m', 'M', 'https://example.com/repo.git')")
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('m', 'p')")
+    row = conn.execute("SELECT is_system FROM marketplace_plugins WHERE marketplace_id = 'm' AND name = 'p'").fetchone()
     assert row[0] is False, f"new plugin defaulted to {row[0]!r}, expected False"
     conn.close()
 
@@ -230,10 +212,7 @@ def test_v38_db_migrates_to_v39(tmp_path):
     # Stand up the v38 minimal shape: schema_version row + the two
     # marketplace tables + a pre-existing plugin row that must survive
     # the migration with is_system = FALSE.
-    conn.execute(
-        "CREATE TABLE schema_version (version INTEGER, "
-        "applied_at TIMESTAMP DEFAULT current_timestamp)"
-    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
     conn.execute("INSERT INTO schema_version (version) VALUES (38)")
     conn.execute("""CREATE TABLE marketplace_registry (
         id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
@@ -254,21 +233,17 @@ def test_v38_db_migrates_to_v39(tmp_path):
         PRIMARY KEY (marketplace_id, name)
     )""")
     conn.execute(
-        "INSERT INTO marketplace_registry (id, name, url) "
-        "VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
+        "INSERT INTO marketplace_registry (id, name, url) VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
     )
-    conn.execute(
-        "INSERT INTO marketplace_plugins (marketplace_id, name) "
-        "VALUES ('legacy', 'foo')"
-    )
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('legacy', 'foo')")
 
     _ensure_schema(conn)
     assert get_schema_version(conn) == SCHEMA_VERSION
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'marketplace_plugins'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_plugins'"
         ).fetchall()
     }
     assert "is_system" in cols
@@ -276,8 +251,7 @@ def test_v38_db_migrates_to_v39(tmp_path):
     # Existing pre-v39 row backfilled to FALSE — no plugin lands in
     # everyone's stack just because we ran the migration.
     row = conn.execute(
-        "SELECT is_system FROM marketplace_plugins "
-        "WHERE marketplace_id = 'legacy' AND name = 'foo'"
+        "SELECT is_system FROM marketplace_plugins WHERE marketplace_id = 'legacy' AND name = 'foo'"
     ).fetchone()
     assert row[0] is False, f"pre-existing row backfilled to {row[0]!r}"
     conn.close()
@@ -289,9 +263,9 @@ def test_v20_adds_source_query(tmp_path):
     _ensure_schema(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'table_registry'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'table_registry'"
         ).fetchall()
     }
     assert "source_query" in cols, f"source_query missing from {cols}"
@@ -312,19 +286,13 @@ def test_claude_md_template_seeded_in_instance_templates(tmp_path):
     _ensure_schema(conn)
 
     tables = {
-        r[0] for r in conn.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main'"
-        ).fetchall()
+        r[0]
+        for r in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
     }
     assert "instance_templates" in tables
-    assert "claude_md_template" not in tables, (
-        "claude_md_template should be consolidated away post-v28"
-    )
+    assert "claude_md_template" not in tables, "claude_md_template should be consolidated away post-v28"
 
-    row = conn.execute(
-        "SELECT key, content FROM instance_templates WHERE key = 'claude_md'"
-    ).fetchone()
+    row = conn.execute("SELECT key, content FROM instance_templates WHERE key = 'claude_md'").fetchone()
     assert row is not None
     assert row[0] == "claude_md"
     assert row[1] is None  # default = no override
@@ -340,10 +308,7 @@ def test_v19_db_migrates_to_v20(tmp_path):
     # Simulate a v19 DB at minimal but realistic shape: schema_version row +
     # a table_registry row in the post-v19 column shape (no is_public column,
     # since v19 finalize dropped it via the table-rebuild idiom).
-    conn.execute(
-        "CREATE TABLE schema_version (version INTEGER, "
-        "applied_at TIMESTAMP DEFAULT current_timestamp)"
-    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
     conn.execute("INSERT INTO schema_version (version) VALUES (19)")
     conn.execute("""CREATE TABLE table_registry (
         id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
@@ -361,16 +326,14 @@ def test_v19_db_migrates_to_v20(tmp_path):
 
     assert get_schema_version(conn) == SCHEMA_VERSION  # bumped 19→28 forward
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'table_registry'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'table_registry'"
         ).fetchall()
     }
     assert "source_query" in cols
     # Existing row preserved, new column NULL
-    row = conn.execute(
-        "SELECT id, source_query FROM table_registry WHERE id='foo'"
-    ).fetchone()
+    row = conn.execute("SELECT id, source_query FROM table_registry WHERE id='foo'").fetchone()
     assert row == ("foo", None)
     conn.close()
 
@@ -389,8 +352,7 @@ def _make_v34_store_entities(conn):
         )
     """)
     conn.execute(
-        "INSERT INTO store_entities (id, visibility_status) VALUES "
-        "('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
+        "INSERT INTO store_entities (id, visibility_status) VALUES ('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
     )
 
 
@@ -409,9 +371,9 @@ def test_v34_to_v35_clean_path_rebuilds_visibility_column(tmp_path):
     _v34_to_v35_migrate(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'store_entities'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
         ).fetchall()
     }
     assert "visibility_status" in cols
@@ -419,12 +381,8 @@ def test_v34_to_v35_clean_path_rebuilds_visibility_column(tmp_path):
     assert "archived_at" in cols
     assert "archived_by" in cols
 
-    rows = dict(conn.execute(
-        "SELECT id, visibility_status FROM store_entities ORDER BY id"
-    ).fetchall())
-    assert rows == {"a": "approved", "b": "pending", "c": "hidden"}, (
-        f"row values must survive the rebuild: {rows}"
-    )
+    rows = dict(conn.execute("SELECT id, visibility_status FROM store_entities ORDER BY id").fetchall())
+    assert rows == {"a": "approved", "b": "pending", "c": "hidden"}, f"row values must survive the rebuild: {rows}"
     conn.close()
 
 
@@ -452,16 +410,15 @@ def test_v34_to_v35_recovers_from_partial_rebuild_missing_visibility(tmp_path):
         )
     """)
     conn.execute(
-        "INSERT INTO store_entities (id, _vis_v35) VALUES "
-        "('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
+        "INSERT INTO store_entities (id, _vis_v35) VALUES ('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
     )
 
     _v34_to_v35_migrate(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'store_entities'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
         ).fetchall()
     }
     assert "visibility_status" in cols
@@ -469,9 +426,7 @@ def test_v34_to_v35_recovers_from_partial_rebuild_missing_visibility(tmp_path):
     assert "archived_at" in cols
     assert "archived_by" in cols
 
-    rows = dict(conn.execute(
-        "SELECT id, visibility_status FROM store_entities ORDER BY id"
-    ).fetchall())
+    rows = dict(conn.execute("SELECT id, visibility_status FROM store_entities ORDER BY id").fetchall())
     assert rows == {"a": "approved", "b": "pending", "c": "hidden"}, (
         f"row values must come back via RENAME, not be lost: {rows}"
     )
@@ -495,25 +450,20 @@ def test_v34_to_v35_recovers_from_partial_rebuild_both_columns(tmp_path):
             _vis_v35 VARCHAR
         )
     """)
-    conn.execute(
-        "INSERT INTO store_entities (id, visibility_status, _vis_v35) VALUES "
-        "('a', 'approved', 'approved')"
-    )
+    conn.execute("INSERT INTO store_entities (id, visibility_status, _vis_v35) VALUES ('a', 'approved', 'approved')")
 
     _v34_to_v35_migrate(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'store_entities'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
         ).fetchall()
     }
     assert "visibility_status" in cols
     assert "_vis_v35" not in cols, "temp column must be dropped"
 
-    row = conn.execute(
-        "SELECT id, visibility_status FROM store_entities WHERE id = 'a'"
-    ).fetchone()
+    row = conn.execute("SELECT id, visibility_status FROM store_entities WHERE id = 'a'").fetchone()
     assert row == ("a", "approved")
     conn.close()
 
@@ -533,10 +483,7 @@ def test_v32_db_with_partial_v35_recovers_through_full_ladder(tmp_path):
     # Stand up the broken state. We only need enough of the schema for the
     # migration ladder to run — ``_ensure_schema`` will create the rest
     # via ``_SYSTEM_SCHEMA``'s IF NOT EXISTS guards.
-    conn.execute(
-        "CREATE TABLE schema_version (version INTEGER, "
-        "applied_at TIMESTAMP DEFAULT current_timestamp)"
-    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
     conn.execute("INSERT INTO schema_version (version) VALUES (32)")
     conn.execute("""
         CREATE TABLE store_entities (
@@ -550,26 +497,21 @@ def test_v32_db_with_partial_v35_recovers_through_full_ladder(tmp_path):
             _vis_v35 VARCHAR
         )
     """)
-    conn.execute(
-        "INSERT INTO store_entities (id, type, name, _vis_v35) "
-        "VALUES ('a', 'skill', 'alpha', 'approved')"
-    )
+    conn.execute("INSERT INTO store_entities (id, type, name, _vis_v35) VALUES ('a', 'skill', 'alpha', 'approved')")
 
     _ensure_schema(conn)
 
     assert get_schema_version(conn) == SCHEMA_VERSION
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'store_entities'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
         ).fetchall()
     }
     assert "visibility_status" in cols
     assert "_vis_v35" not in cols
     # Existing row preserved, value carried over from _vis_v35.
-    row = conn.execute(
-        "SELECT id, visibility_status FROM store_entities WHERE id = 'a'"
-    ).fetchone()
+    row = conn.execute("SELECT id, visibility_status FROM store_entities WHERE id = 'a'").fetchone()
     assert row == ("a", "approved")
     conn.close()
 
@@ -593,13 +535,9 @@ def test_v35_to_v36_reapplies_visibility_constraints(tmp_path):
     ).fetchall()
     assert cols, "visibility_status column missing from store_entities"
     name, is_nullable, default_expr = cols[0]
-    assert is_nullable == "NO", (
-        f"visibility_status must be NOT NULL after v36; got is_nullable={is_nullable!r}"
-    )
+    assert is_nullable == "NO", f"visibility_status must be NOT NULL after v36; got is_nullable={is_nullable!r}"
     # DuckDB renders the default as a quoted literal — match either form.
     assert default_expr is not None, "visibility_status DEFAULT must be set"
-    assert "pending" in str(default_expr).lower(), (
-        f"visibility_status DEFAULT must be 'pending'; got {default_expr!r}"
-    )
+    assert "pending" in str(default_expr).lower(), f"visibility_status DEFAULT must be 'pending'; got {default_expr!r}"
 
     conn.close()
