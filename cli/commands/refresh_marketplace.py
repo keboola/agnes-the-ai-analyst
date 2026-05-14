@@ -39,6 +39,7 @@ import typer
 from cli.config import get_server_url, get_token
 from cli.error_render import render_error
 from cli.lib.marketplace import CLONE_DIR, MARKETPLACE_NAME
+from cli.lib.override import is_override_workspace
 
 
 refresh_marketplace_app = typer.Typer(
@@ -136,7 +137,7 @@ def refresh_marketplace(
             _emit_check_hook_message()
         raise typer.Exit(0)
 
-    events: dict[str, list[str]] = {"installed": [], "updated": []}
+    events: dict[str, list[str]] = {"installed": [], "updated": [], "enabled": []}
 
     if not _git_fetch_and_reset(token):
         raise typer.Exit(1)
@@ -153,7 +154,7 @@ def refresh_marketplace(
 
     _reconcile_with_manifest(events=events, installed_pre=installed_pre)
 
-    if events["installed"] or events["updated"]:
+    if events["installed"] or events["updated"] or events["enabled"]:
         typer.echo(
             "\nRun `/reload-plugins` in Claude Code to load the "
             "new/updated plugins into the running session — no restart needed."
@@ -483,10 +484,6 @@ def _reconcile_with_manifest(
         elif installed_version != manifest_version:
             to_update.append(name)
 
-    if not to_install and not to_update:
-        typer.echo(f"All {len(manifest)} Agnes-stack plugin(s) up to date.")
-        return
-
     if to_install:
         typer.echo(f"Installing {len(to_install)} new plugin(s): " + ", ".join(to_install))
     if to_update:
@@ -527,6 +524,16 @@ def _reconcile_with_manifest(
         events["updated"].append(name)
         if result.stdout:
             typer.echo(result.stdout.rstrip())
+
+    # Whether anything was installed or updated above, the workspace
+    # settings.json must end up with `enabledPlugins["<name>@agnes"]: true`
+    # for every plugin in the stack — `claude plugin install` does not do
+    # this on its own, and a fresh refresh on a workspace where the user
+    # manually `claude plugin disable`-d a stack plugin must re-enable it.
+    _enable_plugins_in_workspace_settings(manifest, events=events)
+
+    if not to_install and not to_update and not events["enabled"]:
+        typer.echo(f"All {len(manifest)} Agnes-stack plugin(s) up to date.")
 
 
 def _emit_check_hook_message() -> None:
@@ -630,3 +637,85 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
         if name:
             versions[name] = version
     return versions
+
+
+def _enable_plugins_in_workspace_settings(
+    manifest: dict[str, str],
+    *,
+    events: dict[str, list[str]],
+) -> None:
+    """Ensure workspace `.claude/settings.json` has `enabledPlugins` entries
+    for every plugin in the user's stack manifest.
+
+    `claude plugin install --scope project` only writes the global plugin
+    registry (`~/.claude/plugins/installed_plugins.json`); it does NOT add
+    the plugin to the workspace `enabledPlugins` map, so Claude Code treats
+    every stack plugin as disabled until something explicitly enables it.
+    This helper closes that gap: after install/update, we write
+    `"<name>@agnes": true` for each manifest entry directly into the
+    workspace settings.
+
+    Stack-as-source-of-truth: a locally `claude plugin disable`-d plugin
+    that still appears in the user's stack gets re-enabled. To permanently
+    exclude a plugin, remove it from the stack (`agnes marketplace remove`)
+    rather than relying on local disable, which is ephemeral between
+    refreshes.
+
+    Override workspaces (init-complete sentinel with `override: true`,
+    see `cli/lib/override.py`) are skipped — the admin's template owns
+    every byte of `.claude/`, same contract as `install_claude_hooks`.
+
+    Idempotent: writes only when at least one plugin actually changed
+    state (missing/false → true). No write when everything is already
+    enabled, so this is safe to call on every refresh without churning
+    mtime or polluting git diffs in workspace repos.
+    """
+    workspace = Path.cwd()
+    if is_override_workspace(workspace):
+        return
+
+    settings_path = workspace / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if settings_path.exists():
+        try:
+            cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            typer.echo(
+                f"warn: {settings_path} is not valid JSON; skipping plugin enable.",
+                err=True,
+            )
+            return
+        if not isinstance(cfg, dict):
+            typer.echo(
+                f"warn: {settings_path} top-level is not an object; skipping plugin enable.",
+                err=True,
+            )
+            return
+    else:
+        cfg = {}
+
+    enabled = cfg.setdefault("enabledPlugins", {})
+    if not isinstance(enabled, dict):
+        typer.echo(
+            f"warn: {settings_path} `enabledPlugins` is not an object; skipping plugin enable.",
+            err=True,
+        )
+        return
+
+    changed: list[str] = []
+    for name in manifest:
+        key = f"{name}@{MARKETPLACE_NAME}"
+        if enabled.get(key) is not True:
+            enabled[key] = True
+            changed.append(name)
+
+    if not changed:
+        return
+
+    settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    events["enabled"].extend(sorted(changed))
+    typer.echo(
+        f"Enabled {len(changed)} plugin(s) in workspace settings: "
+        + ", ".join(sorted(changed))
+    )

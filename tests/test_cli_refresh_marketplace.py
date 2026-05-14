@@ -473,10 +473,20 @@ def test_manual_mode_no_change_does_not_print_reload_hint(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
     """Manual `agnes refresh-marketplace` over an already-up-to-date stack
-    must NOT spam the reload hint — there's nothing to reload for."""
+    must NOT spam the reload hint — there's nothing to reload for.
+
+    "Up to date" now also means the workspace `enabledPlugins` map already
+    matches the stack; without that seed the enable step would otherwise
+    flip a missing entry to `true` and legitimately request a reload.
+    """
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"grpn-eng@agnes": True}}), encoding="utf-8",
+    )
     _set_marketplace_manifest(with_clone, [{"name": "grpn-eng", "version": "1.0.0"}])
     recorder.script(
         ("claude", "plugin", "list", "--json"),
@@ -1039,3 +1049,241 @@ def test_bootstrap_recovery_add_failure_is_fatal_on_existing_clone(
         f"recovery must abort before `marketplace update` when add fails; got: "
         f"{[c.cmd for c in update_calls]!r}"
     )
+
+
+# --- enabledPlugins workspace-settings write -----------------------------------
+#
+# Refresh's reconcile step doesn't just register plugins in the global
+# `~/.claude/plugins/installed_plugins.json`; it also has to write
+# `enabledPlugins["<name>@agnes"] = true` into the workspace
+# `.claude/settings.json`. Without that entry, Claude Code treats the
+# plugin as disabled regardless of registry presence. These tests pin the
+# helper's contract end-to-end through the Typer command, since the helper
+# touches the filesystem and is easier to verify via the real settings.json
+# state than via additional mocking.
+
+
+def _read_workspace_settings(workspace: Path) -> dict:
+    settings_path = workspace / ".claude" / "settings.json"
+    return json.loads(settings_path.read_text(encoding="utf-8"))
+
+
+def test_enable_writes_missing_key_to_workspace_settings(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Fresh workspace with no `.claude/settings.json` → refresh creates the
+    file with `enabledPlugins` populated from the manifest."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, [
+        {"name": "grpn", "version": "1.0.0"},
+        {"name": "grpn-data", "version": "1.1.0"},
+    ])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings.get("enabledPlugins") == {
+        "grpn@agnes": True,
+        "grpn-data@agnes": True,
+    }
+
+
+def test_enable_writes_to_existing_settings_preserving_other_keys(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Workspace already has settings.json with hooks/model/permissions.
+    Refresh must add `enabledPlugins` without disturbing existing keys."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    pre_existing = {
+        "model": "sonnet",
+        "permissions": {"allow": ["Read", "Bash"]},
+        "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo hi"}]}]},
+    }
+    (settings_dir / "settings.json").write_text(
+        json.dumps(pre_existing, indent=2), encoding="utf-8",
+    )
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings["model"] == "sonnet"
+    assert settings["permissions"] == {"allow": ["Read", "Bash"]}
+    assert settings["hooks"] == pre_existing["hooks"]
+    assert settings["enabledPlugins"] == {"grpn@agnes": True}
+
+
+def test_enable_overrides_local_false_back_to_true(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """User locally `claude plugin disable`-d a stack plugin (enabledPlugins
+    has `false`). Stack is source of truth → refresh re-enables it."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"grpn@agnes": False}}), encoding="utf-8",
+    )
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([
+                        {"id": "grpn@agnes", "version": "1.0.0",
+                         "projectPath": str(workspace)},
+                    ]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings["enabledPlugins"] == {"grpn@agnes": True}
+    # Re-enabled → reload hint should fire (even though no install/update).
+    assert "/reload-plugins" in _clean(result.output)
+
+
+def test_enable_is_idempotent_when_already_true(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Every plugin in manifest already `true` in settings → refresh must
+    not rewrite the file (mtime stable) and must not advertise enable
+    events."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps({"enabledPlugins": {"grpn@agnes": True}}, indent=2),
+        encoding="utf-8",
+    )
+    mtime_before = settings_path.stat().st_mtime_ns
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([
+                        {"id": "grpn@agnes", "version": "1.0.0",
+                         "projectPath": str(workspace)},
+                    ]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings["enabledPlugins"] == {"grpn@agnes": True}
+    assert settings_path.stat().st_mtime_ns == mtime_before, (
+        "no-op refresh must not rewrite settings.json"
+    )
+    # No install/update/enable changes → no reload hint.
+    assert "/reload-plugins" not in _clean(result.output)
+
+
+def test_enable_preserves_non_agnes_plugins_in_map(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Workspace's `enabledPlugins` contains entries from other marketplaces
+    (e.g. coupons-team-skills). Refresh must not touch those keys; it only
+    adds/sets `@agnes` entries."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {
+            "coupons-skills@coupons-team-skills": True,
+            "platform-tools@coupons-team-skills": False,  # user disabled
+        }}),
+        encoding="utf-8",
+    )
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings["enabledPlugins"] == {
+        "coupons-skills@coupons-team-skills": True,
+        "platform-tools@coupons-team-skills": False,
+        "grpn@agnes": True,
+    }
+
+
+def test_enable_skipped_in_override_workspace(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Override-mode workspaces (init-complete sentinel with `override: true`)
+    are admin-managed — refresh must not write to their `.claude/settings.json`
+    even though it still installs plugins to the global registry."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    # Admin-managed sentinel.
+    (settings_dir / "init-complete").write_text(
+        "completed_at: 2026-05-13T14:32:00Z\n"
+        "agnes_version: 0.53.0\n"
+        "override: true\n",
+        encoding="utf-8",
+    )
+    # No pre-existing settings.json — refresh must NOT create one.
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    assert not (settings_dir / "settings.json").exists(), (
+        "override-mode workspace must NOT have settings.json materialised by refresh"
+    )
+
+
+def test_reload_hint_printed_when_only_enable_changes(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Nothing to install/update, but enable map had a stale `false` entry
+    → refresh flips it to `true` and prints the /reload-plugins hint so
+    the user knows to reload the running session."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"grpn@agnes": False}}), encoding="utf-8",
+    )
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([
+                        {"id": "grpn@agnes", "version": "1.0.0",
+                         "projectPath": str(workspace)},
+                    ]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+    out = _clean(result.output)
+    assert "/reload-plugins" in out
+    # No install or update should have been triggered.
+    assert not any(c.cmd[:3] == ["claude", "plugin", "install"] for c in recorder.calls)
+    assert not any(c.cmd[:3] == ["claude", "plugin", "update"] for c in recorder.calls)
