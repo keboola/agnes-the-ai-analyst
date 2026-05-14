@@ -100,79 +100,115 @@ class TestWebUISmoke:
         body = resp.text
         # Shared header chrome
         assert "app-header" in body
-        # Nav: "My tokens" (own) is in the user-menu dropdown; admin Tokens
-        # entry (and Tables, Users, Groups, Resource access, Server config)
-        # lives in the Admin dropdown.
-        assert 'href="/tokens"' in body
+        # User-self menu post-consolidation: Profile + My activity only.
+        # Auth debug folded into /me/profile troubleshooting section; the
+        # /me/debug nav entry is gone.
+        assert 'href="/me/profile"' in body
+        assert 'href="/me/activity"' in body
+        assert 'href="/me/debug"' not in body
+        # Admin dropdown still carries the cross-user PAT admin entry.
         assert 'href="/admin/tokens"' in body
-        assert 'href="/profile"' in body
         assert 'href="/admin/users"' in body
         # v12 modern UI markers — Role column was replaced by Groups chips,
         # so role-pill is gone. Confirm-modal pattern is shared by both.
         assert 'class="users-page"' in body
         assert 'id="confirm-modal"' in body
 
-    def test_nav_shows_tokens_link_for_non_admin(self, web_client, analyst_cookie):
-        """Non-admins see 'My tokens' + 'Profile' user-menu links — no admin Tokens entry."""
+    def test_nav_shows_user_self_links_for_non_admin(self, web_client, analyst_cookie):
+        """Non-admins see Profile + My activity user-menu links — no admin
+        Tokens entry, no Auth debug entry (folded into /me/profile)."""
         resp = web_client.get("/dashboard", cookies=analyst_cookie)
         assert resp.status_code in (200, 302)
         if resp.status_code == 302:
             # Dashboard may redirect in some flows; follow it for nav check.
             resp = web_client.get(resp.headers["location"], cookies=analyst_cookie)
         body = resp.text
-        assert 'href="/tokens"' in body
-        assert 'href="/profile"' in body
-        assert ">My tokens<" in body
+        assert 'href="/me/profile"' in body
         assert ">Profile<" in body
+        assert 'href="/me/activity"' in body
+        assert ">My activity<" in body
+        # Auth debug entry is gone from the nav — folded into /me/profile.
+        assert 'href="/me/debug"' not in body
+        assert ">Auth debug<" not in body
+        # Retired entries must not surface.
+        assert ">My tokens<" not in body
+        assert ">My sessions<" not in body
         # Non-admins must NOT see the admin Tokens link inside the Admin dropdown.
         assert 'href="/admin/tokens"' not in body
 
-    def test_nav_shows_all_tokens_link_for_admin(self, web_client, admin_cookie):
-        """Admins see the 'My tokens' user-menu link and the admin Tokens entry inside the Admin dropdown."""
+    def test_nav_shows_admin_dropdown_for_admin(self, web_client, admin_cookie):
+        """Admins see the same user-self menu + the Admin dropdown with
+        cross-user Tokens / Tables / Users entries."""
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code in (200, 302)
         if resp.status_code == 302:
             resp = web_client.get(resp.headers["location"], cookies=admin_cookie)
         body = resp.text
-        assert 'href="/tokens"' in body
+        # User-self menu — same as non-admin; Auth debug gone from nav.
+        assert 'href="/me/activity"' in body
+        assert 'href="/me/debug"' not in body
+        assert ">My tokens<" not in body
+        # Admin dropdown — Tables / Tokens / Users / Groups / Resource access / Server config.
         assert 'href="/admin/tokens"' in body
-        assert ">My tokens<" in body
-        # Admin dropdown now lists Tables / Tokens / Users / Groups / Resource access / Server config.
         assert 'href="/admin/tables"' in body
         assert ">Tables<" in body
         assert ">Tokens<" in body
 
     def test_profile_renders_account_details(self, web_client, admin_cookie):
-        """/profile renders a real profile page with email + tokens link.
+        """/me/profile renders a real profile page with email + inline PAT section.
 
         v12 changes: role-pill is replaced by an Admin-pill driven by Admin
         user_group membership; ``session.google_groups`` is gone (the
         OAuth callback writes Workspace memberships into
         ``user_group_members`` instead), so the "No Google groups available"
         empty state is no longer rendered.
+        Task 3: /tokens link removed; PAT management is now inline on this page.
         """
-        resp = web_client.get("/profile", cookies=admin_cookie)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         assert "admin@test.com" in body
-        assert 'href="/tokens"' in body
+        assert 'href="/tokens"' not in body
+        # Inline PAT section is present
+        assert "Personal Authentication Tokens" in body
+        assert 'id="new-token-btn"' in body
+        # Session & troubleshooting partial is included — a broken
+        # {% include %} or missing template var would drop this string.
+        assert "User record" in body
 
     def test_profile_requires_auth(self, web_client):
-        """/profile requires auth (was a 302 back-compat redirect before)."""
-        resp = web_client.get("/profile", follow_redirects=False)
+        """/me/profile requires auth (was a 302 back-compat redirect before)."""
+        resp = web_client.get("/me/profile", follow_redirects=False)
         # Auth dep raises 401; some configs may redirect to /login — accept either.
         assert resp.status_code in (401, 302)
 
+
+class TestProfileSensitiveLeakage:
+    """The /me/profile page absorbed the former /me/debug session-diagnostics
+    surface (Session & troubleshooting section). The security invariant that
+    protected that surface survives the move: the raw session JWT must never
+    appear in the rendered page — only its decoded claims and a short
+    fingerprint. Compensating test for the deleted
+    test_me_debug.TestNoSensitiveLeakage.test_raw_jwt_not_in_body."""
+
+    def test_raw_jwt_not_in_profile_body(self, web_client, analyst_cookie):
+        """The full session JWT must never appear in the rendered /me/profile
+        page — only its decoded claims and a short fingerprint."""
+        raw_token = analyst_cookie["access_token"]
+        resp = web_client.get("/me/profile", cookies=analyst_cookie)
+        assert resp.status_code == 200
+        assert raw_token not in resp.text, "raw JWT leaked into page body"
+
     @pytest.mark.skip(
         reason=(
-            "v12: /profile no longer renders an admin-self-management link. "
+            "v12: /me/profile no longer renders an admin-self-management link. "
             "Admin can navigate to /admin/users/{id} from the top-nav Admin "
             "dropdown directly. Drop or rewrite this test once the profile "
             "page settles."
         )
     )
     def test_profile_shows_admin_detail_link_for_admin(self, web_client, admin_cookie):
-        resp = web_client.get("/profile", cookies=admin_cookie)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'href="/admin/users/admin1"' in resp.text
 
@@ -184,7 +220,7 @@ class TestWebUISmoke:
         )
     )
     def test_profile_hides_admin_detail_link_for_non_admin(self, web_client, analyst_cookie):
-        resp = web_client.get("/profile", cookies=analyst_cookie)
+        resp = web_client.get("/me/profile", cookies=analyst_cookie)
         assert resp.status_code == 200
         assert "/admin/users/" not in resp.text
 
@@ -198,7 +234,7 @@ class TestWebUISmoke:
         )
     )
     def test_profile_shows_effective_roles_for_non_admin(self, web_client, analyst_cookie):
-        resp = web_client.get("/profile", cookies=analyst_cookie)
+        resp = web_client.get("/me/profile", cookies=analyst_cookie)
         assert resp.status_code == 200
         body = resp.text
         assert "Effective roles" in body
@@ -356,16 +392,14 @@ class TestAdminRoleGuards:
         assert r.status_code == 308
         assert r.headers["location"] == "/admin/activity?source=scheduler"
 
-    def test_profile_sessions_page_no_admin_required(self, web_client, analyst_cookie, admin_cookie):
-        """The /profile/sessions page is gated by get_current_user, not require_admin —
-        every authenticated user views their own sessions."""
-        r = web_client.get("/profile/sessions", follow_redirects=False)
-        assert r.status_code in (302, 401, 403)
+    def test_profile_sessions_redirects_to_me_activity(self, web_client, analyst_cookie, admin_cookie):
+        """/profile/sessions now 301-redirects to /me/activity?tab=sessions
+        (consolidated in the /me/activity page)."""
         r = web_client.get("/profile/sessions", cookies=analyst_cookie, follow_redirects=False)
-        assert r.status_code == 200
-        assert b"My sessions" in r.content
+        assert r.status_code == 301
+        assert r.headers["location"] == "/me/activity?tab=sessions"
         r = web_client.get("/profile/sessions", cookies=admin_cookie, follow_redirects=False)
-        assert r.status_code == 200
+        assert r.status_code == 301
 
     def test_profile_session_download_path_safety(self, web_client, analyst_cookie):
         """Per-session download endpoint must reject any filename that could
@@ -382,33 +416,11 @@ class TestAdminRoleGuards:
         r = web_client.get("/profile/sessions/anything.jsonl", follow_redirects=False)
         assert r.status_code in (302, 401, 403)
 
-    def test_profile_sessions_page_tolerates_stat_failures(self, web_client, analyst_cookie, tmp_path, monkeypatch):
-        """Devin Review on d878764a: a transient stat() failure on one file
-        must not 500 the whole page. Skip the bad row, render the rest."""
-        import pathlib
-        user_sessions = tmp_path / "user_sessions" / "analyst1"
-        user_sessions.mkdir(parents=True)
-        good = user_sessions / "good.jsonl"
-        good.write_text('{"event": "ok"}\n')
-        bad = user_sessions / "bad.jsonl"
-        bad.write_text('{"event": "stat-explodes"}\n')
-
-        monkeypatch.setenv("DATA_DIR", str(tmp_path))
-
-        # Make `bad.jsonl`.stat() raise; `good.jsonl`.stat() works.
-        real_stat = pathlib.Path.stat
-
-        def selective_stat(self, *args, **kwargs):
-            if self.name == "bad.jsonl":
-                raise PermissionError("simulated stat failure")
-            return real_stat(self, *args, **kwargs)
-
-        monkeypatch.setattr(pathlib.Path, "stat", selective_stat)
-
-        r = web_client.get("/profile/sessions", cookies=analyst_cookie, follow_redirects=False)
+    def test_me_activity_page_renders(self, web_client, analyst_cookie):
+        """/me/activity renders for authenticated users (consolidated view)."""
+        r = web_client.get("/me/activity", cookies=analyst_cookie, follow_redirects=False)
         assert r.status_code == 200
-        assert b"good.jsonl" in r.content
-        assert b"bad.jsonl" not in r.content
+        assert b"My activity" in r.content
 
     def test_profile_session_download_returns_file_for_owner(self, web_client, analyst_cookie, tmp_path, monkeypatch):
         """Authenticated owner can fetch their own jsonl with proper Content-Disposition."""

@@ -28,6 +28,13 @@ from app.instance_config import (
     get_instance_logo_svg, get_instance_overview,
 )
 from app.web.connector_prompts import all_connector_prompts
+from app.api.me_debug import (
+    require_debug_auth_enabled,
+    _read_session_token,
+    _decoded_claims,
+    _token_fingerprint,
+    _last_sync_summary,
+)
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.knowledge import KnowledgeRepository
@@ -741,16 +748,17 @@ async def home_page(
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 
 
-@router.get("/me/stats", response_class=HTMLResponse)
-async def me_stats_page(
+@router.get("/me/activity", response_class=HTMLResponse)
+async def me_activity_page(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Per-analyst stats dashboard. Four tabs (Sessions / Tokens /
-    Data access / Sync activity) backed by /api/me/stats/* endpoints.
-    Authed-only; each endpoint enforces user_id = caller scoping
-    server-side so this route just renders the shell.
+    """Unified personal-activity page — consolidated replacement for
+    the old ``/me/stats`` + ``/profile/sessions`` split.  Four tabs
+    (Sessions / Token usage / Data access / Sync activity) backed by
+    ``/api/me/stats/*`` endpoints.  The Sessions tab merges usage
+    metrics with verification-pipeline status and download links.
     """
     ctx = _build_context(
         request,
@@ -758,7 +766,13 @@ async def me_stats_page(
         conn=conn,
         is_admin=is_user_admin(user["id"], conn),
     )
-    return templates.TemplateResponse(request, "me_stats.html", ctx)
+    return templates.TemplateResponse(request, "me_activity.html", ctx)
+
+
+@router.get("/me/stats", response_class=HTMLResponse)
+async def me_stats_redirect(request: Request):
+    """Legacy redirect — ``/me/stats`` → ``/me/activity``."""
+    return RedirectResponse(url="/me/activity", status_code=301)
 
 
 @router.get("/news", response_class=HTMLResponse)
@@ -2058,20 +2072,6 @@ async def admin_workspace_prompt_page(
 
 
 
-@router.get("/tokens", response_class=HTMLResponse)
-async def my_tokens_page(
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    """My tokens — ANY signed-in user (incl. admins' own).
-
-    Always shows the user's own PATs. Create + reveal + revoke-own flow.
-    Admins who need the org-wide view go to /admin/tokens.
-    """
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "my_tokens.html", ctx)
-
-
 @router.get("/admin/tokens", response_class=HTMLResponse)
 async def admin_tokens_page(
     request: Request,
@@ -2079,7 +2079,7 @@ async def admin_tokens_page(
 ):
     """Admin — list of ALL tokens for incident response + offboarding.
 
-    Admin-only. No create form here (admins mint their own PATs via /tokens).
+    Admin-only. No create form here (admins mint their own PATs via /me/profile).
     URL param ?user=<email> pre-fills the owner filter (deep-link from
     /admin/users "Tokens" action).
     """
@@ -2087,7 +2087,7 @@ async def admin_tokens_page(
     return templates.TemplateResponse(request, "admin_tokens.html", ctx)
 
 
-@router.get("/profile", response_class=HTMLResponse)
+@router.get("/me/profile", response_class=HTMLResponse)
 async def profile_page(
     request: Request,
     user: dict = Depends(get_current_user),
@@ -2130,92 +2130,90 @@ async def profile_page(
         else:
             m["display_name"] = m["name"]
 
+    # Session-diagnostics context (formerly the /me/debug page). The
+    # troubleshooting section renders the caller's OWN decoded JWT +
+    # Google-sync snapshot — their own data, no debug gate on the read.
+    _SENSITIVE_USER_COLUMNS = ("password_hash", "setup_token", "reset_token")
+    user_record_safe = {
+        k: v for k, v in user.items() if k not in _SENSITIVE_USER_COLUMNS
+    }
+    raw_token = _read_session_token(request)
+
     ctx = _build_context(
         request,
         user=user,
         memberships=memberships,
         is_admin=is_user_admin(user["id"], conn),
+        user_record=user_record_safe,
+        claims=_decoded_claims(raw_token),
+        token_fingerprint=_token_fingerprint(raw_token),
+        sync_summary=_last_sync_summary(user["id"], conn),
+        # Display-only — keep original case (no .lower()), unlike the
+        # refetch-groups handler below which lowercases for set comparison.
+        google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),
     )
     return templates.TemplateResponse(request, "profile.html", ctx)
 
 
-@router.get("/profile/sessions", response_class=HTMLResponse)
-async def profile_sessions_page(
-    request: Request,
+@router.post("/me/profile/refetch-groups", name="me_profile_refetch_groups")
+async def me_profile_refetch_groups(
+    _: None = Depends(require_debug_auth_enabled),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """User-self-view of own uploaded sessions and their extraction state.
+    """Re-issue ``fetch_user_groups`` for the current user and return a
+    dry-run diff against the cached ``user_group_members`` snapshot,
+    writing nothing. Gated behind AGNES_DEBUG_AUTH — a dry-run admin
+    debug action, not user-facing content."""
+    from app.auth.group_sync import fetch_user_groups
 
-    Walks `${DATA_DIR}/user_sessions/<user_id>/*.jsonl` for the caller's
-    own user_id, joins each file against the verification processor's
-    rows in `session_processor_state` to surface processed_at + items_extracted,
-    and renders a table. Items_extracted = 0 means the verification processor
-    ran but the LLM found no claims worth tracking — that's the documented
-    "no items" outcome; it does NOT mean the pipeline is broken.
-    """
-    import pathlib
-    user_id = user["id"]
-    data_dir = pathlib.Path(os.environ.get("DATA_DIR", "/data"))
-    user_sessions_dir = data_dir / "user_sessions" / user_id
+    fetched = fetch_user_groups(user["email"])
+    soft_failed = fetched is None
+    fetched_list = list(fetched) if fetched else []
 
-    files = []
-    if user_sessions_dir.is_dir():
-        # Stat once per file with OSError tolerance, THEN sort. The previous
-        # `sorted(..., key=lambda p: p.stat().st_mtime)` raised on any
-        # transient stat failure (race with delete, permission flicker) and
-        # 500-ed the whole page (Devin Review on #179).
-        statted = []
-        for jsonl in user_sessions_dir.glob("*.jsonl"):
-            try:
-                stat = jsonl.stat()
-            except OSError:
-                continue
-            statted.append((jsonl, stat))
-        statted.sort(key=lambda pair: pair[1].st_mtime, reverse=True)
-        for jsonl, stat in statted:
-            files.append({
-                "name": jsonl.name,
-                "size_bytes": stat.st_size,
-                "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-            })
+    prefix = os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip().lower()
+    if prefix:
+        relevant = [g.lower() for g in fetched_list if g.lower().startswith(prefix)]
+    else:
+        relevant = [g.lower() for g in fetched_list]
 
-    state_map: dict = {}
-    if files:
-        keys = [f"{user_id}/{f['name']}" for f in files]
-        placeholders = ",".join("?" for _ in keys)
-        rows = conn.execute(
-            f"""SELECT session_file, processed_at, items_extracted, file_hash
-                FROM session_processor_state
-                WHERE processor_name = 'verification'
-                  AND session_file IN ({placeholders})""",
-            keys,
-        ).fetchall()
-        cols = [d[0] for d in conn.description]
-        for row in rows:
-            d = dict(zip(cols, row))
-            state_map[d["session_file"]] = d
+    has_ext = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'user_groups' AND column_name = 'external_id'"
+    ).fetchone()
+    select_ext = "g.external_id" if has_ext else "NULL"
+    current_rows = conn.execute(
+        f"""SELECT g.name, {select_ext} AS external_id
+              FROM user_group_members m
+              JOIN user_groups g ON g.id = m.group_id
+             WHERE m.user_id = ? AND m.source = 'google_sync'
+             ORDER BY g.name""",
+        [user["id"]],
+    ).fetchall()
+    current_external_ids = {r[1].lower() for r in current_rows if r[1]}
+    current_names = [r[0] for r in current_rows]
 
-    rows_view = []
-    for f in files:
-        key = f"{user_id}/{f['name']}"
-        state = state_map.get(key)
-        rows_view.append({
-            "name": f["name"],
-            "size_kb": round(f["size_bytes"] / 1024, 1),
-            "uploaded_at": f["mtime"],
-            "processed_at": state["processed_at"] if state else None,
-            "items_extracted": state["items_extracted"] if state else None,
-            "is_processed": state is not None,
-        })
+    fetched_set = set(relevant)
+    would_add = sorted(fetched_set - current_external_ids)
+    would_remove = sorted(current_external_ids - fetched_set) if has_ext else []
 
-    ctx = _build_context(
-        request,
-        user=user,
-        sessions=rows_view,
-        user_id=user_id,
-    )
-    return templates.TemplateResponse(request, "profile_sessions.html", ctx)
+    return {
+        "soft_failed": soft_failed,
+        "prefix": prefix or None,
+        "fetched": fetched_list,
+        "fetched_relevant": relevant,
+        "current_names": current_names,
+        "current_external_ids": sorted(current_external_ids),
+        "would_add": would_add,
+        "would_remove": would_remove,
+        "applied": False,
+    }
+
+
+@router.get("/profile/sessions", response_class=HTMLResponse)
+async def profile_sessions_redirect(request: Request):
+    """Legacy redirect — ``/profile/sessions`` → ``/me/activity?tab=sessions``."""
+    return RedirectResponse(url="/me/activity?tab=sessions", status_code=301)
 
 
 @router.get("/profile/sessions/{filename}")

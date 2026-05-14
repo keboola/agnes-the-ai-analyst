@@ -12080,107 +12080,10 @@
         ]
       }
     },
-    "/me/debug": {
-      "get": {
-        "operationId": "me_debug_page_me_debug_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Me Debug Page",
-        "tags": [
-          "me-debug"
-        ]
-      }
-    },
-    "/me/debug/refetch-groups": {
-      "post": {
-        "description": "Re-issue ``fetch_user_groups`` for the current user and return a\ndiff against the cached ``user_group_members`` snapshot, *without*\nwriting anything. The \"real\" sync runs only at OAuth callback \u2014\nforcing a write here would let any logged-in user trigger a Google\nAdmin SDK call on demand, which is both noisy and a quota footgun.",
-        "operationId": "me_debug_refetch_groups_me_debug_refetch_groups_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Me Debug Refetch Groups",
-        "tags": [
-          "me-debug"
-        ]
-      }
-    },
-    "/profile": {
+    "/me/profile": {
       "get": {
         "description": "User profile \u2014 self-service view of identity and group memberships.\n\nRenders the user's account info plus a list of group memberships joined\nagainst ``user_groups`` (with the source label so users can tell which\nwere added by an admin, by Google sync, or seeded at deploy).",
-        "operationId": "profile_page_profile_get",
+        "operationId": "profile_page_me_profile_get",
         "parameters": [
           {
             "in": "header",
@@ -12272,56 +12175,6 @@
           }
         },
         "summary": "Setup Page",
-        "tags": [
-          "web"
-        ]
-      }
-    },
-    "/tokens": {
-      "get": {
-        "description": "My tokens \u2014 ANY signed-in user (incl. admins' own).\n\nAlways shows the user's own PATs. Create + reveal + revoke-own flow.\nAdmins who need the org-wide view go to /admin/tokens.",
-        "operationId": "my_tokens_page_tokens_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "My Tokens Page",
         "tags": [
           "web"
         ]

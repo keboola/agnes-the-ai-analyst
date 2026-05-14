@@ -1,13 +1,7 @@
 {% extends "base.html" %}
 
-{% block title %}Stats — {{ instance_brand }}{% endblock %}
+{% block title %}My activity — {{ instance_brand }}{% endblock %}
 
-{# Override block layout (same trick dashboard.html uses) to escape the
-   narrow .container wrap from base.html. Stats tables look cramped
-   inside 800px; 1280px matches the top-nav header width
-   (_app_header.html uses the same value) so the Stats page reads as
-   "same chrome, full content area" rather than a separate visual
-   identity. #}
 {% block layout %}
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
@@ -23,120 +17,125 @@
 
 {% block content %}
 <style>
-.stats-page { max-width: 1280px; margin: 0 auto; padding: 24px 24px 64px; }
-.stats-page h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
-.stats-page .lead { color: var(--hp-text-muted, #6b7280); margin: 0 0 20px; font-size: 13px; }
+/* Page-specific styles only. Tables use the canonical .data-table, stat
+   tiles use .stat-card, paginate buttons use .btn — all from
+   style-custom.css (design-system pass, v0.54.10). What remains here is
+   genuinely page-specific: panel show/hide, the token chart, the sessions
+   help text, pipeline badges, and the download link. */
+.activity-page { max-width: 1280px; margin: 0 auto; padding: 24px 24px 64px; }
 
-.stats-tabs {
-    display: flex; gap: 0; border-bottom: 1px solid var(--hp-border-light, rgba(0,0,0,0.12));
-    margin-bottom: 18px; overflow-x: auto;
-}
-.stats-tab {
-    border: 0; background: transparent; padding: 10px 16px; font: inherit; font-size: 13.5px;
-    color: var(--hp-text-muted, #6b7280); cursor: pointer; border-bottom: 2px solid transparent;
-    white-space: nowrap;
-}
-.stats-tab.is-active { color: var(--hp-text, #111); border-bottom-color: var(--hp-accent, #2563eb); }
 .stats-panel { display: none; }
 .stats-panel.is-active { display: block; }
-
 .stats-loading { color: var(--hp-text-muted, #6b7280); font-style: italic; padding: 24px 0; }
 .stats-error { color: #b91c1c; padding: 24px 0; }
 .stats-empty { color: var(--hp-text-muted, #6b7280); padding: 24px 0; }
 
-table.stats-table {
-    width: 100%; border-collapse: collapse; font-size: 13px;
-    font-variant-numeric: tabular-nums;
-}
-table.stats-table th, table.stats-table td {
-    padding: 8px 10px; border-bottom: 1px solid var(--hp-border-light, rgba(0,0,0,0.07));
-    text-align: left; vertical-align: top;
-}
-table.stats-table th { font-weight: 600; color: var(--hp-text-muted, #6b7280); font-size: 11.5px;
-    text-transform: uppercase; letter-spacing: 0.04em; }
-table.stats-table td.num { text-align: right; }
-table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
+/* Canonical .data-table is left-aligned; numeric columns opt into
+   right-alignment per-page via .num (matches the pre-migration look). */
+.data-table th.num, .data-table td.num { text-align: right; }
 
+/* Layout-only wrappers — the tiles/buttons inside are canonical. */
 .stats-paginate {
     display: flex; gap: 8px; justify-content: flex-end; padding: 12px 0;
 }
-.stats-paginate button {
-    padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
-    border: 1px solid var(--hp-border-light, rgba(0,0,0,0.12)); border-radius: 6px;
-    background: #fff;
-}
-.stats-paginate button:disabled { opacity: 0.4; cursor: not-allowed; }
-
 .stats-overview {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;
 }
 @media (max-width: 720px) { .stats-overview { grid-template-columns: repeat(2, 1fr); } }
-.stats-overview .card {
-    padding: 12px; border-radius: 8px;
-    background: var(--hp-stat-bg, rgba(0,0,0,0.025));
-}
-.stats-overview .lbl {
-    font-size: 11px; color: var(--hp-text-muted, #6b7280);
-    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;
-}
-.stats-overview .val { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .tok-chart { width: 100%; height: 160px; margin: 8px 0 16px; }
 .tok-chart rect { fill: var(--hp-accent, #2563eb); opacity: 0.85; }
 .tok-chart .axis text { font-size: 10px; fill: var(--hp-text-muted, #6b7280); }
+
+.sess-help {
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+    margin-bottom: 16px; line-height: 1.55;
+}
+.sess-help code {
+    background: var(--border-light, #f3f4f6); padding: 1px 6px;
+    border-radius: 4px; font-size: 12px;
+}
+
+.badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+}
+.badge-pending   { background: #fef3c7; color: #92400e; }
+.badge-processed { background: #dbeafe; color: #1e40af; }
+.badge-extracted { background: #d1fae5; color: #065f46; }
+
+.dl-link {
+    display: inline-block; padding: 4px 10px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    color: inherit; text-decoration: none; font-size: 12px; font-weight: 500;
+    background: var(--surface, #fff);
+    transition: background 0.15s, border-color 0.15s;
+}
+.dl-link:hover {
+    background: var(--border-light, #f9fafb);
+    border-color: var(--primary, #6366f1);
+    color: var(--primary, #4338ca);
+}
 </style>
 
-<div class="stats-page">
-    <h1>Your Stats</h1>
-    <p class="lead">
-        Sessions, tokens, data access, and sync activity for
-        <strong>{{ user.email }}</strong>. Data covers the
-        sessions {{ instance_brand }} has processed from your Claude
-        Code transcripts.
-    </p>
+<div class="activity-page">
+    {% set page_hero_eyebrow = "Profile" %}
+    {% set page_hero_title = "My activity" %}
+    {% set page_hero_subtitle = "Sessions, token usage, data access, and sync activity for <strong>" ~ (user.email | e) ~ "</strong>." %}
+    {% include "_page_hero.html" %}
 
-    <nav class="stats-tabs" role="tablist" aria-label="Stats sections">
-        <button type="button" role="tab" class="stats-tab is-active"
+    <nav class="tab-strip" role="tablist" aria-label="Activity sections">
+        <button type="button" role="tab" class="tab-strip__item is-active"
                 data-tab="sessions" aria-selected="true">Sessions</button>
-        <button type="button" role="tab" class="stats-tab"
-                data-tab="tokens" aria-selected="false">Tokens</button>
-        <button type="button" role="tab" class="stats-tab"
+        <button type="button" role="tab" class="tab-strip__item"
+                data-tab="tokens" aria-selected="false">Token usage</button>
+        <button type="button" role="tab" class="tab-strip__item"
                 data-tab="queries" aria-selected="false">Data access</button>
-        <button type="button" role="tab" class="stats-tab"
+        <button type="button" role="tab" class="tab-strip__item"
                 data-tab="sync" aria-selected="false">Sync activity</button>
     </nav>
 
     <section class="stats-panel is-active" id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions">
+        <p class="sess-help">
+            Sessions from your Claude Code workspace. <strong>Items extracted = 0</strong>
+            means the verification detector ran successfully but the LLM didn't find
+            anything worth tracking — that's expected for sessions that are mostly tool
+            calls or coding without confident factual claims.
+            <em>Pending</em> means the file is on disk but the scheduler hasn't processed
+            it yet (next tick: every 15 min by default).
+        </p>
         <div class="stats-loading" data-state="loading">Loading sessions…</div>
         <div data-state="ready" hidden>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>Started</th><th>Model</th>
                     <th class="num">Prompts</th><th class="num">Tools</th>
                     <th class="num">Tokens</th>
+                    <th>Pipeline</th><th class="num">Items</th>
+                    <th></th>
                 </tr></thead>
                 <tbody data-rows></tbody>
             </table>
             <div class="stats-paginate">
-                <button type="button" data-action="prev">‹ Prev</button>
-                <button type="button" data-action="next">Next ›</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-action="prev">‹ Prev</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-action="next">Next ›</button>
             </div>
         </div>
     </section>
 
     <section class="stats-panel" id="panel-tokens" role="tabpanel" aria-labelledby="tab-tokens">
-        <div class="stats-loading" data-state="loading">Loading tokens…</div>
+        <div class="stats-loading" data-state="loading">Loading token usage…</div>
         <div data-state="ready" hidden>
             <div class="stats-overview">
-                <div class="card"><div class="lbl">Input</div><div class="val" data-tok-total="input">—</div></div>
-                <div class="card"><div class="lbl">Output</div><div class="val" data-tok-total="output">—</div></div>
-                <div class="card"><div class="lbl">Cache read</div><div class="val" data-tok-total="cache_read">—</div></div>
-                <div class="card"><div class="lbl">Cache creation</div><div class="val" data-tok-total="cache_creation">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Input</div><div class="stat-card__value" data-tok-total="input">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Output</div><div class="stat-card__value" data-tok-total="output">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Cache read</div><div class="stat-card__value" data-tok-total="cache_read">—</div></div>
+                <div class="stat-card"><div class="stat-card__label">Cache creation</div><div class="stat-card__value" data-tok-total="cache_creation">—</div></div>
             </div>
             <svg class="tok-chart" data-tok-chart viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
 
             <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">By model</h3>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>Model</th><th class="num">Sessions</th>
                     <th class="num">Input</th><th class="num">Output</th>
@@ -146,7 +145,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
             </table>
 
             <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">Top sessions</h3>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>Started</th><th>Model</th>
                     <th class="num">Input</th><th class="num">Output</th>
@@ -160,7 +159,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
     <section class="stats-panel" id="panel-queries" role="tabpanel" aria-labelledby="tab-queries">
         <div class="stats-loading" data-state="loading">Loading queries…</div>
         <div data-state="ready" hidden>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>When</th><th>Action</th><th>Resource</th>
                     <th>Result</th><th class="num">Duration (ms)</th>
@@ -168,7 +167,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
                 <tbody data-rows></tbody>
             </table>
             <div class="stats-paginate">
-                <button type="button" data-action="next">Older ›</button>
+                <button class="btn btn-secondary btn-sm" type="button" data-action="next">Older ›</button>
             </div>
         </div>
     </section>
@@ -177,12 +176,12 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         <div class="stats-loading" data-state="loading">Loading sync activity…</div>
         <div data-state="ready" hidden>
             <div class="stats-overview" style="grid-template-columns: 1fr;">
-                <div class="card">
-                    <div class="lbl">Your last <code>agnes pull</code></div>
-                    <div class="val" data-sync-last-pull>—</div>
+                <div class="stat-card">
+                    <div class="stat-card__label">Your last <code>agnes pull</code></div>
+                    <div class="stat-card__value" data-sync-last-pull>—</div>
                 </div>
             </div>
-            <table class="stats-table">
+            <table class="data-table">
                 <thead><tr>
                     <th>When</th><th>Action</th><th>Source</th>
                     <th>Result</th>
@@ -195,7 +194,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
 
 <script>
 (function () {
-    const root = document.querySelector('.stats-page');
+    const root = document.querySelector('.activity-page');
     if (!root) return;
 
     function fmtNum(n) {
@@ -222,6 +221,12 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         return d.toLocaleString();
     }
 
+    function escapeHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
     async function fetchJSON(url) {
         const r = await fetch(url, { credentials: 'same-origin' });
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -243,6 +248,12 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
 
     const sessionsState = { offset: 0, limit: 25, total: 0 };
 
+    function pipelineBadge(status) {
+        if (status === 'extracted') return '<span class="badge badge-extracted">extracted</span>';
+        if (status === 'processed') return '<span class="badge badge-processed">processed</span>';
+        return '<span class="badge badge-pending">pending</span>';
+    }
+
     async function loadSessions() {
         const panel = document.getElementById('panel-sessions');
         try {
@@ -253,16 +264,22 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
             const tbody = panel.querySelector('[data-rows]');
             tbody.innerHTML = '';
             if (data.rows.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="stats-empty">No sessions yet — start Claude Code in a workspace and they\'ll appear here.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="stats-empty">No sessions yet — start Claude Code in a workspace and they\'ll appear here.</td></tr>';
             }
             for (const r of data.rows) {
                 const tr = document.createElement('tr');
+                const dlCell = r.download_url
+                    ? `<a class="dl-link" href="${escapeHtml(r.download_url)}" download>Download</a>`
+                    : '';
                 tr.innerHTML = `
                     <td>${fmtTimestamp(r.started_at)}</td>
                     <td>${r.primary_model || '<em style="color:#9ca3af;">unprocessed</em>'}</td>
                     <td class="num">${fmtNum(r.user_messages)}</td>
                     <td class="num">${fmtNum(r.tool_calls)}</td>
                     <td class="num">${fmtNum(r.tokens_total)}</td>
+                    <td>${pipelineBadge(r.pipeline_status)}</td>
+                    <td class="num">${r.items_extracted != null ? r.items_extracted : 0}</td>
+                    <td>${dlCell}</td>
                 `;
                 tbody.appendChild(tr);
             }
@@ -285,7 +302,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         loadSessions();
     });
 
-    // ----- Tokens tab -----
+    // ----- Token usage tab -----
 
     async function loadTokens() {
         const panel = document.getElementById('panel-tokens');
@@ -296,7 +313,6 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
                     fmtNum(data.totals[key]);
             }
 
-            // Daily chart — simple bars over the 30-day window.
             const chart = panel.querySelector('[data-tok-chart]');
             chart.innerHTML = '';
             const days = data.daily;
@@ -353,7 +369,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
 
             setReady(panel);
         } catch (e) {
-            setError(panel, 'Could not load tokens: ' + e.message);
+            setError(panel, 'Could not load token data: ' + e.message);
         }
     }
 
@@ -438,7 +454,7 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
     };
 
     function activate(name) {
-        document.querySelectorAll('.stats-tab').forEach((b) => {
+        document.querySelectorAll('.tab-strip__item').forEach((b) => {
             const on = b.dataset.tab === name;
             b.classList.toggle('is-active', on);
             b.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -452,12 +468,13 @@ table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
         }
     }
 
-    document.querySelectorAll('.stats-tab').forEach((b) => {
+    document.querySelectorAll('.tab-strip__item').forEach((b) => {
         b.addEventListener('click', () => activate(b.dataset.tab));
     });
 
-    // Initial paint: sessions tab.
-    activate('sessions');
+    // URL hash support: /me/activity?tab=sessions
+    const urlTab = new URLSearchParams(window.location.search).get('tab');
+    activate(urlTab && loaders[urlTab] ? urlTab : 'sessions');
 })();
 </script>
 {% endblock %}

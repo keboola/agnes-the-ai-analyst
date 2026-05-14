@@ -43,13 +43,22 @@ router = APIRouter(prefix="/api/me/stats", tags=["me"])
 
 
 def _username_for_stats(user: dict) -> str:
-    """Email local-part → filesystem username, mirroring the rule in
-    ``app.api.me._username_for_stats``. Kept inline so this module
-    has no cross-import dependency on ``me.py``; if the mapping
-    evolves both copies update.
+    """Return the key that ``usage_session_summary.username`` holds for
+    sessions uploaded by *user*.
+
+    Production convention: ``app/api/upload.py`` writes JSONLs under
+    ``${DATA_DIR}/user_sessions/<user_id>/``; the session-pipeline
+    runner uses the directory name as the ``username`` column when
+    extracting summaries. ``/profile/sessions`` (now redirected to
+    /me/activity) reads the same dir keyed by ``user_id``. The column
+    is historically named ``username`` but its current contents are
+    user_ids — return the matching lookup key.
+
+    v45 schema added a separate ``user_id`` column for RBAC purposes
+    (#293); reading from the legacy ``username`` column still works
+    because it carries the user_id value as the runner-written key.
     """
-    email: str = user.get("email", "") or ""
-    return email.split("@")[0] if "@" in email else email
+    return user["id"]
 
 
 def _session_data_dir() -> Path:
@@ -66,6 +75,14 @@ def _session_data_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _uploaded_sessions_dir(user_id: str) -> Path:
+    """``${DATA_DIR}/user_sessions/<user_id>`` — where ``agnes push``
+    deposits JSONL files.  Mirrors ``app.web.router.profile_sessions_page``.
+    """
+    data_dir = Path(os.environ.get("DATA_DIR", "/data"))
+    return data_dir / "user_sessions" / user_id
+
+
 @router.get("/sessions")
 def list_self_sessions(
     limit: int = Query(50, ge=1, le=200),
@@ -77,12 +94,13 @@ def list_self_sessions(
 
     Joins ``usage_session_summary`` (processed=true) with a filesystem
     scan of un-processed JSONL so a session appears immediately even
-    before the UsageProcessor runs. Mirrors the admin
-    ``list_user_sessions`` projection plus the v44 token columns —
-    the Stats tab renders one row per session with totals on the
-    right.
+    before the UsageProcessor runs.  Additionally enriches each row
+    with verification-pipeline status (from ``session_processor_state``)
+    and a ``download_url`` when the uploaded JSONL exists in
+    ``${DATA_DIR}/user_sessions/<user_id>/``.
     """
     username = _username_for_stats(user)
+    user_id: str = user["id"]
     user_dir = _session_data_dir() / username
 
     try:
@@ -102,8 +120,6 @@ def list_self_sessions(
             [username],
         ).fetchall()
     except Exception:
-        # usage_session_summary may not exist on a partially-migrated DB.
-        # Fall back to filesystem-only listing rather than 500.
         rows_db = []
 
     cols = [
@@ -128,7 +144,12 @@ def list_self_sessions(
             + int(d.get("cache_creation_tokens") or 0)
         )
         d["processed"] = True
-        processed[d["session_file"]] = d
+        # Dedup key: BASENAME of ``session_file``. The session-pipeline
+        # runner writes ``session_file = f"{username}/{filename}"`` while
+        # the filesystem scan below walks bare filenames. Keying by
+        # basename makes both views agree without normalizing the stored
+        # column.
+        processed[Path(d["session_file"]).name] = d
 
     all_rows: list[dict] = list(processed.values())
     if user_dir.is_dir():
@@ -159,6 +180,21 @@ def list_self_sessions(
                 "processed": False,
             })
 
+    # --- Enrich with verification-pipeline status ---
+    _enrich_pipeline_status(all_rows, user_id, conn)
+
+    # --- Enrich with download URLs for uploaded JSONL ---
+    uploaded_dir = _uploaded_sessions_dir(user_id)
+    uploaded_names: set[str] = set()
+    if uploaded_dir.is_dir():
+        uploaded_names = {p.name for p in uploaded_dir.glob("*.jsonl")}
+    for row in all_rows:
+        fname = row.get("session_file", "")
+        if fname in uploaded_names:
+            row["download_url"] = f"/profile/sessions/{fname}"
+        else:
+            row["download_url"] = None
+
     all_rows.sort(
         key=lambda r: r.get("started_at") or "",
         reverse=True,
@@ -171,6 +207,48 @@ def list_self_sessions(
         "limit": limit,
         "rows": page,
     }
+
+
+def _enrich_pipeline_status(
+    rows: list[dict],
+    user_id: str,
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Add ``pipeline_status`` and ``items_extracted`` from
+    ``session_processor_state`` (verification processor) to each row
+    in-place.  Matches are looked up by ``<user_id>/<session_file>``.
+    """
+    if not rows:
+        return
+    keys = [f"{user_id}/{r['session_file']}" for r in rows]
+    state_map: dict[str, dict] = {}
+    try:
+        placeholders = ",".join("?" for _ in keys)
+        db_rows = conn.execute(
+            f"""SELECT session_file, processed_at, items_extracted
+                FROM session_processor_state
+                WHERE processor_name = 'verification'
+                  AND session_file IN ({placeholders})""",
+            keys,
+        ).fetchall()
+        state_cols = [d[0] for d in conn.description]
+        for row in db_rows:
+            d = dict(zip(state_cols, row))
+            state_map[d["session_file"]] = d
+    except Exception:
+        pass
+    for row in rows:
+        key = f"{user_id}/{row['session_file']}"
+        state = state_map.get(key)
+        if state is None:
+            row["pipeline_status"] = "pending"
+            row["items_extracted"] = None
+        else:
+            items = state.get("items_extracted")
+            row["items_extracted"] = items
+            row["pipeline_status"] = (
+                "extracted" if items and items > 0 else "processed"
+            )
 
 
 # ---------------------------------------------------------------------------

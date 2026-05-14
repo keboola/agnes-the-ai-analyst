@@ -3,11 +3,11 @@
 
 {% block content %}
 <style>
-  /* /profile — read-only account view with Google Workspace group list.
-     Matches the card/hero vocabulary used on /tokens. */
-  body > .container { max-width: 960px; }
+  /* /me/profile — read-only account view with Google Workspace group list.
+     Matches the card/hero vocabulary used by the /me/profile PAT section. */
+  body > .container { max-width: 1100px; }
   .profile-page {
-    max-width: 960px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 28px 8px 48px;
     box-sizing: border-box;
@@ -62,6 +62,17 @@
     text-transform: uppercase;
     letter-spacing: 0.4px;
     color: var(--text-secondary, #6b7280);
+  }
+  /* <details>-based section header: <summary> is phrasing-only, so the
+     header text sits directly in it (no nested <h3>). Mirror the
+     .section-card h3 look. */
+  details.section-card > summary {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+    cursor: pointer;
   }
 
   .account-grid {
@@ -140,20 +151,6 @@
     color: var(--text-primary, #1A253C);
     margin-bottom: 4px;
   }
-
-  .tokens-link-row {
-    margin-top: 18px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border-light, #f3f4f6);
-    font-size: 13.5px;
-    color: var(--text-secondary, #6b7280);
-  }
-  .tokens-link-row a {
-    color: #0073D1;
-    text-decoration: none;
-    font-weight: 600;
-  }
-  .tokens-link-row a:hover { text-decoration: underline; }
 
   /* Effective roles section: chip cloud + grouped breakdown */
   .role-chips {
@@ -251,9 +248,6 @@
       <span class="k">Name</span>
       <span class="v">{{ user.name or "—" }}</span>
     </div>
-    <div class="tokens-link-row">
-      Manage personal access tokens at <a href="/tokens">/tokens</a>.
-    </div>
   </section>
 
   <section class="section-card" aria-label="Group memberships">
@@ -295,6 +289,13 @@
       </div>
     </div>
   </section>
+
+  {% include "_profile_tokens.html" %}
+
+  <details class="section-card" aria-label="Session and troubleshooting">
+    <summary>Session &amp; troubleshooting</summary>
+    {% include "_profile_troubleshooting.html" %}
+  </details>
 </div>
 
 <script>

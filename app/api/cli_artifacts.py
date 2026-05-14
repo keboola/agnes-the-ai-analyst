@@ -148,7 +148,7 @@ EOF
 
 echo "Installed."
 echo "Next steps:"
-echo "  1. Sign in to $SERVER and create a personal access token at $SERVER/tokens"
+echo "  1. Sign in to $SERVER and create a personal access token at $SERVER/me/profile"
 echo "  2. Export it:   export AGNES_TOKEN=<your-token>"
 echo "  3. Verify:      agnes auth whoami"
 """

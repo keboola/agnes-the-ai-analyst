@@ -72,10 +72,10 @@ def test_sessions_endpoint_scopes_to_caller(stats_conn, tmp_path, monkeypatch):
 
     _seed_user(stats_conn, uid="ua", email="alice@example.com")
     _seed_user(stats_conn, uid="ub", email="bob@example.com")
-    _seed_session(stats_conn, sf="a1.jsonl", username="alice",
+    _seed_session(stats_conn, sf="a1.jsonl", username="ua",
                   started_sql="current_timestamp - INTERVAL 1 HOUR",
                   user_messages=4, input_tokens=100, output_tokens=50)
-    _seed_session(stats_conn, sf="b1.jsonl", username="bob",
+    _seed_session(stats_conn, sf="b1.jsonl", username="ub",
                   started_sql="current_timestamp - INTERVAL 1 HOUR",
                   user_messages=9, input_tokens=999, output_tokens=999)
 
@@ -95,7 +95,7 @@ def test_sessions_endpoint_pagination(stats_conn, tmp_path, monkeypatch):
     monkeypatch.setenv("AGNES_SESSION_DATA_DIR", str(tmp_path / "noop"))
     _seed_user(stats_conn, uid="ua", email="alice@example.com")
     for i in range(5):
-        _seed_session(stats_conn, sf=f"s{i}.jsonl", username="alice",
+        _seed_session(stats_conn, sf=f"s{i}.jsonl", username="ua",
                       started_sql=f"current_timestamp - INTERVAL {i} HOUR",
                       user_messages=i)
 
@@ -135,19 +135,19 @@ def test_tokens_endpoint_empty_user(stats_conn):
 
 def test_tokens_endpoint_aggregates(stats_conn):
     _seed_user(stats_conn, uid="ua", email="alice@example.com")
-    _seed_session(stats_conn, sf="x.jsonl", username="alice",
+    _seed_session(stats_conn, sf="x.jsonl", username="ua",
                   started_sql="current_timestamp - INTERVAL 1 HOUR",
                   model="claude-opus-4-7",
                   input_tokens=100, output_tokens=50,
                   cache_read=800, cache_creation=25)
-    _seed_session(stats_conn, sf="y.jsonl", username="alice",
+    _seed_session(stats_conn, sf="y.jsonl", username="ua",
                   started_sql="current_timestamp - INTERVAL 2 DAY",
                   model="claude-sonnet-4-6",
                   input_tokens=200, output_tokens=100,
                   cache_read=400, cache_creation=10)
     # Far-past row excluded by `days=7` window for the daily series, but
     # still counted in lifetime totals + by_model + top.
-    _seed_session(stats_conn, sf="z.jsonl", username="alice",
+    _seed_session(stats_conn, sf="z.jsonl", username="ua",
                   started_sql="current_timestamp - INTERVAL 60 DAY",
                   model="claude-opus-4-7",
                   input_tokens=1, output_tokens=1)

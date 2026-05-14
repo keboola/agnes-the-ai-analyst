@@ -10,7 +10,59 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.15] — 2026-05-14
+
+### Added
+- New `/me/activity` page consolidating per-analyst usage analytics into
+  one place: four tabs — Sessions, Token usage, Data access, Sync
+  activity. The Sessions tab merges what used to be split across two
+  pages: usage metrics (model, prompts, tools, tokens) plus pipeline
+  status (pending/processed/extracted), items-extracted count, and the
+  session download link, all in one table.
+- `GET /api/me/stats/sessions` response now includes `pipeline_status`,
+  `items_extracted`, and `download_url` per row (joined from
+  `session_processor_state` and the `user_sessions/` filesystem).
+
+### Changed
+- `/me/stats` and `/profile/sessions` are consolidated into
+  `/me/activity`. Both old URLs now 301-redirect — `/me/stats` →
+  `/me/activity`, `/profile/sessions` → `/me/activity?tab=sessions`. The
+  `/profile/sessions/{filename}` download endpoint is unchanged.
+- `/profile` is renamed to `/me/profile` and absorbs the former
+  `/me/debug` (session diagnostics) and `/tokens` (Personal
+  Authentication Token management) pages into one account page —
+  Account, Group memberships, Effective access, Personal Authentication
+  Tokens, and a collapsible Session & troubleshooting section. The user
+  menu is now Profile → My activity; the "Stats", "My tokens", and
+  "Auth debug" entries are retired. `/admin/tokens`, the `/auth/tokens`
+  API, and `/api/me/profile` are unchanged.
+- `/api/me/stats/*` session lookup now keys by `user_id` — matching how
+  the session pipeline writes `usage_session_summary.username` — fixing
+  empty results when an analyst's email local-part differed from their
+  user_id. `items_extracted` renders `0` instead of blank when null.
+
+### Fixed
+- `/me/activity` page hero subtitle now escapes `user.email` before
+  concatenating it into the `| safe`-rendered subtitle. The raw
+  concatenation bypassed Jinja2 auto-escaping — an XSS regression
+  relative to the auto-escaped `me_stats.html` it replaced.
+
+### Removed
+- `/profile`, `/me/debug`, and `/tokens` routes plus their templates
+  (`me_stats.html`, `profile_sessions.html`, `me_debug.html`,
+  `my_tokens.html`). `/me/stats` and `/profile/sessions` 301-redirect;
+  `/profile`, `/me/debug`, `/tokens` are removed outright with every
+  internal link repointed to `/me/profile`. The `/me/debug/refetch-groups`
+  POST moved to `/me/profile/refetch-groups` (still gated behind
+  `AGNES_DEBUG_AUTH`).
+
 ### Internal
+- `/me/activity` and `/me/profile` use the canonical design-system
+  primitives (`.data-table`, `.stat-card`, `.btn`) from the v0.54.10
+  design pass rather than bespoke per-page CSS; `stats-table` added to
+  the design-system contract test's deprecated-class list. `me_debug.py`
+  slimmed to a session-diagnostics helpers module; the page is composed
+  from `_profile_tokens.html` and `_profile_troubleshooting.html` partials.
 - Documentation tree cleaned up and consolidated. `CLAUDE.md` rewritten (708 → ~320 lines): the four overlapping release sections, the stale `v1→v35` DuckDB schema history, and the marketplace endpoint internals moved out to focused docs; preachy process sections tightened. New `docs/RELEASING.md` (release process + deploy workflows + CI quirks, with `RELEASE_TEMPLATE.md` folded in as an appendix) and `docs/marketplace.md` (marketplace ingestion + re-serving internals). Historical planning artifacts (`docs/superpowers/`, 52 files) and dated one-off docs (`HACKATHON.md`, `pd-ps-comments.md`, `security-audit-2026-04.md`, `future/NOTIFICATIONS.md`) moved under `docs/archive/`. New `docs/README.md` documentation index organized by audience, linked from `README.md` and `CLAUDE.md`. Removed the `docs/auto-install.md` stub. Fixed dangling doc links in `connectors/jira/README.md` and `dev_docs/README.md`, and repointed code/doc references to the archived paths (or dropped the pointer where the target was already a dead reference on `main`). Added a root `AGENTS.md` pointing to `CLAUDE.md` as the single source of truth for any AI coding agent, and `CLAUDE.local.md` to `.gitignore`.
 
 ## [0.54.14] — 2026-05-14
@@ -71,6 +123,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   Agnes hook fixes will NOT auto-propagate"* contract documented in
   the `[0.54.10]` `### Internal — risk-accepted by design` bullets —
   that scope was wider than the feature's actual intent.
+
+### Fixed
+- `/me/activity` page hero subtitle now escapes `user.email` before
+  concatenating it into the `| safe`-rendered subtitle. The raw
+  concatenation bypassed Jinja2 auto-escaping — an XSS regression
+  relative to the auto-escaped `me_stats.html` on `main`.
 
 ### Removed
 - **`/home` connectors block dropped — the onboarding flow covers it

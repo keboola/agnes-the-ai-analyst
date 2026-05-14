@@ -8,7 +8,7 @@ Single source of truth for working on Agnes against `localhost`. Covers the dev-
 make local-dev
 ```
 
-Then open <http://localhost:8000>. You land on `/dashboard` already logged in as `dev@localhost` (role `admin`) and your `/profile` shows two mocked Workspace groups. No login screen, no `.env` file, no SMTP, no GCP project — just code.
+Then open <http://localhost:8000>. You land on `/dashboard` already logged in as `dev@localhost` (role `admin`) and your `/me/profile` shows two mocked Workspace groups. No login screen, no `.env` file, no SMTP, no GCP project — just code.
 
 On Windows (or anywhere GNU Make / bash aren't available), `scripts\run-local-dev.ps1` is the feature-equivalent sibling — same compose stack, same `LOCAL_DEV_GROUPS` default. Verified on Docker Desktop for Windows.
 
@@ -22,7 +22,7 @@ On Windows (or anywhere GNU Make / bash aren't available), `scripts\run-local-de
 What `make local-dev` actually does:
 
 - Stacks three Compose files: `docker-compose.yml` (base) + `docker-compose.dev.yml` (hot-reload + source bind mount) + `docker-compose.local-dev.yml` (LOCAL_DEV_MODE overlay).
-- Seeds `LOCAL_DEV_GROUPS` with a sensible default (engineers + admins on `example.com`) so `/profile` is non-empty on first boot.
+- Seeds `LOCAL_DEV_GROUPS` with a sensible default (engineers + admins on `example.com`) so `/me/profile` is non-empty on first boot.
 - Touches an empty `.env` if missing — Compose validates `env_file:` paths even for services that never start, and the local-dev overlay drops the env-file requirement for the services that do.
 
 `make local-dev-down` stops the stack; `make local-dev-logs` tails it.
@@ -51,7 +51,7 @@ If you don't see that banner at boot, dev mode isn't on — check `LOCAL_DEV_MOD
 
 ## Mocking Google Workspace groups
 
-`/profile` and any future group-aware code path read `session.google_groups`. In production that field gets populated by the OAuth callback (`app/auth/providers/google.py`) from a Cloud Identity `searchTransitiveGroups` call. In dev there's no OAuth round-trip, so the field stays empty unless we mock it.
+`/me/profile` and any future group-aware code path read `session.google_groups`. In production that field gets populated by the OAuth callback (`app/auth/providers/google.py`) from a Cloud Identity `searchTransitiveGroups` call. In dev there's no OAuth round-trip, so the field stays empty unless we mock it.
 
 `LOCAL_DEV_GROUPS` is a JSON array of objects matching the production shape:
 
@@ -81,7 +81,7 @@ Two checks:
     ```
     A typo (e.g. unbalanced bracket) shows up here — not silently on the first authenticated request.
 
-2. **`/profile`** renders the mocked groups in a list. If you set `LOCAL_DEV_GROUPS=` (empty), you'll see *"No Google groups available"*.
+2. **`/me/profile`** renders the mocked groups in a list. If you set `LOCAL_DEV_GROUPS=` (empty), you'll see *"No Google groups available"*.
 
 ### Edge case: clearing stale groups mid-session
 
