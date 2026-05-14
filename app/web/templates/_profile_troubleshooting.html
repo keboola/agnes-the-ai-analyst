@@ -1,0 +1,182 @@
+{# Session & troubleshooting partial — included by profile.html.
+   Ports the User record, Session JWT, and Last Google sync sections from
+   the former /me/debug page. Group memberships and Resource grants are
+   intentionally omitted — profile.html already renders both above this
+   partial. No {% extends %} / {% block %} — this is an {% include %}-d
+   fragment. #}
+<style>
+  .troubleshoot-kv {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 6px 14px;
+    font-size: 13px;
+  }
+  .troubleshoot-kv .k {
+    color: var(--text-secondary, #6b7280);
+    font-weight: 500;
+  }
+  .troubleshoot-kv .v {
+    color: var(--text-primary, #111827);
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    word-break: break-all;
+  }
+  .troubleshoot-kv .v.muted { color: #9ca3af; font-style: italic; }
+
+  .troubleshoot-pre {
+    background: #0b1220;
+    color: #d1d5db;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow: auto;
+    max-height: 320px;
+  }
+
+  .troubleshoot-section { margin-bottom: 20px; }
+  /* :last-of-type, not :last-child — when DEBUG_AUTH_ENABLED the trailing
+     <script> block is the parent's last child, so :last-child never fires. */
+  .troubleshoot-section:last-of-type { margin-bottom: 0; }
+  .troubleshoot-section h3 {
+    /* Override .section-card h3 margin for nested sub-section headers */
+    margin: 0 0 10px;
+  }
+
+  .troubleshoot-refetch-result { margin-top: 14px; }
+  .troubleshoot-sub-head {
+    font-size: 12px;
+    margin: 14px 0 6px;
+    color: #6b7280;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+</style>
+
+{# ---- User record ---- #}
+<div class="troubleshoot-section">
+  <h3>User record</h3>
+  <div class="troubleshoot-kv">
+    <div class="k">id</div>          <div class="v">{{ user_record.id }}</div>
+    <div class="k">email</div>       <div class="v">{{ user_record.email }}</div>
+    <div class="k">name</div>        <div class="v">{{ user_record.name or "—" }}</div>
+    <div class="k">active</div>      <div class="v">{{ "yes" if user_record.active else "no" }}</div>
+    <div class="k">created_at</div>  <div class="v">{{ user_record.created_at or "—" }}</div>
+  </div>
+</div>
+
+{# ---- Session JWT (decoded) ---- #}
+<div class="troubleshoot-section">
+  <h3>Session JWT (decoded)</h3>
+  <p style="font-size:12px;color:#6b7280;margin:0 0 10px;">
+    Raw token never displayed; fingerprint correlates with logs.
+  </p>
+  {% if claims %}
+  <div class="troubleshoot-kv">
+    <div class="k">fingerprint</div>
+    <div class="v">{{ token_fingerprint }}…</div>
+    <div class="k">subject (sub)</div>
+    <div class="v">{{ claims.sub }}</div>
+    <div class="k">email</div>
+    <div class="v">{{ claims.email }}</div>
+    <div class="k">type (typ)</div>
+    <div class="v">{{ claims.typ or "session" }}</div>
+    <div class="k">issued (iat)</div>
+    <div class="v">{{ claims.iat or "—" }}</div>
+    <div class="k">expires (exp)</div>
+    <div class="v">{{ claims.exp or "—" }}</div>
+    <div class="k">jti</div>
+    <div class="v">{{ claims.jti or "—" }}</div>
+  </div>
+  {% else %}
+  <div class="empty-state">No session token in the request — are you signed in via cookie?</div>
+  {% endif %}
+</div>
+
+{# ---- Last Google sync snapshot ---- #}
+<div class="troubleshoot-section">
+  <h3>Last Google sync snapshot</h3>
+  <p style="font-size:12px;color:#6b7280;margin:0 0 10px;">
+    Read from <code>user_group_members</code>.
+  </p>
+  <div class="troubleshoot-kv">
+    <div class="k">prefix in effect</div>
+    <div class="v">{{ google_group_prefix or "(none)" }}</div>
+    <div class="k">google_sync rows</div>
+    <div class="v">{{ sync_summary.google_sync_count }}</div>
+    <div class="k">last added_at</div>
+    <div class="v">{{ sync_summary.last_added_at or "—" }}</div>
+  </div>
+
+  {% if config.DEBUG_AUTH_ENABLED %}
+  <div style="margin-top:14px;">
+    <button id="troubleshoot-refetch-btn" class="btn btn-primary btn-sm" type="button">
+      Refetch from Google (dry-run)
+    </button>
+    <span id="troubleshoot-refetch-status" style="margin-left:10px; font-size:12px; color:#6b7280;"></span>
+  </div>
+
+  <div id="troubleshoot-refetch-result" class="troubleshoot-refetch-result" hidden>
+    <div class="troubleshoot-kv" style="margin-top:10px;">
+      <div class="k">soft-failed?</div>
+      <div class="v" id="ts-rf-soft"></div>
+      <div class="k">prefix</div>
+      <div class="v" id="ts-rf-prefix"></div>
+    </div>
+
+    <p class="troubleshoot-sub-head">Fetched from Google (post-prefix-filter)</p>
+    <div class="troubleshoot-pre" id="ts-rf-fetched-relevant"></div>
+
+    <p class="troubleshoot-sub-head">Diff vs. cached membership</p>
+    <div class="troubleshoot-pre" id="ts-rf-diff"></div>
+  </div>
+  {% endif %}
+</div>
+
+{% if config.DEBUG_AUTH_ENABLED %}
+<script>
+(function () {
+  const btn = document.getElementById("troubleshoot-refetch-btn");
+  const status = document.getElementById("troubleshoot-refetch-status");
+  const result = document.getElementById("troubleshoot-refetch-result");
+  if (!btn) return;
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    status.textContent = "Asking Google…";
+    result.hidden = true;
+    try {
+      const r = await fetch("/me/profile/refetch-groups", {
+        method: "POST", credentials: "include",
+      });
+      if (!r.ok) {
+        status.textContent = "Failed: HTTP " + r.status;
+        return;
+      }
+      const data = await r.json();
+      document.getElementById("ts-rf-soft").textContent =
+        data.soft_failed ? "yes — Google API didn't answer" : "no";
+      document.getElementById("ts-rf-prefix").textContent = data.prefix || "(none)";
+      document.getElementById("ts-rf-fetched-relevant").textContent =
+        (data.fetched_relevant || []).join("\n") || "(empty)";
+
+      const lines = [];
+      (data.would_add || []).forEach(g => lines.push("+ " + g));
+      (data.would_remove || []).forEach(g => lines.push("- " + g));
+      if (lines.length === 0) {
+        lines.push("(no changes — cached membership matches Google)");
+      }
+      document.getElementById("ts-rf-diff").textContent = lines.join("\n");
+
+      result.hidden = false;
+      status.textContent = "Done — nothing was applied to the database.";
+    } catch (e) {
+      status.textContent = "Network error: " + (e.message || e);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();
+</script>
+{% endif %}

@@ -100,13 +100,12 @@ class TestWebUISmoke:
         body = resp.text
         # Shared header chrome
         assert "app-header" in body
-        # User-self menu post-consolidation: Profile + My activity + Auth debug.
-        # PAT listing moved onto Auth debug; the 'My tokens' entry retired.
-        # /tokens (create/revoke) still works via the link inside the Auth
-        # debug body, not the nav.
+        # User-self menu post-consolidation: Profile + My activity only.
+        # Auth debug folded into /me/profile troubleshooting section; the
+        # /me/debug nav entry is gone.
         assert 'href="/me/profile"' in body
         assert 'href="/me/activity"' in body
-        assert 'href="/me/debug"' in body
+        assert 'href="/me/debug"' not in body
         # Admin dropdown still carries the cross-user PAT admin entry.
         assert 'href="/admin/tokens"' in body
         assert 'href="/admin/users"' in body
@@ -116,9 +115,8 @@ class TestWebUISmoke:
         assert 'id="confirm-modal"' in body
 
     def test_nav_shows_user_self_links_for_non_admin(self, web_client, analyst_cookie):
-        """Non-admins see Profile + My activity + Auth debug user-menu
-        links — no admin Tokens entry. 'My tokens' retired when the PAT
-        list moved onto Auth debug."""
+        """Non-admins see Profile + My activity user-menu links — no admin
+        Tokens entry, no Auth debug entry (folded into /me/profile)."""
         resp = web_client.get("/dashboard", cookies=analyst_cookie)
         assert resp.status_code in (200, 302)
         if resp.status_code == 302:
@@ -129,8 +127,9 @@ class TestWebUISmoke:
         assert ">Profile<" in body
         assert 'href="/me/activity"' in body
         assert ">My activity<" in body
-        assert 'href="/me/debug"' in body
-        assert ">Auth debug<" in body
+        # Auth debug entry is gone from the nav — folded into /me/profile.
+        assert 'href="/me/debug"' not in body
+        assert ">Auth debug<" not in body
         # Retired entries must not surface.
         assert ">My tokens<" not in body
         assert ">My sessions<" not in body
@@ -145,9 +144,9 @@ class TestWebUISmoke:
         if resp.status_code == 302:
             resp = web_client.get(resp.headers["location"], cookies=admin_cookie)
         body = resp.text
-        # User-self menu — same as non-admin.
+        # User-self menu — same as non-admin; Auth debug gone from nav.
         assert 'href="/me/activity"' in body
-        assert 'href="/me/debug"' in body
+        assert 'href="/me/debug"' not in body
         assert ">My tokens<" not in body
         # Admin dropdown — Tables / Tokens / Users / Groups / Resource access / Server config.
         assert 'href="/admin/tokens"' in body
@@ -169,12 +168,32 @@ class TestWebUISmoke:
         body = resp.text
         assert "admin@test.com" in body
         assert 'href="/tokens"' in body
+        # Session & troubleshooting partial is included — a broken
+        # {% include %} or missing template var would drop this string.
+        assert "User record" in body
 
     def test_profile_requires_auth(self, web_client):
         """/me/profile requires auth (was a 302 back-compat redirect before)."""
         resp = web_client.get("/me/profile", follow_redirects=False)
         # Auth dep raises 401; some configs may redirect to /login — accept either.
         assert resp.status_code in (401, 302)
+
+
+class TestProfileSensitiveLeakage:
+    """The /me/profile page absorbed the former /me/debug session-diagnostics
+    surface (Session & troubleshooting section). The security invariant that
+    protected that surface survives the move: the raw session JWT must never
+    appear in the rendered page — only its decoded claims and a short
+    fingerprint. Compensating test for the deleted
+    test_me_debug.TestNoSensitiveLeakage.test_raw_jwt_not_in_body."""
+
+    def test_raw_jwt_not_in_profile_body(self, web_client, analyst_cookie):
+        """The full session JWT must never appear in the rendered /me/profile
+        page — only its decoded claims and a short fingerprint."""
+        raw_token = analyst_cookie["access_token"]
+        resp = web_client.get("/me/profile", cookies=analyst_cookie)
+        assert resp.status_code == 200
+        assert raw_token not in resp.text, "raw JWT leaked into page body"
 
     @pytest.mark.skip(
         reason=(
