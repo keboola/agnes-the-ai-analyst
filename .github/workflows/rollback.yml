@@ -1,0 +1,106 @@
+name: Rollback :stable
+
+# Re-tag :stable to a previous known-good build, deprecate the failing
+# image, and open a tracking issue. Callable from release.yml on
+# smoke-test failure (workflow_call) or manually by an operator
+# (workflow_dispatch) when something breaks post-deploy.
+
+on:
+  workflow_call:
+    inputs:
+      failed_image_tag:
+        description: 'The image_tag that failed (e.g. stable-2026.05.531)'
+        type: string
+        required: true
+      target_image_tag:
+        description: 'Override the rollback target. Defaults to the second-most-recent stable-* tag.'
+        type: string
+        required: false
+  workflow_dispatch:
+    inputs:
+      failed_image_tag:
+        description: 'The image_tag that failed (e.g. stable-2026.05.531)'
+        type: string
+        required: true
+      target_image_tag:
+        description: 'Rollback target. Defaults to the second-most-recent stable-* tag.'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+  issues: write
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve target image
+        id: target
+        run: |
+          if [ -n "${{ inputs.target_image_tag }}" ]; then
+            TARGET="${{ inputs.target_image_tag }}"
+          else
+            # Previous known-good = second-most-recent stable-* CalVer tag.
+            # Same heuristic the inline rollback used before extraction.
+            TARGET=$(git tag -l "stable-*" --sort=-version:refname | head -2 | tail -1)
+            if [ -z "$TARGET" ]; then
+              echo "::error::No previous stable-* tag found — supply target_image_tag explicitly"
+              exit 1
+            fi
+          fi
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "Rollback target: $TARGET"
+
+      - name: Re-tag :stable to target + mark failed image deprecated
+        run: |
+          REPO="ghcr.io/${{ github.repository }}"
+          FAILED="${{ inputs.failed_image_tag }}"
+          TARGET="${{ steps.target.outputs.target }}"
+          # Strip the channel prefix for a backward-compatible deprecated tag name
+          DEPRECATED="deprecated-${FAILED#stable-}"
+
+          docker pull "$REPO:$FAILED"
+          docker tag "$REPO:$FAILED" "$REPO:$DEPRECATED"
+          docker push "$REPO:$DEPRECATED"
+
+          docker pull "$REPO:$TARGET"
+          docker tag "$REPO:$TARGET" "$REPO:stable"
+          docker push "$REPO:stable"
+
+      - name: Open tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FAILED_TAG="${{ inputs.failed_image_tag }}"
+          # Same channel-prefix strip as the re-tag step, so the issue body
+          # shows the deprecated tag name that was actually pushed.
+          DEPRECATED="deprecated-${FAILED_TAG#stable-}"
+          gh issue create \
+            --title "Rollback: :stable reverted from ${{ inputs.failed_image_tag }} to ${{ steps.target.outputs.target }}" \
+            --body "$(cat <<EOF
+          ## Rollback report
+
+          - Failed image: \`ghcr.io/${{ github.repository }}:${{ inputs.failed_image_tag }}\`
+          - Deprecated tag: \`ghcr.io/${{ github.repository }}:${DEPRECATED}\`
+          - Rolled back to: \`ghcr.io/${{ github.repository }}:${{ steps.target.outputs.target }}\`
+          - Triggered by: ${{ github.event_name }}
+          - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Investigate before re-deploying.
+          EOF
+          )" \
+            --label "bug" || echo "::warning::Failed to open rollback tracking issue — check gh auth / labels"
