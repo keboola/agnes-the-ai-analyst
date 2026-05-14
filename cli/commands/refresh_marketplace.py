@@ -39,7 +39,6 @@ import typer
 from cli.config import get_server_url, get_token
 from cli.error_render import render_error
 from cli.lib.marketplace import CLONE_DIR, MARKETPLACE_NAME
-from cli.lib.override import is_override_workspace
 
 
 refresh_marketplace_app = typer.Typer(
@@ -661,9 +660,11 @@ def _enable_plugins_in_workspace_settings(
     rather than relying on local disable, which is ephemeral between
     refreshes.
 
-    Override workspaces (init-complete sentinel with `override: true`,
-    see `cli/lib/override.py`) are skipped — the admin's template owns
-    every byte of `.claude/`, same contract as `install_claude_hooks`.
+    Runs unconditionally — `refresh-marketplace` is a runtime command, so
+    the Initial Workspace Template sentinel (`override: true`) does not
+    apply here. The sentinel governs init-time skip only; runtime CLI
+    keeps workspaces in sync with the user's current stack regardless of
+    how the workspace was originally seeded.
 
     Idempotent: writes only when at least one plugin actually changed
     state (missing/false → true). No write when everything is already
@@ -671,9 +672,6 @@ def _enable_plugins_in_workspace_settings(
     mtime or polluting git diffs in workspace repos.
     """
     workspace = Path.cwd()
-    if is_override_workspace(workspace):
-        return
-
     settings_path = workspace / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 

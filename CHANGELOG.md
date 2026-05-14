@@ -200,9 +200,36 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `"<plugin>@agnes": true` to the workspace settings file after install
   and update, treating the user's marketplace stack as the source of
   truth and re-enabling any plugin that a prior local `claude plugin
-  disable` had turned off. Override workspaces (`init-complete` sentinel
-  with `override: true`) are skipped — admin's template stays
-  authoritative.
+  disable` had turned off.
+- **Runtime CLI commands now work on Initial Workspace Template
+  (override) workspaces.** The `.claude/init-complete` sentinel
+  carrying `override: true` previously short-circuited **every**
+  Agnes writer to `.claude/`, which trapped admin-templated workspaces
+  at a stale snapshot: `agnes refresh-marketplace` couldn't write the
+  `enabledPlugins` map (the fix above stayed inert), and
+  `agnes self-upgrade`'s `maybe_refresh_claude_hooks` couldn't migrate
+  workspaces to new Agnes hook layouts. The sentinel was meant to gate
+  **init-time** skip only — let admins ship the *initial* `.claude/`
+  contents — not to lock the workspace permanently. The override check
+  moves from inside the writers
+  (`cli/lib/hooks.py::install_claude_hooks`,
+  `cli/lib/hooks.py::maybe_refresh_claude_hooks`,
+  `cli/lib/commands.py::install_claude_commands`,
+  `cli/commands/refresh_marketplace.py::_enable_plugins_in_workspace_settings`)
+  to the init-time call site that always was the right place
+  (`cli/commands/init.py::init`, `if not override_active:`). Init-time
+  behavior unchanged — `agnes init` on an override workspace still
+  defers the workspace skeleton to admin's template. Admin custom hooks
+  survive runtime refresh: Agnes only rewrites entries matching
+  `_OUR_COMMAND_MARKERS` (`agnes self-upgrade` / `agnes pull` / ...
+  substring set in `cli/lib/hooks.py`); foreign commands fall through
+  unchanged, same contract as in default workspaces. Existing override
+  workspaces auto-converge on the next `agnes self-upgrade` (which
+  fires from every SessionStart hook); no manual operator action
+  needed. Retracts the earlier *"full responsibility transfer; future
+  Agnes hook fixes will NOT auto-propagate"* contract documented in
+  the `### Internal — risk-accepted by design` bullets immediately
+  below — that scope was wider than the feature's actual intent.
 - **Store guardrails — post-#290 follow-up.** Admin Rescan still writes `status='blocked_inline'` (the only post-v30 producer of that status). Re-add `blocked_inline` to the admin queue's "Needs review" filter chip and to `TERMINAL_BLOCKED_STATUSES` in the bundle-purge job, so a rescan-produced row surfaces in the default operator view and its bundle gets swept by the TTL purge instead of lingering on disk indefinitely. Documents the rescan-only asymmetry inline (chip + purge tuple + new code comments).
 - Stale doc strings referring to the pre-#290 `blocked_inline` quota counter on `app/api/store.py` spam-quota comment, `app/instance_config.py::get_guardrails_blocked_quota_per_day` docstring, and the operator-facing hint in `/admin/server-config` (`blocked_quota_per_day`). All three now correctly describe the narrowed `blocked_llm + review_error` counter that #290 actually shipped.
 
@@ -241,11 +268,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - New audit-log actions: `initial_workspace.register`, `initial_workspace.sync`, `initial_workspace.sync_failed`, `initial_workspace.delete`, `initial_workspace.fetch_started` (server-authored, anchors the trail), `initial_workspace.applied` (CLI-authored, best-effort confirmation).
 
 ### Internal — risk-accepted by design (see Initial Workspace Template feature)
-- `cli/lib/hooks.py::maybe_refresh_claude_hooks` deliberately no-ops when the workspace sentinel carries `override: true`. Future Agnes hook fixes will NOT auto-propagate to override workspaces via `agnes self-upgrade`; admin owns hook freshness in their template repo. Not a regression of #242 (the migration-gap fix that motivated the function applies to Agnes-default workspaces only).
-- `cli/lib/hooks.py::install_claude_hooks` and `cli/lib/commands.py::install_claude_commands` short-circuit on override workspaces. Admin's repo `settings.json` and `.claude/commands/` are the source of truth.
 - `agnes init --force` on override workspaces does NOT back up `CLAUDE.md` (no `CLAUDE.md.bak.<timestamp>` file). Source of truth is the admin's Git repo; recovery is `git log` / `git checkout`. Not a regression of #164.
 - `.claude/CLAUDE.local.md` IS overwritten by override extraction when the admin's repo includes it. The default-mode "never overwrite CLAUDE.local.md" promise is a default-mode promise; override mode hands full file-level control to admin. Documented.
-- `cli/lib/override.py::is_override_workspace` is the single source of truth for the override gate — every CLI surface that writes into `.claude/` calls it before touching the workspace. Avoids per-feature drift.
+- `cli/lib/override.py::is_override_workspace` gates the **init-time** skip block in `cli/commands/init.py` (the `if not override_active:` branch). Runtime CLI commands (`agnes refresh-marketplace`, `agnes self-upgrade`'s `maybe_refresh_claude_hooks`) do NOT consult the sentinel and keep the workspace in sync — see the `### Fixed` entry "Runtime CLI commands now work on Initial Workspace Template workspaces" above for the full contract.
 - `app/api/marketplaces.py::_persist_token` removed; both marketplaces and the new initial-workspace endpoint now route through the shared `app/secrets.py::persist_overlay_token` helper, which wraps the `.env_overlay` read-modify-write in a process-wide `threading.Lock`. Closes a pre-existing race where two concurrent `/admin/marketplaces` Save clicks could clobber each other's PATs on the overlay file.
 
 ## [0.54.8] — 2026-05-13
