@@ -72,6 +72,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the `[0.54.10]` `### Internal — risk-accepted by design` bullets —
   that scope was wider than the feature's actual intent.
 
+### Fixed
+- `/me/activity` page hero subtitle now escapes `user.email` before
+  concatenating it into the `| safe`-rendered subtitle. The raw
+  concatenation bypassed Jinja2 auto-escaping — an XSS regression
+  relative to the auto-escaped `me_stats.html` on `main`.
+
 ### Removed
 - **`/home` connectors block dropped — the onboarding flow covers it
   (#305).** The dedicated `<details data-section="connectors">` section
