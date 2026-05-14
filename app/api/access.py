@@ -1006,7 +1006,7 @@ async def my_effective_access(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Same payload as /api/admin/users/{id}/effective-access but scoped to
-    the calling user. Drives the /profile page's read-only access summary —
+    the calling user. Drives the /me/profile page's read-only access summary —
     so non-admin callers can self-audit without elevation. Admins get the
     same explicit grant breakdown as everyone else (no short-circuit) so
     the profile page audits the actual grant graph; runtime authorization
