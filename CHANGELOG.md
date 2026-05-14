@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- `/me/activity` hero subtitle showed literal `<strong>…</strong>` tags
+  around the user's email instead of rendering them bold. The subtitle
+  was built by `~`-concatenating a `Markup` operand (`user.email | e`)
+  with HTML string literals, which made Jinja2's `markup_join` escape
+  the literal tags too. Switched to `{% set %}…{% endset %}` block
+  capture so the literal `<strong>` stays HTML while the email is still
+  autoescaped.
+
 ## [0.54.15] — 2026-05-14
 
 ### Added

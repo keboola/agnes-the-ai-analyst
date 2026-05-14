@@ -81,7 +81,10 @@
 <div class="activity-page">
     {% set page_hero_eyebrow = "Profile" %}
     {% set page_hero_title = "My activity" %}
-    {% set page_hero_subtitle = "Sessions, token usage, data access, and sync activity for <strong>" ~ (user.email | e) ~ "</strong>." %}
+    {# Block-capture so the literal <strong> stays HTML while {{ user.email }}
+       is still autoescaped. `~`-concatenating a Markup operand (user.email | e)
+       made Jinja2's markup_join escape the literal tags too. #}
+    {% set page_hero_subtitle %}Sessions, token usage, data access, and sync activity for <strong>{{ user.email }}</strong>.{% endset %}
     {% include "_page_hero.html" %}
 
     <nav class="tab-strip" role="tablist" aria-label="Activity sections">
