@@ -189,6 +189,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   fine because `.mp-type-row` contributes its own 24px.
 
 ### Fixed
+- **`agnes refresh-marketplace` now enables stack plugins in workspace
+  settings.** The reconcile step previously stopped at `claude plugin
+  install --scope project`, which only writes the global plugin registry
+  (`~/.claude/plugins/installed_plugins.json`). Without a corresponding
+  entry in the workspace `.claude/settings.json` `enabledPlugins` map,
+  Claude Code treats every installed stack plugin as disabled — `/plugins`
+  hides them from the active section and their slash commands, skills,
+  and agents are unreachable. Refresh now writes
+  `"<plugin>@agnes": true` to the workspace settings file after install
+  and update, treating the user's marketplace stack as the source of
+  truth and re-enabling any plugin that a prior local `claude plugin
+  disable` had turned off. Override workspaces (`init-complete` sentinel
+  with `override: true`) are skipped — admin's template stays
+  authoritative.
 - **Store guardrails — post-#290 follow-up.** Admin Rescan still writes `status='blocked_inline'` (the only post-v30 producer of that status). Re-add `blocked_inline` to the admin queue's "Needs review" filter chip and to `TERMINAL_BLOCKED_STATUSES` in the bundle-purge job, so a rescan-produced row surfaces in the default operator view and its bundle gets swept by the TTL purge instead of lingering on disk indefinitely. Documents the rescan-only asymmetry inline (chip + purge tuple + new code comments).
 - Stale doc strings referring to the pre-#290 `blocked_inline` quota counter on `app/api/store.py` spam-quota comment, `app/instance_config.py::get_guardrails_blocked_quota_per_day` docstring, and the operator-facing hint in `/admin/server-config` (`blocked_quota_per_day`). All three now correctly describe the narrowed `blocked_llm + review_error` counter that #290 actually shipped.
 
