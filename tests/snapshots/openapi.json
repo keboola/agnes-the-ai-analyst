@@ -12177,10 +12177,10 @@
         ]
       }
     },
-    "/profile": {
+    "/me/profile": {
       "get": {
         "description": "User profile \u2014 self-service view of identity and group memberships.\n\nRenders the user's account info plus a list of group memberships joined\nagainst ``user_groups`` (with the source label so users can tell which\nwere added by an admin, by Google sync, or seeded at deploy).",
-        "operationId": "profile_page_profile_get",
+        "operationId": "profile_page_me_profile_get",
         "parameters": [
           {
             "in": "header",

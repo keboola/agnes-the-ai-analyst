@@ -2114,7 +2114,7 @@ async def admin_tokens_page(
     return templates.TemplateResponse(request, "admin_tokens.html", ctx)
 
 
-@router.get("/profile", response_class=HTMLResponse)
+@router.get("/me/profile", response_class=HTMLResponse)
 async def profile_page(
     request: Request,
     user: dict = Depends(get_current_user),

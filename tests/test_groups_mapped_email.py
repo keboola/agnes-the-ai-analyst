@@ -438,7 +438,7 @@ def test_effective_access_lists_explicit_grants_for_admin_user(fresh_db):
 
 
 def test_profile_template_renders_color_coded_membership_chips(fresh_db, monkeypatch):
-    """The /profile page must render group memberships with the same
+    """The /me/profile page must render group memberships with the same
     chip vocabulary used on the user list / detail pages: a colored
     .group-chip with class derived from name (Admin / Everyone) first
     and origin (google_sync / custom) second. google_sync chip text is
@@ -470,7 +470,7 @@ def test_profile_template_renders_color_coded_membership_chips(fresh_db, monkeyp
 
     client = TestClient(app)
     resp = client.get(
-        "/profile",
+        "/me/profile",
         headers={"Accept": "text/html"},
         cookies={"access_token": token},
     )
@@ -489,7 +489,7 @@ def test_profile_template_renders_color_coded_membership_chips(fresh_db, monkeyp
 
 
 def test_my_effective_access_lists_explicit_grants_for_admin_user(fresh_db):
-    """`/api/me/effective-access` (the /profile page surface) mirrors
+    """`/api/me/effective-access` (the /me/profile page surface) mirrors
     /api/admin/users/{id}/effective-access — admins see their explicit
     grant breakdown rather than a flat "Full access" short-circuit. Same
     rationale as the admin-side endpoint: audit the grant graph, not the
@@ -532,7 +532,7 @@ def test_my_effective_access_lists_explicit_grants_for_admin_user(fresh_db):
 
 
 def test_profile_template_drops_full_access_pill(fresh_db):
-    """The /profile page no longer renders the gold "Full access via
+    """The /me/profile page no longer renders the gold "Full access via
     Admin" empty-state for admin users — it should fall through to the
     grant list (or the generic "no resource access" message). Pinning
     the absence of the old branch."""
@@ -541,7 +541,7 @@ def test_profile_template_drops_full_access_pill(fresh_db):
     client = TestClient(app)
     _, token = _seed_admin()
     resp = client.get(
-        "/profile",
+        "/me/profile",
         headers={"Accept": "text/html"},
         cookies={"access_token": token},
     )

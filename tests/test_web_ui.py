@@ -104,7 +104,7 @@ class TestWebUISmoke:
         # PAT listing moved onto Auth debug; the 'My tokens' entry retired.
         # /tokens (create/revoke) still works via the link inside the Auth
         # debug body, not the nav.
-        assert 'href="/profile"' in body
+        assert 'href="/me/profile"' in body
         assert 'href="/me/activity"' in body
         assert 'href="/me/debug"' in body
         # Admin dropdown still carries the cross-user PAT admin entry.
@@ -125,7 +125,7 @@ class TestWebUISmoke:
             # Dashboard may redirect in some flows; follow it for nav check.
             resp = web_client.get(resp.headers["location"], cookies=analyst_cookie)
         body = resp.text
-        assert 'href="/profile"' in body
+        assert 'href="/me/profile"' in body
         assert ">Profile<" in body
         assert 'href="/me/activity"' in body
         assert ">My activity<" in body
@@ -156,7 +156,7 @@ class TestWebUISmoke:
         assert ">Tokens<" in body
 
     def test_profile_renders_account_details(self, web_client, admin_cookie):
-        """/profile renders a real profile page with email + tokens link.
+        """/me/profile renders a real profile page with email + tokens link.
 
         v12 changes: role-pill is replaced by an Admin-pill driven by Admin
         user_group membership; ``session.google_groups`` is gone (the
@@ -164,28 +164,28 @@ class TestWebUISmoke:
         ``user_group_members`` instead), so the "No Google groups available"
         empty state is no longer rendered.
         """
-        resp = web_client.get("/profile", cookies=admin_cookie)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         assert "admin@test.com" in body
         assert 'href="/tokens"' in body
 
     def test_profile_requires_auth(self, web_client):
-        """/profile requires auth (was a 302 back-compat redirect before)."""
-        resp = web_client.get("/profile", follow_redirects=False)
+        """/me/profile requires auth (was a 302 back-compat redirect before)."""
+        resp = web_client.get("/me/profile", follow_redirects=False)
         # Auth dep raises 401; some configs may redirect to /login — accept either.
         assert resp.status_code in (401, 302)
 
     @pytest.mark.skip(
         reason=(
-            "v12: /profile no longer renders an admin-self-management link. "
+            "v12: /me/profile no longer renders an admin-self-management link. "
             "Admin can navigate to /admin/users/{id} from the top-nav Admin "
             "dropdown directly. Drop or rewrite this test once the profile "
             "page settles."
         )
     )
     def test_profile_shows_admin_detail_link_for_admin(self, web_client, admin_cookie):
-        resp = web_client.get("/profile", cookies=admin_cookie)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'href="/admin/users/admin1"' in resp.text
 
@@ -197,7 +197,7 @@ class TestWebUISmoke:
         )
     )
     def test_profile_hides_admin_detail_link_for_non_admin(self, web_client, analyst_cookie):
-        resp = web_client.get("/profile", cookies=analyst_cookie)
+        resp = web_client.get("/me/profile", cookies=analyst_cookie)
         assert resp.status_code == 200
         assert "/admin/users/" not in resp.text
 
@@ -211,7 +211,7 @@ class TestWebUISmoke:
         )
     )
     def test_profile_shows_effective_roles_for_non_admin(self, web_client, analyst_cookie):
-        resp = web_client.get("/profile", cookies=analyst_cookie)
+        resp = web_client.get("/me/profile", cookies=analyst_cookie)
         assert resp.status_code == 200
         body = resp.text
         assert "Effective roles" in body

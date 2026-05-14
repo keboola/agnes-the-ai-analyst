@@ -339,11 +339,11 @@ class TestLocalDevGroupsParser:
         assert get_local_dev_groups() == [{"id": "eng@x.com", "name": "Eng"}]
 
 
-@pytest.mark.skip(reason="v12: session.google_groups + /profile group rendering removed; profile now reads user_group_members. Rewrite to assert membership rows instead.")
+@pytest.mark.skip(reason="v12: session.google_groups + /me/profile group rendering removed; profile now reads user_group_members. Rewrite to assert membership rows instead.")
 class TestLocalDevGroupsInjection:
     """End-to-end: with LOCAL_DEV_MODE=1 + LOCAL_DEV_GROUPS, the seeded dev
     user's session.google_groups gets populated on first authenticated request
-    so /profile renders the mocked groups."""
+    so /me/profile renders the mocked groups."""
 
     @pytest.fixture
     def dev_client(self, tmp_path, monkeypatch):
@@ -360,7 +360,7 @@ class TestLocalDevGroupsInjection:
         return TestClient(create_app())
 
     def test_dev_user_sees_mocked_groups_on_profile(self, dev_client):
-        resp = dev_client.get("/profile")
+        resp = dev_client.get("/me/profile")
         assert resp.status_code == 200
         body = resp.text
         assert "local-dev-engineers@example.com" in body
@@ -376,7 +376,7 @@ class TestLocalDevGroupsInjection:
         monkeypatch.delenv("LOCAL_DEV_GROUPS", raising=False)
         from app.main import create_app
         client = TestClient(create_app())
-        resp = client.get("/profile")
+        resp = client.get("/me/profile")
         assert resp.status_code == 200
         assert "No Google groups available" in resp.text
 
