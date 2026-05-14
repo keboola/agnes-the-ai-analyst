@@ -1227,25 +1227,27 @@ def test_enable_preserves_non_agnes_plugins_in_map(
     }
 
 
-def test_enable_skipped_in_override_workspace(
+def test_enable_runs_regardless_of_override_sentinel(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """Override-mode workspaces (init-complete sentinel with `override: true`)
-    are admin-managed — refresh must not write to their `.claude/settings.json`
-    even though it still installs plugins to the global registry."""
+    """`refresh-marketplace` is a runtime command — it ignores the
+    Initial Workspace Template sentinel and updates `enabledPlugins`
+    even in admin-templated (override: true) workspaces. The sentinel
+    governs `agnes init` skip only; runtime must keep the workspace in
+    sync with the user's current marketplace stack."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
     settings_dir = workspace / ".claude"
     settings_dir.mkdir()
-    # Admin-managed sentinel.
+    # Admin-managed sentinel — must NOT block runtime enable.
     (settings_dir / "init-complete").write_text(
         "completed_at: 2026-05-13T14:32:00Z\n"
         "agnes_version: 0.53.0\n"
         "override: true\n",
         encoding="utf-8",
     )
-    # No pre-existing settings.json — refresh must NOT create one.
+    # No pre-existing settings.json — refresh creates one with enabledPlugins.
 
     _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
     recorder.script(("claude", "plugin", "list", "--json"),
@@ -1254,9 +1256,8 @@ def test_enable_skipped_in_override_workspace(
     result = runner.invoke(refresh_marketplace_app, [])
     assert result.exit_code == 0, result.output
 
-    assert not (settings_dir / "settings.json").exists(), (
-        "override-mode workspace must NOT have settings.json materialised by refresh"
-    )
+    settings = _read_workspace_settings(workspace)
+    assert settings.get("enabledPlugins") == {"grpn@agnes": True}
 
 
 def test_reload_hint_printed_when_only_enable_changes(
