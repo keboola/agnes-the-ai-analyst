@@ -81,7 +81,7 @@ class VerificationProcessor:
 
             # Confidence is computed in code from (source_type, detection_type).
             # The LLM is not trusted to set its own credibility — see Q3 in
-            # docs/pd-ps-comments.md and the ADR.
+            # docs/archive/pd-ps-comments.md and the ADR.
             detection_type = v.get("detection_type")
             try:
                 confidence_value = compute_confidence("user_verification", detection_type)

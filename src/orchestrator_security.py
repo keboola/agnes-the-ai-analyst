@@ -5,8 +5,8 @@ The orchestrator reads `_remote_attach` rows that connectors write into their
 values. Treating the connector as adversarial (compromised image, supply-chain,
 malicious fork) means the orchestrator picks **what** can be installed and
 **which** env vars can be referenced — not the connector. See
-`docs/superpowers/plans/2026-04-27-issue-81-trust-boundary.md` for the full
-threat model.
+`docs/archive/superpowers/plans/2026-04-27-issue-81-trust-boundary.md` for the
+full threat model.
 """
 
 from __future__ import annotations
