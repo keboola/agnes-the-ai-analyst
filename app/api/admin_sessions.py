@@ -108,7 +108,9 @@ def list_sessions(
                   tool_calls, tool_errors,
                   skill_invocations, subagent_dispatches,
                   mcp_calls, slash_commands,
-                  distinct_tools, distinct_skills, primary_model
+                  distinct_tools, distinct_skills, primary_model,
+                  input_tokens, output_tokens,
+                  cache_read_tokens, cache_creation_tokens
            FROM usage_session_summary WHERE {where_sql}
            ORDER BY {col} {direction}
            LIMIT ? OFFSET ?""",
@@ -122,6 +124,8 @@ def list_sessions(
         "skill_invocations","subagent_dispatches",
         "mcp_calls","slash_commands",
         "distinct_tools","distinct_skills","primary_model",
+        "input_tokens","output_tokens",
+        "cache_read_tokens","cache_creation_tokens",
     ]
     out = []
     for r in rows:
@@ -130,6 +134,15 @@ def list_sessions(
             v = d.get(k)
             if isinstance(v, datetime):
                 d[k] = v.isoformat()
+        # Convenience aggregate so JS doesn't have to sum across 4
+        # columns to render a Tokens column on the admin sessions
+        # table (parity with /me/stats Sessions tab).
+        d["tokens_total"] = (
+            int(d.get("input_tokens") or 0)
+            + int(d.get("output_tokens") or 0)
+            + int(d.get("cache_read_tokens") or 0)
+            + int(d.get("cache_creation_tokens") or 0)
+        )
         out.append(d)
     return {
         "rows":        out,

@@ -293,13 +293,14 @@
       '<th data-sort="active_seconds" class="obs-num"><button type="button">Active <span class="obs-sort-arrow"></span></button></th>' +
       '<th data-sort="tool_calls" class="obs-num"><button type="button">Tool calls <span class="obs-sort-arrow"></span></button></th>' +
       '<th data-sort="tool_errors" class="obs-num"><button type="button">Errors <span class="obs-sort-arrow"></span></button></th>' +
+      '<th class="obs-num">Tokens</th>' +
       '<th data-sort="primary_model"><button type="button">Model <span class="obs-sort-arrow"></span></button></th>' +
       '<th>Actions</th>' +
       '</tr>';
     wireSort();
 
     if (!d.rows.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="obs-empty">No sessions match these filters.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="obs-empty">No sessions match these filters.</td></tr>';
       rowCount.textContent = '0 of 0';
       prevBtn.hidden = state.offset === 0;
       nextBtn.hidden = true;
@@ -323,6 +324,7 @@
         '<td class="obs-num">' + escapeHtml(fmtDuration(r.active_seconds)) + '</td>' +
         '<td class="obs-num">' + fmtN(r.tool_calls) + '</td>' +
         '<td class="obs-num">' + errCell + '</td>' +
+        '<td class="obs-num">' + fmtN(r.tokens_total) + '</td>' +
         '<td>' + escapeHtml(r.primary_model || '—') + '</td>' +
         '<td><a href="' + viewerHref + '">View transcript</a></td>';
       tr.addEventListener('click', e => {
