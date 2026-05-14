@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Security
+
+- **RBAC filter uses stable `user_id` (UUID) instead of mutable email
+  local-part (#293).** Non-admin users querying `agnes_sessions` /
+  `agnes_telemetry` are now filtered by `user_id` (immutable UUID)
+  rather than `username` (email local-part, which changes on rename).
+  Schema v45 adds a `user_id` column to `usage_session_summary` and
+  `usage_events`; the session pipeline's `resolve_user_id()` populates
+  it on every (re)process run. `USAGE_PROCESSOR_VERSION` bumps 3→4 to
+  trigger backfill. During the transition period, RBAC queries include
+  an OR fallback on `username` so pre-backfill rows remain visible.
+
 ## [0.54.12] — 2026-05-14
 
 ### Fixed

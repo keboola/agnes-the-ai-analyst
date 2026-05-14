@@ -61,6 +61,7 @@ class InternalTable:
     filter_kind: str  # 'username' | 'user_id'
     display_name: str
     description: str
+    legacy_username_column: str | None = None  # backward-compat OR fallback
 
 
 INTERNAL_TABLES: tuple[InternalTable, ...] = (
@@ -71,6 +72,7 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
         filter_kind="user_id",
         display_name="Agnes sessions",
         description="Claude Code sessions. Also available locally for analysis.",
+        legacy_username_column="username",
     ),
     InternalTable(
         registry_id="agnes_telemetry",
@@ -79,6 +81,7 @@ INTERNAL_TABLES: tuple[InternalTable, ...] = (
         filter_kind="user_id",
         display_name="Agnes telemetry events",
         description="Tool and skill invocations from Claude Code. Also available locally for analysis.",
+        legacy_username_column="username",
     ),
     InternalTable(
         registry_id="agnes_audit",
@@ -143,15 +146,21 @@ def build_filter_clause(table: InternalTable, user: dict[str, Any], is_admin: bo
     Admins get an empty string (unscoped view). Everyone else get
     ``WHERE <col> = '<value>'`` where value has been regex-validated.
 
-    Both ``agnes_sessions`` and ``agnes_telemetry`` now filter on the
-    ``user_id`` column (stable UUID) instead of ``username`` (email
-    local-part, which can change). The ``user_id`` column is populated
-    by the session pipeline's ``resolve_user_id()`` at processing time.
+    ``agnes_sessions`` and ``agnes_telemetry`` filter primarily on
+    ``user_id`` (stable UUID) but include an OR fallback on
+    ``username`` (email local-part) for rows that pre-date the v45
+    backfill.  Once all rows carry a non-NULL ``user_id`` the
+    ``legacy_username_column`` field can be removed.
     """
     if is_admin:
         return ""
     value = _filter_value(user, table.filter_kind)
     safe = value.replace("'", "''")
+
+    if table.legacy_username_column:
+        legacy = _filter_value(user, "username").replace("'", "''")
+        return f"WHERE ({table.filter_column} = '{safe}' OR {table.legacy_username_column} = '{legacy}')"
+
     return f"WHERE {table.filter_column} = '{safe}'"
 
 
