@@ -693,6 +693,20 @@ async def home_page(
     news = NewsTemplateRepository(conn).get_current_published()
     news_intro = news["intro"] if (news and news.get("intro")) else ""
 
+    # Homepage status frame (Last sync, Sessions, Prompts, Tokens, Projects).
+    # Gated on (a) operator flag instance.home.show_status_frame /
+    # AGNES_HOME_SHOW_STATUS_FRAME (default on), AND (b) the user being
+    # onboarded — first-day users see a clean install-hero before zero-value
+    # stat cards. When either gate is closed we skip the DB read entirely.
+    from app.api.me import compute_home_stats
+    from app.instance_config import get_home_status_frame_visibility
+    status_frame_enabled = get_home_status_frame_visibility()
+    home_stats = (
+        compute_home_stats(conn, user, "24h")
+        if (status_frame_enabled and onboarded)
+        else None
+    )
+
     # Single template renders both states. The post-onboarding view keeps
     # the install-steps + connector prompts + auto-mode card visible —
     # they stay relevant for adding a second machine, a missing connector,
@@ -706,6 +720,8 @@ async def home_page(
         onboarded=onboarded,
         is_admin=is_user_admin(user["id"], conn),
         news_intro=news_intro,
+        home_stats=home_stats,
+        status_frame_enabled=status_frame_enabled,
     )
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 

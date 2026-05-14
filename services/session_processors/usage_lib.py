@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterator
 
-USAGE_PROCESSOR_VERSION = 1
+USAGE_PROCESSOR_VERSION = 2
 
 BUILTIN_TOOLS = frozenset({
     "Bash", "Read", "Edit", "Write", "Grep", "Glob", "TodoWrite",
@@ -323,6 +323,10 @@ def compute_summary(turns: list[dict], events: list[dict]) -> dict:
     user_messages = 0
     assistant_messages = 0
     model_counter: Counter = Counter()
+    input_tokens = 0
+    output_tokens = 0
+    cache_read_tokens = 0
+    cache_creation_tokens = 0
 
     for t in turns:
         ts = _parse_ts(t.get("timestamp"))
@@ -337,6 +341,27 @@ def compute_summary(turns: list[dict], events: list[dict]) -> dict:
             m = msg.get("model")
             if m:
                 model_counter[m] += 1
+            # Anthropic API usage block on assistant turns. Older sessions
+            # may lack `cache_*` keys (pre-prompt-caching) — `.get(k, 0)`
+            # tolerates that. Non-int values (corrupted JSONL) are skipped
+            # to keep one bad turn from poisoning the whole summary.
+            usage = msg.get("usage") or {}
+            for key, accum in (
+                ("input_tokens", "input_tokens"),
+                ("output_tokens", "output_tokens"),
+                ("cache_read_input_tokens", "cache_read_tokens"),
+                ("cache_creation_input_tokens", "cache_creation_tokens"),
+            ):
+                v = usage.get(key, 0)
+                if isinstance(v, int):
+                    if accum == "input_tokens":
+                        input_tokens += v
+                    elif accum == "output_tokens":
+                        output_tokens += v
+                    elif accum == "cache_read_tokens":
+                        cache_read_tokens += v
+                    elif accum == "cache_creation_tokens":
+                        cache_creation_tokens += v
 
     started_at = min(timestamps) if timestamps else None
     ended_at = max(timestamps) if timestamps else None
@@ -373,6 +398,10 @@ def compute_summary(turns: list[dict], events: list[dict]) -> dict:
         "distinct_tools": distinct_tools,
         "distinct_skills": distinct_skills,
         "primary_model": primary_model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
         "processor_version": USAGE_PROCESSOR_VERSION,
     }
 

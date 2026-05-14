@@ -50,6 +50,13 @@ instance:
                                      # hasn't pre-provisioned a shared OAuth app can request
                                      # one without leaving the workspace). Empty/unset hides
                                      # the button. Env override: AGNES_INSTANCE_ADMIN_EMAIL.
+  # home:                            # Per-instance toggles for /home content blocks.
+  #   show_automode: true            # Render Step-3 auto-accept-mode block. Default true.
+  #                                  # Env: AGNES_HOME_SHOW_AUTOMODE.
+  #   show_status_frame: true        # Render the 5-card status frame (Last sync, Sessions,
+  #                                  # Prompts, Tokens, Projects). Visible only to onboarded
+  #                                  # users regardless of this flag. Default true. Env:
+  #                                  # AGNES_HOME_SHOW_STATUS_FRAME.
 
 # --- Server ---
 server:

@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -70,7 +70,12 @@ CREATE TABLE IF NOT EXISTS users (
     -- self-mark "I've already set up Agnes locally" button on /home.
     -- Default FALSE; explicit signal required to flip (no PAT-heuristic
     -- auto-flip per the brainstorm decision §D).
-    onboarded BOOLEAN NOT NULL DEFAULT FALSE
+    onboarded BOOLEAN NOT NULL DEFAULT FALSE,
+    -- v44: per-user pull timestamp. Bumped on every GET /api/sync/manifest
+    -- so `agnes pull` (and the SessionStart hook that wraps it) imprints
+    -- the user's last sync time. Powers the /home status frame's "Last
+    -- sync" card.
+    last_pull_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -746,7 +751,16 @@ CREATE TABLE IF NOT EXISTS usage_session_summary (
     distinct_skills     INTEGER DEFAULT 0,
     primary_model       VARCHAR,
     processor_version   INTEGER NOT NULL,
-    extracted_at        TIMESTAMP DEFAULT current_timestamp
+    extracted_at        TIMESTAMP DEFAULT current_timestamp,
+    -- v44: per-session token counters summed from JSONL message.usage.*.
+    -- BIGINT because cache tokens routinely exceed INT range over long
+    -- sessions. Default 0 so existing rows backfill cleanly; the
+    -- processor's reprocess loop (driven by USAGE_PROCESSOR_VERSION
+    -- bump) overwrites with real values on next tick.
+    input_tokens          BIGINT DEFAULT 0,
+    output_tokens         BIGINT DEFAULT 0,
+    cache_read_tokens     BIGINT DEFAULT 0,
+    cache_creation_tokens BIGINT DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username);
 CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at);
@@ -2886,6 +2900,36 @@ def _v42_to_v43(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _v43_to_v44(conn: duckdb.DuckDBPyConnection) -> None:
+    """v44: homepage status frame backing columns.
+
+    Adds ``users.last_pull_at`` (per-user manifest fetch timestamp) and
+    four BIGINT token counters on ``usage_session_summary``
+    (``input_tokens``, ``output_tokens``, ``cache_read_tokens``,
+    ``cache_creation_tokens``). All idempotent ALTERs — fresh installs
+    receive the columns from ``_SYSTEM_SCHEMA`` and this is a no-op for
+    them; upgrade path picks them up.
+
+    Token columns default to 0; existing summary rows backfill on the
+    next UsageProcessor tick because ``USAGE_PROCESSOR_VERSION`` bumps
+    from 1 → 2 in the same release, which the session-pipeline
+    reprocess loop uses to invalidate stale summaries.
+    """
+    conn.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pull_at TIMESTAMP"
+    )
+    for col in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+    ):
+        conn.execute(
+            f"ALTER TABLE usage_session_summary "
+            f"ADD COLUMN IF NOT EXISTS {col} BIGINT DEFAULT 0"
+        )
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -3159,6 +3203,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v41_to_v42(conn)
             # v43 user_observability_views — saved-views for /admin/activity.
             _v42_to_v43(conn)
+            # v44 homepage-stats columns. _SYSTEM_SCHEMA already declares
+            # them on fresh installs (no-op ALTERs); kept here for the
+            # ladder's chronological readability.
+            _v43_to_v44(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3300,6 +3348,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v41_to_v42(conn)
             if current < 43:
                 _v42_to_v43(conn)
+            if current < 44:
+                _v43_to_v44(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

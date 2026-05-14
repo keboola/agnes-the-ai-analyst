@@ -10,7 +10,41 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Homepage status frame.** The `/home` page now opens with a 5-card
+  status row above the install-hero / offboard-strip: **Last sync**
+  (your last `agnes pull`), **Sessions**, **Prompts**, **Tokens used**,
+  **Projects worked on**. A pill toggle switches the window between
+  24h (default) and 7d. Backed by `GET /api/me/home-stats?window=` which
+  joins `users`, `usage_session_summary`, and `usage_events` in a
+  single DuckDB round-trip; the initial paint is SSR'd from the same
+  helper (`app.api.me.compute_home_stats`) so there's no spinner.
+  Visibility is gated on (a) the operator flag
+  `instance.home.show_status_frame` (yaml) /
+  `AGNES_HOME_SHOW_STATUS_FRAME` (env), default `true`, AND (b) the
+  caller being `onboarded`. Cautious-rollout instances can hide the
+  frame entirely; on every install, first-day users still see a clean
+  install-hero before zero-value stats show up.
+- **Per-user pull tracking.** `GET /api/sync/manifest` now stamps
+  `users.last_pull_at` as a side effect. `agnes pull` (and the
+  Claude Code `SessionStart` hook that wraps it) imprints the
+  analyst's "last sync" timestamp for the new homepage card.
+- **Token counters on `usage_session_summary`.** Four new BIGINT
+  columns (`input_tokens`, `output_tokens`, `cache_read_tokens`,
+  `cache_creation_tokens`) summed from JSONL `message.usage.*` per
+  assistant turn. `USAGE_PROCESSOR_VERSION` bumps 1 → 2, which the
+  session-pipeline reprocess loop uses to invalidate stale summaries
+  and backfill tokens on the next tick.
+
 ### Changed
+
+- Schema migration **v43 → v44** (`_v43_to_v44`): idempotent `ALTER
+  TABLE … ADD COLUMN IF NOT EXISTS` for `users.last_pull_at` plus the
+  four token columns above. Fresh installs receive them inline from
+  `_SYSTEM_SCHEMA`; upgrade path runs the function. All new columns
+  default to NULL / 0 so existing rows backfill cleanly without a
+  separate migration step.
 - **Marketplace cover photos served with aggressive browser caching.**
   `/api/marketplace/curated/.../asset/...`, `/api/marketplace/curated/.../mirrored/...`,
   and `/api/store/entities/{id}/photo` now respond with

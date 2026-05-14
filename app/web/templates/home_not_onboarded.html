@@ -1392,6 +1392,17 @@
 
 <div class="home-mock">
 
+    {# Homepage status frame — five counters with 24h/7d toggle.
+       Two gates: (a) operator flag instance.home.show_status_frame /
+       AGNES_HOME_SHOW_STATUS_FRAME (default on, evaluated in router and
+       passed as `status_frame_enabled`); (b) the user being onboarded —
+       fresh users see a clean install-hero before zero-value stats.
+       Router skips `compute_home_stats` (saves the DB hit) when either
+       gate is closed, so `home_stats` is None in that branch. #}
+    {% if status_frame_enabled and onboarded and home_stats %}
+        {% include "_home_stats.html" %}
+    {% endif %}
+
     {% set display_name = (user.name or (user.email or "").split("@")[0] or "there") %}
 
     {# Install-hero renders only for not-onboarded users. Once `agnes init`

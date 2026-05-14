@@ -36,8 +36,9 @@ class UsageRepository:
                  active_seconds, wall_seconds, user_messages, assistant_messages,
                  tool_calls, tool_errors, skill_invocations, subagent_dispatches,
                  mcp_calls, slash_commands, distinct_tools, distinct_skills,
-                 primary_model, processor_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 primary_model, input_tokens, output_tokens, cache_read_tokens,
+                 cache_creation_tokens, processor_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 summary["session_file"],
@@ -58,6 +59,10 @@ class UsageRepository:
                 summary.get("distinct_tools", 0),
                 summary.get("distinct_skills", 0),
                 summary.get("primary_model"),
+                summary.get("input_tokens", 0),
+                summary.get("output_tokens", 0),
+                summary.get("cache_read_tokens", 0),
+                summary.get("cache_creation_tokens", 0),
                 processor_version,
             ],
         )

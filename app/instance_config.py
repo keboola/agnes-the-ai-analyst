@@ -250,6 +250,32 @@ def get_home_automode_visibility() -> bool:
     return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
 
 
+def get_home_status_frame_visibility() -> bool:
+    """Whether /home renders the homepage status frame (Last sync,
+    Sessions, Prompts, Tokens, Projects).
+
+    The template ALSO gates rendering on ``users.onboarded`` so a
+    fresh user sees a clean install-hero before the all-zero stat
+    cards. This helper is the operator-level master switch; the
+    onboarding gate is a UX coherence rule layered on top.
+
+    Cautious-rollout instances that would rather not expose token
+    counters to analysts yet can disable with
+    ``AGNES_HOME_SHOW_STATUS_FRAME=0`` (or
+    ``instance.home.show_status_frame: false`` in YAML).
+
+    Resolution: env var > ``instance.home.show_status_frame`` YAML > True.
+    Shape mirrors :func:`get_home_automode_visibility` so Terraform
+    overrides land the same way.
+    """
+    raw = os.environ.get("AGNES_HOME_SHOW_STATUS_FRAME")
+    if raw is None:
+        raw = get_value("instance", "home", "show_status_frame", default=True)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+
 def get_instance_name() -> str:
     return get_value("instance", "name", default="AI Data Analyst")
 
