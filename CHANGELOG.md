@@ -78,10 +78,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `.connector-copy`, `.connector-preview`, `.copy-next-hint`,
   `.time-badge`, `.gating-note`, `.email-admin`, `.card-mini-cmd`, and
   `.connector-head` CSS rules plus the orphaned `.connector-copy`
-  click-wiring JS from `home_not_onboarded.html`. The `.setup-collapsible`
-  minimize-mode CSS is also dead (predates #305 — the `data-section`
-  elements it styled were removed by earlier PRs) but left untouched
-  for a separate focused cleanup.
+  click-wiring JS from `home_not_onboarded.html`. Also removed the
+  dead `.automode-*`, `.setup-collapsible`, and `.setup-minimize`
+  CSS blocks and the `setupMinimizeToggle` / `data-setup-minimized`
+  JS handler from the same template — the `<details data-section>`
+  sections and the "Minimize setup view" toggle they styled were
+  removed by earlier PRs (#243 onward), leaving the whole
+  minimize-mode machinery unreachable.
 
 ## [0.54.13] — 2026-05-14
 
