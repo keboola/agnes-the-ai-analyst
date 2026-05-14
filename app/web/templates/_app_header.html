@@ -109,7 +109,7 @@
                     <div class="app-user-menu-role">Admin</div>
                     {% endif %}
                 </div>
-                <a class="app-user-menu-item {% if _path == '/profile' %}is-active{% endif %}" role="menuitem" href="/profile">Profile</a>
+                <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
                 {# Auth debug now hosts the Personal Authentication Tokens
                    list (formerly /tokens "My tokens"). Un-gated from

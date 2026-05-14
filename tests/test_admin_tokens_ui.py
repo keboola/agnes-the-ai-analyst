@@ -5,7 +5,7 @@ The two routes render distinct templates:
 - /admin/tokens → admin_tokens.html (admin-only, all users, stat strip,
                                      owner search, sort-by-owner)
 
-/profile 302-redirects to /tokens for back-compat.
+/me/profile 302-redirects to /tokens for back-compat.
 """
 
 import hashlib
@@ -270,9 +270,9 @@ def test_admin_tokens_deeplink_preserves_user_query(fresh_db):
     assert 'id="flt-user"' in resp.text
 
 
-# NOTE: test_profile_redirects_to_tokens removed — /profile no longer
+# NOTE: test_profile_redirects_to_tokens removed — /me/profile no longer
 # redirects to /tokens; it renders a real profile page including Google
-# Workspace groups (cherry-pick of Zdeněk's 4f7e4cd). Current /profile
+# Workspace groups (cherry-pick of Zdeněk's 4f7e4cd). Current /me/profile
 # behaviour is covered by tests/test_auth_providers.py.
 
 
