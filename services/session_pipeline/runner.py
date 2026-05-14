@@ -43,7 +43,7 @@ def resolve_user_id(
     1. Exact match on ``users.id`` (covers the UUID path).
     2. Email local-part match: ``users.email LIKE '<username>@%'``.
        If multiple users share the same local-part (different domains),
-       we pick the one that logged in most recently.
+       we pick the one most recently updated.
     3. Fallback: return ``None`` (orphaned / deleted user).
     """
     row = conn.execute(
@@ -139,6 +139,7 @@ def run_processor(
                     user_id=resolved_uid,
                 )
             except TypeError:
+                # Processor doesn't accept user_id kwarg — fall back.
                 result = processor.process_session(
                     jsonl_path,
                     username,
