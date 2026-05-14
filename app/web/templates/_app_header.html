@@ -24,6 +24,7 @@
         <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Home</a>
         <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
         <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog">Data Packages</a>
+        <a class="app-nav-link {% if _path.startswith('/me/stats') %}is-active{% endif %}" href="/me/stats">Stats</a>
         {# Memory + Admin menu: both admin-only. Backend gates the routes
            themselves via require_admin (see app/web/router.py for
            /corporate-memory + /corporate-memory/admin + /admin/*), so

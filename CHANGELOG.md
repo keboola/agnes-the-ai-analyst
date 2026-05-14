@@ -53,6 +53,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **Per-analyst Stats dashboard at `/me/stats`.** Four-tab page showing
+  the calling user's own data, lazy-loaded per tab:
+  - **Sessions** — paginated `usage_session_summary` rows + filesystem
+    scan of un-processed JSONL (matches the admin `list_user_sessions`
+    shape). Includes the v44 token columns aggregated per row.
+  - **Tokens** — daily series (default last 30 days), by-model
+    breakdown (lifetime), top-10 biggest sessions, lifetime totals.
+  - **Data access** — `audit_log` rows where `action LIKE 'query.%'`
+    for the caller (covers `query.local`, `query.hybrid`, `query.remote`,
+    `query.internal`). Cursor-paginated on `(timestamp, id)`.
+  - **Sync activity** — `audit_log` rows where action is `sync.*` or
+    `manifest.*` for the caller, plus the user's `last_pull_at` for the
+    header. Per-pull history now persists thanks to the new
+    `manifest.fetch` audit row.
+  Backed by `GET /api/me/stats/{sessions,tokens,queries,sync}`,
+  authed-only, server-side caller-scope. New "Stats" link added to the
+  primary nav between "Data Packages" and the Admin dropdown.
+- **`manifest.fetch` audit_log row** written from
+  `GET /api/sync/manifest` alongside the `users.last_pull_at` bump.
+  Surfaces per-pull history (the column UPDATE only retains the most
+  recent timestamp) so the Sync activity tab and any other
+  audit-log-driven view can render a timeline.
+
 - **Homepage status frame.** The `/home` page now opens with a 5-card
   status row above the install-hero / offboard-strip: **Last sync**
   (your last `agnes pull`), **Sessions**, **Prompts**, **Tokens used**,

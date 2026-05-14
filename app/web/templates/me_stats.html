@@ -1,0 +1,463 @@
+{% extends "base.html" %}
+
+{% block title %}Stats — {{ instance_brand }}{% endblock %}
+
+{# Override block layout (same trick dashboard.html uses) to escape the
+   narrow .container wrap from base.html. Stats tables look cramped
+   inside 800px; 1280px matches the top-nav header width
+   (_app_header.html uses the same value) so the Stats page reads as
+   "same chrome, full content area" rather than a separate visual
+   identity. #}
+{% block layout %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-messages">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+    <main class="main">{{ self.content() }}</main>
+{% endblock %}
+
+{% block content %}
+<style>
+.stats-page { max-width: 1280px; margin: 0 auto; padding: 24px 24px 64px; }
+.stats-page h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+.stats-page .lead { color: var(--hp-text-muted, #6b7280); margin: 0 0 20px; font-size: 13px; }
+
+.stats-tabs {
+    display: flex; gap: 0; border-bottom: 1px solid var(--hp-border-light, rgba(0,0,0,0.12));
+    margin-bottom: 18px; overflow-x: auto;
+}
+.stats-tab {
+    border: 0; background: transparent; padding: 10px 16px; font: inherit; font-size: 13.5px;
+    color: var(--hp-text-muted, #6b7280); cursor: pointer; border-bottom: 2px solid transparent;
+    white-space: nowrap;
+}
+.stats-tab.is-active { color: var(--hp-text, #111); border-bottom-color: var(--hp-accent, #2563eb); }
+.stats-panel { display: none; }
+.stats-panel.is-active { display: block; }
+
+.stats-loading { color: var(--hp-text-muted, #6b7280); font-style: italic; padding: 24px 0; }
+.stats-error { color: #b91c1c; padding: 24px 0; }
+.stats-empty { color: var(--hp-text-muted, #6b7280); padding: 24px 0; }
+
+table.stats-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+table.stats-table th, table.stats-table td {
+    padding: 8px 10px; border-bottom: 1px solid var(--hp-border-light, rgba(0,0,0,0.07));
+    text-align: left; vertical-align: top;
+}
+table.stats-table th { font-weight: 600; color: var(--hp-text-muted, #6b7280); font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: 0.04em; }
+table.stats-table td.num { text-align: right; }
+table.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
+
+.stats-paginate {
+    display: flex; gap: 8px; justify-content: flex-end; padding: 12px 0;
+}
+.stats-paginate button {
+    padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--hp-border-light, rgba(0,0,0,0.12)); border-radius: 6px;
+    background: #fff;
+}
+.stats-paginate button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.stats-overview {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;
+}
+@media (max-width: 720px) { .stats-overview { grid-template-columns: repeat(2, 1fr); } }
+.stats-overview .card {
+    padding: 12px; border-radius: 8px;
+    background: var(--hp-stat-bg, rgba(0,0,0,0.025));
+}
+.stats-overview .lbl {
+    font-size: 11px; color: var(--hp-text-muted, #6b7280);
+    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;
+}
+.stats-overview .val { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.tok-chart { width: 100%; height: 160px; margin: 8px 0 16px; }
+.tok-chart rect { fill: var(--hp-accent, #2563eb); opacity: 0.85; }
+.tok-chart .axis text { font-size: 10px; fill: var(--hp-text-muted, #6b7280); }
+</style>
+
+<div class="stats-page">
+    <h1>Your Stats</h1>
+    <p class="lead">
+        Sessions, tokens, data access, and sync activity for
+        <strong>{{ user.email }}</strong>. Data covers the
+        sessions {{ instance_brand }} has processed from your Claude
+        Code transcripts.
+    </p>
+
+    <nav class="stats-tabs" role="tablist" aria-label="Stats sections">
+        <button type="button" role="tab" class="stats-tab is-active"
+                data-tab="sessions" aria-selected="true">Sessions</button>
+        <button type="button" role="tab" class="stats-tab"
+                data-tab="tokens" aria-selected="false">Tokens</button>
+        <button type="button" role="tab" class="stats-tab"
+                data-tab="queries" aria-selected="false">Data access</button>
+        <button type="button" role="tab" class="stats-tab"
+                data-tab="sync" aria-selected="false">Sync activity</button>
+    </nav>
+
+    <section class="stats-panel is-active" id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions">
+        <div class="stats-loading" data-state="loading">Loading sessions…</div>
+        <div data-state="ready" hidden>
+            <table class="stats-table">
+                <thead><tr>
+                    <th>Started</th><th>Model</th>
+                    <th class="num">Prompts</th><th class="num">Tools</th>
+                    <th class="num">Tokens</th>
+                </tr></thead>
+                <tbody data-rows></tbody>
+            </table>
+            <div class="stats-paginate">
+                <button type="button" data-action="prev">‹ Prev</button>
+                <button type="button" data-action="next">Next ›</button>
+            </div>
+        </div>
+    </section>
+
+    <section class="stats-panel" id="panel-tokens" role="tabpanel" aria-labelledby="tab-tokens">
+        <div class="stats-loading" data-state="loading">Loading tokens…</div>
+        <div data-state="ready" hidden>
+            <div class="stats-overview">
+                <div class="card"><div class="lbl">Input</div><div class="val" data-tok-total="input">—</div></div>
+                <div class="card"><div class="lbl">Output</div><div class="val" data-tok-total="output">—</div></div>
+                <div class="card"><div class="lbl">Cache read</div><div class="val" data-tok-total="cache_read">—</div></div>
+                <div class="card"><div class="lbl">Cache creation</div><div class="val" data-tok-total="cache_creation">—</div></div>
+            </div>
+            <svg class="tok-chart" data-tok-chart viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
+
+            <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">By model</h3>
+            <table class="stats-table">
+                <thead><tr>
+                    <th>Model</th><th class="num">Sessions</th>
+                    <th class="num">Input</th><th class="num">Output</th>
+                    <th class="num">Cache R/W</th><th class="num">Total</th>
+                </tr></thead>
+                <tbody data-tok-model></tbody>
+            </table>
+
+            <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">Top sessions</h3>
+            <table class="stats-table">
+                <thead><tr>
+                    <th>Started</th><th>Model</th>
+                    <th class="num">Input</th><th class="num">Output</th>
+                    <th class="num">Cache</th><th class="num">Total</th>
+                </tr></thead>
+                <tbody data-tok-top></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="stats-panel" id="panel-queries" role="tabpanel" aria-labelledby="tab-queries">
+        <div class="stats-loading" data-state="loading">Loading queries…</div>
+        <div data-state="ready" hidden>
+            <table class="stats-table">
+                <thead><tr>
+                    <th>When</th><th>Action</th><th>Resource</th>
+                    <th>Result</th><th class="num">Duration (ms)</th>
+                </tr></thead>
+                <tbody data-rows></tbody>
+            </table>
+            <div class="stats-paginate">
+                <button type="button" data-action="next">Older ›</button>
+            </div>
+        </div>
+    </section>
+
+    <section class="stats-panel" id="panel-sync" role="tabpanel" aria-labelledby="tab-sync">
+        <div class="stats-loading" data-state="loading">Loading sync activity…</div>
+        <div data-state="ready" hidden>
+            <div class="stats-overview" style="grid-template-columns: 1fr;">
+                <div class="card">
+                    <div class="lbl">Your last <code>agnes pull</code></div>
+                    <div class="val" data-sync-last-pull>—</div>
+                </div>
+            </div>
+            <table class="stats-table">
+                <thead><tr>
+                    <th>When</th><th>Action</th><th>Source</th>
+                    <th>Result</th>
+                </tr></thead>
+                <tbody data-rows></tbody>
+            </table>
+        </div>
+    </section>
+</div>
+
+<script>
+(function () {
+    const root = document.querySelector('.stats-page');
+    if (!root) return;
+
+    function fmtNum(n) {
+        if (n == null) return '—';
+        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+        if (n >= 10_000)    return (n / 1_000).toFixed(0) + 'k';
+        if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'k';
+        return String(n);
+    }
+
+    function fmtRelative(iso) {
+        if (!iso) return 'never';
+        const then = new Date(iso);
+        const sec = Math.max(0, (Date.now() - then.getTime()) / 1000);
+        if (sec < 60)        return Math.floor(sec) + 's ago';
+        if (sec < 3600)      return Math.floor(sec / 60) + 'm ago';
+        if (sec < 86400)     return Math.floor(sec / 3600) + 'h ago';
+        return Math.floor(sec / 86400) + 'd ago';
+    }
+
+    function fmtTimestamp(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        return d.toLocaleString();
+    }
+
+    async function fetchJSON(url) {
+        const r = await fetch(url, { credentials: 'same-origin' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    }
+
+    function setReady(panel) {
+        panel.querySelector('[data-state="loading"]').hidden = true;
+        panel.querySelector('[data-state="ready"]').hidden = false;
+    }
+
+    function setError(panel, msg) {
+        const loading = panel.querySelector('[data-state="loading"]');
+        loading.className = 'stats-error';
+        loading.textContent = msg;
+    }
+
+    // ----- Sessions tab -----
+
+    const sessionsState = { offset: 0, limit: 25, total: 0 };
+
+    async function loadSessions() {
+        const panel = document.getElementById('panel-sessions');
+        try {
+            const data = await fetchJSON(
+                `/api/me/stats/sessions?offset=${sessionsState.offset}&limit=${sessionsState.limit}`
+            );
+            sessionsState.total = data.total;
+            const tbody = panel.querySelector('[data-rows]');
+            tbody.innerHTML = '';
+            if (data.rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="stats-empty">No sessions yet — start Claude Code in a workspace and they\'ll appear here.</td></tr>';
+            }
+            for (const r of data.rows) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${fmtTimestamp(r.started_at)}</td>
+                    <td>${r.primary_model || '<em style="color:#9ca3af;">unprocessed</em>'}</td>
+                    <td class="num">${fmtNum(r.user_messages)}</td>
+                    <td class="num">${fmtNum(r.tool_calls)}</td>
+                    <td class="num">${fmtNum(r.tokens_total)}</td>
+                `;
+                tbody.appendChild(tr);
+            }
+            setReady(panel);
+            const prevBtn = panel.querySelector('[data-action="prev"]');
+            const nextBtn = panel.querySelector('[data-action="next"]');
+            prevBtn.disabled = sessionsState.offset === 0;
+            nextBtn.disabled = sessionsState.offset + sessionsState.limit >= sessionsState.total;
+        } catch (e) {
+            setError(panel, 'Could not load sessions: ' + e.message);
+        }
+    }
+
+    document.querySelector('#panel-sessions [data-action="prev"]').addEventListener('click', () => {
+        sessionsState.offset = Math.max(0, sessionsState.offset - sessionsState.limit);
+        loadSessions();
+    });
+    document.querySelector('#panel-sessions [data-action="next"]').addEventListener('click', () => {
+        sessionsState.offset += sessionsState.limit;
+        loadSessions();
+    });
+
+    // ----- Tokens tab -----
+
+    async function loadTokens() {
+        const panel = document.getElementById('panel-tokens');
+        try {
+            const data = await fetchJSON('/api/me/stats/tokens?days=30');
+            for (const key of ['input', 'output', 'cache_read', 'cache_creation']) {
+                panel.querySelector(`[data-tok-total="${key}"]`).textContent =
+                    fmtNum(data.totals[key]);
+            }
+
+            // Daily chart — simple bars over the 30-day window.
+            const chart = panel.querySelector('[data-tok-chart]');
+            chart.innerHTML = '';
+            const days = data.daily;
+            if (days.length > 0) {
+                const max = Math.max(...days.map(d => d.total), 1);
+                const w = 600 / Math.max(days.length, 1);
+                days.forEach((d, i) => {
+                    const h = Math.max(1, (d.total / max) * 140);
+                    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    rect.setAttribute('x', String(i * w + 1));
+                    rect.setAttribute('y', String(160 - h));
+                    rect.setAttribute('width', String(Math.max(1, w - 2)));
+                    rect.setAttribute('height', String(h));
+                    rect.setAttribute('title', `${d.day}: ${d.total}`);
+                    chart.appendChild(rect);
+                });
+            }
+
+            const modelTbody = panel.querySelector('[data-tok-model]');
+            modelTbody.innerHTML = '';
+            if (data.by_model.length === 0) {
+                modelTbody.innerHTML = '<tr><td colspan="6" class="stats-empty">No token data yet.</td></tr>';
+            }
+            for (const m of data.by_model) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${m.model}</td>
+                    <td class="num">${fmtNum(m.sessions)}</td>
+                    <td class="num">${fmtNum(m.input)}</td>
+                    <td class="num">${fmtNum(m.output)}</td>
+                    <td class="num">${fmtNum(m.cache_read + m.cache_creation)}</td>
+                    <td class="num"><strong>${fmtNum(m.total)}</strong></td>
+                `;
+                modelTbody.appendChild(tr);
+            }
+
+            const topTbody = panel.querySelector('[data-tok-top]');
+            topTbody.innerHTML = '';
+            if (data.top_sessions.length === 0) {
+                topTbody.innerHTML = '<tr><td colspan="6" class="stats-empty">No sessions yet.</td></tr>';
+            }
+            for (const s of data.top_sessions) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${fmtTimestamp(s.started_at)}</td>
+                    <td>${s.primary_model || ''}</td>
+                    <td class="num">${fmtNum(s.input)}</td>
+                    <td class="num">${fmtNum(s.output)}</td>
+                    <td class="num">${fmtNum(s.cache_read + s.cache_creation)}</td>
+                    <td class="num"><strong>${fmtNum(s.total)}</strong></td>
+                `;
+                topTbody.appendChild(tr);
+            }
+
+            setReady(panel);
+        } catch (e) {
+            setError(panel, 'Could not load tokens: ' + e.message);
+        }
+    }
+
+    // ----- Queries tab -----
+
+    const queriesState = { cursor: null };
+
+    async function loadQueries(append) {
+        const panel = document.getElementById('panel-queries');
+        try {
+            const params = new URLSearchParams({ limit: '50' });
+            if (queriesState.cursor) {
+                params.set('cursor_ts', queriesState.cursor.timestamp);
+                params.set('cursor_id', queriesState.cursor.id);
+            }
+            const data = await fetchJSON(`/api/me/stats/queries?${params}`);
+            const tbody = panel.querySelector('[data-rows]');
+            if (!append) tbody.innerHTML = '';
+            if (data.rows.length === 0 && !append) {
+                tbody.innerHTML = '<tr><td colspan="5" class="stats-empty">No queries logged for your account yet.</td></tr>';
+            }
+            for (const r of data.rows) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${fmtTimestamp(r.timestamp)}</td>
+                    <td><code>${r.action}</code></td>
+                    <td>${r.resource || ''}</td>
+                    <td>${r.result || ''}</td>
+                    <td class="num">${r.duration_ms != null ? r.duration_ms : ''}</td>
+                `;
+                tbody.appendChild(tr);
+            }
+            queriesState.cursor = data.next_cursor;
+            panel.querySelector('[data-action="next"]').disabled = !queriesState.cursor;
+            setReady(panel);
+        } catch (e) {
+            setError(panel, 'Could not load queries: ' + e.message);
+        }
+    }
+
+    document.querySelector('#panel-queries [data-action="next"]').addEventListener('click', () => {
+        loadQueries(true);
+    });
+
+    // ----- Sync tab -----
+
+    async function loadSync() {
+        const panel = document.getElementById('panel-sync');
+        try {
+            const data = await fetchJSON('/api/me/stats/sync?limit=50');
+            panel.querySelector('[data-sync-last-pull]').textContent =
+                fmtRelative(data.last_pull_at);
+            const tbody = panel.querySelector('[data-rows]');
+            tbody.innerHTML = '';
+            if (data.rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="stats-empty">No sync activity yet.</td></tr>';
+            }
+            for (const r of data.rows) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${fmtTimestamp(r.timestamp)}</td>
+                    <td><code>${r.action}</code></td>
+                    <td>${r.client_kind || ''}</td>
+                    <td>${r.result || ''}</td>
+                `;
+                tbody.appendChild(tr);
+            }
+            setReady(panel);
+        } catch (e) {
+            setError(panel, 'Could not load sync activity: ' + e.message);
+        }
+    }
+
+    // ----- Tab switching -----
+
+    const loaded = new Set();
+    const loaders = {
+        sessions: loadSessions,
+        tokens: loadTokens,
+        queries: loadQueries,
+        sync: loadSync,
+    };
+
+    function activate(name) {
+        document.querySelectorAll('.stats-tab').forEach((b) => {
+            const on = b.dataset.tab === name;
+            b.classList.toggle('is-active', on);
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        document.querySelectorAll('.stats-panel').forEach((p) => {
+            p.classList.toggle('is-active', p.id === 'panel-' + name);
+        });
+        if (!loaded.has(name)) {
+            loaded.add(name);
+            loaders[name]();
+        }
+    }
+
+    document.querySelectorAll('.stats-tab').forEach((b) => {
+        b.addEventListener('click', () => activate(b.dataset.tab));
+    });
+
+    // Initial paint: sessions tab.
+    activate('sessions');
+})();
+</script>
+{% endblock %}
