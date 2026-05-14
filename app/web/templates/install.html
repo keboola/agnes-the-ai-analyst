@@ -470,7 +470,7 @@
             border-color: var(--primary);
         }
 
-        /* ── Inline CTA link (Open /tokens etc.) ── */
+        /* ── Inline CTA link (Open /me/profile etc.) ── */
         .btn-cta {
             display: inline-flex;
             align-items: center;
@@ -803,8 +803,8 @@
                     Tokens let the CLI, CI jobs, and Claude Code talk to the
                     server without a browser session.
                 </p>
-                <a href="/tokens" class="btn-cta">
-                    Open /tokens
+                <a href="/me/profile#tokens" class="btn-cta">
+                    Open /me/profile#tokens
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M5 12h14M13 5l7 7-7 7"/>
                     </svg>
@@ -1031,7 +1031,7 @@
             try {
                 // Uniform PAT mint for everyone: scope=general,
                 // expires_in_days=90. The same `/auth/tokens` endpoint
-                // a user can already hit from the /tokens UI — no
+                // a user can already hit from the /me/profile UI — no
                 // role-locked endpoint, no per-role TTL clamp.
                 var tokenBody = { name: defaultTokenName(), expires_in_days: 90 };
                 var resp = await fetch('/auth/tokens', {

@@ -356,9 +356,9 @@ At `app/web/templates/install.html:806-807`, change:
 to:
 ```html
 <a href="/me/profile#tokens" class="btn-cta">
-    Open /me/profile
+    Open /me/profile#tokens
 ```
-Update the comment at line 473 (`Open /tokens etc.`) and line 1034 (`from the /tokens UI`) to say `/me/profile`.
+(href and label must agree — the label mirrors the literal path, as the old `Open /tokens` did.) Update the comment at line 473 (`Open /tokens etc.`) and line 1034 (`from the /tokens UI`) to say `/me/profile`.
 
 - [ ] **Step 2: Update CLI-facing strings**
 
