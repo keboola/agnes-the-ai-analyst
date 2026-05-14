@@ -1453,7 +1453,7 @@
         <div class="eyebrow">Welcome, {{ display_name }} — let's get you set up</div>
         <h1>Connect Claude Code on your machine to your team's data</h1>
         <p class="lead">
-            {{ instance_brand }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>. Everything it installs lives in your home folder (<code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/{{ workspace_dir }}</code>) and can be removed in one command.
+            {{ instance_brand }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, third-party tools (Asana, Google Workspace, Atlassian), and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>; the install script also connects your tools for you, so there's no extra page to visit. Everything it installs lives in your home folder (<code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/{{ workspace_dir }}</code>) and can be removed in one command.
         </p>
 
         <div class="install-block">
@@ -1662,99 +1662,17 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
         <p class="home-usage-foot">For the deepest integration, create every project under <code>~/{{ workspace_dir }}/Projects/</code> — existing or new. The bundled plugin keeps each project in sync with the central catalog automatically, and the session-analysis loop is scoped to that root.</p>
     </section>
 
-    <details class="setup-collapsible" data-section="connectors" open>
-        <summary>
-            <span class="ico" aria-hidden="true">&#x1F517;</span>
-            <span class="ttl">Connect your tools <small>(Asana / Google Workspace / Atlassian)</small></span>
-            <span class="chev" aria-hidden="true">&rsaquo;</span>
-        </summary>
-        <div class="section-label section-label-flat">Once {{ instance_brand }} is installed — connect your tools</div>
-
-    <div class="connector-tiles">
-        <div class="connector-tile">
-            <span class="ico">&#x2705;</span>
-            {# P0-3 — title row + time-badge + post-copy hint. The hint
-               container is rendered hidden; the JS reveals it after the
-               copy succeeds, then auto-hides after 8 s. #}
-            <div class="ttl-row">
-                <span class="ttl">Asana</span>
-                <span class="time-badge">~5 min · self-serve</span>
-            </div>
-            <div class="desc">Read tasks and projects, comment, create updates — Claude works alongside your project boards without leaving the terminal.</div>
-            <div class="connector-actions">
-                <button class="connector-copy" data-copy-target="asana-prompt" data-connector="Asana">Copy prompt</button>
-                <div class="copy-next-hint" data-hint-for="Asana">
-                    <span>&#x2705; Copied. Now paste into Claude Code — run <code>claude</code> in your terminal, then paste &amp; press Enter.</span>
-                </div>
-                <details class="connector-preview">
-                    <summary>Show prompt</summary>
-                    {# Asana prompt body sourced from app/web/connector_prompts.py
-                       (`asana_prompt()`). Same string the main setup script
-                       inlines in step 9, so the two surfaces stay in lockstep. #}
-                    <div class="card-mini-cmd"><code id="asana-prompt">{{ connector_prompts.asana }}</code></div>
-                </details>
-            </div>
-        </div>
-
-        <div class="connector-tile">
-            <span class="ico">&#x1F4DA;</span>
-            {# P0-3 + P1-8 — Google Workspace tile. Time badge warns when
-               the operator hasn't provisioned a shared OAuth app (forces
-               the user to set up GCP themselves, which is a ~20-min
-               clickops detour). The gating-note + email-admin button
-               appear in that same un-configured branch so the user has
-               a way out before copying. #}
-            <div class="ttl-row">
-                <span class="ttl">Google Workspace</span>
-                {% if gws_oauth.configured %}
-                <span class="time-badge">~5 min · self-serve</span>
-                {% else %}
-                <span class="time-badge is-warn">~20 min · admin help likely</span>
-                {% endif %}
-            </div>
-            <div class="desc">Drive, Calendar, Gmail, Docs, Sheets, Chat — Claude reads and acts across your work account via the official <code>gws</code> CLI.</div>
-            {% if not gws_oauth.configured %}
-            <div class="gating-note">
-                <strong>Heads up:</strong> your {{ instance_brand }} admin hasn't provisioned a shared Google Cloud OAuth app yet, so this connector needs GCP project setup (creating an OAuth client, enabling APIs). It's fastest to ask your admin first — the button below pre-fills the email.
-            </div>
-            {% endif %}
-            <div class="connector-actions">
-                <button class="connector-copy" data-copy-target="gws-prompt" data-connector="Google Workspace">Copy prompt</button>
-                {% if not gws_oauth.configured and instance_admin_email %}
-                <a class="email-admin" href="mailto:{{ instance_admin_email }}?subject={{ instance_brand|urlencode }}%20%E2%80%94%20Google%20Workspace%20OAuth%20setup&amp;body=Hi%20%E2%80%94%20I'd%20like%20to%20connect%20Google%20Workspace%20in%20{{ instance_brand|urlencode }}%20but%20it%20looks%20like%20a%20shared%20OAuth%20app%20isn't%20provisioned%20yet.%20Could%20you%20set%20it%20up%20for%20our%20instance%3F%20Thanks!">
-                    &#x2709;&#xFE0F; Email admin
-                </a>
-                {% endif %}
-                <div class="copy-next-hint" data-hint-for="Google Workspace">
-                    <span>&#x2705; Copied. Now paste into Claude Code — run <code>claude</code> in your terminal, then paste &amp; press Enter.</span>
-                </div>
-                <details class="connector-preview">
-                    <summary>Show prompt</summary>
-                    <div class="card-mini-cmd"><code id="gws-prompt">{{ connector_prompts.gws }}</code></div>
-                </details>
-            </div>
-        </div>
-
-        <div class="connector-tile">
-            <span class="ico">&#x1F39F;&#xFE0F;</span>
-            <div class="ttl-row">
-                <span class="ttl">Atlassian (Jira / Confluence)</span>
-                <span class="time-badge">~7 min · self-serve</span>
-            </div>
-            <div class="desc">Read and write Jira issues, search Confluence pages — Claude pulls ticket context and posts updates without leaving the workspace.</div>
-            <div class="connector-actions">
-                <button class="connector-copy" data-copy-target="jira-prompt" data-connector="Atlassian">Copy prompt</button>
-                <div class="copy-next-hint" data-hint-for="Atlassian">
-                    <span>&#x2705; Copied. Now paste into Claude Code — run <code>claude</code> in your terminal, then paste &amp; press Enter.</span>
-                </div>
-                <details class="connector-preview">
-                    <summary>Show prompt</summary>
-                    <div class="card-mini-cmd"><code id="jira-prompt">{{ connector_prompts.atlassian }}</code></div>
-                </details>
-            </div>
-        </div>
-    </div>
-    </details>
+    {# Connectors `<details data-section="connectors">` block removed —
+       the install-hero's Step 4 clipboard payload (rendered via
+       `_claude_setup_instructions.jinja` inside the "Or paste manually"
+       fallback) already inlines the same Asana / GWS / Atlassian
+       prompts from app/web/connector_prompts.py via
+       app/web/setup_instructions.py::_connectors_block. Showing them
+       a second time as standalone cards duplicated UX without adding
+       reach — the install script visits them all in sequence. Brief
+       mention in the install-hero lead paragraph above covers the
+       benefits ("third-party tools (Asana, Google Workspace,
+       Atlassian)"); deep ops live in /setup-advanced. #}
 
     <div class="section-label">Want to look around first?</div>
     <p class="look-around-lead">You don't need {{ instance_brand }} installed locally to browse what's available. Anything you bookmark or subscribe to will be there waiting after you set {{ instance_brand }} up.</p>

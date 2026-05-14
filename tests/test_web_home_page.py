@@ -109,20 +109,20 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
     assert "Step 4 — install" not in body
 
 
-def test_connectors_render_flat_when_onboarded_by_default(fresh_db):
-    """Connect-your-tools section must NOT auto-collapse on the
-    server-side `users.onboarded=TRUE` flip. It renders flat (in <details
-    open>) by default; only an explicit user click on the in-hero
-    "Minimize setup view" toggle (persisted in localStorage, not server)
-    activates the collapsed bar layout.
+def test_connectors_section_removed_from_home(fresh_db):
+    """The dedicated `<details data-section="connectors">` block was
+    dropped from `/home` — the install-hero's Step 4 clipboard payload
+    (rendered via `_claude_setup_instructions.jinja` inside the manual
+    fallback) already inlines the same Asana / GWS / Atlassian prompts
+    from `app/web/connector_prompts.py` via
+    `app/web/setup_instructions.py::_connectors_block`. Showing them
+    twice on the same page was duplicate UX. The lead paragraph in the
+    install-hero now mentions the connectors briefly so users still see
+    the benefit before they hit the install.
 
-    Auto-mode used to be a peer `setup-collapsible` section
-    (`data-section="step3"`) outside the install-hero. It moved into the
-    install-hero as Step 2 of the install flow (so users enable it
-    BEFORE Step 3's ~20-command install runs), and the standalone
-    outside-hero copy was dropped to avoid duplicating reference
-    content. Onboarded users no longer see the auto-mode block at all —
-    consistent with Step 1 + Step 3 also hiding post-onboarding."""
+    Co-asserts the auto-mode block removal that this test originally
+    pinned — onboarded users still see neither the connectors block
+    nor the legacy auto-mode peer section."""
     from src.db import get_system_db, close_system_db
 
     conn = get_system_db()
@@ -136,21 +136,36 @@ def test_connectors_render_flat_when_onboarded_by_default(fresh_db):
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
     body = resp.text
-    # Auto-mode no longer renders for onboarded users — both the
-    # in-hero install-block and the legacy outside-hero `<details>`
-    # reference card are gated `{% if not onboarded %}` / removed.
+    # Auto-mode peer section still gone (legacy guard, not regressed).
     assert 'class="automode-card"' not in body
     assert 'data-section="step3"' not in body
     assert "Step 2 — turn on auto-mode" not in body
-    # Connect-your-tools section is still flat-open by default.
-    assert 'class="connector-tiles"' in body
-    assert 'class="setup-collapsible" data-section="connectors" open' in body
+    # Dedicated connectors block is gone from /home in BOTH states.
+    assert 'class="connector-tiles"' not in body
+    assert 'data-section="connectors"' not in body
     # Server-rendered HTML never carries the data-setup-minimized
     # attribute on the .home-mock root — that's a client-side
-    # localStorage decision applied via JS on load. The token still
-    # appears in inline CSS selectors and the JS body, which is fine.
+    # localStorage decision applied via JS on load.
     assert '<div class="home-mock" data-setup-minimized' not in body
     assert 'class="home-mock"\n' in body or '<div class="home-mock">' in body
+
+    # Not-onboarded path: same — the section disappears regardless of
+    # state. Lead-paragraph still surfaces the connector names so users
+    # know the benefit exists before they kick off the install.
+    conn = get_system_db()
+    try:
+        _, sess2 = _make_user_and_session(
+            conn, email="not-onboarded@example.com", onboarded=False
+        )
+    finally:
+        conn.close()
+        close_system_db()
+    body2 = _client().get("/home", cookies={"access_token": sess2}).text
+    assert 'class="connector-tiles"' not in body2
+    assert 'data-section="connectors"' not in body2
+    # Lead-paragraph mentions the three connector families so the
+    # benefit isn't lost when the dedicated section disappears.
+    assert "Asana, Google Workspace, Atlassian" in body2
 
 
 def test_minimize_toggle_no_longer_rendered(fresh_db):
@@ -237,12 +252,15 @@ def test_home_hides_email_admin_button_when_admin_email_unset(fresh_db, monkeypa
     assert "mailto:?" not in body  # specifically, no broken empty mailto
 
 
-def test_home_shows_email_admin_button_when_admin_email_set_and_gws_unconfigured(
-    fresh_db, monkeypatch,
-):
-    """When admin_email is set AND gws_oauth is unconfigured, the mailto
-    link renders. (Both conditions required — see template guard
-    ``{% if not gws_oauth.configured and instance_admin_email %}``.)"""
+def test_home_no_longer_shows_email_admin_button(fresh_db, monkeypatch):
+    """The Email-admin mailto CTA used to live inside the /home GWS
+    connector tile. With the dedicated `<details data-section="connectors">`
+    block removed (see test_connectors_section_removed_from_home above),
+    the button has no rendering site even when admin_email is set + GWS
+    is unconfigured. The escalation path lives inside the install
+    script's GWS step now — Claude prompts the user with the admin
+    email when the connector setup hits an OAuth gating wall, so the
+    affordance moves to the surface where it's actually useful."""
     monkeypatch.setenv("AGNES_INSTANCE_ADMIN_EMAIL", "ops@example.com")
     monkeypatch.delenv("AGNES_GWS_CLIENT_ID", raising=False)
     monkeypatch.delenv("AGNES_GWS_CLIENT_SECRET", raising=False)
@@ -254,8 +272,8 @@ def test_home_shows_email_admin_button_when_admin_email_set_and_gws_unconfigured
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert "Email admin" in body
-    assert "mailto:ops@example.com" in body
+    assert "Email admin" not in body
+    assert 'mailto:ops@example.com' not in body
 
 
 def test_home_hides_email_admin_button_when_gws_configured(fresh_db, monkeypatch):
@@ -276,59 +294,17 @@ def test_home_hides_email_admin_button_when_gws_configured(fresh_db, monkeypatch
     assert "Email admin" not in body
 
 
-def test_home_renders_connector_prompts_from_shared_module(fresh_db):
-    """Single source of truth check: the prompt text the /home tiles
-    paste must equal the strings ``app/web/connector_prompts.py`` returns.
-    The same strings are also inlined into the setup script's step 9, so
-    if they ever drift the two surfaces would tell users to do different
-    things — this test catches that early."""
-    import html as _html
-    import re
-
-    from src.db import get_system_db, close_system_db
-    from app.web.connector_prompts import (
-        asana_prompt, gws_prompt, atlassian_prompt,
-    )
-    from app.instance_config import (
-        get_gws_oauth_credentials, get_instance_admin_email,
-    )
-
-    conn = get_system_db()
-    try:
-        _, sess = _make_user_and_session(conn)
-    finally:
-        conn.close()
-        close_system_db()
-
-    c = _client()
-    body = c.get("/home", cookies={"access_token": sess}).text
-
-    # Resolve the same gws_oauth dict the route uses so the parity check
-    # exercises whichever branch (configured / manual) is active in the
-    # current test environment.
-    gws = get_gws_oauth_credentials()
-    expected_gws = gws_prompt(
-        gws_oauth_configured=bool(gws.get("configured")),
-        gws_client_id=str(gws.get("client_id") or ""),
-        gws_client_secret=str(gws.get("client_secret") or ""),
-        gws_project_id=str(gws.get("project_id") or ""),
-        oauthlib_insecure_transport=str(gws.get("oauthlib_insecure_transport") or "1"),
-        instance_admin_email=get_instance_admin_email(),
-    )
-
-    for slug, expected in (
-        ("asana", asana_prompt()),
-        ("gws", expected_gws),
-        ("jira", atlassian_prompt()),
-    ):
-        m = re.search(rf'<code id="{slug}-prompt">(.*?)</code>', body, re.DOTALL)
-        assert m, f"{slug}-prompt block missing from /home"
-        actual = _html.unescape(m.group(1))
-        assert actual == expected, (
-            f"{slug}-prompt body diverged from connector_prompts module — "
-            f"the home tile and setup script will paste different text. "
-            f"len(home)={len(actual)} len(module)={len(expected)}"
-        )
+# `test_home_renders_connector_prompts_from_shared_module` was dropped here
+# alongside the removal of the /home `<details data-section="connectors">`
+# block. The test pinned source-of-truth parity between the home tile
+# `<code id="*-prompt">` blocks and `app/web/connector_prompts.py`. With the
+# tiles gone, the only surface left for those strings is the install-hero's
+# Step 4 clipboard payload (rendered via `_claude_setup_instructions.jinja`
+# from `setup_instructions_lines`, which is built in
+# `app/web/setup_instructions.py::_connectors_block` calling the same
+# `connector_prompts.py` functions). One surface, no drift risk → the
+# parity test is redundant. If a second surface ever re-renders these
+# prompts, restore a parity test scoped to that new consumer.
 
 
 # ── Getting Started + Overview + Usage modes (PR #289 home additions) ────
