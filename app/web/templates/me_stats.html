@@ -2,9 +2,26 @@
 
 {% block title %}Stats — {{ instance_brand }}{% endblock %}
 
+{# Override block layout (same trick dashboard.html uses) to escape the
+   narrow .container wrap from base.html. Stats tables look cramped
+   inside 800px; 1400px gives the by-model and top-sessions tables
+   enough breathing room without going edge-to-edge on wide monitors. #}
+{% block layout %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-messages">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+    <main class="main">{{ self.content() }}</main>
+{% endblock %}
+
 {% block content %}
 <style>
-.stats-page { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+.stats-page { max-width: 1400px; margin: 0 auto; padding: 24px 24px 64px; }
 .stats-page h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
 .stats-page .lead { color: var(--hp-text-muted, #6b7280); margin: 0 0 20px; font-size: 13px; }
 
