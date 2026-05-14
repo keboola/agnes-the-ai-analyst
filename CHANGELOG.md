@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.13] — 2026-05-14
+
 ### Security
 
 - **RBAC filter uses stable `user_id` (UUID) instead of mutable email
