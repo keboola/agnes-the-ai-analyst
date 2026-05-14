@@ -7,6 +7,9 @@
 
   /* .tokens-section layout/width is owned by profile.html (.section-card). */
 
+  /* Offset the #tokens deep-link target below the sticky .app-header (~72px). */
+  #tokens { scroll-margin-top: 80px; }
+
   /* Section header row: title + New-token button side by side */
   .tokens-section-header {
     display: flex;
@@ -627,7 +630,7 @@
   }
 </style>
 
-<div class="tokens-section section-card" data-is-admin="false" data-view="my">
+<div id="tokens" class="tokens-section section-card" data-is-admin="false" data-view="my">
   <!-- ═════════ SECTION HEADER ═════════ -->
   <div class="tokens-section-header">
     <div class="tokens-section-title-block">
