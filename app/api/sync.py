@@ -812,10 +812,22 @@ async def sync_manifest(
             "UPDATE users SET last_pull_at = current_timestamp WHERE id = ?",
             [user["id"]],
         )
+        # Also emit an audit_log row so /me/stats Sync activity has a
+        # timeline of pulls (the column UPDATE only retains the most
+        # recent one). Action `manifest.fetch` covers both `agnes pull`
+        # via PAT and browser-driven manifest peeks; clients can
+        # disambiguate via client_kind.
+        AuditRepository(conn).log(
+            user_id=user["id"],
+            action="manifest.fetch",
+            resource="manifest",
+            result="ok",
+            client_kind="api",
+        )
     except Exception:
-        # Never block a pull because the stamp UPDATE hit a transient
-        # issue (locked WAL, partial migration window). The manifest
-        # itself is the load-bearing payload.
+        # Never block a pull because the stamp UPDATE / audit row hit a
+        # transient issue (locked WAL, partial migration window). The
+        # manifest itself is the load-bearing payload.
         pass
     return _build_manifest_for_user(conn, user)
 

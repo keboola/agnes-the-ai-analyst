@@ -726,6 +726,26 @@ async def home_page(
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 
 
+@router.get("/me/stats", response_class=HTMLResponse)
+async def me_stats_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-analyst stats dashboard. Four tabs (Sessions / Tokens /
+    Data access / Sync activity) backed by /api/me/stats/* endpoints.
+    Authed-only; each endpoint enforces user_id = caller scoping
+    server-side so this route just renders the shell.
+    """
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+    )
+    return templates.TemplateResponse(request, "me_stats.html", ctx)
+
+
 @router.get("/news", response_class=HTMLResponse)
 async def news_page(
     request: Request,
