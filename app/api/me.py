@@ -71,17 +71,18 @@ _WINDOW_INTERVALS = {
 
 
 def _username_for_stats(user: dict) -> str:
-    """Map a users row to the filesystem username used by the session
-    collector and stored in ``usage_session_summary.username``.
+    """Return the key that ``usage_session_summary.username`` holds for
+    sessions uploaded by *user*.
 
-    Mirrors ``app.api.admin_user_sessions._username_from_user``: the
-    session collector writes JSONL under the OS username of the agent
-    process which, for current deployments, equals the email local-part.
-    Kept inline here so this endpoint has no cross-module dependency on
-    an admin-only helper; if the mapping evolves both copies must update.
+    Production convention: ``app/api/upload.py`` writes JSONLs under
+    ``${DATA_DIR}/user_sessions/<user_id>/``; the session-pipeline
+    runner uses the directory name as the ``username`` column when
+    extracting summaries. ``/profile/sessions`` reads the same dir
+    keyed by ``user_id``. The column is historically named
+    ``username`` but its current contents are user_ids — return the
+    matching lookup key.
     """
-    email: str = user.get("email", "") or ""
-    return email.split("@")[0] if "@" in email else email
+    return user["id"]
 
 
 def compute_home_stats(

@@ -43,22 +43,34 @@ router = APIRouter(prefix="/api/me/stats", tags=["me"])
 
 
 def _username_for_stats(user: dict) -> str:
-    """Email local-part → filesystem username, mirroring the rule in
-    ``app.api.me._username_for_stats``. Kept inline so this module
-    has no cross-import dependency on ``me.py``; if the mapping
-    evolves both copies update.
+    """Return the key that ``usage_session_summary.username`` holds for
+    sessions uploaded by *user*.
+
+    The session-pipeline runner sources this value from the directory
+    name under ``${DATA_DIR}/user_sessions/<here>/``, and the production
+    convention (matching `app/api/upload.py` and `/profile/sessions`)
+    keys those directories by ``user["id"]`` (UUID). The column is
+    historically named ``username`` but its current contents are
+    user_ids; this helper returns the right lookup key without
+    renaming the column.
     """
-    email: str = user.get("email", "") or ""
-    return email.split("@")[0] if "@" in email else email
+    return user["id"]
 
 
 def _session_data_dir() -> Path:
-    """Match ``app.api.admin_user_sessions._session_data_dir``."""
-    return Path(
-        os.environ.get("SESSION_DATA_DIR")
-        or os.environ.get("AGNES_SESSION_DATA_DIR")
-        or "/data/sessions"
+    """Filesystem root the Sessions tab scans for un-processed JSONL.
+
+    Mirrors `/profile/sessions` (`${DATA_DIR}/user_sessions/<user_id>/`)
+    so both views see the same uploaded files. SESSION_DATA_DIR env
+    override is honored for deployments that pin the path explicitly.
+    """
+    explicit = os.environ.get("SESSION_DATA_DIR") or os.environ.get(
+        "AGNES_SESSION_DATA_DIR"
     )
+    if explicit:
+        return Path(explicit)
+    data_dir = os.environ.get("DATA_DIR", "/data")
+    return Path(data_dir) / "user_sessions"
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +126,10 @@ def list_self_sessions(
         "cache_read_tokens", "cache_creation_tokens",
         "primary_model",
     ]
+    # Dedup key: BASENAME of `session_file`. The session-pipeline runner
+    # writes ``session_file = f"{username}/{filename}"`` while the
+    # filesystem scan below walks bare filenames. Keying by basename
+    # makes both views agree without normalizing the stored column.
     processed: dict[str, dict] = {}
     for r in rows_db:
         d = dict(zip(cols, r))
@@ -128,7 +144,7 @@ def list_self_sessions(
             + int(d.get("cache_creation_tokens") or 0)
         )
         d["processed"] = True
-        processed[d["session_file"]] = d
+        processed[Path(d["session_file"]).name] = d
 
     all_rows: list[dict] = list(processed.values())
     if user_dir.is_dir():

@@ -116,7 +116,7 @@ def stats_conn(tmp_path):
     return conn
 
 
-def _seed_user(conn, *, uid="u1", email="alice@example.com"):
+def _seed_user(conn, *, uid="ua", email="alice@example.com"):
     conn.execute(
         "INSERT INTO users (id, email, active, onboarded, last_pull_at) "
         "VALUES (?, ?, TRUE, TRUE, current_timestamp)",
@@ -159,29 +159,29 @@ def test_compute_home_stats_24h_vs_7d_windowing(stats_conn):
     from app.api.me import compute_home_stats
 
     _seed_user(stats_conn)
-    _seed_session(stats_conn, session_file="a.jsonl", username="alice",
+    _seed_session(stats_conn, session_file="a.jsonl", username="ua",
                   started_sql="current_timestamp - INTERVAL 1 HOUR",
                   prompts=5, input_tokens=100, output_tokens=50,
                   cache_read=800, cache_creation=25)
-    _seed_session(stats_conn, session_file="b.jsonl", username="alice",
+    _seed_session(stats_conn, session_file="b.jsonl", username="ua",
                   started_sql="current_timestamp - INTERVAL 3 DAY",
                   prompts=5, input_tokens=100, output_tokens=50,
                   cache_read=800, cache_creation=25)
-    _seed_session(stats_conn, session_file="c.jsonl", username="alice",
+    _seed_session(stats_conn, session_file="c.jsonl", username="ua",
                   started_sql="current_timestamp - INTERVAL 30 DAY",
                   prompts=99)
 
     _seed_event(stats_conn, ev_id="e1", session_file="a.jsonl",
-                username="alice", cwd="/proj/alpha",
+                username="ua", cwd="/proj/alpha",
                 occurred_sql="current_timestamp - INTERVAL 1 HOUR")
     _seed_event(stats_conn, ev_id="e2", session_file="a.jsonl",
-                username="alice", cwd="/proj/beta",
+                username="ua", cwd="/proj/beta",
                 occurred_sql="current_timestamp - INTERVAL 2 HOUR")
     _seed_event(stats_conn, ev_id="e3", session_file="b.jsonl",
-                username="alice", cwd="/proj/gamma",
+                username="ua", cwd="/proj/gamma",
                 occurred_sql="current_timestamp - INTERVAL 3 DAY")
 
-    user = {"id": "u1", "email": "alice@example.com"}
+    user = {"id": "ua", "email": "alice@example.com"}
 
     s24 = compute_home_stats(stats_conn, user, "24h")
     assert s24["window"] == "24h"
@@ -204,7 +204,7 @@ def test_compute_home_stats_unknown_window_clamps_to_24h(stats_conn):
     from app.api.me import compute_home_stats
 
     _seed_user(stats_conn)
-    s = compute_home_stats(stats_conn, {"id": "u1", "email": "alice@example.com"}, "bogus")
+    s = compute_home_stats(stats_conn, {"id": "ua", "email": "alice@example.com"}, "bogus")
     assert s["window"] == "24h"
 
 
