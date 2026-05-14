@@ -164,17 +164,6 @@ class TestCuratedSkill:
         s = _summary(conn, "skill_curated.jsonl")
         assert s["skill_invocations"] == 1
 
-    def test_slash_command_also_extracted(self, tmp_path, monkeypatch):
-        """skill_curated fixture has a /my-skill slash command in user message."""
-        conn = _fresh_db(tmp_path, monkeypatch)
-        _seed_attribution(conn)
-        _process("skill_curated.jsonl", conn)
-        evts = _events(conn)
-        types = [e["event_type"] for e in evts]
-        # Both tool_use (Skill) and slash_command should be present
-        assert "tool_use" in types
-        assert "slash_command" in types
-
 
 class TestFleaSkill:
     def test_flea_attribution(self, tmp_path, monkeypatch):
@@ -384,3 +373,64 @@ class TestMultiToolTurnDedup:
             "SELECT COUNT(*) FROM usage_events WHERE session_id='sess-multi'"
         ).fetchone()[0]
         assert n == 2, f"expected 2 events (one per tu_xxx), got {n}"
+
+
+class TestCommandNameTagExtraction:
+    """Slash invocations arrive as <command-name>/foo</command-name> embedded in
+    user message content (Claude Code's wire format). Unit-test iter_events
+    against synthetic turns so a future shape shift doesn't silently regress."""
+
+    @staticmethod
+    def _user_turn(content):
+        return {
+            "type": "user",
+            "uuid": "u1",
+            "parentUuid": None,
+            "sessionId": "sess-cn",
+            "timestamp": "2026-05-14T10:00:00.000Z",
+            "cwd": "/workspace",
+            "message": {"role": "user", "content": content},
+        }
+
+    def test_extracts_command_name_from_string_content(self):
+        from services.session_processors.usage_lib import iter_events
+        turn = self._user_turn(
+            "<command-name>/clear</command-name>\n<command-args></command-args>"
+        )
+        events = list(iter_events([turn]))
+        assert len(events) == 1
+        assert events[0].event_type == "slash_command"
+        assert events[0].command_name == "clear"
+
+    def test_extracts_command_name_from_text_block(self):
+        """Defensive: same regex behavior when content arrives as a list-of-blocks
+        instead of a plain string, in case Claude Code's wire format shifts."""
+        from services.session_processors.usage_lib import iter_events
+        turn = self._user_turn(
+            [{"type": "text", "text": "<command-name>/plugin:name</command-name>"}]
+        )
+        events = list(iter_events([turn]))
+        assert len(events) == 1
+        assert events[0].command_name == "plugin:name"
+
+    def test_command_name_not_at_start_still_matches(self):
+        """Real Claude Code prepends a <command-message> sibling before the
+        <command-name> tag — regex must search, not anchor at start."""
+        from services.session_processors.usage_lib import iter_events
+        turn = self._user_turn(
+            "<command-message>foo</command-message>\n"
+            "<command-name>/foo</command-name>\n"
+            "<command-args>some arg</command-args>"
+        )
+        events = list(iter_events([turn]))
+        assert len(events) == 1
+        assert events[0].command_name == "foo"
+
+    def test_plain_text_without_tag_does_not_match(self):
+        """A user message that happens to contain '/foo' as prose, but no
+        <command-name> tag, must NOT yield a slash_command event — that's the
+        whole point of switching from the old `^\\s*/<name>` regex."""
+        from services.session_processors.usage_lib import iter_events
+        turn = self._user_turn("Hello world, see /not-a-command-just-prose for context.")
+        events = list(iter_events([turn]))
+        assert events == []

@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterator
 
-USAGE_PROCESSOR_VERSION = 2
+USAGE_PROCESSOR_VERSION = 3
 
 BUILTIN_TOOLS = frozenset({
     "Bash", "Read", "Edit", "Write", "Grep", "Glob", "TodoWrite",
@@ -48,8 +48,13 @@ BUILTIN_TOOLS = frozenset({
     "LS",  # also built-in
 })
 
-# Slash commands: "/something" or "/namespace:something" at start of user text
-SLASH_RE = re.compile(r"^\s*/([A-Za-z][\w:-]*)")
+# Claude Code wraps user-typed slash invocations as
+# <command-name>/<name></command-name> inside the user message content
+# (raw "/foo" plain text never reaches the jsonl). Tag may sit anywhere
+# in the text — typically after a <command-message> sibling — so we
+# search rather than anchor at start. Name pattern matches both flat
+# commands (`clear`, `exit`) and plugin-prefixed ones (`plugin:name`).
+COMMAND_NAME_RE = re.compile(r"<command-name>/([A-Za-z][\w:-]*)</command-name>")
 
 # Event types to skip entirely
 _SKIP_TYPES = frozenset({
@@ -125,7 +130,9 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
     - Skill tool → also extracts skill_name
     - Task/Agent tools → event_type='subagent'
     - mcp__* tools → event_type='mcp_call'
-    - User messages starting with '/' → event_type='slash_command'
+    - User messages containing a <command-name>/foo</command-name> tag
+      (Claude Code's wire format for user-typed slash invocations)
+      → event_type='slash_command', command_name='foo'
 
     Skips: system, summary, file-history-snapshot, queue-operation, progress.
     """
@@ -191,7 +198,11 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
                     )
 
         elif turn_type == "user":
-            # Slash-command detection from text content
+            # Slash-invocation detection: scan user message content for
+            # <command-name>/foo</command-name> tags. content is normally a
+            # plain string on slash-invocation turns; tolerate the
+            # list-of-blocks shape too in case Claude Code's wire format
+            # shifts to structured content later.
             if isinstance(content, str):
                 text_parts = [content]
             elif isinstance(content, list):
@@ -206,8 +217,7 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
             for text in text_parts:
                 if not text:
                     continue
-                m = SLASH_RE.match(text)
-                if m:
+                for name in COMMAND_NAME_RE.findall(text):
                     yield ParsedEvent(
                         event_uuid=event_uuid,
                         parent_uuid=parent_uuid,
@@ -216,7 +226,7 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
                         tool_name=None,
                         skill_name=None,
                         subagent_type=None,
-                        command_name=m.group(1),
+                        command_name=name,
                         is_error=False,
                         model=None,
                         cwd=cwd,
