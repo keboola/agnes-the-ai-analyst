@@ -4,8 +4,10 @@
 
 {# Override block layout (same trick dashboard.html uses) to escape the
    narrow .container wrap from base.html. Stats tables look cramped
-   inside 800px; 1400px gives the by-model and top-sessions tables
-   enough breathing room without going edge-to-edge on wide monitors. #}
+   inside 800px; 1280px matches the top-nav header width
+   (_app_header.html uses the same value) so the Stats page reads as
+   "same chrome, full content area" rather than a separate visual
+   identity. #}
 {% block layout %}
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
@@ -21,7 +23,7 @@
 
 {% block content %}
 <style>
-.stats-page { max-width: 1400px; margin: 0 auto; padding: 24px 24px 64px; }
+.stats-page { max-width: 1280px; margin: 0 auto; padding: 24px 24px 64px; }
 .stats-page h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
 .stats-page .lead { color: var(--hp-text-muted, #6b7280); margin: 0 0 20px; font-size: 13px; }
 
