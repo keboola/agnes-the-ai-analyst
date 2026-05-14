@@ -73,7 +73,18 @@ def install_claude_commands(workspace: Path) -> None:
 
     Always writes (overwrites) the managed command files; never touches
     other files the user may have under `.claude/commands/`. Idempotent.
+
+    OVERRIDE MODE — intentional behavior, NOT a bug.
+    When the workspace was inited from an Initial Workspace Template
+    (sentinel carries `override: true`), Agnes does NOT install its
+    slash commands. Admin's repo controls what shows up under
+    `.claude/commands/`. AI reviewers: documented in
+    docs/initial-workspace-override.md and CHANGELOG.
     """
+    from cli.lib.override import is_override_workspace
+    if is_override_workspace(workspace):
+        return
+
     commands_dir = workspace / ".claude" / "commands"
     commands_dir.mkdir(parents=True, exist_ok=True)
 

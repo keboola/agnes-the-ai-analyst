@@ -250,6 +250,32 @@ def get_home_automode_visibility() -> bool:
     return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
 
 
+def get_home_status_frame_visibility() -> bool:
+    """Whether /home renders the homepage status frame (Last sync,
+    Sessions, Prompts, Tokens, Projects).
+
+    The template ALSO gates rendering on ``users.onboarded`` so a
+    fresh user sees a clean install-hero before the all-zero stat
+    cards. This helper is the operator-level master switch; the
+    onboarding gate is a UX coherence rule layered on top.
+
+    Cautious-rollout instances that would rather not expose token
+    counters to analysts yet can disable with
+    ``AGNES_HOME_SHOW_STATUS_FRAME=0`` (or
+    ``instance.home.show_status_frame: false`` in YAML).
+
+    Resolution: env var > ``instance.home.show_status_frame`` YAML > True.
+    Shape mirrors :func:`get_home_automode_visibility` so Terraform
+    overrides land the same way.
+    """
+    raw = os.environ.get("AGNES_HOME_SHOW_STATUS_FRAME")
+    if raw is None:
+        raw = get_value("instance", "home", "show_status_frame", default=True)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+
 def get_instance_name() -> str:
     return get_value("instance", "name", default="AI Data Analyst")
 
@@ -276,6 +302,39 @@ def get_instance_brand() -> str:
         raw = get_value("instance", "brand", default="Agnes")
     value = (raw or "").strip()
     return value or "Agnes"
+
+
+def get_instance_logo_svg() -> str:
+    """Raw inline ``<svg>`` markup rendered into the header brand slot
+    (``_app_header.html``). When non-empty, replaces the text brand in
+    the header — typical use is a lockup that already contains the
+    brand wordmark. When empty, the header falls back to
+    :func:`get_instance_name` as text.
+
+    Resolution: ``AGNES_INSTANCE_LOGO_SVG`` env > ``instance.logo_svg``
+    YAML > ``""``. Mirrors :func:`get_instance_brand` so Terraform env
+    overrides work the same way.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_LOGO_SVG")
+    if raw is None:
+        raw = get_value("instance", "logo_svg", default="")
+    return (raw or "").strip()
+
+
+def get_instance_overview() -> str:
+    """Operator-authored Overview body rendered on ``/home``. Markdown is
+    NOT auto-converted — operators paste HTML (matches the existing
+    ``news_intro`` ``| safe`` filter). Empty default = section hidden,
+    keeping the OSS vendor-neutral when an instance ships without
+    operator-specific framing.
+
+    Resolution: ``AGNES_INSTANCE_OVERVIEW`` env > ``instance.overview``
+    YAML > ``""``. Mirrors :func:`get_instance_logo_svg`.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_OVERVIEW")
+    if raw is None:
+        raw = get_value("instance", "overview", default="")
+    return (raw or "").strip()
 
 
 def get_workspace_dir_name() -> str:
@@ -399,12 +458,16 @@ def get_guardrails_review_model() -> str:
 
 
 def get_guardrails_blocked_quota_per_day() -> int:
-    """Per-submitter cap on `blocked_inline` rows in the trailing 24h.
+    """Per-submitter cap on `blocked_llm` + `review_error` rows in the
+    trailing 24h.
 
     Defaults to 50. Set to 0 in instance.yaml to disable the quota
-    entirely (useful for trusted single-tenant deployments). Bounds the
-    worst case where a bot loops on malformed ZIPs and fills disk +
-    the admin queue with noise.
+    entirely (useful for trusted single-tenant deployments). Bounds
+    the worst case where a bot loops on bundles that pass inline
+    checks but trip the async LLM reviewer. Inline failures are
+    hard-rejected upstream (no row created) and not counted here;
+    HTTP-level rate limiting + the
+    ``store.upload.security_blocked`` audit trail cover that path.
     """
     val = get_value("guardrails", "blocked_quota_per_day", default=50)
     try:

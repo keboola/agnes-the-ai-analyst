@@ -28,14 +28,35 @@ instance:
                                      # "FoundryAI"). Set explicitly only if you want a folder
                                      # name that differs from the auto-derivation. Env override:
                                      # AGNES_WORKSPACE_DIR_NAME.
-  # logo_svg: Full <svg> element for header logo (optional, default: Keboola logo)
-  # Example: '<svg width="120" height="30" viewBox="0 0 100 30" xmlns="http://www.w3.org/2000/svg"><text y="22" font-size="24" fill="#333">Logo</text></svg>'
+  # logo_svg: |                      # Inline <svg> element rendered into the header brand slot.
+  #   <svg width="120" height="30" viewBox="0 0 100 30" xmlns="http://www.w3.org/2000/svg">
+  #     <text y="22" font-size="24" fill="#333">Logo</text>
+  #   </svg>
+  #                                  # When set, the SVG replaces the text brand in the header.
+  #                                  # `name` above still drives browser <title> text and page
+  #                                  # headings — keep it populated. Env override:
+  #                                  # AGNES_INSTANCE_LOGO_SVG.
+  # overview: |                      # Operator-authored Overview body rendered in the new
+  #   <p>Free-form HTML — paragraphs, links, lists.</p>
+  #                                  # Overview section on /home (between Getting Started and
+  #                                  # Usage modes). Use for product framing, privacy posture,
+  #                                  # what-data-flows summary — operator-specific copy stays
+  #                                  # out of the OSS this way. HTML in, HTML out (same `| safe`
+  #                                  # filter as news_intro). Empty/unset = section hidden.
+  #                                  # Env override: AGNES_INSTANCE_OVERVIEW.
   # sync_interval: "1 hour"          # Cadence shown in analyst CLAUDE.md (e.g., "1 hour", "30 minutes", "daily")
   # admin_email: "ops@acme.com"      # Operator contact shown on /home GWS connector tile as
                                      # an "Email admin" mailto button (analysts whose operator
                                      # hasn't pre-provisioned a shared OAuth app can request
                                      # one without leaving the workspace). Empty/unset hides
                                      # the button. Env override: AGNES_INSTANCE_ADMIN_EMAIL.
+  # home:                            # Per-instance toggles for /home content blocks.
+  #   show_automode: true            # Render Step-3 auto-accept-mode block. Default true.
+  #                                  # Env: AGNES_HOME_SHOW_AUTOMODE.
+  #   show_status_frame: true        # Render the 5-card status frame (Last sync, Sessions,
+  #                                  # Prompts, Tokens, Projects). Visible only to onboarded
+  #                                  # users regardless of this flag. Default true. Env:
+  #                                  # AGNES_HOME_SHOW_STATUS_FRAME.
 
 # --- Server ---
 server:

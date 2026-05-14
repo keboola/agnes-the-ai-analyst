@@ -3199,7 +3199,11 @@ a.slack-badge:hover {
     font-weight: 600;
     font-size: 16px;
 }
-.app-header-logo svg { display: block; }
+.app-header-logo svg {
+    display: block;
+    max-height: 40px;
+    width: auto;
+}
 a.app-header-logo:focus-visible {
     outline: 2px solid var(--primary, #6366f1);
     outline-offset: 2px;
@@ -3808,6 +3812,13 @@ a.news-cta:hover { background: #0056A3; }
     background-color: var(--error);
     color: #fff;
 }
+
+.btn-warning {
+    background: #f59e0b;
+    color: #fff;
+    border: 1px solid #d97706;
+}
+.btn-warning:hover { filter: brightness(1.06); }
 
 .btn-lg { padding: 12px 20px; font-size: var(--text-md); }
 

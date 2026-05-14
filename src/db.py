@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -70,7 +70,12 @@ CREATE TABLE IF NOT EXISTS users (
     -- self-mark "I've already set up Agnes locally" button on /home.
     -- Default FALSE; explicit signal required to flip (no PAT-heuristic
     -- auto-flip per the brainstorm decision §D).
-    onboarded BOOLEAN NOT NULL DEFAULT FALSE
+    onboarded BOOLEAN NOT NULL DEFAULT FALSE,
+    -- v44: per-user pull timestamp. Bumped on every GET /api/sync/manifest
+    -- so `agnes pull` (and the SessionStart hook that wraps it) imprints
+    -- the user's last sync time. Powers the /home status frame's "Last
+    -- sync" card.
+    last_pull_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -746,7 +751,16 @@ CREATE TABLE IF NOT EXISTS usage_session_summary (
     distinct_skills     INTEGER DEFAULT 0,
     primary_model       VARCHAR,
     processor_version   INTEGER NOT NULL,
-    extracted_at        TIMESTAMP DEFAULT current_timestamp
+    extracted_at        TIMESTAMP DEFAULT current_timestamp,
+    -- v44: per-session token counters summed from JSONL message.usage.*.
+    -- BIGINT because cache tokens routinely exceed INT range over long
+    -- sessions. Default 0 so existing rows backfill cleanly; the
+    -- processor's reprocess loop (driven by USAGE_PROCESSOR_VERSION
+    -- bump) overwrites with real values on next tick.
+    input_tokens          BIGINT DEFAULT 0,
+    output_tokens         BIGINT DEFAULT 0,
+    cache_read_tokens     BIGINT DEFAULT 0,
+    cache_creation_tokens BIGINT DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username);
 CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at);
@@ -803,6 +817,18 @@ import threading
 _system_db_lock = threading.Lock()
 _system_db_conn: duckdb.DuckDBPyConnection | None = None
 _system_db_path: str | None = None
+
+# Mirror the system-DB singleton pattern for the analytics DB. Pre-#163,
+# `get_analytics_db()` opened a fresh `duckdb.connect()` on every call —
+# most callers don't `.close()` the returned handle, so each leaked
+# connection held a WAL ref + FD until GC kicked in. Under load this
+# manifested as "too many open files" or DuckDB lock contention on the
+# analytics DB. Singleton + cursor-per-call (mirrors `get_system_db()`
+# above) means callers that close the cursor only close the cursor —
+# the underlying connection stays.
+_analytics_db_lock = threading.Lock()
+_analytics_db_conn: duckdb.DuckDBPyConnection | None = None
+_analytics_db_path: str | None = None
 
 
 def _get_data_dir() -> Path:
@@ -905,10 +931,34 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
 
 
 def get_analytics_db() -> duckdb.DuckDBPyConnection:
-    """Get a connection to the analytics database (parquet views)."""
-    db_path = _get_data_dir() / "analytics" / "server.duckdb"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return _maybe_instrument(duckdb.connect(str(db_path)), "analytics")
+    """Get a connection to the analytics database (parquet views).
+
+    Singleton — mirrors `get_system_db()` above. Returns a cursor on the
+    shared connection so callers can `.close()` the handle without
+    closing the underlying connection. Re-opens transparently when
+    `DATA_DIR` changes (test fixtures that swap data dirs across cases).
+
+    Pre-#163 this opened a fresh connection on every call and most
+    callers leaked it; see the rationale block at the module-level
+    `_analytics_db_*` globals. `get_analytics_db_readonly()` deliberately
+    stays per-call because each invocation re-ATTACHes extract.duckdb
+    files into a fresh read-only context.
+    """
+    global _analytics_db_conn, _analytics_db_path
+    db_path = str(_get_data_dir() / "analytics" / "server.duckdb")
+
+    with _analytics_db_lock:
+        if _analytics_db_conn is None or _analytics_db_path != db_path:
+            # Close stale connection if DATA_DIR changed (test fixtures)
+            if _analytics_db_conn is not None:
+                try:
+                    _analytics_db_conn.close()
+                except Exception:
+                    pass
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            _analytics_db_conn = duckdb.connect(db_path)
+            _analytics_db_path = db_path
+        return _maybe_instrument(_analytics_db_conn.cursor(), "analytics")
 
 
 def _reattach_remote_extensions(
@@ -2850,6 +2900,36 @@ def _v42_to_v43(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _v43_to_v44(conn: duckdb.DuckDBPyConnection) -> None:
+    """v44: homepage status frame backing columns.
+
+    Adds ``users.last_pull_at`` (per-user manifest fetch timestamp) and
+    four BIGINT token counters on ``usage_session_summary``
+    (``input_tokens``, ``output_tokens``, ``cache_read_tokens``,
+    ``cache_creation_tokens``). All idempotent ALTERs — fresh installs
+    receive the columns from ``_SYSTEM_SCHEMA`` and this is a no-op for
+    them; upgrade path picks them up.
+
+    Token columns default to 0; existing summary rows backfill on the
+    next UsageProcessor tick because ``USAGE_PROCESSOR_VERSION`` bumps
+    from 1 → 2 in the same release, which the session-pipeline
+    reprocess loop uses to invalidate stale summaries.
+    """
+    conn.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pull_at TIMESTAMP"
+    )
+    for col in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+    ):
+        conn.execute(
+            f"ALTER TABLE usage_session_summary "
+            f"ADD COLUMN IF NOT EXISTS {col} BIGINT DEFAULT 0"
+        )
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -3123,6 +3203,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v41_to_v42(conn)
             # v43 user_observability_views — saved-views for /admin/activity.
             _v42_to_v43(conn)
+            # v44 homepage-stats columns. _SYSTEM_SCHEMA already declares
+            # them on fresh installs (no-op ALTERs); kept here for the
+            # ladder's chronological readability.
+            _v43_to_v44(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3264,6 +3348,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v41_to_v42(conn)
             if current < 43:
                 _v42_to_v43(conn)
+            if current < 44:
+                _v43_to_v44(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
@@ -3355,3 +3441,28 @@ def close_system_db() -> None:
             logger.debug("close_system_db: close raised (%s); ignoring", exc)
         _system_db_conn = None
         _system_db_path = None
+
+
+def close_analytics_db() -> None:
+    """Close the shared analytics DB connection. Called on app shutdown.
+
+    Mirrors `close_system_db()` above (best-effort CHECKPOINT then
+    close, swallow exceptions). Analytics DB is the parquet-views layer;
+    a dirty WAL on it is less consequential than on the system DB
+    (read-only views can be rebuilt by the orchestrator on next start)
+    but the CHECKPOINT keeps the file on-disk clean for any operator
+    poking at it with the duckdb CLI.
+    """
+    global _analytics_db_conn, _analytics_db_path
+    if _analytics_db_conn:
+        try:
+            _analytics_db_conn.execute("CHECKPOINT")
+            logger.debug("close_analytics_db: CHECKPOINT ok")
+        except Exception as exc:
+            logger.warning("close_analytics_db: CHECKPOINT failed (%s); proceeding to close", exc)
+        try:
+            _analytics_db_conn.close()
+        except Exception as exc:
+            logger.debug("close_analytics_db: close raised (%s); ignoring", exc)
+        _analytics_db_conn = None
+        _analytics_db_path = None

@@ -292,9 +292,22 @@ def test_curated_asset_rejects_html_extension(seeded_app):
     assert "unsupported_asset_extension" in r.text
 
 
-def test_curated_asset_rejects_renamed_html_as_png(seeded_app):
-    """A curator who renames ``evil.html`` to ``evil.png`` must still be
-    blocked — magic-bytes validation catches the missing PNG signature."""
+def test_curated_asset_renamed_html_is_neutered_by_headers(seeded_app):
+    """A curator who renames ``evil.html`` to ``evil.png`` no longer triggers
+    a 415 — magic-bytes validation was dropped from the request path (see
+    CHANGELOG entry under [Unreleased] → Changed). The remaining defense
+    layers neuter the payload at the browser:
+
+    * ``Content-Type`` pinned to ``image/png`` from the extension table, so
+      the browser never parses the body as HTML.
+    * ``X-Content-Type-Options: nosniff`` so the browser refuses to second-
+      guess the declared Content-Type.
+    * Strict CSP (``default-src 'none'``) so even if HTML did render,
+      scripts/iframes/etc. couldn't execute.
+
+    Body validation happens at curator-content-acceptance time (git fetch
+    against the admin-registered upstream repo), not on every GET request.
+    """
     repo_root = _seed_asset_marketplace(seeded_app, slug="xss-rename")
     (repo_root / "evil.png").write_text(
         "<script>alert('xss')</script>", encoding="utf-8",
@@ -306,9 +319,11 @@ def test_curated_asset_rejects_renamed_html_as_png(seeded_app):
         "/api/marketplace/curated/xss-rename/demo/asset/evil.png",
         headers=headers,
     )
-    assert r.status_code == 415
-    assert "asset_validation_failed" in r.text
-    assert "png_magic_bytes_mismatch" in r.text
+    assert r.status_code == 200
+    assert r.headers.get("content-type", "").startswith("image/png")
+    assert r.headers.get("x-content-type-options") == "nosniff"
+    csp = r.headers.get("content-security-policy", "")
+    assert "default-src 'none'" in csp
 
 
 def test_curated_asset_rejects_svg_extension(seeded_app):

@@ -75,7 +75,7 @@ class TestPurgeBlockedBundles:
 
         sub_id, eid = _seed_with_bundle(
             conn, tmp_path / "store", "u1", "old-bad",
-            status="blocked_inline", days_old=45,
+            status="blocked_llm", days_old=45,
         )
         plugin_dir = tmp_path / "store" / eid / "plugin"
         assert plugin_dir.exists()
@@ -103,7 +103,7 @@ class TestPurgeBlockedBundles:
 
         sub_id, eid = _seed_with_bundle(
             conn, tmp_path / "store", "u1", "fresh-bad",
-            status="blocked_inline", days_old=2,
+            status="blocked_llm", days_old=2,
         )
         result = purge_blocked_bundles(
             conn, ttl_days=30,
@@ -166,7 +166,7 @@ class TestPurgeBlockedBundles:
 
         sub_id, eid = _seed_with_bundle(
             conn, tmp_path / "store", "u1", "x",
-            status="blocked_inline", days_old=999,
+            status="blocked_llm", days_old=999,
         )
         result = purge_blocked_bundles(
             conn, ttl_days=0,

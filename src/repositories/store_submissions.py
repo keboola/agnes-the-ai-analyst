@@ -141,21 +141,29 @@ class StoreSubmissionsRepository:
         self, submitter_id: str, since,
     ) -> int:
         """Spam-quota helper. Counts submissions by ``submitter_id`` whose
-        verdict is one of the rejected/error states
-        (``blocked_inline | blocked_llm | review_error``) newer than
+        verdict is ``blocked_llm`` or ``review_error`` newer than
         ``since`` (a ``datetime`` — typically now - 24h). Called from
-        the POST entry point; refusal bounds disk growth from a single
-        bot looping on malformed/risky ZIPs.
+        the POST entry point; refusal bounds the load placed on the
+        async LLM reviewer by a single bot looping risky bundles.
 
-        Pre-fix this counted ONLY ``blocked_inline``. A bad-actor
-        submitter who triggered ten ``blocked_llm`` verdicts was
-        unbounded. All three states represent rejected uploads — count
-        them together.
+        Inline failures (manifest/content validation, static-security
+        deny-list) are hard-rejected upstream without creating a
+        submission row — they don't consume the LLM-tier quota.
+        Slowapi rate limits + the audit_log
+        ``store.upload.security_blocked`` trail cover that path.
+
+        Historical note: pre-#9 this counted only ``blocked_inline``;
+        a bot triggering ``blocked_llm`` verdicts was unbounded.
+        Post-#9 it widened to all three. The current incarnation
+        narrows back to LLM-tier states since inline failures no
+        longer create rows. Legacy ``blocked_inline`` rows in DBs that
+        ran the v30 contract are still present (historical audit) but
+        intentionally excluded from the live counter.
         """
         row = self.conn.execute(
             "SELECT COUNT(*) FROM store_submissions "
             "WHERE submitter_id = ? "
-            "  AND status IN ('blocked_inline', 'blocked_llm', 'review_error') "
+            "  AND status IN ('blocked_llm', 'review_error') "
             "  AND created_at >= ?",
             [submitter_id, since],
         ).fetchone()

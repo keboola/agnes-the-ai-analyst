@@ -25,6 +25,7 @@ from app.instance_config import (
     get_gws_oauth_credentials, get_home_automode_visibility,
     get_instance_admin_email, get_atlassian_base_url,
     get_instance_brand, get_workspace_dir_name,
+    get_instance_logo_svg, get_instance_overview,
 )
 from app.web.connector_prompts import all_connector_prompts
 from src.repositories.sync_state import SyncStateRepository
@@ -367,7 +368,8 @@ def _build_context(
         INSTANCE_NAME = get_instance_name()
         INSTANCE_SUBTITLE = get_instance_subtitle()
         INSTANCE_COPYRIGHT = ""
-        LOGO_SVG = ""
+        LOGO_SVG = get_instance_logo_svg()
+        INSTANCE_OVERVIEW = get_instance_overview()
         TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "")
         SSH_ALIAS = "data-analyst"
         SERVER_HOST = os.environ.get("SERVER_HOST", "")
@@ -726,6 +728,20 @@ async def home_page(
     news = NewsTemplateRepository(conn).get_current_published()
     news_intro = news["intro"] if (news and news.get("intro")) else ""
 
+    # Homepage status frame (Last sync, Sessions, Prompts, Tokens, Projects).
+    # Gated on (a) operator flag instance.home.show_status_frame /
+    # AGNES_HOME_SHOW_STATUS_FRAME (default on), AND (b) the user being
+    # onboarded — first-day users see a clean install-hero before zero-value
+    # stat cards. When either gate is closed we skip the DB read entirely.
+    from app.api.me import compute_home_stats
+    from app.instance_config import get_home_status_frame_visibility
+    status_frame_enabled = get_home_status_frame_visibility()
+    home_stats = (
+        compute_home_stats(conn, user, "24h")
+        if (status_frame_enabled and onboarded)
+        else None
+    )
+
     # Single template renders both states. The post-onboarding view keeps
     # the install-steps + connector prompts + auto-mode card visible —
     # they stay relevant for adding a second machine, a missing connector,
@@ -739,6 +755,8 @@ async def home_page(
         onboarded=onboarded,
         is_admin=is_user_admin(user["id"], conn),
         news_intro=news_intro,
+        home_stats=home_stats,
+        status_frame_enabled=status_frame_enabled,
     )
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 

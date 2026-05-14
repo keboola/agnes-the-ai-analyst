@@ -383,7 +383,7 @@
     <div id="system-confirm-body" style="font-size: 13px; line-height: 1.55; color: var(--text-secondary, #374151);"></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" data-close-modal="system-confirm-modal">Cancel</button>
-      <button class="btn btn-secondary warning" id="system-confirm-ok-btn">Confirm</button>
+      <button class="btn btn-warning" id="system-confirm-ok-btn">Confirm</button>
     </div>
   </div>
 </div>
@@ -641,8 +641,8 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
         <li>Operators can revoke either via <a href="/admin/access" style="color: var(--primary, #6366f1);">/admin/access</a> or by uninstalling on each user's stack.</li>
       </ul>`;
     okBtn.textContent = "Unmark system";
-    okBtn.classList.remove("warning");
-    okBtn.classList.add("primary");
+    okBtn.classList.remove("btn-warning");
+    okBtn.classList.add("btn-primary");
   } else {
     titleEl.textContent = "Mark as system plugin?";
     pluginEl.textContent = pluginName;
@@ -660,8 +660,8 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
         Unmarking later does not auto-clean the materialized grants — they stay until manually removed.
       </p>`;
     okBtn.textContent = "Mark as system";
-    okBtn.classList.remove("primary");
-    okBtn.classList.add("warning");
+    okBtn.classList.remove("btn-primary");
+    okBtn.classList.add("btn-warning");
   }
 
   // Single-shot handler — re-bind on every open so we don't leak across
