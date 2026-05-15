@@ -10,6 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Flea-market admin **Rescan** of a non-current v2+ submission with
+  `guardrails.enabled: false` now promotes the entity forward
+  (mirrors the inline-promote in create / update / restore). Pre-fix
+  the branch flipped submission status to `approved` and entity
+  visibility to `approved` but never called `promote_to_version` —
+  the rescan re-approved the version without making it current.
+  Codex adversarial-review follow-up on PR #330. The guardrails-on
+  path is unchanged (rescan schedules an LLM review; promotion lands
+  when the verdict approves through `runner.run_llm_review`).
+
 ## [0.54.22] — 2026-05-15
 
 ### Fixed
