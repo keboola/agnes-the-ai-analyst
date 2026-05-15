@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.16] — 2026-05-15
+
 ### Added
 - "Curated Memory" now sits in the primary navigation next to Data
   Packages, visible to every authenticated user.
