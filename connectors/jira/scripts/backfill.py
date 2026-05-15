@@ -283,8 +283,10 @@ class JiraBackfill:
                 f"Backfill remote-links fetch for {issue_key} failed: server error "
                 f"({response.status_code})"
             )
-        logger.debug(f"Failed to fetch remote links for {issue_key}: {response.status_code}")
-        return []
+        raise JiraFetchError(
+            f"Backfill remote-links fetch for {issue_key} failed: unexpected status "
+            f"{response.status_code}"
+        )
 
     def save_issue(self, issue_data: dict) -> Path | None:
         """

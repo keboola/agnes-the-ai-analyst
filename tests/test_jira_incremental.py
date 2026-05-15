@@ -252,3 +252,63 @@ def test_incremental_preserves_remote_links_when_overlay_absent(tmp_path):
     assert df is not None and len(df) == 1, \
         "Existing remote-link row was wiped — overlay-absent signal not honored"
     assert df.iloc[0]["remote_link_id"] == "rl-existing"
+
+
+def test_incremental_wipes_remote_links_when_overlay_present_but_empty(tmp_path):
+    """The mirror-image case: when _remote_links IS present but the list is
+    empty, that's a successful fetch confirming the issue legitimately has no
+    remote links right now. The transform MUST wipe any existing parquet rows
+    for that issue — keeping them would be stale data.
+
+    Together with test_incremental_preserves_remote_links_when_overlay_absent,
+    this locks the absent-vs-empty contract end-to-end. A future regression
+    that 'simplifies' the transform to treat [] the same as absent (i.e.,
+    skip upsert) would be caught here."""
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    # Pre-seed a stale row that should be wiped.
+    _seed_remote_links_parquet(output_dir, "2026-05", [{
+        "issue_key": "PROJ-2",
+        "remote_link_id": "rl-stale",
+        "url": "https://example.com/stale",
+        "title": "Stale link to be wiped",
+        "application_name": "X",
+        "application_type": "x",
+    }])
+
+    # Raw issue WITH _remote_links: [] — fresh fetch confirmed empty.
+    _write_raw_issue(raw_dir, "PROJ-2", {
+        "key": "PROJ-2",
+        "id": "10002",
+        "fields": {
+            "summary": "test",
+            "status": {"name": "Open"},
+            "issuetype": {"name": "Bug"},
+            "attachment": [],
+            "comment": {"comments": []},
+            "created": "2026-05-15T00:00:00.000+0000",
+            "updated": "2026-05-15T00:00:00.000+0000",
+        },
+        "_remote_links": [],
+    })
+
+    ok = transform_single_issue(
+        issue_key="PROJ-2",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    df = load_parquet_month(output_dir / "remote_links", "2026-05")
+    # Either the file was unlinked (df is None) or the row was removed.
+    # Both outcomes satisfy the contract — the stale row must not survive.
+    if df is not None:
+        remaining = df[df["issue_key"] == "PROJ-2"]
+        assert len(remaining) == 0, \
+            "Stale remote-link row survived a successful empty-list fetch — " \
+            "the empty-list (legitimate) signal was misinterpreted as preserve"

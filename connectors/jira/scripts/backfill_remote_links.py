@@ -112,8 +112,10 @@ def fetch_remote_links(base_url: str, auth: tuple[str, str], issue_key: str) -> 
             f"Targeted backfill remote-links fetch for {issue_key} failed: server error "
             f"({response.status_code})"
         )
-    logger.debug(f"Failed to fetch remote links for {issue_key}: {response.status_code}")
-    return []
+    raise JiraFetchError(
+        f"Targeted backfill remote-links fetch for {issue_key} failed: unexpected status "
+        f"{response.status_code}"
+    )
 
 
 def process_file(json_path: Path, base_url: str, auth: tuple[str, str]) -> str:

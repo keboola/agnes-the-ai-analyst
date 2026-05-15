@@ -235,6 +235,25 @@ class TestFetchRemoteLinks:
             with pytest.raises(JiraFetchError, match="server"):
                 service.fetch_remote_links("PROJ-1")
 
+    def test_raises_on_429_rate_limit(self, jira_env):
+        # 429 in the webhook hot path must raise (not silently return []).
+        # A webhook burst hitting Jira's rate limiter is the most likely
+        # production scenario; returning [] would re-trigger the wipe bug.
+        service = _make_jira_service(jira_env)
+        with patch("connectors.jira.service.httpx.Client",
+                   return_value=self._mock_http(429)):
+            with pytest.raises(JiraFetchError, match="rate limited"):
+                service.fetch_remote_links("PROJ-1")
+
+    def test_raises_on_unexpected_status(self, jira_env):
+        # Any non-success/non-404 status raises — covers 400, 405, 418, etc.
+        # No silent fall-through.
+        service = _make_jira_service(jira_env)
+        with patch("connectors.jira.service.httpx.Client",
+                   return_value=self._mock_http(418)):
+            with pytest.raises(JiraFetchError, match="unexpected status"):
+                service.fetch_remote_links("PROJ-1")
+
     def test_raises_on_request_error(self, jira_env):
         import httpx
         service = _make_jira_service(jira_env)
@@ -311,6 +330,13 @@ class TestTransformRemoteLinks:
         # Absent key = save_issue skipped the overlay because fetch failed.
         # Signal to caller: preserve existing parquet rows for this issue.
         result = transform_remote_links({"key": "PROJ-1"})
+        assert result is None
+
+    def test_returns_none_when_key_is_explicit_null(self):
+        # Defensive: a JSON with `_remote_links: null` (from older buggy code
+        # or a manual edit) would otherwise blow up on `for rl in None`.
+        # Treat null the same as absent — both mean "no fresh data".
+        result = transform_remote_links({"key": "PROJ-1", "_remote_links": None})
         assert result is None
 
 

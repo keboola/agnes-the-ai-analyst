@@ -545,9 +545,13 @@ def transform_remote_links(raw_issue: dict) -> list[dict] | None:
     succeeded (200 or 404), absent means the fetch raised.
     """
     issue_key = raw_issue.get("key")
-    if "_remote_links" not in raw_issue:
+    # Treat both absent key and explicit None as the "no fresh data" signal —
+    # absent is the contract from save_issue/backfill writers, None is the
+    # defensive case where a JSON edit or older buggy code stored an explicit
+    # null (would otherwise blow up on `for rl in None`).
+    remote_links = raw_issue.get("_remote_links")
+    if remote_links is None:
         return None
-    remote_links = raw_issue["_remote_links"]
 
     records = []
     for rl in remote_links:
@@ -681,8 +685,12 @@ def transform_all(
             rl_records = transform_remote_links(raw_issue)
             if rl_records is not None:
                 remote_links_by_month[month_key].extend(rl_records)
-            # else: _remote_links overlay was skipped (fetch failure) — preserve
-            # whatever existing rows the parquet already has for this issue.
+            # else: _remote_links overlay was skipped (fetch failure). The batch
+            # rebuild writes monthly parquets from scratch, so this issue simply
+            # contributes no rows to the rebuild — it doesn't "preserve" anything.
+            # A re-run after the outage clears will repopulate. The incremental
+            # path (incremental_transform.py) is what genuinely preserves
+            # existing rows; batch mode is full-rebuild and not the hot path.
 
         except Exception as e:
             logger.error(f"Error processing {json_file}: {e}")

@@ -127,7 +127,7 @@ class JiraService:
         Fetch complete issue data from Jira.
 
         Args:
-            issue_key: Issue key (e.g., "KSP-123")
+            issue_key: Issue key (e.g., "PROJ-123")
 
         Returns:
             Issue data dict or None if fetch failed
@@ -219,11 +219,12 @@ class JiraService:
 
         Returns the list of remote links on 200; an empty list on 404
         (issue legitimately has no remote links). Raises JiraFetchError
-        on auth (401/403) or server (5xx) failure or any httpx.RequestError,
-        so callers that overlay this onto cached issue data can skip the
-        overlay instead of wiping existing rows. Other 4xx (e.g. 429 rate
-        limit) are logged and return [] — those are transient and shouldn't
-        escalate.
+        on ANY other status code or on httpx.RequestError, so callers
+        that overlay this onto cached issue data can skip the overlay
+        instead of wiping existing rows. Critically, 429 rate limits
+        also raise — silently returning [] there would re-trigger the
+        same wipe bug (a webhook burst hitting Jira's rate limiter is
+        the most likely production scenario).
         """
         if not self.is_configured():
             return []
@@ -251,16 +252,20 @@ class JiraService:
                 f"Remote-links fetch for {issue_key} failed: auth error "
                 f"({response.status_code}) — token may be expired/revoked"
             )
+        if response.status_code == 429:
+            raise JiraFetchError(
+                f"Remote-links fetch for {issue_key} failed: rate limited "
+                f"(429) — retry later"
+            )
         if response.status_code >= 500:
             raise JiraFetchError(
                 f"Remote-links fetch for {issue_key} failed: server error "
                 f"({response.status_code})"
             )
-        logger.warning(
-            f"Failed to fetch remote links for {issue_key}: "
+        raise JiraFetchError(
+            f"Remote-links fetch for {issue_key} failed: unexpected status "
             f"{response.status_code}"
         )
-        return []
 
     def save_issue(self, issue_data: dict[str, Any]) -> Path | None:
         """
@@ -296,7 +301,7 @@ class JiraService:
         # Add metadata
         issue_data["_synced_at"] = datetime.now(timezone.utc).isoformat()
 
-        # Issue-248-class guard: if fetch_remote_links raises (auth/server failure),
+        # Overlay-skip guard: if fetch_remote_links raises (auth/server failure),
         # leave the _remote_links key ABSENT. transform_remote_links treats absent key
         # as "no fresh data, preserve existing parquet rows". A present-but-empty list
         # would be interpreted as "this issue has no remote links — wipe existing".
