@@ -186,6 +186,111 @@ async def lifespan(app):
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
 
+    # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
+    # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
+    # without going through bootstrap; never overwritten if already set.
+    # The Admin/Everyone user_groups themselves are seeded inside
+    # _ensure_schema (src.db._seed_system_groups), so this hook only has to
+    # handle membership for the seed admin.
+    # Lives in lifespan (worker-only), NOT create_app(): the latter runs
+    # in the uvicorn --reload master too, and duckdb >=1.5 holds an
+    # exclusive per-process file lock on system.duckdb that would then
+    # block the worker.
+    from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
+    seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
+    if seed_email:
+        try:
+            from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+            from src.repositories.user_group_members import UserGroupMembersRepository
+            from src.repositories.users import UserRepository
+            conn = get_system_db()
+            repo = UserRepository(conn)
+            seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
+            password_hash = None
+            if seed_password:
+                from argon2 import PasswordHasher
+                password_hash = PasswordHasher().hash(seed_password)
+            existing = repo.get_by_email(seed_email)
+            if not existing:
+                import uuid
+                user_id = str(uuid.uuid4())
+                repo.create(
+                    id=user_id,
+                    email=seed_email,
+                    name="Admin",
+                    password_hash=password_hash,
+                )
+                logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
+            else:
+                user_id = existing["id"]
+                if password_hash and not existing.get("password_hash"):
+                    repo.update(id=user_id, password_hash=password_hash)
+                    logger.info("Set password on existing seed admin: %s", seed_email)
+            # Make sure the seed admin is actually in the Admin group — this
+            # is what gives them admin access in v12. Idempotent.
+            admin_group = conn.execute(
+                "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
+            ).fetchone()
+            if admin_group:
+                UserGroupMembersRepository(conn).add_member(
+                    user_id=user_id,
+                    group_id=admin_group[0],
+                    source="system_seed",
+                    added_by="app.main:seed_admin",
+                )
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not seed admin: {e}")
+
+    # Seed the synthetic scheduler user when SCHEDULER_API_TOKEN is configured,
+    # so the very first cron tick after a fresh deploy already has a valid
+    # actor to attribute audit-log entries to. The lazy seed in
+    # `app.auth.scheduler_token.get_scheduler_user` covers the case where the
+    # secret is rotated mid-life, but doing it here keeps startup observable.
+    from app.auth.scheduler_token import get_scheduler_secret
+    if get_scheduler_secret():
+        try:
+            from app.auth.scheduler_token import (
+                SCHEDULER_TOKEN_MIN_LENGTH,
+                ensure_scheduler_user,
+            )
+            from src.db import get_system_db
+            secret = get_scheduler_secret()
+            if len(secret) < SCHEDULER_TOKEN_MIN_LENGTH:
+                logger.warning(
+                    "SCHEDULER_API_TOKEN is set but only %d chars — auth path"
+                    " disabled (minimum %d). Generate a longer secret in .env.",
+                    len(secret), SCHEDULER_TOKEN_MIN_LENGTH,
+                )
+            else:
+                conn = get_system_db()
+                try:
+                    ensure_scheduler_user(conn)
+                finally:
+                    conn.close()
+        except Exception as e:
+            logger.warning(f"Could not seed scheduler user: {e}")
+
+    # C8: Warn when no user has a password_hash — bootstrap endpoint is open.
+    # This is intentional UX (operator can claim seed admin), but the open
+    # window should be visible in startup logs so it's not forgotten.
+    if not is_local_dev_mode():
+        try:
+            from src.db import get_system_db
+            from src.repositories.users import UserRepository
+            conn = get_system_db()
+            repo = UserRepository(conn)
+            all_users = repo.list_all()
+            has_password = any(u.get("password_hash") for u in all_users)
+            if not has_password:
+                logger.warning(
+                    "No user has a password set — /auth/bootstrap is reachable. "
+                    "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
+                )
+            conn.close()
+        except Exception:
+            pass  # never block startup on a logging convenience
+
     # Construct the PostHog client up front so its background flush thread
     # starts before the first request — and so a missing/invalid key fails
     # loud at boot rather than on first capture. No-op when disabled.
@@ -479,106 +584,6 @@ def create_app() -> FastAPI:
             logger.warning("LOCAL_DEV_GROUPS is unset — session.google_groups will be empty.")
         logger.warning("NEVER enable this in a deployment reachable from the internet.")
         logger.warning("=" * 60)
-
-    # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
-    # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
-    # without going through bootstrap; never overwritten if already set.
-    # The Admin/Everyone user_groups themselves are seeded inside
-    # _ensure_schema (src.db._seed_system_groups), so this hook only has to
-    # handle membership for the seed admin.
-    seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
-    if seed_email:
-        try:
-            from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-            from src.repositories.user_group_members import UserGroupMembersRepository
-            from src.repositories.users import UserRepository
-            conn = get_system_db()
-            repo = UserRepository(conn)
-            seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
-            password_hash = None
-            if seed_password:
-                from argon2 import PasswordHasher
-                password_hash = PasswordHasher().hash(seed_password)
-            existing = repo.get_by_email(seed_email)
-            if not existing:
-                import uuid
-                user_id = str(uuid.uuid4())
-                repo.create(
-                    id=user_id,
-                    email=seed_email,
-                    name="Admin",
-                    password_hash=password_hash,
-                )
-                logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
-            else:
-                user_id = existing["id"]
-                if password_hash and not existing.get("password_hash"):
-                    repo.update(id=user_id, password_hash=password_hash)
-                    logger.info("Set password on existing seed admin: %s", seed_email)
-            # Make sure the seed admin is actually in the Admin group — this
-            # is what gives them admin access in v12. Idempotent.
-            admin_group = conn.execute(
-                "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
-            ).fetchone()
-            if admin_group:
-                UserGroupMembersRepository(conn).add_member(
-                    user_id=user_id,
-                    group_id=admin_group[0],
-                    source="system_seed",
-                    added_by="app.main:seed_admin",
-                )
-            conn.close()
-        except Exception as e:
-            logger.warning(f"Could not seed admin: {e}")
-
-    # Seed the synthetic scheduler user when SCHEDULER_API_TOKEN is configured,
-    # so the very first cron tick after a fresh deploy already has a valid
-    # actor to attribute audit-log entries to. The lazy seed in
-    # `app.auth.scheduler_token.get_scheduler_user` covers the case where the
-    # secret is rotated mid-life, but doing it here keeps startup observable.
-    from app.auth.scheduler_token import get_scheduler_secret
-    if get_scheduler_secret():
-        try:
-            from app.auth.scheduler_token import (
-                SCHEDULER_TOKEN_MIN_LENGTH,
-                ensure_scheduler_user,
-            )
-            from src.db import get_system_db
-            secret = get_scheduler_secret()
-            if len(secret) < SCHEDULER_TOKEN_MIN_LENGTH:
-                logger.warning(
-                    "SCHEDULER_API_TOKEN is set but only %d chars — auth path"
-                    " disabled (minimum %d). Generate a longer secret in .env.",
-                    len(secret), SCHEDULER_TOKEN_MIN_LENGTH,
-                )
-            else:
-                conn = get_system_db()
-                try:
-                    ensure_scheduler_user(conn)
-                finally:
-                    conn.close()
-        except Exception as e:
-            logger.warning(f"Could not seed scheduler user: {e}")
-
-    # C8: Warn when no user has a password_hash — bootstrap endpoint is open.
-    # This is intentional UX (operator can claim seed admin), but the open
-    # window should be visible in startup logs so it's not forgotten.
-    if not is_local_dev_mode():
-        try:
-            from src.db import get_system_db
-            from src.repositories.users import UserRepository
-            conn = get_system_db()
-            repo = UserRepository(conn)
-            all_users = repo.list_all()
-            has_password = any(u.get("password_hash") for u in all_users)
-            if not has_password:
-                logger.warning(
-                    "No user has a password set — /auth/bootstrap is reachable. "
-                    "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
-                )
-            conn.close()
-        except Exception:
-            pass  # never block startup on a logging convenience
 
     # Static files
     static_dir = Path(__file__).parent / "web" / "static"

@@ -68,6 +68,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   concatenating it into the `| safe`-rendered subtitle. The raw
   concatenation bypassed Jinja2 auto-escaping — an XSS regression
   relative to the auto-escaped `me_stats.html` it replaced.
+- Local dev with `docker-compose.dev.yml` (uvicorn --reload) no longer
+  hits "Could not set lock on file system.duckdb" — moved seed_admin /
+  scheduler_user / no-password-warning blocks from `create_app()` (where
+  they ran in both reloader + worker) into the lifespan (worker-only).
 
 ### Removed
 - `/profile`, `/me/debug`, and `/tokens` routes plus their templates
