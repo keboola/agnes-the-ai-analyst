@@ -906,6 +906,101 @@ class TestStoreBundle:
         # require_admin denies non-admin with 403.
         assert r.status_code == 403, r.text
 
+    def test_bundle_zip_filters_quarantined_for_non_owner(
+        self, web_client, monkeypatch,
+    ):
+        """Codex adversarial review [CRITICAL]: GET /bundle.zip used
+        ``repo.list(...)`` without a visibility filter. An
+        authenticated non-admin could download pending / blocked v1
+        bytes by hitting the bundle endpoint. Fixed by mirroring the
+        browse-listing gate: non-admin sees only ``approved`` (plus
+        their own non-approved entries)."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+
+        # Owner uploads a clean skill (lands approved with guardrails off).
+        owner_id, owner_cookies = _create_user(web_client, "bundle-owner@x.com")
+        r = self._upload_skill(web_client, owner_cookies, name="bundle-public")
+        eid_public = r.json()["id"]
+
+        from src.db import get_system_db
+        # Owner also has a SECOND skill that we manually flip to
+        # visibility=pending (simulating in-review).
+        r = self._upload_skill(web_client, owner_cookies, name="bundle-pending")
+        eid_pending = r.json()["id"]
+        conn = get_system_db()
+        StoreEntitiesRepository(conn).set_visibility(eid_pending, "pending")
+        conn.close()
+
+        # Snoop is a different non-admin user.
+        _, snoop_cookies = _create_user(web_client, "bundle-snoop@x.com")
+        r = web_client.get("/api/store/bundle.zip", cookies=snoop_cookies)
+        assert r.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            names = zf.namelist()
+        # Snoop sees the approved entity ...
+        assert any(f"entities/{eid_public}/" in n for n in names), (
+            "approved entity must be present in bundle"
+        )
+        # ... but NEVER the pending one.
+        assert not any(f"entities/{eid_pending}/" in n for n in names), (
+            "non-admin must NOT see pending entities via bundle.zip"
+        )
+        # Manifest entry count reflects the filter.
+        manifest = json.loads(
+            zipfile.ZipFile(io.BytesIO(r.content)).read("manifest.json"),
+        )
+        manifest_ids = {e["entity_id"] for e in manifest["entries"]}
+        assert eid_public in manifest_ids
+        assert eid_pending not in manifest_ids
+
+    def test_bundle_zip_owner_sees_own_pending(self, web_client):
+        """Owner-of-pending sees their own non-approved entries in
+        their bundle export (matches the browse-listing affordance
+        via include_owner_id)."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+
+        from src.db import get_system_db
+        owner_id, owner_cookies = _create_user(web_client, "bundle-mine@x.com")
+        r = self._upload_skill(web_client, owner_cookies, name="mine-pending")
+        eid = r.json()["id"]
+        conn = get_system_db()
+        StoreEntitiesRepository(conn).set_visibility(eid, "pending")
+        conn.close()
+
+        r = web_client.get("/api/store/bundle.zip", cookies=owner_cookies)
+        assert r.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            names = zf.namelist()
+        assert any(f"entities/{eid}/" in n for n in names), (
+            "owner must see their OWN pending entity in their bundle"
+        )
+
+    def test_bundle_zip_admin_sees_all(self, web_client):
+        """Admin sees pending entries from other users too."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from tests.helpers.auth import grant_admin
+
+        from src.db import get_system_db
+        owner_id, owner_cookies = _create_user(web_client, "bundle-other-owner@x.com")
+        r = self._upload_skill(web_client, owner_cookies, name="other-pending")
+        eid = r.json()["id"]
+        conn = get_system_db()
+        StoreEntitiesRepository(conn).set_visibility(eid, "pending")
+        conn.close()
+
+        _, admin_cookies = _create_user(web_client, "bundle-admin@x.com")
+        conn = get_system_db()
+        grant_admin(conn, "bundle-admin")
+        conn.close()
+
+        r = web_client.get("/api/store/bundle.zip", cookies=admin_cookies)
+        assert r.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            names = zf.namelist()
+        assert any(f"entities/{eid}/" in n for n in names), (
+            "admin must see pending entities from any owner"
+        )
+
 
 class TestInstallCycle:
     def test_install_uninstall_and_count(self, web_client):

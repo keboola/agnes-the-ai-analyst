@@ -61,6 +61,38 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   banner now renders for those failure statuses too, with copy that
   acknowledges the prior version is still live ("Latest edit failed
   review — previously approved version (vN) keeps serving …").
+- Flea-market `/api/store/bundle.zip` export now filters by
+  `visibility_status='approved'` for non-admin non-owner callers.
+  Previously an authenticated user could call the bundle endpoint
+  and pull pending / blocked / hidden v1 bytes — bypassing the
+  publish gate the same way `_enforce_visibility` already prevents
+  on detail pages + install. Owners still see their own non-approved
+  entries (matches the browse-listing `include_owner_id` affordance);
+  admins still see everything. (Critical — surfaced by adversarial
+  review.)
+- Flea-market PUT (edit) + restore endpoints now serialize concurrent
+  writes against the same `entity_id` via a per-entity asyncio lock.
+  Two concurrent PUTs could previously both pass the
+  `latest_for_entity` pending gate, both bake into
+  `versions/v<N+1>/plugin/`, and both append a `version_history`
+  entry. The lock closes the window for single-process deployments;
+  multi-worker deployments still have a residual window (tracked in
+  the follow-up issue). (High — surfaced by adversarial review.)
+- Flea-market `StoreSubmissionsRepository.update_status` is now
+  compare-and-swap on terminal statuses (`approved`, `overridden`,
+  `blocked_inline`). A late background-task LLM verdict racing with
+  an admin override or with a more recent terminal verdict can no
+  longer silently clobber the row. Callers that legitimately need to
+  overwrite a terminal state pass `allow_terminal_overwrite=True`
+  explicitly. Returns a boolean indicating whether the write landed.
+  `runner.run_llm_review` now honors the bool on both its `approved`
+  and `blocked_llm` branches: a CAS no-op skips the downstream
+  cascade (visibility flip, version promote, the verdict-specific
+  audit entry that would otherwise contradict the row) and logs a
+  single `store.submission.bg_verdict_skipped` audit row instead,
+  so an operator reviewing the queue sees dropped verdicts
+  explicitly rather than via row-vs-audit contradiction.
+  (High — surfaced by adversarial review.)
 - Flea-market admin **Retry review** and **Rescan** now review the
   STAGED version's bundle, not the live `plugin/` directory. For a
   v2+ edit held at `pending_llm` / `blocked_llm` / `review_error`,

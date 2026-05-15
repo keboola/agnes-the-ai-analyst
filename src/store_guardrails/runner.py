@@ -225,12 +225,33 @@ def run_llm_review(
 
         passed = llm_review.is_safe(verdict)
         if passed:
-            subs_repo.update_status(
+            written = subs_repo.update_status(
                 submission_id,
                 status="approved",
                 llm_findings=verdict,
                 reviewed_by_model=model,
             )
+            if not written:
+                # The row hit a terminal status (approved / overridden /
+                # blocked_inline) before this BG verdict could land —
+                # most commonly an admin Override fired while the LLM
+                # call was running. Skip the entire downstream cascade
+                # (visibility flip, version promote, "approved" audit
+                # entry that would contradict the row) and log the
+                # suppression instead so the operator timeline shows
+                # the dropped verdict.
+                audit.log(
+                    user_id=submitter_id,
+                    action="store.submission.bg_verdict_skipped",
+                    resource=f"store_submission:{submission_id}",
+                    params={
+                        "attempted_verdict": "approved",
+                        "reason": "submission already at terminal status (CAS no-op)",
+                        "model": model,
+                    },
+                    result="skipped",
+                )
+                return LlmResult(verdict=verdict, reviewed_by_model=model)
             # Two outcomes are possible AND independent here:
             #
             # 1. Initial-upload (v1) approval flips visibility from
@@ -332,12 +353,30 @@ def run_llm_review(
                     result="ok",
                 )
         else:
-            subs_repo.update_status(
+            written = subs_repo.update_status(
                 submission_id,
                 status="blocked_llm",
                 llm_findings=verdict,
                 reviewed_by_model=model,
             )
+            if not written:
+                # CAS no-op: row hit a terminal status before this
+                # verdict landed (admin override, prior terminal write).
+                # See the parallel `approved` branch above — same
+                # treatment: log the suppression, skip the misleading
+                # "blocked_llm" audit entry, return early.
+                audit.log(
+                    user_id=submitter_id,
+                    action="store.submission.bg_verdict_skipped",
+                    resource=f"store_submission:{submission_id}",
+                    params={
+                        "attempted_verdict": "blocked_llm",
+                        "reason": "submission already at terminal status (CAS no-op)",
+                        "model": model,
+                    },
+                    result="skipped",
+                )
+                return LlmResult(verdict=verdict, reviewed_by_model=model)
             # On block, entity state depends on which path triggered
             # this submission:
             #
