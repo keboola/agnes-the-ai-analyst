@@ -1050,14 +1050,19 @@
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Category</span>
-                            {# Free-text input with existing categories as
-                               typeahead suggestions. Admins typically pick from
-                               what's already there but can introduce a new
-                               category slug by typing it. #}
-                            <input id="editItemCategory" type="text" list="editCategoryOptions" placeholder="pick or type new" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
-                            <datalist id="editCategoryOptions">
-                                {% for c in edit_categories %}<option value="{{ c }}">{% endfor %}
-                            </datalist>
+                            {# A <select> dropdown (clicks reliably across all
+                               browsers; <datalist> didn't — Firefox/Safari
+                               wouldn't open the suggestion list on the
+                               typeahead arrow click). The "+ Add new
+                               category…" pseudo-option reveals a sibling
+                               input so admins can still introduce a fresh
+                               slug without leaving the modal. #}
+                            <select id="editItemCategoryPick" onchange="onCategoryPickChange(this.value)" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                                <option value="">(unset)</option>
+                                {% for c in edit_categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+                                <option value="__NEW__">+ Add new category…</option>
+                            </select>
+                            <input id="editItemCategoryNew" type="text" placeholder="new category slug" style="display: none; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Domain</span>
@@ -1087,16 +1092,18 @@
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Tags (comma-separated)</span>
-                            <input id="editItemTags" type="text" list="editTagOptions" placeholder="tag1, tag2" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                            <input id="editItemTags" type="text" list="editTagOptions" placeholder="type new tag, or click a chip below" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
                             <datalist id="editTagOptions">
                                 {% for t in edit_tags %}<option value="{{ t }}">{% endfor %}
                             </datalist>
                             {% if edit_tags %}
-                            <div id="editItemTagSuggestions" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
-                                {# Click-to-append chips. JS in submitEditItem
-                                   already parses comma-separated values, so
-                                   clicking just appends to the input. #}
-                                {% for t in edit_tags %}<button type="button" class="tag" onclick="appendEditTag('{{ t | replace("'", "\\'") }}')" style="cursor: pointer; padding: 1px 8px; background: var(--surface-2, #f3f4f6); border: 1px solid var(--border); border-radius: 999px; font-size: 11px; color: var(--text-secondary);">+ {{ t }}</button>{% endfor %}
+                            <div style="font-size: 11px; color: var(--text-muted); margin-top: 6px;">Existing tags — click to add:</div>
+                            <div id="editItemTagSuggestions" style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px;">
+                                {# Click-to-append chips. submitEditItem parses
+                                   the comma-separated input; click just
+                                   appends. Visually loud so the affordance
+                                   is obvious. #}
+                                {% for t in edit_tags %}<button type="button" onclick="appendEditTag('{{ t | replace("'", "\\'") }}')" style="cursor: pointer; padding: 3px 10px; background: var(--primary, #0073D1); color: white; border: none; border-radius: 999px; font-size: 12px; font-weight: 500;">+ {{ t }}</button>{% endfor %}
                             </div>
                             {% endif %}
                         </label>
@@ -1453,12 +1460,41 @@
         _editingItemId = itemId;
         document.getElementById('editItemTitle').value = item.title || '';
         document.getElementById('editItemContent').value = item.content || '';
-        document.getElementById('editItemCategory').value = item.category || '';
+        // Category: pick the existing option if it matches one in the
+        // dropdown; otherwise dynamically add it as a one-off option so the
+        // current value is visible (and selected) even if it's a one-off
+        // slug that didn't exist when the page rendered.
+        const catSel = document.getElementById('editItemCategoryPick');
+        const catNewIn = document.getElementById('editItemCategoryNew');
+        const curCat = item.category || '';
+        const hasOpt = [...catSel.options].some(o => o.value === curCat);
+        if (curCat && !hasOpt) {
+            // Insert before the "+ Add new…" pseudo-option (always last).
+            const newOpt = new Option(curCat, curCat);
+            catSel.add(newOpt, catSel.options.length - 1);
+        }
+        catSel.value = curCat;
+        catNewIn.style.display = 'none';
+        catNewIn.value = '';
         document.getElementById('editItemDomain').value = item.domain || '';
         document.getElementById('editItemAudience').value = item.audience || '';
         const tagsArr = parseJsonField(item.tags);
         document.getElementById('editItemTags').value = tagsArr.join(', ');
         document.getElementById('editItemModal').style.display = 'block';
+    }
+
+    // Category picker handler — toggles the "new slug" input when the
+    // operator selects the "+ Add new category…" pseudo-option. Restores
+    // it on any other selection so a mis-click recovers cleanly.
+    function onCategoryPickChange(value) {
+        const newInput = document.getElementById('editItemCategoryNew');
+        if (value === '__NEW__') {
+            newInput.style.display = '';
+            newInput.focus();
+        } else {
+            newInput.style.display = 'none';
+            newInput.value = '';
+        }
     }
 
     function closeEditItemModal() {
@@ -1496,7 +1532,13 @@
         // empty-string → null path.
         const orNull = (s) => (s && s.trim() ? s.trim() : null);
         const content = document.getElementById('editItemContent').value || null;
-        const category = orNull(document.getElementById('editItemCategory').value);
+        // Category: if "+ Add new" is selected, take the value from the
+        // sibling text input; otherwise use the picked dropdown value.
+        let categoryRaw = document.getElementById('editItemCategoryPick').value;
+        if (categoryRaw === '__NEW__') {
+            categoryRaw = document.getElementById('editItemCategoryNew').value;
+        }
+        const category = orNull(categoryRaw);
         const domain = orNull(document.getElementById('editItemDomain').value);
         const audience = orNull(document.getElementById('editItemAudience').value);
         const tagsStr = document.getElementById('editItemTags').value;
