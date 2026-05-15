@@ -61,6 +61,24 @@ After the PR with the release-cut is merged to `main`:
 
 Never tag or release before merge.
 
+## Post-merge auto-rollback
+
+On every `main` push, GitHub Actions `release.yml` builds the `:stable`
+image and a `smoke-test` job pulls it and runs a docker-compose stack.
+If the smoke test fails:
+
+- `rollback-on-smoke-fail` calls `rollback.yml`, which re-points `:stable`
+  to the previous known-good build.
+- A tracking issue labeled `bug` is opened with the failing image, the
+  commit SHA, the deprecated tag, and the rollback target.
+
+Success signal after merge: `smoke-test` green AND `rollback-on-smoke-fail`
+skipped. If rollback fires, the merge shipped a broken image to GHCR —
+investigate the tracking issue before any further push.
+
+Manual rollback, forced target, and weekly tag-pruning operator commands
+live in `docs/RELEASING.md`.
+
 ## Tests before push
 
 Run `.venv/bin/pytest tests/ --tb=short -n auto -q` before every push.

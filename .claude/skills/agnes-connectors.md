@@ -66,4 +66,7 @@ For each remote-mode table in `_meta`, the extractor writes a row in
 
 ## Stable infrastructure — do NOT modify
 
-`connectors/jira/file_lock.py` and `connectors/jira/transform.py`.
+`connectors/jira/file_lock.py`. (`connectors/jira/transform.py` was
+previously off-limits but as of 0.54.19 is no longer; it remains
+sensitive — touch only with end-to-end understanding of the
+JSON-overlay / parquet-rewrite pipeline.)

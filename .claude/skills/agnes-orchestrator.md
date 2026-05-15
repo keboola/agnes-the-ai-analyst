@@ -69,5 +69,7 @@ in `CHANGELOG.md`. Adding a schema version means:
 
 ## Files NOT to modify
 
-`connectors/jira/file_lock.py`, `connectors/jira/transform.py`,
-`services/ws_gateway/` — stable infrastructure.
+`connectors/jira/file_lock.py` and `services/ws_gateway/` — stable
+infrastructure. (`connectors/jira/transform.py` was previously off-limits
+but as of 0.54.19 is no longer; it remains sensitive — touch only with
+end-to-end understanding of the JSON-overlay / parquet-rewrite pipeline.)
