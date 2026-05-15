@@ -193,3 +193,25 @@ def test_v48_to_v49_seeds_extra_non_canonical_domains():
     assert row is not None
     assert row[1] == "sales-coaching"
     assert row[0].startswith("md_")
+
+
+def test_v48_to_v49_populates_item_domains_junction():
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    conn.execute("INSERT INTO knowledge_items VALUES ('k1', 't1', 'approved', 'finance')")
+    conn.execute("INSERT INTO knowledge_items VALUES ('k2', 't2', 'approved', 'sales-coaching')")
+    conn.execute("INSERT INTO knowledge_items VALUES ('k3', 't3', 'approved', NULL)")
+    conn.execute("INSERT INTO knowledge_items VALUES ('k4', 't4', 'approved', '')")
+    _v48_to_v49(conn)
+
+    junction = conn.execute(
+        "SELECT kid.item_id, md.slug "
+        "  FROM knowledge_item_domains kid "
+        "  JOIN memory_domains md ON md.id = kid.domain_id "
+        " ORDER BY kid.item_id"
+    ).fetchall()
+    assert ("k1", "finance") in junction
+    assert ("k2", "sales-coaching") in junction
+    # NULL and empty-string domain → no junction row
+    assert not any(r[0] == "k3" for r in junction)
+    assert not any(r[0] == "k4" for r in junction)
