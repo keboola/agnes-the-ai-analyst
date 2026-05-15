@@ -51,6 +51,7 @@ from cli.commands.disk_info import disk_info_app
 from cli.commands.store import store_app
 from cli.commands.my_stack import my_stack_app
 from cli.commands.marketplace import marketplace_app
+from cli.commands.stack import stack_app
 
 
 def _cli_version() -> str:
@@ -144,6 +145,7 @@ app.add_typer(disk_info_app, name="disk-info")
 app.add_typer(store_app, name="store")
 app.add_typer(my_stack_app, name="my-stack")
 app.add_typer(marketplace_app, name="marketplace")
+app.add_typer(stack_app, name="stack")
 
 
 def _capture_cli_exception(exc: BaseException, kind: str) -> None:
