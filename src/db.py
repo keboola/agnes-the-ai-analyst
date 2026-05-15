@@ -149,6 +149,11 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     supersedes VARCHAR,
     sensitivity VARCHAR DEFAULT 'internal',
     is_personal BOOLEAN DEFAULT FALSE,
+    -- v49: governance Required tier, split out of the v15-era
+    -- status='mandatory' overload. status now tracks lifecycle only
+    -- (pending/approved/rejected); is_required is the orthogonal
+    -- "must appear in the bundle, cannot be dismissed" flag.
+    is_required BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
@@ -3098,6 +3103,21 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         "ALTER TABLE resource_grants "
         "ADD COLUMN IF NOT EXISTS requirement VARCHAR DEFAULT 'available'"
+    )
+
+    # 2) knowledge_items.is_required — splits the v15-era status='mandatory'
+    # overload into an orthogonal boolean. Items can now be 'approved' and
+    # also Required (governance tier), or 'pending' without affecting the
+    # Required state. Existing 'mandatory' rows migrate to
+    # is_required=TRUE, status='approved'.
+    conn.execute(
+        "ALTER TABLE knowledge_items "
+        "ADD COLUMN IF NOT EXISTS is_required BOOLEAN DEFAULT FALSE"
+    )
+    conn.execute(
+        "UPDATE knowledge_items "
+        "   SET is_required = TRUE, status = 'approved' "
+        " WHERE status = 'mandatory'"
     )
 
 
