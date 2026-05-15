@@ -186,6 +186,19 @@ async def lifespan(app):
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
 
+    # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
+    # The migration to schema v47 already does this on first upgrade, but
+    # for instances that have been on v47 across restarts the boot-time
+    # rebuild guarantees the index reflects whatever mutations landed via
+    # the BG-task / scheduler paths that bypass the per-mutation hook.
+    # Soft-failure — logs WARNING and the repo falls back to ILIKE.
+    try:
+        from src.db import get_system_db
+        from src.fts import ensure_knowledge_fts_index
+        ensure_knowledge_fts_index(get_system_db())
+    except Exception:
+        logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
+
     # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
     # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
     # without going through bootstrap; never overwritten if already set.
