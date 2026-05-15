@@ -947,6 +947,363 @@ class TestAdminRescan:
         assert r.status_code == 403
 
 
+class TestAdminRetryReviewsStagedBundle:
+    """Codex adversarial finding [CRITICAL C1]: admin retry was passing
+    live `plugin/` to the LLM. For a v2+ pending_llm / blocked_llm /
+    review_error submission, live still holds the prior approved
+    version. A retry would review the WRONG bytes and the runner's
+    hash-match promotion would then advance the entity to staged
+    bytes that were never reviewed. Fixed by resolving the staged
+    `versions/v<N>/plugin/` from the submission's version_history
+    entry."""
+
+    def test_retry_v2_blocked_passes_staged_dir_not_live(
+        self, web_client, monkeypatch,
+    ):
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        # v1 clean upload (guardrails off by default in tests).
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-retry-test")
+        user_id, user_cookies = _create_user(web_client, "retrystaged@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("retrystaged"), "application/zip")},
+            data={"type": "skill",
+                  "description": (
+                      "Use when verifying retry reads staged version "
+                      "bundle bytes not live for v2 blocked submissions"
+                  )},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+
+        # v2 PUT with guardrails on, LLM mocked to BLOCK → blocked_llm.
+        def mock_block(*a, **kw):
+            return {
+                "risk_level": "high", "summary": "mock block",
+                "findings": [{"severity": "high", "category": "test",
+                              "file": "x", "explanation": "mock"}],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_block,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+        import io as _io
+        import zipfile as _zip
+        buf = _io.BytesIO()
+        with _zip.ZipFile(buf, "w") as zf:
+            zf.writestr(
+                "retrystaged/SKILL.md",
+                "---\nname: retrystaged\ndescription: "
+                "Use when verifying that admin retry hits the staged dir bundle bytes for v2 blocked submissions\n---\n\n"
+                + ("V2-only body text that is intentionally long enough to clear the inline content-quality threshold. " * 4),
+            )
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", buf.getvalue(), "application/zip")},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 200, r.text
+        from src.store_guardrails.runner import run_llm_review
+        conn = get_system_db()
+        sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+        )
+
+        # Capture what review_bundle is called with on retry.
+        seen = {}
+        def spy_review_bundle(plugin_dir, **kw):
+            seen["plugin_dir"] = plugin_dir
+            return {
+                "risk_level": "safe", "summary": "ok",
+                "findings": [], "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+                "content_quality": {"verdict": "pass", "issues": []},
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", spy_review_bundle,
+        )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-retry-loader")
+
+        # Admin retry.
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.post(
+            f"/api/admin/store/submissions/{sub_id}/retry",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        v2_dir = Path(get_store_dir()) / eid / "versions" / "v2" / "plugin"
+        live_dir = Path(get_store_dir()) / eid / "plugin"
+        assert seen["plugin_dir"] == v2_dir, (
+            f"retry must review STAGED bytes ({v2_dir}); "
+            f"instead reviewed {seen['plugin_dir']} (live={live_dir})"
+        )
+
+    def test_rescan_v2_blocked_passes_staged_dir_not_live(
+        self, web_client, monkeypatch,
+    ):
+        """Same invariant for rescan."""
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-rescan-test")
+        user_id, user_cookies = _create_user(web_client, "rescanstaged@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("rescanstaged"), "application/zip")},
+            data={"type": "skill",
+                  "description": (
+                      "Use when verifying rescan reads staged version "
+                      "bundle bytes not live for v2 blocked submissions"
+                  )},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 201
+        eid = r.json()["id"]
+
+        def mock_block(*a, **kw):
+            return {
+                "risk_level": "high", "summary": "mock block",
+                "findings": [{"severity": "high", "category": "test",
+                              "file": "x", "explanation": "mock"}],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_block,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+        import io as _io
+        import zipfile as _zip
+        buf = _io.BytesIO()
+        with _zip.ZipFile(buf, "w") as zf:
+            zf.writestr(
+                "rescanstaged/SKILL.md",
+                "---\nname: rescanstaged\ndescription: "
+                "Use when verifying that admin rescan hits the staged dir bundle bytes for v2 blocked submissions\n---\n\n"
+                + ("V2 unique payload body line that is intentionally long enough to clear the inline content-quality threshold. " * 4),
+            )
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", buf.getvalue(), "application/zip")},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 200, r.text
+        from src.store_guardrails.runner import run_llm_review
+        conn = get_system_db()
+        sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+        )
+
+        # Spy on the inline pipeline. admin.py imports
+        # `run_inline_checks` function-locally — patch at the source
+        # module so the lookup at call time sees the spy.
+        seen_inline: list = []
+        from src.store_guardrails import run_inline_checks as orig_run_inline
+        def spy_inline(plugin_dir, **kw):
+            seen_inline.append(plugin_dir)
+            return orig_run_inline(plugin_dir, **kw)
+        monkeypatch.setattr(
+            "src.store_guardrails.run_inline_checks", spy_inline,
+        )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-rescan")
+
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.post(
+            f"/api/admin/store/submissions/{sub_id}/rescan",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        v2_dir = Path(get_store_dir()) / eid / "versions" / "v2" / "plugin"
+        assert v2_dir in seen_inline, (
+            f"rescan must run inline against STAGED bytes ({v2_dir}); "
+            f"got {seen_inline}"
+        )
+
+
+class TestOverrideForwardOnly:
+    """Codex adversarial finding [HIGH H1]: override's promote loop
+    used `target != current`, which would happily DEMOTE the live
+    bundle when admin overrode a stale v2 submission while v3 was
+    already approved + live. Forward-only: refuse the promote step
+    when target_n <= current.
+
+    Override of the row still flips status + visibility (admin's
+    intent on the row itself is preserved); the on-disk live bundle
+    just isn't rolled back."""
+
+    def test_override_stale_v2_does_not_demote_when_v3_current(
+        self, web_client, monkeypatch,
+    ):
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        # v1 clean, v2 PUT (mocked block) → blocked_llm, entity stays v1.
+        # Set a fake API key so the BG task `run_llm_review` (scheduled
+        # by the API after each PUT) can pass `default_api_key_loader`
+        # — it then calls the mocked `review_bundle`, not the network.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-override-test")
+        user_id, user_cookies = _create_user(web_client, "demote@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("demote"), "application/zip")},
+            data={"type": "skill",
+                  "description": (
+                      "Use when verifying override never demotes a "
+                      "currently-live newer version of the same entity"
+                  )},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 201
+        eid = r.json()["id"]
+
+        def mock_block(*a, **kw):
+            return {
+                "risk_level": "high", "summary": "mock block",
+                "findings": [{"severity": "high", "category": "test",
+                              "file": "x", "explanation": "mock"}],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_block,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+
+        # PUT v2 → blocked_llm.
+        import io as _io
+        import zipfile as _zip
+        def _v2_zip():
+            buf = _io.BytesIO()
+            with _zip.ZipFile(buf, "w") as zf:
+                zf.writestr(
+                    "demote/SKILL.md",
+                    "---\nname: demote\ndescription: Use when v2 blocked path is exercised by admin override forward-only tests for the demote-protection invariant\n---\n\n"
+                    + ("V2 BODY content line long enough to clear the inline content-quality threshold for skill bodies. " * 4),
+                )
+            return buf.getvalue()
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", _v2_zip(), "application/zip")},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 200
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.store_guardrails.runner import run_llm_review
+        conn = get_system_db()
+        v2_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v2_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+        )
+
+        # PUT v3 with mocked-APPROVE → v3 becomes current.
+        def mock_approve(*a, **kw):
+            return {
+                "risk_level": "safe", "summary": "ok",
+                "findings": [], "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+                "content_quality": {"verdict": "pass", "issues": []},
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_approve,
+        )
+        def _v3_zip():
+            buf = _io.BytesIO()
+            with _zip.ZipFile(buf, "w") as zf:
+                zf.writestr(
+                    "demote/SKILL.md",
+                    "---\nname: demote\ndescription: Use when v3 approved path is exercised by admin override forward-only tests for the demote-protection invariant\n---\n\n"
+                    + ("V3 BODY content line long enough to clear the inline content-quality threshold for skill bodies. " * 4),
+                )
+            return buf.getvalue()
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v3.zip", _v3_zip(), "application/zip")},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 200
+        conn = get_system_db()
+        v3_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v3_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v3" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+        )
+        conn = get_system_db()
+        ent_at_v3 = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert ent_at_v3["version_no"] == 3, (
+            f"v3 must auto-promote to current; got {ent_at_v3['version_no']}"
+        )
+        v3_hash = ent_at_v3["version"]
+
+        # Admin overrides stale v2 (status was blocked_llm). MUST NOT
+        # demote live from v3 back to v2 bytes.
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.post(
+            f"/api/admin/store/submissions/{v2_sub_id}/override",
+            json={"reason": "cleared in offline review — leaving stale row"},
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        conn = get_system_db()
+        ent_after = StoreEntitiesRepository(conn).get(eid)
+        v2_sub_after = StoreSubmissionsRepository(conn).get(v2_sub_id)
+        conn.close()
+        assert ent_after["version_no"] == 3, (
+            f"override of stale v2 must NOT demote live; "
+            f"got version_no={ent_after['version_no']} (expected 3)"
+        )
+        assert ent_after["version"] == v3_hash, (
+            "entity.version hash must stay at v3 — got demoted"
+        )
+        # Submission row still flips to overridden (admin intent on the
+        # row itself is preserved; only the on-disk roll-back is gated).
+        assert v2_sub_after["status"] == "overridden"
+
+
 # ---------------------------------------------------------------------------
 # v30: Download bundle, Sort by size, Quota
 # ---------------------------------------------------------------------------

@@ -3765,8 +3765,14 @@ async def admin_override_store_submission(
             except (TypeError, ValueError):
                 target_version_no = None
             break
+    # Forward-only: refuse to promote backwards. An admin overriding a
+    # stale v2 submission when v3 is already approved + live must NOT
+    # demote the live bundle back to v2's bytes. Override flips the
+    # row's status + visibility regardless; only the version-promote
+    # is gated. Forward (target > current) is the only motion the
+    # publish-gate model is designed to express.
     if (target_version_no is not None
-            and target_version_no != int(entity_row.get("version_no") or 0)):
+            and target_version_no > int(entity_row.get("version_no") or 0)):
         if ents_repo.promote_version(entity_id, target_version_no):
             try:
                 from app.api.store import _swap_live_to_version
@@ -3833,7 +3839,11 @@ async def admin_rescan_store_submission(
     whose bundle was rolled back (no ``entity_id``) cannot be rescanned —
     nothing to scan.
     """
-    from app.api.store import _plugin_dir
+    from app.api.store import (
+        _plugin_dir,
+        _submission_plugin_dir,
+        _version_no_for_submission,
+    )
     from src.db import get_system_db
     from src.repositories.store_entities import StoreEntitiesRepository
     from src.repositories.store_submissions import StoreSubmissionsRepository
@@ -3856,12 +3866,21 @@ async def admin_rescan_store_submission(
     if not entity_id:
         raise HTTPException(status_code=409, detail="cannot_rescan_without_entity")
 
-    plugin_dir = _plugin_dir(entity_id)
+    ents = StoreEntitiesRepository(conn)
+    entity = ents.get(entity_id)
+    # Rescan the bundle this submission represents — not live. See the
+    # equivalent fix in /retry for the full reasoning. Same fall-back
+    # to live for legacy rows that never seeded a versions/v<N>/plugin/.
+    target_n = _version_no_for_submission(entity or {}, submission_id)
+    if target_n is not None:
+        plugin_dir = _submission_plugin_dir(entity_id, target_n)
+        if not plugin_dir.exists():
+            plugin_dir = _plugin_dir(entity_id)
+    else:
+        plugin_dir = _plugin_dir(entity_id)
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 
-    ents = StoreEntitiesRepository(conn)
-    entity = ents.get(entity_id)
     description = (entity or {}).get("description")
 
     inline = run_inline_checks(
@@ -3955,8 +3974,13 @@ async def admin_retry_store_submission(
     Only valid when the original submission's plugin tree is still on
     disk — for inline-blocked rows the bundle was deleted at POST time.
     """
-    from app.api.store import _plugin_dir
+    from app.api.store import (
+        _plugin_dir,
+        _submission_plugin_dir,
+        _version_no_for_submission,
+    )
     from src.db import get_system_db
+    from src.repositories.store_entities import StoreEntitiesRepository
     from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails.runner import (
         default_api_key_loader,
@@ -3978,7 +4002,22 @@ async def admin_retry_store_submission(
             status_code=409, detail="cannot_retry_without_entity",
         )
 
-    plugin_dir = _plugin_dir(entity_id)
+    # Review the STAGED version's bytes — not live. For a v2+ edit
+    # held at pending_llm or blocked_llm, live `plugin/` still holds
+    # the prior approved version. Reviewing live would produce a
+    # verdict against the wrong bytes; the runner's hash-match
+    # promotion would then advance the entity to staged bytes that
+    # were never actually reviewed.
+    ent = StoreEntitiesRepository(conn).get(entity_id) or {}
+    target_n = _version_no_for_submission(ent, submission_id)
+    if target_n is not None:
+        plugin_dir = _submission_plugin_dir(entity_id, target_n)
+        # Fall back to live for legacy pre-v37 rows where the version
+        # dir was never seeded.
+        if not plugin_dir.exists():
+            plugin_dir = _plugin_dir(entity_id)
+    else:
+        plugin_dir = _plugin_dir(entity_id)
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 

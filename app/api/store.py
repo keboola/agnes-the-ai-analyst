@@ -27,7 +27,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import duckdb
@@ -382,6 +382,37 @@ def _entity_dir(entity_id: str) -> Path:
 
 def _plugin_dir(entity_id: str) -> Path:
     return _entity_dir(entity_id) / "plugin"
+
+
+def _submission_plugin_dir(
+    entity_id: str, version_no: int,
+) -> Path:
+    """On-disk path of the bundle a particular submission represents.
+
+    v37+ writes each version's bytes under
+    ``<entity_dir>/versions/v<N>/plugin/``. Live ``plugin/`` mirrors
+    whichever ``v<N>`` is currently promoted. Admin retry / rescan
+    flows MUST review the staged version dir, not live — otherwise a
+    pending v2 retry would re-review v1's bytes, a clean verdict
+    would land, and the runner's hash-match promotion would advance
+    the entity to v2 bytes that were never actually reviewed.
+    """
+    return _entity_dir(entity_id) / "versions" / f"v{int(version_no)}" / "plugin"
+
+
+def _version_no_for_submission(
+    entity_row: Dict[str, Any], submission_id: str,
+) -> Optional[int]:
+    """Locate the version_history entry produced by `submission_id`
+    and return its ``n``. Used by admin retry / rescan / override to
+    pick the right ``versions/v<N>/plugin/`` directory."""
+    for entry in (entity_row.get("version_history") or []):
+        if entry.get("submission_id") == submission_id:
+            try:
+                return int(entry.get("n"))
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _assets_dir(entity_id: str) -> Path:

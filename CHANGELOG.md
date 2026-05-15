@@ -73,6 +73,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   banner now renders for those failure statuses too, with copy that
   acknowledges the prior version is still live ("Latest edit failed
   review — previously approved version (vN) keeps serving …").
+- Flea-market admin **Retry review** and **Rescan** now review the
+  STAGED version's bundle, not the live `plugin/` directory. For a
+  v2+ edit held at `pending_llm` / `blocked_llm` / `review_error`,
+  live still holds the prior approved version. Reviewing live would
+  produce a verdict against the WRONG bytes; the runner's hash-match
+  promotion would then advance the entity to staged bytes that were
+  never actually reviewed. Now resolves the staged
+  `versions/v<N>/plugin/` from the submission's `version_history`
+  entry. (Critical — surfaced by adversarial review.)
+- Flea-market admin **Override** is now forward-only on promotion.
+  Previously `target_version_no != current` would happily demote the
+  live bundle when admin overrode a stale v2 submission while v3 was
+  already approved + live. Changed to `target > current` so override
+  flips status + visibility on the row regardless, but on-disk
+  promotion only fires for newer versions. The same `> current`
+  guard is now applied defensively in `runner.run_llm_review` so a
+  late LLM verdict can't demote past a more recent approval either.
+  (High — surfaced by adversarial review.)
 - Flea-market admin **Override** on a v2+ edit/restore submission now
   promotes the entity to the overridden version + swaps the on-disk
   live bundle. Pre-fix the override only flipped
