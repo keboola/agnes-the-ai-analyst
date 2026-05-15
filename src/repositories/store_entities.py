@@ -485,6 +485,55 @@ class StoreEntitiesRepository:
         columns = [d[0] for d in self.conn.description]
         return self._row_to_dict(columns, rows[0])
 
+    def get_with_version_approvals(
+        self, id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Same as :meth:`get` but each ``version_history`` entry gets
+        an additional ``submission_status`` field populated from
+        ``store_submissions``.
+
+        Used by the detail page + restore endpoint to gate which
+        versions are restorable. Legacy v1 rows created pre-v37 carry
+        ``submission_id=None`` (the v1 seed predates the
+        backfill) — those map to ``submission_status=None`` and the
+        consumer treats them as approved (back-compat).
+        """
+        entity = self.get(id)
+        if entity is None:
+            return None
+        history = list(entity.get("version_history") or [])
+        if not history:
+            return entity
+        sub_ids = [
+            entry.get("submission_id") for entry in history
+            if entry.get("submission_id")
+        ]
+        status_by_id: Dict[str, str] = {}
+        if sub_ids:
+            placeholders = ",".join("?" for _ in sub_ids)
+            rows = self.conn.execute(
+                f"SELECT id, status FROM store_submissions "
+                f"WHERE id IN ({placeholders})",
+                sub_ids,
+            ).fetchall()
+            for sub_id, status in rows:
+                status_by_id[sub_id] = status
+        # Defensive copy of each history entry before mutating — today
+        # ``self.get()`` re-parses JSON each call so the mutation can't
+        # leak across calls, but copying costs nothing and protects any
+        # future caching layer from carrying the annotated
+        # ``submission_status`` key into a subsequent plain ``get()``.
+        annotated: List[Dict[str, Any]] = []
+        for entry in history:
+            entry = dict(entry)
+            sid = entry.get("submission_id")
+            entry["submission_status"] = (
+                status_by_id.get(sid) if sid else None
+            )
+            annotated.append(entry)
+        entity["version_history"] = annotated
+        return entity
+
     def get_by_owner_and_name(
         self,
         owner_user_id: str,

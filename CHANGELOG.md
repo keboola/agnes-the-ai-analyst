@@ -10,8 +10,105 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (operator-facing)**: flea-market guardrail pipeline now
+  fail-CLOSED on misconfig. `get_guardrails_enabled()` previously
+  conflated operator intent (`guardrails.enabled` YAML) with provider
+  readiness (`ANTHROPIC_API_KEY` env) — when intent was True but the
+  env var was missing, the pipeline silently auto-fell-back to disabled
+  and every upload landed `approved` without an LLM review. Split into
+  `get_guardrails_enabled()` (intent only) and a new
+  `get_guardrails_llm_provider_ready()` (env only). Three-state matrix:
+  `enabled=false → auto-approve` (unchanged), `enabled=true + ready →
+  normal hold-for-review` (unchanged), `enabled=true + not-ready →
+  submissions sit at `pending_llm`, no auto-approval` (new — was
+  silent auto-approval). Admin **Retry review** action on
+  `/admin/store/submissions/<id>` now covers `pending_llm` too (was
+  `review_error` + `blocked_llm`). Boot-time `WARNING` banner surfaces
+  the misconfig in `app/main.py`. Operators who relied on the
+  auto-fallback for local-dev no-LLM setups must now explicitly set
+  `guardrails.enabled: false` in `instance.yaml` — same outcome,
+  explicit intent.
+- Flea-market admin **Override** action on
+  `/admin/store/submissions/<id>` now covers `pending_llm` submissions
+  too (was `blocked_inline` + `blocked_llm` + `review_error`). Closes
+  a UX gap created by the new fail-CLOSED behavior above: under
+  enabled-but-not-ready, a known-good submission would otherwise sit
+  indefinitely until the admin set credentials AND clicked **Retry
+  review**. Override already routes through `entity.version_history`
+  to resolve the correct version dir (and is now forward-only on
+  promote — see the Fixed bullet below), so it stays safe for v2+
+  deferred-promotion submissions.
+
 ### Fixed
 - **Unauthenticated browser requests to `GET /api/initial-workspace.zip` now redirect to `/login?next=/api/initial-workspace.zip` instead of returning a raw JSON 401** (#315). This is the one `/api/*` endpoint that's designed to be hit directly from a browser bookmark (the analyst clean-install zip), so it intentionally opts out of the global `_API_PATH_PREFIXES` "never redirect /api/*" contract in `app/main.py`. CLI / curl / other API clients (any `Accept` without `text/html` — including the `*/*` default) keep getting the 401 they can handle.
+- Flea-market LLM security review failed with `LLMFormatError: Response
+  truncated (max_tokens) for schema store_guardrails_review` when the
+  reviewer emitted many findings or content-quality issues. Raised the
+  output budget (2500 → 6000 tokens) and added a one-shot
+  retry-with-doubled-budget in the Anthropic provider (up to 4× initial)
+  so the verdict survives an occasional verbose response instead of
+  pinning the submission in `review_error`. (We initially added
+  `maxItems=20` to the schema's `findings` and `content_quality.issues`
+  arrays, but Anthropic's structured-output validator rejects `maxItems`
+  on array types — removed.)
+- Flea-market entity detail page surfaces the latest submission's
+  failure verdict even when a previously-approved version is still
+  serving (deferred-promotion path). The owner / admin used to see no
+  banner at all when a v2+ edit landed in `review_error`,
+  `blocked_llm`, or `blocked_inline` because the `_quarantine_banner`
+  partial gated on `entity.visibility_status != 'approved'`. The
+  banner now renders for those failure statuses too, with copy that
+  acknowledges the prior version is still live ("Latest edit failed
+  review — previously approved version (vN) keeps serving …").
+- Flea-market admin **Retry review** and **Rescan** now review the
+  STAGED version's bundle, not the live `plugin/` directory. For a
+  v2+ edit held at `pending_llm` / `blocked_llm` / `review_error`,
+  live still holds the prior approved version. Reviewing live would
+  produce a verdict against the WRONG bytes; the runner's hash-match
+  promotion would then advance the entity to staged bytes that were
+  never actually reviewed. Now resolves the staged
+  `versions/v<N>/plugin/` from the submission's `version_history`
+  entry. (Critical — surfaced by adversarial review.)
+- Flea-market admin **Override** is now forward-only on promotion.
+  Previously `target_version_no != current` would happily demote the
+  live bundle when admin overrode a stale v2 submission while v3 was
+  already approved + live. Changed to `target > current` so override
+  flips status + visibility on the row regardless, but on-disk
+  promotion only fires for newer versions. The same `> current`
+  guard is now applied defensively in `runner.run_llm_review` so a
+  late LLM verdict can't demote past a more recent approval either.
+  (High — surfaced by adversarial review.)
+- Flea-market admin **Override** on a v2+ edit/restore submission now
+  promotes the entity to the overridden version + swaps the on-disk
+  live bundle. Pre-fix the override only flipped
+  `visibility_status='approved'` and `submission.status='overridden'`,
+  leaving `entity.version_no` at the prior approved version — so
+  installers (and the marketplace UI) kept serving the OLD bytes the
+  admin just intended to replace. Mirrors the auto-approval branch in
+  `runner.run_llm_review`: look up the submission's version in
+  `version_history`, `promote_version` + `_swap_live_to_version` when
+  it differs from current. Initial-v1 overrides unchanged (no
+  promotion needed).
+- Flea-market Restore button + endpoint no longer allow restoring a
+  version that was never approved. The versions card hid the gate
+  entirely (showed Restore on any non-current row), and the backend
+  blocked only while the latest submission was `pending_*` — so a
+  `blocked_llm` / `review_error` version could be restored anyway.
+  Added `submission_status` decoration on `version_history` via a new
+  `StoreEntitiesRepository.get_with_version_approvals` helper, gated
+  the UI button on `submission_status in ('approved', None)`
+  (`None` is the legacy v1 seed, back-compat-treated as approved),
+  rendered status pills for blocked / errored / pending rows, and
+  added a 400 `version_not_approved` guard in
+  `POST /api/store/entities/{id}/versions/{n}/restore`.
+
+### Internal
+- `StoreEntitiesRepository.get_with_version_approvals` now defensively
+  copies each `version_history` entry before annotating with
+  `submission_status`. `self.get()` re-parses JSON each call today so
+  this is belt-and-suspenders, but it protects any future caching layer
+  from leaking the annotated key into a subsequent plain `get()` call.
 
 ## [0.54.17] — 2026-05-15
 

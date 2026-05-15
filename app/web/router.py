@@ -1368,40 +1368,44 @@ async def marketplace_flea_detail(
     from src.repositories.store_entities import StoreEntitiesRepository
     from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    entity = StoreEntitiesRepository(conn).get(entity_id)
-    if not entity:
+    repo = StoreEntitiesRepository(conn)
+    # Owner/admin get a version-status decorated entity so the versions
+    # card can gate the Restore button on past-version approval state.
+    # Plain viewers don't see the versions card at all, so the cheaper
+    # plain get() suffices.
+    base_entity = repo.get(entity_id)
+    if not base_entity:
         raise HTTPException(status_code=404, detail="Entity not found")
 
     # Refuse early — same gate as the API + the asset endpoints. 404
     # (not 403) so the entity's existence isn't leaked.
-    _enforce_visibility(entity, user, conn)
+    _enforce_visibility(base_entity, user, conn)
 
-    is_owner = entity.get("owner_user_id") == user.get("id")
+    is_owner = base_entity.get("owner_user_id") == user.get("id")
     is_admin = is_user_admin(user["id"], conn)
 
+    entity = (
+        repo.get_with_version_approvals(entity_id)
+        if (is_owner or is_admin) else base_entity
+    )
+
     # Pull the latest submission so the quarantine banner can render
-    # the most recent verdict (inline_checks + llm_findings). Skipped
-    # for plain non-owner non-admin viewers since they only see
-    # approved entities and don't need the diagnostic.
+    # the most recent verdict (inline_checks + llm_findings). v37:
+    # always load for owner/admin, even when the entity itself is
+    # approved at a prior version — under deferred promotion, a v2+
+    # edit can leave the latest submission in `review_error` /
+    # `blocked_llm` while the entity row stays approved. Gating the
+    # fetch on `visibility_status != 'approved'` silently hid the
+    # failure from the owner.
     quarantine_sub = None
-    if (is_owner or is_admin) and entity.get("visibility_status") != "approved":
+    if is_owner or is_admin:
         quarantine_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
 
-    # v37: even when entity is 'approved' (deferred promotion path —
-    # existing installers continue receiving the prior version),
-    # owner/admin needs to see if there's an edit-review in flight so
-    # the Edit button can lock + a small status surfaces. Look it up
-    # separately from quarantine_sub to keep the banner partial's
-    # gates intact.
-    edit_in_flight = False
-    if (is_owner or is_admin):
-        latest = (
-            StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
-        )
-        if latest and latest.get("status") in (
-            "pending_inline", "pending_llm",
-        ):
-            edit_in_flight = True
+    # v37: the Edit button locks while a submission is under review.
+    edit_in_flight = bool(
+        quarantine_sub
+        and quarantine_sub.get("status") in ("pending_inline", "pending_llm")
+    )
 
     common = dict(
         source="flea",

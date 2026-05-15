@@ -3726,7 +3726,7 @@ async def admin_override_store_submission(
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
-    if sub["status"] not in {"blocked_inline", "blocked_llm", "review_error"}:
+    if sub["status"] not in {"blocked_inline", "blocked_llm", "review_error", "pending_llm"}:
         raise HTTPException(
             status_code=409,
             detail=f"cannot_override_status:{sub['status']}",
@@ -3747,8 +3747,47 @@ async def admin_override_store_submission(
     ents_repo = StoreEntitiesRepository(conn)
     ents_repo.set_visibility(entity_id, "approved")
 
-    # Update usage-attribution rows now that the entity is live.
+    # Mirror the runner's deferred-promotion path. An override on a
+    # v2+ edit/restore must promote the overridden version + swap the
+    # on-disk live bundle, otherwise the entity stays at the prior
+    # approved version and installers keep receiving stale bytes the
+    # admin just told us to replace. For an initial v1 submission
+    # (no prior approved) the version_no already matches — the loop
+    # just no-ops and we skip promotion harmlessly.
     entity_row = ents_repo.get(entity_id) or {}
+    promoted_to: Optional[int] = None
+    sub_hash = sub.get("version")
+    target_version_no: Optional[int] = None
+    for entry in (entity_row.get("version_history") or []):
+        if entry.get("hash") == sub_hash:
+            try:
+                target_version_no = int(entry.get("n"))
+            except (TypeError, ValueError):
+                target_version_no = None
+            break
+    # Forward-only: refuse to promote backwards. An admin overriding a
+    # stale v2 submission when v3 is already approved + live must NOT
+    # demote the live bundle back to v2's bytes. Override flips the
+    # row's status + visibility regardless; only the version-promote
+    # is gated. Forward (target > current) is the only motion the
+    # publish-gate model is designed to express.
+    if (target_version_no is not None
+            and target_version_no > int(entity_row.get("version_no") or 0)):
+        if ents_repo.promote_version(entity_id, target_version_no):
+            try:
+                from app.api.store import _swap_live_to_version
+                _swap_live_to_version(entity_id, target_version_no)
+                promoted_to = target_version_no
+                # Re-read after promotion so attribution picks up the
+                # new version's name/type if a rename was bundled in.
+                entity_row = ents_repo.get(entity_id) or entity_row
+            except Exception:
+                logger.exception(
+                    "override: live swap failed for entity %s v%d",
+                    entity_id, target_version_no,
+                )
+
+    # Update usage-attribution rows now that the entity is live.
     update_flea_attribution(
         conn, entity_id,
         entity_row.get("type", ""),
@@ -3765,6 +3804,7 @@ async def admin_override_store_submission(
             "prior_status": sub["status"],
             "prior_findings": sub.get("llm_findings"),
             "prior_inline": sub.get("inline_checks"),
+            "promoted_to_version_no": promoted_to,
         },
         result="ok",
     )
@@ -3799,7 +3839,11 @@ async def admin_rescan_store_submission(
     whose bundle was rolled back (no ``entity_id``) cannot be rescanned —
     nothing to scan.
     """
-    from app.api.store import _plugin_dir
+    from app.api.store import (
+        _plugin_dir,
+        _submission_plugin_dir,
+        _version_no_for_submission,
+    )
     from src.db import get_system_db
     from src.repositories.store_entities import StoreEntitiesRepository
     from src.repositories.store_submissions import StoreSubmissionsRepository
@@ -3809,7 +3853,10 @@ async def admin_rescan_store_submission(
         default_model_loader,
         run_llm_review,
     )
-    from app.instance_config import get_guardrails_enabled
+    from app.instance_config import (
+        get_guardrails_enabled,
+        get_guardrails_llm_provider_ready,
+    )
 
     subs = StoreSubmissionsRepository(conn)
     sub = subs.get(submission_id)
@@ -3819,12 +3866,21 @@ async def admin_rescan_store_submission(
     if not entity_id:
         raise HTTPException(status_code=409, detail="cannot_rescan_without_entity")
 
-    plugin_dir = _plugin_dir(entity_id)
+    ents = StoreEntitiesRepository(conn)
+    entity = ents.get(entity_id)
+    # Rescan the bundle this submission represents — not live. See the
+    # equivalent fix in /retry for the full reasoning. Same fall-back
+    # to live for legacy rows that never seeded a versions/v<N>/plugin/.
+    target_n = _version_no_for_submission(entity or {}, submission_id)
+    if target_n is not None:
+        plugin_dir = _submission_plugin_dir(entity_id, target_n)
+        if not plugin_dir.exists():
+            plugin_dir = _plugin_dir(entity_id)
+    else:
+        plugin_dir = _plugin_dir(entity_id)
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 
-    ents = StoreEntitiesRepository(conn)
-    entity = ents.get(entity_id)
     description = (entity or {}).get("description")
 
     inline = run_inline_checks(
@@ -3849,20 +3905,28 @@ async def admin_rescan_store_submission(
         )
         return {"ok": True, "submission_id": submission_id, "status": "blocked_inline"}
 
-    # Inline passes — schedule LLM if enabled, else auto-approve.
-    guardrails_on = get_guardrails_enabled()
-    new_status = "pending_llm" if guardrails_on else "approved"
+    # Inline passes. Three-state matrix:
+    #   - intent False           → auto-approve (operator opt-out)
+    #   - intent True + ready    → pending_llm, schedule LLM
+    #   - intent True + not-ready → pending_llm, DO NOT schedule (admin
+    #     retries from the same endpoint after providing credentials)
+    guardrails_enabled = get_guardrails_enabled()
+    provider_ready = get_guardrails_llm_provider_ready()
+    hold_for_review = guardrails_enabled
+    schedule_async_llm = guardrails_enabled and provider_ready
+    guardrails_on = hold_for_review  # retained for audit-log compat
+    new_status = "pending_llm" if hold_for_review else "approved"
     subs.conn.execute(
         "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
         "status = ?, updated_at = current_timestamp "
         "WHERE id = ?",
         [__import__("json").dumps(inline.to_response_dict()), new_status, submission_id],
     )
-    if guardrails_on:
+    if hold_for_review:
         ents.set_visibility(entity_id, "pending")
     else:
         ents.set_visibility(entity_id, "approved")
-        # Guardrails off — immediately live; write attribution.
+        # Guardrails explicitly disabled — immediately live; write attribution.
         entity_row = ents.get(entity_id) or {}
         update_flea_attribution(
             conn, entity_id,
@@ -3874,9 +3938,10 @@ async def admin_rescan_store_submission(
         action="store.submission.rescan",
         resource=f"store_submission:{submission_id}",
         params={"entity_id": entity_id, "outcome": new_status,
-                "guardrails_enabled": guardrails_on},
+                "guardrails_enabled": guardrails_on,
+                "provider_ready": provider_ready},
     )
-    if guardrails_on:
+    if schedule_async_llm:
         background.add_task(
             run_llm_review,
             submission_id,
@@ -3895,13 +3960,27 @@ async def admin_retry_store_submission(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Re-queue the LLM review for a submission stuck in ``review_error``.
+    """Re-queue the LLM review for a submission.
+
+    Eligible statuses:
+      * ``review_error`` — LLM call failed, admin retrying after the
+        underlying issue (rate limit, timeout, transient outage) clears.
+      * ``blocked_llm`` — admin disagrees with the prior verdict; rerun
+        from a clean slate (review rules may have shifted since).
+      * ``pending_llm`` — submission was held when the LLM provider had
+        no credentials in env (fail-CLOSED matrix: intent True + not
+        ready). Admin sets the key and re-fires from here.
 
     Only valid when the original submission's plugin tree is still on
     disk — for inline-blocked rows the bundle was deleted at POST time.
     """
-    from app.api.store import _plugin_dir
+    from app.api.store import (
+        _plugin_dir,
+        _submission_plugin_dir,
+        _version_no_for_submission,
+    )
     from src.db import get_system_db
+    from src.repositories.store_entities import StoreEntitiesRepository
     from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails.runner import (
         default_api_key_loader,
@@ -3913,7 +3992,7 @@ async def admin_retry_store_submission(
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
-    if sub["status"] not in {"review_error", "blocked_llm"}:
+    if sub["status"] not in {"review_error", "blocked_llm", "pending_llm"}:
         raise HTTPException(
             status_code=409, detail=f"cannot_retry_status:{sub['status']}",
         )
@@ -3923,7 +4002,22 @@ async def admin_retry_store_submission(
             status_code=409, detail="cannot_retry_without_entity",
         )
 
-    plugin_dir = _plugin_dir(entity_id)
+    # Review the STAGED version's bytes — not live. For a v2+ edit
+    # held at pending_llm or blocked_llm, live `plugin/` still holds
+    # the prior approved version. Reviewing live would produce a
+    # verdict against the wrong bytes; the runner's hash-match
+    # promotion would then advance the entity to staged bytes that
+    # were never actually reviewed.
+    ent = StoreEntitiesRepository(conn).get(entity_id) or {}
+    target_n = _version_no_for_submission(ent, submission_id)
+    if target_n is not None:
+        plugin_dir = _submission_plugin_dir(entity_id, target_n)
+        # Fall back to live for legacy pre-v37 rows where the version
+        # dir was never seeded.
+        if not plugin_dir.exists():
+            plugin_dir = _plugin_dir(entity_id)
+    else:
+        plugin_dir = _plugin_dir(entity_id)
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 

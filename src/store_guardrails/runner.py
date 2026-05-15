@@ -280,8 +280,11 @@ def run_llm_review(
                             except (TypeError, ValueError):
                                 target_version_no = None
                             break
+                    # Forward-only promotion. A late verdict landing for
+                    # an older submission must NOT demote the live bundle
+                    # past a version that was approved more recently.
                     if (target_version_no is not None
-                            and target_version_no != int(ent_row.get("version_no") or 0)):
+                            and target_version_no > int(ent_row.get("version_no") or 0)):
                         if ents_repo.promote_version(entity_id, target_version_no):
                             try:
                                 from app.api.store import _swap_live_to_version

@@ -27,7 +27,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import duckdb
@@ -46,7 +46,10 @@ from pydantic import BaseModel
 
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
-from app.instance_config import get_guardrails_enabled
+from app.instance_config import (
+    get_guardrails_enabled,
+    get_guardrails_llm_provider_ready,
+)
 from app.utils import get_store_dir
 from src.db import get_system_db
 from src.repositories.audit import AuditRepository
@@ -379,6 +382,37 @@ def _entity_dir(entity_id: str) -> Path:
 
 def _plugin_dir(entity_id: str) -> Path:
     return _entity_dir(entity_id) / "plugin"
+
+
+def _submission_plugin_dir(
+    entity_id: str, version_no: int,
+) -> Path:
+    """On-disk path of the bundle a particular submission represents.
+
+    v37+ writes each version's bytes under
+    ``<entity_dir>/versions/v<N>/plugin/``. Live ``plugin/`` mirrors
+    whichever ``v<N>`` is currently promoted. Admin retry / rescan
+    flows MUST review the staged version dir, not live — otherwise a
+    pending v2 retry would re-review v1's bytes, a clean verdict
+    would land, and the runner's hash-match promotion would advance
+    the entity to v2 bytes that were never actually reviewed.
+    """
+    return _entity_dir(entity_id) / "versions" / f"v{int(version_no)}" / "plugin"
+
+
+def _version_no_for_submission(
+    entity_row: Dict[str, Any], submission_id: str,
+) -> Optional[int]:
+    """Locate the version_history entry produced by `submission_id`
+    and return its ``n``. Used by admin retry / rescan / override to
+    pick the right ``versions/v<N>/plugin/`` directory."""
+    for entry in (entity_row.get("version_history") or []):
+        if entry.get("submission_id") == submission_id:
+            try:
+                return int(entry.get("n"))
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _assets_dir(entity_id: str) -> Path:
@@ -1318,11 +1352,22 @@ async def create_entity(
         bundle_meta = compute_bundle_meta(plugin_dir)
         subs_repo = StoreSubmissionsRepository(conn)
 
-        guardrails_on = get_guardrails_enabled()
-        # When the pipeline is disabled (local dev / no ANTHROPIC_API_KEY)
-        # we approve immediately. Inline checks ran above and recorded a
-        # passing verdict; skip the async LLM step and the 'pending' hold.
-        initial_visibility = "approved" if not guardrails_on else "pending"
+        # Three-state matrix (fail-CLOSED on misconfig):
+        #   - intent False           → auto-approve (operator opt-out, e.g. local dev)
+        #   - intent True + ready    → hold for review, schedule LLM async
+        #   - intent True + NOT ready → hold for review, DO NOT auto-approve
+        #     (submission sits at pending_llm; admin can set the key + click
+        #     Retry review or override-publish manually). The previous
+        #     auto-fallback silently approved everything when the env-var
+        #     was missing — a fail-OPEN hole.
+        guardrails_enabled = get_guardrails_enabled()
+        provider_ready = get_guardrails_llm_provider_ready()
+        hold_for_review = guardrails_enabled  # intent drives the hold
+        schedule_async_llm = guardrails_enabled and provider_ready
+        # `guardrails_on` retained for downstream audit-log compat —
+        # historical column meaning is "did the pipeline gate this row".
+        guardrails_on = hold_for_review
+        initial_visibility = "pending" if hold_for_review else "approved"
         photo_rel = await _save_photo(photo, entity_id) if photo else None
         doc_rels = await _save_docs(docs, entity_id)
 
@@ -1369,11 +1414,16 @@ async def create_entity(
                 "guardrails_enabled": guardrails_on,
             },
         )
-        if guardrails_on:
+        if schedule_async_llm:
             _schedule_llm_review(background_tasks, sub_id, plugin_dir)
         elif initial_visibility == "approved":
-            # Guardrails off — entity is immediately live; write attribution now.
+            # Guardrails explicitly disabled in YAML — entity is
+            # immediately live; write attribution now.
             update_flea_attribution(conn, entity_id, type, final_name)
+        # Else: enabled-but-not-ready. Submission sits at pending_llm;
+        # entity stays at visibility=pending. Admin retries from the
+        # admin UI once credentials are present, OR overrides + publishes
+        # the row manually. No silent auto-approval.
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -1703,7 +1753,17 @@ async def update_entity(
     # guardrails disabled the path collapses: submission lands at
     # 'approved' and we promote synchronously below.
     if file is not None and new_version_no is not None and new_version_dir is not None:
-        guardrails_on = get_guardrails_enabled()
+        # Same three-state matrix as the initial-upload path. Hold the
+        # new version (defer promotion) whenever guardrails are enabled
+        # — even when the provider isn't ready. Promotion only fires on
+        # an actual LLM approval OR when the operator explicitly opted
+        # out via `guardrails.enabled: false`. Misconfig (enabled +
+        # no key) sits at pending_llm awaiting admin action.
+        guardrails_enabled = get_guardrails_enabled()
+        provider_ready = get_guardrails_llm_provider_ready()
+        hold_for_review = guardrails_enabled
+        schedule_async_llm = guardrails_enabled and provider_ready
+        guardrails_on = hold_for_review
         subs_repo = StoreSubmissionsRepository(conn)
         from src.store_guardrails.bundle_meta import compute_bundle_meta
         # Hash the NEW version dir, not live (which still holds the
@@ -1715,7 +1775,7 @@ async def update_entity(
             type=entity["type"],
             name=rename_to or entity["name"],
             version=new_version,
-            status="approved" if not guardrails_on else "pending_llm",
+            status="approved" if not hold_for_review else "pending_llm",
             entity_id=entity_id,
             inline_checks=inline_after_update.to_response_dict()
                           if inline_after_update else None,
@@ -1734,20 +1794,21 @@ async def update_entity(
         )
         _audit(
             conn, user["id"],
-            "store.submission.accepted" if guardrails_on else "store.submission.approved",
+            "store.submission.accepted" if hold_for_review else "store.submission.approved",
             sub_id, {"entity_id": entity_id, "on": "update",
                      "version_no": appended_n,
                      "guardrails_enabled": guardrails_on},
         )
-        if guardrails_on:
+        if schedule_async_llm:
             # Live remains at prior approved bundle. LLM reviews the
             # new version dir; runner promotes on approval.
             _schedule_llm_review(
                 background_tasks, sub_id, new_version_dir / "plugin",
             )
-        else:
-            # Guardrails off → implicit approval. Promote inline:
-            # update entity columns + swap live to new version.
+        elif not hold_for_review:
+            # Guardrails explicitly disabled → implicit approval.
+            # Promote inline: update entity columns + swap live to new
+            # version.
             repo.promote_version(entity_id, appended_n)
             _swap_live_to_version(entity_id, appended_n)
             # Live bundle is now the new version; refresh attribution.
@@ -1757,6 +1818,10 @@ async def update_entity(
                 ent_after_swap.get("type") or entity["type"],
                 ent_after_swap.get("name") or (rename_to or entity["name"]),
             )
+        # Else (enabled + not-ready): submission sits at pending_llm,
+        # live continues serving the prior approved version. Admin
+        # retries from /admin/store/submissions once credentials are
+        # provided.
 
     # Use the freshly-appended version number when a bundle change
     # produced one, falling back to the planned new_version_no for
@@ -1847,6 +1912,30 @@ async def restore_version(
             },
         )
 
+    # Refuse to restore a version that was never approved. Look up the
+    # submission that produced version `v<version_no>` and gate on its
+    # status. Legacy v1 (no submission_id — seeded pre-v37) is
+    # back-compat treated as approved. The UI also hides the Restore
+    # button for these statuses, but defense in depth: a direct API
+    # caller bypasses the template.
+    src_sub_id = next(
+        (entry.get("submission_id") for entry in
+            (entity.get("version_history") or [])
+            if int(entry.get("n") or 0) == int(version_no)),
+        None,
+    )
+    if src_sub_id:
+        src_sub = StoreSubmissionsRepository(conn).get(src_sub_id)
+        if src_sub and src_sub.get("status") not in ("approved",):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "version_not_approved",
+                    "version_no": version_no,
+                    "source_status": src_sub.get("status"),
+                },
+            )
+
     # Locate the source version dir.
     source_dir = (
         _entity_dir(entity_id) / "versions" / f"v{version_no}" / "plugin"
@@ -1904,7 +1993,11 @@ async def restore_version(
     # swap + version_no/version/file_size bump) waits on LLM approval.
     from src.store_guardrails.bundle_meta import compute_bundle_meta
     target_meta = compute_bundle_meta(target_plugin)
-    guardrails_on = get_guardrails_enabled()
+    # Same three-state hold-for-review matrix as create/edit.
+    guardrails_enabled = get_guardrails_enabled()
+    provider_ready = get_guardrails_llm_provider_ready()
+    hold_for_review = guardrails_enabled
+    schedule_async_llm = guardrails_enabled and provider_ready
     subs_repo = StoreSubmissionsRepository(conn)
     sub_id = subs_repo.create(
         submitter_id=user["id"],
@@ -1912,7 +2005,7 @@ async def restore_version(
         type=entity["type"],
         name=entity["name"],
         version=new_version,
-        status="approved" if not guardrails_on else "pending_llm",
+        status="approved" if not hold_for_review else "pending_llm",
         entity_id=entity_id,
         inline_checks=inline.to_response_dict(),
         file_size=target_meta.file_size,
@@ -1932,11 +2025,13 @@ async def restore_version(
          "new_version_no": appended_n,
          "submission_id": sub_id},
     )
-    if guardrails_on:
+    if schedule_async_llm:
         _schedule_llm_review(background_tasks, sub_id, target_plugin)
-    else:
+    elif not hold_for_review:
+        # Guardrails explicitly disabled — inline-promote.
         repo.promote_version(entity_id, appended_n)
         _swap_live_to_version(entity_id, appended_n)
+    # Else (enabled + not-ready): defer promotion, await admin retry.
 
     _invalidate_etag()
     return _entity_to_response(conn, repo.get(entity_id))  # type: ignore[arg-type]

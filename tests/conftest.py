@@ -26,6 +26,44 @@ os.makedirs(os.path.join(os.environ["DATA_DIR"], "state"), exist_ok=True)
 
 
 @pytest.fixture(autouse=True)
+def _flea_guardrails_disabled_by_default(monkeypatch):
+    """Default flea-market upload pipeline to OFF for every test.
+
+    Post-v45 publish-gate refactor split operator intent
+    (``guardrails.enabled`` in instance.yaml) from provider readiness
+    (``ANTHROPIC_API_KEY`` in env). Both default to True/False in a
+    test env that has no instance.yaml + no key — so the gate is now
+    ``enabled=True, ready=False`` and every upload sits at
+    ``visibility_status='pending'`` waiting on a non-existent LLM
+    call. That breaks every legacy test that uploads a bundle and
+    expects v1 to be live.
+
+    Default both to False here so legacy tests keep working. Tests
+    that exercise the guardrail-on path override per-test with
+    ``monkeypatch.setattr("app.api.store.get_guardrails_enabled",
+    lambda: True)`` + the matching ``..._llm_provider_ready`` line.
+    """
+    try:
+        # `app.api.store` does a top-level import — patch the bound
+        # symbol there. Existing per-test overrides target the same path.
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: False,
+        )
+    except (AttributeError, ImportError):
+        # app.api.store may not be importable in some test contexts
+        # (e.g. tests that exercise migrations without the full app).
+        pass
+    try:
+        # `app.api.admin` does a function-local import — patch the
+        # source so per-call lookups see the override.
+        monkeypatch.setattr(
+            "app.instance_config.get_guardrails_enabled", lambda: False,
+        )
+    except (AttributeError, ImportError):
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _disable_auth_rate_limit_in_tests():
     """Disable the slowapi auth rate limiter for every test by default.
 
