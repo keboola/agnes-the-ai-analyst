@@ -1,0 +1,195 @@
+"""Repository for ``data_packages`` + ``data_package_tables`` (v49).
+
+A Data Package is an admin-curated bundle of tables (M:N to ``table_registry``)
+that serves as the unit of "Add to stack" on /catalog. Seeded inline from the
+``/admin/tables`` typeahead per Section 7 of the unified-stack design doc.
+
+The FK on ``data_package_tables.package_id REFERENCES data_packages(id)`` does
+not declare ``ON DELETE CASCADE`` (DuckDB constraint surface is narrower than
+Postgres). ``delete()`` clears the junction explicitly so callers don't have
+to remember the order.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+import duckdb
+
+
+class DataPackagesRepository:
+    def __init__(self, conn: duckdb.DuckDBPyConnection):
+        self.conn = conn
+
+    # -- CRUD --------------------------------------------------------------
+
+    def create(
+        self,
+        *,
+        name: str,
+        slug: str,
+        description: Optional[str],
+        icon: Optional[str],
+        color: Optional[str],
+        created_by: str,
+    ) -> str:
+        """Insert a new package; returns the generated id.
+
+        Raises ``duckdb.ConstraintException`` if ``slug`` collides — the
+        UNIQUE constraint on ``data_packages.slug`` is the source of truth
+        (no pre-check race window).
+        """
+        pkg_id = "pkg_" + uuid4().hex[:12]
+        self.conn.execute(
+            "INSERT INTO data_packages(id, slug, name, description, icon, color, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [pkg_id, slug, name, description, icon, color, created_by],
+        )
+        return pkg_id
+
+    def get(self, pkg_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT id, slug, name, description, icon, color, created_by, created_at, updated_at "
+            "FROM data_packages WHERE id = ?",
+            [pkg_id],
+        ).fetchone()
+        if not row:
+            return None
+        cols = [
+            "id", "slug", "name", "description", "icon", "color",
+            "created_by", "created_at", "updated_at",
+        ]
+        return dict(zip(cols, row))
+
+    def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT id FROM data_packages WHERE slug = ?", [slug]
+        ).fetchone()
+        return self.get(row[0]) if row else None
+
+    def list(
+        self,
+        *,
+        search: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        query = (
+            "SELECT id, slug, name, description, icon, color, created_by, "
+            "created_at, updated_at FROM data_packages"
+        )
+        params: List[Any] = []
+        if search:
+            query += " WHERE name ILIKE ?"
+            params.append(f"%{search}%")
+        query += " ORDER BY name LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        cols = [
+            "id", "slug", "name", "description", "icon", "color",
+            "created_by", "created_at", "updated_at",
+        ]
+        return [dict(zip(cols, r)) for r in rows]
+
+    def update(
+        self,
+        pkg_id: str,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        icon: Optional[str] = None,
+        color: Optional[str] = None,
+    ) -> None:
+        fields: List[str] = []
+        params: List[Any] = []
+        if name is not None:
+            fields.append("name = ?")
+            params.append(name)
+        if description is not None:
+            fields.append("description = ?")
+            params.append(description)
+        if icon is not None:
+            fields.append("icon = ?")
+            params.append(icon)
+        if color is not None:
+            fields.append("color = ?")
+            params.append(color)
+        if not fields:
+            return
+        fields.append("updated_at = current_timestamp")
+        params.append(pkg_id)
+        self.conn.execute(
+            f"UPDATE data_packages SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+
+    def delete(self, pkg_id: str) -> None:
+        """Drop the package and its junction rows.
+
+        DuckDB doesn't honor ``ON DELETE CASCADE`` on every FK declaration;
+        we clear ``data_package_tables`` first to keep the invariant that
+        no orphan junction rows survive (other repos / API callers may
+        join through it).
+        """
+        self.conn.execute(
+            "DELETE FROM data_package_tables WHERE package_id = ?", [pkg_id]
+        )
+        self.conn.execute("DELETE FROM data_packages WHERE id = ?", [pkg_id])
+
+    # -- Junction (package ↔ tables) ---------------------------------------
+
+    def add_table(self, pkg_id: str, table_id: str, *, added_by: str) -> bool:
+        """Insert a junction row. Returns True iff a new row was inserted."""
+        before = self.conn.execute(
+            "SELECT 1 FROM data_package_tables WHERE package_id = ? AND table_id = ?",
+            [pkg_id, table_id],
+        ).fetchone()
+        if before:
+            return False
+        self.conn.execute(
+            "INSERT INTO data_package_tables(package_id, table_id, added_by) "
+            "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            [pkg_id, table_id, added_by],
+        )
+        return True
+
+    def remove_table(self, pkg_id: str, table_id: str) -> bool:
+        """Drop a junction row. Returns True iff a row was deleted."""
+        before = self.conn.execute(
+            "SELECT 1 FROM data_package_tables WHERE package_id = ? AND table_id = ?",
+            [pkg_id, table_id],
+        ).fetchone()
+        if not before:
+            return False
+        self.conn.execute(
+            "DELETE FROM data_package_tables WHERE package_id = ? AND table_id = ?",
+            [pkg_id, table_id],
+        )
+        return True
+
+    def list_tables(self, pkg_id: str) -> List[Dict[str, Any]]:
+        """Tables belonging to a package (name-ordered)."""
+        rows = self.conn.execute(
+            "SELECT tr.id, tr.name "
+            "FROM data_package_tables dpt "
+            "JOIN table_registry tr ON tr.id = dpt.table_id "
+            "WHERE dpt.package_id = ? ORDER BY tr.name",
+            [pkg_id],
+        ).fetchall()
+        return [{"id": r[0], "name": r[1]} for r in rows]
+
+    def list_packages_of_table(self, table_id: str) -> List[Dict[str, Any]]:
+        """Packages a given table belongs to (name-ordered)."""
+        rows = self.conn.execute(
+            "SELECT dp.id, dp.slug, dp.name, dp.description, dp.icon, dp.color "
+            "FROM data_package_tables dpt "
+            "JOIN data_packages dp ON dp.id = dpt.package_id "
+            "WHERE dpt.table_id = ? ORDER BY dp.name",
+            [table_id],
+        ).fetchall()
+        return [
+            {
+                "id": r[0], "slug": r[1], "name": r[2],
+                "description": r[3], "icon": r[4], "color": r[5],
+            }
+            for r in rows
+        ]
