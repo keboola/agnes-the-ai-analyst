@@ -8,6 +8,8 @@ import pytest
 
 from tests.helpers.factories import WebhookEventFactory
 
+from connectors.jira.service import JiraFetchError
+
 
 @pytest.fixture
 def jira_env(tmp_path, monkeypatch):
@@ -180,3 +182,64 @@ class TestJiraServiceWebhookProcessing:
             secret.encode("utf-8"), payload, hashlib.sha256
         ).hexdigest()
         assert sig == f"sha256={expected_mac}"
+
+
+class TestFetchRemoteLinks:
+    """fetch_remote_links must raise on auth/server failure to prevent the
+    save_issue overlay from writing [] into cached JSON, which downstream
+    would interpret as 'delete existing remote_links rows for this issue'."""
+
+    def _mock_http(self, status_code, json_body=None):
+        """Build a MagicMock httpx.Client context manager returning a fixed response."""
+        response = MagicMock()
+        response.status_code = status_code
+        response.json.return_value = json_body or []
+        client = MagicMock()
+        client.get.return_value = response
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+        return client
+
+    def test_returns_list_on_200(self, jira_env):
+        service = _make_jira_service(jira_env)
+        with patch("connectors.jira.service.httpx.Client",
+                   return_value=self._mock_http(200, [{"id": "1"}])):
+            assert service.fetch_remote_links("PROJ-1") == [{"id": "1"}]
+
+    def test_returns_empty_on_404(self, jira_env):
+        service = _make_jira_service(jira_env)
+        with patch("connectors.jira.service.httpx.Client",
+                   return_value=self._mock_http(404)):
+            assert service.fetch_remote_links("PROJ-1") == []
+
+    def test_raises_on_401(self, jira_env):
+        service = _make_jira_service(jira_env)
+        with patch("connectors.jira.service.httpx.Client",
+                   return_value=self._mock_http(401)):
+            with pytest.raises(JiraFetchError, match="auth"):
+                service.fetch_remote_links("PROJ-1")
+
+    def test_raises_on_403(self, jira_env):
+        service = _make_jira_service(jira_env)
+        with patch("connectors.jira.service.httpx.Client",
+                   return_value=self._mock_http(403)):
+            with pytest.raises(JiraFetchError, match="auth"):
+                service.fetch_remote_links("PROJ-1")
+
+    def test_raises_on_500(self, jira_env):
+        service = _make_jira_service(jira_env)
+        with patch("connectors.jira.service.httpx.Client",
+                   return_value=self._mock_http(500)):
+            with pytest.raises(JiraFetchError, match="server"):
+                service.fetch_remote_links("PROJ-1")
+
+    def test_raises_on_request_error(self, jira_env):
+        import httpx
+        service = _make_jira_service(jira_env)
+        client = MagicMock()
+        client.get.side_effect = httpx.RequestError("connection reset")
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+        with patch("connectors.jira.service.httpx.Client", return_value=client):
+            with pytest.raises(JiraFetchError, match="connection"):
+                service.fetch_remote_links("PROJ-1")

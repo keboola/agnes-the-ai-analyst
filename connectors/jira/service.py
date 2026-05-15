@@ -217,11 +217,13 @@ class JiraService:
         """
         Fetch remote links for an issue from Jira.
 
-        Args:
-            issue_key: Issue key (e.g., "KSP-123")
-
-        Returns:
-            List of remote link dicts, empty list on failure
+        Returns the list of remote links on 200; an empty list on 404
+        (issue legitimately has no remote links). Raises JiraFetchError
+        on auth (401/403) or server (5xx) failure or any httpx.RequestError,
+        so callers that overlay this onto cached issue data can skip the
+        overlay instead of wiping existing rows. Other 4xx (e.g. 429 rate
+        limit) are logged and return [] — those are transient and shouldn't
+        escalate.
         """
         if not self.is_configured():
             return []
@@ -235,21 +237,30 @@ class JiraService:
                     auth=self.auth,
                     headers={"Accept": "application/json"},
                 )
-
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                return []
-            else:
-                logger.warning(
-                    f"Failed to fetch remote links for {issue_key}: "
-                    f"{response.status_code}"
-                )
-                return []
-
         except httpx.RequestError as e:
-            logger.warning(f"Request error fetching remote links for {issue_key}: {e}")
+            raise JiraFetchError(
+                f"Remote-links fetch for {issue_key} failed: connection — {e}"
+            ) from e
+
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code == 404:
             return []
+        if response.status_code in (401, 403):
+            raise JiraFetchError(
+                f"Remote-links fetch for {issue_key} failed: auth error "
+                f"({response.status_code}) — token may be expired/revoked"
+            )
+        if response.status_code >= 500:
+            raise JiraFetchError(
+                f"Remote-links fetch for {issue_key} failed: server error "
+                f"({response.status_code})"
+            )
+        logger.warning(
+            f"Failed to fetch remote links for {issue_key}: "
+            f"{response.status_code}"
+        )
+        return []
 
     def save_issue(self, issue_data: dict[str, Any]) -> Path | None:
         """
