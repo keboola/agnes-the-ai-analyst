@@ -756,7 +756,68 @@ async def admin_mandate(
     _audit_action(conn, user["email"], "mandate", item_id, {
         "reason": request.reason, "audience": request.audience,
     })
+    # v49 Section 9.1 — spec table maps both mark-mandatory and the legacy
+    # mandate endpoint to the canonical ``memory_item.set_required`` action
+    # with a boolean payload so audit consumers can stop splitting on path.
+    try:
+        AuditRepository(conn).log(
+            user_id=user["email"],
+            action="memory_item.set_required",
+            resource=f"knowledge_item:{item_id}",
+            params={"new_value": True},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "is_required": True, "status": "mandatory"}
+
+
+@router.post("/items/{item_id}/mark-mandatory")
+async def mark_mandatory(
+    item_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Promote an item to required (``is_required = TRUE``).
+
+    v49: explicit path-segment variant of the legacy ``/admin/mandate`` query-
+    param endpoint, matching the spec's Section 6 mapping table. Same audit
+    pattern but no audience / reason fields — those stay on /admin/mandate.
+    """
+    repo = KnowledgeRepository(conn)
+    _get_item_or_404(repo, item_id)
+    repo.set_is_required(item_id, True)
+    AuditRepository(conn).log(
+        user_id=user["email"],
+        action="memory_item.set_required",
+        resource=f"knowledge_item:{item_id}",
+        params={"new_value": True},
+    )
+    return {"id": item_id, "is_required": True}
+
+
+@router.post("/items/{item_id}/mark-unmandatory")
+async def mark_unmandatory(
+    item_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Demote an item from required (``is_required = FALSE``).
+
+    v49 — inverse of mark-mandatory. The item stays in the catalog with its
+    existing ``status`` (typically ``approved``); only the required-tier flag
+    flips. Audit row writes ``memory_item.set_required`` with
+    ``{new_value: false}``.
+    """
+    repo = KnowledgeRepository(conn)
+    _get_item_or_404(repo, item_id)
+    repo.set_is_required(item_id, False)
+    AuditRepository(conn).log(
+        user_id=user["email"],
+        action="memory_item.set_required",
+        resource=f"knowledge_item:{item_id}",
+        params={"new_value": False},
+    )
+    return {"id": item_id, "is_required": False}
 
 
 @router.post("/admin/revoke")
