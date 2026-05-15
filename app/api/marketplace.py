@@ -1859,6 +1859,30 @@ def _curated_inner_parent_fields(
     }
 
 
+def _flea_inner_parent_fields(
+    conn: duckdb.DuckDBPyConnection, entity: dict,
+) -> Dict[str, Any]:
+    """Flea sibling of ``_curated_inner_parent_fields``: build the parent-plugin
+    metadata block for an inner skill/agent that lives inside a flea plugin
+    entity. Sourced entirely from ``store_entities`` columns — no curator
+    enrichment file convention exists for flea bundles yet, so the same
+    fallbacks the flea plugin detail hero uses (strip_archive_suffix on
+    entity.name, owner display, entity.updated_at) populate the response.
+    """
+    from src.store_naming import strip_archive_suffix
+    owner_display = _resolve_owner_display(
+        conn, entity["owner_user_id"], entity.get("owner_username") or "",
+    )
+    return {
+        "marketplace_name": "Flea Market",
+        "category": entity.get("category"),
+        "parent_author_name": owner_display or OWNER_TODO_PLACEHOLDER,
+        "parent_updated_at": _to_iso(entity.get("updated_at")),
+        "manifest_name": entity["name"],
+        "parent_display_name": strip_archive_suffix(entity["name"]),
+    }
+
+
 def _load_mirror_manifest(marketplace_id: str) -> Dict[Tuple[str, str], Any]:
     """Read the asset-mirror manifest for one marketplace, keyed by
     ``(plugin_name, url)``.
@@ -2345,6 +2369,108 @@ async def curated_agent_detail(
         telemetry=telemetry,
         parent_stack_count=parent_stack_count,
         **merged,
+    )
+
+
+@router.get(
+    "/flea/{entity_id}/skill/{skill_name}",
+    response_model=InnerDetailResponse,
+)
+async def flea_skill_detail(
+    entity_id: str,
+    skill_name: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Inner skill detail for a skill nested inside a flea plugin entity.
+
+    Mirror of ``curated_skill_detail`` for the flea bundle root layout
+    (``${DATA_DIR}/store/<entity_id>/plugin/``). Visibility gate matches
+    the standalone flea_detail handler — owner / admin see quarantined
+    entities, everyone else gets 404.
+    """
+    from app.api.store import _enforce_visibility
+    from app.utils import get_store_dir
+    entity = StoreEntitiesRepository(conn).get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    _enforce_visibility(entity, user, conn)
+    plugin_root = Path(get_store_dir()) / entity_id / "plugin"
+    res = _read_inner(plugin_root, "skills", skill_name, is_dir_layout=True)
+    skill_dir = _safe_join(plugin_root, "skills", skill_name)
+    if res is None or skill_dir is None:
+        raise HTTPException(status_code=404, detail="skill_not_found")
+    text, relpath = res
+    fm = _parse_frontmatter(text)
+    parent = _flea_inner_parent_fields(conn, entity)
+    telemetry = _load_inner_item_stats(
+        conn, "flea", parent_plugin=entity["name"], name=skill_name, item_type="skill",
+    )
+    return InnerDetailResponse(
+        marketplace_id="",
+        plugin_name=entity["name"],
+        kind="skill",
+        name=fm.get("name") or skill_name,
+        description=fm.get("description"),
+        body=_frontmatter_body(text),
+        relpath=relpath,
+        bundle_size=_bundle_size(skill_dir),
+        files=_walk_files(skill_dir),
+        telemetry=telemetry,
+        parent_stack_count=int(entity.get("install_count") or 0),
+        **parent,
+    )
+
+
+@router.get(
+    "/flea/{entity_id}/agent/{agent_name}",
+    response_model=InnerDetailResponse,
+)
+async def flea_agent_detail(
+    entity_id: str,
+    agent_name: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Inner agent detail for an agent nested inside a flea plugin entity.
+
+    Mirror of ``curated_agent_detail``. Agents are flat single-file .md
+    so ``bundle_size`` is the file size and ``files`` is a single entry.
+    """
+    from app.api.store import _enforce_visibility
+    from app.utils import get_store_dir
+    entity = StoreEntitiesRepository(conn).get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    _enforce_visibility(entity, user, conn)
+    plugin_root = Path(get_store_dir()) / entity_id / "plugin"
+    res = _read_inner(plugin_root, "agents", agent_name, is_dir_layout=False)
+    agent_path = _safe_join(plugin_root, "agents", f"{agent_name}.md")
+    if res is None or agent_path is None:
+        raise HTTPException(status_code=404, detail="agent_not_found")
+    text, relpath = res
+    fm = _parse_frontmatter(text)
+    try:
+        agent_size = agent_path.stat().st_size
+    except OSError:
+        agent_size = 0
+    parent = _flea_inner_parent_fields(conn, entity)
+    telemetry = _load_inner_item_stats(
+        conn, "flea", parent_plugin=entity["name"], name=agent_name, item_type="agent",
+    )
+    return InnerDetailResponse(
+        marketplace_id="",
+        plugin_name=entity["name"],
+        kind="agent",
+        name=fm.get("name") or agent_name,
+        description=fm.get("description"),
+        body=_frontmatter_body(text),
+        relpath=relpath,
+        bundle_size=agent_size,
+        files=[FileEntry(path=f"{agent_name}.md", size=agent_size)],
+        telemetry=telemetry,
+        parent_stack_count=int(entity.get("install_count") or 0),
+        **parent,
     )
 
 
