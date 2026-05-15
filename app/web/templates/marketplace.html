@@ -596,7 +596,7 @@ function renderCategories(items) {
   allBtn.textContent = 'All';
   allBtn.addEventListener('click', () => {
     state.category = null; state.page = 1; syncURL();
-    renderCategories(items); loadItems();
+    renderCategories(items); loadItems(); loadMostPopular();
   });
   row.appendChild(allBtn);
   for (const c of items) {
@@ -606,7 +606,7 @@ function renderCategories(items) {
     btn.innerHTML = `${categorySVG(c.name)} ${esc(c.name)} <span class="count">${c.count}</span>`;
     btn.addEventListener('click', () => {
       state.category = c.name; state.page = 1; syncURL();
-      renderCategories(items); loadItems();
+      renderCategories(items); loadItems(); loadMostPopular();
     });
     row.appendChild(btn);
   }
@@ -975,6 +975,7 @@ function runSearch() {
   state.page = 1;
   syncURL();
   loadItems();
+  loadMostPopular();
 }
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
