@@ -1365,6 +1365,101 @@ class TestAdminBundleDownload:
         )
         assert r.status_code == 403
 
+    def test_download_v2_blocked_returns_staged_bundle_not_live(
+        self, web_client, monkeypatch,
+    ):
+        """Codex adversarial review [LOW]: pre-fix the download
+        streamed live `plugin/` bytes regardless of which submission
+        was being inspected. Under deferred promotion (v37+), live
+        holds the prior approved version's bytes — so downloading a
+        blocked v2 returned v1's safe bundle while the admin was
+        deciding whether to override the *staged* v2's risky bytes.
+        Fixed: resolve the staged `versions/v<N>/plugin/` per
+        submission via `_version_no_for_submission`."""
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-dl-test")
+        user_id, user_cookies = _create_user(web_client, "dl-stage@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("dlstage"), "application/zip")},
+            data={"type": "skill",
+                  "description": (
+                      "Use when verifying admin forensic download "
+                      "serves staged version bytes for v2 blocked "
+                      "submissions instead of the live prior version"
+                  )},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+
+        # PUT v2 with mocked LLM block.
+        def mock_block(*a, **kw):
+            return {
+                "risk_level": "high", "summary": "mock block",
+                "findings": [{"severity": "high", "category": "test",
+                              "file": "x", "explanation": "mock"}],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_block,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+        import io as _io
+        import zipfile as _zip
+        v2_marker = "V2_STAGED_PAYLOAD_UNIQUE_TOKEN"
+        buf = _io.BytesIO()
+        with _zip.ZipFile(buf, "w") as zf:
+            zf.writestr(
+                "dlstage/SKILL.md",
+                "---\nname: dlstage\ndescription: "
+                "Use when verifying admin download returns staged bytes for v2 blocked submissions\n---\n\n"
+                + (f"{v2_marker}. Body content long enough to clear the inline content-quality threshold for skill bodies. " * 3),
+            )
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", buf.getvalue(), "application/zip")},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        # Confirm v2 sub is blocked + entity stayed at v1 (live = v1 bytes).
+        conn = get_system_db()
+        v2_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        v2_sub = StoreSubmissionsRepository(conn).get(v2_sub_id)
+        ent = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert v2_sub["status"] == "blocked_llm"
+        assert ent["version_no"] == 1
+
+        # Admin downloads the v2 submission's bundle. Must serve the
+        # STAGED v2 bytes (contain v2_marker), NOT live v1 (which
+        # doesn't).
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.get(
+            f"/api/admin/store/submissions/{v2_sub_id}/bundle.zip",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            blob = b""
+            for n in zf.namelist():
+                blob += zf.read(n)
+        assert v2_marker.encode() in blob, (
+            "admin download must return STAGED v2 bytes "
+            "(missing the v2-only marker — got live v1 bytes instead)"
+        )
+
 
 class TestAdminSortBySize:
     def test_sort_file_size_asc_desc(self, web_client):

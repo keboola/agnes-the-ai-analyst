@@ -1408,3 +1408,49 @@ class TestPublishGateFailClosed:
         conn.close()
         assert ent["visibility_status"] == "approved"
         assert sub["status"] == "approved"
+
+
+class TestAtomicPromote:
+    """Codex adversarial review [MEDIUM]: pre-fix sequence was
+    ``repo.promote_version(...)`` → ``_swap_live_to_version(...)``.
+    If the source ``versions/v<N>/plugin/`` was missing,
+    ``_swap_live_to_version`` returned False silently — leaving DB
+    at the new version but live still on the prior bytes.
+
+    Fix: a ``promote_to_version`` helper that swaps live FIRST, then
+    promotes the DB. Missing source → return None, no DB change."""
+
+    def test_missing_source_dir_does_not_advance_db(self, web_client):
+        """Promote with a missing version dir must leave both DB and
+        live untouched."""
+        from app.api.store import promote_to_version, _plugin_dir
+        from src.repositories.store_entities import StoreEntitiesRepository
+
+        user_id, _ = _create_user(web_client, "atomic@x.com")
+        conn = get_system_db()
+        repo = StoreEntitiesRepository(conn)
+        repo.create(
+            id="ent-atomic", owner_user_id=user_id, owner_username="atomic",
+            type="skill", name="atomic", description="x" * 40,
+            category=None, version="aaaaaaaaaaaaaaaa", file_size=10,
+            visibility_status="approved",
+        )
+        # Inject a v2 history entry without creating the on-disk dir
+        # — simulates the "DB has entry, bundle wiped" inconsistency.
+        repo.append_version_history(
+            "ent-atomic", version_hash="bbbbbbbbbbbbbbbb",
+            sha256=None, size=20, submission_id="fake-sub", created_by=user_id,
+        )
+        conn.close()
+
+        # Attempt to promote to v2 — version dir doesn't exist.
+        conn = get_system_db()
+        repo = StoreEntitiesRepository(conn)
+        result = promote_to_version("ent-atomic", 2, repo)
+        ent_after = repo.get("ent-atomic")
+        conn.close()
+        assert result is None, "must signal failure when source missing"
+        assert ent_after["version_no"] == 1, (
+            f"DB must NOT advance when live swap can't happen; got "
+            f"version_no={ent_after['version_no']}"
+        )

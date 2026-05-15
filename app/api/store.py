@@ -790,6 +790,64 @@ def _write_synth_plugin_json(
 
 
 
+def promote_to_version(
+    entity_id: str,
+    target_version_no: int,
+    repo: StoreEntitiesRepository,
+) -> Optional[int]:
+    """Atomic-ish promotion: swap live bundle FIRST, then update DB.
+
+    Returns the promoted version number on success, ``None`` when the
+    source bundle is missing or the swap failed. The DB row only moves
+    forward after the live dir is in place — eliminating the
+    "DB promoted but live still on prior bytes" inconsistency
+    surfaced by the adversarial review.
+
+    Failure modes:
+        * Source ``versions/v<N>/plugin/`` missing → return None,
+          no DB change, no live change.
+        * Swap raises mid-rename → live is restored from backup
+          (handled inside ``_swap_live_to_version``); DB untouched.
+        * DB ``promote_version`` reports no row updated (entity gone) →
+          best-effort swap back to prior version so live + DB stay
+          consistent.
+    """
+    source = _entity_dir(entity_id) / "versions" / f"v{int(target_version_no)}" / "plugin"
+    if not source.is_dir():
+        logger.error(
+            "promote_to_version: source missing for entity %s v%d at %s",
+            entity_id, target_version_no, source,
+        )
+        return None
+    prior_row = repo.get(entity_id) or {}
+    prior_n = int(prior_row.get("version_no") or 0)
+    try:
+        ok = _swap_live_to_version(entity_id, target_version_no)
+    except OSError:
+        logger.exception(
+            "promote_to_version: live swap raised for entity %s v%d",
+            entity_id, target_version_no,
+        )
+        return None
+    if not ok:
+        return None
+    if not repo.promote_version(entity_id, target_version_no):
+        # DB row vanished mid-flight (rare: hard-delete between our
+        # earlier `.get()` and the promote). Roll live back to the
+        # prior version to keep on-disk and (still-absent) DB
+        # consistent for the next caller.
+        if prior_n:
+            try:
+                _swap_live_to_version(entity_id, prior_n)
+            except Exception:
+                logger.exception(
+                    "promote_to_version: rollback swap failed for entity %s",
+                    entity_id,
+                )
+        return None
+    return int(target_version_no)
+
+
 def _swap_live_to_version(entity_id: str, version_no: int) -> bool:
     """Replace the live ``plugin/`` dir with a copy of the named
     version's contents. Used by the guardrails-disabled promote path
@@ -1566,7 +1624,19 @@ async def update_entity(
         tmp.close()
         scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
         existing_plugin = _plugin_dir(entity_id)
-        new_version_no = int(entity.get("version_no") or 1) + 1
+        # New version number is max(version_history.n) + 1, NOT
+        # entity.version_no + 1. Under deferred promotion (v37+),
+        # entity.version_no stays at the last *approved* version while
+        # version_history accumulates blocked / errored / pending
+        # entries. Deriving from version_no would overwrite an
+        # in-flight (blocked or pending) version dir on the next PUT
+        # — and the runner's hash-match promotion would then load
+        # bytes that don't match the recorded submission. Bug surfaced
+        # by adversarial review (M2 / atomic promotion).
+        history_ns = [
+            int(e.get("n") or 0) for e in (entity.get("version_history") or [])
+        ]
+        new_version_no = (max(history_ns) if history_ns else int(entity.get("version_no") or 1)) + 1
         version_root = _entity_dir(entity_id) / "versions" / f"v{new_version_no}"
         staging_plugin = version_root / "plugin"
         new_version_dir = version_root  # exposed to outer scope
@@ -1807,10 +1877,10 @@ async def update_entity(
             )
         elif not hold_for_review:
             # Guardrails explicitly disabled → implicit approval.
-            # Promote inline: update entity columns + swap live to new
-            # version.
-            repo.promote_version(entity_id, appended_n)
-            _swap_live_to_version(entity_id, appended_n)
+            # Promote inline via the atomic helper: swap-first then
+            # DB-promote so a missing source / mid-rename failure
+            # never leaves the DB ahead of the on-disk bundle.
+            promote_to_version(entity_id, appended_n, repo)
             # Live bundle is now the new version; refresh attribution.
             ent_after_swap = repo.get(entity_id) or {}
             update_flea_attribution(
@@ -1958,7 +2028,13 @@ async def restore_version(
         )
 
     # Copy source → new version dir, run guardrails, swap live.
-    new_version_no = int(entity.get("version_no") or 1) + 1
+    # Derive from max(version_history.n) so deferred-promotion blocked
+    # / errored entries don't get overwritten. Same fix as the PUT
+    # path above.
+    history_ns = [
+        int(e.get("n") or 0) for e in (entity.get("version_history") or [])
+    ]
+    new_version_no = (max(history_ns) if history_ns else int(entity.get("version_no") or 1)) + 1
     target_root = _entity_dir(entity_id) / "versions" / f"v{new_version_no}"
     target_plugin = target_root / "plugin"
     if target_plugin.exists():
@@ -2028,9 +2104,8 @@ async def restore_version(
     if schedule_async_llm:
         _schedule_llm_review(background_tasks, sub_id, target_plugin)
     elif not hold_for_review:
-        # Guardrails explicitly disabled — inline-promote.
-        repo.promote_version(entity_id, appended_n)
-        _swap_live_to_version(entity_id, appended_n)
+        # Guardrails explicitly disabled — inline-promote atomically.
+        promote_to_version(entity_id, appended_n, repo)
     # Else (enabled + not-ready): defer promotion, await admin retry.
 
     _invalidate_etag()

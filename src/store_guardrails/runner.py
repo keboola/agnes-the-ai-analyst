@@ -285,16 +285,14 @@ def run_llm_review(
                     # past a version that was approved more recently.
                     if (target_version_no is not None
                             and target_version_no > int(ent_row.get("version_no") or 0)):
-                        if ents_repo.promote_version(entity_id, target_version_no):
-                            try:
-                                from app.api.store import _swap_live_to_version
-                                _swap_live_to_version(entity_id, target_version_no)
-                                promoted_to = target_version_no
-                            except Exception:
-                                logger.exception(
-                                    "promote_version live swap failed for entity %s v%d",
-                                    entity_id, target_version_no,
-                                )
+                        # Atomic helper: swap live bundle first, then
+                        # update the DB. Eliminates the
+                        # "DB promoted but live still on prior bytes"
+                        # window flagged by adversarial review.
+                        from app.api.store import promote_to_version
+                        promoted_to = promote_to_version(
+                            entity_id, target_version_no, ents_repo,
+                        )
                 else:
                     # Entity left the serve-able states between BG
                     # task start + verdict-write. Record so admin
