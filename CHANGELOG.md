@@ -10,6 +10,43 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Flea-market: derive next version_no from `max(version_history.n) + 1`
+  instead of `entity.version_no + 1` in PUT (edit) + restore. Under
+  deferred promotion (v37+) `entity.version_no` stays at the last
+  *approved* version while `version_history` accumulates blocked /
+  errored / pending entries — so the previous derivation would
+  overwrite an in-flight blocked v2 dir on the next PUT, and the
+  runner's hash-match promotion would then load bytes that don't
+  match the recorded submission. Surfaced by the adversarial review
+  while fixing the atomic-promote ordering.
+- Flea-market live-bundle swap + DB promote is now atomic-ish via a
+  new `promote_to_version` helper that swaps live FIRST and only
+  advances `entity.version_no` after the on-disk swap succeeds.
+  Pre-fix the runner / override / inline-promote paths called
+  `repo.promote_version` then `_swap_live_to_version`. A missing
+  source dir made the swap silently return False — leaving the DB
+  ahead of live. Helper now refuses on missing source and rolls back
+  live to the prior version if the DB promote fails. (Medium —
+  surfaced by adversarial review.)
+- Flea-market LLM prompt: file PATHS in the per-file
+  `--- FILE: {rel} ---` header now go through the same
+  `<bundle>` / `</bundle>` escape as file BODIES. Pre-fix only the
+  bodies were escaped — a ZIP whose relative path concatenated to
+  `</bundle>` (a `<` directory + `bundle>` child) could forge the
+  trust-boundary close tag from inside the path slot and inject
+  apparent system instructions after the apparent boundary.
+  (Medium — surfaced by adversarial review.)
+- Flea-market admin forensic download
+  (`GET /api/admin/store/submissions/{id}/bundle.zip`) now returns
+  the STAGED bundle bytes the submission represents, not live.
+  Pre-fix downloading a blocked v2 submission streamed live's prior
+  approved v1 bytes — admins reviewing whether to override saw safe
+  bytes instead of the risky staged bytes they were deciding about.
+  Resolves staged `versions/v<N>/plugin/` via
+  `_version_no_for_submission`; falls back to live for legacy rows.
+  (Low — surfaced by adversarial review.)
+
 ### Changed
 - **BREAKING (operator-facing)**: flea-market guardrail pipeline now
   fail-CLOSED on misconfig. `get_guardrails_enabled()` previously

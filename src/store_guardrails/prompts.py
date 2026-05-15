@@ -221,21 +221,21 @@ def build_review_prompt(
     truncated = False
 
     for rel, body in _ranked_text_files(plugin_dir):
-        chunk_header = f"\n--- FILE: {rel} ---\n"
+        # Escape literal <bundle>/</bundle> tags in BOTH the file path
+        # AND the file body so a ZIP member named `</bundle>` or a
+        # crafted README can't forge a close tag, escape the sentinel,
+        # and inject instructions the model would read as outside the
+        # trust boundary. The system prompt declares the tags as the
+        # boundary; we have to keep them unique. Pre-fix, only file
+        # bodies were escaped — a filename containing `</bundle>`
+        # would bypass the boundary (adversarial-review finding).
+        safe_rel = _escape_sentinels(rel)
+        chunk_header = f"\n--- FILE: {safe_rel} ---\n"
         # Per-file head clip.
         chunk_body = body[:PER_FILE_HEAD_BYTES]
         if len(body) > PER_FILE_HEAD_BYTES:
             chunk_body += f"\n[... truncated {len(body) - PER_FILE_HEAD_BYTES} bytes ...]\n"
-        # Escape any literal <bundle>/</bundle> tags inside user content so
-        # an adversarial README can't forge a close tag, escape the
-        # sentinel, and inject instructions that the model would read as
-        # outside the trust boundary. The system prompt declares the
-        # tags as the boundary; we have to keep them unique.
-        chunk_body = (
-            chunk_body
-            .replace("</bundle>", "</_bundle_>")
-            .replace("<bundle>", "<_bundle_>")
-        )
+        chunk_body = _escape_sentinels(chunk_body)
         chunk = chunk_header + chunk_body
         if used + len(chunk) > MAX_REVIEW_BYTES:
             truncated = True
@@ -252,6 +252,25 @@ def build_review_prompt(
 
     parts.append("\n</bundle>\n")
     return "".join(parts)
+
+
+def _escape_sentinels(text: str) -> str:
+    """Neutralize literal ``<bundle>`` / ``</bundle>`` tags in any
+    untrusted bundle content (file bodies AND file paths).
+
+    The system prompt declares the ``<bundle>`` sentinels as the
+    trust boundary. If any content inside that boundary forges a
+    matching close tag, the model could be tricked into reading
+    subsequent text as outside the boundary — and following
+    instructions there. The substitution keeps each occurrence
+    visible to the reviewer (so it can be flagged) while preventing
+    the trust-boundary forgery.
+    """
+    return (
+        text
+        .replace("</bundle>", "</_bundle_>")
+        .replace("<bundle>", "<_bundle_>")
+    )
 
 
 # Files sorted by a "scan first" heuristic — manifests + docs + scripts
