@@ -931,6 +931,104 @@ async def catalog(
     return templates.TemplateResponse(request, "catalog.html", ctx)
 
 
+@router.get("/catalog/p/{slug}", response_class=HTMLResponse)
+async def catalog_package_detail(
+    slug: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-package drill-down — header + table list (Task 8.3 of v49 plan).
+
+    RBAC: admin god-mode or grant on this package. The page mirrors the
+    surface of ``GET /api/data-packages/{slug}`` (which carries the
+    telemetry emit + audit-log path) — the JS side also issues GET on
+    that endpoint so behavior is identical regardless of entry point.
+    """
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+    from app.services.stack_resolver import StackResolver
+    from src.repositories.data_packages import DataPackagesRepository
+    from src.repositories.sync_state import SyncStateRepository
+    from src.repositories.table_registry import TableRegistryRepository
+    from src.repositories.usage import UsageRepository
+
+    pkg_repo = DataPackagesRepository(conn)
+    pkg = pkg_repo.get_by_slug(slug)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+
+    # Admin bypass via is_user_admin; otherwise require a grant (any tier).
+    if not (is_user_admin(user["id"], conn) or
+            can_access(user["id"], ResourceType.DATA_PACKAGE.value, pkg["id"], conn)):
+        raise HTTPException(status_code=403, detail="access_denied")
+
+    # Telemetry: emit data_package.view (Section 9.2). source=browse|my-stack
+    # passed as ?source=…; default 'direct' for typed/bookmarked navigation.
+    source_hint = request.query_params.get("source", "direct")
+    try:
+        UsageRepository(conn).emit_server_event(
+            event_type="data_package.view",
+            user_id=user["id"],
+            username=user.get("email") or user["id"],
+            props={"slug": slug, "source": source_hint},
+        )
+    except Exception:
+        logger.warning("usage_events emit failed for data_package.view")
+
+    resolver = StackResolver(conn)
+    effective_required = resolver.is_required(
+        user["id"], ResourceType.DATA_PACKAGE, pkg["id"]
+    )
+    # In-stack iff required OR a subscription row exists.
+    in_stack = effective_required or bool(conn.execute(
+        "SELECT 1 FROM user_stack_subscriptions "
+        "WHERE user_id = ? AND resource_type = 'data_package' AND resource_id = ?",
+        [user["id"], pkg["id"]],
+    ).fetchone())
+
+    # Hydrate tables with query_mode + last_sync from registry + sync_state.
+    table_rows = pkg_repo.list_tables(pkg["id"])
+    table_repo = TableRegistryRepository(conn)
+    sync_states = {s["table_id"]: s for s in SyncStateRepository(conn).get_all_states()}
+    tables = []
+    for tr in table_rows:
+        full = table_repo.get(tr["id"]) or {}
+        st = sync_states.get(tr["id"]) or {}
+        size = st.get("file_size_bytes") or 0
+        tables.append({
+            "id": tr["id"],
+            "name": tr["name"],
+            "query_mode": full.get("query_mode") or "local",
+            "last_sync_display": (str(st.get("last_sync"))[:19] if st.get("last_sync") else None),
+            "size_display": _human_size(size) if size else None,
+            "size_bytes": size,
+        })
+
+    total_size = sum(t["size_bytes"] for t in tables)
+    ctx = _build_context(
+        request, user=user,
+        pkg=pkg,
+        tables=tables,
+        effective_requirement="required" if effective_required else "available",
+        in_stack=in_stack,
+        total_size_bytes=total_size,
+        total_size_display=_human_size(total_size) if total_size else None,
+    )
+    return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
+
+
+def _human_size(n: int) -> str:
+    """Format bytes as a short human string. Mirrors the format used on
+    the marketplace card meta line."""
+    if not n:
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}".replace(".0 ", " ")
+        n /= 1024
+    return f"{n:.1f} PB"
+
 
 @router.get("/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory(
