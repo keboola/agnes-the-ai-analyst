@@ -30,7 +30,7 @@
            sits in the primary nav next to Data Packages, visible to all
            authenticated users. The admin review queue is separate:
            /admin/corporate-memory, in the Admin dropdown below. #}
-        <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory">Curated Memory</a>
+        <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory">Memory</a>
 
         {# Admin menu: admin-only. Backend gates the routes via
            require_admin (see app/web/router.py for /admin/*, including
@@ -78,7 +78,7 @@
                    template injected into each workspace. #}
                 <div class="app-nav-menu-section">Agent Experience</div>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Memory Review</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Init Prompt</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Workspace Prompt</a>
