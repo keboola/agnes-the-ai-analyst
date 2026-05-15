@@ -112,6 +112,7 @@ from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.data_packages import router as data_packages_router
 from app.api.memory_domains import router as memory_domains_router
+from app.api.stack import router as stack_router
 from app.api.initial_workspace import router as initial_workspace_router
 from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
@@ -673,6 +674,7 @@ def create_app() -> FastAPI:
     app.include_router(marketplaces_router)
     app.include_router(data_packages_router)
     app.include_router(memory_domains_router)
+    app.include_router(stack_router)
     app.include_router(initial_workspace_router)
     app.include_router(store_router)
     app.include_router(my_stack_router)
