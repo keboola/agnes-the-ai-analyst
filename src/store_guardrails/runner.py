@@ -283,18 +283,25 @@ def run_llm_review(
                 # serve-able state. Archive / hidden-by-admin paths
                 # leave alone.
                 if current_visibility == "approved":
-                    # v46: attribution lookup is live — the next
-                    # UsageProcessor tick preloads the approved entity by name.
-                    sub_row = subs_repo.get(submission_id) or {}
-                    sub_hash = sub_row.get("version")
-                    target_version_no = None
-                    for entry in (ent_row.get("version_history") or []):
-                        if entry.get("hash") == sub_hash:
-                            try:
-                                target_version_no = int(entry.get("n"))
-                            except (TypeError, ValueError):
-                                target_version_no = None
-                            break
+                    # v48 (#329): attribution lookup is live — the next
+                    # UsageProcessor tick preloads the approved entity by
+                    # name against marketplace_plugins / store_entities;
+                    # no cached attribution rows to refresh on promote.
+                    # Look up THIS submission's version entry by
+                    # submission_id, NOT by hash. Hash-based lookup
+                    # breaks when a user re-uploads byte-identical
+                    # bundles (e.g. v2 same content as v1): the loop
+                    # picks the FIRST history entry with that hash
+                    # (always v1, n=1), so `target_version_no` lands at
+                    # 1 instead of the actual new entry's n. The
+                    # forward-only `target > current` guard then skips
+                    # the promote, leaving the entity stuck at v1.
+                    # Surfaced live on a development deployment with
+                    # an entity that had 5+ identical-hash history rows.
+                    from app.api.store import _version_no_for_submission
+                    target_version_no = _version_no_for_submission(
+                        ent_row, submission_id,
+                    )
                     # Forward-only promotion. A late verdict landing for
                     # an older submission must NOT demote the live bundle
                     # past a version that was approved more recently.
