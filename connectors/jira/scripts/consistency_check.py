@@ -119,7 +119,7 @@ class JiraConsistencyChecker:
     GRACE_PERIOD_MINUTES = 5
 
     # Thresholds for auto-backfill
-    AUTO_FIX_THRESHOLD = 10  # Auto-fix if ≤10 issues missing
+    AUTO_FIX_THRESHOLD = 20  # Auto-fix if ≤20 issues missing
     WARNING_THRESHOLD = 5  # Log WARNING if >5 issues
 
     # Jira API limits

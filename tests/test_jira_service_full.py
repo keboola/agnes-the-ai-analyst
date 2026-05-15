@@ -8,6 +8,7 @@ import pytest
 
 from tests.helpers.factories import WebhookEventFactory
 
+from connectors.jira.scripts.consistency_check import JiraConsistencyChecker
 from connectors.jira.service import JiraFetchError
 from connectors.jira.transform import transform_remote_links
 
@@ -311,3 +312,23 @@ class TestTransformRemoteLinks:
         # Signal to caller: preserve existing parquet rows for this issue.
         result = transform_remote_links({"key": "PROJ-1"})
         assert result is None
+
+
+class TestAutoFixThreshold:
+    """The auto-fix threshold determines at what gap size we auto-backfill
+    vs require manual review. Legacy bumped it from 10 to 20 — small enough
+    to stay safe, big enough to absorb a typical SLA-poller hiccup."""
+
+    def test_threshold_is_twenty(self):
+        assert JiraConsistencyChecker.AUTO_FIX_THRESHOLD == 20
+
+    def test_alert_level_warning_at_threshold(self):
+        # 20 missing should still be WARNING (auto-fix territory), not ERROR.
+        config = MagicMock()
+        checker = JiraConsistencyChecker(config)
+        assert checker.get_alert_level(20) == "WARNING"
+
+    def test_alert_level_error_above_threshold(self):
+        config = MagicMock()
+        checker = JiraConsistencyChecker(config)
+        assert checker.get_alert_level(21) == "ERROR"
