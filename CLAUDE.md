@@ -298,11 +298,12 @@ Auth providers in `app/auth/` (FastAPI-based):
 
 ## Release process
 
-Full recipe, deploy workflows, and CI quirks: [`docs/RELEASING.md`](docs/RELEASING.md). The non-negotiable rules:
+Full recipe, deploy workflows, manual rollback runbook, weekly tag-housekeeping, and CI quirks: [`docs/RELEASING.md`](docs/RELEASING.md). The non-negotiable rules:
 
 - **Changelog discipline.** Every PR that changes user-visible behavior MUST add a bullet under `## [Unreleased]` in `CHANGELOG.md`, in the same PR — grouped Added/Changed/Fixed/Removed/Internal, `**BREAKING**` prefix for breaking changes. No follow-ups.
 - **Release-cut belongs to the PR.** The version bump (`pyproject.toml`) + CHANGELOG rename + new empty `[Unreleased]` are the LAST commit on the PR that earned the version — never a standalone follow-up PR. If a PR lands the only `[Unreleased]` content, the release-cut ships in the same merge. After merge: tag `vX.Y.Z` on the merge commit + create the GitHub Release.
 - **Run the full test suite before every push** — `.venv/bin/pytest tests/ --tb=short -n auto -q` (this is what CI runs). Failures in code you touched: fix before pushing. Failures unrelated to your diff: confirm with `git stash` they reproduce on a clean branch, note them in the PR body, don't block on them.
+- **Watch the post-merge `release.yml` run.** On `main` pushes a `smoke-test` job pulls the just-built `:stable` image and runs a docker-compose stack; if it fails, the `rollback-on-smoke-fail` job calls the reusable `rollback.yml` workflow which re-points `:stable` to the previous known-good build and opens a tracking issue labeled `bug`. Success signal after merge = `smoke-test` green + `rollback-on-smoke-fail` skipped. If the rollback fires, the merge shipped a broken image to GHCR — investigate the tracking issue before any further push (the issue body has the failing image, commit SHA, deprecated tag, and rollback target). Manual rollback / forced target / weekly tag-pruning operator commands are in [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Project conventions
 
