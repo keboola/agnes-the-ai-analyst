@@ -1,5 +1,6 @@
 """Tests for incremental Jira parquet transform (upsert_dataframe and friends)."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,8 +11,10 @@ import pytest
 from connectors.jira.incremental_transform import (
     load_parquet_month,
     save_parquet_month,
+    transform_single_issue,
     upsert_dataframe,
 )
+from connectors.jira.transform import REMOTE_LINKS_SCHEMA
 
 
 # Minimal schema compatible with ISSUES_SCHEMA for testing purposes
@@ -183,3 +186,69 @@ class TestParquetMonthlyPartitioning:
         assert proj1.iloc[0]["summary"] == "Updated"
         proj2 = final[final["issue_key"] == "PROJ-2"]
         assert proj2.iloc[0]["summary"] == "Keep"
+
+
+def _seed_remote_links_parquet(parquet_root, month_key, rows):
+    """Write a starter remote_links parquet so we can assert preservation."""
+    df = pd.DataFrame(rows)
+    target = parquet_root / "remote_links"
+    target.mkdir(parents=True, exist_ok=True)
+    save_parquet_month(df, REMOTE_LINKS_SCHEMA, target, month_key)
+
+
+def _write_raw_issue(raw_dir, issue_key, payload):
+    """Seed raw issue JSON at the path transform_single_issue reads from."""
+    issues_dir = raw_dir / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    (issues_dir / f"{issue_key}.json").write_text(json.dumps(payload))
+
+
+def test_incremental_preserves_remote_links_when_overlay_absent(tmp_path):
+    """When the _remote_links key is absent from the raw JSON (the writer
+    skipped the overlay due to a Jira fetch failure), transform_single_issue
+    must NOT wipe existing parquet rows for that issue. Existing rows must
+    remain untouched and the function must report success."""
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    # Pre-seed an existing remote-link row for PROJ-1 in month 2026-05.
+    _seed_remote_links_parquet(output_dir, "2026-05", [{
+        "issue_key": "PROJ-1",
+        "remote_link_id": "rl-existing",
+        "url": "https://example.com/old",
+        "title": "Pre-existing link",
+        "application_name": "X",
+        "application_type": "x",
+    }])
+
+    # Raw issue WITHOUT _remote_links key — overlay was skipped upstream.
+    _write_raw_issue(raw_dir, "PROJ-1", {
+        "key": "PROJ-1",
+        "id": "10001",
+        "fields": {
+            "summary": "test",
+            "status": {"name": "Open"},
+            "issuetype": {"name": "Bug"},
+            "attachment": [],
+            "comment": {"comments": []},
+            "created": "2026-05-15T00:00:00.000+0000",
+            "updated": "2026-05-15T00:00:00.000+0000",
+        },
+        # NOTE: no _remote_links key — that is the test condition.
+    })
+
+    ok = transform_single_issue(
+        issue_key="PROJ-1",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    df = load_parquet_month(output_dir / "remote_links", "2026-05")
+    assert df is not None and len(df) == 1, \
+        "Existing remote-link row was wiped — overlay-absent signal not honored"
+    assert df.iloc[0]["remote_link_id"] == "rl-existing"
