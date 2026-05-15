@@ -60,13 +60,14 @@ def refresh_marketplace(
     check: bool = typer.Option(
         False, "--check",
         help=(
-            "Detect-only mode for the SessionStart hook. Runs `git fetch` "
-            "and compares local HEAD with remote FETCH_HEAD. When they "
-            "differ, emits a Claude Code hook JSON message hinting the "
-            "user at `/update-agnes-plugins`. No `git reset`, no plugin "
-            "install/update side effects — fast, invisible when nothing "
-            "changed, fully recoverable interactively via the slash "
-            "command."
+            "Detect-only mode for the SessionStart hook. Runs "
+            "`git ls-remote origin HEAD` and compares the returned SHA "
+            "with local HEAD. When they differ, emits a Claude Code "
+            "hook JSON message hinting the user at "
+            "`/update-agnes-plugins`. No `git fetch`, no `git reset`, "
+            "no plugin install/update side effects — fast, invisible "
+            "when nothing changed, fully recoverable interactively "
+            "via the slash command."
         ),
     ),
     bootstrap: bool = typer.Option(
