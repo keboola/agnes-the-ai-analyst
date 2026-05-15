@@ -296,10 +296,19 @@ class JiraService:
         # Add metadata
         issue_data["_synced_at"] = datetime.now(timezone.utc).isoformat()
 
-        # Fetch and embed remote links for Parquet transform
+        # Issue-248-class guard: if fetch_remote_links raises (auth/server failure),
+        # leave the _remote_links key ABSENT. transform_remote_links treats absent key
+        # as "no fresh data, preserve existing parquet rows". A present-but-empty list
+        # would be interpreted as "this issue has no remote links — wipe existing".
         issue_key_for_links = issue_data.get("key")
         if issue_key_for_links:
-            issue_data["_remote_links"] = self.fetch_remote_links(issue_key_for_links)
+            try:
+                issue_data["_remote_links"] = self.fetch_remote_links(issue_key_for_links)
+            except JiraFetchError as e:
+                logger.warning(
+                    f"Skipping _remote_links overlay for {issue_key_for_links}: {e}. "
+                    f"Existing parquet rows will be preserved."
+                )
 
         # Overlay SLA fields from JSM service account (personal token lacks permissions)
         sla_fields = self.fetch_sla_fields(issue_key)

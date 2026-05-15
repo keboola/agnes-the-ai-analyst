@@ -243,3 +243,42 @@ class TestFetchRemoteLinks:
         with patch("connectors.jira.service.httpx.Client", return_value=client):
             with pytest.raises(JiraFetchError, match="connection"):
                 service.fetch_remote_links("PROJ-1")
+
+
+class TestSaveIssueRemoteLinksOverlay:
+    """save_issue must NOT set _remote_links when fetch_remote_links raises.
+    The absent key is the contract with transform_remote_links: it signals
+    'preserve existing rows'. A present-but-empty list would wipe them."""
+
+    def test_sets_remote_links_on_success(self, jira_env):
+        service = _make_jira_service(jira_env)
+        with patch.object(service, "fetch_remote_links", return_value=[{"id": "rl-1"}]), \
+             patch.object(service, "fetch_sla_fields", return_value=None):
+            path = service.save_issue(_fake_issue_data("PROJ-1"))
+        with open(path) as f:
+            data = json.load(f)
+        assert data["_remote_links"] == [{"id": "rl-1"}]
+
+    def test_sets_empty_remote_links_on_404(self, jira_env):
+        # 404 stays as [] — legitimately means "issue has no remote links".
+        service = _make_jira_service(jira_env)
+        with patch.object(service, "fetch_remote_links", return_value=[]), \
+             patch.object(service, "fetch_sla_fields", return_value=None):
+            path = service.save_issue(_fake_issue_data("PROJ-1"))
+        with open(path) as f:
+            data = json.load(f)
+        assert data["_remote_links"] == []
+
+    def test_omits_remote_links_key_on_fetch_error(self, jira_env):
+        # When fetch raises, the key MUST be absent — that's the signal
+        # to the transform that this isn't fresh data and should be skipped.
+        service = _make_jira_service(jira_env)
+        with patch.object(service, "fetch_remote_links",
+                          side_effect=JiraFetchError("auth")), \
+             patch.object(service, "fetch_sla_fields", return_value=None):
+            path = service.save_issue(_fake_issue_data("PROJ-1"))
+        with open(path) as f:
+            data = json.load(f)
+        assert "_remote_links" not in data, \
+            "Absent key is the contract with transform_remote_links — " \
+            "do not change to an empty list."
