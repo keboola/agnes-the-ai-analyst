@@ -1706,3 +1706,103 @@ class TestAtomicPromote:
             f"DB must NOT advance when live swap can't happen; got "
             f"version_no={ent_after['version_no']}"
         )
+
+
+class TestPromoteLookupByByteIdenticalBundles:
+    """Live-issue regression observed on agnes-development: an entity
+    had multiple version_history rows sharing the same `hash` (user
+    re-uploaded byte-identical bundles as v2/v4/v6). The runner's
+    promote-on-approve path looked up the submission's version_no
+    in version_history BY HASH and broke on the FIRST match — always
+    v1. With v1's n=1 and current=1, the forward-only
+    `target > current` guard skipped the promote, so the passing
+    LLM verdict never advanced the entity. UI kept showing v1 as
+    'current' even though the new submission's status was 'approved'.
+
+    Fix: look up by `submission_id` via `_version_no_for_submission`."""
+
+    def test_byte_identical_v2_promotes_to_current(
+        self, web_client, monkeypatch,
+    ):
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        from src.store_guardrails.runner import run_llm_review
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-identical-test")
+        owner_id, owner_cookies = _create_user(web_client, "identical@x.com")
+        # Same body for v1 + v2 → byte-identical zip → same hash.
+        identical_body = (
+            "Identical body line that is intentionally long enough to "
+            "clear the content threshold for skill bodies. " * 4
+        )
+        v1_zip = _make_skill_zip("identical", body=identical_body)
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("v1.zip", v1_zip, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+
+        conn = get_system_db()
+        ent_v1 = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        v1_hash = ent_v1["version"]
+        assert ent_v1["version_no"] == 1
+
+        # Flip guardrails ON for v2. Mock LLM to approve.
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+
+        def mock_approve(*a, **kw):
+            return {
+                "risk_level": "safe", "summary": "ok",
+                "findings": [], "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+                "content_quality": {"verdict": "pass", "issues": []},
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_approve,
+        )
+
+        # PUT v2 with IDENTICAL bytes.
+        v2_zip = _make_skill_zip("identical", body=identical_body)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        conn = get_system_db()
+        v2_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v2_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+        )
+
+        conn = get_system_db()
+        ent_after = StoreEntitiesRepository(conn).get(eid)
+        v2_sub = StoreSubmissionsRepository(conn).get(v2_sub_id)
+        conn.close()
+        # Pre-fix the runner would have matched v1's history entry
+        # first (same hash), target_version_no=1, `1 > 1` False, no
+        # promote → entity stuck at v1.
+        assert ent_after["version_no"] == 2, (
+            f"v2 must promote even when its hash matches v1's; got "
+            f"version_no={ent_after['version_no']}. Lookup-by-hash "
+            f"would have stuck the entity at v1."
+        )
+        assert v2_sub["status"] == "approved"
+        assert ent_after["version"] == v1_hash, (
+            "hash unchanged (bundle is byte-identical) but version_no DID move"
+        )

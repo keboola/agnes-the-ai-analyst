@@ -11,6 +11,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Fixed
+- Flea-market: promote-on-approve and admin-override now look up the
+  submission's `version_no` in `version_history` by **submission_id**,
+  not by **hash**. Hash-based lookup broke whenever the user uploaded
+  byte-identical bundles across versions (e.g. same content as v2 and
+  v4): the loop matched the FIRST history entry with that hash —
+  always v1 — so `target_version_no` landed at 1, the forward-only
+  `target > current` guard skipped the promote, and the entity stayed
+  stuck at v1 even though the new submission was `status='approved'`.
+  UI kept showing v1 as "current". Observed live on
+  agnes-development with an entity that had 5+ identical-hash history
+  rows. Both `runner.run_llm_review` (BG auto-approve) and
+  `admin_override_store_submission` now reuse the existing
+  `_version_no_for_submission` helper.
 - Flea-market: derive next version_no from `max(version_history.n) + 1`
   instead of `entity.version_no + 1` in PUT (edit) + restore. Under
   deferred promotion (v37+) `entity.version_no` stays at the last

@@ -3756,15 +3756,18 @@ async def admin_override_store_submission(
     # just no-ops and we skip promotion harmlessly.
     entity_row = ents_repo.get(entity_id) or {}
     promoted_to: Optional[int] = None
-    sub_hash = sub.get("version")
-    target_version_no: Optional[int] = None
-    for entry in (entity_row.get("version_history") or []):
-        if entry.get("hash") == sub_hash:
-            try:
-                target_version_no = int(entry.get("n"))
-            except (TypeError, ValueError):
-                target_version_no = None
-            break
+    # Look up THIS submission's version entry by submission_id, NOT
+    # by hash. Hash-based lookup breaks when the user re-uploads
+    # byte-identical bundles (e.g. v2 same content as v1): the loop
+    # picks the FIRST history entry with that hash (always v1, n=1),
+    # so target_version_no lands at 1 instead of the actual new
+    # entry's n. The forward-only `target > current` guard then
+    # skips the promote, leaving the entity stuck at v1. Surfaced
+    # live on agnes-development.
+    from app.api.store import _version_no_for_submission
+    target_version_no: Optional[int] = _version_no_for_submission(
+        entity_row, submission_id,
+    )
     # Forward-only: refuse to promote backwards. An admin overriding a
     # stale v2 submission when v3 is already approved + live must NOT
     # demote the live bundle back to v2's bytes. Override flips the
