@@ -120,6 +120,38 @@
     display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
     margin-top: 12px;
   }
+  /* Hero telemetry chip — same shape as the plugin detail page, with
+     a "Plugin:" prefix on the installed segment because skills/agents
+     show the *parent plugin's* stack count (no per-skill subscription
+     model exists). Recoloured for the kind-tinted hero background. */
+  .item-detail .hero .hero-telemetry {
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: rgba(255,255,255,0.92);
+    line-height: 1.7;
+  }
+  .item-detail .hero .hero-telemetry > span {
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .item-detail .hero .hero-telemetry svg {
+    width: 14px; height: 14px;
+    flex-shrink: 0;
+  }
+  /* Icon colors mirror the plugin detail page so the four-segment
+     chip reads identically across plugin + skill/agent surfaces. */
+  .item-detail .hero .hero-telemetry .seg-active    > svg { color: #6ee7b7; }
+  .item-detail .hero .hero-telemetry .seg-calls     > svg { color: #fdba74; }
+  .item-detail .hero .hero-telemetry .seg-installed > svg { color: #fde68a; }
+  .item-detail .hero .hero-telemetry .seg-installed .seg-installed-label {
+    opacity: 0.78;
+    font-weight: 600;
+    margin-right: 2px;
+  }
+  .item-detail .hero .hero-telemetry .trend-up   { color: #6ee7b7; font-weight: 600; }
+  .item-detail .hero .hero-telemetry .trend-down { color: #fca5a5; font-weight: 600; }
   .item-detail .type-badge {
     display: inline-block;
     padding: 3px 10px; border-radius: 999px;
@@ -787,6 +819,14 @@
           <span class="type-badge">{{ kind }}</span>
           <span class="source-badge {{ source }}">{{ 'Curated' if source == 'curated' else 'Flea' }}</span>
         </div>
+        <!-- Telemetry funnel chip — same four segments as the plugin
+             detail page (active · calls · trend · Plugin: N installed).
+             The installed count is the *parent plugin's* stack count
+             with a "Plugin:" prefix because skills/agents don't have a
+             per-item subscription model; tooltip spells it out. JS
+             hides the slot when the parent isn't installed AND the
+             item has no 30d activity. -->
+        <div class="hero-telemetry" id="hero-telemetry" hidden></div>
       </div>
     </div>
     <!-- Actions absolutely anchored at the hero's top-right corner.
@@ -825,9 +865,7 @@
     </div>
     <aside class="panel details">
       <h2>Details</h2>
-      <dl id="details-list">
-        <div class="row"><dt>Type</dt><dd>{{ kind | capitalize }}</dd></div>
-      </dl>
+      <dl id="details-list"></dl>
     </aside>
   </div>
 
@@ -913,6 +951,14 @@
     if (n < 1024*1024) return (n/1024).toFixed(2) + ' KB';
     if (n < 1024*1024*1024) return (n/(1024*1024)).toFixed(2) + ' MB';
     return (n/(1024*1024*1024)).toFixed(2) + ' GB';
+  }
+  // Short integer formatter — matches the listing card + plugin detail
+  // so figures look identical across the three surfaces.
+  function fmtNum(n) {
+    if (!n) return '0';
+    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000)    return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
   }
   function fmtRelative(iso) {
     if (!iso) return '—';
@@ -1213,6 +1259,50 @@
     heroTaglineEl.hidden = false;
   }
 
+  // ── Hero telemetry chip ───────────────────────────────────────────
+  // Four-segment funnel matching the plugin detail page, with one
+  // twist: the installed segment shows the *parent plugin's* stack
+  // count under a "Plugin:" label, because skills/agents inherit
+  // adoption from their plugin (no per-item subscription model). The
+  // tooltip spells out the relationship. Hidden when neither the
+  // parent is installed AND the item has no 30d activity.
+  (function renderInnerHeroTelemetry() {
+    const slot = document.getElementById('hero-telemetry');
+    if (!slot) return;
+    const tel = d.telemetry || {};
+    const parentStack = d.parent_stack_count || 0;
+    const activeUsers = tel.distinct_users_30d || 0;
+    const calls = tel.invocations_30d || 0;
+    const trend = tel.trend_pct;
+    if (parentStack === 0 && calls === 0) { slot.hidden = true; return; }
+    const svg = (path) =>
+      `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${path}"/></svg>`;
+    const ICON_USER = svg("M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z");
+    const ICON_BOLT = svg("M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z");
+    const ICON_STACK = svg("M5.566 4.657A4.505 4.505 0 0 1 6.75 4.5h10.5c.41 0 .806.055 1.183.157A3 3 0 0 0 15.75 3h-7.5a3 3 0 0 0-2.684 1.657ZM2.25 12a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3v-6ZM5.25 7.5c-.41 0-.806.055-1.184.157A3 3 0 0 1 6.75 6h10.5a3 3 0 0 1 2.683 1.657A4.505 4.505 0 0 0 18.75 7.5H5.25Z");
+    const ICON_TUP   = svg("M15.22 6.268a.75.75 0 0 1 .968-.432l5.942 2.28a.75.75 0 0 1 .431.97l-2.28 5.94a.75.75 0 1 1-1.4-.537l1.63-4.251-1.086.483a11.2 11.2 0 0 0-5.45 5.174.75.75 0 0 1-1.199.19L9 12.31l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75a.75.75 0 0 1 1.06 0l3.606 3.605a12.694 12.694 0 0 1 5.68-4.973l1.086-.484-4.251-1.631a.75.75 0 0 1-.432-.97Z");
+    const ICON_TDOWN = svg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
+    const segs = [
+      `<span class="seg-active" title="${activeUsers} users invoked this ${esc(kind)} in the last 30 days">${ICON_USER} ${fmtNum(activeUsers)} active</span>`,
+      `<span class="seg-calls" title="${calls} invocations of this ${esc(kind)} in the last 30 days">${ICON_BOLT} ${fmtNum(calls)} calls</span>`,
+    ];
+    if (trend !== null && trend !== undefined) {
+      const up = trend >= 0;
+      const cls = up ? 'trend-up' : 'trend-down';
+      const icon = up ? ICON_TUP : ICON_TDOWN;
+      segs.push(`<span class="${cls}" title="Week-over-week change in invocations of this ${esc(kind)}">${icon} ${Math.abs(Math.round(trend))}%</span>`);
+    }
+    // Parent plugin stack count — "Plugin:" prefix + tooltip make the
+    // semantic shift explicit. We're not showing how many people use
+    // this skill; we're showing how many have the parent plugin in
+    // their stack. The funnel insight: "12 installed plugin → 2
+    // actually use this skill".
+    const parentPluginLabel = esc(d.plugin_name || pluginName || 'parent plugin');
+    segs.push(`<span class="seg-installed" title="Parent plugin (${parentPluginLabel}) currently installed by ${parentStack} users">${ICON_STACK} <span class="seg-installed-label">Plugin:</span> ${fmtNum(parentStack)} installed</span>`);
+    slot.innerHTML = segs.join(' · ');
+    slot.hidden = false;
+  })();
+
   // ── Description ────────────────────────────────────────────────────
   // When the curator authored a rich markdown body in marketplace-metadata.json,
   // the API renders + sanitizes it server-side and ships as
@@ -1268,22 +1358,33 @@
   // `owner_todo` placeholder for the Curator row stays as a deliberate
   // reminder to wire up curator metadata.
   const dl = document.getElementById('details-list');
-  // v46: per-item telemetry block, appended to whichever metadata rows
-  // get rendered below. Hidden when telemetry is null (no rollup row).
+  // Activity rows for the sidebar — Invocations + Users live in the
+  // hero chip now, no need to duplicate. Two derived signals only the
+  // daily series can give us:
+  //   * Active days — engagement consistency over the 30d window.
+  //   * Last used   — recency (answers "is this still being used?").
+  // Both rendered only when the item has at least one active day so a
+  // brand-new skill doesn't show "0 of 30" + "Last used —".
   const telemetryRows = (() => {
-    if (!d.telemetry || d.telemetry.invocations_30d == null) return '';
-    const t = d.telemetry;
-    const users = t.distinct_users_30d != null
-      ? `<div class="row"><dt>Users (30d)</dt><dd>${t.distinct_users_30d.toLocaleString()}</dd></div>`
-      : '';
-    return `<div class="row"><dt>Invocations (30d)</dt><dd>${t.invocations_30d.toLocaleString()}</dd></div>${users}`;
+    if (!d.telemetry || !Array.isArray(d.telemetry.daily_series)) return '';
+    const series = d.telemetry.daily_series;
+    const activeDays = series.filter(p => (p.invocations || 0) > 0).length;
+    if (activeDays === 0) return '';
+    let lastIso = null;
+    for (let i = series.length - 1; i >= 0; i--) {
+      if ((series[i].invocations || 0) > 0) { lastIso = series[i].day; break; }
+    }
+    return `<div class="row"><dt>Active days</dt><dd>${activeDays} of ${series.length}</dd></div>`
+         + (lastIso
+            ? `<div class="row"><dt>Last used</dt><dd>${esc(fmtRelative(lastIso))}</dd></div>`
+            : '');
   })();
   if (source === 'curated') {
     const author = (d.parent_author_name && d.parent_author_name !== 'owner_todo')
       ? esc(d.parent_author_name)
       : '<span class="todo">owner_todo</span>';
+    // Type already shown as a badge in the hero — skip the row here.
     dl.innerHTML = `
-      <div class="row"><dt>Type</dt><dd>${esc(kind === 'skill' ? 'Skill' : 'Agent')}</dd></div>
       <div class="row"><dt>Parent plugin</dt><dd class="mono">${esc(pluginName)}</dd></div>
       <div class="row"><dt>Marketplace</dt><dd>${esc(d.marketplace_name || marketplaceId)}</dd></div>
       ${d.relpath ? `<div class="row"><dt>Path</dt><dd class="mono">${esc(d.relpath)}</dd></div>` : ''}
@@ -1293,8 +1394,8 @@
       <div class="row"><dt>Curator</dt><dd>${author}</dd></div>`;
   } else {
     const ownerLabel = d.owner_display || d.author_name || '';
+    // Type already shown as a badge in the hero — skip the row here.
     dl.innerHTML = `
-      <div class="row"><dt>Type</dt><dd>${esc(kind === 'skill' ? 'Skill' : 'Agent')}</dd></div>
       ${ownerLabel ? `<div class="row"><dt>Owner</dt><dd>${esc(ownerLabel)}</dd></div>` : ''}
       ${d.version ? `<div class="row"><dt>Version</dt><dd class="mono">v${esc(d.version)}</dd></div>` : ''}
       ${d.category ? `<div class="row"><dt>Category</dt><dd>${esc(d.category)}</dd></div>` : ''}
