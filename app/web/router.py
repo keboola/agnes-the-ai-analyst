@@ -843,121 +843,93 @@ async def setup_advanced_page(
     return templates.TemplateResponse(request, "setup_advanced.html", ctx)
 
 
+def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
+                              source_types: Optional[list] = None) -> dict:
+    """Adapt a ResourceEntry → template entry dict for the _stack_card macro."""
+    meta_bits = []
+    if table_count:
+        meta_bits.append(f"{table_count} table{'s' if table_count != 1 else ''}")
+    return {
+        "id": entry.id,
+        "name": entry.name,
+        "description": entry.description,
+        "icon": entry.icon or "📦",
+        "color": entry.color or "#fce7f3",
+        "requirement": entry.requirement,
+        "in_stack": entry.in_stack,
+        "meta": " · ".join(meta_bits) if meta_bits else None,
+        "tags": source_types or [],
+        "drilldown_url": drilldown_url,
+        "footer_left": (
+            f"View {table_count} table{'s' if table_count != 1 else ''} →"
+            if table_count else "Open →"
+        ),
+    }
+
+
 @router.get("/catalog", response_class=HTMLResponse)
 async def catalog(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    sync_repo = SyncStateRepository(conn)
-    settings_repo = SyncSettingsRepository(conn)
-    profile_repo = ProfileRepository(conn)
+    # v49 — unified Browse + My Stack tabs (Task 8.2). The old per-source
+    # source-card / per-table list moved into /catalog/p/<slug> (Task 8.3).
+    from app.services.stack_resolver import StackResolver
+    from app.resource_types import ResourceType
+    from src.repositories.data_packages import DataPackagesRepository
 
-    all_states = sync_repo.get_all_states()
-    all_profiles = profile_repo.get_all()
-    enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
-    datasets = get_datasets()
+    resolver = StackResolver(conn)
+    pkg_repo = DataPackagesRepository(conn)
 
-    # Build catalog data from table_registry in DuckDB. Filter pre-render so
-    # the page only lists tables the user actually has access to — Admin
-    # group members see everything (can_access shortcut), other users see
-    # only entries with a matching resource_grants(group, "table", id) row.
+    # Pre-compute per-package table counts + source-type tag set in one pass
+    # so we don't repeat the join per card.
+    pkg_meta: dict[str, dict] = {}
     try:
-        from src.repositories.table_registry import TableRegistryRepository
-        from app.auth.access import can_access
-        from app.resource_types import ResourceType
-        table_repo = TableRegistryRepository(conn)
-        registered = table_repo.list_all()
-
-        user_id = user.get("id", "")
-        tables = []
-        internal_tables = []
-        for tc in registered:
-            table_id = tc.get("id", "")
-            if not can_access(user_id, ResourceType.TABLE.value, table_id, conn):
-                continue
-            table_data = {
-                "id": table_id,
-                "name": tc.get("name", ""),
-                "description": tc.get("description", ""),
-                "dataset": tc.get("bucket"),
-                "source_type": tc.get("source_type") or "",
-                "sync_strategy": tc.get("sync_strategy", "full_refresh"),
-                "query_mode": tc.get("query_mode", "local"),
-                "profile": all_profiles.get(table_id),
+        for pkg in pkg_repo.list():
+            tables = pkg_repo.list_tables(pkg["id"])
+            source_types = sorted({(t.get("source_type") or "") for t in tables if t.get("source_type")})
+            pkg_meta[pkg["id"]] = {
+                "table_count": len(tables),
+                "source_types": source_types,
             }
-            # Add sync state
-            for state in all_states:
-                if state["table_id"] == table_id:
-                    table_data["last_sync"] = state.get("last_sync")
-                    table_data["rows"] = state.get("rows")
-                    break
-            # Agnes internal tables (agnes_sessions / agnes_telemetry /
-            # agnes_audit) render in a dedicated card on /catalog rather
-            # than under "Core Business Data" — they're system tables,
-            # not business data, but analysts should still discover them
-            # for `agnes query` so they need to live on the catalog page.
-            if tc.get("source_type") == "internal":
-                internal_tables.append(table_data)
-            else:
-                tables.append(table_data)
     except Exception as e:
-        tables = []
-        internal_tables = []
-        logger.warning(f"Could not load catalog: {e}")
+        logger.warning("could not enumerate data_packages: %s", e)
 
-    # Build data_stats for catalog template (business-data card header).
-    # `total_tables` must count REGISTERED business tables, not just
-    # synced ones — a registry of 30 tables with 0 ever synced would
-    # otherwise render as "0 tables" on the Core Business Data card.
-    # `internal` source_type tables render in their own card; exclude
-    # them here so the Core counter doesn't double-count system tables.
-    total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
-    data_stats = {
-        "total_tables": len(tables),
-        "total_rows": total_rows,
-        "total_columns": 0,
-        "total_size": sum(s.get("file_size_bytes", 0) or 0 for s in all_states),
-        "last_updated": max((s.get("last_sync") for s in all_states if s.get("last_sync")), default=None),
-    }
+    browse_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
+    stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
 
-    # Build business-data categories from `tables` (excludes internal).
-    categories = {}
-    for t in tables:
-        ds = t.get("dataset") or "default"
-        if ds not in categories:
-            categories[ds] = {"name": ds, "tables": []}
-        categories[ds]["tables"].append(t)
-    catalog_data = []
-    for cat in categories.values():
-        cat["count"] = len(cat["tables"])
-        catalog_data.append(cat)
+    def _adapt(e):
+        slug = None
+        try:
+            full = pkg_repo.get(e.id)
+            if full:
+                slug = full.get("slug")
+        except Exception:
+            slug = None
+        meta = pkg_meta.get(e.id, {})
+        return _data_package_entry_dict(
+            e,
+            drilldown_url=f"/catalog/p/{slug}" if slug else f"/catalog#{e.id}",
+            table_count=meta.get("table_count", 0),
+            source_types=meta.get("source_types", []),
+        )
 
-    # Internal-tables card. Single flat list — the three rows already
-    # share one category ("Agnes Internal"), so no accordion grouping is
-    # useful. Template renders them as a plain list under their own card.
-    internal_card = None
-    if internal_tables:
-        internal_card = {
-            "name": "Agnes Internal",
-            "count": len(internal_tables),
-            "tables": internal_tables,
-        }
+    entries = [_adapt(e) for e in browse_entries]
+    stack_entries_adapted = [_adapt(e) for e in stack_entries]
+
+    # Aggregate distinct source types across the user's visible packages —
+    # drives the per-source chip row in catalog.html.
+    source_type_chips = sorted({st for e in entries for st in (e.get("tags") or [])})
 
     ctx = _build_context(
         request, user=user,
-        tables=tables,
-        datasets=datasets,
-        enabled_datasets=enabled_datasets,
-        data_stats=data_stats,
-        categories=catalog_data,
-        catalog_data=catalog_data,
-        internal_card=internal_card,
-        metrics_data=[],
-        sync_states=all_states,
-        folder_mapping={},
+        entries=entries,
+        stack_entries=stack_entries_adapted,
+        source_type_chips=source_type_chips,
     )
     return templates.TemplateResponse(request, "catalog.html", ctx)
+
 
 
 @router.get("/corporate-memory", response_class=HTMLResponse)
