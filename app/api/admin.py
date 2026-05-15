@@ -3809,7 +3809,10 @@ async def admin_rescan_store_submission(
         default_model_loader,
         run_llm_review,
     )
-    from app.instance_config import get_guardrails_enabled
+    from app.instance_config import (
+        get_guardrails_enabled,
+        get_guardrails_llm_provider_ready,
+    )
 
     subs = StoreSubmissionsRepository(conn)
     sub = subs.get(submission_id)
@@ -3849,20 +3852,28 @@ async def admin_rescan_store_submission(
         )
         return {"ok": True, "submission_id": submission_id, "status": "blocked_inline"}
 
-    # Inline passes — schedule LLM if enabled, else auto-approve.
-    guardrails_on = get_guardrails_enabled()
-    new_status = "pending_llm" if guardrails_on else "approved"
+    # Inline passes. Three-state matrix:
+    #   - intent False           → auto-approve (operator opt-out)
+    #   - intent True + ready    → pending_llm, schedule LLM
+    #   - intent True + not-ready → pending_llm, DO NOT schedule (admin
+    #     retries from the same endpoint after providing credentials)
+    guardrails_enabled = get_guardrails_enabled()
+    provider_ready = get_guardrails_llm_provider_ready()
+    hold_for_review = guardrails_enabled
+    schedule_async_llm = guardrails_enabled and provider_ready
+    guardrails_on = hold_for_review  # retained for audit-log compat
+    new_status = "pending_llm" if hold_for_review else "approved"
     subs.conn.execute(
         "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
         "status = ?, updated_at = current_timestamp "
         "WHERE id = ?",
         [__import__("json").dumps(inline.to_response_dict()), new_status, submission_id],
     )
-    if guardrails_on:
+    if hold_for_review:
         ents.set_visibility(entity_id, "pending")
     else:
         ents.set_visibility(entity_id, "approved")
-        # Guardrails off — immediately live; write attribution.
+        # Guardrails explicitly disabled — immediately live; write attribution.
         entity_row = ents.get(entity_id) or {}
         update_flea_attribution(
             conn, entity_id,
@@ -3874,9 +3885,10 @@ async def admin_rescan_store_submission(
         action="store.submission.rescan",
         resource=f"store_submission:{submission_id}",
         params={"entity_id": entity_id, "outcome": new_status,
-                "guardrails_enabled": guardrails_on},
+                "guardrails_enabled": guardrails_on,
+                "provider_ready": provider_ready},
     )
-    if guardrails_on:
+    if schedule_async_llm:
         background.add_task(
             run_llm_review,
             submission_id,
@@ -3895,7 +3907,16 @@ async def admin_retry_store_submission(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Re-queue the LLM review for a submission stuck in ``review_error``.
+    """Re-queue the LLM review for a submission.
+
+    Eligible statuses:
+      * ``review_error`` — LLM call failed, admin retrying after the
+        underlying issue (rate limit, timeout, transient outage) clears.
+      * ``blocked_llm`` — admin disagrees with the prior verdict; rerun
+        from a clean slate (review rules may have shifted since).
+      * ``pending_llm`` — submission was held when the LLM provider had
+        no credentials in env (fail-CLOSED matrix: intent True + not
+        ready). Admin sets the key and re-fires from here.
 
     Only valid when the original submission's plugin tree is still on
     disk — for inline-blocked rows the bundle was deleted at POST time.
@@ -3913,7 +3934,7 @@ async def admin_retry_store_submission(
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
-    if sub["status"] not in {"review_error", "blocked_llm"}:
+    if sub["status"] not in {"review_error", "blocked_llm", "pending_llm"}:
         raise HTTPException(
             status_code=409, detail=f"cannot_retry_status:{sub['status']}",
         )

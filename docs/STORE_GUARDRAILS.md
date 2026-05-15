@@ -101,12 +101,25 @@ Required environment variable (when guardrails enabled):
 ANTHROPIC_API_KEY=sk-ant-…   # or LLM_API_KEY for the proxy case
 ```
 
-If `guardrails.enabled: true` but neither key is set, the pipeline
-**auto-falls back to disabled** with a warning at startup — uploads
-auto-approve until the operator wires up the LLM. This keeps tests +
-first-boot sane; it does NOT silently let unreviewed uploads through
-when the operator clearly intended review (the env var is missing, not
-the YAML).
+### Three-state publish-gate matrix (fail-CLOSED)
+
+The pipeline distinguishes **operator intent** (the YAML toggle) from
+**provider readiness** (whether `ANTHROPIC_API_KEY` / `LLM_API_KEY` is
+in the environment). The two are deliberately separate so a missing
+env var can't silently flip an intended-on pipeline into auto-approve.
+
+| `guardrails.enabled` | Provider key in env | Behavior |
+|---|---|---|
+| `false` | (any) | Pipeline OFF. Inline checks still run. Uploads auto-approve. Operator's explicit opt-out — local dev / no-LLM deployments. |
+| `true` | yes | Normal hold-for-review. Inline + LLM both run. |
+| `true` | **no** | **Hold-for-review, but no async worker fires.** Submissions land at `status='pending_llm'` and stay there until an admin either provides the key and clicks **Retry review** on `/admin/store/submissions/<id>`, or overrides + publishes the row manually. The entity stays at `visibility_status='pending'` (initial v1) or at the prior approved version (v2+ edits/restores). No silent auto-approval. A loud boot-time warning surfaces the misconfig in the logs. |
+
+This is the **fail-CLOSED** policy. Before v45 the third row silently
+auto-approved every upload as a "first-boot sanity" affordance — which
+also meant a deployment whose operator forgot to set the key published
+every upload without security review. The split was introduced after a
+prod incident where an admin uploaded a skill containing a `curl … | sh`
+exfiltration script and the system happily marked it `approved`.
 
 ---
 

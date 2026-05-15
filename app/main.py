@@ -480,6 +480,33 @@ def create_app() -> FastAPI:
         logger.warning("NEVER enable this in a deployment reachable from the internet.")
         logger.warning("=" * 60)
 
+    # Guardrails misconfig surface — fail-CLOSED matrix means an enabled
+    # pipeline with no LLM credentials in env will hold every submission
+    # at `pending_llm` indefinitely. Surface this LOUDLY at boot so the
+    # operator finds the cause before the submission queue piles up.
+    try:
+        from app.instance_config import (
+            get_guardrails_enabled,
+            get_guardrails_llm_provider_ready,
+        )
+        if get_guardrails_enabled() and not get_guardrails_llm_provider_ready():
+            logger.warning("=" * 60)
+            logger.warning(
+                "GUARDRAILS ENABLED BUT NO LLM PROVIDER CREDENTIALS FOUND.",
+            )
+            logger.warning(
+                "Set ANTHROPIC_API_KEY (or LLM_API_KEY) in the environment, "
+                "or disable guardrails in instance.yaml.",
+            )
+            logger.warning(
+                "Until then, every flea-market upload will sit at "
+                "status='pending_llm' awaiting admin retry — the LLM "
+                "review step cannot run.",
+            )
+            logger.warning("=" * 60)
+    except Exception:
+        logger.exception("guardrails readiness probe failed at boot")
+
     # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
     # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
     # without going through bootstrap; never overwritten if already set.

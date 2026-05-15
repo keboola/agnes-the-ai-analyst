@@ -25,6 +25,12 @@ MAX_RETRIES = 3
 INITIAL_BACKOFF_SECONDS = 2
 BACKOFF_MULTIPLIER = 2
 
+# Truncation retry: when the model hits max_tokens we retry with a
+# doubled budget. Caps the multiplier at 4x the caller's original
+# value so a runaway can't drain the per-call budget.
+MAX_TRUNCATION_RETRIES = 2  # 2x then 4x
+TRUNCATION_BUDGET_MULTIPLIER = 2
+
 
 def _strict_json_schema(schema):
     """Return a copy of the schema with additionalProperties=False on every object type.
@@ -94,16 +100,39 @@ class AnthropicExtractor:
             LLMRefusalError: Model refused to respond.
         """
         last_exception: Exception | None = None
+        # Truncation retries bump max_tokens; transient retries bump
+        # backoff. Accounted separately so a verbose response under
+        # rate-limit doesn't burn both budgets at once.
+        truncation_retries = 0
+        current_max_tokens = max_tokens
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 return self._attempt_extraction(
-                    prompt, max_tokens, json_schema, schema_name, attempt,
-                    system=system,
+                    prompt, current_max_tokens, json_schema, schema_name,
+                    attempt, system=system,
                 )
             except LLMAuthError:
                 raise
             except LLMRefusalError:
+                raise
+            except LLMFormatError as e:
+                # Truncation is a special case: same prompt + schema,
+                # but the model didn't have room to finish. Retry with
+                # a doubled budget — capped — instead of giving up.
+                # Other format errors (bad JSON, schema mismatch) won't
+                # benefit from more tokens, so re-raise immediately.
+                if (str(e).startswith("Response truncated")
+                        and truncation_retries < MAX_TRUNCATION_RETRIES):
+                    truncation_retries += 1
+                    current_max_tokens *= TRUNCATION_BUDGET_MULTIPLIER
+                    logger.warning(
+                        "Response truncated on attempt %d for model %s, "
+                        "retrying with max_tokens=%d (%dx initial)",
+                        attempt, self._model, current_max_tokens,
+                        TRUNCATION_BUDGET_MULTIPLIER ** truncation_retries,
+                    )
+                    continue
                 raise
             except (LLMRateLimitError, LLMTimeoutError) as e:
                 last_exception = e
