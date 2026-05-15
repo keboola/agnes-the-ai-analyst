@@ -1709,9 +1709,9 @@ class TestAtomicPromote:
 
 
 class TestPromoteLookupByByteIdenticalBundles:
-    """Live-issue regression observed on agnes-development: an entity
-    had multiple version_history rows sharing the same `hash` (user
-    re-uploaded byte-identical bundles as v2/v4/v6). The runner's
+    """Live-issue regression observed on a development deployment: an
+    entity had multiple version_history rows sharing the same `hash`
+    (user re-uploaded byte-identical bundles as v2/v4/v6). The runner's
     promote-on-approve path looked up the submission's version_no
     in version_history BY HASH and broke on the FIRST match — always
     v1. With v1's n=1 and current=1, the forward-only
