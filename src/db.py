@@ -140,7 +140,9 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     -- the row; is_personal scopes the row to the contributor only (excluded
     -- from /bundle, listed only when the contributor is the caller).
     confidence DOUBLE,
-    domain VARCHAR,
+    -- v49: the scalar ``domain`` column was replaced by the
+    -- ``knowledge_item_domains`` M:N junction (see ``memory_domains``
+    -- and the v49 backfill in ``_v48_to_v49``).
     entities JSON,
     source_type VARCHAR DEFAULT 'claude_local_md',
     source_ref VARCHAR,
@@ -3220,9 +3222,11 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
     # 4) Memory Domains — first-class entities replacing the scalar
-    # ``knowledge_items.domain`` string. Junction allows an item to
-    # belong to multiple domains; admin can create non-canonical
-    # domains beyond the legacy VALID_DOMAINS six. See spec section 3.4.
+    # ``knowledge_items.domain`` string. The ``memory_domains`` parent
+    # table is created here; ``knowledge_item_domains`` is deferred to
+    # after the legacy column is dropped (step 9) because DuckDB blocks
+    # ``ALTER TABLE knowledge_items DROP COLUMN`` while a child table
+    # holds an FK reference. See spec section 3.4.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS memory_domains (
@@ -3237,21 +3241,6 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
             updated_at  TIMESTAMP DEFAULT current_timestamp
         )
         """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS knowledge_item_domains (
-            item_id   VARCHAR NOT NULL REFERENCES knowledge_items(id),
-            domain_id VARCHAR NOT NULL REFERENCES memory_domains(id),
-            added_at  TIMESTAMP DEFAULT current_timestamp,
-            added_by  VARCHAR,
-            PRIMARY KEY (item_id, domain_id)
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain "
-        "ON knowledge_item_domains(domain_id)"
     )
 
     # 5) Seed canonical memory_domains from the legacy ``VALID_DOMAINS``
@@ -3294,20 +3283,20 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
-    # 6) Populate the junction from the legacy scalar ``knowledge_items.domain``
-    # column. One row per non-null/non-empty domain value. NULLs (and the
-    # rare empty string from hand-edited rows) carry no domain relation, so
-    # they're filtered out — the junction stays sparse rather than emitting
-    # synthetic rows.
+    # 6) Stash the legacy (item_id, domain_id) pairs in a temporary table
+    # so we can recreate the relation after dropping the scalar column.
+    # DuckDB blocks the DROP COLUMN as long as a child table FK-references
+    # ``knowledge_items``, so the junction itself is created in step 9b
+    # below — after the column is gone.
+    conn.execute("DROP TABLE IF EXISTS _v49_item_domain_pairs")
     conn.execute(
         """
-        INSERT INTO knowledge_item_domains(item_id, domain_id, added_at)
-        SELECT ki.id, md.id, current_timestamp
+        CREATE TEMP TABLE _v49_item_domain_pairs AS
+        SELECT ki.id AS item_id, md.id AS domain_id
           FROM knowledge_items ki
           JOIN memory_domains  md
             ON md.slug = lower(regexp_replace(ki.domain, '[^a-z0-9]+', '-', 'g'))
          WHERE ki.domain IS NOT NULL AND ki.domain <> ''
-        ON CONFLICT DO NOTHING
         """
     )
 
@@ -3347,6 +3336,51 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+
+    # 9a) Drop the legacy ``knowledge_items.domain`` scalar. Single-PR
+    # cutover per D14 — the temp-stashed pairs from step 6 + memory_domains
+    # seeded in step 5 are the new sources of truth. ``IF EXISTS`` keeps
+    # the migration idempotent for fixtures that have already dropped the
+    # column. This MUST come before creating ``knowledge_item_domains``
+    # because DuckDB blocks ``ALTER TABLE … DROP COLUMN`` while any child
+    # table holds an FK reference (DependencyException).
+    conn.execute("ALTER TABLE knowledge_items DROP COLUMN IF EXISTS domain")
+
+    # 9b) Now create the M:N junction and replay the stashed pairs.
+    # ``CREATE TABLE IF NOT EXISTS`` keeps re-runs idempotent for fresh
+    # installs where ``_SYSTEM_SCHEMA`` already created the table.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_item_domains (
+            item_id   VARCHAR NOT NULL REFERENCES knowledge_items(id),
+            domain_id VARCHAR NOT NULL REFERENCES memory_domains(id),
+            added_at  TIMESTAMP DEFAULT current_timestamp,
+            added_by  VARCHAR,
+            PRIMARY KEY (item_id, domain_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain "
+        "ON knowledge_item_domains(domain_id)"
+    )
+    # Replay the stashed pairs. The temp table exists only when the
+    # upgrade path ran step 6 — fresh installs skip both step 6 and
+    # this replay since ``_v49_item_domain_pairs`` was never created.
+    has_pairs = conn.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_name = '_v49_item_domain_pairs'"
+    ).fetchone()
+    if has_pairs:
+        conn.execute(
+            """
+            INSERT INTO knowledge_item_domains(item_id, domain_id, added_at)
+            SELECT item_id, domain_id, current_timestamp
+              FROM _v49_item_domain_pairs
+            ON CONFLICT DO NOTHING
+            """
+        )
+        conn.execute("DROP TABLE _v49_item_domain_pairs")
 
 
 _V33_TO_V34_MIGRATIONS = [
