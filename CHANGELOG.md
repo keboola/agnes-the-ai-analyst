@@ -10,7 +10,84 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.21] — 2026-05-15
+
+### Added
+- **Marketplace — flea inner skill/agent detail page parity with
+  curated.** New backend endpoints `GET /api/marketplace/flea/{id}/skill/{name}`
+  and `…/agent/{name}` plus matching web routes that render
+  `marketplace_item_detail.html`. Stack-install is blocked on inner
+  items (same rule curated has had since launch — "Open parent plugin
+  →" button + helper text instead). Breadcrumb: `Marketplace › Flea
+  Market › <parent plugin> › <self>`.
+- **Marketplace — funnel chip + Most adopted sort + listing polish.**
+  The funnel chip (`N active · N calls · ±X% trend · N installed`)
+  now lives on the marketplace cards, plugin detail hero, inner
+  detail hero, AND the inner skill/agent cards on the parent plugin
+  detail page. New `Most adopted (30d)` sort; deterministic Most
+  Popular ordering. Trending sort hidden when no trend data.
+  Breadcrumb second segment is now a generic clickable `Curated
+  Marketplace` / `Flea Market` link instead of the opaque
+  per-instance marketplace name. Flea sidebar uses `Owner` label
+  (vs `Curator` on curated); flea-inner sidebar mirrors curated
+  nested layout (Parent plugin / Bundle size / Active days / Last
+  used / Owner).
+
+### Changed
+- **BREAKING:** `MarketplaceItem.unique_users_30d` renamed to
+  `distinct_users_30d` in the `/api/marketplace/items` response. The
+  new value is a true distinct count across the 30-day window (from
+  the `usage_marketplace_item_window` snapshot), not the old
+  sum-of-daily proxy that over-counted active multi-day users.
+- `usage_events.source` is now populated per-event by
+  `MarketplaceItemLookup` (live join against `marketplace_plugins` +
+  `store_entities`). Previously it sat at `'builtin'` for every row
+  because the v42 `AttributionLookup` matched skill/command names
+  without the plugin prefix that Claude Code actually writes —
+  `usage_events.source = 'curated'` / `'flea'` / `'builtin'` becomes
+  meaningful for the first time. `usage_events.ref_id` semantics
+  shift in lockstep — curated stores the plain plugin name, flea
+  stores `NULL`.
+- `USAGE_PROCESSOR_VERSION` bumped 5 → 6 so the session-pipeline
+  reprocess loop re-attributes historic events on next tick.
+- `_build_telemetry` returns `None` (not a zero-shape dict) when
+  `invocations_30d == 0`, so detail endpoints can omit the chip
+  payload entirely. The frontend hero / sidebar are already
+  None-safe (`d.telemetry || {}` guard, `if (!d.telemetry || …)` on
+  daily_series).
+
+### Removed
+- **BREAKING:** four schema-v42 telemetry tables (v48 migration):
+  - `usage_attribution_skills`, `usage_attribution_agents`, and
+    `usage_attribution_commands` — replaced by live prefix-split
+    lookup against `marketplace_plugins` + `store_entities`. Verified
+    empty or derivable; no unique data lost.
+  - `usage_plugin_daily` — replaced by
+    `usage_marketplace_item_daily` + `_window`. Verified empty in
+    production-shape data (the v42 rollup `INSERT` was gated on
+    `source IN ('curated','flea')` but the broken attribution layer
+    always produced `'builtin'`).
+- `src/repositories/usage_attribution.py`,
+  `src/usage_attribution_helpers.py`,
+  `scripts/backfill_usage_attribution.py`, and their test fixtures
+  (`tests/test_usage_attribution.py`,
+  `tests/test_backfill_usage_attribution.py`) — no callers remain.
+
 ### Internal
+- **Schema v48** — marketplace telemetry refactor.
+  `usage_marketplace_item_daily` (per-day fact with count +
+  distinct_users + error_count, keyed by
+  `(day, source, type, parent_plugin, name)`) and
+  `usage_marketplace_item_window` (sliding-window snapshot, labels
+  `last_7d` refreshed every UsageProcessor tick, `last_30d` refreshed
+  hourly) replace the dropped v42 attribution + plugin-daily tables.
+  Auto-migrates on first boot; fresh installs receive the new tables
+  via `_SYSTEM_SCHEMA`. The migration was renumbered v45→v46 →
+  v47→v48 on rebase since the v46 / v47 slots were already taken by
+  #316 (per-user dismiss) and #326 (FTS BM25 index).
+- `scripts/backfill_marketplace_rollup.py` — one-shot script to
+  populate the new rollup tables from historic `usage_events` after
+  a v48 deploy.
 - **Repo-committed Claude Code agents + skills under `.claude/`.**
   Four knowledge skills (`agnes-orchestrator`, `agnes-rbac`,
   `agnes-connectors`, `agnes-release-process`) auto-load into the main
