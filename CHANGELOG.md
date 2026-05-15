@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.20] — 2026-05-15
+
 ### Added
 - **Corporate Memory — BM25 relevance ranking on knowledge search.**
   Replaces the `title ILIKE '%q%' OR content ILIKE '%q%'`
