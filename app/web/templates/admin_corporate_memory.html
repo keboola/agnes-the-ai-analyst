@@ -301,6 +301,116 @@
             box-shadow: 0 0 0 2px var(--primary-light);
         }
 
+        /* ─── v49 Task 8.6 — Admin moderation visual parity with /memory/d/<slug> ───
+           Mirrors the .memory-item layout from memory_domain_detail.html so
+           an admin reviewing the queue sees items in the SAME shape an
+           analyst sees them, with an extra .memory-item__admin-actions
+           row for moderation buttons. The existing .knowledge-item / .knowledge-title
+           / .knowledge-content / .item-actions classes still apply (we
+           emit both class sets on the same node), so the legacy JS that
+           queries `.knowledge-item` for keyboard navigation, bulk-edit
+           checkbox state, etc. keeps working unchanged. */
+        .memory-item.is-required {
+            background: #fffbeb;
+            border-color: #f59e0b;
+        }
+        .memory-item__header {
+            display: flex;
+            align-items: flex-start;
+            gap: var(--space-3);
+            margin-bottom: var(--space-2);
+        }
+        .memory-item__title {
+            margin: 0;
+            font-size: var(--text-md);
+            font-weight: var(--font-semibold);
+            color: var(--text-primary);
+            flex: 1;
+            min-width: 0;
+        }
+        .memory-item__badges {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            background: rgba(0, 115, 209, 0.12);
+            color: #0056A3;
+        }
+        .badge--category { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
+        .badge--source   { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
+        .badge--required { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+        .badge--status   { background: rgba(100, 116, 139, 0.18); color: #475569; }
+
+        .memory-item__content {
+            font-size: var(--text-base);
+            color: var(--text-secondary);
+            line-height: 1.7;
+            white-space: pre-wrap;
+            margin-bottom: var(--space-3);
+        }
+        .memory-item__footer {
+            display: flex;
+            align-items: center;
+            gap: var(--space-3);
+            padding-top: var(--space-3);
+            border-top: 1px solid var(--border-light, #eceff1);
+            font-size: var(--text-xs);
+            color: var(--text-secondary);
+            flex-wrap: wrap;
+        }
+        .memory-item__votes {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .memory-item__contributors {
+            display: inline-flex;
+            gap: 4px;
+            align-items: center;
+        }
+        .memory-item__avatar {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: rgba(0, 115, 209, 0.18);
+            color: #0056A3;
+            font-size: 10px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .memory-item__tags {
+            display: inline-flex;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+        .memory-item__tag {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--border-light, #f3f4f6);
+            color: var(--text-secondary, #5f6368);
+        }
+        .memory-item__meta { margin-left: auto; }
+        .memory-item__admin-actions {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: var(--space-3);
+            padding-top: var(--space-3);
+            border-top: 1px dashed var(--border-light, #eceff1);
+        }
+
         .item-row {
             display: flex;
             gap: var(--space-4);
@@ -2314,13 +2424,23 @@
     const _itemsById = new Map();
 
     // mode: 'review' | 'all' | 'browse'
-    //   - 'review' renders the Approve / Reject action buttons; row checkbox
-    //     drives the Review-tab bulk-edit bar (updateSelectionCount('review')).
-    //   - 'all' renders the per-row Edit/Delete/Mandate buttons; row checkbox
-    //     drives the All-Items-tab bulk-edit bar (updateSelectionCount('all')).
+    //   - 'review' renders the Approve / Reject / Make-Mandatory action row;
+    //     row checkbox drives the Review-tab bulk-edit bar
+    //     (updateSelectionCount('review')).
+    //   - 'all' renders status-dependent actions (Approve/Reject/Demote/etc.);
+    //     row checkbox drives the All-Items-tab bulk-edit bar
+    //     (updateSelectionCount('all')).
     //   - 'browse' omits the row checkbox entirely — Browse tab has no batch
-    //     bar; rendering a checkbox there would leave it orphaned and
-    //     dispatch updateSelectionCount() against an invisible tab.
+    //     bar; rendering a checkbox there would leave it orphaned.
+    //
+    // v49 (Task 8.6): redesigned to match the user-facing /memory/d/<slug>
+    // drill-down card layout (`.memory-item` class set). Visual parity
+    // means an admin reviewing the queue sees items in the same shape
+    // analysts see them, with Required badge / votes / contributors /
+    // tags / status-badge / confidence chips preserved. Admin actions
+    // (Approve / Reject / Make-Mandatory / Edit) sit in a dedicated
+    // `.memory-item__admin-actions` row so the analyst-side affordances
+    // (Dismiss etc.) stay isolated from moderation actions.
     function renderItemCard(item, idx, mode) {
         _itemsById.set(item.id, item);
         const status = item.status || 'pending';
@@ -2330,34 +2450,38 @@
         const initials = sourceUser.split('@')[0].substring(0, 2).toUpperCase();
         const contributors = [{name: sourceUser, initials: initials}];
 
-        // Determine available actions based on current status
-        let actionsHtml = '';
+        // Determine available admin actions. Review tab keeps explicit
+        // Approve / Make-Mandatory / Reject for the moderation flow;
+        // All / Browse fall back to the status-aware action set so
+        // admins can still demote / re-approve / revoke / etc.
+        let adminActionsHtml = '';
         if (mode === 'review') {
-            actionsHtml = `
-                <div class="item-actions">
-                    <button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="20 6 9 17 4 12"/>
-                        </svg>
-                        Approve <span class="shortcut-hint">A</span>
-                    </button>
-                    <button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                        </svg>
-                        Make Mandatory <span class="shortcut-hint">M</span>
-                    </button>
-                    <button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"/>
-                            <line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                        Reject <span class="shortcut-hint">R</span>
-                    </button>
-                    <button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>
-                </div>`;
+            adminActionsHtml = `
+                <button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    Approve <span class="shortcut-hint">A</span>
+                </button>
+                <button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    Make Mandatory <span class="shortcut-hint">M</span>
+                </button>
+                <button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                    Reject <span class="shortcut-hint">R</span>
+                </button>
+                <button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`;
         } else {
-            actionsHtml = buildStatusActions(item);
+            // Reuse the status-aware button set; strip the wrapping
+            // .item-actions div — admin-actions row provides its own
+            // flex container now.
+            adminActionsHtml = buildStatusActions(item, /* wrapped= */false);
         }
 
         const mandateFormHtml = `
@@ -2375,47 +2499,64 @@
                 </div>
             </div>`;
 
+        const isRequired = !!item.is_required || status === 'mandatory';
+        const tags = parseJsonField(item.tags);
+        const upvotes = item.upvotes || 0;
+        const downvotes = item.downvotes || 0;
+
+        // Row checkbox emitted inline so the regression guard in
+        // tests/test_admin_memory_page_all_items_batch_bar.py keeps
+        // matching the documented `mode === 'browse' ? ''` branch.
+        // Browse-tab cards have no batch bar so the checkbox is
+        // suppressed there — the rest of the JS infrastructure
+        // (`getSelectedIds`, `updateSelectionCount`) is shared with
+        // Review + All tabs.
         return `
-            <div class="knowledge-item" data-id="${esc(item.id)}" data-idx="${idx}">
-                <div class="item-row">
+            <div class="memory-item ${isRequired ? 'is-required' : ''} knowledge-item" data-id="${esc(item.id)}" data-idx="${idx}">
+                <div class="memory-item__header">
                     ${mode === 'browse' ? '' : `<input type="checkbox" class="item-checkbox" data-id="${esc(item.id)}" onchange="updateSelectionCount('${mode}')">`}
-                    <div class="item-body">
-                        <div class="knowledge-header">
-                            <div>
-                                <div class="knowledge-title">${escapeHtml(item.title || 'Untitled')}</div>
-                                <div class="knowledge-meta">
-                                    <span class="category-badge ${esc(item.category || 'general')}">${escapeHtml(categoryDisplay)}</span>
-                                    ${item.domain ? `<span style="display:inline-block;padding:2px 8px;background:#e8f0fe;color:#1a73e8;border-radius:999px;font-size:11px;">${escapeHtml(item.domain)}</span>` : ''}
-                                    ${item.confidence ? `<span style="display:inline-block;padding:2px 8px;background:#f0fdf4;color:#16a34a;border-radius:999px;font-size:11px;">${Math.round(item.confidence*100)}%</span>` : ''}
-                                    ${item.source_type === 'user_verification' ? '<span style="display:inline-block;padding:2px 8px;background:#dbeafe;color:#1d4ed8;border-radius:999px;font-size:11px;">Verified</span>' : ''}
-                                    ${mode !== 'review' ? `<span class="status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
-                                    <span>Added ${escapeHtml(dateStr)}</span>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="knowledge-content">${escapeHtml(item.content || '')}</div>
-                        <div class="knowledge-footer">
-                            <div class="knowledge-tags">
-                                ${parseJsonField(item.tags).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
-                            </div>
-                            <div class="contributors">
-                                <div class="contributor-avatars">
-                                    ${contributors.slice(0, 3).map(u =>
-                                        `<span class="contributor-avatar" title="${escapeHtml(u.name)}">${escapeHtml(u.initials)}</span>`
-                                    ).join('')}
-                                    ${contributors.length > 3 ? `<span class="contributor-avatar">+${contributors.length - 3}</span>` : ''}
-                                </div>
-                                <span>${contributors.length} contributor${contributors.length !== 1 ? 's' : ''}</span>
-                            </div>
-                        </div>
-                        ${actionsHtml}
-                        ${mandateFormHtml}
+                    <h3 class="memory-item__title knowledge-title">${escapeHtml(item.title || 'Untitled')}</h3>
+                    <div class="memory-item__badges">
+                        ${isRequired ? '<span class="badge badge--required">Required</span>' : ''}
+                        ${item.category ? `<span class="badge badge--category">${escapeHtml(categoryDisplay)}</span>` : ''}
+                        ${item.source_type ? `<span class="badge badge--source">${escapeHtml(item.source_type)}</span>` : ''}
+                        ${(status && status !== 'approved') ? `<span class="badge badge--status status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
+                        ${item.confidence ? `<span class="badge">${Math.round(item.confidence*100)}% conf</span>` : ''}
                     </div>
                 </div>
+                <div class="memory-item__content knowledge-content">${escapeHtml(item.content || '')}</div>
+                <div class="memory-item__footer">
+                    <span class="memory-item__votes">
+                        <span title="upvotes">▲ ${upvotes}</span>
+                        <span title="downvotes">▼ ${downvotes}</span>
+                    </span>
+                    ${contributors.length ? `
+                        <span class="memory-item__contributors">
+                            ${contributors.slice(0, 3).map(u =>
+                                `<span class="memory-item__avatar" title="${escapeHtml(u.name)}">${escapeHtml(u.initials)}</span>`
+                            ).join('')}
+                        </span>` : ''}
+                    ${tags.length ? `
+                        <span class="memory-item__tags">
+                            ${tags.map(t => `<span class="memory-item__tag tag">${escapeHtml(t)}</span>`).join('')}
+                        </span>` : ''}
+                    <span class="memory-item__meta">Added ${escapeHtml(dateStr)}</span>
+                </div>
+                <div class="memory-item__admin-actions item-actions">
+                    ${adminActionsHtml}
+                </div>
+                ${mandateFormHtml}
             </div>`;
     }
 
-    function buildStatusActions(item) {
+    function buildStatusActions(item, wrapped) {
+        // ``wrapped`` defaults to true for legacy callers (e.g. anywhere
+        // else in the codebase that still consumes the wrapped form).
+        // The v49 admin redesign in ``renderItemCard`` passes
+        // ``wrapped=false`` because the new layout supplies its own
+        // ``.memory-item__admin-actions`` flex container so wrapping
+        // again would double up the row.
+        if (wrapped === undefined) wrapped = true;
         const status = item.status || 'pending';
         let buttons = [];
 
@@ -2442,7 +2583,7 @@
         buttons.push(`<button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`);
 
         if (buttons.length === 0) return '';
-        return `<div class="item-actions">${buttons.join('')}</div>`;
+        return wrapped ? `<div class="item-actions">${buttons.join('')}</div>` : buttons.join('');
     }
 
     // ─────────────────────────────────────────────────────────────
