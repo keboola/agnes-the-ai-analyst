@@ -73,6 +73,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   banner now renders for those failure statuses too, with copy that
   acknowledges the prior version is still live ("Latest edit failed
   review — previously approved version (vN) keeps serving …").
+- Flea-market admin **Override** on a v2+ edit/restore submission now
+  promotes the entity to the overridden version + swaps the on-disk
+  live bundle. Pre-fix the override only flipped
+  `visibility_status='approved'` and `submission.status='overridden'`,
+  leaving `entity.version_no` at the prior approved version — so
+  installers (and the marketplace UI) kept serving the OLD bytes the
+  admin just intended to replace. Mirrors the auto-approval branch in
+  `runner.run_llm_review`: look up the submission's version in
+  `version_history`, `promote_version` + `_swap_live_to_version` when
+  it differs from current. Initial-v1 overrides unchanged (no
+  promotion needed).
 - Flea-market Restore button + endpoint no longer allow restoring a
   version that was never approved. The versions card hid the gate
   entirely (showed Restore on any non-current row), and the backend
