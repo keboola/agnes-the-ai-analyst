@@ -97,9 +97,13 @@ class MarketplaceItem(BaseModel):
     # whose curator hasn't filled the new fields yet.
     display_name: Optional[str] = None
     tagline: Optional[str] = None
-    # telemetry (v46): populated from usage_marketplace_item_window
+    # telemetry (v46): populated from usage_marketplace_item_window. Both
+    # windows are surfaced so the listing can drive different sections
+    # off different horizons (Most Popular → 7d, detail headline → 30d).
     invocations_30d: int = 0
     distinct_users_30d: int = 0
+    invocations_7d: int = 0
+    distinct_users_7d: int = 0
     trend_pct: Optional[float] = None
 
 
@@ -354,12 +358,13 @@ def _load_invocation_stats(
     else:
         type_filter = "AND parent_plugin = ''"
 
-    # 30d invocations + true distinct users from the window snapshot.
+    # 30d + 7d invocations + true distinct users from the window snapshot.
+    # Both labels live in the same table; one query pulls both.
     win_rows = conn.execute(
         f"""
-        SELECT name, invocations, distinct_users
+        SELECT period_label, name, invocations, distinct_users
         FROM usage_marketplace_item_window
-        WHERE period_label = 'last_30d'
+        WHERE period_label IN ('last_30d', 'last_7d')
           AND source = ?
           {type_filter}
         """,
@@ -386,18 +391,33 @@ def _load_invocation_stats(
     trend_by_name = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in trend_rows}
 
     out: Dict[str, Dict] = {}
-    for name, inv30, du30 in win_rows:
-        recent, prior = trend_by_name.get(name, (0, 0))
-        trend = None
-        # Threshold preserved from the v42 implementation — trend is noisy
-        # below 3 prior-week invocations so suppress to None.
+    for period_label, name, inv, du in win_rows:
+        stat = out.setdefault(name, {
+            "invocations_30d": 0,
+            "distinct_users_30d": 0,
+            "invocations_7d": 0,
+            "distinct_users_7d": 0,
+            "trend_pct": None,
+        })
+        if period_label == "last_30d":
+            stat["invocations_30d"] = int(inv or 0)
+            stat["distinct_users_30d"] = int(du or 0)
+        elif period_label == "last_7d":
+            stat["invocations_7d"] = int(inv or 0)
+            stat["distinct_users_7d"] = int(du or 0)
+    # Trend = recent_7 vs prior_7 from the daily fact (independent of the
+    # window snapshot's freshness). Threshold preserved from v42 — trend is
+    # noisy below 3 prior-week invocations so suppress to None.
+    for name, (recent, prior) in trend_by_name.items():
+        stat = out.setdefault(name, {
+            "invocations_30d": 0,
+            "distinct_users_30d": 0,
+            "invocations_7d": 0,
+            "distinct_users_7d": 0,
+            "trend_pct": None,
+        })
         if prior >= 3:
-            trend = (recent - prior) / prior * 100.0
-        out[name] = {
-            "invocations_30d": int(inv30 or 0),
-            "distinct_users_30d": int(du30 or 0),
-            "trend_pct": trend,
-        }
+            stat["trend_pct"] = (recent - prior) / prior * 100.0
     return out
 
 
@@ -603,6 +623,8 @@ def _curated_to_item(
         tagline=enrichment.get("tagline"),
         invocations_30d=stat.get("invocations_30d", 0),
         distinct_users_30d=stat.get("distinct_users_30d", 0),
+        invocations_7d=stat.get("invocations_7d", 0),
+        distinct_users_7d=stat.get("distinct_users_7d", 0),
         trend_pct=stat.get("trend_pct"),
     )
 
@@ -653,6 +675,8 @@ def _flea_to_item(
         is_viewer_owner=is_viewer_owner,
         invocations_30d=stat.get("invocations_30d", 0),
         distinct_users_30d=stat.get("distinct_users_30d", 0),
+        invocations_7d=stat.get("invocations_7d", 0),
+        distinct_users_7d=stat.get("distinct_users_7d", 0),
         trend_pct=stat.get("trend_pct"),
     )
 
