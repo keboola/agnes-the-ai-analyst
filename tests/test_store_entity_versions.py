@@ -1548,6 +1548,97 @@ class TestBgTaskIdempotency:
         conn.close()
         assert row["status"] == "overridden"
 
+    def test_runner_late_verdict_logs_skipped_not_approved(
+        self, web_client, monkeypatch,
+    ):
+        """End-to-end pair to ``test_late_verdict_does_not_clobber_overridden``:
+        when the LLM verdict lands on an already-overridden submission,
+        ``runner.run_llm_review`` honors the CAS bool and:
+          1. row status stays ``overridden``,
+          2. audit log gets a single ``bg_verdict_skipped`` entry,
+          3. audit log does NOT get a contradictory ``approved`` /
+             ``blocked_llm`` entry — pre-fix the runner discarded the
+             return value and ran the downstream cascade including
+             the misleading audit write.
+        """
+        from src.repositories.audit import AuditRepository
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        from src.store_guardrails.runner import run_llm_review
+        from app.utils import get_store_dir
+
+        owner_id, owner_cookies = _create_user(web_client, "lateverdict@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="lateverdict")
+
+        # Flip guardrails on, PUT v2 → pending_llm under deferred-promotion
+        # (visibility stays 'approved' at v1).
+        monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
+        monkeypatch.setattr(
+            "app.api.store._schedule_llm_review", lambda *a, **kw: None,
+        )
+        # Mock review_bundle to return an "approved"-shape verdict so
+        # the runner would (pre-fix) hit the approved branch + cascade.
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle",
+            lambda *a, **kw: {
+                "risk_level": "safe", "summary": "ok",
+                "findings": [], "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+            },
+        )
+
+        v2 = _make_skill_zip("lateverdict", body="v2 " * 80)
+        web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2, "application/zip")},
+            cookies=owner_cookies,
+        )
+
+        # Admin override flips the v2 submission row to 'overridden'.
+        from tests.helpers.auth import grant_admin
+        admin_id, admin_cookies = _create_user(web_client, "lv-admin@x.com")
+        conn = get_system_db()
+        grant_admin(conn, admin_id)
+        sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        r = web_client.post(
+            f"/api/admin/store/submissions/{sub_id}/override",
+            json={"reason": "false positive cleared offline"},
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        # Now fire the runner directly — it would (pre-fix) try to write
+        # status='approved' on the already-overridden row.
+        run_llm_review(
+            sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk-test",
+            model_loader=lambda: "claude-haiku-4-5-20251001",
+        )
+
+        # Row must stay overridden + audit log must show skipped, not
+        # the misleading approved write.
+        conn = get_system_db()
+        row = StoreSubmissionsRepository(conn).get(sub_id)
+        rows = AuditRepository(conn).query_for_resources(
+            [f"store_submission:{sub_id}"], limit=20,
+        )
+        conn.close()
+        actions = [r.get("action") for r in rows]
+        assert row["status"] == "overridden", (
+            f"row must stay overridden under CAS no-op; got {row['status']}"
+        )
+        assert "store.submission.bg_verdict_skipped" in actions, (
+            f"runner must log bg_verdict_skipped on CAS no-op; got {actions}"
+        )
+        assert "store.submission.approved" not in actions, (
+            "runner must NOT log approved when the CAS no-op'd the write — "
+            f"audit must not contradict the row state; got {actions}"
+        )
+
     def test_explicit_allow_terminal_overwrite_works(self, web_client):
         """Admin paths that legitimately need to overwrite a terminal
         state can pass `allow_terminal_overwrite=True` and get the

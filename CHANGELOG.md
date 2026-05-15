@@ -85,6 +85,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   longer silently clobber the row. Callers that legitimately need to
   overwrite a terminal state pass `allow_terminal_overwrite=True`
   explicitly. Returns a boolean indicating whether the write landed.
+  `runner.run_llm_review` now honors the bool on both its `approved`
+  and `blocked_llm` branches: a CAS no-op skips the downstream
+  cascade (visibility flip, version promote, the verdict-specific
+  audit entry that would otherwise contradict the row) and logs a
+  single `store.submission.bg_verdict_skipped` audit row instead,
+  so an operator reviewing the queue sees dropped verdicts
+  explicitly rather than via row-vs-audit contradiction.
   (High — surfaced by adversarial review.)
 - Flea-market admin **Retry review** and **Rescan** now review the
   STAGED version's bundle, not the live `plugin/` directory. For a
