@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.17] — 2026-05-15
+
 ### Changed
 - `agnes refresh-marketplace --check` (the SessionStart-hook detector
   that fires on every Claude Code session start in every workspace)
