@@ -116,9 +116,28 @@
   .item-detail .hero .meta {
     min-width: 0;
   }
-  .item-detail .hero .badges {
-    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  /* Pills — name + CSS structure copied from marketplace_plugin_detail.html
+     so plugin / skill / agent hero badges are visually identical except
+     for the per-item variants. Item-only addition: `.pill.type` (Skill /
+     Agent uppercase label) — plugin detail has no kind axis. */
+  .item-detail .hero .pills {
+    display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
     margin-top: 12px;
+  }
+  .item-detail .pill {
+    background: rgba(255,255,255,0.16); color: #fff;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+  }
+  .item-detail .pill.cat { background: rgba(255,255,255,0.22); }
+  .item-detail .pill.ver { font-family: var(--font-mono); }
+  .item-detail .pill.curated { background: #FEF3C7; color: #B45309; font-weight: 600; }
+  .item-detail .pill.flea    { background: #EDE9FE; color: #6D28D9; font-weight: 600; }
+  .item-detail .pill.muted   { background: transparent; color: rgba(255,255,255,0.72); padding-left: 0; }
+  .item-detail .pill.type {
+    background: rgba(255,255,255,0.22); color: #fff;
+    font-weight: var(--font-semibold);
+    text-transform: uppercase; letter-spacing: 0.5px;
   }
   /* Hero telemetry chip — same shape as the plugin detail page, with
      a "Plugin:" prefix on the installed segment because skills/agents
@@ -152,23 +171,6 @@
   }
   .item-detail .hero .hero-telemetry .trend-up   { color: #6ee7b7; font-weight: 600; }
   .item-detail .hero .hero-telemetry .trend-down { color: #fca5a5; font-weight: 600; }
-  .item-detail .type-badge {
-    display: inline-block;
-    padding: 3px 10px; border-radius: 999px;
-    background: rgba(255,255,255,0.22); color: #fff;
-    font-size: 11px; font-weight: var(--font-semibold);
-    text-transform: uppercase; letter-spacing: 0.5px;
-  }
-  .item-detail .source-badge {
-    font-size: 11px; padding: 3px 10px; border-radius: 999px;
-    font-weight: var(--font-semibold);
-  }
-  .item-detail .source-badge.curated { background: #FEF3C7; color: #B45309; }
-  .item-detail .source-badge.flea    { background: #EDE9FE; color: #6D28D9; }
-  .item-detail .cat-badge {
-    font-size: 11px; padding: 3px 10px; border-radius: 999px;
-    background: rgba(255,255,255,0.16); color: #fff;
-  }
 
   .item-detail .hero h1 {
     margin: 0 0 6px; font-size: 28px; font-weight: var(--font-bold);
@@ -815,9 +817,9 @@
         <h1 id="hero-name">{{ inner_name or item_name or plugin_name }}</h1>
         <div class="hero-tagline" id="hero-tagline" hidden></div>
         <div class="meta-row" id="hero-meta-row"></div>
-        <div class="badges" id="hero-badges">
-          <span class="type-badge">{{ kind }}</span>
-          <span class="source-badge {{ source }}">{{ 'Curated' if source == 'curated' else 'Flea' }}</span>
+        <div class="pills" id="hero-pills">
+          <span class="pill type">{{ kind }}</span>
+          <span class="pill {{ source }}">{{ 'Curated' if source == 'curated' else 'Flea' }}</span>
         </div>
         <!-- Telemetry funnel chip — same four segments as the plugin
              detail page (active · calls · trend · Plugin: N installed).
@@ -1012,19 +1014,27 @@
   document.title = `${heroTitle} — Marketplace`;
 
   // ── Breadcrumbs ────────────────────────────────────────────────────
+  // Mirror plugin detail shape: Marketplace › <marketplace_name> › <parent
+  // plugin display name> › <self>. `<marketplace_name>` is plain text (no
+  // link, same as plugin detail). Parent plugin segment links to the
+  // plugin detail page so users can climb one level. Flea has no parent
+  // plugin, so the path collapses to Marketplace › Flea Market › <self>.
   const crumbs = document.getElementById('crumbs');
+  const parentPluginLabel = d.parent_display_name || d.manifest_name || pluginName;
   if (source === 'curated') {
     crumbs.innerHTML =
       `<a href="/marketplace?tab=curated">Marketplace</a>
        <span class="sep">›</span>
-       <a href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">${esc(pluginName)}</a>
+       <span>${esc(d.marketplace_name || marketplaceId)}</span>
+       <span class="sep">›</span>
+       <a href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">${esc(parentPluginLabel)}</a>
        <span class="sep">›</span>
        <span class="current">${esc(heroTitle)}</span>`;
   } else {
     crumbs.innerHTML =
       `<a href="/marketplace?tab=flea">Marketplace</a>
        <span class="sep">›</span>
-       <a href="/marketplace?tab=flea">Flea Market</a>
+       <span>Flea Market</span>
        <span class="sep">›</span>
        <span class="current">${esc(d.manifest_name || heroTitle)}</span>`;
   }
@@ -1053,13 +1063,20 @@
         data-fallback="${esc(initials)}">`;
   }
 
-  // Badges — keep type + source (already server-rendered), append category.
-  const badges = document.getElementById('hero-badges');
+  // Pills — same structure / class names as plugin detail hero so the two
+  // surfaces share `.pill.cat / .curated / .flea / .muted` CSS. Item-only
+  // addition: `.pill.type` (Skill / Agent uppercase, no parallel on plugin
+  // detail which has no kind axis).
+  const pills = document.getElementById('hero-pills');
   const sourceBadge = source === 'curated'
-    ? '<span class="source-badge curated">Curated</span>'
-    : '<span class="source-badge flea">Flea</span>';
-  const cat = d.category ? `<span class="cat-badge">${esc(d.category)}</span>` : '';
-  badges.innerHTML = `<span class="type-badge">${esc(kind)}</span>${sourceBadge}${cat}`;
+    ? '<span class="pill curated">Curated</span>'
+    : '<span class="pill flea">Flea</span>';
+  const cat = d.category ? `<span class="pill cat">${esc(d.category)}</span>` : '';
+  const updatedAt = source === 'curated' ? d.parent_updated_at : d.updated_at;
+  const updated = updatedAt
+    ? `<span class="pill muted">Updated ${esc(fmtRelative(updatedAt))}</span>`
+    : '';
+  pills.innerHTML = `<span class="pill type">${esc(kind)}</span>${sourceBadge}${cat}${updated}`;
 
   // Invocation block — lives inside the Description panel so the "how to
   // call it" cue sits right under "what it does". Flea entities ship as
@@ -1115,20 +1132,17 @@
     const author = (d.parent_author_name && d.parent_author_name !== 'owner_todo')
       ? `<strong>${esc(d.parent_author_name)}</strong>`
       : `<strong style="font-style:italic; color:var(--warn-color);">owner_todo</strong>`;
-    const updated = d.parent_updated_at ? `Updated ${esc(fmtRelative(d.parent_updated_at))}` : '';
     metaRow.innerHTML =
       `<span>part of <a href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}"><strong>${esc(pluginName)}</strong></a></span>
        <span class="dot">·</span>
-       <span>by ${author}</span>
-       ${updated ? `<span class="dot">·</span><span>${updated}</span>` : ''}`;
+       <span>by ${author}</span>`;
   } else {
     const author = d.owner_display || d.author_name || '';
     metaRow.innerHTML =
       `<span>by <strong>${esc(author)}</strong></span>
        <span class="dot">·</span>
        <span>${d.install_count || 0} installed</span>
-       ${d.bundle_size != null ? `<span class="dot">·</span><span>${esc(fmtBytes(d.bundle_size))}</span>` : ''}
-       ${d.updated_at ? `<span class="dot">·</span><span>Updated ${esc(fmtRelative(d.updated_at))}</span>` : ''}`;
+       ${d.bundle_size != null ? `<span class="dot">·</span><span>${esc(fmtBytes(d.bundle_size))}</span>` : ''}`;
   }
 
   // Hero action — Curated nested redirects to parent plugin (no install at
@@ -1385,12 +1399,9 @@
       : '<span class="todo">owner_todo</span>';
     // Type already shown as a badge in the hero — skip the row here.
     dl.innerHTML = `
-      <div class="row"><dt>Parent plugin</dt><dd class="mono">${esc(pluginName)}</dd></div>
-      <div class="row"><dt>Marketplace</dt><dd>${esc(d.marketplace_name || marketplaceId)}</dd></div>
-      ${d.relpath ? `<div class="row"><dt>Path</dt><dd class="mono">${esc(d.relpath)}</dd></div>` : ''}
+      <div class="row"><dt>Parent plugin</dt><dd>${esc(d.parent_display_name || d.manifest_name || pluginName)}</dd></div>
       ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}
       ${telemetryRows}
-      ${d.parent_updated_at ? `<div class="row"><dt>Updated</dt><dd>${esc(fmtRelative(d.parent_updated_at))}</dd></div>` : ''}
       <div class="row"><dt>Curator</dt><dd>${author}</dd></div>`;
   } else {
     const ownerLabel = d.owner_display || d.author_name || '';
@@ -1402,8 +1413,7 @@
       ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}
       <div class="row"><dt>Installs</dt><dd>${d.install_count || 0}</dd></div>
       ${telemetryRows}
-      ${d.released_at ? `<div class="row"><dt>Released</dt><dd>${esc(fmtRelative(d.released_at))}</dd></div>` : ''}
-      ${d.updated_at ? `<div class="row"><dt>Updated</dt><dd>${esc(fmtRelative(d.updated_at))}</dd></div>` : ''}`;
+      ${d.released_at ? `<div class="row"><dt>Released</dt><dd>${esc(fmtRelative(d.released_at))}</dd></div>` : ''}`;
   }
 
   // ── Docs section ────────────────────────────────────────────────
