@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- `agnes refresh-marketplace --check` (the SessionStart-hook detector
+  that fires on every Claude Code session start in every workspace)
+  now uses `git ls-remote origin HEAD` instead of `git fetch origin`
+  to learn whether the remote marketplace has changed. ls-remote
+  transfers one line of text (`<sha>\tHEAD`) over a single HTTPS
+  round-trip — no git objects, no metadata — so the hook completes
+  in ~0.5–1 s instead of the ~8 s a full fetch took. Detection logic
+  is unchanged (compare local `HEAD` SHA to remote `HEAD` SHA, emit
+  the `/update-agnes-plugins` hint JSON on mismatch, silent on
+  match). The slash-command and `--bootstrap` paths still do real
+  `git fetch + reset --hard` — they actually need the objects.
+
 ### Fixed
 - `/me/activity` hero subtitle showed literal `<strong>…</strong>` tags
   around the user's email instead of rendering them bold. The subtitle
