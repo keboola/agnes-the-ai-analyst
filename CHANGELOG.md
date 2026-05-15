@@ -13,6 +13,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [0.54.17] — 2026-05-15
 
 ### Changed
+- **BREAKING (operator-facing)**: flea-market guardrail pipeline now
+  fail-CLOSED on misconfig. `get_guardrails_enabled()` previously
+  conflated operator intent (`guardrails.enabled` YAML) with provider
+  readiness (`ANTHROPIC_API_KEY` env) — when intent was True but the
+  env var was missing, the pipeline silently auto-fell-back to disabled
+  and every upload landed `approved` without an LLM review. Split into
+  `get_guardrails_enabled()` (intent only) and a new
+  `get_guardrails_llm_provider_ready()` (env only). Three-state matrix:
+  `enabled=false → auto-approve` (unchanged), `enabled=true + ready →
+  normal hold-for-review` (unchanged), `enabled=true + not-ready →
+  submissions sit at `pending_llm`, no auto-approval` (new — was
+  silent auto-approval). Admin **Retry review** action on
+  `/admin/store/submissions/<id>` now covers `pending_llm` too (was
+  `review_error` + `blocked_llm`). Boot-time `WARNING` banner surfaces
+  the misconfig in `app/main.py`. Operators who relied on the
+  auto-fallback for local-dev no-LLM setups must now explicitly set
+  `guardrails.enabled: false` in `instance.yaml` — same outcome,
+  explicit intent.
 - `agnes refresh-marketplace --check` (the SessionStart-hook detector
   that fires on every Claude Code session start in every workspace)
   now uses `git ls-remote origin HEAD` instead of `git fetch origin`
@@ -33,6 +51,37 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the literal tags too. Switched to `{% set %}…{% endset %}` block
   capture so the literal `<strong>` stays HTML while the email is still
   autoescaped.
+- Flea-market LLM security review failed with `LLMFormatError: Response
+  truncated (max_tokens) for schema store_guardrails_review` when the
+  reviewer emitted many findings or content-quality issues. Raised the
+  output budget (2500 → 6000 tokens) and added a one-shot
+  retry-with-doubled-budget in the Anthropic provider (up to 4× initial)
+  so the verdict survives an occasional verbose response instead of
+  pinning the submission in `review_error`. (We initially added
+  `maxItems=20` to the schema's `findings` and `content_quality.issues`
+  arrays, but Anthropic's structured-output validator rejects `maxItems`
+  on array types — removed.)
+- Flea-market entity detail page surfaces the latest submission's
+  failure verdict even when a previously-approved version is still
+  serving (deferred-promotion path). The owner / admin used to see no
+  banner at all when a v2+ edit landed in `review_error`,
+  `blocked_llm`, or `blocked_inline` because the `_quarantine_banner`
+  partial gated on `entity.visibility_status != 'approved'`. The
+  banner now renders for those failure statuses too, with copy that
+  acknowledges the prior version is still live ("Latest edit failed
+  review — previously approved version (vN) keeps serving …").
+- Flea-market Restore button + endpoint no longer allow restoring a
+  version that was never approved. The versions card hid the gate
+  entirely (showed Restore on any non-current row), and the backend
+  blocked only while the latest submission was `pending_*` — so a
+  `blocked_llm` / `review_error` version could be restored anyway.
+  Added `submission_status` decoration on `version_history` via a new
+  `StoreEntitiesRepository.get_with_version_approvals` helper, gated
+  the UI button on `submission_status in ('approved', None)`
+  (`None` is the legacy v1 seed, back-compat-treated as approved),
+  rendered status pills for blocked / errored / pending rows, and
+  added a 400 `version_not_approved` guard in
+  `POST /api/store/entities/{id}/versions/{n}/restore`.
 
 ### Internal
 - CI test suite sharded for speed. The `test` job in `.github/workflows/ci.yml` is now a `test-shard` matrix — 4 parallel jobs via `pytest-split`, balanced by a committed `.test_durations` file — aggregated into a single `test` status check so branch protection needs no change. The duplicate full-suite `test` job in `release.yml` is removed (it re-ran the same ~10 min suite a second time on every push to main/feature branches); `release.yml` is now image-build only, with the advisory ruff/mypy steps moved to a lean `lint` job in `ci.yml`. Net: ~10 min → ~3 min wall-clock per push, and the suite runs once instead of twice. Adds `pytest-split` to the `dev` extra.

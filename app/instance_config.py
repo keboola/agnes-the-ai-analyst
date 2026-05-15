@@ -569,21 +569,32 @@ def get_guardrails_min_body_chars() -> int:
 
 
 def get_guardrails_enabled() -> bool:
-    """Master kill-switch for the guardrail pipeline.
+    """Operator's stated intent for the guardrail pipeline.
 
-    Defaults to True. Operators can disable by setting ``guardrails.enabled:
-    false`` in instance.yaml — useful for local development against the
-    UI without burning Anthropic tokens. Inline checks always run; this
-    flag only gates the LLM step (and skips the pending → approved hold).
+    Reads ``guardrails.enabled`` from instance.yaml. Defaults to True.
+    Operators can explicitly disable by setting ``guardrails.enabled:
+    false`` — useful for local development against the UI without
+    burning Anthropic tokens.
 
-    Auto-fallback: when the YAML says enabled but no ANTHROPIC_API_KEY /
-    LLM_API_KEY is set in the environment, behave as disabled. This
-    keeps the test suite + first-boot operator experience sane — uploads
-    auto-approve until the operator wires up an LLM provider rather than
-    silently piling up in ``review_error``.
+    Note: this returns intent ONLY. Whether the LLM provider has
+    working credentials is a separate concern — see
+    :func:`get_guardrails_llm_provider_ready`. The two are kept apart
+    so callers can implement fail-CLOSED behavior: hold submissions at
+    ``pending_llm`` (instead of silently auto-approving) when intent is
+    True but credentials are missing.
     """
-    if not bool(get_value("guardrails", "enabled", default=True)):
-        return False
+    return bool(get_value("guardrails", "enabled", default=True))
+
+
+def get_guardrails_llm_provider_ready() -> bool:
+    """Whether the LLM provider has credentials present in the
+    environment.
+
+    Independent from :func:`get_guardrails_enabled` (operator intent).
+    A False return here when intent is True is a misconfiguration —
+    the caller should hold submissions at ``pending_llm`` and surface
+    a loud boot-time warning rather than silently auto-approving.
+    """
     if os.environ.get("ANTHROPIC_API_KEY", "").strip():
         return True
     if os.environ.get("LLM_API_KEY", "").strip():

@@ -30,10 +30,14 @@ from .prompts import (
 
 logger = logging.getLogger(__name__)
 
-# Bound the response budget. The schema is small — findings + content_quality
-# issues typically have 0–3 items each — but allow headroom so the model
-# doesn't truncate when both lists fire.
-MAX_RESPONSE_TOKENS = 2500
+# Bound the response budget. The schema's two arrays (findings +
+# content_quality.issues) are individually capped at maxItems=20, but
+# each item is ~120-180 tokens (severity/category/file/explanation/
+# fix_hint or file/field/issue/hint). A bundle with many weak
+# descriptions can easily hit 4-5k output tokens. Stay generous on
+# Haiku/Sonnet — output cost is negligible compared to the cost of a
+# truncated verdict pinning the submission in `review_error`.
+MAX_RESPONSE_TOKENS = 6000
 
 
 def review_bundle(

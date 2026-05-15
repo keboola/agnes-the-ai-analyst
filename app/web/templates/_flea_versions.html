@@ -55,6 +55,14 @@
   }
   .versions-card button.restore:hover { background: var(--surface-muted, #f9fafb); }
   .versions-card button.restore:disabled { opacity: 0.5; cursor: not-allowed; }
+  .versions-card .status-pill {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.3px; vertical-align: middle;
+  }
+  .versions-card .status-pill.blocked { background: #fee2e2; color: #991b1b; }
+  .versions-card .status-pill.errored { background: #fef3c7; color: #92400e; }
+  .versions-card .status-pill.pending { background: #e0e7ff; color: #3730a3; }
 </style>
 
 <div class="versions-card">
@@ -91,12 +99,37 @@
           {{ v.created_at[:10] if v.created_at else '' }}
         </td>
         <td>
+          {# Restore only when the version was actually approved.
+             ``submission_status=None`` is legacy v1 (seeded pre-v37
+             before submission_id backfill) — treat as approved.
+             Anything else (blocked_inline / blocked_llm /
+             review_error / pending_*) renders a pill instead so the
+             owner understands why no button. #}
+          {% set _sub_status = v.submission_status %}
+          {% set _is_approvable = _sub_status in ['approved', None] %}
           {% if v.n != entity.version_no %}
-          <button class="restore" type="button"
-                  data-version-no="{{ v.n }}"
-                  onclick="restoreVersion({{ v.n }})">
-            Restore
-          </button>
+            {% if _is_approvable %}
+            <button class="restore" type="button"
+                    data-version-no="{{ v.n }}"
+                    onclick="restoreVersion({{ v.n }})">
+              Restore
+            </button>
+            {% elif _sub_status in ['blocked_inline', 'blocked_llm'] %}
+            <span class="status-pill blocked"
+                  title="This version was blocked by guardrails — restore disabled.">
+              blocked
+            </span>
+            {% elif _sub_status == 'review_error' %}
+            <span class="status-pill errored"
+                  title="The security reviewer errored on this version — restore disabled.">
+              errored
+            </span>
+            {% elif _sub_status in ['pending_inline', 'pending_llm'] %}
+            <span class="status-pill pending"
+                  title="This version is still under review.">
+              pending
+            </span>
+            {% endif %}
           {% endif %}
         </td>
       </tr>
@@ -155,6 +188,10 @@ async function restoreVersion(versionNo) {
         return;
       } else if (code === 'prior_version_pending') {
         msg = 'A previous edit is still under review. Wait for the verdict before restoring.';
+      } else if (code === 'version_not_approved') {
+        const src = j.detail.source_status || 'not approved';
+        msg = `Restore blocked: v${versionNo} was never approved `
+            + `(status: ${src}). Pick a version that passed review.`;
       } else if (code === 'version_not_found') {
         msg = 'That version is no longer on disk.';
       } else if (code === 'already_current') {

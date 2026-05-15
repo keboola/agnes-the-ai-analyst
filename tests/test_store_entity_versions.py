@@ -288,6 +288,155 @@ class TestRestoreVersion:
         )
         assert r.status_code in (403, 404), r.text
 
+    def test_restore_rejects_blocked_llm_version(self, web_client, monkeypatch):
+        """A v2 that LLM-blocked sits in version_history with
+        submission.status='blocked_llm'. The restore endpoint must
+        refuse to roll forward from that bundle — defense in depth
+        against the UI being bypassed by direct POST."""
+        # Mock LLM to BLOCK v2.
+        def mock_review_bundle(*args, **kwargs):
+            return {
+                "risk_level": "high",
+                "summary": "mock block",
+                "findings": [{"severity": "high", "category": "test",
+                              "file": "x", "explanation": "mock"}],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock-model",
+                "error": None,
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle",
+            mock_review_bundle,
+        )
+
+        owner_id, owner_cookies = _create_user(web_client, "blockrestore@x.com")
+        # Phase 1: guardrails OFF — v1 lands approved.
+        eid = _upload_clean(web_client, owner_cookies, name="blockrestore")
+        # Phase 2: guardrails ON → v2 blocked, entity stays at v1.
+        monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
+        v2 = _make_skill_zip("blockrestore", body="V2 BODY " * 80)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        # Drive the BG review synchronously.
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        from src.store_guardrails.runner import run_llm_review
+        conn = get_system_db()
+        sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk-test",
+            model_loader=lambda: "claude-haiku-4-5-20251001",
+        )
+
+        # Now POST a restore /versions/2/restore. Must 400 because v2
+        # was never approved.
+        r = web_client.post(
+            f"/api/store/entities/{eid}/versions/2/restore",
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 400, r.text
+        body = r.json()
+        assert body["detail"]["code"] == "version_not_approved"
+        assert body["detail"]["source_status"] == "blocked_llm"
+
+    def test_restore_rejects_review_error_version(self, web_client, monkeypatch):
+        """Same as blocked_llm but the LLM call errored — the
+        submission row lands at 'review_error' and the version is
+        equally not-approvable."""
+        def mock_review_bundle(*args, **kwargs):
+            return {
+                "risk_level": None,
+                "summary": None,
+                "findings": [],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock-model",
+                "error": "LLMFormatError: mock truncation",
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle",
+            mock_review_bundle,
+        )
+
+        owner_id, owner_cookies = _create_user(web_client, "errrestore@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="errrestore")
+        monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
+        v2 = _make_skill_zip("errrestore", body="V2 BODY " * 80)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        from src.store_guardrails.runner import run_llm_review
+        conn = get_system_db()
+        sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk-test",
+            model_loader=lambda: "claude-haiku-4-5-20251001",
+        )
+
+        r = web_client.post(
+            f"/api/store/entities/{eid}/versions/2/restore",
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 400, r.text
+        body = r.json()
+        assert body["detail"]["code"] == "version_not_approved"
+        assert body["detail"]["source_status"] == "review_error"
+
+    def test_restore_allows_legacy_v1_without_submission_id(self, web_client):
+        """The v1 seed entry created by ``StoreEntitiesRepository.create``
+        carries ``submission_id=None`` until the API layer backfills.
+        A restore targeting v1 must NOT be rejected just because the
+        join can't find a submission status — back-compat for entities
+        created before v37."""
+        owner_id, owner_cookies = _create_user(web_client, "legv1@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="legv1")
+        # Manually clear v1's submission_id to simulate the legacy seed.
+        conn = get_system_db()
+        repo = StoreEntitiesRepository(conn)
+        ent = repo.get(eid)
+        history = ent["version_history"]
+        history[0]["submission_id"] = None
+        conn.execute(
+            "UPDATE store_entities SET version_history = ? WHERE id = ?",
+            [json.dumps(history), eid],
+        )
+        conn.close()
+
+        # PUT a v2 so v1 is no longer current.
+        v2 = _make_skill_zip("legv1", body="V2 BODY " * 80)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        # Restore v1 → must succeed (200), because legacy v1 has
+        # submission_id=None which the guard treats as approved.
+        r = web_client.post(
+            f"/api/store/entities/{eid}/versions/1/restore",
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+
 
 class TestEditPage:
     def test_edit_page_renders_for_owner(self, web_client):
@@ -386,6 +535,7 @@ class TestInstallerAlwaysGetsLatestApproved:
         # import get_guardrails_enabled` binds the symbol into app.api.store,
         # so patching the source module isn't enough.
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
 
         # PUT a new bundle. Guardrails on → submission lands at
         # pending_llm; promotion deferred.
@@ -461,6 +611,7 @@ class TestInstallerAlwaysGetsLatestApproved:
         # import get_guardrails_enabled` binds the symbol into app.api.store,
         # so patching the source module isn't enough.
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         conn = get_system_db()
         v1_hash = StoreEntitiesRepository(conn).get(eid)["version"]
         conn.close()
@@ -600,6 +751,7 @@ class TestRestoreDeferredPromotion:
         )
         # v2 promoted (guardrails off). Now flip on for the restore.
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         monkeypatch.setattr(
             "app.api.store._schedule_llm_review",
             lambda *a, **kw: None,
@@ -626,6 +778,91 @@ class TestEditPageBanner:
     """Detail page banner during pending edit review must surface
     the version under review + the prior version still serving."""
 
+    def test_banner_shows_review_error_when_prior_version_still_serving(
+        self, web_client, monkeypatch,
+    ):
+        """v2+ edit landing in review_error must surface a banner to
+        owner/admin even though entity stays at visibility=approved.
+        The original gate (visibility != approved) silently hid the
+        failure — see Bug #2 in plan
+        when-i-submitted-new-delightful-russell.md."""
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        # Mock LLM to ERROR on v2.
+        def mock_review_bundle(*args, **kwargs):
+            return {
+                "risk_level": None,
+                "summary": None,
+                "findings": [],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock-model",
+                "error": "LLMFormatError: mock truncation",
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle",
+            mock_review_bundle,
+        )
+
+        owner_id, owner_cookies = _create_user(web_client, "errbanner@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="errbanner")
+        monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
+
+        v2 = _make_skill_zip("errbanner", body="V2 BODY " * 80)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        # Drive the BG review synchronously so the submission row
+        # lands at review_error.
+        from src.store_guardrails.runner import run_llm_review
+        conn = get_system_db()
+        sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        ent = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert ent["visibility_status"] == "approved", (
+            "deferred promotion: entity stays approved at prior version"
+        )
+        run_llm_review(
+            sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk-test",
+            model_loader=lambda: "claude-haiku-4-5-20251001",
+        )
+
+        # Confirm the submission really landed at review_error.
+        conn = get_system_db()
+        sub = StoreSubmissionsRepository(conn).get(sub_id)
+        ent = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert sub["status"] == "review_error"
+        assert ent["visibility_status"] == "approved", (
+            "entity must remain approved — prior version still serving"
+        )
+
+        # Detail page MUST surface the failure.
+        r = web_client.get(
+            f"/marketplace/flea/{eid}", cookies=owner_cookies,
+        )
+        assert r.status_code == 200
+        body = r.text
+        # The widened v2+ review_error copy mentions the prior version
+        # still serving — that's the user-visible signal we just added.
+        assert "Latest edit failed review" in body, (
+            "banner partial must render review_error H3 for v2+ edit "
+            "when prior version still serves"
+        )
+        assert "previously approved version (v1)" in body, (
+            "banner copy must explain why the entity still appears live"
+        )
+        # The model's error string must reach the page so the owner
+        # can see what went wrong.
+        assert "LLMFormatError" in body
+
     def test_banner_shows_version_n_under_review(self, web_client, monkeypatch):
         from src.repositories.store_submissions import StoreSubmissionsRepository
         owner_id, owner_cookies = _create_user(web_client, "bannerowner@x.com")
@@ -633,6 +870,7 @@ class TestEditPageBanner:
 
         # Switch guardrails on; stub LLM scheduler so v2 stays pending.
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         monkeypatch.setattr(
             "app.api.store._schedule_llm_review",
             lambda *a, **kw: None,
@@ -742,6 +980,7 @@ class TestPRReviewFixes:
 
         # Switch guardrails on for the edit so promotion defers.
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         monkeypatch.setattr(
             "app.api.store._schedule_llm_review",
             lambda *a, **kw: None,
@@ -789,6 +1028,7 @@ class TestPRReviewFixes:
 
         # Enable guardrails so promotion defers.
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         monkeypatch.setattr(
             "app.api.store._schedule_llm_review",
             lambda *a, **kw: None,
@@ -840,6 +1080,7 @@ class TestPRReviewFixes:
         # Enable guardrails for the edit. Stub LLM scheduler so we
         # control when the runner fires.
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         monkeypatch.setattr(
             "app.api.store._schedule_llm_review",
             lambda *a, **kw: None,
@@ -908,6 +1149,7 @@ class TestPRReviewFixes:
         eid = _upload_clean(web_client, owner_cookies, name="archmid")
 
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         monkeypatch.setattr(
             "app.api.store._schedule_llm_review",
             lambda *a, **kw: None,
@@ -1005,3 +1247,164 @@ class TestAdminQueueShowsVersion:
         assert "<dt>Version</dt>" in body
         assert "<dt>Bundle hash</dt>" in body
         assert "v1" in body
+
+
+class TestPublishGateFailClosed:
+    """Hold-for-review when ``guardrails.enabled: true`` but no LLM
+    provider credentials are present in env. The pre-v45 fall-back
+    silently auto-approved every upload — a fail-OPEN hole the
+    operator couldn't notice. New behavior: submissions sit at
+    ``pending_llm``, entity stays at ``visibility_status='pending'``,
+    admin retries from /admin/store/submissions after providing
+    credentials."""
+
+    def test_v1_upload_enabled_but_not_ready_holds_at_pending(
+        self, web_client, monkeypatch,
+    ):
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        # Flip guardrails ON but leave provider_ready as False.
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: False,
+        )
+        # No mock review_bundle — we should never call the LLM.
+        # If we did, the lack of patching would surface as a real
+        # network call attempt, easy to catch as a hang.
+
+        owner_id, owner_cookies = _create_user(web_client, "holdv1@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="holdv1")
+
+        conn = get_system_db()
+        ent = StoreEntitiesRepository(conn).get(eid)
+        sub = StoreSubmissionsRepository(conn).latest_for_entity(eid)
+        conn.close()
+        assert ent["visibility_status"] == "pending", (
+            "enabled-but-not-ready must NOT publish — entity stays pending"
+        )
+        assert sub["status"] == "pending_llm", (
+            "submission must hold at pending_llm awaiting admin retry"
+        )
+        assert sub["llm_findings"] is None, (
+            "no LLM call was made — findings must be empty"
+        )
+
+    def test_admin_retry_pending_llm_fires_review(
+        self, web_client, monkeypatch,
+    ):
+        """After the operator sets the API key, admin Retry-review on a
+        held pending_llm row schedules + runs the LLM."""
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        # Phase 1: upload with provider not-ready → held at pending_llm.
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: False,
+        )
+        owner_id, owner_cookies = _create_user(web_client, "retryholder@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="retryholder")
+
+        conn = get_system_db()
+        sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+
+        # Phase 2: operator adds credentials, admin retries.
+        # Inject a fake env var so default_api_key_loader doesn't raise
+        # before the mock review_bundle runs.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-fake-key-for-retry")
+        # Mock review_bundle so the retry resolves to approved without
+        # touching the network.
+        def mock_review_bundle(*args, **kwargs):
+            return {
+                "risk_level": "safe", "summary": "ok",
+                "findings": [], "template_placeholders_found": 0,
+                "reviewed_by_model": "mock-model", "error": None,
+                "content_quality": {"verdict": "pass", "issues": []},
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle",
+            mock_review_bundle,
+        )
+
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.post(
+            f"/api/admin/store/submissions/{sub_id}/retry",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200, r.text
+        # After retry, BG task runs synchronously in TestClient (it
+        # blocks the response). Verify the row moved to approved.
+        conn = get_system_db()
+        sub = StoreSubmissionsRepository(conn).get(sub_id)
+        ent = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert sub["status"] == "approved", (
+            f"retry must drive submission to approved; got {sub['status']}"
+        )
+        assert ent["visibility_status"] == "approved", (
+            "entity must flip to approved after LLM ok"
+        )
+
+    def test_edit_enabled_but_not_ready_holds_prior_serving(
+        self, web_client, monkeypatch,
+    ):
+        """v2+ edit under enabled-but-not-ready: v1 keeps serving,
+        v2 submission held at pending_llm. Critical safety property:
+        no silent promotion."""
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        # Initial upload runs with guardrails OFF (autouse default) →
+        # v1 approved. Then flip to enabled-but-not-ready for PUT.
+        owner_id, owner_cookies = _create_user(web_client, "holdedit@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="holdedit")
+        conn = get_system_db()
+        v1_hash = StoreEntitiesRepository(conn).get(eid)["version"]
+        conn.close()
+
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: False,
+        )
+        v2 = _make_skill_zip("holdedit", body="V2 BODY " * 80)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        conn = get_system_db()
+        ent = StoreEntitiesRepository(conn).get(eid)
+        sub = StoreSubmissionsRepository(conn).latest_for_entity(eid)
+        conn.close()
+        # Entity stays approved at v1, v2 sits at pending_llm.
+        assert ent["visibility_status"] == "approved"
+        assert ent["version_no"] == 1
+        assert ent["version"] == v1_hash, (
+            "live bundle must remain v1 — no silent promotion of v2"
+        )
+        assert sub["status"] == "pending_llm"
+        assert sub["llm_findings"] is None
+
+    def test_disabled_intent_still_auto_approves(
+        self, web_client, monkeypatch,
+    ):
+        """Operator explicitly opting out (``enabled: false``) keeps
+        the prior auto-approve behavior — local dev / no-LLM
+        deployments aren't blocked."""
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        # autouse fixture already sets enabled=False. Just confirm
+        # behavior end-to-end.
+        owner_id, owner_cookies = _create_user(web_client, "offowner@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="offowner")
+
+        conn = get_system_db()
+        ent = StoreEntitiesRepository(conn).get(eid)
+        sub = StoreSubmissionsRepository(conn).latest_for_entity(eid)
+        conn.close()
+        assert ent["visibility_status"] == "approved"
+        assert sub["status"] == "approved"
