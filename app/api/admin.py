@@ -3773,19 +3773,20 @@ async def admin_override_store_submission(
     # publish-gate model is designed to express.
     if (target_version_no is not None
             and target_version_no > int(entity_row.get("version_no") or 0)):
-        if ents_repo.promote_version(entity_id, target_version_no):
-            try:
-                from app.api.store import _swap_live_to_version
-                _swap_live_to_version(entity_id, target_version_no)
-                promoted_to = target_version_no
-                # Re-read after promotion so attribution picks up the
-                # new version's name/type if a rename was bundled in.
-                entity_row = ents_repo.get(entity_id) or entity_row
-            except Exception:
-                logger.exception(
-                    "override: live swap failed for entity %s v%d",
-                    entity_id, target_version_no,
-                )
+        # Atomic helper: swap live bundle first, then update the DB.
+        # Eliminates the "DB promoted but live still on prior bytes"
+        # window. If the helper returns None (source missing / swap
+        # failed) the row's status + visibility are still flipped
+        # above — admin can re-trigger via /rescan once the bundle
+        # is recovered.
+        from app.api.store import promote_to_version
+        promoted_to = promote_to_version(
+            entity_id, target_version_no, ents_repo,
+        )
+        if promoted_to is not None:
+            # Re-read after promotion so attribution picks up the
+            # new version's name/type if a rename was bundled in.
+            entity_row = ents_repo.get(entity_id) or entity_row
 
     # Update usage-attribution rows now that the entity is live.
     update_flea_attribution(
@@ -4105,8 +4106,13 @@ async def admin_download_store_submission_bundle(
     import io as _io
     import zipfile as _zipfile
     from pathlib import Path as _P
-    from app.api.store import _plugin_dir as _sp_plugin_dir
+    from app.api.store import (
+        _plugin_dir as _sp_plugin_dir,
+        _submission_plugin_dir,
+        _version_no_for_submission,
+    )
 
+    from src.repositories.store_entities import StoreEntitiesRepository
     from src.repositories.store_submissions import StoreSubmissionsRepository
 
     sub = StoreSubmissionsRepository(conn).get(submission_id)
@@ -4116,7 +4122,20 @@ async def admin_download_store_submission_bundle(
     if not entity_id:
         raise HTTPException(status_code=410, detail="bundle_purged_or_missing")
 
-    plugin_dir = _sp_plugin_dir(entity_id)
+    # Resolve the STAGED bundle this submission represents, not live.
+    # Under deferred promotion, live `plugin/` holds the prior approved
+    # version — so for a blocked v2 row, live shows v1's safe bytes
+    # while the staged v2 bytes (the actual risky upload the admin is
+    # reviewing) sit in `versions/v2/plugin/`. Falls back to live for
+    # legacy rows that never seeded a versions/ dir.
+    ent = StoreEntitiesRepository(conn).get(entity_id) or {}
+    target_n = _version_no_for_submission(ent, submission_id)
+    if target_n is not None:
+        plugin_dir = _submission_plugin_dir(entity_id, target_n)
+        if not plugin_dir.exists():
+            plugin_dir = _sp_plugin_dir(entity_id)
+    else:
+        plugin_dir = _sp_plugin_dir(entity_id)
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 
