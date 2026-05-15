@@ -1250,6 +1250,269 @@
 
     <!-- Toast notification -->
     <div id="toast" class="toast"></div>
+
+    <!-- ═══════════════ Create Memory Domain modal (Task 8.10b) ═══════════════
+         Fired from the chip-input's `chip-create` event in the item-edit
+         modal (the Domains field is a chip-input with
+         `data-chip-input="memory_domain"`). The handler below opens this
+         modal pre-filled with the typed name, POSTs to
+         /api/admin/memory-domains, and adds the freshly-created chip back
+         into the chip-input host via `.addChip()`.
+
+         Two-step flow per spec Section 7.4: after the entity is created,
+         a second mini-modal (Create-Memory-Domain RBAC step) renders a
+         per-group requirement matrix so the admin can grant
+         available|required tiers without leaving the page. The Skip
+         link short-circuits back to the chip-input. -->
+    <div id="createMemoryDomainModal"
+         style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+      <div style="background: var(--surface); max-width: 520px; margin: 80px auto;
+                  padding: var(--space-5); border-radius: var(--radius-lg);
+                  border: 1px solid var(--border);">
+        <h3 style="margin-bottom: var(--space-3);">Create Memory Domain</h3>
+        <div style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Name</span>
+            <input id="cmd-name" type="text" placeholder="Engineering"
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm);
+                          background:var(--bg); color:var(--text);">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+            <input id="cmd-slug" type="text" placeholder="engineering"
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm);
+                          background:var(--bg); color:var(--text);">
+            <span style="font-size:11px; color:var(--text-secondary);">
+              URL-safe identifier; auto-derived from Name.
+            </span>
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">
+              Description <span style="color:var(--text-secondary);">(optional)</span>
+            </span>
+            <textarea id="cmd-desc" rows="2"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);
+                             font-family:inherit; resize:vertical;"></textarea>
+          </label>
+          <div style="display:flex; gap:var(--space-3);">
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Icon</span>
+              <input id="cmd-icon" type="text" value="🎯" maxlength="4"
+                     style="padding:6px; border:1px solid var(--border);
+                            border-radius:var(--radius-sm);
+                            background:var(--bg); color:var(--text);">
+            </label>
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Color</span>
+              <input id="cmd-color" type="text" value="#dcfce7" placeholder="#dcfce7"
+                     style="padding:6px; border:1px solid var(--border);
+                            border-radius:var(--radius-sm);
+                            background:var(--bg); color:var(--text);">
+            </label>
+          </div>
+        </div>
+        <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
+                    margin-top:var(--space-4);">
+          <button class="btn" onclick="closeCreateMemoryDomainModal()">Cancel</button>
+          <button class="btn btn-mandate" id="cmd-submit-btn"
+                  onclick="submitCreateMemoryDomain()">Create &amp; assign</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════ Memory Domain RBAC assign mini-modal (Task 8.10b — step 2) ═══════════════
+         Optional follow-up after Create succeeds: per-group Available |
+         Required requirement matrix. Skipping returns control to the
+         chip-input. Mirrors the same pattern wired into
+         /admin/tables for Data Packages — see Task 8.10a's commit. -->
+    <div id="createMemoryDomainRbacModal"
+         style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2060;">
+      <div style="background: var(--surface); max-width: 560px; margin: 80px auto;
+                  padding: var(--space-5); border-radius: var(--radius-lg);
+                  border: 1px solid var(--border); max-height:80vh; overflow-y:auto;">
+        <h3 style="margin-bottom: var(--space-3);">
+          Assign access to <span id="cmd-rbac-name"></span>
+        </h3>
+        <p style="margin-bottom: var(--space-3); color: var(--text-secondary); font-size: 13px;">
+          Optional. Grant per-group access tiers — <em>available</em> shows
+          the domain in the group's Browse; <em>required</em> auto-installs
+          it into the group's stack on next pull.
+        </p>
+        <div id="cmd-rbac-rows" style="display:flex; flex-direction:column; gap:6px;">
+          <div class="loading" style="padding:var(--space-3); color:var(--text-secondary);">
+            Loading groups…
+          </div>
+        </div>
+        <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
+                    margin-top:var(--space-4);">
+          <button class="btn" onclick="skipCreateMemoryDomainRbac()">Skip</button>
+          <button class="btn btn-mandate" id="cmd-rbac-save-btn"
+                  onclick="submitCreateMemoryDomainRbac()">Save grants</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Track which chip-input host triggered the create flow so we can
+      // append the new chip back into it on success.
+      let _cmdHost = null;
+      // Domain id from step 1, carried into step 2 for /api/admin/grants.
+      let _cmdNewDomainId = null;
+      let _cmdNewDomainName = null;
+
+      function openCreateMemoryDomainModal(typed, host) {
+        _cmdHost = host;
+        document.getElementById('cmd-name').value = typed || '';
+        document.getElementById('cmd-slug').value =
+          (typed || '').toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        document.getElementById('cmd-desc').value = '';
+        document.getElementById('cmd-icon').value = '🎯';
+        document.getElementById('cmd-color').value = '#dcfce7';
+        document.getElementById('createMemoryDomainModal').style.display = 'block';
+      }
+      function closeCreateMemoryDomainModal() {
+        _cmdHost = null;
+        document.getElementById('createMemoryDomainModal').style.display = 'none';
+      }
+      async function submitCreateMemoryDomain() {
+        const btn = document.getElementById('cmd-submit-btn');
+        btn.disabled = true;
+        try {
+          const payload = {
+            name: document.getElementById('cmd-name').value.trim(),
+            slug: document.getElementById('cmd-slug').value.trim(),
+            description: document.getElementById('cmd-desc').value.trim() || null,
+            icon: document.getElementById('cmd-icon').value.trim() || null,
+            color: document.getElementById('cmd-color').value.trim() || null,
+          };
+          if (!payload.name || !payload.slug) {
+            alert('Name and slug are required.');
+            btn.disabled = false;
+            return;
+          }
+          const r = await fetch('/api/admin/memory-domains', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const detail = await r.json().catch(() => ({}));
+            alert('Failed: ' + (detail.detail || r.statusText));
+            btn.disabled = false;
+            return;
+          }
+          const body = await r.json();
+          if (_cmdHost && _cmdHost.addChip) {
+            _cmdHost.addChip({ id: body.id, name: payload.name });
+          }
+          // Stash for step 2 BEFORE closing — closeCreateMemoryDomainModal
+          // resets _cmdHost which we want preserved across the RBAC step.
+          const carriedHost = _cmdHost;
+          _cmdNewDomainId = body.id;
+          _cmdNewDomainName = payload.name;
+          document.getElementById('createMemoryDomainModal').style.display = 'none';
+          _cmdHost = carriedHost;
+          openCreateMemoryDomainRbacModal();
+        } catch (e) {
+          alert('Network error: ' + e.message);
+          btn.disabled = false;
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      // ── RBAC step 2 ───────────────────────────────────────────────
+      async function openCreateMemoryDomainRbacModal() {
+        document.getElementById('cmd-rbac-name').textContent = _cmdNewDomainName || '';
+        const rowsEl = document.getElementById('cmd-rbac-rows');
+        rowsEl.innerHTML = '<div class="loading" style="padding:var(--space-3); color:var(--text-secondary);">Loading groups…</div>';
+        document.getElementById('createMemoryDomainRbacModal').style.display = 'block';
+        try {
+          const r = await fetch('/api/admin/groups', { credentials: 'same-origin' });
+          if (!r.ok) throw new Error('groups fetch ' + r.status);
+          const body = await r.json();
+          const groups = Array.isArray(body) ? body : (body.groups || []);
+          rowsEl.innerHTML = groups.map(g => {
+            const gid = String(g.id || g.name || '');
+            const gname = String(g.name || gid);
+            return (
+              '<div data-group-id="' + gid + '" '
+              + 'style="display:flex; gap:8px; align-items:center; '
+              + 'padding:6px; border:1px solid var(--border); border-radius:6px;">'
+              + '<span style="flex:1;">' + gname + '</span>'
+              + '<select class="cmd-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
+              + '<option value="">(no grant)</option>'
+              + '<option value="available">available</option>'
+              + '<option value="required">required</option>'
+              + '</select>'
+              + '</div>'
+            );
+          }).join('') || '<div style="padding:var(--space-3); color:var(--text-secondary);">No groups defined yet.</div>';
+        } catch (e) {
+          rowsEl.innerHTML = '<div style="padding:var(--space-3); color:var(--text-secondary);">Failed to load groups: ' + e.message + '</div>';
+        }
+      }
+      function skipCreateMemoryDomainRbac() {
+        _cmdNewDomainId = null;
+        _cmdNewDomainName = null;
+        document.getElementById('createMemoryDomainRbacModal').style.display = 'none';
+      }
+      async function submitCreateMemoryDomainRbac() {
+        const btn = document.getElementById('cmd-rbac-save-btn');
+        btn.disabled = true;
+        try {
+          const rows = document.querySelectorAll('#cmd-rbac-rows [data-group-id]');
+          const calls = [];
+          rows.forEach(row => {
+            const gid = row.getAttribute('data-group-id');
+            const sel = row.querySelector('.cmd-rbac-req');
+            const req = sel && sel.value;
+            if (!req) return;
+            calls.push(fetch('/api/admin/grants', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({
+                group_id: gid,
+                resource_type: 'memory_domain',
+                resource_id: _cmdNewDomainId,
+                requirement: req,
+              }),
+            }));
+          });
+          if (calls.length) {
+            const results = await Promise.allSettled(calls);
+            const fails = results.filter(r => r.status === 'rejected' || (r.value && !r.value.ok));
+            if (fails.length) {
+              alert(fails.length + ' grant(s) failed; rest succeeded.');
+            }
+          }
+          skipCreateMemoryDomainRbac();
+        } catch (e) {
+          alert('Network error: ' + e.message);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      // Hook: chip-input fires `chip-create` when the user clicks the
+      // "+ Create new" tail row in the dropdown. We only react when the
+      // host is the Memory Domain chip-input (data-chip-input="memory_domain")
+      // so the same listener can coexist with the Data Package one on
+      // pages that mount both.
+      document.addEventListener('chip-create', (e) => {
+        const host = e.detail && e.detail.host;
+        if (host && host.dataset.chipInput === 'memory_domain') {
+          openCreateMemoryDomainModal(e.detail.typed, host);
+        }
+      });
+    </script>
 {% endblock %}
 
 {% block scripts %}
