@@ -40,13 +40,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterator
 
-# v5: v46 marketplace-telemetry refactor swapped AttributionLookup for
+# v6: MarketplaceItemLookup now resolves <flea_plugin>:<inner> prefixes so
+# skills/agents nested inside a flea plugin bundle attribute to source='flea'
+# with parent_plugin=<plugin name> (same shape as curated nested attribution).
+# Pre-v6 these landed as ('builtin', '', None) and never flowed into the
+# rollup tables. Bump forces re-attribution on the next reprocess tick.
+# (v5: v46 marketplace-telemetry refactor swapped AttributionLookup for
 # MarketplaceItemLookup. Identifier prefix (`<plugin>:<local>`) now drives
 # attribution and usage_events.source / ref_id are populated per-event from
-# the live marketplace_plugins + store_entities tables. Bump forces the
-# session-pipeline reprocess loop to re-attribute existing rows.
+# the live marketplace_plugins + store_entities tables.)
 # (v4: #293 user_id column; v3: #303 <command-name> slash extraction.)
-USAGE_PROCESSOR_VERSION = 5
+USAGE_PROCESSOR_VERSION = 6
 
 # Claude Code wraps user-typed slash invocations as
 # <command-name>/<name></command-name> inside the user message content
@@ -278,6 +282,14 @@ class MarketplaceItemLookup:
                 "SELECT name, type FROM store_entities WHERE visibility_status='approved'"
             ).fetchall()
         }
+        # Flea PLUGIN entities can be matched as a prefix too — `<plugin>:<inner>`
+        # invocations of a skill / agent that lives inside a flea plugin bundle
+        # land here, mirroring the curated nested attribution path. Standalone
+        # flea entities still flow through the FLEA_BUNDLE_PREFIX branch.
+        self._flea_plugins: set[str] = {
+            name for name, ent_type in self._flea_entities.items()
+            if ent_type == "plugin"
+        }
 
     def resolve(self, event: ParsedEvent) -> tuple[str, str, str | None, str | None]:
         """Return ``(source, parent_plugin, name, type)``.
@@ -308,6 +320,11 @@ class MarketplaceItemLookup:
                 continue
             if prefix in self._curated_plugins:
                 return ("curated", prefix, local, default_type)
+            if prefix in self._flea_plugins:
+                # Skill / agent nested inside a flea plugin bundle. Same
+                # shape as curated: source='flea', parent_plugin=<plugin
+                # name>, name=<inner local-part>.
+                return ("flea", prefix, local, default_type)
             # Unknown plugin prefix — fall through to builtin (matches the
             # rebuild_rollups filter that excludes unattributed events).
         return ("builtin", "", None, None)

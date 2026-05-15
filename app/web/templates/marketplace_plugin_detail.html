@@ -826,7 +826,7 @@
     <div class="crumbs">
       <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}">Marketplace</a>
       <span class="sep">›</span>
-      <span id="crumb-mid">{{ source | capitalize }}</span>
+      <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}" id="crumb-mid">{{ 'Curated Marketplace' if source == 'curated' else 'Flea Market' }}</a>
       <span class="sep">›</span>
       <span id="crumb-name">{{ plugin_name }}</span>
     </div>
@@ -1008,8 +1008,9 @@
   // when the curator hasn't filled the friendly tagline yet — preserves
   // the historical hero look for un-enriched plugins.
   const heroTitle = d.display_name || d.manifest_name || d.plugin_name;
-  document.getElementById('crumb-mid').textContent =
-    d.source === 'curated' ? (d.marketplace_name || d.marketplace_id) : 'Flea Market';
+  // crumb-mid is rendered server-side as the generic "Curated Marketplace"
+  // / "Flea Market" link — no JS update needed (was previously overwritten
+  // with the per-instance marketplace_name, which was opaque to analysts).
   document.getElementById('crumb-name').textContent = heroTitle;
   document.title = `${heroTitle} — Marketplace`;
 

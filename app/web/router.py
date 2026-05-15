@@ -1516,6 +1516,87 @@ async def marketplace_curated_agent_detail(
     )
 
 
+@router.get(
+    "/marketplace/flea/{entity_id}/skill/{skill_name}",
+    response_class=HTMLResponse,
+)
+async def marketplace_flea_skill_detail(
+    request: Request,
+    entity_id: str,
+    skill_name: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Inner skill detail page for a skill nested inside a flea plugin.
+
+    Mirrors ``marketplace_curated_skill_detail`` but uses the standalone
+    flea visibility gate (``_enforce_visibility``) — owner / admin see
+    quarantined entities, everyone else gets 404 (entity existence not
+    leaked).
+    """
+    from app.api.store import _enforce_visibility
+    from app.auth.access import is_user_admin
+    from src.repositories.store_entities import StoreEntitiesRepository
+    entity = StoreEntitiesRepository(conn).get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    _enforce_visibility(entity, user, conn)
+    is_owner = entity.get("owner_user_id") == user.get("id")
+    is_admin = is_user_admin(user["id"], conn)
+    ctx = _build_context(
+        request, user=user,
+        source="flea", kind="skill",
+        entity_id=entity_id,
+        plugin_name=entity["name"],
+        inner_name=skill_name,
+        entity=entity,
+        is_owner=is_owner,
+        is_admin=is_admin,
+    )
+    return templates.TemplateResponse(
+        request, "marketplace_item_detail.html", ctx,
+    )
+
+
+@router.get(
+    "/marketplace/flea/{entity_id}/agent/{agent_name}",
+    response_class=HTMLResponse,
+)
+async def marketplace_flea_agent_detail(
+    request: Request,
+    entity_id: str,
+    agent_name: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Inner agent detail page for an agent nested inside a flea plugin.
+
+    Mirrors ``marketplace_flea_skill_detail``; kind="agent".
+    """
+    from app.api.store import _enforce_visibility
+    from app.auth.access import is_user_admin
+    from src.repositories.store_entities import StoreEntitiesRepository
+    entity = StoreEntitiesRepository(conn).get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    _enforce_visibility(entity, user, conn)
+    is_owner = entity.get("owner_user_id") == user.get("id")
+    is_admin = is_user_admin(user["id"], conn)
+    ctx = _build_context(
+        request, user=user,
+        source="flea", kind="agent",
+        entity_id=entity_id,
+        plugin_name=entity["name"],
+        inner_name=agent_name,
+        entity=entity,
+        is_owner=is_owner,
+        is_admin=is_admin,
+    )
+    return templates.TemplateResponse(
+        request, "marketplace_item_detail.html", ctx,
+    )
+
+
 @router.get("/marketplace/guide/curated", response_class=HTMLResponse)
 async def marketplace_guide_curated(
     request: Request,
