@@ -1319,11 +1319,14 @@
     const slot = document.getElementById('hero-telemetry');
     if (!slot) return;
     const tel = d.telemetry || {};
-    // Curated inner items inherit installed adoption from the parent plugin
-    // (no per-skill subscription model). Flea entities are standalone, so
-    // the chip uses the entity-level install_count — same number the listing
-    // card and the plugin detail flea hero already surface.
-    const installedCount = source === 'curated'
+    // Adoption source per scenario:
+    //   * Curated inner — `parent_stack_count` (parent plugin's subscribers).
+    //   * Flea inner    — `parent_stack_count` (backend fills it with the
+    //                      parent flea plugin's install_count — see
+    //                      `flea_skill_detail` / `flea_agent_detail`).
+    //   * Flea standalone (no innerName) — `install_count` directly on the
+    //                      entity.
+    const installedCount = (source === 'curated' || innerName)
       ? (d.parent_stack_count || 0)
       : (d.install_count || 0);
     const activeUsers = tel.distinct_users_30d || 0;
@@ -1347,16 +1350,16 @@
       const icon = up ? ICON_TUP : ICON_TDOWN;
       segs.push(`<span class="${cls}" title="Week-over-week change in invocations of this ${esc(kind)}">${icon} ${Math.abs(Math.round(trend))}%</span>`);
     }
-    // Installed segment differs by source:
-    //   * Curated: parent plugin's stack count — "Plugin:" prefix + tooltip
-    //     make the semantic shift explicit. We're not showing how many
-    //     people use this skill; we're showing how many have the parent
-    //     plugin in their stack. The funnel insight: "12 installed plugin
-    //     → 2 actually use this skill".
-    //   * Flea: entity-level install_count (standalone, no parent plugin).
+    // Installed segment differs per scenario:
+    //   * Curated inner / flea inner: parent plugin's stack count —
+    //     "Plugin:" prefix + tooltip make the semantic shift explicit.
+    //     We're not showing how many people use this skill; we're
+    //     showing how many have the parent plugin in their stack. The
+    //     funnel insight: "12 installed plugin → 2 actually use this skill".
+    //   * Flea standalone (no innerName): entity-level install_count.
     //     Plain `N installed` matches the plugin detail flea hero.
-    if (source === 'curated') {
-      const parentPluginLabel = esc(d.plugin_name || pluginName || 'parent plugin');
+    if (source === 'curated' || innerName) {
+      const parentPluginLabel = esc(d.parent_display_name || d.manifest_name || pluginName || 'parent plugin');
       segs.push(`<span class="seg-installed" title="Parent plugin (${parentPluginLabel}) currently installed by ${installedCount} users">${ICON_STACK} <span class="seg-installed-label">Plugin:</span> ${fmtNum(installedCount)} installed</span>`);
     } else {
       segs.push(`<span class="seg-installed" title="Installed by ${installedCount} users">${ICON_STACK} ${fmtNum(installedCount)} installed</span>`);

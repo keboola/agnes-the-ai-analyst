@@ -672,6 +672,33 @@
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  /* Funnel chip on each inner card — lifted from marketplace.html
+     `.mp-card .inv-chip`, re-scoped to the plugin detail surface so
+     listing-card rules can evolve independently. Same colour mapping
+     so users carry mental model from listing → detail. */
+  .plugin-detail .inner-card .inv-chip {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 8px;
+    font-size: 11.5px; color: var(--text-secondary);
+    line-height: 1.4;
+  }
+  .plugin-detail .inner-card .inv-chip-left {
+    display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .plugin-detail .inner-card .inv-chip > span,
+  .plugin-detail .inner-card .inv-chip-left > span {
+    display: inline-flex; align-items: center; gap: 3px;
+    white-space: nowrap;
+  }
+  .plugin-detail .inner-card .inv-chip .seg-installed { margin-left: auto; }
+  .plugin-detail .inner-card .inv-chip svg {
+    width: 13px; height: 13px; flex-shrink: 0;
+  }
+  .plugin-detail .inner-card .inv-chip .seg-installed > svg { color: #F59F0A; }
+  .plugin-detail .inner-card .inv-chip .seg-active    > svg { color: #0e9b6a; }
+  .plugin-detail .inner-card .inv-chip .seg-calls     > svg { color: #f97316; }
+  .plugin-detail .inner-card .inv-chip .trend-up   { color: #10b77f; font-weight: 600; }
+  .plugin-detail .inner-card .inv-chip .trend-down { color: #ef4444; font-weight: 600; }
 
   /* Tables (commands, hooks, mcps) */
   .plugin-detail .substruct table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -1382,6 +1409,44 @@
   }
 
   // ── Internal structure ─────────────────────────────────────────
+  // Funnel chip on the inner skill/agent card — mirrors the marketplace
+  // listing card chip (same four segments, same icons, same gate). Inner
+  // items can't be installed standalone, so the "installed" segment reads
+  // the parent plugin's adoption count (curated stack_count or flea
+  // install_count, populated server-side as parent_stack_count).
+  const _innerSvg = (path) =>
+    `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${path}"/></svg>`;
+  const INNER_ICON_STACK = _innerSvg("M5.566 4.657A4.505 4.505 0 0 1 6.75 4.5h10.5c.41 0 .806.055 1.183.157A3 3 0 0 0 15.75 3h-7.5a3 3 0 0 0-2.684 1.657ZM2.25 12a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3v-6ZM5.25 7.5c-.41 0-.806.055-1.184.157A3 3 0 0 1 6.75 6h10.5a3 3 0 0 1 2.683 1.657A4.505 4.505 0 0 0 18.75 7.5H5.25Z");
+  const INNER_ICON_USER  = _innerSvg("M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z");
+  const INNER_ICON_BOLT  = _innerSvg("M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z");
+  const INNER_ICON_TUP   = _innerSvg("M15.22 6.268a.75.75 0 0 1 .968-.432l5.942 2.28a.75.75 0 0 1 .431.97l-2.28 5.94a.75.75 0 1 1-1.4-.537l1.63-4.251-1.086.483a11.2 11.2 0 0 0-5.45 5.174.75.75 0 0 1-1.199.19L9 12.31l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75a.75.75 0 0 1 1.06 0l3.606 3.605a12.694 12.694 0 0 1 5.68-4.973l1.086-.484-4.251-1.631a.75.75 0 0 1-.432-.97Z");
+  const INNER_ICON_TDOWN = _innerSvg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
+  function buildInnerCardChip(it) {
+    const stackCount = it.parent_stack_count || 0;
+    const activeUsers = it.distinct_users_30d || 0;
+    const calls = it.invocations_30d || 0;
+    const trend = it.trend_pct;
+    // Same gate as the listing card / hero chip — zero adoption AND
+    // zero 30d activity means brand-new bundle, don't visually penalise
+    // it with a "0 · 0 · 0" row.
+    if (stackCount === 0 && calls === 0) return '';
+    const leftSegs = [
+      `<span class="seg-active" title="${activeUsers} users invoked it in the last 30 days">${INNER_ICON_USER} ${fmtNum(activeUsers)} active</span>`,
+      `<span class="seg-calls" title="${calls} invocations in the last 30 days">${INNER_ICON_BOLT} ${fmtNum(calls)} calls</span>`,
+    ];
+    if (trend !== null && trend !== undefined) {
+      const up = trend >= 0;
+      const icon = up ? INNER_ICON_TUP : INNER_ICON_TDOWN;
+      const cls = up ? 'trend-up' : 'trend-down';
+      leftSegs.push(`<span class="${cls}" title="Week-over-week change in invocations">${icon} ${Math.abs(Math.round(trend))}%</span>`);
+    }
+    const installedSeg = `<span class="seg-installed" title="Parent plugin currently installed by ${stackCount} users">${INNER_ICON_STACK} ${fmtNum(stackCount)} installed</span>`;
+    return `<div class="inv-chip">
+      <span class="inv-chip-left">${leftSegs.join(' · ')}</span>
+      ${installedSeg}
+    </div>`;
+  }
+
   function buildCardSection(title, items, type) {
     if (!items || !items.length) return '';
     // Inner cards render the marketplace-metadata cover photo when present
@@ -1403,6 +1468,7 @@
           <span class="type-badge">${type}</span>
           <div class="name">${esc(it.name)}</div>
           <div class="desc">${esc(it.description || '')}</div>
+          ${buildInnerCardChip(it)}
         </div>
       </a>`;
     }).join('');

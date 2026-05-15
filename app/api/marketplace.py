@@ -148,6 +148,20 @@ class InnerItemSummary(BaseModel):
     # endpoint, mirrored /mirrored/ endpoint, or pass-through external URL).
     # None → frontend renders initials placeholder ("SK" / "AG").
     cover_photo_url: Optional[str] = None
+    # Per-item engagement signal so the plugin detail page's inner card grid
+    # can render the same funnel chip the marketplace listing cards show.
+    # Sourced from usage_marketplace_item_window + usage_marketplace_item_daily
+    # via the bulk loader `_load_inner_items_stats_by_parent`. Zero/None when
+    # the rollup has no row for this item (brand-new bundle, zero invocations) —
+    # the frontend hides the chip on (parent_stack_count == 0 && calls == 0),
+    # same gate as listing cards.
+    invocations_30d: int = 0
+    distinct_users_30d: int = 0
+    trend_pct: Optional[float] = None
+    # Adoption inherited from the parent plugin — inner items can't be
+    # installed on their own, so the chip's "installed" segment reads the
+    # parent's stack count (curated) / install_count (flea).
+    parent_stack_count: int = 0
 
 
 class CommandEntry(BaseModel):
@@ -577,6 +591,72 @@ def _load_inner_item_stats(
         "trend_pct": trend_pct,
         "daily_series": daily_series,
     }
+
+
+def _load_inner_items_stats_by_parent(
+    conn: duckdb.DuckDBPyConnection,
+    source: str,
+    parent_plugin: str,
+) -> Dict[Tuple[str, str], Dict[str, object]]:
+    """Bulk per-inner-item stats for one parent plugin.
+
+    Returns ``{(name, type): {invocations_30d, distinct_users_30d, trend_pct}}``.
+    One query against ``usage_marketplace_item_window`` + one against
+    ``_daily`` per parent plugin (vs N+1 if each card lookup-ed individually).
+    Type-keyed because skills and agents are allowed to share a name in
+    the same bundle.
+
+    Used by ``curated_detail`` and ``flea_detail`` to enrich the
+    ``skills`` / ``agents`` lists they return, so the plugin detail page
+    can render the listing-card-style funnel chip on every inner card.
+    """
+    win_rows = conn.execute(
+        """
+        SELECT name, type, invocations, distinct_users
+        FROM usage_marketplace_item_window
+        WHERE period_label = 'last_30d'
+          AND source = ?
+          AND parent_plugin = ?
+        """,
+        [source, parent_plugin],
+    ).fetchall()
+    trend_rows = conn.execute(
+        """
+        SELECT
+            name, type,
+            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
+            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
+                      AND day <  CURRENT_DATE - INTERVAL 7 DAY
+                     THEN count ELSE 0 END) AS inv_prior
+        FROM usage_marketplace_item_daily
+        WHERE source = ?
+          AND parent_plugin = ?
+          AND day >= CURRENT_DATE - INTERVAL 14 DAY
+        GROUP BY name, type
+        """,
+        [source, parent_plugin],
+    ).fetchall()
+    out: Dict[Tuple[str, str], Dict[str, object]] = {}
+    for name, item_type, inv, du in win_rows:
+        out[(name, item_type)] = {
+            "invocations_30d": int(inv or 0),
+            "distinct_users_30d": int(du or 0),
+            "trend_pct": None,
+        }
+    # Trend threshold mirrors the listing card / hero chip — suppress to
+    # None below 3 prior-week invocations (noise floor from v42).
+    for name, item_type, recent, prior in trend_rows:
+        key = (name, item_type)
+        stat = out.setdefault(key, {
+            "invocations_30d": 0,
+            "distinct_users_30d": 0,
+            "trend_pct": None,
+        })
+        recent_i = int(recent or 0)
+        prior_i = int(prior or 0)
+        if prior_i >= 3:
+            stat["trend_pct"] = (recent_i - prior_i) / prior_i * 100.0
+    return out
 
 
 def _audit(
@@ -1496,6 +1576,28 @@ async def curated_detail(
             manifest=inner_manifest, metadata=inner_metadata,
             version=asset_version,
         )
+
+    # Per-item telemetry — 1 query per plugin (not per item) via the bulk
+    # loader. Same rollup tables the listing card / inner detail hero chip
+    # read from. Adoption is inherited from the parent plugin's stack
+    # count because inner items can't be installed standalone.
+    inner_stats = _load_inner_items_stats_by_parent(conn, "curated", plugin_name)
+    parent_stack = _load_curated_stack_counts(conn).get(
+        (marketplace_id, plugin_name), 0,
+    )
+    for s in skills:
+        row = inner_stats.get((s.name, "skill")) or {}
+        s.invocations_30d = int(row.get("invocations_30d") or 0)
+        s.distinct_users_30d = int(row.get("distinct_users_30d") or 0)
+        s.trend_pct = row.get("trend_pct")
+        s.parent_stack_count = parent_stack
+    for a in agents:
+        row = inner_stats.get((a.name, "agent")) or {}
+        a.invocations_30d = int(row.get("invocations_30d") or 0)
+        a.distinct_users_30d = int(row.get("distinct_users_30d") or 0)
+        a.trend_pct = row.get("trend_pct")
+        a.parent_stack_count = parent_stack
+
     commands = _list_commands(plugin_root)
     hooks = _list_hooks(plugin_root)
     mcps = _list_mcps(plugin_root)
@@ -1604,6 +1706,25 @@ async def flea_detail(
         agents = _list_inner_agents(plugin_root)
         for a in agents:
             a.detail_url = f"/marketplace/flea/{entity_id}/agent/{a.name}"
+        # Per-item telemetry — same shape as curated_detail. Adoption
+        # inherits from the parent flea plugin's install_count (no
+        # standalone install on inner items).
+        inner_stats = _load_inner_items_stats_by_parent(
+            conn, "flea", entity["name"],
+        )
+        flea_parent_stack = int(entity.get("install_count") or 0)
+        for s in skills:
+            row = inner_stats.get((s.name, "skill")) or {}
+            s.invocations_30d = int(row.get("invocations_30d") or 0)
+            s.distinct_users_30d = int(row.get("distinct_users_30d") or 0)
+            s.trend_pct = row.get("trend_pct")
+            s.parent_stack_count = flea_parent_stack
+        for a in agents:
+            row = inner_stats.get((a.name, "agent")) or {}
+            a.invocations_30d = int(row.get("invocations_30d") or 0)
+            a.distinct_users_30d = int(row.get("distinct_users_30d") or 0)
+            a.trend_pct = row.get("trend_pct")
+            a.parent_stack_count = flea_parent_stack
         commands = _list_commands(plugin_root)
         hooks = _list_hooks(plugin_root)
         mcps = _list_mcps(plugin_root)
@@ -1684,6 +1805,11 @@ async def flea_detail(
         cover_photo_url=cover_url,
         bundle_size=int(entity.get("file_size") or 0) or _bundle_size(plugin_root),
         install_count=int(entity.get("install_count") or 0),
+        # Mirror what the listing card already does (see _build_marketplace_item
+        # for flea): hero chip + telemetry visibility gate both read
+        # `d.stack_count`, so populate it from entity.install_count rather
+        # than letting it default to 0.
+        stack_count=int(entity.get("install_count") or 0),
         released_at=_to_iso(entity.get("created_at")),
         updated_at=_to_iso(entity.get("updated_at")),
         installed=is_installed,
