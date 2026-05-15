@@ -1050,7 +1050,14 @@
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Category</span>
-                            <input id="editItemCategory" type="text" placeholder="e.g. metric, dataset" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                            {# Free-text input with existing categories as
+                               typeahead suggestions. Admins typically pick from
+                               what's already there but can introduce a new
+                               category slug by typing it. #}
+                            <input id="editItemCategory" type="text" list="editCategoryOptions" placeholder="pick or type new" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                            <datalist id="editCategoryOptions">
+                                {% for c in edit_categories %}<option value="{{ c }}">{% endfor %}
+                            </datalist>
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Domain</span>
@@ -1066,11 +1073,32 @@
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Audience</span>
-                            <input id="editItemAudience" type="text" placeholder="e.g. all or group:finance" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                            {# Audience is a closed enum: `(unset)` / `all` /
+                               `group:<name>` per RBAC group. The free-text
+                               input let admins typo `gourp:eng` and silently
+                               hide an item from everyone; a `<select>` rules
+                               that out. Groups come from the same source the
+                               mandate-form picker uses. #}
+                            <select id="editItemAudience" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                                <option value="">(unset)</option>
+                                <option value="all">all (every authenticated user)</option>
+                                {% for g in groups %}<option value="group:{{ g.name }}">group:{{ g.name }} ({{ g.members_count }} member{{ 's' if g.members_count != 1 else '' }})</option>{% endfor %}
+                            </select>
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Tags (comma-separated)</span>
-                            <input id="editItemTags" type="text" placeholder="tag1, tag2" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                            <input id="editItemTags" type="text" list="editTagOptions" placeholder="tag1, tag2" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                            <datalist id="editTagOptions">
+                                {% for t in edit_tags %}<option value="{{ t }}">{% endfor %}
+                            </datalist>
+                            {% if edit_tags %}
+                            <div id="editItemTagSuggestions" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
+                                {# Click-to-append chips. JS in submitEditItem
+                                   already parses comma-separated values, so
+                                   clicking just appends to the input. #}
+                                {% for t in edit_tags %}<button type="button" class="tag" onclick="appendEditTag('{{ t | replace("'", "\\'") }}')" style="cursor: pointer; padding: 1px 8px; background: var(--surface-2, #f3f4f6); border: 1px solid var(--border); border-radius: 999px; font-size: 11px; color: var(--text-secondary);">+ {{ t }}</button>{% endfor %}
+                            </div>
+                            {% endif %}
                         </label>
                     </div>
                 </div>
@@ -1436,6 +1464,17 @@
     function closeEditItemModal() {
         document.getElementById('editItemModal').style.display = 'none';
         _editingItemId = null;
+    }
+
+    // Click handler for the "+ tag" suggestion chips below the Tags input.
+    // Appends `tag` to the comma-separated value if not already present.
+    function appendEditTag(tag) {
+        const el = document.getElementById('editItemTags');
+        const cur = (el.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        if (cur.includes(tag)) return;
+        cur.push(tag);
+        el.value = cur.join(', ');
+        el.focus();
     }
 
     async function submitEditItem() {

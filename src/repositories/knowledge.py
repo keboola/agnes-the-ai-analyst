@@ -9,20 +9,46 @@ import duckdb
 
 
 class KnowledgeRepository:
+    # Columns persisted as JSON-encoded strings (see `create` / `update` /
+    # `bulk_update` — they pass values through ``json.dumps``). Decode on the
+    # read path so callers — templates, the JSON API, e2e flows — see real
+    # lists. Without this, Jinja's ``{% for tag in item.tags %}`` happily
+    # iterates the characters of the JSON string and renders each one in its
+    # own <span>.
+    _JSON_LIST_COLUMNS = ("tags", "entities")
+
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
+
+    @classmethod
+    def _normalize_row(cls, row: Dict[str, Any]) -> Dict[str, Any]:
+        for col in cls._JSON_LIST_COLUMNS:
+            v = row.get(col)
+            if v is None:
+                row[col] = []
+            elif isinstance(v, list):
+                continue
+            elif isinstance(v, str):
+                try:
+                    parsed = json.loads(v) if v else []
+                except (ValueError, TypeError):
+                    parsed = []
+                row[col] = parsed if isinstance(parsed, list) else []
+            else:
+                row[col] = []
+        return row
 
     def _row_to_dict(self, row) -> Optional[Dict[str, Any]]:
         if not row:
             return None
         columns = [desc[0] for desc in self.conn.description]
-        return dict(zip(columns, row))
+        return self._normalize_row(dict(zip(columns, row)))
 
     def _rows_to_dicts(self, rows) -> List[Dict[str, Any]]:
         if not rows:
             return []
         columns = [desc[0] for desc in self.conn.description]
-        return [dict(zip(columns, row)) for row in rows]
+        return [self._normalize_row(dict(zip(columns, row))) for row in rows]
 
     def get_by_id(self, item_id: str) -> Optional[Dict[str, Any]]:
         result = self.conn.execute("SELECT * FROM knowledge_items WHERE id = ?", [item_id]).fetchone()

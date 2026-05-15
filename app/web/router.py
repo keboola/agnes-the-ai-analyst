@@ -1050,7 +1050,16 @@ async def corporate_memory(
         governance={"mode": governance_mode, "groups": cm_config.get("groups", {})},
         categories=categories,
         domains=domains,
-        stats={"total": len(all_items), "approved": len([i for i in all_items if i.get("status") == "approved"])},
+        stats={
+            "total": len(all_items),
+            "approved": len([i for i in all_items if i.get("status") == "approved"]),
+            # Template-facing aliases. Without these, the stats bar at the
+            # top of /corporate-memory renders blank `value` divs ("Contributors"
+            # / "Knowledge Items" with no number under them) because Jinja's
+            # Undefined silently coerces to empty string.
+            "contributors": len({i.get("source_user") for i in all_items if i.get("source_user")}),
+            "knowledge_count": len([i for i in all_items if i.get("status") in ("approved", "mandatory")]),
+        },
         user_votes={},
         is_km_admin=is_admin_view,
         user_contributions=user_contributions,
@@ -1127,6 +1136,15 @@ async def corporate_memory_admin(
         for g in _groups_repo.list_all()
     ]
 
+    # Existing-value pools for the per-item edit form pickers. Before, Category /
+    # Audience / Tags were free-text required inputs — admins had to remember the
+    # exact category slug or audience expression, and tags couldn't be discovered.
+    # We surface what's already in the store as `<datalist>` suggestions (Category
+    # / Tags) and a `<select>` (Audience built from RBAC groups) without losing
+    # free-text entry for fresh values.
+    edit_categories = sorted({i.get("category") for i in all_items if i.get("category")})
+    edit_tags = sorted({t for i in all_items for t in (i.get("tags") or []) if t})
+
     ctx = _build_context(
         request, user=user,
         pending_items=pending,
@@ -1143,6 +1161,8 @@ async def corporate_memory_admin(
         },
         governance=get_corporate_memory_config(),
         groups=user_groups_for_ui,
+        edit_categories=edit_categories,
+        edit_tags=edit_tags,
         contradictions=contradictions,
         audit_entries=[],
     )
