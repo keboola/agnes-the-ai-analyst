@@ -1251,6 +1251,20 @@
   if (d.bundle_size != null) {
     detailRows.push(`<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>`);
   }
+  // v46 telemetry: 30-day invocation + adoption metrics from the
+  // usage_marketplace_item_window snapshot. Hidden when telemetry is null
+  // (no rollup data yet — typically a freshly added plugin).
+  if (d.telemetry && d.telemetry.invocations_30d != null) {
+    const tel = d.telemetry;
+    detailRows.push(
+      `<div class="row"><dt>Invocations (30d)</dt><dd>${tel.invocations_30d.toLocaleString()}</dd></div>`
+    );
+    if (tel.distinct_users_30d != null) {
+      detailRows.push(
+        `<div class="row"><dt>Users (30d)</dt><dd>${tel.distinct_users_30d.toLocaleString()}</dd></div>`
+      );
+    }
+  }
   // Owner: render real value when present; for curated keep the
   // `owner_todo` placeholder visible as a reminder to wire up curator
   // metadata (intentional — flea falls through silently).

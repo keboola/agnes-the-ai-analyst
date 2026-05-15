@@ -718,18 +718,11 @@ function buildCard(it) {
   const cardName = it.display_name || it.name;
   const cardDesc = it.tagline || it.description || '';
 
-  // Invocation chip: show only when there's usage data
-  let invChip = '';
-  if (it.invocations_30d > 0) {
-    let trendPart = '';
-    if (it.trend_pct != null) {
-      const sign = it.trend_pct >= 0 ? '+' : '';
-      const cls = it.trend_pct >= 0 ? 'trend-up' : 'trend-down';
-      const arrow = it.trend_pct >= 0 ? '↑' : '↓';
-      trendPart = ` · <span class="${cls}">${arrow} ${sign}${Math.round(it.trend_pct)}%</span>`;
-    }
-    invChip = `<div class="inv-chip">🔥 ${fmtNum(it.invocations_30d)} uses${trendPart}</div>`;
-  }
+  // v46: invocation chip is not rendered on the card per product decision —
+  // API response still carries `invocations_30d`, `distinct_users_30d`, and
+  // `trend_pct` for the Most-Used / Trending sections and the per-card
+  // detail view, but the at-a-glance chip is hidden until UX is finalised.
+  const invChip = '';
 
   card.innerHTML = `
     ${quarantineBadge}

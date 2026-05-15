@@ -70,11 +70,6 @@ from src.store_naming import (
     sanitize_username,
     suffixed_name,
 )
-from src.usage_attribution_helpers import (
-    delete_flea_attribution,
-    update_flea_attribution,
-)
-
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/store", tags=["store"])
 
@@ -1510,14 +1505,12 @@ async def create_entity(
         )
         if schedule_async_llm:
             _schedule_llm_review(background_tasks, sub_id, plugin_dir)
-        elif initial_visibility == "approved":
-            # Guardrails explicitly disabled in YAML — entity is
-            # immediately live; write attribution now.
-            update_flea_attribution(conn, entity_id, type, final_name)
-        # Else: enabled-but-not-ready. Submission sits at pending_llm;
-        # entity stays at visibility=pending. Admin retries from the
-        # admin UI once credentials are present, OR overrides + publishes
-        # the row manually. No silent auto-approval.
+        # When guardrails are explicitly disabled the entity is immediately
+        # live (initial_visibility=='approved'); when enabled-but-not-ready
+        # the submission sits at pending_llm and the admin retries / overrides
+        # from the admin UI — no silent auto-approval. v46: no separate
+        # attribution write needed in either branch — `MarketplaceItemLookup`
+        # resolves flea entities via `store_entities.name` at event time.
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -1861,15 +1854,8 @@ async def _update_entity_locked(
         video_url=video_url,
     )
 
-    # Metadata-only rename: live bundle is already updated above; refresh
-    # attribution so lookups resolve the new name immediately.
-    if rename_to is not None and file is None:
-        ent_after_rename = repo.get(entity_id) or {}
-        update_flea_attribution(
-            conn, entity_id,
-            ent_after_rename.get("type") or entity["type"],
-            ent_after_rename.get("name") or rename_to,
-        )
+    # v46: rename no longer needs an explicit attribution refresh — the
+    # next UsageProcessor tick preloads store_entities by current name.
 
     # Bundle change → record a new version + maybe promote.
     #
@@ -1939,15 +1925,11 @@ async def _update_entity_locked(
             # Guardrails explicitly disabled → implicit approval.
             # Promote inline via the atomic helper: swap-first then
             # DB-promote so a missing source / mid-rename failure
-            # never leaves the DB ahead of the on-disk bundle.
+            # never leaves the DB ahead of the on-disk bundle. v47:
+            # attribution lookup is live — `MarketplaceItemLookup`
+            # resolves flea entities by name at event time, so no
+            # separate `update_flea_attribution` refresh is needed.
             promote_to_version(entity_id, appended_n, repo)
-            # Live bundle is now the new version; refresh attribution.
-            ent_after_swap = repo.get(entity_id) or {}
-            update_flea_attribution(
-                conn, entity_id,
-                ent_after_swap.get("type") or entity["type"],
-                ent_after_swap.get("name") or (rename_to or entity["name"]),
-            )
         # Else (enabled + not-ready): submission sits at pending_llm,
         # live continues serving the prior approved version. Admin
         # retries from /admin/store/submissions once credentials are
@@ -2264,7 +2246,8 @@ async def delete_entity(
         UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
         StoreEntitiesRepository(conn).delete(entity_id)
         shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
-        delete_flea_attribution(conn, entity_id)
+        # v46: attribution lookup is live — the next UsageProcessor tick
+        # rebuilds its in-memory cache without the deleted entity.
         _audit(
             conn,
             user["id"],
@@ -2322,7 +2305,8 @@ async def delete_entity(
             raise HTTPException(
                 status_code=500, detail="archive_rename_failed",
             )
-    delete_flea_attribution(conn, entity_id)
+    # v46: archived entity is filtered out of the next attribution preload
+    # because the lookup query is `WHERE visibility_status='approved'`.
     _audit(
         conn,
         user["id"],

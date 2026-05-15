@@ -40,29 +40,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterator
 
-# v4: #293 added the user_id column to usage tables — bump forces the
-# session-pipeline reprocess loop to backfill user_id on existing rows.
-# (v3 was #303's <command-name> slash extraction.)
-USAGE_PROCESSOR_VERSION = 4
-
-BUILTIN_TOOLS = frozenset(
-    {
-        "Bash",
-        "Read",
-        "Edit",
-        "Write",
-        "Grep",
-        "Glob",
-        "TodoWrite",
-        "Task",
-        "Agent",
-        "NotebookEdit",
-        "WebFetch",
-        "WebSearch",
-        "ExitPlanMode",
-        "LS",  # also built-in
-    }
-)
+# v5: v46 marketplace-telemetry refactor swapped AttributionLookup for
+# MarketplaceItemLookup. Identifier prefix (`<plugin>:<local>`) now drives
+# attribution and usage_events.source / ref_id are populated per-event from
+# the live marketplace_plugins + store_entities tables. Bump forces the
+# session-pipeline reprocess loop to re-attribute existing rows.
+# (v4: #293 user_id column; v3: #303 <command-name> slash extraction.)
+USAGE_PROCESSOR_VERSION = 5
 
 # Claude Code wraps user-typed slash invocations as
 # <command-name>/<name></command-name> inside the user message content
@@ -253,65 +237,80 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
                     )
 
 
-class AttributionLookup:
-    """Preloads attribution tables into memory for O(1) event attribution.
+# Synthetic plugin name Agnes uses to bundle flea-market store entities into
+# a single Claude Code marketplace surface. Skill/agent/command identifiers
+# from flea entities arrive as `agnes-store-bundle:<entity-name>` in the JSONL.
+FLEA_BUNDLE_PREFIX = "agnes-store-bundle"
 
-    Resolves (source, ref_id) for each event. Built-in tools and unknowns
-    return ('builtin', None). curated wins over flea (alphabetical ordering
-    means 'curated' < 'flea' → first-write-wins when iterating ORDER BY source).
+
+class MarketplaceItemLookup:
+    """Preloads marketplace_plugins + store_entities into memory for O(1)
+    per-event attribution.
+
+    Claude Code writes plugin-defined skill/agent/command identifiers in the
+    JSONL as ``<plugin_name>:<local_name>`` (e.g. ``grpn:design``). The prefix
+    is the *plugin* name (curated plugin name, or the synthetic
+    ``agnes-store-bundle`` for flea entities); the local part is the
+    skill/agent/command name relative to that plugin. Identifiers without
+    a ``:`` are either built-in tools (``Bash``, ``Read``, …) or flat slash
+    commands (``/exit``) — neither participates in marketplace telemetry.
+
+    ``resolve()`` returns ``(source, parent_plugin, name, type)``:
+    - ``source``: ``'curated'`` | ``'flea'`` | ``'builtin'``
+    - ``parent_plugin``: the prefix when it matched a plugin, ``''`` otherwise
+      (also ``''`` for flea entities, which are standalone — no parent)
+    - ``name``: the local-part when source is curated/flea, ``None`` otherwise
+    - ``type``: ``'skill'`` | ``'agent'`` — derived from the event_type
+      (slash commands count as skill per product rule).
     """
 
     def __init__(self, conn):
-        self._skills: dict[str, tuple[str, str]] = {}  # name -> (source, ref_id)
-        self._agents: dict[str, tuple[str, str]] = {}
-        self._commands: dict[str, tuple[str, str]] = {}
+        self._curated_plugins: set[str] = {
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT name FROM marketplace_plugins"
+            ).fetchall()
+        }
+        # Flea entities are looked up by name; we also need their type to
+        # determine whether the invocation should land as skill, agent or
+        # plugin in the rollup tables.
+        self._flea_entities: dict[str, str] = {
+            row[0]: row[1] for row in conn.execute(
+                "SELECT name, type FROM store_entities WHERE visibility_status='approved'"
+            ).fetchall()
+        }
 
-        for row in conn.execute(
-            "SELECT skill_name, source, ref_id FROM usage_attribution_skills ORDER BY source ASC"
-        ).fetchall():
-            self._skills.setdefault(row[0], (row[1], row[2]))
+    def resolve(self, event: ParsedEvent) -> tuple[str, str, str | None, str | None]:
+        """Return ``(source, parent_plugin, name, type)``.
 
-        for row in conn.execute(
-            "SELECT agent_name, source, ref_id FROM usage_attribution_agents ORDER BY source ASC"
-        ).fetchall():
-            self._agents.setdefault(row[0], (row[1], row[2]))
-
-        for row in conn.execute(
-            "SELECT command_name, source, ref_id FROM usage_attribution_commands ORDER BY source ASC"
-        ).fetchall():
-            self._commands.setdefault(row[0], (row[1], row[2]))
-
-    def attribute(self, event: ParsedEvent) -> tuple[str, str | None]:
-        """Resolve (source, ref_id). Returns ('builtin', None) for built-ins or unknowns.
-
-        Lookup order:
-        1. Skill invocations → skill attribution table (bypasses BUILTIN_TOOLS check
-           because Skill tool is built-in but the *skill name* identifies the plugin).
-        2. Subagent dispatches → agent attribution table (bypasses BUILTIN_TOOLS check
-           because Task/Agent are built-in but the *subagent_type* identifies the plugin).
-        3. Slash commands → command attribution table.
-        4. Built-in tool names → ('builtin', None).
-        5. Unknown tool names → ('builtin', None) fallback.
+        Priority order — first identifier with a ``:`` prefix that matches a
+        known plugin wins. Identifiers without ``:`` (built-in tools, flat
+        slash commands) drop through to the builtin fallback.
         """
-        # Skill name takes priority over tool_name check
-        if event.skill_name and event.skill_name in self._skills:
-            return self._skills[event.skill_name]
-
-        # Subagent type takes priority over tool_name check
-        if event.subagent_type and event.subagent_type in self._agents:
-            return self._agents[event.subagent_type]
-
-        # Slash command attribution
-        if event.command_name and event.command_name in self._commands:
-            return self._commands[event.command_name]
-
-        # Built-in tool names (Task/Agent fall through to here only when
-        # their subagent_type is not in the attribution table)
-        if event.tool_name in BUILTIN_TOOLS:
-            return ("builtin", None)
-
-        # Unknown tool name → builtin fallback
-        return ("builtin", None)
+        # (identifier, default_type_when_matched)
+        candidates = (
+            (event.skill_name, "skill"),
+            (event.subagent_type, "agent"),
+            (event.command_name, "skill"),  # slash commands counted as skill
+        )
+        for ident, default_type in candidates:
+            if not ident or ":" not in ident:
+                continue
+            prefix, local = ident.split(":", 1)
+            if prefix == FLEA_BUNDLE_PREFIX:
+                ent_type = self._flea_entities.get(local)
+                if ent_type:
+                    # For a flea entity bundle, the local-part *is* the
+                    # entity name and its type comes from the registry.
+                    # Standalone flea items have no parent plugin.
+                    return ("flea", "", local, ent_type)
+                # Bundle prefix but no matching entity — likely archived
+                # since the event was written. Fall through to builtin.
+                continue
+            if prefix in self._curated_plugins:
+                return ("curated", prefix, local, default_type)
+            # Unknown plugin prefix — fall through to builtin (matches the
+            # rebuild_rollups filter that excludes unattributed events).
+        return ("builtin", "", None, None)
 
 
 def compute_active_seconds(timestamps: list[datetime]) -> int:
@@ -433,20 +432,185 @@ def compute_summary(turns: list[dict], events: list[dict]) -> dict:
     }
 
 
-def rebuild_rollups(conn, *, since_day=None) -> None:
-    """Rebuild daily rollups from usage_events.
+# Refresh interval for the 30-day window snapshot. The daily fact + 7d window
+# refresh on every UsageProcessor tick (~10 min) because they're cheap and
+# need to reflect recent activity. The 30d window is fuller, costs more to
+# rebuild, and barely shifts between ticks — refresh hourly instead. Tracked
+# in `session_processor_state` (processor_name='marketplace_rollup_30d').
+WINDOW_30D_REFRESH_SECONDS = 3600
+_MARKETPLACE_30D_TRACKER = "marketplace_rollup_30d"
 
-    Default since_day = CURRENT_DATE - 7 (incremental refresh on every tick).
-    Pass since_day=None to do full rebuild on reprocess.
 
-    Both rollup tables are updated inside a single transaction so a partial
-    failure never leaves them inconsistent.
+def _identifier_split(skill_name, subagent_type, command_name, event_type):
+    """Replicate MarketplaceItemLookup.resolve()'s prefix-split logic.
+
+    Returns ``(prefix, local, default_type)`` or ``(None, None, None)`` if
+    no identifier carries a plugin prefix. Used by the SQL rollup builder
+    so the attribution logic stays in one place even though the loop runs
+    in Python.
+    """
+    candidates = (
+        (skill_name, "skill"),
+        (subagent_type, "agent"),
+        (command_name, "skill"),  # slash commands counted as skill (product rule)
+    )
+    for ident, default_type in candidates:
+        if not ident or ":" not in ident:
+            continue
+        prefix, local = ident.split(":", 1)
+        return prefix, local, default_type
+    return None, None, None
+
+
+def _attribute_event(curated_plugins: set[str], flea_entities: dict[str, str],
+                     skill_name, subagent_type, command_name, event_type):
+    """Resolve one event to (source, type, parent_plugin, name).
+
+    Returns None when the event doesn't belong in marketplace rollups
+    (built-in tool, flat slash command, unknown plugin prefix).
+
+    Lookup tables (curated_plugins, flea_entities) are passed in so the
+    caller can preload once and reuse across thousands of events.
+    """
+    prefix, local, default_type = _identifier_split(skill_name, subagent_type, command_name, event_type)
+    if prefix is None:
+        return None
+    if prefix == FLEA_BUNDLE_PREFIX:
+        ent_type = flea_entities.get(local)
+        if ent_type is None:
+            return None
+        return ("flea", ent_type, "", local)
+    if prefix in curated_plugins:
+        return ("curated", default_type, prefix, local)
+    return None
+
+
+def _aggregate_events(events_rows, curated_plugins, flea_entities, *, group_by_day: bool):
+    """Walk raw event rows and produce aggregated buckets.
+
+    ``events_rows`` shape: (day, user_id, is_error, skill_name, subagent_type,
+    command_name, event_type). When ``group_by_day=True`` returns rows keyed
+    by (day, source, type, parent_plugin, name) — for daily fact. Else
+    aggregates across the whole window (source, type, parent_plugin, name).
+
+    Plugin-level aggregation (type='plugin' rows) is added by walking the
+    child results once and grouping by parent.
+    """
+    # Bucket: key -> dict(count, users:set, errors)
+    leaf: dict[tuple, dict] = {}
+    for row in events_rows:
+        day, uid, is_err, sk, sa, cm, etype = row
+        attributed = _attribute_event(curated_plugins, flea_entities, sk, sa, cm, etype)
+        if attributed is None:
+            continue
+        source, type_, parent, name = attributed
+        if group_by_day:
+            key = (day, source, type_, parent, name)
+        else:
+            key = (source, type_, parent, name)
+        b = leaf.setdefault(key, {"count": 0, "users": set(), "errors": 0})
+        b["count"] += 1
+        if uid:
+            b["users"].add(uid)
+        if is_err:
+            b["errors"] += 1
+
+    # Plugin-level rollup: curated invocations get a parent row, summing the
+    # children. distinct_users at plugin level recomputed across child users
+    # so a user counted in two skills of the same plugin doesn't double-count.
+    plugin_bucket: dict[tuple, dict] = {}
+    for key, vals in leaf.items():
+        if group_by_day:
+            day, source, type_, parent, name = key
+        else:
+            day = None
+            source, type_, parent, name = key
+        if source != "curated" or not parent:
+            continue
+        if group_by_day:
+            pkey = (day, "curated", "plugin", "", parent)
+        else:
+            pkey = ("curated", "plugin", "", parent)
+        pb = plugin_bucket.setdefault(pkey, {"count": 0, "users": set(), "errors": 0})
+        pb["count"] += vals["count"]
+        pb["users"] |= vals["users"]
+        pb["errors"] += vals["errors"]
+    leaf.update(plugin_bucket)
+    return leaf
+
+
+def _last_30d_due(conn) -> bool:
+    """True if the 30d window has not been refreshed within the threshold."""
+    row = conn.execute(
+        "SELECT processed_at FROM session_processor_state "
+        "WHERE processor_name = ? AND session_file = '__rollup__'",
+        [_MARKETPLACE_30D_TRACKER],
+    ).fetchone()
+    if row is None:
+        return True
+    last = row[0]
+    if last is None:
+        return True
+    # processed_at is a TIMESTAMP — DuckDB returns datetime; normalise to UTC.
+    now = datetime.now(timezone.utc)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (now - last).total_seconds() >= WINDOW_30D_REFRESH_SECONDS
+
+
+def _mark_last_30d_refreshed(conn) -> None:
+    # Pass the timestamp explicitly — DuckDB parses bare `current_timestamp`
+    # in an ON CONFLICT … DO UPDATE SET clause as a column name on the
+    # right-hand side, then can't bind it.
+    now = datetime.now(timezone.utc)
+    conn.execute(
+        """
+        INSERT INTO session_processor_state
+            (processor_name, session_file, username, processed_at, items_extracted)
+        VALUES (?, '__rollup__', 'system', ?, 0)
+        ON CONFLICT (processor_name, session_file) DO UPDATE SET
+            processed_at = EXCLUDED.processed_at
+        """,
+        [_MARKETPLACE_30D_TRACKER, now],
+    )
+
+
+def rebuild_rollups(conn, *, since_day=None, force_30d: bool = False) -> None:
+    """Rebuild marketplace + legacy tool rollups from usage_events.
+
+    Refresh policy (called every UsageProcessor tick):
+      - ``usage_marketplace_item_daily``: incremental DELETE+INSERT for the
+        last 7 days (default), or full rebuild when ``since_day=None`` is
+        passed in via reprocess.
+      - ``usage_marketplace_item_window`` ``period_label='last_7d'``: full
+        DELETE+INSERT every tick.
+      - ``usage_marketplace_item_window`` ``period_label='last_30d'``: full
+        DELETE+INSERT once an hour, or when ``force_30d=True``.
+      - ``usage_tool_daily`` (legacy): incremental DELETE+INSERT, unchanged
+        behaviour from v42.
+
+    All updates run in a single transaction so a partial failure never
+    leaves the rollup set inconsistent.
     """
     if since_day is None:
         since_day = (datetime.now(timezone.utc) - timedelta(days=7)).date()
 
+    # Preload lookup tables once — reused across daily + 7d + 30d rebuilds.
+    curated_plugins = {
+        r[0] for r in conn.execute("SELECT DISTINCT name FROM marketplace_plugins").fetchall()
+    }
+    flea_entities = {
+        r[0]: r[1] for r in conn.execute(
+            "SELECT name, type FROM store_entities WHERE visibility_status='approved'"
+        ).fetchall()
+    }
+
+    do_30d = force_30d or _last_30d_due(conn)
+
     try:
         conn.execute("BEGIN")
+
+        # ---- Legacy: usage_tool_daily (unchanged) ----
         conn.execute("DELETE FROM usage_tool_daily WHERE day >= ?", [since_day])
         conn.execute(
             """
@@ -467,26 +631,54 @@ def rebuild_rollups(conn, *, since_day=None) -> None:
             """,
             [since_day],
         )
-        conn.execute("DELETE FROM usage_plugin_daily WHERE day >= ?", [since_day])
-        conn.execute(
+
+        # ---- New: usage_marketplace_item_daily (incremental last 7d) ----
+        daily_events = conn.execute(
             """
-            INSERT INTO usage_plugin_daily
-                (day, source, ref_id, invocations, distinct_users, distinct_sessions)
             SELECT
                 CAST(occurred_at AS DATE) AS day,
-                source,
-                ref_id,
-                COUNT(*),
-                COUNT(DISTINCT username),
-                COUNT(DISTINCT session_id)
+                user_id,
+                is_error,
+                skill_name,
+                subagent_type,
+                command_name,
+                event_type
             FROM usage_events
             WHERE CAST(occurred_at AS DATE) >= ?
-              AND ref_id IS NOT NULL
-              AND source IN ('curated', 'flea')
-            GROUP BY day, source, ref_id
             """,
             [since_day],
+        ).fetchall()
+        daily_buckets = _aggregate_events(
+            daily_events, curated_plugins, flea_entities, group_by_day=True
         )
+        conn.execute("DELETE FROM usage_marketplace_item_daily WHERE day >= ?", [since_day])
+        if daily_buckets:
+            conn.executemany(
+                """
+                INSERT INTO usage_marketplace_item_daily
+                    (day, source, type, parent_plugin, name, count, distinct_users, error_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (day, source, type_, parent, name, v["count"], len(v["users"]), v["errors"])
+                    for (day, source, type_, parent, name), v in daily_buckets.items()
+                ],
+            )
+
+        # ---- New: usage_marketplace_item_window period_label='last_7d' (full) ----
+        cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).date()
+        _rebuild_window(
+            conn, "last_7d", cutoff_7d, curated_plugins, flea_entities,
+        )
+
+        # ---- New: usage_marketplace_item_window period_label='last_30d' (hourly) ----
+        if do_30d:
+            cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).date()
+            _rebuild_window(
+                conn, "last_30d", cutoff_30d, curated_plugins, flea_entities,
+            )
+            _mark_last_30d_refreshed(conn)
+
         conn.execute("COMMIT")
     except Exception:
         try:
@@ -494,3 +686,45 @@ def rebuild_rollups(conn, *, since_day=None) -> None:
         except Exception:
             pass
         raise
+
+
+def _rebuild_window(conn, period_label: str, cutoff_day, curated_plugins, flea_entities) -> None:
+    """Full DELETE+INSERT of one period_label in usage_marketplace_item_window.
+
+    Caller wraps the call in a BEGIN/COMMIT transaction along with the
+    other rollup writes — this function only does the DML.
+    """
+    events = conn.execute(
+        """
+        SELECT
+            CAST(occurred_at AS DATE) AS day,
+            user_id,
+            is_error,
+            skill_name,
+            subagent_type,
+            command_name,
+            event_type
+        FROM usage_events
+        WHERE CAST(occurred_at AS DATE) >= ?
+        """,
+        [cutoff_day],
+    ).fetchall()
+    buckets = _aggregate_events(
+        events, curated_plugins, flea_entities, group_by_day=False
+    )
+    conn.execute(
+        "DELETE FROM usage_marketplace_item_window WHERE period_label = ?",
+        [period_label],
+    )
+    if buckets:
+        conn.executemany(
+            """
+            INSERT INTO usage_marketplace_item_window
+                (period_label, source, type, parent_plugin, name, invocations, distinct_users)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (period_label, source, type_, parent, name, v["count"], len(v["users"]))
+                for (source, type_, parent, name), v in buckets.items()
+            ],
+        )
