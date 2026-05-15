@@ -2064,6 +2064,29 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
 
         # 4: rebuild table_registry without `is_public` column.
         if "is_public" in _existing_cols("table_registry"):
+            # v49: _SYSTEM_SCHEMA runs before the migration ladder and
+            # creates ``data_package_tables`` with a FK pointing at
+            # table_registry(id). DuckDB blocks the RENAME until the
+            # dependent is dropped — drop it and recreate after the swap.
+            # The v49 finalize re-establishes data_package_tables, and the
+            # body of this migration's INSERT … SELECT preserves all
+            # registry rows so the recreated FK won't dangle. Saved-rows
+            # in data_package_tables also stay valid (they reference
+            # table_registry.id which is preserved verbatim).
+            data_pkg_existed = False
+            pkg_rows = []
+            try:
+                pkg_rows = conn.execute(
+                    "SELECT package_id, table_id, added_at, added_by "
+                    "FROM data_package_tables"
+                ).fetchall()
+                data_pkg_existed = True
+                conn.execute("DROP TABLE data_package_tables")
+            except duckdb.Error:
+                # Table doesn't exist (pre-v49 DB or hand-crafted fixture);
+                # the v49 migration body will create it later.
+                pass
+
             conn.execute("ALTER TABLE table_registry RENAME TO table_registry_v18_pre")
             conn.execute(
                 """CREATE TABLE table_registry (
@@ -2104,6 +2127,29 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
             col_list = ", ".join(common)
             conn.execute(f"INSERT INTO table_registry ({col_list}) SELECT {col_list} FROM table_registry_v18_pre")
             conn.execute("DROP TABLE table_registry_v18_pre")
+
+            # Recreate the v49 junction + restore any rows we captured.
+            if data_pkg_existed:
+                conn.execute(
+                    """CREATE TABLE data_package_tables (
+                        package_id  VARCHAR NOT NULL REFERENCES data_packages(id),
+                        table_id    VARCHAR NOT NULL REFERENCES table_registry(id),
+                        added_at    TIMESTAMP DEFAULT current_timestamp,
+                        added_by    VARCHAR,
+                        PRIMARY KEY (package_id, table_id)
+                    )"""
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_data_package_tables_table "
+                    "ON data_package_tables(table_id)"
+                )
+                for row in pkg_rows:
+                    conn.execute(
+                        "INSERT INTO data_package_tables"
+                        "(package_id, table_id, added_at, added_by) "
+                        "VALUES (?, ?, ?, ?)",
+                        list(row),
+                    )
 
         conn.execute("COMMIT")
     except Exception:
@@ -3191,11 +3237,20 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
         "ALTER TABLE knowledge_items "
         "ADD COLUMN IF NOT EXISTS is_required BOOLEAN DEFAULT FALSE"
     )
-    conn.execute(
-        "UPDATE knowledge_items "
-        "   SET is_required = TRUE, status = 'approved' "
-        " WHERE status = 'mandatory'"
-    )
+    # Skip the backfill UPDATE on hand-crafted v1 fixtures where
+    # ``status`` was never added — the ladder upgrade from v1 reaches v15
+    # before v49 anyway, but the migration body sees the pre-v15 shape
+    # only on those test paths. Guard so the migration stays no-op-safe.
+    has_status = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'knowledge_items' AND column_name = 'status'"
+    ).fetchone()
+    if has_status:
+        conn.execute(
+            "UPDATE knowledge_items "
+            "   SET is_required = TRUE, status = 'approved' "
+            " WHERE status = 'mandatory'"
+        )
 
     # 3) Data Packages — admin-curated bundles of tables. A package is a
     # browse / add-to-stack unit; the tables it contains flow into the
@@ -3355,16 +3410,30 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
 
     # 9a) Drop the legacy ``knowledge_items.domain`` scalar. Single-PR
     # cutover per D14 — the temp-stashed pairs from step 6 + memory_domains
-    # seeded in step 5 are the new sources of truth. ``IF EXISTS`` keeps
-    # the migration idempotent for fixtures that have already dropped the
-    # column. This MUST come before creating ``knowledge_item_domains``
-    # because DuckDB blocks ``ALTER TABLE … DROP COLUMN`` while any child
-    # table holds an FK reference (DependencyException).
+    # seeded in step 5 are the new sources of truth.
+    #
+    # DuckDB blocks ``ALTER TABLE … DROP COLUMN`` while any FK references
+    # the same table (DependencyException). On the fresh-install +
+    # upgrade-from-v1 paths, ``_SYSTEM_SCHEMA`` runs BEFORE the migration
+    # ladder and creates ``knowledge_item_domains`` with the FK already
+    # in place. We DROP that dependent (stashing its rows), perform the
+    # column drop, and recreate the junction immediately after.
+    junction_existed = False
+    stashed_rows: list = []
+    try:
+        stashed_rows = conn.execute(
+            "SELECT item_id, domain_id, added_at, added_by "
+            "FROM knowledge_item_domains"
+        ).fetchall()
+        junction_existed = True
+        conn.execute("DROP TABLE knowledge_item_domains")
+    except duckdb.Error:
+        # Junction didn't exist (genuine v48 upgrade path); fall through.
+        pass
+
     conn.execute("ALTER TABLE knowledge_items DROP COLUMN IF EXISTS domain")
 
-    # 9b) Now create the M:N junction and replay the stashed pairs.
-    # ``CREATE TABLE IF NOT EXISTS`` keeps re-runs idempotent for fresh
-    # installs where ``_SYSTEM_SCHEMA`` already created the table.
+    # 9b) (Re)create the M:N junction and replay any rows we stashed.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS knowledge_item_domains (
@@ -3380,6 +3449,14 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain "
         "ON knowledge_item_domains(domain_id)"
     )
+    if junction_existed and stashed_rows:
+        for row in stashed_rows:
+            conn.execute(
+                "INSERT INTO knowledge_item_domains"
+                "(item_id, domain_id, added_at, added_by) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                list(row),
+            )
     # Replay the stashed pairs. The temp table exists only when the
     # upgrade path ran step 6 — fresh installs skip both step 6 and
     # this replay since ``_v49_item_domain_pairs`` was never created.
