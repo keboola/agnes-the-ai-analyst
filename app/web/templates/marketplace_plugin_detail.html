@@ -1393,11 +1393,14 @@
       }
     }
   }
-  // Curator: render real value when present; for curated keep the
-  // `owner_todo` placeholder visible as a reminder to wire up curator
-  // metadata (intentional — flea falls through silently).
+  // Authorship row label tracks the source: curated bundles have a
+  // curator (the marketplace operator), flea bundles have an owner
+  // (the analyst who uploaded). When `author_name` is the `owner_todo`
+  // placeholder the curated branch surfaces it visibly as a reminder
+  // to wire up curator metadata; flea falls through silently.
+  const authorLabel = d.source === 'curated' ? 'Curator' : 'Owner';
   if (d.author_name && d.author_name !== 'owner_todo') {
-    detailRows.push(`<div class="row"><dt>Curator</dt><dd>${esc(d.author_name)}</dd></div>`);
+    detailRows.push(`<div class="row"><dt>${authorLabel}</dt><dd>${esc(d.author_name)}</dd></div>`);
   } else if (d.source === 'curated') {
     detailRows.push(`<div class="row"><dt>Curator</dt><dd><span class="todo">owner_todo</span></dd></div>`);
   }
