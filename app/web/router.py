@@ -1179,6 +1179,104 @@ async def corporate_memory(
     return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
 
+@router.get("/memory/d/{slug}", response_class=HTMLResponse)
+async def memory_domain_detail(
+    slug: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-domain drill-down — header + per-item richness (Task 8.5).
+
+    Preserves the full per-item affordance set from the legacy /corporate-
+    memory page: votes, contributors, tags, category/source/required
+    badges, dismiss/undismiss, mark-personal toggle, admin edit link.
+    """
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+    from app.services.stack_resolver import StackResolver
+    from src.repositories.memory_domains import MemoryDomainsRepository
+    from src.repositories.usage import UsageRepository
+
+    domains_repo = MemoryDomainsRepository(conn)
+    repo = KnowledgeRepository(conn)
+    domain = domains_repo.get_by_slug(slug)
+    if not domain:
+        raise HTTPException(status_code=404, detail="memory_domain_not_found")
+    if not (is_user_admin(user["id"], conn) or
+            can_access(user["id"], ResourceType.MEMORY_DOMAIN.value, domain["id"], conn)):
+        raise HTTPException(status_code=403, detail="access_denied")
+
+    source_hint = request.query_params.get("source", "direct")
+    try:
+        UsageRepository(conn).emit_server_event(
+            event_type="memory_domain.view",
+            user_id=user["id"],
+            username=user.get("email") or user["id"],
+            props={"slug": slug, "source": source_hint},
+        )
+    except Exception:
+        logger.warning("usage_events emit failed for memory_domain.view")
+
+    resolver = StackResolver(conn)
+    effective_required = resolver.is_required(
+        user["id"], ResourceType.MEMORY_DOMAIN, domain["id"]
+    )
+    in_stack = effective_required or bool(conn.execute(
+        "SELECT 1 FROM user_stack_subscriptions "
+        "WHERE user_id = ? AND resource_type = 'memory_domain' AND resource_id = ?",
+        [user["id"], domain["id"]],
+    ).fetchone())
+
+    # Hydrate items with votes + contributors + dismissed-by-me + tags.
+    summaries = domains_repo.list_items_of_domain(domain["id"], limit=10000)
+    dismissed_set = set(repo.list_dismissed_ids(user["id"])) if user.get("id") else set()
+    items: list[dict] = []
+    required_count = 0
+    for s in summaries:
+        it = repo.get_by_id(s["id"])
+        if not it:
+            continue
+        if it.get("is_required"):
+            required_count += 1
+        votes = repo.get_votes(it["id"])
+        it["upvotes"] = votes["upvotes"]
+        it["downvotes"] = votes["downvotes"]
+        it["dismissed_by_me"] = it["id"] in dismissed_set
+        # Contributor avatars from source_user (single contributor today).
+        su = (it.get("source_user") or "").strip()
+        if su:
+            name = su.split("@", 1)[0]
+            parts = [p for p in name.replace(".", " ").replace("_", " ").split() if p]
+            if len(parts) >= 2:
+                initials = (parts[0][0] + parts[1][0]).upper()
+            elif parts:
+                initials = parts[0][:2].upper()
+            else:
+                initials = name[:2].upper()
+            it["contributors_display"] = [{"name": name, "initials": initials}]
+        else:
+            it["contributors_display"] = []
+        items.append(it)
+
+    # Sort: required first, then by created_at desc (stable + predictable).
+    items.sort(key=lambda r: (not r.get("is_required"), -((r.get("created_at") or 0).timestamp() if hasattr(r.get("created_at") or 0, "timestamp") else 0)))
+
+    # Tag user with is_admin flag for template-side admin affordances.
+    user_render = dict(user)
+    user_render["is_admin"] = is_user_admin(user["id"], conn)
+
+    ctx = _build_context(
+        request, user=user_render,
+        domain=domain,
+        items=items,
+        required_count=required_count,
+        effective_requirement="required" if effective_required else "available",
+        in_stack=in_stack,
+    )
+    return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
+
+
 @router.get("/admin/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory_admin(
     request: Request,
