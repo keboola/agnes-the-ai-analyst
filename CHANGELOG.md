@@ -10,6 +10,38 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.18] — 2026-05-15
+
+### Added
+- "Curated Memory" now sits in the primary navigation next to Data
+  Packages, visible to every authenticated user.
+- **Per-user Dismiss** for Curated Memory items — analysts can opt-out
+  of approved items from their AI-agent bundle and gray them out on
+  `/corporate-memory`. Schema v46 adds `knowledge_item_user_dismissed`;
+  new endpoints `POST /api/memory/{id}/dismiss` and `DELETE` (idempotent).
+  **Mandatory items can never be dismissed** — the governance hard rule
+  is enforced at two layers (API rejects with 400, SQL filter exempts
+  mandatory rows even if a stale dismissal exists). `GET /api/memory`
+  gains `hide_dismissed=false` (default off — dismissed items still
+  visible with a badge + Undismiss button) and per-item `dismissed_by_me`
+  flag. `GET /api/memory/bundle` always excludes dismissed items.
+- **"My Upvotes" filter** on `/corporate-memory` replaces the old dead
+  "My Rules" sentinel. Backed by a new `?upvoted_by_me=true` filter on
+  `/api/memory` that subquerying against `knowledge_votes`.
+- **Inline tag typeahead** in the admin edit modal — focus the tag
+  input to browse all existing tags as a dropdown, type to filter
+  (case-insensitive), ↑/↓ + Enter to add as pill, type a fresh value
+  to surface "+ Add new tag: <value>". Tags now render as removable
+  pills (× to remove); Backspace on empty input pops the last pill.
+- **Bulk-edit modal pickers** for `/admin/corporate-memory` — Category,
+  Audience, and Add tag get `<select>` dropdowns with `+ Add new…` for
+  free entry; Remove tag is now a closed-set picker. Closes #128.
+- **`FilterState` client utility** — `app/web/static/js/filter-state.js`
+  exposes `save/load/clear/bindInputs` for persisting filter UI state
+  per-page in localStorage (keyed `agnes:filters:<scope>`). Adopted on
+  `/corporate-memory` (search / category / domain / sort / group-by /
+  hide-dismissed); other admin pages can adopt the same pattern.
+
 ### Fixed
 - Flea-market: derive next version_no from `max(version_history.n) + 1`
   instead of `entity.version_no + 1` in PUT (edit) + restore. Under
@@ -76,6 +108,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   to resolve the correct version dir (and is now forward-only on
   promote — see the Fixed bullet below), so it stays safe for v2+
   deferred-promotion submissions.
+- The `/corporate-memory` domain filter dropdown now offers the full
+  `VALID_DOMAINS` enum (finance / engineering / product / data /
+  operations / infrastructure), not just domains that already have ≥1
+  item — the old behavior collapsed to a single option on fresh stores.
+- **BREAKING (UI):** the Curated Memory admin review queue moved from
+  `/corporate-memory/admin` to `/admin/corporate-memory` — no redirect.
+  It is now reached from the Admin nav dropdown ("Memory Review").
+- `/corporate-memory` (Curated Memory) is no longer admin-only — the
+  route runs on `get_current_user`, matching the already-open
+  `/api/memory/*` endpoints. The pending-review banner stays admin-only
+  (suppressed server-side for non-admins).
+- Both Curated Memory pages now render the shared `_page_hero.html`
+  header band instead of bespoke per-page chrome, matching catalog /
+  me-activity / admin pages.
 
 ### Fixed
 - **Unauthenticated browser requests to `GET /api/initial-workspace.zip` now redirect to `/login?next=/api/initial-workspace.zip` instead of returning a raw JSON 401** (#315). This is the one `/api/*` endpoint that's designed to be hit directly from a browser bookmark (the analyst clean-install zip), so it intentionally opts out of the global `_API_PATH_PREFIXES` "never redirect /api/*" contract in `app/main.py`. CLI / curl / other API clients (any `Accept` without `text/html` — including the `*/*` default) keep getting the 401 they can handle.
@@ -178,6 +224,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `submission_status`. `self.get()` re-parses JSON each call today so
   this is belt-and-suspenders, but it protects any future caching layer
   from leaking the annotated key into a subsequent plain `get()` call.
+- `corporate_memory_admin.html` renamed to `admin_corporate_memory.html`
+  to match the `admin_*` template convention; dropped dead `.ck-topbar` /
+  `.page-header` inline CSS (the latter collided with the design-system
+  `.page-header--hero` selector).
 
 ## [0.54.17] — 2026-05-15
 
