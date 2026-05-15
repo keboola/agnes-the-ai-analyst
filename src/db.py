@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 47
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -2935,6 +2935,28 @@ def _v44_to_v45(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id)")
 
 
+def _v46_to_v47(conn: duckdb.DuckDBPyConnection) -> None:
+    """v47: DuckDB FTS BM25 index over knowledge_items(title, content).
+
+    Replaces ``ILIKE '%q%'`` ranking-by-insertion-order in
+    ``KnowledgeRepository.search`` with BM25 relevance scoring (#121).
+
+    The migration is *soft*: failure to load the ``fts`` extension or
+    create the index does not block the schema bump. ``ensure_knowledge_fts_index``
+    logs at WARNING level and returns False; the repo's search path
+    defensively falls back to ILIKE on every query so offline /
+    sandboxed installs that can't fetch the extension keep working.
+
+    DuckDB FTS indexes are static snapshots — they don't track
+    base-table mutations automatically. ``search()`` rebuilds on every
+    call via the same helper (``overwrite=1`` makes the PRAGMA
+    idempotent). At corpus sizes <few-thousand rows this is sub-100ms
+    and avoids the per-row update-macro plumbing.
+    """
+    from src.fts import ensure_knowledge_fts_index
+    ensure_knowledge_fts_index(conn)
+
+
 def _v45_to_v46(conn: duckdb.DuckDBPyConnection) -> None:
     """v46: per-user opt-out (dismiss) for knowledge items.
 
@@ -3249,6 +3271,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # curated memory items. _SYSTEM_SCHEMA already creates the
             # table on fresh installs; this call is a no-op there.
             _v45_to_v46(conn)
+            # v47 fts index over knowledge_items — best-effort, silent
+            # fallback to ILIKE search if the fts extension can't load.
+            _v46_to_v47(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3395,6 +3420,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v44_to_v45(conn)
             if current < 46:
                 _v45_to_v46(conn)
+            if current < 47:
+                _v46_to_v47(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

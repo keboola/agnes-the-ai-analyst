@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **Knowledge-item search now ranks by BM25 relevance** instead of
+  insertion order (`/api/memory?search=…`, admin search box, browse
+  query filter). Uses the DuckDB `fts` extension with `strip_accents=1`
+  + `lower=1`, so Czech queries like `cesky` match documents containing
+  `česky`. ILIKE fallback kicks in when the extension can't be loaded
+  (offline / sandboxed installs); the fallback preserves the pre-#121
+  match set, only result ordering regresses to `updated_at DESC`. Schema
+  v47 builds the initial index; `KnowledgeRepository` rebuilds on
+  `create` / title-or-content `update`, and `app/main.py` lifespan
+  rebuilds once on boot as a safety net. Closes #121.
+
 ## [0.54.18] — 2026-05-15
 
 ### Added

@@ -104,6 +104,7 @@ class KnowledgeRepository:
                 now, now,
             ],
         )
+        self._refresh_fts_index()
 
     _UPDATABLE_FIELDS = {
         "title", "content", "category", "tags", "domain", "entities",
@@ -123,6 +124,10 @@ class KnowledgeRepository:
             f"UPDATE knowledge_items SET {set_clause}, updated_at = ? WHERE id = ?",
             values,
         )
+        # FTS index needs rebuilding only when the indexed text changed —
+        # status / domain / tag flips don't affect the BM25 token stream.
+        if "title" in safe or "content" in safe:
+            self._refresh_fts_index()
 
     def update_status(self, item_id: str, status: str) -> None:
         now = datetime.now(timezone.utc)
@@ -130,6 +135,19 @@ class KnowledgeRepository:
             "UPDATE knowledge_items SET status = ?, updated_at = ? WHERE id = ?",
             [status, now, item_id],
         )
+        # Status flips don't touch the indexed title/content — no rebuild.
+
+    def _refresh_fts_index(self) -> None:
+        """Rebuild the BM25 index after a mutation that changed indexed text.
+
+        Soft helper — failure is logged inside ``ensure_knowledge_fts_index``
+        and the repo's search path falls back to ILIKE on the next call.
+        Kept as a private method so the create / update sites stay free of
+        try/except clutter.
+        """
+        from src.fts import ensure_knowledge_fts_index
+
+        ensure_knowledge_fts_index(self.conn)
 
     def list_items(
         self,
@@ -222,10 +240,49 @@ class KnowledgeRepository:
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        pattern = f"%{query}%"
-        sql = """SELECT * FROM knowledge_items
-            WHERE (title ILIKE ? OR content ILIKE ?)"""
-        params: List[Any] = [pattern, pattern]
+        """Relevance-ranked search across ``title`` + ``content`` (#121).
+
+        Uses DuckDB FTS BM25 ranking when the extension is available;
+        falls back to a non-ranked ``ILIKE`` query (ORDER BY
+        ``updated_at`` DESC) otherwise. Same filter surface either way.
+        The fallback is the same code path that ran before #121, so
+        existing installs without ``fts`` available regress only on
+        result *ordering*, not on result set membership.
+
+        Index rebuilds are *not* triggered here — too expensive at
+        search QPS. ``create`` / ``update`` / ``update_status`` rebuild
+        on mutation; ``app/main.py`` lifespan rebuilds once on startup
+        as a safety net. We only need ``LOAD fts`` here so the
+        ``match_bm25`` UDF resolves on this cursor.
+        """
+        from src.fts import ensure_fts_loaded
+
+        use_fts = ensure_fts_loaded(self.conn)
+
+        if use_fts:
+            # BM25 path. ``match_bm25`` is evaluated once in the SELECT
+            # and reused as the WHERE / ORDER BY filter via the alias —
+            # DuckDB's planner deduplicates the call internally, but
+            # the explicit alias makes the intent (score-based ranking,
+            # not relevance-binary filtering) obvious to readers.
+            sql = (
+                "SELECT *, fts_main_knowledge_items.match_bm25(id, ?) AS bm25_score "
+                "FROM knowledge_items "
+                "WHERE fts_main_knowledge_items.match_bm25(id, ?) IS NOT NULL"
+            )
+            params: List[Any] = [query, query]
+            order_clause = " ORDER BY bm25_score DESC, updated_at DESC"
+        else:
+            # ILIKE fallback — preserves the pre-#121 behaviour byte-for-byte
+            # so test fixtures and offline installs don't regress.
+            pattern = f"%{query}%"
+            sql = (
+                "SELECT * FROM knowledge_items "
+                "WHERE (title ILIKE ? OR content ILIKE ?)"
+            )
+            params = [pattern, pattern]
+            order_clause = " ORDER BY updated_at DESC"
+
         if statuses:
             placeholders = ", ".join("?" for _ in statuses)
             sql += f" AND status IN ({placeholders})"
@@ -262,7 +319,7 @@ class KnowledgeRepository:
                 ")"
             )
             params.append(dismissed_by_user)
-        sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        sql += order_clause + " LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         results = self.conn.execute(sql, params).fetchall()
         return self._rows_to_dicts(results)
@@ -281,9 +338,22 @@ class KnowledgeRepository:
         hide_dismissed: bool = False,
     ) -> int:
         if search:
-            pattern = f"%{search}%"
-            sql = "SELECT COUNT(*) FROM knowledge_items WHERE (title ILIKE ? OR content ILIKE ?)"
-            params: List[Any] = [pattern, pattern]
+            # Mirror search()'s tier choice so the count matches the
+            # actual paginated result set (#121). Same FTS-or-ILIKE
+            # decision tree; same predicate shape.
+            from src.fts import ensure_fts_loaded
+
+            use_fts = ensure_fts_loaded(self.conn)
+            if use_fts:
+                sql = (
+                    "SELECT COUNT(*) FROM knowledge_items "
+                    "WHERE fts_main_knowledge_items.match_bm25(id, ?) IS NOT NULL"
+                )
+                params: List[Any] = [search]
+            else:
+                pattern = f"%{search}%"
+                sql = "SELECT COUNT(*) FROM knowledge_items WHERE (title ILIKE ? OR content ILIKE ?)"
+                params = [pattern, pattern]
         else:
             sql = "SELECT COUNT(*) FROM knowledge_items WHERE 1=1"
             params = []

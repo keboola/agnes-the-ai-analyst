@@ -110,7 +110,7 @@ def test_schema_version_is_44():
     #            protected: the API rejects POSTs against them, and the
     #            SQL filter exempts ``status = 'mandatory'`` so any stale
     #            row from before an item was mandated is silently ignored.
-    assert SCHEMA_VERSION == 46
+    assert SCHEMA_VERSION == 47
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
