@@ -10,6 +10,45 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- `connectors/jira/scripts/consistency_check.py` —
+  `AUTO_FIX_THRESHOLD` bumped from 10 to 20. Auto-backfill now covers
+  typical SLA-poller hiccups before escalating to ERROR.
+  `WARNING_THRESHOLD` unchanged.
+
+### Fixed
+- **`connectors/jira` — transient Jira API failure no longer wipes
+  existing `remote_links` parquet rows.** Pre-fix, all three
+  `fetch_remote_links` sites (`service.py`, `scripts/backfill.py`,
+  `scripts/backfill_remote_links.py`) silently returned `[]` on
+  401/403/429/5xx or `httpx.RequestError`. Callers overlaid that `[]`
+  onto cached issue JSON, and `transform_remote_links` interpreted the
+  empty list as "issue legitimately has no remote links — delete its
+  existing rows", so a transient Jira auth blip (or a webhook burst
+  hitting Jira's rate limiter) permanently wiped remote-link history.
+  Now: every fetch site raises `JiraFetchError` on non-200/non-404
+  status and `httpx.RequestError` (including the "service not
+  configured" path — a webhook arriving while API creds are missing
+  no longer surfaces as a silent wipe), overlay sites skip the
+  `_remote_links` key on raise (leaving it ABSENT, not
+  present-but-empty), and `transform_remote_links` returns `None` for
+  absent / `null` keys (preserve existing rows) vs `[]` (legitimate
+  empty — wipe). Both consumers (batch `transform_all` and incremental
+  `transform_single_issue`) honor the new contract. End-to-end tests
+  lock both halves: `test_incremental_preserves_remote_links_when_overlay_absent`
+  + `test_incremental_wipes_remote_links_when_overlay_present_but_empty`.
+  The bulk-backfill scripts retain their existing `Retry-After`
+  sleep+retry loop for 429 (appropriate for non-interactive batch
+  contexts); only the webhook hot path raises on 429.
+
+### Internal
+- `CLAUDE.md` — `connectors/jira/transform.py` removed from the
+  "Files NOT to modify" list. The `_remote_links` hardening required
+  modifying `transform_remote_links` and `transform_all` to honor the
+  new "overlay absent → preserve existing rows" contract; the module
+  remains sensitive (touch only with end-to-end understanding of the
+  JSON-overlay / parquet-rewrite pipeline) but is no longer off-limits.
+
 ## [0.54.18] — 2026-05-15
 
 ### Added
