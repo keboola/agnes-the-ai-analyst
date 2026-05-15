@@ -526,14 +526,28 @@ def transform_issuelinks(raw_issue: dict) -> list[dict]:
     return records
 
 
-def transform_remote_links(raw_issue: dict) -> list[dict]:
+def transform_remote_links(raw_issue: dict) -> list[dict] | None:
     """Extract and transform remote links from an issue.
 
-    Remote links are embedded in the raw issue JSON as `_remote_links`
-    by the fetch layer (jira_service.py / jira_backfill.py).
+    Returns:
+      - list[dict]: fresh records to upsert into parquet. May be empty,
+        meaning the issue legitimately has no remote links right now
+        (HTTP 200 with [] or HTTP 404 from the fetch).
+      - None: the _remote_links key was absent from raw_issue, which
+        signals that save_issue (or the equivalent backfill writer)
+        could not refresh remote links — typically a 401/403/5xx from
+        the Jira API. Callers MUST treat None as "skip the upsert";
+        overwriting with [] would delete existing parquet rows for
+        this issue.
+
+    The key shape is set by the writers (JiraService.save_issue,
+    JiraBackfiller, backfill_remote_links): present means the fetch
+    succeeded (200 or 404), absent means the fetch raised.
     """
     issue_key = raw_issue.get("key")
-    remote_links = raw_issue.get("_remote_links", [])
+    if "_remote_links" not in raw_issue:
+        return None
+    remote_links = raw_issue["_remote_links"]
 
     records = []
     for rl in remote_links:
@@ -664,7 +678,11 @@ def transform_all(
 
             changelog_by_month[month_key].extend(transform_changelog(raw_issue))
             issuelinks_by_month[month_key].extend(transform_issuelinks(raw_issue))
-            remote_links_by_month[month_key].extend(transform_remote_links(raw_issue))
+            rl_records = transform_remote_links(raw_issue)
+            if rl_records is not None:
+                remote_links_by_month[month_key].extend(rl_records)
+            # else: _remote_links overlay was skipped (fetch failure) — preserve
+            # whatever existing rows the parquet already has for this issue.
 
         except Exception as e:
             logger.error(f"Error processing {json_file}: {e}")

@@ -9,6 +9,7 @@ import pytest
 from tests.helpers.factories import WebhookEventFactory
 
 from connectors.jira.service import JiraFetchError
+from connectors.jira.transform import transform_remote_links
 
 
 @pytest.fixture
@@ -282,3 +283,31 @@ class TestSaveIssueRemoteLinksOverlay:
         assert "_remote_links" not in data, \
             "Absent key is the contract with transform_remote_links — " \
             "do not change to an empty list."
+
+
+class TestTransformRemoteLinks:
+    """transform_remote_links returns None when _remote_links is absent
+    (preserve-existing signal) and [] when present-but-empty (legitimate 'none')."""
+
+    def test_returns_list_when_links_present(self):
+        result = transform_remote_links({
+            "key": "PROJ-1",
+            "_remote_links": [{
+                "id": "rl-1",
+                "object": {"url": "https://x", "title": "X"},
+                "application": {"name": "App", "type": "type"},
+            }],
+        })
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["remote_link_id"] == "rl-1"
+
+    def test_returns_empty_list_when_key_present_but_empty(self):
+        result = transform_remote_links({"key": "PROJ-1", "_remote_links": []})
+        assert result == []
+
+    def test_returns_none_when_key_absent(self):
+        # Absent key = save_issue skipped the overlay because fetch failed.
+        # Signal to caller: preserve existing parquet rows for this issue.
+        result = transform_remote_links({"key": "PROJ-1"})
+        assert result is None
