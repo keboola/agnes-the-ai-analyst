@@ -159,3 +159,37 @@ def test_v48_to_v49_memory_domains_slug_unique():
         conn.execute(
             "INSERT INTO memory_domains(id, slug, name) VALUES ('md_y', 'custom', 'Custom dup')"
         )
+
+
+def test_v48_to_v49_seeds_canonical_domains():
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    _v48_to_v49(conn)
+
+    slugs = {r[0] for r in conn.execute("SELECT slug FROM memory_domains").fetchall()}
+    expected = {"finance", "engineering", "product", "data", "operations", "infrastructure"}
+    assert expected.issubset(slugs)
+
+    # Deterministic IDs — frontend / migration callers can rely on the
+    # md_<slug> convention.
+    row = conn.execute("SELECT id FROM memory_domains WHERE slug='finance'").fetchone()
+    assert row[0] == "md_finance"
+
+
+def test_v48_to_v49_seeds_extra_non_canonical_domains():
+    """Defensive: a v48 DB with a non-VALID_DOMAINS domain value gets its
+    own memory_domains row so the junction backfill (task 1.6) doesn't
+    drop the relation."""
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    conn.execute(
+        "INSERT INTO knowledge_items VALUES ('k1', 't1', 'approved', 'sales-coaching')"
+    )
+    _v48_to_v49(conn)
+
+    row = conn.execute(
+        "SELECT id, slug, name FROM memory_domains WHERE name = 'sales-coaching'"
+    ).fetchone()
+    assert row is not None
+    assert row[1] == "sales-coaching"
+    assert row[0].startswith("md_")

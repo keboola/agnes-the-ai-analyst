@@ -3242,6 +3242,46 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
         "ON knowledge_item_domains(domain_id)"
     )
 
+    # 5) Seed canonical memory_domains from the legacy ``VALID_DOMAINS``
+    # constant in ``app/api/memory.py`` (the v15 hardcoded six). Deterministic
+    # ``md_<slug>`` ids so downstream Phase-2+ refactors can rely on the
+    # naming convention without re-querying. Icons / colors are part of the
+    # canonical seed so the Browse UI renders consistently across instances.
+    canonical_domains = [
+        ("md_finance",        "finance",        "Finance",        "💰", "#dcfce7"),
+        ("md_engineering",    "engineering",    "Engineering",    "⚙️", "#dbeafe"),
+        ("md_product",        "product",        "Product",        "📦", "#fef3c7"),
+        ("md_data",           "data",           "Data",           "📊", "#f3e8ff"),
+        ("md_operations",     "operations",     "Operations",     "🔧", "#fff7ed"),
+        ("md_infrastructure", "infrastructure", "Infrastructure", "🏗️", "#fef2f2"),
+    ]
+    for did, slug, name, icon, color in canonical_domains:
+        conn.execute(
+            "INSERT INTO memory_domains (id, slug, name, icon, color, created_at) "
+            "VALUES (?, ?, ?, ?, ?, current_timestamp) "
+            "ON CONFLICT (slug) DO NOTHING",
+            [did, slug, name, icon, color],
+        )
+
+    # Plus one row per non-canonical ``knowledge_items.domain`` value found
+    # in the existing data (defensive — instances may have hand-set domains
+    # outside the six). Slug normalization mirrors the junction populate
+    # query below so the join in task 1.6 matches deterministically.
+    conn.execute(
+        """
+        INSERT INTO memory_domains(id, slug, name, created_at)
+        SELECT
+            'md_' || lower(regexp_replace(domain, '[^a-z0-9]+', '_', 'g')),
+            lower(regexp_replace(domain, '[^a-z0-9]+', '-', 'g')),
+            domain,
+            current_timestamp
+          FROM (SELECT DISTINCT domain FROM knowledge_items
+                 WHERE domain IS NOT NULL AND domain <> ''
+                   AND domain NOT IN ('finance','engineering','product','data','operations','infrastructure'))
+        ON CONFLICT (slug) DO NOTHING
+        """
+    )
+
 
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
