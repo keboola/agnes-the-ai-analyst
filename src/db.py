@@ -516,6 +516,32 @@ CREATE TABLE IF NOT EXISTS data_package_tables (
 CREATE INDEX IF NOT EXISTS idx_data_package_tables_table
     ON data_package_tables(table_id);
 
+-- v49: Memory Domains — first-class entities replacing the v15 scalar
+-- ``knowledge_items.domain`` string. Junction allows an item to belong
+-- to multiple domains; admin can create non-canonical domains beyond the
+-- legacy ``VALID_DOMAINS`` six. See spec section 3.4.
+CREATE TABLE IF NOT EXISTS memory_domains (
+    id          VARCHAR PRIMARY KEY,
+    slug        VARCHAR UNIQUE NOT NULL,
+    name        VARCHAR NOT NULL,
+    description TEXT,
+    icon        VARCHAR,
+    color       VARCHAR,
+    created_by  VARCHAR,
+    created_at  TIMESTAMP DEFAULT current_timestamp,
+    updated_at  TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_item_domains (
+    item_id   VARCHAR NOT NULL REFERENCES knowledge_items(id),
+    domain_id VARCHAR NOT NULL REFERENCES memory_domains(id),
+    added_at  TIMESTAMP DEFAULT current_timestamp,
+    added_by  VARCHAR,
+    PRIMARY KEY (item_id, domain_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain
+    ON knowledge_item_domains(domain_id);
+
 -- v22: reserved (formerly setup_banner — feature dropped, table kept for
 -- forward compatibility with already-migrated instances).
 CREATE TABLE IF NOT EXISTS setup_banner (
@@ -3179,6 +3205,41 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_data_package_tables_table "
         "ON data_package_tables(table_id)"
+    )
+
+    # 4) Memory Domains — first-class entities replacing the scalar
+    # ``knowledge_items.domain`` string. Junction allows an item to
+    # belong to multiple domains; admin can create non-canonical
+    # domains beyond the legacy VALID_DOMAINS six. See spec section 3.4.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_domains (
+            id          VARCHAR PRIMARY KEY,
+            slug        VARCHAR UNIQUE NOT NULL,
+            name        VARCHAR NOT NULL,
+            description TEXT,
+            icon        VARCHAR,
+            color       VARCHAR,
+            created_by  VARCHAR,
+            created_at  TIMESTAMP DEFAULT current_timestamp,
+            updated_at  TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_item_domains (
+            item_id   VARCHAR NOT NULL REFERENCES knowledge_items(id),
+            domain_id VARCHAR NOT NULL REFERENCES memory_domains(id),
+            added_at  TIMESTAMP DEFAULT current_timestamp,
+            added_by  VARCHAR,
+            PRIMARY KEY (item_id, domain_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain "
+        "ON knowledge_item_domains(domain_id)"
     )
 
 
