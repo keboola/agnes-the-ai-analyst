@@ -447,10 +447,11 @@ def _find_reusable_approved_verdict(
     Rationale:
         Anthropic structured output is non-deterministic. The
         content_quality.verdict in particular can flip pass↔fail on
-        byte-identical bundles (observed live on agnes-development
-        for entity 6ba2ee1d…: v1/v2/v4/v6 same hash all approved,
-        v5 same hash blocked because the model flagged 1 description
-        as weak). When the user restores an already-approved version
+        byte-identical bundles (observed live on a development
+        deployment: across five identical-hash submissions of one
+        entity, four landed `approved` and one landed `blocked_llm`
+        because the model flagged a description as weak on that one
+        call). When the user restores an already-approved version
         — or re-uploads byte-identical bundles — the previous verdict
         is the authoritative one and should be reused.
 
@@ -1547,6 +1548,15 @@ async def create_entity(
             file_size=bundle_meta.file_size,
             bundle_sha256=bundle_meta.sha256,
         )
+        # Backfill the v1 seed's submission_id so downstream lookups
+        # (`_version_no_for_submission`, admin queue v#, admin detail
+        # v# chip, restore reuse) can resolve v1 the same way they
+        # resolve v2+. Pre-fix this was deferred to a later
+        # `update_history_submission_id` call that never landed in
+        # the create path — leaving the v1 entry with
+        # `submission_id=None` and every "find v# for this submission"
+        # lookup silently failing for v1.
+        repo.update_history_submission_id(entity_id, 1, sub_id)
         _audit(
             conn, user["id"],
             "store.submission.accepted" if guardrails_on else "store.submission.approved",

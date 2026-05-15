@@ -258,6 +258,58 @@
     {% endif %}
   </div>
 
+  {# ── Version switcher ────────────────────────────────────────────────────── #}
+  {# All submissions linked to this entity, newest first. Admin clicks
+     any row to jump to its detail. Surfaces multi-version entities so
+     verdicts across versions can be compared without bouncing back to
+     the queue. #}
+  {% if sibling_submissions and sibling_submissions|length > 1 %}
+  <div class="det-card">
+    <h2>Submissions for this entity ({{ sibling_submissions|length }})</h2>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>v#</th>
+          <th>Status</th>
+          <th>Hash</th>
+          <th>Reviewed by</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sibling_submissions %}
+        <tr {% if s.is_current %}style="background: var(--surface-muted, #f9fafb);"{% endif %}>
+          <td>
+            {% if s.version_no %}
+              <strong>v{{ s.version_no }}</strong>
+            {% else %}
+              <span class="empty-msg">—</span>
+            {% endif %}
+            {% if s.version_no and s.version_no == entity_version_no %}
+              <span class="badge approved" style="margin-left:4px;font-size:9px;">current</span>
+            {% endif %}
+          </td>
+          <td><span class="badge {{ s.status }}">{{ s.status }}</span></td>
+          <td><code>{{ (s.version or '')[:12] }}</code></td>
+          <td style="font-size:11px;color:var(--text-secondary,#6b7280);">{{ s.reviewed_by_model or '—' }}</td>
+          <td style="font-size:11px;color:var(--text-secondary,#6b7280);">
+            {{ s.created_at.strftime("%Y-%m-%d %H:%M") if s.created_at else "" }}
+          </td>
+          <td>
+            {% if s.is_current %}
+              <span class="empty-msg">viewing</span>
+            {% else %}
+              <a href="/admin/store/submissions/{{ s.id }}">Open →</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   {# ── Override history ────────────────────────────────────────────────────── #}
   {% if sub.override_by %}
   <div class="det-card">
