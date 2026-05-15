@@ -11,7 +11,7 @@ def test_schema_version_is_42():
     # constant. Test name preserved for git-blame continuity; the
     # version-pinned tests in test_db_schema_version.py and
     # test_home_stats.py carry the v44 commentary.
-    assert SCHEMA_VERSION == 45
+    assert SCHEMA_VERSION == 46
 
 
 def test_v42_tables_exist_after_init(tmp_path):
@@ -22,16 +22,23 @@ def test_v42_tables_exist_after_init(tmp_path):
         row[0]
         for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()
     }
+    # v46 dropped: usage_plugin_daily, usage_attribution_skills/_agents/_commands.
+    # v46 added: usage_marketplace_item_daily, usage_marketplace_item_window.
     for tbl in [
         "usage_events",
         "usage_session_summary",
         "usage_tool_daily",
+        "usage_marketplace_item_daily",
+        "usage_marketplace_item_window",
+    ]:
+        assert tbl in tables, f"missing table {tbl}"
+    for tbl in [
         "usage_plugin_daily",
         "usage_attribution_skills",
         "usage_attribution_agents",
         "usage_attribution_commands",
     ]:
-        assert tbl in tables, f"missing table {tbl}"
+        assert tbl not in tables, f"dropped table {tbl} still present"
     conn.close()
 
 
@@ -43,6 +50,8 @@ def test_v42_indices_exist(tmp_path):
         row[0]
         for row in conn.execute("SELECT index_name FROM duckdb_indexes WHERE table_name LIKE 'usage_%'").fetchall()
     }
+    # v46 dropped: idx_usage_attr_*_lookup.
+    # v46 added: idx_mid_lookup, idx_miw_lookup on the new marketplace tables.
     for idx in [
         "idx_usage_events_session",
         "idx_usage_events_user_time",
@@ -51,9 +60,8 @@ def test_v42_indices_exist(tmp_path):
         "idx_usage_events_ref",
         "idx_usage_session_user",
         "idx_usage_session_started",
-        "idx_usage_attr_skill_lookup",
-        "idx_usage_attr_agent_lookup",
-        "idx_usage_attr_command_lookup",
+        "idx_mid_lookup",
+        "idx_miw_lookup",
     ]:
         assert idx in idx_names, f"missing index {idx}"
     conn.close()
@@ -68,7 +76,7 @@ def test_v41_to_v42_is_idempotent(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 45
+    assert v == 46
     conn.close()
 
 
@@ -89,22 +97,21 @@ def test_v41_db_upgrades_cleanly(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 45
+    assert v == 46
     # All 7 new v41 tables exist after the v40→v41 upgrade
     tables = {
         row[0]
         for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()
     }
+    # v46 replaced the v42 attribution/rollup tables — verify the post-v46 set.
     for tbl in [
         "usage_events",
         "usage_session_summary",
         "usage_tool_daily",
-        "usage_plugin_daily",
-        "usage_attribution_skills",
-        "usage_attribution_agents",
-        "usage_attribution_commands",
+        "usage_marketplace_item_daily",
+        "usage_marketplace_item_window",
     ]:
-        assert tbl in tables, f"missing table {tbl} after v40→v41 upgrade"
+        assert tbl in tables, f"missing table {tbl} after upgrade"
     conn.close()
 
 
@@ -121,7 +128,7 @@ def test_v30_db_ladders_all_the_way_up(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 45
+    assert v == 46
     cnt = conn.execute("SELECT COUNT(*) FROM audit_log WHERE id='vintage'").fetchone()[0]
     assert cnt == 1
     # New v41 table exists

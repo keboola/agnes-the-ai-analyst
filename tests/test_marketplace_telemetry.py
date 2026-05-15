@@ -52,20 +52,48 @@ def _seed_curated(user_id: str, marketplace: str, plugin: str) -> None:
         conn.close()
 
 
-def _seed_rollup(source: str, ref_id: str, rows: list[tuple]) -> None:
-    """Insert (day_offset, invocations, distinct_users) rows into usage_plugin_daily."""
+def _seed_rollup(source: str, plugin_name: str, rows: list[tuple]) -> None:
+    """Seed marketplace rollup data for `(source, plugin_name)`.
+
+    Writes per-day rows into `usage_marketplace_item_daily` (for the
+    trend-pct calculation, which reads daily) AND a single aggregate row
+    into `usage_marketplace_item_window` for ``period_label='last_30d'``
+    (for the card / detail invocations_30d lookup).
+
+    `rows` is a list of (day_offset, invocations, distinct_users); the
+    helper sums them to produce the window snapshot.
+
+    Test data uses ``type='plugin'`` + ``parent_plugin=''`` to model
+    curated plugin-level rollup rows (the shape the marketplace cards
+    look up).
+    """
     from src.db import get_system_db
     today = dt.date.today()
     conn = get_system_db()
     try:
+        type_ = "plugin"
+        parent_plugin = ""
+        # Per-day daily-fact rows — drive the trend-pct calculation.
         for d_offset, inv, users in rows:
             day = today - dt.timedelta(days=d_offset)
             conn.execute(
-                "INSERT OR REPLACE INTO usage_plugin_daily "
-                "(day, source, ref_id, invocations, distinct_users, distinct_sessions) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [day, source, ref_id, inv, users, inv],
+                "INSERT OR REPLACE INTO usage_marketplace_item_daily "
+                "(day, source, type, parent_plugin, name, count, distinct_users, error_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                [day, source, type_, parent_plugin, plugin_name, inv, users],
             )
+        # 30d window snapshot — sum across days within the window. In real
+        # data this is a TRUE distinct count from usage_events; tests use
+        # sum-of-daily-distinct as an approximation since they control the
+        # underlying data shape directly.
+        total_inv = sum(inv for offset, inv, _ in rows if offset <= 30)
+        total_users = sum(u for offset, _, u in rows if offset <= 30)
+        conn.execute(
+            "INSERT OR REPLACE INTO usage_marketplace_item_window "
+            "(period_label, source, type, parent_plugin, name, invocations, distinct_users) "
+            "VALUES ('last_30d', ?, ?, ?, ?, ?, ?)",
+            [source, type_, parent_plugin, plugin_name, total_inv, total_users],
+        )
     finally:
         conn.close()
 
@@ -88,10 +116,10 @@ class TestTelemetryDefaults:
         found = False
         for item in resp.json()["items"]:
             assert "invocations_30d" in item, "missing invocations_30d field"
-            assert "unique_users_30d" in item, "missing unique_users_30d field"
+            assert "distinct_users_30d" in item, "missing distinct_users_30d field"
             assert "trend_pct" in item, "missing trend_pct field"
             assert item["invocations_30d"] == 0
-            assert item["unique_users_30d"] == 0
+            assert item["distinct_users_30d"] == 0
             assert item["trend_pct"] is None
             found = True
         assert found, "Expected at least one item"
@@ -99,11 +127,11 @@ class TestTelemetryDefaults:
 
 class TestInvocationsReturned:
     def test_invocations_returned_after_rollup_seeded(self, seeded_app, admin_user):
-        """Seed usage_plugin_daily for a curated plugin and confirm items endpoint
+        """Seed rollup for a curated plugin and confirm items endpoint
         returns the correct invocations_30d sum."""
         _seed_curated("admin1", "test-mp", "test-plug")
         # Days 1, 3, 10 ago — all within 30d window
-        _seed_rollup("curated", "test-mp/test-plug", [
+        _seed_rollup("curated", "test-plug", [
             (1, 100, 10),
             (3, 50, 5),
             (10, 20, 2),
@@ -114,12 +142,12 @@ class TestInvocationsReturned:
         items = {i["name"]: i for i in resp.json()["items"]}
         assert "test-plug" in items, f"plugin not in response: {list(items)}"
         assert items["test-plug"]["invocations_30d"] == 170  # 100+50+20
-        assert items["test-plug"]["unique_users_30d"] == 17  # 10+5+2
+        assert items["test-plug"]["distinct_users_30d"] == 17  # 10+5+2
 
     def test_old_rollups_excluded_from_30d_sum(self, seeded_app, admin_user):
         """Rows older than 30 days must NOT appear in invocations_30d."""
         _seed_curated("admin1", "test-mp2", "old-plug")
-        _seed_rollup("curated", "test-mp2/old-plug", [
+        _seed_rollup("curated", "old-plug", [
             (31, 999, 99),  # outside 30d window
             (1, 5, 1),      # inside
         ])
@@ -136,8 +164,8 @@ class TestSortMostUsed:
         """sort=most_used returns items in descending invocations_30d order."""
         _seed_curated("admin1", "sort-mp", "low-plug")
         _seed_curated("admin1", "sort-mp", "high-plug")
-        _seed_rollup("curated", "sort-mp/low-plug", [(1, 10, 1)])
-        _seed_rollup("curated", "sort-mp/high-plug", [(1, 500, 50)])
+        _seed_rollup("curated", "low-plug", [(1, 10, 1)])
+        _seed_rollup("curated", "high-plug", [(1, 500, 50)])
 
         c = seeded_app["client"]
         resp = c.get(
@@ -174,7 +202,7 @@ class TestSortTrending:
         """Items with prior-week invocations < 3 must not appear in trending sort."""
         _seed_curated("admin1", "trend-mp", "noisy-plug")
         # Only recent-week data (prior = 0) — trend_pct is None
-        _seed_rollup("curated", "trend-mp/noisy-plug", [(1, 50, 5)])
+        _seed_rollup("curated", "noisy-plug", [(1, 50, 5)])
 
         c = seeded_app["client"]
         resp = c.get(
@@ -192,30 +220,12 @@ class TestSortTrending:
     ):
         """An item with >=3 prior-week invocations must appear in trending sort."""
         _seed_curated("admin1", "trend-mp2", "trend-plug")
-        today = dt.date.today()
-        from src.db import get_system_db
-        conn = get_system_db()
-        try:
-            # prior week (8-14 days ago): 10 invocations
-            for offset in [8, 10, 12]:
-                day = today - dt.timedelta(days=offset)
-                conn.execute(
-                    "INSERT OR REPLACE INTO usage_plugin_daily "
-                    "(day, source, ref_id, invocations, distinct_users, distinct_sessions) "
-                    "VALUES (?, 'curated', 'trend-mp2/trend-plug', ?, ?, ?)",
-                    [day, 4, 1, 4],
-                )
-            # recent week (1-6 days ago): 30 invocations (trend > 0)
-            for offset in [1, 3, 5]:
-                day = today - dt.timedelta(days=offset)
-                conn.execute(
-                    "INSERT OR REPLACE INTO usage_plugin_daily "
-                    "(day, source, ref_id, invocations, distinct_users, distinct_sessions) "
-                    "VALUES (?, 'curated', 'trend-mp2/trend-plug', ?, ?, ?)",
-                    [day, 10, 2, 10],
-                )
-        finally:
-            conn.close()
+        # prior week (8-14 days ago): 12 invocations across 3 days
+        # recent week (1-6 days ago): 30 invocations across 3 days
+        _seed_rollup("curated", "trend-plug", [
+            (8, 4, 1), (10, 4, 1), (12, 4, 1),
+            (1, 10, 2), (3, 10, 2), (5, 10, 2),
+        ])
 
         c = seeded_app["client"]
         resp = c.get(
@@ -258,7 +268,7 @@ class TestMostPopularSection:
         """After seeding usage_plugin_daily, sort=most_used returns items with
         invocations_30d > 0, which the JS uses to un-hide the section."""
         _seed_curated("admin1", "pop-mp", "popular-plug")
-        _seed_rollup("curated", "pop-mp/popular-plug", [(1, 100, 10)])
+        _seed_rollup("curated", "popular-plug", [(1, 100, 10)])
 
         c = seeded_app["client"]
         resp = c.get(
@@ -293,7 +303,7 @@ class TestDetailTelemetry:
         """GET /api/marketplace/curated/{mp}/{plugin} returns telemetry dict with
         invocations_30d and 30-entry daily_series when rollup data exists."""
         _seed_curated("admin1", "detail-mp2", "detail-plug2")
-        _seed_rollup("curated", "detail-mp2/detail-plug2", [
+        _seed_rollup("curated", "detail-plug2", [
             (1, 50, 5),
             (5, 30, 3),
         ])
@@ -306,7 +316,7 @@ class TestDetailTelemetry:
         tele = resp.json()["telemetry"]
         assert tele is not None
         assert tele["invocations_30d"] == 80  # 50+30
-        assert tele["unique_users_30d"] == 8   # 5+3
+        assert tele["distinct_users_30d"] == 8   # 5+3
         assert "daily_series" in tele
         assert len(tele["daily_series"]) == 30
         # Each entry has day + invocations

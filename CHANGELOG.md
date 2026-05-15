@@ -10,6 +10,61 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- Marketplace telemetry rollup tables (schema v46):
+  - `usage_marketplace_item_daily` — per-day fact (count, distinct_users,
+    error_count) keyed by (day, source, type, parent_plugin, name).
+  - `usage_marketplace_item_window` — sliding-window snapshot with true
+    cross-window distinct user counts; `period_label='last_7d'`
+    refreshed every UsageProcessor tick, `period_label='last_30d'`
+    refreshed hourly.
+- `InnerDetailResponse.telemetry` — 30-day invocation + distinct-user
+  metrics surfaced on curated inner skill / agent detail pages
+  (`/marketplace/curated/<mp>/<plugin>/skill/<skill>` and `…/agent/<agent>`).
+- `scripts/backfill_marketplace_rollup.py` — one-shot script to populate
+  the new rollup tables from historic `usage_events` after a v46 deploy.
+
+### Changed
+- **BREAKING:** `MarketplaceItem.unique_users_30d` renamed to
+  `distinct_users_30d` in the `/api/marketplace/items` response. The new
+  value is a true distinct count across the 30-day window (from the
+  `usage_marketplace_item_window` snapshot), not the old sum-of-daily
+  proxy that over-counted active multi-day users.
+- `usage_events.source` is now populated per-event by `MarketplaceItemLookup`
+  (live join against `marketplace_plugins` + `store_entities`). Previously
+  it sat at `'builtin'` for every row because the v42 `AttributionLookup`
+  matched skill/command names without the plugin prefix that Claude Code
+  actually writes — `usage_events.source = 'curated'` / `'flea'` /
+  `'builtin'` becomes meaningful for the first time.
+- `usage_events.ref_id` semantics — now stores the plain plugin name
+  (curated) instead of `<marketplace_id>/<plugin_name>`; flea entities
+  store `NULL` (no parent plugin). Admin telemetry endpoints
+  (`/api/admin/telemetry/{summary,query,facets,export}`) keep their
+  `GROUP BY ref_id` / `source` shapes — bucket values shift to the
+  new semantics.
+- The marketplace browse card no longer renders the invocation chip
+  (`🔥 N uses · ↑ X%`) pending UX finalisation. `invocations_30d`,
+  `distinct_users_30d`, and `trend_pct` remain in the API response for
+  the upcoming Most-Used / Trending sections and the detail pages.
+- `USAGE_PROCESSOR_VERSION` bumped 4 → 5 so the session-pipeline
+  reprocess loop re-attributes historic events to the new
+  source/ref_id semantics on the next tick.
+
+### Removed
+- **BREAKING:** four schema-v42 telemetry tables (v46 migration):
+  - `usage_attribution_skills`, `usage_attribution_agents`, and
+    `usage_attribution_commands` — replaced by live prefix-split lookup
+    against `marketplace_plugins` + `store_entities`. Verified empty or
+    derivable; no unique data lost.
+  - `usage_plugin_daily` — replaced by `usage_marketplace_item_daily`
+    + `_window`. Verified empty in production-shape data (the v42 rollup
+    INSERT was gated on `source IN ('curated','flea')` but the broken
+    attribution layer always produced `'builtin'`).
+- `src/repositories/usage_attribution.py`, `src/usage_attribution_helpers.py`,
+  `scripts/backfill_usage_attribution.py`, and their test fixtures
+  (`tests/test_usage_attribution.py`,
+  `tests/test_backfill_usage_attribution.py`) — no callers remain.
+
 ### Fixed
 - `/me/activity` hero subtitle showed literal `<strong>…</strong>` tags
   around the user's email instead of rendering them bold. The subtitle
@@ -20,6 +75,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   autoescaped.
 
 ### Internal
+- `usage_tool_daily` flagged as candidate for removal. The table is
+  still populated by `rebuild_rollups` for backwards compatibility with
+  the `usage_ask` schema digest, but has no product-UI consumer after
+  the v46 marketplace telemetry refactor. Will be evaluated for drop in
+  the next iteration.
 - CI test suite sharded for speed. The `test` job in `.github/workflows/ci.yml` is now a `test-shard` matrix — 4 parallel jobs via `pytest-split`, balanced by a committed `.test_durations` file — aggregated into a single `test` status check so branch protection needs no change. The duplicate full-suite `test` job in `release.yml` is removed (it re-ran the same ~10 min suite a second time on every push to main/feature branches); `release.yml` is now image-build only, with the advisory ruff/mypy steps moved to a lean `lint` job in `ci.yml`. Net: ~10 min → ~3 min wall-clock per push, and the suite runs once instead of twice. Adds `pytest-split` to the `dev` extra.
 
 ## [0.54.16] — 2026-05-14
