@@ -1,85 +1,29 @@
 {% extends "base.html" %}
 
-{% block title %}Curated Memory — Admin{% endblock %}
+{% block title %}Curated Memory{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+{# Shared utility for persisting filter UI state per-page in localStorage.
+   See app/web/static/js/filter-state.js for the public API and adoption
+   pattern. Loaded with defer so window.FilterState exists by the time
+   the page's own DOMContentLoaded listener runs. #}
+<script src="{{ static_url('js/filter-state.js') }}" defer></script>
 <style>
         /* Corporate Memory Page - Design System Styles */
         .container-memory {
-            max-width: 1000px;
+            max-width: var(--width-app);
             margin: 0 auto;
             padding: var(--space-6);
         }
 
-        /* Top bar — matches the .obs-topbar look used on /admin/activity,
-           /admin/telemetry, /admin/sessions. Kept under a `ck-` prefix here
-           because the rest of the page still uses its own design tokens;
-           when the obs-* classes are lifted to style-custom.css we'll
-           drop the duplication. */
-        .ck-topbar {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 24px;
-            padding: 12px 0 20px;
-            border-bottom: 1px solid var(--border, #e5e7eb);
-            margin-bottom: 16px;
-        }
-        .ck-title {
-            margin: 0 0 4px 0;
-            font-size: 22px;
-            font-weight: 600;
-            color: var(--text-primary, #111827);
-        }
-        .ck-subtitle {
-            margin: 0;
-            color: var(--text-secondary, #6b7280);
-            font-size: 13px;
-            max-width: 720px;
-            line-height: 1.5;
-        }
-        .ck-subtitle code {
-            background: var(--border-light, #f3f4f6);
-            padding: 1px 6px;
-            border-radius: 4px;
-            font-size: 12px;
-        }
-
-        /* Header */
-        .page-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding-bottom: var(--space-5);
-            border-bottom: 1px solid var(--border);
-            margin-bottom: var(--space-6);
-        }
-
-        .header-left {
-            display: flex;
-            align-items: center;
-            gap: var(--space-4);
-        }
-
-        .back-link {
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-            color: var(--text-secondary);
-            text-decoration: none;
-            font-size: var(--text-sm);
-            padding: var(--space-2) var(--space-3);
-            border-radius: var(--radius-md);
-            transition: all 0.15s;
-        }
-
-        .back-link:hover {
-            background: var(--border-light);
-            color: var(--text-primary);
-        }
+        /* Page title is the shared `_page_hero.html` partial (blue hero
+           band), same as catalog / me-activity / admin pages. The old
+           bespoke `.ck-topbar` / `.page-header` rules lived here and
+           are gone — `.page-header` in particular collided with the
+           design-system `.page-header--hero` selector. */
 
         .page-title {
             display: flex;
@@ -252,6 +196,46 @@
 
         .knowledge-item.synced {
             border-left: 3px solid var(--success);
+        }
+
+        /* Dismissed-by-current-user — keeps the item in the list (so the
+           user can see what they hid + restore it) but visually demotes it. */
+        .knowledge-item.dismissed {
+            opacity: 0.55;
+            background: var(--bg-subtle, #f9fafb);
+        }
+        .knowledge-item.dismissed .knowledge-title { text-decoration: line-through; }
+        body.cm-hide-dismissed .knowledge-item.dismissed { display: none; }
+
+        .dismiss-btn {
+            margin-left: 4px;
+            width: 28px; height: 28px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-muted);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .dismiss-btn:hover {
+            background: var(--error-bg, #fef2f2);
+            color: var(--error, #dc2626);
+            border-color: var(--error, #dc2626);
+        }
+        .dismiss-btn.dismissed {
+            background: var(--primary-light, #eef5fb);
+            color: var(--primary, #0073D1);
+            border-color: var(--primary, #0073D1);
+        }
+        .dismiss-btn.dismissed:hover {
+            background: var(--primary, #0073D1);
+            color: white;
+        }
+        .source-badge.dismissed-badge {
+            background: var(--border, #e5e7eb);
+            color: var(--text-muted, #6b7280);
         }
 
         .knowledge-header {
@@ -592,24 +576,11 @@
 {% endblock %}
 
 {% block layout %}
+    {% set page_hero_eyebrow = "Knowledge" %}
+    {% set page_hero_title = "Curated Memory" %}
+    {% set page_hero_subtitle = "Approved and mandated knowledge distilled from analyst sessions — the shared organizational memory your AI agents pull at runtime via <code>/api/memory/*</code>." %}
+    {% include "_page_hero.html" %}
 <div class="container-memory">
-        {# Match the obs-page header pattern used by /admin/activity,
-           /admin/telemetry and /admin/sessions so admins see one
-           consistent visual chrome across the Activity Center + Agent
-           Experience groups. Styles inlined for now; the obs-* class
-           set isn't promoted to a shared stylesheet yet (one page over
-           four already; lift on next iteration). #}
-        <header class="ck-topbar">
-            <div>
-                <h1 class="ck-title">Curated Memory</h1>
-                <p class="ck-subtitle">
-                    Knowledge items extracted from analyst sessions by the verification
-                    processor. Admin reviews pending entries and approves, mandates or
-                    rejects them; approved items become shared organizational knowledge
-                    that AI agents pull at runtime via <code>/api/memory/*</code>.
-                </p>
-            </div>
-        </header>
 
         {% if pending_review_count and pending_review_count > 0 %}
         <!-- Admin-only review-queue banner (#176). Hidden when 0; non-admins
@@ -624,7 +595,7 @@
             <span>
                 <strong>{{ pending_review_count }} pending item{{ 's' if pending_review_count != 1 else '' }}</strong>
                 awaiting review —
-                <a href="/corporate-memory/admin" style="color: #854d0e; text-decoration: underline; font-weight: var(--font-medium);">review them at /corporate-memory/admin</a>
+                <a href="/admin/corporate-memory" style="color: #854d0e; text-decoration: underline; font-weight: var(--font-medium);">review them at /admin/corporate-memory</a>
             </span>
         </div>
         {% endif %}
@@ -668,9 +639,13 @@
                 </svg>
                 <input type="text" id="searchInput" placeholder="Search knowledge..." onkeyup="debounceSearch()">
             </div>
-            <div class="filter-group">
+            <div class="filter-group" id="categoryFilterGroup">
                 <button class="filter-btn active" data-category="" onclick="setFilter(this)">All</button>
-                <button class="filter-btn" data-category="my_rules" onclick="setFilter(this)">My Rules</button>
+                {# Special pseudo-category "my_upvotes" — gets translated to
+                   ?upvoted_by_me=true in loadKnowledge() and the tree filter.
+                   Replaces the old dead "My Rules" filter that sent
+                   ?category=my_rules (no row ever matched). #}
+                <button class="filter-btn" data-category="my_upvotes" onclick="setFilter(this)">My Upvotes</button>
                 {% for cat in categories %}
                 <button class="filter-btn" data-category="{{ cat }}" onclick="setFilter(this)">{{ cat|replace('_', ' ')|title }}</button>
                 {% endfor %}
@@ -696,12 +671,20 @@
                 <option value="tag">Group by tag</option>
                 <option value="audience">Group by audience</option>
             </select>
+            {# Per-user dismissed-filter toggle. Dismissed items are visible
+               by default (grayed out + an Undismiss button) — the toggle
+               provides an opt-in cleanup view. Persisted via FilterState so
+               it survives a page reload on the same browser. #}
+            <label style="display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; font-size: 13px; color: var(--text-secondary); cursor: pointer;">
+                <input type="checkbox" id="hideDismissedToggle" onchange="onHideDismissedChange()" style="cursor: pointer;">
+                Hide dismissed
+            </label>
         </div>
 
         <!-- Knowledge List -->
         <div id="knowledgeList" class="knowledge-list">
             {% for item in knowledge['items'] %}
-            <div class="knowledge-item {% if item.synced %}synced{% endif %}" data-id="{{ item.id }}">
+            <div class="knowledge-item {% if item.synced %}synced{% endif %}{% if item.dismissed_by_me %} dismissed{% endif %}" data-id="{{ item.id }}" data-status="{{ item.status }}">
                 <div class="knowledge-header">
                     <div>
                         <div class="knowledge-title">{{ item.title }}</div>
@@ -711,6 +694,7 @@
                             {% if item.confidence %}<span class="confidence-badge" title="Confidence: {{ '%.0f'|format(item.confidence * 100) }}%">{{ '%.0f'|format(item.confidence * 100) }}%</span>{% endif %}
                             {% if item.source_type == 'user_verification' %}<span class="source-badge verification">Verified</span>{% endif %}
                             {% if item.status == 'mandatory' %}<span class="source-badge mandatory">Mandatory</span>{% endif %}
+                            {% if item.dismissed_by_me %}<span class="source-badge dismissed-badge">Dismissed</span>{% endif %}
                             <span>Added {{ item.created_at.strftime('%Y-%m-%d') if item.created_at else 'recently' }}</span>
                         </div>
                     </div>
@@ -732,6 +716,17 @@
                                 </svg>
                                 <span>{{ item.downvotes or 0 }}</span>
                             </button>
+                            {# Dismiss / Undismiss — hidden entirely for
+                               mandatory items (governance rule: cannot be
+                               opted out). Toggles between Dismiss (when
+                               not yet dismissed) and Undismiss. #}
+                            {% if item.status != 'mandatory' %}
+                                {% if item.dismissed_by_me %}
+                                <button class="dismiss-btn dismissed" onclick="undismiss('{{ item.id }}')" title="Undismiss — show in my AI context again">↺</button>
+                                {% else %}
+                                <button class="dismiss-btn" onclick="dismiss('{{ item.id }}')" title="Dismiss — exclude from my AI context">×</button>
+                                {% endif %}
+                            {% endif %}
                         </div>
                         {% if item.synced %}
                         <span class="synced-badge">
@@ -905,7 +900,11 @@
 
         const html = data.groups.map(g => {
             const filtered = (g.items || []).filter(it => {
-                if (categoryFilter && categoryFilter !== 'my_rules' && it.category !== categoryFilter) return false;
+                // "my_upvotes" is a non-category pseudo-filter handled
+                // server-side via ?upvoted_by_me; the tree endpoint already
+                // returns the right subset, so we skip the category check
+                // when that pseudo-value is active.
+                if (categoryFilter && categoryFilter !== 'my_upvotes' && it.category !== categoryFilter) return false;
                 if (domainFilter && it.domain !== domainFilter) return false;
                 return true;
             });
@@ -946,8 +945,10 @@
 
     async function loadKnowledge(category, search, page, sort, domain) {
         const params = new URLSearchParams();
-        if (category && category !== 'my_rules') params.append('category', category);
-        if (category === 'my_rules') params.append('my_rules', 'true');
+        // "my_upvotes" pseudo-category is translated to the real
+        // ?upvoted_by_me=true filter the backend understands.
+        if (category && category !== 'my_upvotes') params.append('category', category);
+        if (category === 'my_upvotes') params.append('upvoted_by_me', 'true');
         if (search) params.append('search', search);
         if (sort) params.append('sort', sort);
         if (domain) params.append('domain', domain);
@@ -980,7 +981,7 @@
         }
 
         list.innerHTML = data.items.map(item => `
-            <div class="knowledge-item ${item.synced ? 'synced' : ''}" data-id="${item.id}">
+            <div class="knowledge-item ${item.synced ? 'synced' : ''}${item.dismissed_by_me ? ' dismissed' : ''}" data-id="${item.id}" data-status="${escapeHtml(item.status || '')}">
                 <div class="knowledge-header">
                     <div>
                         <div class="knowledge-title">${escapeHtml(item.title)}</div>
@@ -990,6 +991,7 @@
                             ${item.confidence ? `<span class="confidence-badge">${Math.round(item.confidence * 100)}%</span>` : ''}
                             ${item.source_type === 'user_verification' ? '<span class="source-badge verification">Verified</span>' : ''}
                             ${item.status === 'mandatory' ? '<span class="source-badge mandatory">Mandatory</span>' : ''}
+                            ${item.dismissed_by_me ? '<span class="source-badge dismissed-badge">Dismissed</span>' : ''}
                             <span>Added ${item.created_at ? item.created_at.substring(0, 10) : 'recently'}</span>
                         </div>
                     </div>
@@ -1011,6 +1013,9 @@
                                 </svg>
                                 <span>${item.downvotes || 0}</span>
                             </button>
+                            ${item.status !== 'mandatory' ? (item.dismissed_by_me
+                                ? `<button class="dismiss-btn dismissed" onclick="undismiss('${item.id}')" title="Undismiss — show in my AI context again">↺</button>`
+                                : `<button class="dismiss-btn" onclick="dismiss('${item.id}')" title="Dismiss — exclude from my AI context">×</button>`) : ''}
                         </div>
                         ${item.synced ? `
                         <span class="synced-badge">
@@ -1082,6 +1087,43 @@
         }
     }
 
+    // Dismiss / Undismiss — toggles user's personal opt-out for the item.
+    // Server-side: POST inserts a knowledge_item_user_dismissed row (or
+    // rejects with 400 for mandatory items, which is why the button isn't
+    // rendered for those — defense at the API layer + the UI). DELETE is
+    // idempotent. Both refresh the list via applyFilters() so the row
+    // re-renders with the new state (grayed out, action button flipped).
+    async function dismiss(itemId) {
+        try {
+            const resp = await fetch(`/api/memory/${encodeURIComponent(itemId)}/dismiss`, { method: 'POST' });
+            if (resp.ok) {
+                applyFilters();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                console.error('Dismiss failed:', resp.status, err);
+            }
+        } catch (e) { console.error('Failed to dismiss:', e); }
+    }
+    async function undismiss(itemId) {
+        try {
+            const resp = await fetch(`/api/memory/${encodeURIComponent(itemId)}/dismiss`, { method: 'DELETE' });
+            if (resp.ok) {
+                applyFilters();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                console.error('Undismiss failed:', resp.status, err);
+            }
+        } catch (e) { console.error('Failed to undismiss:', e); }
+    }
+    // Toggle handler — mirrors checkbox state to a body class so CSS hides
+    // dismissed rows without a server roundtrip. Same effect could be done
+    // by passing ?hide_dismissed=true to /api/memory; keeping it client-side
+    // for the user toggle avoids a flash-of-content during fetch.
+    function onHideDismissedChange() {
+        const cb = document.getElementById('hideDismissedToggle');
+        document.body.classList.toggle('cm-hide-dismissed', cb.checked);
+    }
+
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
@@ -1102,5 +1144,26 @@
             console.error('Failed to toggle personal flag:', e);
         }
     }
+
+    // ─── Persist filter UI state via the shared FilterState utility ───
+    // Scope key includes a version suffix so a future shape change can
+    // orphan the old store cleanly (bump `cm_v1` → `cm_v2`).
+    document.addEventListener('DOMContentLoaded', () => {
+        if (!window.FilterState) return;
+        FilterState.bindInputs('cm_v1', [
+            { id: 'searchInput', param: 'q', event: 'input' },
+            { id: 'sortSelect', param: 'sort' },
+            { id: 'domainFilter', param: 'domain' },
+            { id: 'groupBySelect', param: 'groupBy' },
+            { id: 'hideDismissedToggle', param: 'hideDismissed' },
+            { id: 'categoryFilterGroup', param: 'category',
+              buttonGroup: { selector: '.filter-btn[data-category]', dataAttr: 'category' } },
+        ]);
+        // Apply derived state (body class) after hydration, and re-fetch
+        // with hydrated filters so server-rendered list re-runs through
+        // the same path the user would hit by toggling manually.
+        onHideDismissedChange();
+        applyFilters();
+    });
     </script>
 {% endblock %}

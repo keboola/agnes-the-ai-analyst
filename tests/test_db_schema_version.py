@@ -92,14 +92,25 @@ def test_schema_version_is_44():
     #            filter combinations backing the unified /admin/activity
     #            page (UNIQUE(user_id, name)). Schema is intentionally
     #            opaque JSON because the UI evolves faster than DB.
-    # v43 → v44 (this PR): homepage status frame backing columns —
+    # v43 → v44: homepage status frame backing columns —
     #            users.last_pull_at (per-user manifest fetch timestamp,
     #            bumped by GET /api/sync/manifest) plus four BIGINT token
     #            counters on usage_session_summary (input_tokens,
     #            output_tokens, cache_read_tokens, cache_creation_tokens).
     #            USAGE_PROCESSOR_VERSION simultaneously bumps 1→2 so the
     #            reprocess loop backfills tokens on next tick.
-    assert SCHEMA_VERSION == 45
+    # v44 → v45: user_id column on usage_session_summary + usage_events
+    #            (stable RBAC filter — replaces the unstable email-local-part
+    #            ``username`` column) plus matching indices.
+    # v45 → v46 (this PR): per-user opt-out (dismiss) for curated memory
+    #            items. New table ``knowledge_item_user_dismissed``
+    #            ((user_id, item_id) PK, dismissed_at) + index on user_id
+    #            for the EXISTS subquery used by list_items / search /
+    #            count_items / bundle. Mandatory items are governance-
+    #            protected: the API rejects POSTs against them, and the
+    #            SQL filter exempts ``status = 'mandatory'`` so any stale
+    #            row from before an item was mandated is silently ignored.
+    assert SCHEMA_VERSION == 46
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
