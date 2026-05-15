@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.21] — 2026-05-15
+
 ### Added
 - **Marketplace — flea inner skill/agent detail page parity with
   curated.** New backend endpoints `GET /api/marketplace/flea/{id}/skill/{name}`
