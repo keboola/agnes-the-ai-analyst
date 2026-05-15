@@ -37,7 +37,7 @@ apply to this diff and say so.
 
 Grep the diff for customer-specific tokens:
 
-    git diff <base>...HEAD | grep -i -E 'keboola|groupon|foundryai|keboola\.com|kids-ai-data-analysis|prj-grp-foundryai' | grep -v '^---\|^+++'
+    git diff <base>...HEAD | grep -i -E 'keboola|groupon|foundryai|keboola\.com|kids-ai-data-analysis|prj-grp-foundryai' | grep -v -e '^---' -e '^+++'
 
 Expected matches: zero (outside `docs/archive/` and `CHANGELOG.md` historical
 entries). Report any other match as Warning with the file:line.
