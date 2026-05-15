@@ -1775,6 +1775,119 @@
     <footer class="footer">
         <a href="{{ url_for('dashboard') }}">Back to Dashboard</a>
         </footer>
+
+    <!-- ═══════════════ Create Data Package modal (Task 8.10) ═══════════════
+         Fired from a chip-input `chip-create` event — the chip-input emits
+         a CustomEvent with the typed name; the handler below opens this
+         modal pre-filled, POSTs to /api/admin/data-packages, and adds the
+         freshly-created chip back into the chip-input host via .addChip(). -->
+    <div class="modal-overlay" id="createDataPackageModal" style="display:none;">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header">
+          <h2>Create Data Package</h2>
+          <button class="modal-close" onclick="closeCreateDataPackageModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">Name</label>
+            <input id="cdp-name" type="text" class="form-input" placeholder="Sales bundle">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Slug</label>
+            <input id="cdp-slug" type="text" class="form-input" placeholder="sales-bundle">
+            <div class="form-hint">URL-safe identifier; auto-derived from Name.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Description <span class="optional">(optional)</span></label>
+            <textarea id="cdp-desc" class="form-input" rows="2"></textarea>
+          </div>
+          <div class="form-group" style="display:flex; gap:12px;">
+            <div style="flex:1;">
+              <label class="form-label">Icon</label>
+              <input id="cdp-icon" type="text" class="form-input" value="📦" maxlength="4">
+            </div>
+            <div style="flex:1;">
+              <label class="form-label">Color</label>
+              <input id="cdp-color" type="text" class="form-input" value="#fce7f3" placeholder="#fce7f3">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeCreateDataPackageModal()">Cancel</button>
+          <button class="btn btn-primary" id="cdp-submit-btn" onclick="submitCreateDataPackage()">
+            Create &amp; assign
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Track which chip-input host triggered the create flow so we can
+      // append the new chip back into it on success.
+      let _cdpHost = null;
+
+      function openCreateDataPackageModal(typed, host) {
+        _cdpHost = host;
+        document.getElementById('cdp-name').value = typed || '';
+        document.getElementById('cdp-slug').value =
+          (typed || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        document.getElementById('cdp-desc').value = '';
+        document.getElementById('cdp-icon').value = '📦';
+        document.getElementById('cdp-color').value = '#fce7f3';
+        document.getElementById('createDataPackageModal').style.display = 'flex';
+      }
+      function closeCreateDataPackageModal() {
+        _cdpHost = null;
+        document.getElementById('createDataPackageModal').style.display = 'none';
+      }
+      async function submitCreateDataPackage() {
+        const btn = document.getElementById('cdp-submit-btn');
+        btn.disabled = true;
+        try {
+          const payload = {
+            name: document.getElementById('cdp-name').value.trim(),
+            slug: document.getElementById('cdp-slug').value.trim(),
+            description: document.getElementById('cdp-desc').value.trim() || null,
+            icon: document.getElementById('cdp-icon').value.trim() || null,
+            color: document.getElementById('cdp-color').value.trim() || null,
+          };
+          if (!payload.name || !payload.slug) {
+            alert('Name and slug are required.');
+            btn.disabled = false;
+            return;
+          }
+          const r = await fetch('/api/admin/data-packages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const detail = await r.json().catch(() => ({}));
+            alert('Failed: ' + (detail.detail || r.statusText));
+            btn.disabled = false;
+            return;
+          }
+          const body = await r.json();
+          if (_cdpHost && _cdpHost.addChip) {
+            _cdpHost.addChip({ id: body.id, name: payload.name });
+          }
+          closeCreateDataPackageModal();
+        } catch (e) {
+          alert('Network error: ' + e.message);
+          btn.disabled = false;
+        }
+      }
+
+      // Hook: chip-input on this page fires `chip-create` when the user
+      // selects the "+ Create new" tail row in the dropdown.
+      document.addEventListener('chip-create', (e) => {
+        const host = e.detail && e.detail.host;
+        if (host && host.dataset.chipInput === 'data_package') {
+          openCreateDataPackageModal(e.detail.typed, host);
+        }
+      });
+    </script>
 {% endblock %}
 
 {% block scripts %}
