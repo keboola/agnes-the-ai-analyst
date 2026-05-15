@@ -50,9 +50,17 @@ jobs:
 
       - name: Resolve target image
         id: target
+        # Inputs are passed via env to keep them out of the shell-script
+        # source — `${{ ... }}` is textual substitution, so an attacker with
+        # workflow_dispatch privilege could otherwise close a quote and
+        # inject commands. Env-var expansion does not re-parse for command
+        # substitution, so it's safe.
+        env:
+          TARGET_INPUT: ${{ inputs.target_image_tag }}
+          FAILED: ${{ inputs.failed_image_tag }}
         run: |
-          if [ -n "${{ inputs.target_image_tag }}" ]; then
-            TARGET="${{ inputs.target_image_tag }}"
+          if [ -n "$TARGET_INPUT" ]; then
+            TARGET="$TARGET_INPUT"
           else
             # Previous known-good = second-most-recent stable-* CalVer tag.
             # Same heuristic the inline rollback used before extraction.
@@ -62,14 +70,23 @@ jobs:
               exit 1
             fi
           fi
+          # If only one stable-* tag exists (fresh repo, or aggressive
+          # pruning), head -2 | tail -1 falls back to the same tag — which
+          # equals FAILED. Pushing the broken image back as :stable is the
+          # opposite of a rollback, so refuse loudly.
+          if [ "$TARGET" = "$FAILED" ]; then
+            echo "::error::Rollback target equals failed tag ($TARGET) — no distinct previous stable-* tag; supply target_image_tag explicitly"
+            exit 1
+          fi
           echo "target=$TARGET" >> "$GITHUB_OUTPUT"
           echo "Rollback target: $TARGET"
 
       - name: Re-tag :stable to target + mark failed image deprecated
+        env:
+          FAILED: ${{ inputs.failed_image_tag }}
+          TARGET: ${{ steps.target.outputs.target }}
         run: |
           REPO="ghcr.io/${{ github.repository }}"
-          FAILED="${{ inputs.failed_image_tag }}"
-          TARGET="${{ steps.target.outputs.target }}"
           if [[ "$FAILED" != stable-* ]]; then
             echo "::warning::failed_image_tag '$FAILED' is not a stable-* tag — this workflow rolls back the :stable channel; the deprecated-* tag name may be non-standard."
           fi
@@ -87,21 +104,28 @@ jobs:
       - name: Open tracking issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FAILED: ${{ inputs.failed_image_tag }}
+          TARGET: ${{ steps.target.outputs.target }}
+          REPO_SLUG: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
         run: |
-          FAILED_TAG="${{ inputs.failed_image_tag }}"
           # Same channel-prefix strip as the re-tag step, so the issue body
           # shows the deprecated tag name that was actually pushed.
-          DEPRECATED="deprecated-${FAILED_TAG#stable-}"
+          DEPRECATED="deprecated-${FAILED#stable-}"
           gh issue create \
-            --title "Rollback: :stable reverted from ${{ inputs.failed_image_tag }} to ${{ steps.target.outputs.target }}" \
+            --title "Rollback: :stable reverted from $FAILED to $TARGET" \
             --body "$(cat <<EOF
           ## Rollback report
 
-          - Failed image: \`ghcr.io/${{ github.repository }}:${{ inputs.failed_image_tag }}\`
-          - Deprecated tag: \`ghcr.io/${{ github.repository }}:${DEPRECATED}\`
-          - Rolled back to: \`ghcr.io/${{ github.repository }}:${{ steps.target.outputs.target }}\`
-          - Triggered by: ${{ github.event_name }}
-          - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          - Failed image: \`ghcr.io/${REPO_SLUG}:${FAILED}\`
+          - Commit: \`${SHA}\`
+          - Deprecated tag: \`ghcr.io/${REPO_SLUG}:${DEPRECATED}\`
+          - Rolled back to: \`ghcr.io/${REPO_SLUG}:${TARGET}\`
+          - Triggered by: ${EVENT}
+          - Run: ${SERVER_URL}/${REPO_SLUG}/actions/runs/${RUN_ID}
 
           Investigate before re-deploying.
           EOF

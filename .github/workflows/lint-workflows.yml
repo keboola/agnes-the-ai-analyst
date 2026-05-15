@@ -40,3 +40,16 @@ jobs:
         # while the existing workflow inventory is being cleaned up. Flip
         # to false (default) once the repo is actionlint-clean.
         continue-on-error: true
+
+      - name: Run shellcheck on ops scripts
+        # actionlint above only walks `.github/workflows/**` + the shell
+        # snippets embedded inside their `run:` blocks; freestanding
+        # `scripts/ops/*.sh` files (which are also in this workflow's path
+        # filter) need their own pass. shellcheck is pre-installed on
+        # ubuntu-latest runners.
+        run: |
+          if compgen -G "scripts/ops/*.sh" > /dev/null; then
+            shellcheck scripts/ops/*.sh
+          else
+            echo "No scripts/ops/*.sh found — nothing to check."
+          fi
