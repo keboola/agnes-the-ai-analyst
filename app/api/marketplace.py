@@ -338,9 +338,17 @@ class InnerDetailResponse(BaseModel):
     invocation: Optional[str] = None
     # v46: per-item telemetry — 30d invocations + distinct users for this
     # specific skill/agent (lookup keyed by parent_plugin + name in the
-    # usage_marketplace_item_window snapshot). None when no rollup row
-    # exists yet — caller renders empty telemetry block.
+    # usage_marketplace_item_window snapshot). Always present so the
+    # frontend chip can decide visibility from (parent_stack_count > 0
+    # OR invocations_30d > 0), matching the plugin detail page.
     telemetry: Optional[Dict[str, object]] = None
+    # parent_stack_count: how many users currently have the *parent
+    # plugin* in their stack. Skills/agents inherit adoption from their
+    # plugin — there's no per-skill subscription model — so the hero
+    # chip surfaces the parent figure with a "Plugin:" label and a
+    # tooltip explaining the relationship, completing the funnel:
+    # "12 installed the plugin → 2 active on this skill".
+    parent_stack_count: int = 0
 
 
 class InstallActionResponse(BaseModel):
@@ -484,15 +492,24 @@ def _load_inner_item_stats(
     parent_plugin: str,
     name: str,
     item_type: str,
-) -> Dict[str, object] | None:
-    """Return 30d invocations + distinct_users for one curated inner item
-    (skill or agent under a plugin) or for a standalone flea entity.
+) -> Dict[str, object]:
+    """Return a per-item telemetry dict for one curated inner skill/agent
+    or one standalone flea entity.
 
     For flea entities ``parent_plugin`` is ``''`` (matches the stored
     empty-string sentinel). For curated inner items it's the plugin name.
 
-    Returns None when no rollup row exists yet — caller renders an empty
-    telemetry block.
+    Always returns a dict (never None) so the frontend can render the
+    hero chip from the same field shape regardless of activity level —
+    visibility is decided client-side from (parent_stack_count > 0 OR
+    invocations_30d > 0), matching the plugin detail behaviour. The dict
+    includes:
+
+      * invocations_30d, distinct_users_30d — window snapshot lookup
+      * trend_pct — same recent-7 vs prior-7 calc as plugin level,
+        sourced from the daily fact for this item
+      * daily_series — 30-entry zero-padded list of {day, invocations}
+        the sidebar uses to derive Active days + Last used
     """
     row = conn.execute(
         """
@@ -506,14 +523,55 @@ def _load_inner_item_stats(
         """,
         [source, item_type, parent_plugin, name],
     ).fetchone()
-    if row is None:
-        return None
-    inv30, du30 = row
-    if not inv30:
-        return None
+    inv30 = int(row[0]) if row and row[0] else 0
+    du30 = int(row[1]) if row and row[1] else 0
+    # Trend — recent_7 vs prior_7 from the daily fact for this specific
+    # skill/agent (mirrors the plugin-level _load_invocation_stats math).
+    trend_row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
+            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
+                      AND day <  CURRENT_DATE - INTERVAL 7  DAY
+                     THEN count ELSE 0 END) AS inv_prior
+        FROM usage_marketplace_item_daily
+        WHERE source = ?
+          AND type = ?
+          AND parent_plugin = ?
+          AND name = ?
+          AND day >= CURRENT_DATE - INTERVAL 14 DAY
+        """,
+        [source, item_type, parent_plugin, name],
+    ).fetchone()
+    recent = int(trend_row[0]) if trend_row and trend_row[0] else 0
+    prior = int(trend_row[1]) if trend_row and trend_row[1] else 0
+    trend_pct = (recent - prior) / prior * 100.0 if prior >= 3 else None
+    # Daily series — 30 entries, zero-padded for days without activity.
+    daily_rows = conn.execute(
+        """
+        SELECT day, count
+        FROM usage_marketplace_item_daily
+        WHERE source = ?
+          AND type = ?
+          AND parent_plugin = ?
+          AND name = ?
+          AND day >= CURRENT_DATE - INTERVAL 30 DAY
+        ORDER BY day
+        """,
+        [source, item_type, parent_plugin, name],
+    ).fetchall()
+    by_day = {str(r[0]): int(r[1] or 0) for r in daily_rows}
+    import datetime as _dt
+    today = _dt.date.today()
+    daily_series = []
+    for offset in range(29, -1, -1):
+        d = (today - _dt.timedelta(days=offset)).isoformat()
+        daily_series.append({"day": d, "invocations": by_day.get(d, 0)})
     return {
-        "invocations_30d": int(inv30),
-        "distinct_users_30d": int(du30 or 0),
+        "invocations_30d": inv30,
+        "distinct_users_30d": du30,
+        "trend_pct": trend_pct,
+        "daily_series": daily_series,
     }
 
 
@@ -2204,6 +2262,9 @@ async def curated_skill_detail(
     telemetry = _load_inner_item_stats(
         conn, "curated", parent_plugin=plugin_name, name=skill_name, item_type="skill",
     )
+    parent_stack_count = _load_curated_stack_counts(conn).get(
+        (marketplace_id, plugin_name), 0,
+    )
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
@@ -2215,6 +2276,7 @@ async def curated_skill_detail(
         bundle_size=_bundle_size(skill_dir),
         files=_walk_files(skill_dir),
         telemetry=telemetry,
+        parent_stack_count=parent_stack_count,
         **merged,
     )
 
@@ -2258,6 +2320,9 @@ async def curated_agent_detail(
     telemetry = _load_inner_item_stats(
         conn, "curated", parent_plugin=plugin_name, name=agent_name, item_type="agent",
     )
+    parent_stack_count = _load_curated_stack_counts(conn).get(
+        (marketplace_id, plugin_name), 0,
+    )
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
@@ -2269,6 +2334,7 @@ async def curated_agent_detail(
         bundle_size=agent_size,
         files=[FileEntry(path=f"{agent_name}.md", size=agent_size)],
         telemetry=telemetry,
+        parent_stack_count=parent_stack_count,
         **merged,
     )
 
