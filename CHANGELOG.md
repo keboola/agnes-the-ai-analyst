@@ -10,6 +10,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Flea-market restore endpoint now reuses the prior approved
+  submission's LLM verdict when the restored bundle is
+  byte-identical to a history entry already reviewed by the same
+  `review_model`. Pre-fix every restore re-ran the LLM; Anthropic
+  structured output is non-deterministic — same bytes flipped
+  `content_quality.verdict` pass↔fail across calls, so a second
+  restore of an already-approved version could spuriously land at
+  `blocked_llm`. Reuse skips the LLM, stamps the new submission
+  with the prior verdict + `reused_from_submission_id` marker,
+  and saves the Anthropic token cost. Surfaced live on
+  agnes-development: entity 6ba2ee1d…'s v5 (third restore of v1,
+  same hash as v1/v2/v4/v6) landed blocked while siblings were
+  approved.
+- Admin submission detail page now surfaces
+  `llm_findings.content_quality.issues` in its own table next to
+  the security-findings table. Pre-fix the template only rendered
+  security findings, so a submission blocked purely on
+  `content_quality.verdict='fail'` (no security findings) showed
+  up as "No findings — model verdict was clean" even though
+  `status='blocked_llm'`. Also adds an explicit
+  "Blocked but no findings recorded" notice when the verdict is
+  blocked but neither findings list is populated (transient LLM
+  non-determinism), pointing admin at Rescan / Override. Reuse
+  markers (`reused_from_submission_id`) render too.
+
 ## [0.54.22] — 2026-05-15
 
 ### Fixed

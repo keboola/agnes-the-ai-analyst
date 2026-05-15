@@ -1806,3 +1806,222 @@ class TestPromoteLookupByByteIdenticalBundles:
         assert ent_after["version"] == v1_hash, (
             "hash unchanged (bundle is byte-identical) but version_no DID move"
         )
+
+
+class TestRestoreReusesApprovedVerdict:
+    """Live-bug fix: a second restore of an already-approved version
+    sometimes flipped to `blocked_llm` because Anthropic structured
+    output is non-deterministic — same bytes, different
+    `content_quality.verdict` across calls. Restore now detects
+    byte-identical bundles backed by a prior `approved` submission
+    (same reviewed_by_model) and reuses that verdict."""
+
+    def test_restore_of_approved_version_skips_llm_and_reuses_verdict(
+        self, web_client, monkeypatch,
+    ):
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        from src.store_guardrails.runner import run_llm_review
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-reuse")
+        owner_id, owner_cookies = _create_user(web_client, "reuse@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="reuseme")
+
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_review_model",
+            lambda: "claude-haiku-4-5-test",
+        )
+        # Stub the BG-task scheduler so only our direct `run_llm_review`
+        # call writes the verdict (real BG uses default_model_loader
+        # which resolves to a different reviewed_by_model and would
+        # win the terminal-state CAS race).
+        monkeypatch.setattr(
+            "app.api.store._schedule_llm_review",
+            lambda *a, **kw: None,
+        )
+
+        approve_calls = {"n": 0}
+
+        def mock_approve(*a, **kw):
+            approve_calls["n"] += 1
+            return {
+                "risk_level": "safe", "summary": "ok",
+                "findings": [], "template_placeholders_found": 0,
+                "reviewed_by_model": "claude-haiku-4-5-test",
+                "error": None,
+                "content_quality": {"verdict": "pass", "issues": []},
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_approve,
+        )
+
+        v2_zip = _make_skill_zip("reuseme", body="V2 body unique " * 30)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        v2_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v2_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk",
+            model_loader=lambda: "claude-haiku-4-5-test",
+        )
+        calls_after_v2 = approve_calls["n"]
+
+        v3_zip = _make_skill_zip("reuseme", body="V3 body unique " * 30)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v3.zip", v3_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        v3_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v3_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v3" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk",
+            model_loader=lambda: "claude-haiku-4-5-test",
+        )
+        calls_after_v3 = approve_calls["n"]
+        # BG task in TestClient may fire run_llm_review on its own
+        # in addition to our direct call, so don't assert exact count
+        # difference — only check the restore window.
+        assert calls_after_v3 > calls_after_v2
+
+        # Restore v2 → byte-identical to v2 approved entry. Reuse
+        # must fire → no new LLM call.
+        r = web_client.post(
+            f"/api/store/entities/{eid}/versions/2/restore",
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        assert approve_calls["n"] == calls_after_v3, (
+            f"restore of approved version must NOT call LLM; "
+            f"count grew from {calls_after_v3} to {approve_calls['n']}"
+        )
+
+        conn = get_system_db()
+        ent_after = StoreEntitiesRepository(conn).get(eid)
+        v4_sub_id = next(
+            (e["submission_id"] for e in ent_after["version_history"]
+             if int(e["n"]) == 4),
+            None,
+        )
+        v4_sub = StoreSubmissionsRepository(conn).get(v4_sub_id) if v4_sub_id else None
+        conn.close()
+        assert v4_sub is not None
+        assert v4_sub["status"] == "approved"
+        assert v4_sub["reviewed_by_model"] == "claude-haiku-4-5-test"
+        assert (v4_sub["llm_findings"] or {}).get(
+            "reused_from_submission_id"
+        ) == v2_sub_id
+        assert ent_after["version_no"] == 4
+
+    def test_restore_legacy_v1_falls_back_to_llm(
+        self, web_client, monkeypatch,
+    ):
+        """v1 seed (guardrails-OFF approval, no reviewed_by_model) is
+        NOT eligible for reuse. Restoring v1 must schedule a real
+        LLM review under guardrails-on."""
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        from src.store_guardrails.runner import run_llm_review
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-fallback")
+        owner_id, owner_cookies = _create_user(web_client, "noreuse@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="noreuse")
+
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_review_model",
+            lambda: "claude-haiku-4-5-test",
+        )
+        # Stub the BG-task scheduler so only our direct `run_llm_review`
+        # call writes the verdict (real BG uses default_model_loader
+        # which resolves to a different reviewed_by_model and would
+        # win the terminal-state CAS race).
+        monkeypatch.setattr(
+            "app.api.store._schedule_llm_review",
+            lambda *a, **kw: None,
+        )
+
+        approve_calls = {"n": 0}
+
+        def mock_approve(*a, **kw):
+            approve_calls["n"] += 1
+            return {
+                "risk_level": "safe", "summary": "ok",
+                "findings": [], "template_placeholders_found": 0,
+                "reviewed_by_model": "claude-haiku-4-5-test",
+                "error": None,
+                "content_quality": {"verdict": "pass", "issues": []},
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_approve,
+        )
+
+        v2_zip = _make_skill_zip("noreuse", body="V2 body " * 30)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        v2_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v2_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk",
+            model_loader=lambda: "claude-haiku-4-5-test",
+        )
+        calls_after_v2 = approve_calls["n"]
+
+        r = web_client.post(
+            f"/api/store/entities/{eid}/versions/1/restore",
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        v3_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v3_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v3" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk",
+            model_loader=lambda: "claude-haiku-4-5-test",
+        )
+        # No reuse: BG/manual LLM calls fired (count grew).
+        assert approve_calls["n"] > calls_after_v2
+        conn = get_system_db()
+        v3_sub = StoreSubmissionsRepository(conn).get(v3_sub_id)
+        conn.close()
+        assert v3_sub["status"] == "approved"
+        assert (v3_sub["llm_findings"] or {}).get(
+            "reused_from_submission_id"
+        ) is None

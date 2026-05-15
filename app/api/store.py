@@ -51,6 +51,7 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.instance_config import (
     get_guardrails_enabled,
     get_guardrails_llm_provider_ready,
+    get_guardrails_review_model,
 )
 from app.utils import get_store_dir
 from src.db import get_system_db
@@ -429,6 +430,57 @@ async def _hold_entity_write_lock(entity_id: str):
             _entity_write_locks[entity_id] = lock
     async with lock:
         yield
+
+
+def _find_reusable_approved_verdict(
+    entity_row: Dict[str, Any],
+    new_version_hash: str,
+    subs_repo,
+    current_review_model: str,
+) -> Optional[tuple]:
+    """Find a prior `approved` submission whose bundle hash matches
+    the new submission's hash and whose reviewer was the same model.
+
+    Returns ``(prior_submission_id, prior_llm_findings)`` for the
+    caller to reuse, or ``None`` if no eligible prior verdict exists.
+
+    Rationale:
+        Anthropic structured output is non-deterministic. The
+        content_quality.verdict in particular can flip pass↔fail on
+        byte-identical bundles (observed live on agnes-development
+        for entity 6ba2ee1d…: v1/v2/v4/v6 same hash all approved,
+        v5 same hash blocked because the model flagged 1 description
+        as weak). When the user restores an already-approved version
+        — or re-uploads byte-identical bundles — the previous verdict
+        is the authoritative one and should be reused.
+
+        Gated on ``reviewed_by_model`` match so a stricter model can
+        still re-review under tightened rules (admin upgrades from
+        Haiku → Sonnet → Opus).
+    """
+    for entry in (entity_row.get("version_history") or []):
+        if entry.get("hash") != new_version_hash:
+            continue
+        sid = entry.get("submission_id")
+        if not sid:
+            continue
+        try:
+            sub = subs_repo.get(sid)
+        except Exception:
+            continue
+        if not sub:
+            continue
+        if sub.get("status") != "approved":
+            continue
+        # Skip rows that pre-date the LLM tier (guardrails-off prior
+        # approvals carry no reviewed_by_model — caller still needs
+        # the LLM to validate the bundle under guardrails-on rules).
+        if not sub.get("reviewed_by_model"):
+            continue
+        if sub.get("reviewed_by_model") != current_review_model:
+            continue
+        return sid, sub.get("llm_findings") or {}
+    return None
 
 
 def _version_no_for_submission(
@@ -2136,6 +2188,99 @@ async def _restore_version_locked(
     hold_for_review = guardrails_enabled
     schedule_async_llm = guardrails_enabled and provider_ready
     subs_repo = StoreSubmissionsRepository(conn)
+
+    # Idempotent restore: when the restored bundle is byte-identical
+    # to a prior `approved` submission reviewed by the SAME model,
+    # reuse that verdict and skip the async LLM step. Anthropic
+    # structured output is non-deterministic — same bytes can flip
+    # content_quality.verdict pass↔fail across calls, so a second
+    # restore of an already-approved version could spuriously block.
+    # Reuse keeps the chain deterministic + saves tokens.
+    # `restore` (and its byte-for-byte recovery contract) is the
+    # most natural place for this; PUT could extend later. Gated on
+    # `schedule_async_llm` so guardrails-off keeps its existing
+    # auto-approve path and enabled-but-not-ready doesn't silently
+    # promote without a verdict in env.
+    reuse_verdict = None
+    if schedule_async_llm:
+        try:
+            current_model = get_guardrails_review_model()
+            reuse_verdict = _find_reusable_approved_verdict(
+                entity, new_version, subs_repo, current_model,
+            )
+        except Exception:
+            logger.exception(
+                "restore: reusable-verdict lookup failed for entity %s",
+                entity_id,
+            )
+            reuse_verdict = None
+
+    if reuse_verdict is not None:
+        prior_sid, prior_findings = reuse_verdict
+        reused_findings = dict(prior_findings)
+        reused_findings["reused_from_submission_id"] = prior_sid
+        reused_findings["reused_reason"] = (
+            "byte-identical bundle to a prior approved submission; "
+            "skipped re-running LLM review to avoid spurious "
+            "content_quality flips (Anthropic structured output is "
+            "non-deterministic)"
+        )
+        sub_id = subs_repo.create(
+            submitter_id=user["id"],
+            submitter_email=user.get("email"),
+            type=entity["type"],
+            name=entity["name"],
+            version=new_version,
+            status="approved",
+            entity_id=entity_id,
+            inline_checks=inline.to_response_dict(),
+            llm_findings=reused_findings,
+            file_size=target_meta.file_size,
+            bundle_sha256=target_meta.sha256,
+        )
+        # Stamp reviewed_by_model + llm_findings via update_status
+        # (create doesn't accept reviewed_by_model). Terminal-state
+        # CAS guard allows this since the row was just inserted at
+        # 'approved' — we're re-affirming, not clobbering.
+        subs_repo.update_status(
+            sub_id, status="approved",
+            llm_findings=reused_findings,
+            reviewed_by_model=current_model,
+            allow_terminal_overwrite=True,
+        )
+        appended_n = repo.append_version_history(
+            entity_id,
+            version_hash=new_version,
+            sha256=target_meta.sha256,
+            size=target_meta.file_size,
+            submission_id=sub_id,
+            created_by=user["id"],
+        )
+        _audit(
+            conn, user["id"],
+            "store.submission.reused_approved_verdict",
+            f"store_submission:{sub_id}",
+            {
+                "entity_id": entity_id,
+                "restored_from_version_no": version_no,
+                "new_version_no": appended_n,
+                "reused_from_submission_id": prior_sid,
+                "reviewed_by_model": current_model,
+            },
+        )
+        _audit(
+            conn, user["id"], "store.entity.restore", entity_id,
+            {"restored_from_version_no": version_no,
+             "new_version_no": appended_n,
+             "submission_id": sub_id,
+             "reused_verdict": True},
+        )
+        # Forward-only promote (same gate as runner / override).
+        if appended_n > int(entity.get("version_no") or 0):
+            promote_to_version(entity_id, appended_n, repo)
+        _invalidate_etag()
+        return _entity_to_response(conn, repo.get(entity_id))  # type: ignore[arg-type]
+
     sub_id = subs_repo.create(
         submitter_id=user["id"],
         submitter_email=user.get("email"),

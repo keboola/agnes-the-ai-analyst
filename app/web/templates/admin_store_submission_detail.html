@@ -404,6 +404,7 @@
           <p class="det-summary">{{ sub.llm_findings.summary }}</p>
         {% endif %}
         {% if sub.llm_findings.findings %}
+        <h3 style="margin: 18px 0 6px 0; font-size: 13px; color: var(--text-secondary, #6b7280); text-transform: uppercase; letter-spacing: 0.4px;">Security findings</h3>
         <table class="data-table">
           <thead>
             <tr><th>Severity</th><th>Category</th><th>File</th><th>Explanation</th><th>Fix hint</th></tr>
@@ -420,8 +421,58 @@
             {% endfor %}
           </tbody>
         </table>
-        {% else %}
-          <div class="empty-msg">No findings — model verdict was clean.</div>
+        {% endif %}
+        {# Content-quality issues. Pre-fix the template only rendered
+           the security findings table, so a submission blocked
+           purely on content_quality (e.g. weak description) showed
+           up as 'No findings — model verdict was clean' even though
+           status was blocked_llm. Surfaced live by an admin
+           investigating a blocked re-restore of an already-approved
+           bundle. #}
+        {% set cq = sub.llm_findings.content_quality %}
+        {% if cq and cq.issues %}
+        <h3 style="margin: 18px 0 6px 0; font-size: 13px; color: var(--text-secondary, #6b7280); text-transform: uppercase; letter-spacing: 0.4px;">
+          Content quality issues
+          <span class="badge {{ 'fail' if cq.verdict == 'fail' else 'safe' }}" style="margin-left: 6px;">{{ cq.verdict }}</span>
+        </h3>
+        <table class="data-table">
+          <thead>
+            <tr><th>File</th><th>Field</th><th>Issue</th><th>Suggested rewrite</th></tr>
+          </thead>
+          <tbody>
+            {% for issue in cq.issues %}
+            <tr>
+              <td><code>{{ issue.file }}</code></td>
+              <td><code>{{ issue.field }}</code></td>
+              <td>{{ issue.issue }}</td>
+              <td>{{ issue.hint or "" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+        {% if not sub.llm_findings.findings and not (cq and cq.issues) %}
+          {% if sub.status in ['blocked_llm', 'review_error'] %}
+            <div class="det-error-box">
+              <strong>Blocked but no findings recorded.</strong>
+              This is usually a transient LLM non-determinism: the
+              reviewer returned a fail verdict without enumerating
+              the offending items. Click <em>Rescan</em> to re-run
+              the pipeline, or <em>Override</em> with a written
+              reason if you've verified the bundle offline.
+            </div>
+          {% else %}
+            <div class="empty-msg">No findings — model verdict was clean.</div>
+          {% endif %}
+        {% endif %}
+        {% if sub.llm_findings.reused_from_submission_id %}
+          <div class="empty-msg" style="margin-top: 12px;">
+            ✓ Verdict reused from prior approved submission
+            <a href="/admin/store/submissions/{{ sub.llm_findings.reused_from_submission_id }}">
+              {{ sub.llm_findings.reused_from_submission_id[:8] }}
+            </a>
+            (byte-identical bundle — LLM was not re-called).
+          </div>
         {% endif %}
       {% endif %}
     {% elif sub.status in ['pending_inline', 'pending_llm'] %}
