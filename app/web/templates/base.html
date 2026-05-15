@@ -45,6 +45,11 @@
     </div>
     {% endblock %}
     {% include "_version_badge.html" %}
+    {# Shared chip-input component (Task 8.7) — loaded globally so /admin/tables
+       and /admin/corporate-memory can mount it without their own <script> tag.
+       Idempotent: the component only initialises elements with .chip-input or
+       [data-chip-input] that lack a `data-chip-ready` flag. #}
+    <script src="{{ static_url('js/components/chip-input.js') }}" defer></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -1078,6 +1078,24 @@
                             <div class="form-label">Source check</div>
                             <div class="form-hint" id="bqPrecheckSummaryText"></div>
                         </div>
+                        {# v49 (Task 8.8): Data Packages chip-input field.
+                           The submit handler (registerBqTable) is intentionally
+                           NOT wired to forward `package_ids` to /api/admin/tables
+                           in this pass — backend extension lives in a focused
+                           follow-up. For now the chip-input persists chosen
+                           packages locally and the admin can attach via
+                           `POST /api/admin/data-packages/<id>/tables` from the
+                           CLI / package admin UI. #}
+                        <div class="form-group">
+                            <label class="form-label">Data Packages <span class="optional">(optional)</span></label>
+                            <div class="chip-input"
+                                 data-source-url="/api/admin/data-packages"
+                                 data-allow-create="true"
+                                 data-name="bq_package_ids"
+                                 data-placeholder="Type to search or create…"
+                                 data-chip-input="data_package"></div>
+                            <div class="form-hint">Bundle this table into one or more Data Packages so analysts can opt-in to it as a group.</div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button class="btn btn-secondary" onclick="closeRegisterBqModal()">Cancel</button>
