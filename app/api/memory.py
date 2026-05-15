@@ -634,6 +634,23 @@ async def dismiss_item(
     if item.get("is_required") is True:
         raise HTTPException(status_code=400, detail="Cannot dismiss a mandatory item")
     repo.dismiss(user["id"], item_id)
+    # v49 Section 9.2 — telemetry. domain_ids surfaces the per-item domain
+    # membership so /admin/telemetry can correlate dismissals with the
+    # domain they came from.
+    try:
+        from src.repositories.memory_domains import MemoryDomainsRepository
+        from src.repositories.usage import UsageRepository
+        domain_ids = [
+            d["id"] for d in MemoryDomainsRepository(conn).list_domains_of_item(item_id)
+        ]
+        UsageRepository(conn).emit_server_event(
+            event_type="memory.dismiss",
+            user_id=user["id"],
+            username=user.get("email") or user["id"],
+            props={"item_id": item_id, "domain_ids": domain_ids},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "dismissed": True}
 
 
@@ -654,6 +671,17 @@ async def undismiss_item(
     if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     repo.undismiss(user["id"], item_id)
+    # v49 Section 9.2 — telemetry. Best-effort fire-and-forget.
+    try:
+        from src.repositories.usage import UsageRepository
+        UsageRepository(conn).emit_server_event(
+            event_type="memory.undismiss",
+            user_id=user["id"],
+            username=user.get("email") or user["id"],
+            props={"item_id": item_id},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "dismissed": False}
 
 
