@@ -311,21 +311,33 @@
     font-size: 11px; color: var(--text-secondary);
   }
   .mp-card .ver { font-variant-numeric: tabular-nums; }
-  /* Funnel chip — 4 segments separated by `·` (Installed / Active /
-     Calls / Trend). Each segment is a <span> so line-wrap on narrow
-     cards respects segment boundaries. Inline Heroicons recolor via
-     currentColor; trend up/down override colour. */
+  /* Funnel chip — two groups on one row:
+     LEFT: active · calls · trend (engagement, time-bounded)
+     RIGHT: installed (passive adoption, all-time)
+     Installed is pushed to the trailing edge via margin-left:auto so
+     it visually reads as a separate category — it answers "how many
+     have this" while the left group answers "how is it used". */
   .mp-card .inv-chip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 4px;
     font-size: 11px; color: var(--text-secondary);
     margin-top: 6px;
     line-height: 1.5;
   }
-  .mp-card .inv-chip > span {
+  .mp-card .inv-chip-left { /* inline container for · -joined segments */
+    display: inline;
+  }
+  .mp-card .inv-chip > span,
+  .mp-card .inv-chip-left > span {
     white-space: nowrap;
     display: inline-flex;
     align-items: center;
     gap: 3px;
   }
+  .mp-card .inv-chip .seg-installed { margin-left: auto; }
   .mp-card .inv-chip svg {
     width: 12px; height: 12px;
     flex-shrink: 0;
@@ -540,7 +552,6 @@
   <div id="mp-popular-section" hidden>
     <div class="mp-section-header">
       <h2>Most Popular</h2>
-      <div class="meta">Last 7 days</div>
     </div>
     <div class="mp-grid" id="mp-popular-grid"></div>
   </div>
@@ -789,8 +800,13 @@ function buildCard(it) {
   const ICON_TREND_DOWN = _svg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
   let invChip = '';
   if (stackCount > 0 || calls > 0) {
-    const segments = [
-      `<span class="seg-installed" title="${stackCount} users have this installed">${ICON_STACK} ${fmtNum(stackCount)} installed</span>`,
+    // Two semantic groups on one row:
+    //  - LEFT  (engagement, time-bounded): active · calls · trend
+    //  - RIGHT (passive adoption, all-time): installed
+    // Installed alone says little ("12 people installed it") without
+    // engagement context ("…but did anyone use it?"), so it lives
+    // visually separated on the trailing edge — flex margin-auto.
+    const leftSegs = [
       `<span class="seg-active" title="${activeUsers} users invoked it in the last 30 days">${ICON_USER} ${fmtNum(activeUsers)} active</span>`,
       `<span class="seg-calls" title="${calls} invocations in the last 30 days">${ICON_BOLT} ${fmtNum(calls)} calls</span>`,
     ];
@@ -800,9 +816,13 @@ function buildCard(it) {
       const cls = up ? 'trend-up' : 'trend-down';
       // Magnitude only — direction is in the arrow. Round to int
       // (decimals add visual noise without precision value at glance scale).
-      segments.push(`<span class="${cls}" title="Week-over-week change in invocations">${icon} ${Math.abs(Math.round(trend))}%</span>`);
+      leftSegs.push(`<span class="${cls}" title="Week-over-week change in invocations">${icon} ${Math.abs(Math.round(trend))}%</span>`);
     }
-    invChip = `<div class="inv-chip">${segments.join(' · ')}</div>`;
+    const installedSeg = `<span class="seg-installed" title="Currently installed by ${stackCount} users">${ICON_STACK} ${fmtNum(stackCount)} installed</span>`;
+    invChip = `<div class="inv-chip">
+      <span class="inv-chip-left">${leftSegs.join(' · ')}</span>
+      ${installedSeg}
+    </div>`;
   }
 
   card.innerHTML = `
@@ -880,7 +900,7 @@ function renderPager(total) {
     b.textContent = label;
     if (active) b.classList.add('is-active');
     b.addEventListener('click', () => {
-      state.page = page; syncURL(); loadItems();
+      state.page = page; syncURL(); loadItems(); loadMostPopular();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
     return b;
@@ -999,52 +1019,57 @@ async function fetchOne(tab, overrides = {}) {
 
 // ── Most Popular loader ───────────────────────────────────────────────────
 async function loadMostPopular() {
-  // Shown on curated + flea tabs (the discovery tabs). Hidden when a
-  // search query or category filter is active so the result list isn't
-  // shadowed by a stale popularity strip. The All-* header stays put
+  // Shown on curated + flea tabs (the discovery tabs) and only on the
+  // first page — on page 2+ the user is past initial discovery and a
+  // top-of-list popularity strip becomes redundant noise above the
+  // actual results they paged into. Also hidden when a search query
+  // or category filter is active so the result list isn't shadowed
+  // by a stale popularity strip. The All-* header stays put
   // regardless — only this section toggles.
   const section = document.getElementById('mp-popular-section');
-  if (!['curated', 'flea'].includes(state.tab) || state.q || state.category) {
+  if (!['curated', 'flea'].includes(state.tab) || state.q || state.category || (state.page || 1) > 1) {
     section.hidden = true;
     return;
   }
   try {
-    // Pull a wider page (server still sorts by 30d invocations) and
-    // re-sort + filter client-side on the 7d window so the strip
-    // reflects what's hot *right now*, not over the lifetime month.
-    // page_size of 24 gives plenty of headroom.
+    // Most Popular = top adopters over the **same 30d horizon** the
+    // rest of the listing uses. The card chip below already renders
+    // 30d numbers; sorting by a different window (7d) made the
+    // header label ("Last 7 days") promise something the cards
+    // weren't showing — cognitive mismatch. Unifying on 30d keeps a
+    // single mental model: every card means the same thing everywhere.
     //
     // Sort hierarchy — cascading tie-breakers prevent the "two cards
     // with identical primary key swap on every refresh" UX bug:
     //
-    //   1. distinct_users_7d DESC  ← adoption (the "popular" signal:
-    //      how many different people picked this up this week, not
-    //      how many calls one power user fired)
-    //   2. invocations_7d   DESC  ← volume given equal adoption
-    //   3. distinct_users_30d DESC ← broader adoption window as a
-    //      stabilising fallback
-    //   4. invocations_30d  DESC  ← broader volume window
-    //   5. name              ASC  ← deterministic textual order
-    //   6. marketplace_slug  ASC  ← splits duplicate plugin names
+    //   1. distinct_users_30d DESC  ← adoption (the "popular" signal:
+    //      how many different people invoked it, not how many calls
+    //      one power user fired)
+    //   2. invocations_30d   DESC  ← volume given equal adoption
+    //   3. distinct_users_7d  DESC ← recency: among equally-adopted
+    //      30d plugins, the one with broader 7d adoption ranks higher
+    //   4. invocations_7d    DESC  ← recent volume
+    //   5. name               ASC  ← deterministic textual order
+    //   6. marketplace_slug   ASC  ← splits duplicate plugin names
     //      across multiple marketplaces (e.g. `grpn` in `groupon-
     //      marketplace` vs. test seeds)
     const r = await fetchOne(state.tab, { sort: 'most_used', page: 1, page_size: 24 });
     const cmp = (a, b) => {
       const cmpN = (x, y) => (y || 0) - (x || 0);
-      let d = cmpN(a.distinct_users_7d, b.distinct_users_7d);
-      if (d) return d;
-      d = cmpN(a.invocations_7d, b.invocations_7d);
-      if (d) return d;
-      d = cmpN(a.distinct_users_30d, b.distinct_users_30d);
+      let d = cmpN(a.distinct_users_30d, b.distinct_users_30d);
       if (d) return d;
       d = cmpN(a.invocations_30d, b.invocations_30d);
+      if (d) return d;
+      d = cmpN(a.distinct_users_7d, b.distinct_users_7d);
+      if (d) return d;
+      d = cmpN(a.invocations_7d, b.invocations_7d);
       if (d) return d;
       d = (a.name || '').localeCompare(b.name || '');
       if (d) return d;
       return (a.marketplace_slug || '').localeCompare(b.marketplace_slug || '');
     };
     const popular = (r.items || [])
-      .filter(it => (it.invocations_7d || 0) > 0)
+      .filter(it => (it.invocations_30d || 0) > 0)
       .sort(cmp)
       .slice(0, 4);
     if (!popular.length) { section.hidden = true; return; }
