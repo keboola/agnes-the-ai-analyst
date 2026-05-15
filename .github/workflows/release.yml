@@ -24,9 +24,14 @@ on:
 permissions:
   contents: write
   packages: write
-  # issues: write — default for jobs; the rollback-on-smoke-fail job
-  # (which declares its own permissions) opens a tracking issue on
-  # smoke-test failure.
+  # issues: write — explicitly granted at workflow scope so the
+  # rollback-on-smoke-fail job (which calls rollback.yml via workflow_call)
+  # can open a tracking issue when an auto-rollback fires. Reusable-
+  # workflow permissions are bounded by the caller's GITHUB_TOKEN scope,
+  # so removing this line would silently 403 rollback.yml's gh issue
+  # create step (the || echo fallback would swallow the failure, leaving
+  # :stable reverted with no operator alert). Keep in sync with the
+  # rollback-on-smoke-fail job-level permissions below.
   issues: write
 
 # When a developer pushes a brand-new branch with code changes, GitHub fires

@@ -27,10 +27,28 @@ on:
         type: string
         required: false
 
+# NOTE: This top-level block has dual semantics:
+#   - On `workflow_dispatch` (manual operator trigger): governs the
+#     GITHUB_TOKEN scope directly.
+#   - On `workflow_call` from release.yml: the caller's job-level
+#     `permissions:` (rollback-on-smoke-fail) governs, intersected with
+#     this block as a cap. Tightening this block lowers the cap on both
+#     entry points; tightening the caller affects only the workflow_call
+#     path. Keep both in sync if you adjust either side.
 permissions:
   contents: read
   packages: write
   issues: write
+
+# Override the caller's `cancel-in-progress: true` concurrency policy
+# (release.yml groups by ref and cancels older runs to avoid duplicate
+# CalVer claims). A rollback mid-flight must NOT be cancelled — the
+# re-tag step has multiple `docker push`es; a cancellation between them
+# would leave :stable on the broken image. A reusable workflow's own
+# concurrency block overrides the inherited one.
+concurrency:
+  group: rollback-${{ github.repository }}-${{ inputs.failed_image_tag }}
+  cancel-in-progress: false
 
 jobs:
   rollback:
@@ -41,6 +59,10 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # GHCR login moved BEFORE target resolution so the resolve step can
+      # use `docker manifest inspect` to skip known-broken candidates
+      # (versions that already carry a `:deprecated-*` alias from a prior
+      # rollback).
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -58,24 +80,42 @@ jobs:
         env:
           TARGET_INPUT: ${{ inputs.target_image_tag }}
           FAILED: ${{ inputs.failed_image_tag }}
+          REPO_SLUG: ${{ github.repository }}
         run: |
+          REPO="ghcr.io/${REPO_SLUG}"
           if [ -n "$TARGET_INPUT" ]; then
             TARGET="$TARGET_INPUT"
           else
-            # Previous known-good = second-most-recent stable-* CalVer tag.
-            # Same heuristic the inline rollback used before extraction.
-            TARGET=$(git tag -l "stable-*" --sort=-version:refname | head -2 | tail -1)
+            # Walk back through stable-* tags newest-first; skip any whose
+            # `:deprecated-<stripped>` GHCR alias exists, because that
+            # marks a previously-failed release. The naive "second-most-
+            # recent" heuristic re-points :stable at known-broken images on
+            # cascading failures (rollback only pushes a deprecated alias,
+            # it does NOT delete the failed git tag — that would break
+            # CalVer immutability — so the failed tag stays in sort order
+            # on subsequent rollbacks).
+            TARGET=""
+            while IFS= read -r CANDIDATE; do
+              [ -z "$CANDIDATE" ] && continue
+              [ "$CANDIDATE" = "$FAILED" ] && continue
+              STRIPPED="${CANDIDATE#stable-}"
+              if docker manifest inspect "$REPO:deprecated-${STRIPPED}" > /dev/null 2>&1; then
+                echo "  skipping $CANDIDATE (carries :deprecated-${STRIPPED} from a prior rollback)"
+                continue
+              fi
+              TARGET="$CANDIDATE"
+              break
+            done < <(git tag -l "stable-*" --sort=-version:refname)
             if [ -z "$TARGET" ]; then
-              echo "::error::No previous stable-* tag found — supply target_image_tag explicitly"
+              echo "::error::No known-good previous stable-* tag found — supply target_image_tag explicitly"
               exit 1
             fi
           fi
-          # If only one stable-* tag exists (fresh repo, or aggressive
-          # pruning), head -2 | tail -1 falls back to the same tag — which
-          # equals FAILED. Pushing the broken image back as :stable is the
-          # opposite of a rollback, so refuse loudly.
+          # Defense in depth: even with the walk-back, refuse if the
+          # resolved target somehow matches FAILED (e.g. operator override
+          # via target_image_tag pointing at the failed build).
           if [ "$TARGET" = "$FAILED" ]; then
-            echo "::error::Rollback target equals failed tag ($TARGET) — no distinct previous stable-* tag; supply target_image_tag explicitly"
+            echo "::error::Rollback target equals failed tag ($TARGET) — refusing to re-push broken image"
             exit 1
           fi
           echo "target=$TARGET" >> "$GITHUB_OUTPUT"
@@ -93,13 +133,19 @@ jobs:
           # Strip the channel prefix for a backward-compatible deprecated tag name
           DEPRECATED="deprecated-${FAILED#stable-}"
 
-          docker pull "$REPO:$FAILED"
-          docker tag "$REPO:$FAILED" "$REPO:$DEPRECATED"
-          docker push "$REPO:$DEPRECATED"
-
+          # Order matters: push :stable recovery FIRST, then the
+          # :deprecated-* audit tag. If something interrupts mid-step
+          # (concurrency block above SHOULD prevent it, but defense in
+          # depth), the worst case is missing audit metadata — production
+          # is already healthy. The reverse order risked :stable stuck on
+          # the broken image.
           docker pull "$REPO:$TARGET"
           docker tag "$REPO:$TARGET" "$REPO:stable"
           docker push "$REPO:stable"
+
+          docker pull "$REPO:$FAILED"
+          docker tag "$REPO:$FAILED" "$REPO:$DEPRECATED"
+          docker push "$REPO:$DEPRECATED"
 
       - name: Open tracking issue
         env:

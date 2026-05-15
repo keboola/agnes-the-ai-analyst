@@ -83,16 +83,20 @@ if [ "$SECTION1_HAS_WORK" = "1" ] && [ "$DRY_RUN" = "1" ]; then
   SECTION1_HAS_WORK=0
 fi
 
-if [ "$SECTION1_HAS_WORK" = "1" ]; then
-  # Delete git tags (remote first; local fallback is harmless).
-  for TAG in "${TO_PRUNE[@]}"; do
-    echo "  deleting tag: $TAG"
-    git push origin --delete "$TAG" \
-      || echo "    (remote push failed — tag may already be gone, or the push was blocked)"
-    git tag -d "$TAG" 2>/dev/null || true
-  done
+# Track failures so the workflow run turns red even when individual
+# operations were swallowed by `|| ...` fallbacks. Stdout warnings alone
+# are invisible on a green run, so a hard exit-1 at the end is the only
+# reliable signal to operators.
+PRUNE_FAILED=0
 
-  # Delete GHCR image versions. Requires GH_TOKEN with packages:write.
+if [ "$SECTION1_HAS_WORK" = "1" ]; then
+  # Fetch GHCR versions BEFORE any git-tag deletion — if the API call
+  # fails (403 missing scope, 429 rate limit, transient 5xx), we abort
+  # cleanly with no state change. Doing the irrecoverable git-tag delete
+  # first risked orphan GHCR images: the next run rebuilds TO_PRUNE from
+  # `git tag -l`, so without the local git tag the orphan image is never
+  # enumerated again.
+  TAG_TO_ID=""
   if [ -n "${GH_TOKEN:-}" ]; then
     ORG=$(echo "$REPO" | cut -d/ -f1)
     PKG_NAME=$(echo "$REPO" | cut -d/ -f2)
@@ -101,10 +105,11 @@ if [ "$SECTION1_HAS_WORK" = "1" ]; then
     # One paginated fetch up-front, then per-tag lookups against the
     # cached result. Avoids O(N × pages) API calls on a multi-month
     # backlog (legacy CalVer tag counts run ~500/month per channel).
+    # No `|| echo "[]"` fallback — let `set -e` propagate API failure
+    # rather than silently turning every TAG into a no-op skip.
     VERSIONS_JSON=$(gh api \
       "/orgs/${ORG}/packages/container/${PKG_NAME}/versions" \
-      --paginate \
-      || echo "[]")
+      --paginate)
 
     # CRITICAL: GHCR's DELETE-version drops the entire manifest, taking
     # EVERY tag on it (including `:stable`, `:dev`, `dev-<user>-latest`).
@@ -122,23 +127,48 @@ if [ "$SECTION1_HAS_WORK" = "1" ]; then
       | . as $v
       | .metadata.container.tags[] as $t
       | "\($t)\t\($v.id)"
-    ' || echo "")
+    ')
+  else
+    echo "GH_TOKEN not set — GHCR image deletion will be skipped (git tags will still be pruned below)."
+  fi
 
+  # Delete git tags. Local delete is gated on successful remote push —
+  # if the remote refuses (protected tag, missing contents:write,
+  # transient failure), leaving the local tag in place means the next
+  # run retries the same TAG cleanly. checkout@v6 re-fetches tags so a
+  # successful local-only delete would just come back anyway.
+  for TAG in "${TO_PRUNE[@]}"; do
+    echo "  deleting tag: $TAG"
+    if git push origin --delete "$TAG"; then
+      git tag -d "$TAG" 2>/dev/null || true
+    else
+      echo "    (remote push failed — leaving local tag in place for retry; check tag-protection rules or contents:write scope)"
+      PRUNE_FAILED=1
+    fi
+  done
+
+  # Delete GHCR image versions using the up-front fetch.
+  if [ -n "${GH_TOKEN:-}" ]; then
     echo "Deleting matching GHCR image versions ..."
     for TAG in "${TO_PRUNE[@]}"; do
       VERSION_ID=$(echo "$TAG_TO_ID" | awk -v t="$TAG" '$1==t {print $2; exit}')
       if [ -n "$VERSION_ID" ]; then
         echo "  deleting GHCR image $TAG (version $VERSION_ID)"
-        gh api -X DELETE \
-          "/orgs/${ORG}/packages/container/${PKG_NAME}/versions/${VERSION_ID}" \
-          || echo "    (DELETE failed — check packages:write scope, rate limits, or version already gone)"
+        if ! gh api -X DELETE \
+          "/orgs/${ORG}/packages/container/${PKG_NAME}/versions/${VERSION_ID}"; then
+          echo "    (DELETE failed — check packages:write scope, rate limits, or version already gone)"
+          PRUNE_FAILED=1
+        fi
       else
         echo "  skipping GHCR image $TAG — no eligible version (already gone, or shares a manifest with :stable/:dev/*-latest)"
       fi
     done
-  else
-    echo "GH_TOKEN not set — skipping GHCR image deletion (git tags pruned above)."
   fi
+fi
+
+if [ "$PRUNE_FAILED" = "1" ]; then
+  echo "::error::One or more prune operations failed — see warnings above"
+  exit 1
 fi
 
 echo "Prune complete."
