@@ -173,6 +173,16 @@ class StoreSubmissionsRepository:
     # Routes to the broader counter post-#9.
     count_blocked_inline_for_submitter_since = count_blocked_for_submitter_since
 
+    # Terminal states whose `status` should never be silently overwritten
+    # by an asynchronous (BG-task) writer. Admin-triggered actions
+    # (override, delete) call dedicated repo methods or set
+    # ``allow_terminal_overwrite=True`` explicitly. The BG-task path
+    # in ``runner.run_llm_review`` calls ``update_status`` without that
+    # flag — so a late LLM verdict racing with an admin override OR
+    # with a more recent terminal verdict can no longer clobber the
+    # row.
+    _TERMINAL_STATUSES = frozenset({"approved", "overridden", "blocked_inline"})
+
     def update_status(
         self,
         id: str,
@@ -180,7 +190,19 @@ class StoreSubmissionsRepository:
         status: str,
         llm_findings: Optional[Dict[str, Any]] = None,
         reviewed_by_model: Optional[str] = None,
-    ) -> None:
+        allow_terminal_overwrite: bool = False,
+    ) -> bool:
+        """Update a submission's status. Returns ``True`` when the row
+        was actually updated, ``False`` when a compare-and-swap skipped
+        the write because the row had already moved to a terminal state.
+
+        The CAS protects against the BG-task race surfaced by the
+        adversarial review of PR #316: a late LLM verdict could
+        previously clobber ``status='overridden'`` (admin force-published
+        the submission while the LLM was still running). With the guard,
+        BG callers no-op on terminal rows; admin paths still call
+        ``set_override`` etc. which write unconditionally.
+        """
         if status not in VALID_STATUSES:
             raise ValueError(f"invalid submission status: {status!r}")
         sets = ["status = ?", "updated_at = ?"]
@@ -191,11 +213,25 @@ class StoreSubmissionsRepository:
         if reviewed_by_model is not None:
             sets.append("reviewed_by_model = ?")
             params.append(reviewed_by_model)
+        where_clauses = ["id = ?"]
         params.append(id)
-        self.conn.execute(
-            f"UPDATE store_submissions SET {', '.join(sets)} WHERE id = ?",
-            params,
+        if not allow_terminal_overwrite:
+            placeholders = ",".join("?" for _ in self._TERMINAL_STATUSES)
+            where_clauses.append(f"status NOT IN ({placeholders})")
+            params.extend(self._TERMINAL_STATUSES)
+        sql = (
+            f"UPDATE store_submissions SET {', '.join(sets)} "
+            f"WHERE {' AND '.join(where_clauses)}"
         )
+        result = self.conn.execute(sql, params)
+        # DuckDB returns a relation with the rowcount in row 0, col 0
+        # for an UPDATE. fetchone() is the portable way to read it.
+        try:
+            row = result.fetchone()
+            rowcount = int(row[0]) if row else 0
+        except Exception:
+            rowcount = 0
+        return rowcount > 0
 
     def set_override(
         self,

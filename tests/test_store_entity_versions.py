@@ -1408,3 +1408,164 @@ class TestPublishGateFailClosed:
         conn.close()
         assert ent["visibility_status"] == "approved"
         assert sub["status"] == "approved"
+
+
+class TestConcurrentPutSerialization:
+    """Codex adversarial review [HIGH]: concurrent PUTs racing on the
+    same entity_id could both pass the ``latest_for_entity`` pending
+    gate, both bake into ``versions/v<N+1>/plugin/``, and both append
+    a ``version_history`` entry. Per-entity asyncio lock added to
+    serialize the critical section in PUT + restore.
+
+    Integration coverage (two real PUTs racing against TestClient)
+    isn't practical here: each TestClient call wraps the async handler
+    in its own event loop, so asyncio.Lock acquired in loop A cannot
+    coordinate with loop B — they deadlock instead of contending. In
+    a real uvicorn deployment all requests run on a single event loop
+    and the lock works as designed. This test exercises the helper
+    directly to verify the serialization semantics; the integration
+    side is covered by the existing `prior_version_pending` test
+    (which fires once the first PUT has committed)."""
+
+    def test_per_entity_lock_serializes(self):
+        import asyncio
+        from app.api.store import _hold_entity_write_lock
+
+        seq: list = []
+
+        async def task(label: str) -> None:
+            async with _hold_entity_write_lock("ent-shared"):
+                seq.append(f"{label}-in")
+                # Yield to the scheduler to give the other coroutine a
+                # chance to run if the lock isn't held.
+                await asyncio.sleep(0.01)
+                seq.append(f"{label}-out")
+
+        async def driver() -> None:
+            await asyncio.gather(task("A"), task("B"))
+
+        asyncio.run(driver())
+
+        # Pairs must NOT interleave — one finishes entirely before
+        # the other starts.
+        assert seq in (
+            ["A-in", "A-out", "B-in", "B-out"],
+            ["B-in", "B-out", "A-in", "A-out"],
+        ), f"per-entity lock failed to serialize: seq={seq}"
+
+    def test_per_entity_lock_does_not_serialize_across_entities(self):
+        """Different entity_ids get independent locks so unrelated
+        writes don't block each other."""
+        import asyncio
+        from app.api.store import _hold_entity_write_lock
+
+        seq: list = []
+
+        async def task(label: str, entity: str) -> None:
+            async with _hold_entity_write_lock(entity):
+                seq.append(f"{label}-in")
+                await asyncio.sleep(0.01)
+                seq.append(f"{label}-out")
+
+        async def driver() -> None:
+            await asyncio.gather(task("A", "ent-a"), task("B", "ent-b"))
+
+        asyncio.run(driver())
+
+        # Interleaving expected: A-in, B-in, A-out, B-out (or B/A
+        # ordering depending on which coroutine the loop picks first).
+        assert seq[0] in {"A-in", "B-in"}
+        assert seq[1] in {"A-in", "B-in"}
+        assert seq[0] != seq[1], (
+            f"entities should have run in parallel — got serial: {seq}"
+        )
+
+
+class TestBgTaskIdempotency:
+    """Codex adversarial review [HIGH]: `update_status` blindly
+    overwrote any current status. A late BG-task LLM verdict racing
+    with an admin override could clobber `overridden` back to
+    `approved`/`blocked_llm`. Now: terminal statuses are
+    compare-and-swap-protected; BG callers no-op."""
+
+    def test_late_verdict_does_not_clobber_overridden(self, web_client):
+        """Admin overrides a blocked submission. A subsequent late
+        BG-task ``update_status`` for the same submission must NOT
+        flip it back."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        user_id, _ = _create_user(web_client, "idemp@x.com")
+        conn = get_system_db()
+        ents = StoreEntitiesRepository(conn)
+        ents.create(
+            id="ent-idemp", owner_user_id=user_id, owner_username="idemp",
+            type="skill", name="idemp-skill", description="x" * 40,
+            category=None, version="aaaaaaaaaaaaaaaa", file_size=10,
+            visibility_status="pending",
+        )
+        subs = StoreSubmissionsRepository(conn)
+        sid = subs.create(
+            submitter_id=user_id, submitter_email="idemp@x.com",
+            type="skill", name="idemp-skill", version="aaaaaaaaaaaaaaaa",
+            status="blocked_llm", entity_id="ent-idemp",
+            llm_findings={"risk_level": "high", "summary": "x"},
+        )
+        ents.update_history_submission_id("ent-idemp", 1, sid)
+        conn.close()
+
+        from tests.helpers.auth import grant_admin
+        admin_id, admin_cookies = _create_user(web_client, "idemp-admin@x.com")
+        conn = get_system_db()
+        grant_admin(conn, admin_id)
+        conn.close()
+
+        # Override the blocked submission → status='overridden'.
+        r = web_client.post(
+            f"/api/admin/store/submissions/{sid}/override",
+            json={"reason": "false positive — cleared in offline review"},
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200
+
+        # Now simulate a late BG-task verdict arriving:
+        # update_status is called without allow_terminal_overwrite.
+        conn = get_system_db()
+        subs = StoreSubmissionsRepository(conn)
+        # CAS no-op because status=='overridden' is terminal.
+        wrote = subs.update_status(
+            sid, status="approved",
+            llm_findings={"risk_level": "safe", "summary": "late"},
+        )
+        conn.close()
+        assert wrote is False, (
+            "late BG verdict must NOT overwrite a terminal `overridden` row"
+        )
+
+        # Status still overridden.
+        conn = get_system_db()
+        row = StoreSubmissionsRepository(conn).get(sid)
+        conn.close()
+        assert row["status"] == "overridden"
+
+    def test_explicit_allow_terminal_overwrite_works(self, web_client):
+        """Admin paths that legitimately need to overwrite a terminal
+        state can pass `allow_terminal_overwrite=True` and get the
+        write through. Used by rescan and similar admin actions."""
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        user_id, _ = _create_user(web_client, "termok@x.com")
+        conn = get_system_db()
+        sid = StoreSubmissionsRepository(conn).create(
+            submitter_id=user_id, submitter_email="termok@x.com",
+            type="skill", name="x", version="aaaa", status="approved",
+            entity_id=None,
+        )
+        wrote = StoreSubmissionsRepository(conn).update_status(
+            sid, status="pending_llm", allow_terminal_overwrite=True,
+        )
+        conn.close()
+        assert wrote is True
+        conn = get_system_db()
+        row = StoreSubmissionsRepository(conn).get(sid)
+        conn.close()
+        assert row["status"] == "pending_llm"
