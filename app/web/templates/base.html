@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
+    {# Shared stack card styles — drives /catalog + /memory Browse/My Stack
+       cards (matches marketplace.html .mp-card visual language). #}
+    <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">
     {# app.js loaded by _app_header.html itself so pages that include
        the header directly without extending base.html (e.g. admin_tables)
        still get the nav-dropdown wiring. #}

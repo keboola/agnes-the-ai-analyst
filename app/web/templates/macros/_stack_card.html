@@ -1,0 +1,74 @@
+{# Shared stack card macro — visual parity with marketplace.html .mp-card.
+
+   Renders a single resource entry (data package or memory domain) using
+   the same skeleton marketplace plugin cards use:
+
+     [icon-box · title · meta]
+     [description (clamped to 2 lines)]
+     [tag pills]
+     [footer-left link · footer-right action button]
+
+   States (dual-encoded: color border + text badge):
+     .stack-card.is-required → yellow border #f59e0b + "Required" badge top-right
+     .stack-card.is-in-stack → green  border #10b77f + Remove button
+     default                  → neutral border + "+ Add to stack" button
+
+   `entry` is a dict-like with keys:
+     id, name, description, icon, color, requirement ("available"|"required"),
+     in_stack (bool), meta (str), tags (list[str]), drilldown_url (str),
+     footer_left (str), action_disabled_label (str).
+#}
+{% macro card(entry) %}
+{% set _cls_required = ' is-required' if entry.requirement == 'required' else '' %}
+{% set _cls_instack = ' is-in-stack' if entry.in_stack else '' %}
+<div class="stack-card{{ _cls_required }}{{ _cls_instack }}"
+     data-id="{{ entry.id }}"
+     data-requirement="{{ entry.requirement|default('available') }}"
+     data-in-stack="{{ '1' if entry.in_stack else '0' }}">
+  {% if entry.requirement == 'required' %}
+    <div class="stack-card__req-badge" title="Required by your organization">Required</div>
+  {% elif entry.in_stack %}
+    <div class="stack-card__req-badge stack-card__req-badge--instack" title="In your stack">In stack</div>
+  {% endif %}
+
+  <div class="stack-card__icon-row">
+    <div class="stack-card__icon-box" style="background:{{ entry.color|default('#f3f4f6') }}">
+      {{ entry.icon|default('📦') }}
+    </div>
+    <div class="stack-card__heading">
+      <h3 class="stack-card__title">{{ entry.name }}</h3>
+      {% if entry.meta %}<div class="stack-card__meta">{{ entry.meta }}</div>{% endif %}
+    </div>
+  </div>
+
+  {% if entry.description %}
+    <div class="stack-card__desc">{{ entry.description }}</div>
+  {% endif %}
+
+  {% if entry.tags %}
+    <div class="stack-card__tags">
+      {% for tag in entry.tags %}<span class="stack-card__tag">{{ tag }}</span>{% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="stack-card__footer">
+    {% if entry.drilldown_url %}
+      <a class="stack-card__drilldown" href="{{ entry.drilldown_url }}">{{ entry.footer_left|default('Open →') }}</a>
+    {% else %}
+      <span class="stack-card__author">{{ entry.footer_left|default('') }}</span>
+    {% endif %}
+    {% if entry.requirement == 'required' %}
+      <button class="stack-card__btn stack-card__btn--required" disabled
+              title="Required by your organization — managed by admin">
+        In stack (required)
+      </button>
+    {% elif entry.in_stack %}
+      <button class="stack-card__btn stack-card__btn--remove"
+              data-action="remove" data-id="{{ entry.id }}">Remove</button>
+    {% else %}
+      <button class="stack-card__btn stack-card__btn--add"
+              data-action="add" data-id="{{ entry.id }}">+ Add to stack</button>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}
