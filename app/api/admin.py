@@ -3761,7 +3761,7 @@ async def admin_override_store_submission(
     # so target_version_no lands at 1 instead of the actual new
     # entry's n. The forward-only `target > current` guard then
     # skips the promote, leaving the entity stuck at v1. Surfaced
-    # live on agnes-development.
+    # live on a development deployment.
     from app.api.store import _version_no_for_submission
     target_version_no: Optional[int] = _version_no_for_submission(
         entity_row, submission_id,

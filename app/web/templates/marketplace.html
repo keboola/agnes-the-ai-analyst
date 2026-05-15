@@ -1051,8 +1051,8 @@ async function loadMostPopular() {
     //   4. invocations_7d    DESC  ← recent volume
     //   5. name               ASC  ← deterministic textual order
     //   6. marketplace_slug   ASC  ← splits duplicate plugin names
-    //      across multiple marketplaces (e.g. `grpn` in `groupon-
-    //      marketplace` vs. test seeds)
+    //      across multiple marketplaces (e.g. a `foo` plugin shipped
+    //      both by `<customer>-marketplace` and by curated test seeds)
     const r = await fetchOne(state.tab, { sort: 'most_used', page: 1, page_size: 24 });
     const cmp = (a, b) => {
       const cmpN = (x, y) => (y || 0) - (x || 0);
