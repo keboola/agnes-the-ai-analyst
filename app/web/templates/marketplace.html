@@ -311,11 +311,32 @@
     font-size: 11px; color: var(--text-secondary);
   }
   .mp-card .ver { font-variant-numeric: tabular-nums; }
+  /* Funnel chip — 4 segments separated by `·` (Installed / Active /
+     Calls / Trend). Each segment is a <span> so line-wrap on narrow
+     cards respects segment boundaries. Inline Heroicons recolor via
+     currentColor; trend up/down override colour. */
   .mp-card .inv-chip {
-    display: inline-flex; align-items: center; gap: 4px;
     font-size: 11px; color: var(--text-secondary);
-    margin-top: 2px;
+    margin-top: 6px;
+    line-height: 1.5;
   }
+  .mp-card .inv-chip > span {
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .mp-card .inv-chip svg {
+    width: 12px; height: 12px;
+    flex-shrink: 0;
+  }
+  /* Per-segment icon colors — text stays neutral so the chip reads as
+     metadata, but the leading glyph is colour-coded so it scans fast.
+     Installed mirrors the amber accent of the My Stack tab (#F59F0A);
+     active is green for "real engagement"; calls is orange for energy. */
+  .mp-card .inv-chip .seg-installed > svg { color: #F59F0A; }
+  .mp-card .inv-chip .seg-active    > svg { color: #0e9b6a; }
+  .mp-card .inv-chip .seg-calls     > svg { color: #f97316; }
   .mp-card .inv-chip .trend-up   { color: #10b77f; font-weight: 600; }
   .mp-card .inv-chip .trend-down { color: #ef4444; font-weight: 600; }
 
@@ -740,11 +761,49 @@ function buildCard(it) {
   const cardName = it.display_name || it.name;
   const cardDesc = it.tagline || it.description || '';
 
-  // v46: invocation chip is not rendered on the card per product decision —
-  // API response still carries `invocations_30d`, `distinct_users_30d`, and
-  // `trend_pct` for the Most-Used / Trending sections and the per-card
-  // detail view, but the at-a-glance chip is hidden until UX is finalised.
-  const invChip = '';
+  // Funnel chip — installed (passive adoption) → active users (real
+  // engagement) → calls (volume) → trend (momentum). Hidden when both
+  // installed and 30d invocations are zero so brand-new plugins don't
+  // get visually penalised by a "0 · 0 · 0" row. Each segment carries
+  // a tooltip for screen-readers + curious hover. Heroicons outline
+  // 24×24, inline so they recolor via currentColor and don't pull
+  // an asset request per card.
+  const stackCount = it.stack_count || 0;
+  const activeUsers = it.distinct_users_30d || 0;
+  const calls = it.invocations_30d || 0;
+  const trend = it.trend_pct;
+  // Heroicons solid 24×24 — filled glyphs so the chip reads as a row
+  // of small colourful badges rather than thin outlines. fill-rule
+  // evenodd because rectangle-stack ships as multi-path.
+  const _svg = (path) =>
+    `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${path}"/></svg>`;
+  // rectangle-stack (solid) — same glyph as the My Stack tab (l. 451)
+  // but filled, so the "installed" segment visually echoes the tab.
+  const ICON_STACK = _svg("M5.566 4.657A4.505 4.505 0 0 1 6.75 4.5h10.5c.41 0 .806.055 1.183.157A3 3 0 0 0 15.75 3h-7.5a3 3 0 0 0-2.684 1.657ZM2.25 12a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3v-6ZM5.25 7.5c-.41 0-.806.055-1.184.157A3 3 0 0 1 6.75 6h10.5a3 3 0 0 1 2.683 1.657A4.505 4.505 0 0 0 18.75 7.5H5.25Z");
+  // user (solid) — filled silhouette for active users.
+  const ICON_USER = _svg("M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z");
+  // bolt (solid) — lightning for call volume / energy.
+  const ICON_BOLT = _svg("M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z");
+  // arrow-trending-up / -down (solid) — week-over-week momentum.
+  const ICON_TREND_UP   = _svg("M15.22 6.268a.75.75 0 0 1 .968-.432l5.942 2.28a.75.75 0 0 1 .431.97l-2.28 5.94a.75.75 0 1 1-1.4-.537l1.63-4.251-1.086.483a11.2 11.2 0 0 0-5.45 5.174.75.75 0 0 1-1.199.19L9 12.31l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75a.75.75 0 0 1 1.06 0l3.606 3.605a12.694 12.694 0 0 1 5.68-4.973l1.086-.484-4.251-1.631a.75.75 0 0 1-.432-.97Z");
+  const ICON_TREND_DOWN = _svg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
+  let invChip = '';
+  if (stackCount > 0 || calls > 0) {
+    const segments = [
+      `<span class="seg-installed" title="${stackCount} users have this installed">${ICON_STACK} ${fmtNum(stackCount)} installed</span>`,
+      `<span class="seg-active" title="${activeUsers} users invoked it in the last 30 days">${ICON_USER} ${fmtNum(activeUsers)} active</span>`,
+      `<span class="seg-calls" title="${calls} invocations in the last 30 days">${ICON_BOLT} ${fmtNum(calls)} calls</span>`,
+    ];
+    if (trend !== null && trend !== undefined) {
+      const up = trend >= 0;
+      const icon = up ? ICON_TREND_UP : ICON_TREND_DOWN;
+      const cls = up ? 'trend-up' : 'trend-down';
+      // Magnitude only — direction is in the arrow. Round to int
+      // (decimals add visual noise without precision value at glance scale).
+      segments.push(`<span class="${cls}" title="Week-over-week change in invocations">${icon} ${Math.abs(Math.round(trend))}%</span>`);
+    }
+    invChip = `<div class="inv-chip">${segments.join(' · ')}</div>`;
+  }
 
   card.innerHTML = `
     ${quarantineBadge}
@@ -953,13 +1012,40 @@ async function loadMostPopular() {
     // Pull a wider page (server still sorts by 30d invocations) and
     // re-sort + filter client-side on the 7d window so the strip
     // reflects what's hot *right now*, not over the lifetime month.
-    // page_size of 24 gives plenty of headroom — items with no 7d
-    // activity get filtered out, the rest sort by invocations_7d DESC,
-    // and we keep the top 4.
+    // page_size of 24 gives plenty of headroom.
+    //
+    // Sort hierarchy — cascading tie-breakers prevent the "two cards
+    // with identical primary key swap on every refresh" UX bug:
+    //
+    //   1. distinct_users_7d DESC  ← adoption (the "popular" signal:
+    //      how many different people picked this up this week, not
+    //      how many calls one power user fired)
+    //   2. invocations_7d   DESC  ← volume given equal adoption
+    //   3. distinct_users_30d DESC ← broader adoption window as a
+    //      stabilising fallback
+    //   4. invocations_30d  DESC  ← broader volume window
+    //   5. name              ASC  ← deterministic textual order
+    //   6. marketplace_slug  ASC  ← splits duplicate plugin names
+    //      across multiple marketplaces (e.g. `grpn` in `groupon-
+    //      marketplace` vs. test seeds)
     const r = await fetchOne(state.tab, { sort: 'most_used', page: 1, page_size: 24 });
+    const cmp = (a, b) => {
+      const cmpN = (x, y) => (y || 0) - (x || 0);
+      let d = cmpN(a.distinct_users_7d, b.distinct_users_7d);
+      if (d) return d;
+      d = cmpN(a.invocations_7d, b.invocations_7d);
+      if (d) return d;
+      d = cmpN(a.distinct_users_30d, b.distinct_users_30d);
+      if (d) return d;
+      d = cmpN(a.invocations_30d, b.invocations_30d);
+      if (d) return d;
+      d = (a.name || '').localeCompare(b.name || '');
+      if (d) return d;
+      return (a.marketplace_slug || '').localeCompare(b.marketplace_slug || '');
+    };
     const popular = (r.items || [])
       .filter(it => (it.invocations_7d || 0) > 0)
-      .sort((a, b) => (b.invocations_7d || 0) - (a.invocations_7d || 0))
+      .sort(cmp)
       .slice(0, 4);
     if (!popular.length) { section.hidden = true; return; }
     const grid = document.getElementById('mp-popular-grid');
