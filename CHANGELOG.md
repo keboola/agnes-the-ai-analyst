@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- **Repo-committed Claude Code agents + skills under `.claude/`.**
+  Four knowledge skills (`agnes-orchestrator`, `agnes-rbac`,
+  `agnes-connectors`, `agnes-release-process`) auto-load into the main
+  agent's context when their description matches the work or are
+  invokable explicitly via `Skill(<name>)`. Four specialist subagents
+  (`agnes-reviewer-rules`, `agnes-reviewer-rbac`,
+  `agnes-reviewer-architecture`, `agnes-releaser`) wire into the
+  Agent tool — reviewers fire in parallel at the end of PR work;
+  the releaser handles pre-merge release-cut + post-merge tag /
+  GitHub Release. `.gitignore` un-ignores `.claude/agents/` and
+  `.claude/skills/` while keeping the rest of `.claude/` local-only.
+  Source of truth for the rules these encode remains `CLAUDE.md` +
+  `docs/RELEASING.md`. Design rationale +
+  implementation plan: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`
+  and `docs/superpowers/plans/2026-05-15-agnes-agents.md`.
+
 ## [0.54.20] — 2026-05-15
 
 ### Added
