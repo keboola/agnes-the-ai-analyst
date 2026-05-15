@@ -967,6 +967,25 @@
 
         <!-- All Items Tab -->
         <div id="tab-all" class="tab-content">
+            <!-- Bulk-edit batch bar (issue #129) — mirrors Review tab's bar but
+                 scoped to All Items selection state and without the Approve /
+                 Reject actions (those stay in Review). The same JS plumbing
+                 (`getSelectedIds('all')`, `updateSelectionCount('all')`,
+                 `openBulkEditModal(...)` reading `currentTab`) already exists. -->
+            <div class="batch-bar">
+                <label>
+                    <input type="checkbox" id="selectAllAll" onchange="toggleSelectAll('all')">
+                    Select all
+                </label>
+                <span class="selected-count" id="selectedCountAll"></span>
+                <div class="batch-actions">
+                    <button class="btn" id="batchMoveCategoryBtnAll" disabled onclick="openBulkEditModal('category')">Move to category…</button>
+                    <button class="btn" id="batchMoveDomainBtnAll" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
+                    <button class="btn" id="batchAddTagBtnAll" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
+                    <button class="btn" id="batchRemoveTagBtnAll" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
+                    <button class="btn" id="batchSetAudienceBtnAll" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
+                </div>
+            </div>
             <div class="filter-bar">
                 <label for="statusFilter">Status:</label>
                 <select class="filter-select" id="statusFilter" onchange="loadAllItems(1)">
@@ -2007,6 +2026,12 @@
 
         list.innerHTML = data.items.map((item, idx) => renderItemCard(item, idx, false)).join('');
         renderPagination(paginationEl, data, 'loadAllItems');
+        // Reset the "Select all" header checkbox + button states after every
+        // re-render (issue #129); previous selection IDs no longer exist in
+        // the DOM after the list refreshes.
+        const selAll = document.getElementById('selectAllAll');
+        if (selAll) selAll.checked = false;
+        updateSelectionCount('all');
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2075,7 +2100,7 @@
         return `
             <div class="knowledge-item" data-id="${esc(item.id)}" data-idx="${idx}">
                 <div class="item-row">
-                    ${isReview ? `<input type="checkbox" class="item-checkbox" data-id="${esc(item.id)}" onchange="updateSelectionCount('review')">` : ''}
+                    <input type="checkbox" class="item-checkbox" data-id="${esc(item.id)}" onchange="updateSelectionCount('${isReview ? 'review' : 'all'}')">
                     <div class="item-body">
                         <div class="knowledge-header">
                             <div>
@@ -2374,15 +2399,20 @@
     function updateSelectionCount(tab) {
         const ids = getSelectedIds(tab);
         const countEl = document.getElementById(tab === 'review' ? 'selectedCountReview' : 'selectedCountAll');
-        const approveBtn = document.getElementById(tab === 'review' ? 'batchApproveBtn' : 'batchApproveBtnAll');
-        const rejectBtn = document.getElementById(tab === 'review' ? 'batchRejectBtn' : 'batchRejectBtnAll');
+        // Approve / Reject buttons exist only in the Review tab — All Items
+        // batch bar (issue #129) deliberately omits them (status changes belong
+        // to per-row buttons or the keyboard workflow in Review).
+        const approveBtn = tab === 'review' ? document.getElementById('batchApproveBtn') : null;
+        const rejectBtn = tab === 'review' ? document.getElementById('batchRejectBtn') : null;
 
         if (countEl) countEl.textContent = ids.length > 0 ? `${ids.length} selected` : '';
         if (approveBtn) approveBtn.disabled = ids.length === 0;
         if (rejectBtn) rejectBtn.disabled = ids.length === 0;
-        // Bulk-edit buttons (issue #62) — enable when at least one item ticked.
-        ['batchMoveCategoryBtn', 'batchMoveDomainBtn', 'batchAddTagBtn', 'batchRemoveTagBtn', 'batchSetAudienceBtn'].forEach(id => {
-            const btn = document.getElementById(id);
+        // Bulk-edit buttons (issue #62 + #129) — Review tab uses bare IDs;
+        // All Items tab adds the "All" suffix. Each tab toggles its own set.
+        const suffix = tab === 'review' ? '' : 'All';
+        ['batchMoveCategoryBtn', 'batchMoveDomainBtn', 'batchAddTagBtn', 'batchRemoveTagBtn', 'batchSetAudienceBtn'].forEach(base => {
+            const btn = document.getElementById(base + suffix);
             if (btn) btn.disabled = ids.length === 0;
         });
     }
