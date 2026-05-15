@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- Specialized Claude Code agents and skills for Agnes development. Knowledge skills under `.claude/skills/` (orchestrator, RBAC, connectors, release-process); reviewer + releaser subagents under `.claude/agents/`. Design: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`.
+
 ## [0.54.19] — 2026-05-15
 
 ### Changed

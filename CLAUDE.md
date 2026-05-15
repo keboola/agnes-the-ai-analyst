@@ -311,6 +311,15 @@ Full recipe, deploy workflows, manual rollback runbook, weekly tag-housekeeping,
 - **Run the full test suite before every push** — `.venv/bin/pytest tests/ --tb=short -n auto -q` (this is what CI runs). Failures in code you touched: fix before pushing. Failures unrelated to your diff: confirm with `git stash` they reproduce on a clean branch, note them in the PR body, don't block on them.
 - **Watch the post-merge `release.yml` run.** On `main` pushes a `smoke-test` job pulls the just-built `:stable` image and runs a docker-compose stack; if it fails, the `rollback-on-smoke-fail` job calls the reusable `rollback.yml` workflow which re-points `:stable` to the previous known-good build and opens a tracking issue labeled `bug`. Success signal after merge = `smoke-test` green + `rollback-on-smoke-fail` skipped. If the rollback fires, the merge shipped a broken image to GHCR — investigate the tracking issue before any further push (the issue body has the failing image, commit SHA, deprecated tag, and rollback target). Manual rollback / forced target / weekly tag-pruning operator commands are in [`docs/RELEASING.md`](docs/RELEASING.md).
 
+## Specialized agents and skills
+
+Two committed locations carry Agnes-specific Claude Code behavior:
+
+- `.claude/skills/agnes-*.md` — knowledge skills (`agnes-orchestrator`, `agnes-rbac`, `agnes-connectors`, `agnes-release-process`). Loaded into the main agent's context when their description matches the work, or invoked explicitly via `Skill(<name>)`. Read these before editing the corresponding part of the codebase.
+- `.claude/agents/agnes-*.md` — specialist subagents (`agnes-reviewer-rules`, `agnes-reviewer-rbac`, `agnes-reviewer-architecture`, `agnes-releaser`). Spawned via the Agent tool at the end of PR work (reviewers, in parallel) or explicitly before/after merge (releaser).
+
+Design rationale: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`.
+
 ## Project conventions
 
 ### Vendor-agnostic OSS — no customer-specific content
