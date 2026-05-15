@@ -3924,6 +3924,17 @@ async def admin_rescan_store_submission(
         ents.set_visibility(entity_id, "pending")
     else:
         ents.set_visibility(entity_id, "approved")
+        # Guardrails explicitly disabled — immediately live. Promote
+        # the rescanned submission's version forward (same atomic
+        # helper the create / update / restore inline-promote paths
+        # use). Pre-fix this branch flipped visibility but never
+        # called promote_to_version, so a rescan that re-approved a
+        # non-current v2+ left the entity stuck at the prior version.
+        # Surfaced by adversarial review of PR #330.
+        from app.api.store import promote_to_version
+        entity_row = ents.get(entity_id) or {}
+        if target_n is not None and target_n > int(entity_row.get("version_no") or 0):
+            promote_to_version(entity_id, target_n, ents)
         # v46: attribution lookup is live — no explicit refresh needed.
     AuditRepository(conn).log(
         user_id=user["id"],
