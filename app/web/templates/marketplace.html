@@ -537,6 +537,7 @@
       <select class="mp-sort-select" id="mp-sort-select" title="Sort by">
         <option value="recent">Recent</option>
         <option value="most_used">Most used (30d)</option>
+        <option value="most_adopted">Most adopted (30d)</option>
         <option value="trending">Trending</option>
       </select>
     </div>
@@ -576,7 +577,7 @@ function loadFromURL() {
   state.category = p.get('category') || null;
   state.type = p.get('type') || null;
   const rawSort = p.get('sort') || 'recent';
-  state.sort = ['recent','most_used','trending'].includes(rawSort) ? rawSort : 'recent';
+  state.sort = ['recent','most_used','most_adopted','trending'].includes(rawSort) ? rawSort : 'recent';
   state.page = Math.max(1, parseInt(p.get('page') || '1', 10));
 }
 function syncURL() {
@@ -874,10 +875,13 @@ async function loadItems() {
     const results = await Promise.all(fetches);
     const merged = [];
     let total = 0;
+    const availableUnion = new Set();
     for (const r of results) {
       merged.push(...(r.items || []));
       total += r.total || 0;
+      for (const s of (r.available_sorts || [])) availableUnion.add(s);
     }
+    applyAvailableSorts([...availableUnion]);
     // Client-side paginate the merged set: backend already paginated each
     // half so this is an approximate combined view, sufficient for search.
     renderGrid(merged);
@@ -885,8 +889,32 @@ async function loadItems() {
     return;
   }
   const r = await fetchOne(state.tab);
+  applyAvailableSorts(r.available_sorts || []);
   renderGrid(r.items || []);
   renderPager(r.total || 0);
+}
+
+// Toggle visibility of sort options the current response says aren't
+// available. Trending is the only conditional one — its DESC trend_pct
+// sort returns an empty grid when the prior-week threshold hasn't
+// cleared anywhere, so we hide the option instead. If the user is
+// already on a now-unavailable sort, reset to 'recent' and re-fetch.
+function applyAvailableSorts(available) {
+  const select = document.getElementById('mp-sort-select');
+  if (!select) return;
+  for (const opt of select.options) {
+    opt.hidden = !available.includes(opt.value);
+  }
+  if (!available.includes(state.sort)) {
+    state.sort = 'recent';
+    select.value = 'recent';
+    syncURL();
+    // Re-fetch on the recovered sort. Avoid recursing forever by only
+    // doing this when the response we just rendered was on the
+    // now-unavailable sort.
+    loadItems();
+    loadMostPopular();
+  }
 }
 
 async function fetchOne(tab, overrides = {}) {
