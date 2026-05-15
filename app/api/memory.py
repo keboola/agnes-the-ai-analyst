@@ -13,18 +13,36 @@ import duckdb
 from app.auth.dependencies import get_current_user, _get_db
 from app.auth.access import require_admin, is_user_admin
 from src.repositories.knowledge import KnowledgeRepository
+from src.repositories.memory_domains import MemoryDomainsRepository
 from src.repositories.audit import AuditRepository
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
-VALID_STATUSES = ["pending", "approved", "mandatory", "rejected", "revoked", "expired"]
+# v49: ``mandatory`` is no longer a lifecycle status — Required tier rides on
+# ``knowledge_items.is_required``. ``status`` covers lifecycle only (pending,
+# approved, rejected, revoked, expired).
+VALID_STATUSES = ["pending", "approved", "rejected", "revoked", "expired"]
 
 BUNDLE_TOKEN_BUDGET = 6000
 # Rough chars-per-token estimate (conservative).
 _CHARS_PER_TOKEN = 4
-VALID_DOMAINS = ["finance", "engineering", "product", "data", "operations", "infrastructure"]
+
+# v49: domain set is no longer a hardcoded enum — it lives in the
+# ``memory_domains`` table and is administrable via /admin/memory-domains.
+# Validation uses ``MemoryDomainsRepository.exists_by_slug``.
+
+
+def _validate_domain_slug(slug: Optional[str], conn: duckdb.DuckDBPyConnection) -> None:
+    """Raise 400 if ``slug`` is truthy but doesn't resolve to a memory_domains row."""
+    if not slug:
+        return
+    if not MemoryDomainsRepository(conn).exists_by_slug(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown memory domain slug: {slug!r}",
+        )
 
 # API-layer allowlist for ``POST /api/memory/admin/bulk-update``. The repo's
 # ``_UPDATABLE_FIELDS`` is intentionally broader (``status``, ``sensitivity``,
@@ -86,14 +104,15 @@ def _caller_granted_memory_domains(
     """Domains the caller has been granted access to via resource_grants.
 
     The grant model is generic — admins assign ``MEMORY_DOMAIN`` resources
-    (e.g. ``finance``) to ``user_groups`` rows via ``/admin/access``. This
-    helper resolves the caller's group memberships against
-    ``resource_grants`` and returns the union of domain strings.
+    (e.g. ``md_finance``) to ``user_groups`` rows via ``/admin/access``.
+    This helper resolves the caller's group memberships against
+    ``resource_grants`` and returns the union of ``memory_domains.id``
+    values (v49: the migration re-pointed grants from slug to id).
 
     Returns ``None`` for privileged viewers (admins see everything regardless
     of grants — same convention as ``_effective_groups``). Returns an
-    empty list when the caller has no grants — the SQL filter then treats
-    this as a no-op (the ``OR domain IN ()`` clause is skipped).
+    empty list when the caller has no grants — the SQL EXISTS-join collapses
+    in that case, preserving pre-RBAC behaviour.
     """
     if _is_privileged_viewer(user, conn):
         return None
@@ -201,6 +220,38 @@ class ResolveDuplicateRequest(BaseModel):
     larger feature).
     """
     resolution: str
+
+
+# ---- Memory domain catalog (v49 — frontend typeahead + admin dropdowns) ----
+
+
+@router.get("/domains")
+async def list_memory_domains(
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """List all memory domains for chip-input typeahead + dropdown population.
+
+    v49: replaces the hardcoded ``VALID_DOMAINS`` constant. Returns every
+    row in ``memory_domains`` (admin-administered + the six canonical seed
+    rows) so the frontend can render the picker without a separate /admin
+    endpoint. Authenticated users only — domain catalog is non-sensitive
+    metadata that powers the item-edit UI.
+    """
+    domains = MemoryDomainsRepository(conn).list()
+    return {
+        "domains": [
+            {
+                "id": d["id"],
+                "slug": d["slug"],
+                "name": d["name"],
+                "description": d["description"],
+                "icon": d["icon"],
+                "color": d["color"],
+            }
+            for d in domains
+        ]
+    }
 
 
 # ---- User endpoints ----
@@ -357,7 +408,8 @@ async def get_stats(
         # Mirror the visibility composition KnowledgeRepository.list_items
         # uses: audience match OR MEMORY_DOMAIN grant. Without this the
         # stats `total` diverges from the list endpoint's `total_count` for
-        # non-admin users with grants (Devin BUG_0001 on PR #141 5f649a4).
+        # non-admin users with grants. v49: granted_domains values are
+        # ``memory_domains.id`` and resolve via the junction EXISTS subquery.
         visibility = ["audience IS NULL", "audience = 'all'"]
         if groups:
             placeholders = ",".join(["?"] * len(groups))
@@ -365,7 +417,11 @@ async def get_stats(
             params.extend(groups)
         if granted_domains:
             domain_placeholders = ",".join(["?"] * len(granted_domains))
-            visibility.append(f"domain IN ({domain_placeholders})")
+            visibility.append(
+                "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                "WHERE kid.item_id = knowledge_items.id "
+                f"AND kid.domain_id IN ({domain_placeholders}))"
+            )
             params.extend(granted_domains)
         where_clauses.append("(" + " OR ".join(visibility) + ")")
 
@@ -389,9 +445,15 @@ async def get_stats(
     ).fetchall()
     categories = sorted(r[0] for r in cat_rows if r[0])
 
+    # v49: domain lives in the junction. LEFT JOIN to surface 'unset' bucket
+    # for items without any domain row, matching the pre-v49 COALESCE behavior.
     by_domain_rows = conn.execute(
-        f"SELECT COALESCE(domain, 'unset') AS d, COUNT(*) "
-        f"FROM knowledge_items{where_sql} GROUP BY d",
+        "SELECT COALESCE(md.slug, 'unset') AS d, COUNT(*) "
+        "FROM knowledge_items "
+        "LEFT JOIN knowledge_item_domains kid ON kid.item_id = knowledge_items.id "
+        "LEFT JOIN memory_domains md ON md.id = kid.domain_id"
+        + (where_sql or "")
+        + " GROUP BY d",
         params,
     ).fetchall()
     by_domain = {r[0]: r[1] for r in by_domain_rows}
@@ -440,11 +502,7 @@ async def create_knowledge(
     # so an item can't be created with a domain it can't be patched to. Empty /
     # missing domain is fine — only reject non-empty values outside the allowlist.
     # See PR #126 review.
-    if request.domain and request.domain not in VALID_DOMAINS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"domain must be one of: {VALID_DOMAINS}",
-        )
+    _validate_domain_slug(request.domain, conn)
     repo = KnowledgeRepository(conn)
     item_id = str(uuid.uuid4())
 
@@ -572,7 +630,8 @@ async def dismiss_item(
     item = repo.get_by_id(item_id)
     if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
-    if item.get("status") == "mandatory":
+    # v49: Required tier rides on ``is_required`` (was status='mandatory').
+    if item.get("is_required") is True:
         raise HTTPException(status_code=400, detail="Cannot dismiss a mandatory item")
     repo.dismiss(user["id"], item_id)
     return {"id": item_id, "dismissed": True}
@@ -684,15 +743,20 @@ async def admin_mandate(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """v49: Required tier rides on ``knowledge_items.is_required`` boolean —
+    ``status`` is reserved for lifecycle (pending/approved/rejected/revoked/
+    expired). This endpoint keeps the path stable for back-compat; response
+    shape now surfaces ``is_required: True`` instead of ``status: 'mandatory'``.
+    """
     repo = KnowledgeRepository(conn)
     _get_item_or_404(repo, item_id)
-    repo.update_status(item_id, "mandatory")
+    repo.set_is_required(item_id, True)
     if request.audience is not None:
         repo.update(item_id, audience=request.audience)
     _audit_action(conn, user["email"], "mandate", item_id, {
         "reason": request.reason, "audience": request.audience,
     })
-    return {"id": item_id, "status": "mandatory"}
+    return {"id": item_id, "is_required": True, "status": "mandatory"}
 
 
 @router.post("/admin/revoke")
@@ -735,27 +799,34 @@ async def admin_batch(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Batch governance action on multiple items."""
+    """Batch governance action on multiple items.
+
+    v49: ``mandate`` flips the new ``is_required`` boolean to TRUE (was
+    ``status='mandatory'`` overload). Other actions still drive ``status``.
+    """
     repo = KnowledgeRepository(conn)
-    action_map = {
+    # mandate is special — it writes is_required, not status. All other
+    # actions stay on the status lifecycle column.
+    status_actions = {
         "approve": "approved",
         "reject": "rejected",
-        "mandate": "mandatory",
         "revoke": "revoked",
     }
-    if request.action not in action_map:
+    if request.action not in (*status_actions, "mandate"):
         raise HTTPException(status_code=400, detail=f"Invalid action: {request.action}")
 
-    new_status = action_map[request.action]
     results = {"success": [], "not_found": []}
     for item_id in request.item_ids:
         item = repo.get_by_id(item_id)
         if not item:
             results["not_found"].append(item_id)
             continue
-        repo.update_status(item_id, new_status)
-        if request.action == "mandate" and request.audience is not None:
-            repo.update(item_id, audience=request.audience)
+        if request.action == "mandate":
+            repo.set_is_required(item_id, True)
+            if request.audience is not None:
+                repo.update(item_id, audience=request.audience)
+        else:
+            repo.update_status(item_id, status_actions[request.action])
         _audit_action(conn, user["email"], request.action, item_id, {
             "reason": request.reason, "audience": request.audience, "batch": True,
         })
@@ -1044,11 +1115,8 @@ async def admin_patch_item(
     # empty-string short-circuit on ``domain``, and ``audience`` had no clearing
     # path at all. See PR #126 round-4 review.
     updates = request.model_dump(exclude_unset=True)
-    if "domain" in updates and updates["domain"] and updates["domain"] not in VALID_DOMAINS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"domain must be one of: {VALID_DOMAINS}",
-        )
+    if "domain" in updates and updates["domain"]:
+        _validate_domain_slug(updates["domain"], conn)
     # ``title`` is NOT NULL in the schema. ``exclude_unset=True`` lets explicit
     # ``null`` through, which would 500 on a DuckDB constraint violation. Reject
     # at the boundary so the caller gets a 400 with a clear message instead.
@@ -1100,11 +1168,8 @@ async def admin_bulk_update(
                 f"Allowed: {sorted(_BULK_UPDATE_ALLOWED)}"
             ),
         )
-    if "domain" in updates and updates["domain"] and updates["domain"] not in VALID_DOMAINS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"domain must be one of: {VALID_DOMAINS}",
-        )
+    if "domain" in updates and updates["domain"]:
+        _validate_domain_slug(updates["domain"], conn)
     # Mirror the PATCH boundary check — title is NOT NULL in the schema, so
     # an explicit null here would fall through to a per-item Constraint Error
     # in repo.bulk_update() instead of a clean 400 to the caller.
@@ -1357,8 +1422,9 @@ async def get_bundle(
     # ``list_items``; the user's dismissal row for a then-approved item is
     # silently ignored if/when the item is later mandated.
     dismissed_by_user_id = user["id"]
+    # v49: Required tier rides on is_required boolean. Was statuses=['mandatory'].
     mandatory = repo.list_items(
-        statuses=["mandatory"],
+        is_required=True,
         exclude_personal=True,
         user_groups=effective_groups,
         granted_domains=granted_domains,
@@ -1370,6 +1436,7 @@ async def get_bundle(
 
     approved = repo.list_items(
         statuses=["approved"],
+        is_required=False,
         exclude_personal=True,
         user_groups=effective_groups,
         granted_domains=granted_domains,

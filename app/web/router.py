@@ -989,7 +989,11 @@ async def corporate_memory(
     # (incl. dismissed) is rendered; the toolbar "Hide dismissed" toggle
     # client-side filters via FilterState (or a server refetch with
     # hide_dismissed=true — both supported, JS uses fetch).
-    items = repo.list_items(statuses=["approved", "mandatory"], limit=100)
+    # v49: ``mandatory`` is no longer a status — Required tier rides on
+    # ``is_required`` boolean. All previously-mandatory rows were migrated
+    # to status='approved' + is_required=TRUE, so a single status filter
+    # covers both buckets without losing rows.
+    items = repo.list_items(statuses=["approved"], limit=100)
     dismissed_set = set(repo.list_dismissed_ids(user["id"])) if user.get("id") else set()
 
     def _build_source_users_display(it: dict) -> list[dict]:
@@ -1030,16 +1034,13 @@ async def corporate_memory(
     # Build stats + filter dropdowns from the full item set so the dropdowns
     # match the data the page is rendering. `categories` is derived from
     # what's actually in the store (free-text enum, grows over time).
-    # `domains` is a CLOSED enum on the backend (VALID_DOMAINS in
-    # app/api/memory.py), so we always offer the full list — earlier we
-    # filtered to only domains with ≥1 item, which made the dropdown
-    # collapse to a single "engineering" option on instances where only
-    # one domain had been used. Operators should be able to pick any
-    # valid domain even when the current store has none of it.
-    from app.api.memory import VALID_DOMAINS
+    # v49: domains live in the ``memory_domains`` table — we surface every
+    # row so the dropdown carries the full admin-administered set even
+    # when the store currently has no items of a given domain.
+    from src.repositories.memory_domains import MemoryDomainsRepository
     all_items = repo.list_items(limit=10000)
     categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
-    domains = list(VALID_DOMAINS)
+    domains = [d["slug"] for d in MemoryDomainsRepository(conn).list()]
 
     # #176: surface the pending review queue to admins. Without this the
     # main page silently filtered status='pending' items and operators had
@@ -1074,7 +1075,10 @@ async def corporate_memory(
             # / "Knowledge Items" with no number under them) because Jinja's
             # Undefined silently coerces to empty string.
             "contributors": len({i.get("source_user") for i in all_items if i.get("source_user")}),
-            "knowledge_count": len([i for i in all_items if i.get("status") in ("approved", "mandatory")]),
+            # v49: status='mandatory' is gone (Required tier moved to is_required
+            # boolean); previously-mandatory rows are status='approved'. Counting
+            # just 'approved' captures both buckets.
+            "knowledge_count": len([i for i in all_items if i.get("status") == "approved"]),
         },
         user_votes={},
         is_km_admin=is_admin_view,
@@ -1170,7 +1174,13 @@ async def corporate_memory_admin(
             "pending": len(pending),
             "pending_count": status_counts.get("pending", 0),
             "approved_count": status_counts.get("approved", 0),
-            "mandatory_count": status_counts.get("mandatory", 0),
+            # v49: 'mandatory' as a status is gone — count items with the
+            # ``is_required`` flag set instead. ``status_counts`` is built off
+            # the status column so it can never produce a 'mandatory' bucket
+            # again; project from the items list directly.
+            "mandatory_count": sum(
+                1 for i in all_items if i.get("is_required") is True
+            ),
             "knowledge_count": len(all_items),
             "contradictions": len(contradictions),
             "duplicates": duplicates_count,
