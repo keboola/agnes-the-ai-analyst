@@ -306,6 +306,10 @@ class InnerDetailResponse(BaseModel):
     # the synth marketplace.json uses, so /<manifest_name>:<inner_name> is
     # exactly what Claude Code accepts after install.
     manifest_name: str = ""
+    # Parent plugin's curator-friendly display name from marketplace-metadata.json
+    # (same value the plugin detail hero prefers over manifest_name). Null when
+    # curator hasn't set it; the frontend then falls back to manifest_name.
+    parent_display_name: Optional[str] = None
     bundle_size: Optional[int] = None
     files: List[FileEntry] = []
     # v32: per-skill / per-agent enrichment from marketplace-metadata.json sub-tree.
@@ -1841,12 +1845,17 @@ def _curated_inner_parent_fields(
         Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     )
     meta = _resolve_marketplace_meta(conn, marketplace_id)
+    # Pull the parent plugin's curator-friendly display name from the same
+    # source the plugin detail hero uses (`_curated_plugin_enrichment`).
+    # LRU-cached, so no per-request I/O cost.
+    enrichment = _curated_plugin_enrichment(marketplace_id, plugin_name)
     return {
         "marketplace_name": meta["name"],
         "category": plugin_row.get("category"),
         "parent_author_name": meta["curator_name"] or OWNER_TODO_PLACEHOLDER,
         "parent_updated_at": _to_iso(plugin_row.get("updated_at")),
         "manifest_name": resolve_manifest_name(plugin_root, fallback=plugin_name),
+        "parent_display_name": enrichment.get("display_name"),
     }
 
 
