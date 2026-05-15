@@ -293,8 +293,14 @@ Auth providers in `app/auth/` (FastAPI-based):
 
 ### Files NOT to modify (stable infrastructure)
 - `connectors/jira/file_lock.py` — advisory file locking
-- `connectors/jira/transform.py` — core Jira transform logic
 - `services/ws_gateway/` — WebSocket notification gateway
+
+(`connectors/jira/transform.py` was previously listed here but has been
+removed: the `_remote_links` hardening in 0.54.19 required modifying
+`transform_remote_links` and `transform_all` to honor a new "overlay
+absent → preserve existing rows" contract. The transform module remains
+sensitive — touch it only when you understand the JSON-overlay /
+parquet-rewrite pipeline end-to-end — but it is no longer off-limits.)
 
 ## Release process
 

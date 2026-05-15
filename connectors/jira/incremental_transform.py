@@ -217,10 +217,19 @@ def transform_single_issue(
             updated_paths.append(path)
 
             # Remote links
-            existing_remote_links = load_parquet_month(output_dir / "remote_links", month_key)
-            updated_remote_links = upsert_dataframe(existing_remote_links, remote_links_records, "issue_key", issue_key)
-            path = save_parquet_month(updated_remote_links, REMOTE_LINKS_SCHEMA, output_dir / "remote_links", month_key)
-            updated_paths.append(path)
+            if remote_links_records is not None:
+                existing_remote_links = load_parquet_month(output_dir / "remote_links", month_key)
+                updated_remote_links = upsert_dataframe(existing_remote_links, remote_links_records, "issue_key", issue_key)
+                path = save_parquet_month(updated_remote_links, REMOTE_LINKS_SCHEMA, output_dir / "remote_links", month_key)
+                updated_paths.append(path)
+            else:
+                # The writer (save_issue / backfill / backfill_remote_links) skipped
+                # the _remote_links overlay due to a Jira fetch failure. Preserve the
+                # existing parquet rows for this issue instead of wiping them.
+                logger.warning(
+                    f"Skipping remote_links upsert for {issue_key}: overlay absent "
+                    f"(fetch failure). Existing rows preserved."
+                )
 
         # Update extract.duckdb _meta for all affected tables
         try:
