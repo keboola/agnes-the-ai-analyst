@@ -3747,8 +3747,41 @@ async def admin_override_store_submission(
     ents_repo = StoreEntitiesRepository(conn)
     ents_repo.set_visibility(entity_id, "approved")
 
-    # Update usage-attribution rows now that the entity is live.
+    # Mirror the runner's deferred-promotion path. An override on a
+    # v2+ edit/restore must promote the overridden version + swap the
+    # on-disk live bundle, otherwise the entity stays at the prior
+    # approved version and installers keep receiving stale bytes the
+    # admin just told us to replace. For an initial v1 submission
+    # (no prior approved) the version_no already matches — the loop
+    # just no-ops and we skip promotion harmlessly.
     entity_row = ents_repo.get(entity_id) or {}
+    promoted_to: Optional[int] = None
+    sub_hash = sub.get("version")
+    target_version_no: Optional[int] = None
+    for entry in (entity_row.get("version_history") or []):
+        if entry.get("hash") == sub_hash:
+            try:
+                target_version_no = int(entry.get("n"))
+            except (TypeError, ValueError):
+                target_version_no = None
+            break
+    if (target_version_no is not None
+            and target_version_no != int(entity_row.get("version_no") or 0)):
+        if ents_repo.promote_version(entity_id, target_version_no):
+            try:
+                from app.api.store import _swap_live_to_version
+                _swap_live_to_version(entity_id, target_version_no)
+                promoted_to = target_version_no
+                # Re-read after promotion so attribution picks up the
+                # new version's name/type if a rename was bundled in.
+                entity_row = ents_repo.get(entity_id) or entity_row
+            except Exception:
+                logger.exception(
+                    "override: live swap failed for entity %s v%d",
+                    entity_id, target_version_no,
+                )
+
+    # Update usage-attribution rows now that the entity is live.
     update_flea_attribution(
         conn, entity_id,
         entity_row.get("type", ""),
@@ -3765,6 +3798,7 @@ async def admin_override_store_submission(
             "prior_status": sub["status"],
             "prior_findings": sub.get("llm_findings"),
             "prior_inline": sub.get("inline_checks"),
+            "promoted_to_version_no": promoted_to,
         },
         result="ok",
     )
