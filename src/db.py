@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 45
+SCHEMA_VERSION = 46
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -229,6 +229,21 @@ CREATE TABLE IF NOT EXISTS knowledge_votes (
     voted_at TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (item_id, user_id)
 );
+
+-- v46: per-user opt-out for knowledge items. A row here means the user has
+-- dismissed an item from their personal AI bundle and (optionally) their
+-- listing — but mandatory items can never be dismissed; the governance
+-- hard rule is enforced API-side and reinforced by the SQL filter via
+-- ``status != 'mandatory'`` in the EXISTS subquery in list_items/search/
+-- count_items/bundle. Idempotent inserts (ON CONFLICT do nothing).
+CREATE TABLE IF NOT EXISTS knowledge_item_user_dismissed (
+    user_id VARCHAR NOT NULL,
+    item_id VARCHAR NOT NULL,
+    dismissed_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (user_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_user_dismissed_user
+    ON knowledge_item_user_dismissed(user_id);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id VARCHAR PRIMARY KEY,
@@ -2920,6 +2935,35 @@ def _v44_to_v45(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id)")
 
 
+def _v45_to_v46(conn: duckdb.DuckDBPyConnection) -> None:
+    """v46: per-user opt-out (dismiss) for knowledge items.
+
+    Adds ``knowledge_item_user_dismissed`` (user_id, item_id, dismissed_at)
+    with composite PK and an index on ``user_id`` to support the EXISTS
+    subquery used by list_items / search / count_items / bundle to filter
+    out items the caller has dismissed. Mandatory items are excluded from
+    that filter at the SQL layer (``status != 'mandatory'``); the API
+    further refuses POSTs against mandatory items so the row is never
+    written in the first place.
+
+    Idempotent: ``CREATE TABLE IF NOT EXISTS`` + ``CREATE INDEX IF NOT
+    EXISTS`` are safe to re-run. Fresh installs receive the table via
+    ``_SYSTEM_SCHEMA``; the upgrade path picks it up here.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS knowledge_item_user_dismissed (
+            user_id VARCHAR NOT NULL,
+            item_id VARCHAR NOT NULL,
+            dismissed_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (user_id, item_id)
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_item_user_dismissed_user "
+        "ON knowledge_item_user_dismissed(user_id)"
+    )
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -3201,6 +3245,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # the columns for fresh installs; migration adds them for
             # existing DBs. No-op on fresh.
             _v44_to_v45(conn)
+            # v46 knowledge_item_user_dismissed — per-user opt-out for
+            # curated memory items. _SYSTEM_SCHEMA already creates the
+            # table on fresh installs; this call is a no-op there.
+            _v45_to_v46(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3345,6 +3393,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v43_to_v44(conn)
             if current < 45:
                 _v44_to_v45(conn)
+            if current < 46:
+                _v45_to_v46(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -13,6 +13,38 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 - "Curated Memory" now sits in the primary navigation next to Data
   Packages, visible to every authenticated user.
+- **Per-user Dismiss** for Curated Memory items — analysts can opt-out
+  of approved items from their AI-agent bundle and gray them out on
+  `/corporate-memory`. Schema v46 adds `knowledge_item_user_dismissed`;
+  new endpoints `POST /api/memory/{id}/dismiss` and `DELETE` (idempotent).
+  **Mandatory items can never be dismissed** — the governance hard rule
+  is enforced at two layers (API rejects with 400, SQL filter exempts
+  mandatory rows even if a stale dismissal exists). `GET /api/memory`
+  gains `hide_dismissed=false` (default off — dismissed items still
+  visible with a badge + Undismiss button) and per-item `dismissed_by_me`
+  flag. `GET /api/memory/bundle` always excludes dismissed items.
+- **"My Upvotes" filter** on `/corporate-memory` replaces the old dead
+  "My Rules" sentinel. Backed by a new `?upvoted_by_me=true` filter on
+  `/api/memory` that subquerying against `knowledge_votes`.
+- **Inline tag typeahead** in the admin edit modal — focus the tag
+  input to browse all existing tags as a dropdown, type to filter
+  (case-insensitive), ↑/↓ + Enter to add as pill, type a fresh value
+  to surface "+ Add new tag: <value>". Tags now render as removable
+  pills (× to remove); Backspace on empty input pops the last pill.
+- **Bulk-edit modal pickers** for `/admin/corporate-memory` — Category,
+  Audience, and Add tag get `<select>` dropdowns with `+ Add new…` for
+  free entry; Remove tag is now a closed-set picker. Closes #128.
+- **`FilterState` client utility** — `app/web/static/js/filter-state.js`
+  exposes `save/load/clear/bindInputs` for persisting filter UI state
+  per-page in localStorage (keyed `agnes:filters:<scope>`). Adopted on
+  `/corporate-memory` (search / category / domain / sort / group-by /
+  hide-dismissed); other admin pages can adopt the same pattern.
+
+### Changed
+- The `/corporate-memory` domain filter dropdown now offers the full
+  `VALID_DOMAINS` enum (finance / engineering / product / data /
+  operations / infrastructure), not just domains that already have ≥1
+  item — the old behavior collapsed to a single option on fresh stores.
 
 ### Changed
 - **BREAKING (UI):** the Curated Memory admin review queue moved from

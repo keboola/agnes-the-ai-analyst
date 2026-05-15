@@ -12224,6 +12224,118 @@
           "jira-webhooks"
         ]
       }
+    },
+    "/api/memory/{item_id}/dismiss": {
+      "delete": {
+        "description": "Idempotent un-dismiss \u2014 a second DELETE still returns 200.\n\nReturns 404 if the item itself doesn't exist (consistent with the rest\nof the per-item endpoints); the dismissal row's existence is not\nconsulted because absence is the success state.",
+        "operationId": "undismiss_item_api_memory__item_id__dismiss_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Undismiss Item",
+        "tags": [
+          "memory"
+        ]
+      },
+      "post": {
+        "description": "Per-user opt-out \u2014 remove an item from the caller's AI bundle.\n\nIdempotent: re-dismissing an already-dismissed item is a no-op success.\nMandatory items can never be dismissed \u2014 the governance hard rule \u2014\nso a POST against one returns 400 with a clear detail message.",
+        "operationId": "dismiss_item_api_memory__item_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss Item",
+        "tags": [
+          "memory"
+        ]
+      }
     }
   }
 }

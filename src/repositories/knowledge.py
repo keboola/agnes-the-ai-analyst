@@ -141,6 +141,8 @@ class KnowledgeRepository:
         user_groups: Optional[List[str]] = None,
         granted_domains: Optional[List[str]] = None,
         upvoted_by_user: Optional[str] = None,
+        dismissed_by_user: Optional[str] = None,
+        hide_dismissed: bool = False,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -186,6 +188,21 @@ class KnowledgeRepository:
                 visibility_clauses.append(f"domain IN ({domain_placeholders})")
                 params.extend(granted_domains)
             query += " AND (" + " OR ".join(visibility_clauses) + ")"
+        if hide_dismissed and dismissed_by_user:
+            # v46: per-user opt-out. Exclude items the caller has dismissed,
+            # but never hide ``mandatory`` items — the governance hard rule
+            # is enforced here as well as in the API layer so a stale row
+            # in knowledge_item_user_dismissed (left over from before an
+            # item was mandated) can't accidentally hide a mandatory item.
+            query += (
+                " AND NOT EXISTS ("
+                " SELECT 1 FROM knowledge_item_user_dismissed d"
+                " WHERE d.item_id = knowledge_items.id"
+                "   AND d.user_id = ?"
+                "   AND knowledge_items.status != 'mandatory'"
+                ")"
+            )
+            params.append(dismissed_by_user)
         query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         return self._rows_to_dicts(self.conn.execute(query, params).fetchall())
@@ -200,6 +217,8 @@ class KnowledgeRepository:
         category: Optional[str] = None,
         domain: Optional[str] = None,
         source_type: Optional[str] = None,
+        dismissed_by_user: Optional[str] = None,
+        hide_dismissed: bool = False,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -233,6 +252,16 @@ class KnowledgeRepository:
                 visibility_clauses.append(f"domain IN ({domain_placeholders})")
                 params.extend(granted_domains)
             sql += " AND (" + " OR ".join(visibility_clauses) + ")"
+        if hide_dismissed and dismissed_by_user:
+            sql += (
+                " AND NOT EXISTS ("
+                " SELECT 1 FROM knowledge_item_user_dismissed d"
+                " WHERE d.item_id = knowledge_items.id"
+                "   AND d.user_id = ?"
+                "   AND knowledge_items.status != 'mandatory'"
+                ")"
+            )
+            params.append(dismissed_by_user)
         sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         results = self.conn.execute(sql, params).fetchall()
@@ -248,6 +277,8 @@ class KnowledgeRepository:
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
         granted_domains: Optional[List[str]] = None,
+        dismissed_by_user: Optional[str] = None,
+        hide_dismissed: bool = False,
     ) -> int:
         if search:
             pattern = f"%{search}%"
@@ -282,6 +313,16 @@ class KnowledgeRepository:
                 visibility_clauses.append(f"domain IN ({domain_placeholders})")
                 params.extend(granted_domains)
             sql += " AND (" + " OR ".join(visibility_clauses) + ")"
+        if hide_dismissed and dismissed_by_user:
+            sql += (
+                " AND NOT EXISTS ("
+                " SELECT 1 FROM knowledge_item_user_dismissed d"
+                " WHERE d.item_id = knowledge_items.id"
+                "   AND d.user_id = ?"
+                "   AND knowledge_items.status != 'mandatory'"
+                ")"
+            )
+            params.append(dismissed_by_user)
         return self.conn.execute(sql, params).fetchone()[0]
 
     def list_by_domain(
@@ -340,6 +381,50 @@ class KnowledgeRepository:
             [item_id],
         ).fetchone()
         return {"upvotes": result[0], "downvotes": result[1]}
+
+    # --- Dismissals (v46 — per-user opt-out) ---
+    #
+    # Mandatory items are never dismissible. The API layer rejects POSTs
+    # against mandatory items with a 400; the SQL filters in list_items /
+    # search / count_items and the bundle endpoint also exclude
+    # ``status = 'mandatory'`` from the dismissal subquery, so a stale row
+    # left over from before an item was mandated cannot accidentally hide
+    # a mandatory item.
+
+    def dismiss(self, user_id: str, item_id: str) -> None:
+        """Idempotent INSERT — re-dismissing is a no-op."""
+        self.conn.execute(
+            """INSERT INTO knowledge_item_user_dismissed (user_id, item_id)
+            VALUES (?, ?)
+            ON CONFLICT (user_id, item_id) DO NOTHING""",
+            [user_id, item_id],
+        )
+
+    def undismiss(self, user_id: str, item_id: str) -> None:
+        """Idempotent DELETE — un-dismissing an item that was never dismissed is a no-op."""
+        self.conn.execute(
+            "DELETE FROM knowledge_item_user_dismissed WHERE user_id = ? AND item_id = ?",
+            [user_id, item_id],
+        )
+
+    def is_dismissed(self, user_id: str, item_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM knowledge_item_user_dismissed WHERE user_id = ? AND item_id = ?",
+            [user_id, item_id],
+        ).fetchone()
+        return row is not None
+
+    def list_dismissed_ids(self, user_id: str) -> List[str]:
+        """Return all item ids this user has dismissed.
+
+        Callers typically materialize the result as a ``set`` to power per-
+        item ``dismissed_by_me`` flags on the listing response.
+        """
+        rows = self.conn.execute(
+            "SELECT item_id FROM knowledge_item_user_dismissed WHERE user_id = ?",
+            [user_id],
+        ).fetchall()
+        return [r[0] for r in rows]
 
     # --- Contradictions ---
 

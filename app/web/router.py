@@ -983,7 +983,14 @@ async def corporate_memory(
     zeroes ``pending_review_count`` for non-admins.
     """
     repo = KnowledgeRepository(conn)
+    # v46: server-side initial render mirrors the JS fetch contract — items
+    # are annotated with `dismissed_by_me` so the template can gray out the
+    # ones the caller dismissed without a second round-trip. The full list
+    # (incl. dismissed) is rendered; the toolbar "Hide dismissed" toggle
+    # client-side filters via FilterState (or a server refetch with
+    # hide_dismissed=true — both supported, JS uses fetch).
     items = repo.list_items(statuses=["approved", "mandatory"], limit=100)
+    dismissed_set = set(repo.list_dismissed_ids(user["id"])) if user.get("id") else set()
 
     def _build_source_users_display(it: dict) -> list[dict]:
         """Derive ``[{name, initials}]`` from the stored ``source_user`` email.
@@ -1008,12 +1015,14 @@ async def corporate_memory(
             initials = name[:2].upper()
         return [{"name": name, "initials": initials}]
 
-    # Enrich with votes + derived contributor-avatar list.
+    # Enrich with votes + derived contributor-avatar list + per-item
+    # dismissed-by-me flag (used to gray the row out + flip the action button).
     for item in items:
         votes = repo.get_votes(item["id"])
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
         item["source_users_display"] = _build_source_users_display(item)
+        item["dismissed_by_me"] = item["id"] in dismissed_set
 
     cm_config = get_corporate_memory_config()
     governance_mode = cm_config.get("distribution_mode")
@@ -1047,6 +1056,7 @@ async def corporate_memory(
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
         item["source_users_display"] = _build_source_users_display(item)
+        item["dismissed_by_me"] = item["id"] in dismissed_set
 
     is_admin_view = is_user_admin(user["id"], conn)
     ctx = _build_context(
