@@ -967,6 +967,25 @@
 
         <!-- All Items Tab -->
         <div id="tab-all" class="tab-content">
+            <!-- Bulk-edit batch bar (issue #129) — mirrors Review tab's bar but
+                 scoped to All Items selection state and without the Approve /
+                 Reject actions (those stay in Review). The same JS plumbing
+                 (`getSelectedIds('all')`, `updateSelectionCount('all')`,
+                 `openBulkEditModal(...)` reading `currentTab`) already exists. -->
+            <div class="batch-bar">
+                <label>
+                    <input type="checkbox" id="selectAllAll" onchange="toggleSelectAll('all')">
+                    Select all
+                </label>
+                <span class="selected-count" id="selectedCountAll"></span>
+                <div class="batch-actions">
+                    <button class="btn" id="batchMoveCategoryBtnAll" disabled onclick="openBulkEditModal('category')">Move to category…</button>
+                    <button class="btn" id="batchMoveDomainBtnAll" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
+                    <button class="btn" id="batchAddTagBtnAll" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
+                    <button class="btn" id="batchRemoveTagBtnAll" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
+                    <button class="btn" id="batchSetAudienceBtnAll" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
+                </div>
+            </div>
             <div class="filter-bar">
                 <label for="statusFilter">Status:</label>
                 <select class="filter-select" id="statusFilter" onchange="loadAllItems(1)">
@@ -1428,7 +1447,7 @@
                     <summary style="cursor: pointer; font-weight: var(--font-semibold);">
                         ${escapeHtml(g.label)} <span style="color: var(--text-secondary); font-weight: normal;">(${g.count})</span>
                     </summary>
-                    <div style="margin-top: var(--space-3);">${(g.items || []).map((it, idx) => renderItemCard(it, idx, false)).join('')}</div>
+                    <div style="margin-top: var(--space-3);">${(g.items || []).map((it, idx) => renderItemCard(it, idx, 'browse')).join('')}</div>
                 </details>`;
         }).join('');
     }
@@ -1983,7 +2002,7 @@
             return;
         }
 
-        list.innerHTML = data.items.map((item, idx) => renderItemCard(item, idx, true)).join('');
+        list.innerHTML = data.items.map((item, idx) => renderItemCard(item, idx, 'review')).join('');
         renderPagination(paginationEl, data, 'loadReviewQueue');
         updateSelectionCount('review');
     }
@@ -2005,8 +2024,14 @@
             return;
         }
 
-        list.innerHTML = data.items.map((item, idx) => renderItemCard(item, idx, false)).join('');
+        list.innerHTML = data.items.map((item, idx) => renderItemCard(item, idx, 'all')).join('');
         renderPagination(paginationEl, data, 'loadAllItems');
+        // Reset the "Select all" header checkbox + button states after every
+        // re-render (issue #129); previous selection IDs no longer exist in
+        // the DOM after the list refreshes.
+        const selAll = document.getElementById('selectAllAll');
+        if (selAll) selAll.checked = false;
+        updateSelectionCount('all');
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2018,7 +2043,15 @@
     // from, without a fresh GET round-trip.
     const _itemsById = new Map();
 
-    function renderItemCard(item, idx, isReview) {
+    // mode: 'review' | 'all' | 'browse'
+    //   - 'review' renders the Approve / Reject action buttons; row checkbox
+    //     drives the Review-tab bulk-edit bar (updateSelectionCount('review')).
+    //   - 'all' renders the per-row Edit/Delete/Mandate buttons; row checkbox
+    //     drives the All-Items-tab bulk-edit bar (updateSelectionCount('all')).
+    //   - 'browse' omits the row checkbox entirely — Browse tab has no batch
+    //     bar; rendering a checkbox there would leave it orphaned and
+    //     dispatch updateSelectionCount() against an invisible tab.
+    function renderItemCard(item, idx, mode) {
         _itemsById.set(item.id, item);
         const status = item.status || 'pending';
         const categoryDisplay = (item.category || 'general').replace(/_/g, ' ');
@@ -2029,7 +2062,7 @@
 
         // Determine available actions based on current status
         let actionsHtml = '';
-        if (isReview) {
+        if (mode === 'review') {
             actionsHtml = `
                 <div class="item-actions">
                     <button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">
@@ -2075,7 +2108,7 @@
         return `
             <div class="knowledge-item" data-id="${esc(item.id)}" data-idx="${idx}">
                 <div class="item-row">
-                    ${isReview ? `<input type="checkbox" class="item-checkbox" data-id="${esc(item.id)}" onchange="updateSelectionCount('review')">` : ''}
+                    ${mode === 'browse' ? '' : `<input type="checkbox" class="item-checkbox" data-id="${esc(item.id)}" onchange="updateSelectionCount('${mode}')">`}
                     <div class="item-body">
                         <div class="knowledge-header">
                             <div>
@@ -2085,7 +2118,7 @@
                                     ${item.domain ? `<span style="display:inline-block;padding:2px 8px;background:#e8f0fe;color:#1a73e8;border-radius:999px;font-size:11px;">${escapeHtml(item.domain)}</span>` : ''}
                                     ${item.confidence ? `<span style="display:inline-block;padding:2px 8px;background:#f0fdf4;color:#16a34a;border-radius:999px;font-size:11px;">${Math.round(item.confidence*100)}%</span>` : ''}
                                     ${item.source_type === 'user_verification' ? '<span style="display:inline-block;padding:2px 8px;background:#dbeafe;color:#1d4ed8;border-radius:999px;font-size:11px;">Verified</span>' : ''}
-                                    ${!isReview ? `<span class="status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
+                                    ${mode !== 'review' ? `<span class="status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
                                     <span>Added ${escapeHtml(dateStr)}</span>
                                 </div>
                             </div>
@@ -2374,15 +2407,20 @@
     function updateSelectionCount(tab) {
         const ids = getSelectedIds(tab);
         const countEl = document.getElementById(tab === 'review' ? 'selectedCountReview' : 'selectedCountAll');
-        const approveBtn = document.getElementById(tab === 'review' ? 'batchApproveBtn' : 'batchApproveBtnAll');
-        const rejectBtn = document.getElementById(tab === 'review' ? 'batchRejectBtn' : 'batchRejectBtnAll');
+        // Approve / Reject buttons exist only in the Review tab — All Items
+        // batch bar (issue #129) deliberately omits them (status changes belong
+        // to per-row buttons or the keyboard workflow in Review).
+        const approveBtn = tab === 'review' ? document.getElementById('batchApproveBtn') : null;
+        const rejectBtn = tab === 'review' ? document.getElementById('batchRejectBtn') : null;
 
         if (countEl) countEl.textContent = ids.length > 0 ? `${ids.length} selected` : '';
         if (approveBtn) approveBtn.disabled = ids.length === 0;
         if (rejectBtn) rejectBtn.disabled = ids.length === 0;
-        // Bulk-edit buttons (issue #62) — enable when at least one item ticked.
-        ['batchMoveCategoryBtn', 'batchMoveDomainBtn', 'batchAddTagBtn', 'batchRemoveTagBtn', 'batchSetAudienceBtn'].forEach(id => {
-            const btn = document.getElementById(id);
+        // Bulk-edit buttons (issue #62 + #129) — Review tab uses bare IDs;
+        // All Items tab adds the "All" suffix. Each tab toggles its own set.
+        const suffix = tab === 'review' ? '' : 'All';
+        ['batchMoveCategoryBtn', 'batchMoveDomainBtn', 'batchAddTagBtn', 'batchRemoveTagBtn', 'batchSetAudienceBtn'].forEach(base => {
+            const btn = document.getElementById(base + suffix);
             if (btn) btn.disabled = ids.length === 0;
         });
     }

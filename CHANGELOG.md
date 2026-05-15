@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Corporate Memory — bulk-edit batch bar on the All Items tab.**
+  Symmetric to the Review-tab bar shipped in #126; row checkboxes,
+  "Select all" header, and the five bulk-edit actions (Move to
+  category / Move to domain / Add tag / Remove tag / Set audience)
+  now appear on `/corporate-memory-admin` All Items as well. Approve
+  / Reject stay scoped to Review per #129's scope decision (status
+  flips belong with the per-row actions or the keyboard workflow).
+  Closes #129.
+
 ## [0.54.19] — 2026-05-15
 
 ### Changed
