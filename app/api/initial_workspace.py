@@ -527,6 +527,15 @@ async def analyst_zip(
     CLI then surfaces a typed error pointing at "Sync now".
     """
     if user is None:
+        # Browser → redirect to /login (target preserved via ?next=).
+        # CLI / curl / API client → raw 401 they can handle.
+        # This endpoint is the one `/api/*` URL designed to be hit directly
+        # from a browser bookmark (analyst clean-install zip), so it
+        # intentionally opts out of the global `_API_PATH_PREFIXES`
+        # "never redirect /api/*" contract in `app/main.py`. Matching only
+        # `text/html` — NOT `*/*` — mirrors `_wants_html()` in `app/main.py`:
+        # `*/*` is curl's default and must keep getting the raw 401 so
+        # tooling that parses `{"detail": "..."}` doesn't silently break.
         if "text/html" in request.headers.get("accept", ""):
             return RedirectResponse(
                 url="/login?next=/api/initial-workspace.zip", status_code=302

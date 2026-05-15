@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Unauthenticated browser requests to `GET /api/initial-workspace.zip` now redirect to `/login?next=/api/initial-workspace.zip` instead of returning a raw JSON 401** (#315). This is the one `/api/*` endpoint that's designed to be hit directly from a browser bookmark (the analyst clean-install zip), so it intentionally opts out of the global `_API_PATH_PREFIXES` "never redirect /api/*" contract in `app/main.py`. CLI / curl / other API clients (any `Accept` without `text/html` — including the `*/*` default) keep getting the 401 they can handle.
+
 ## [0.54.17] — 2026-05-15
 
 ### Changed

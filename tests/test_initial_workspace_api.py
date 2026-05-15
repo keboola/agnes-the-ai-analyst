@@ -606,6 +606,30 @@ def test_analyst_zip_api_unauthenticated_returns_401(web_client):
     assert r.status_code == 401
 
 
+def test_analyst_zip_curl_default_accept_returns_401(web_client):
+    """`Accept: */*` (curl's default with no `-H`) lands in the 401 branch.
+
+    Mirrors the `_wants_html()` contract in `app/main.py`: `*/*` must NOT
+    silently flip a curl/tooling client to an HTML response — they expect
+    `{"detail": "..."}` and a real 401.
+    """
+    r = web_client.get(
+        "/api/initial-workspace.zip",
+        headers={"Accept": "*/*"},
+    )
+    assert r.status_code == 401
+
+
+def test_analyst_zip_empty_accept_returns_401(web_client):
+    """Empty `Accept` header lands in the 401 branch — same shape as the `*/*`
+    case (no `text/html` substring means: not a browser, give the raw 401)."""
+    r = web_client.get(
+        "/api/initial-workspace.zip",
+        headers={"Accept": ""},
+    )
+    assert r.status_code == 401
+
+
 def test_analyst_zip_404_when_not_configured(web_client):
     """GET /api/initial-workspace.zip returns 404 when no template."""
     headers = _make_user(web_client)
