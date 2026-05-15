@@ -467,11 +467,19 @@ CREATE TABLE IF NOT EXISTS user_group_members (
 -- registered the resource type (e.g. '<marketplace_slug>/<plugin_name>').
 --
 -- v14: group_id FK→user_groups(id), same rationale as user_group_members.
+-- v49: ``requirement`` enum splits Required-tier semantics out of the
+-- grant identity. ``available`` (default) — grantee can opt in via
+-- ``user_stack_subscriptions``. ``required`` — auto-included in the
+-- effective stack, opt-out blocked at the API. Applies to
+-- ``data_package`` / ``memory_domain`` / ``memory_item`` grants;
+-- ``marketplace_plugin`` Required-tier stays on
+-- ``marketplace_plugins.is_system`` per D1.
 CREATE TABLE IF NOT EXISTS resource_grants (
     id            VARCHAR PRIMARY KEY,
     group_id      VARCHAR NOT NULL REFERENCES user_groups(id),
     resource_type VARCHAR NOT NULL,
     resource_id   VARCHAR NOT NULL,
+    requirement   VARCHAR DEFAULT 'available',
     assigned_at   TIMESTAMP DEFAULT current_timestamp,
     assigned_by   VARCHAR,
     UNIQUE (group_id, resource_type, resource_id)
@@ -3072,6 +3080,25 @@ def _v47_to_v48(conn: duckdb.DuckDBPyConnection) -> None:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mid_lookup ON usage_marketplace_item_daily(source, type, parent_plugin, name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type)")
+
+
+def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
+    """v49: unified stack for Data Packages + Memory.
+
+    Single migration entry point for the v49 cutover. See
+    ``docs/brainstorms/2026-05-15-unified-stack-design.md`` section 8.1
+    for the full step list. Idempotent (``ALTER ... ADD COLUMN IF NOT
+    EXISTS``, ``CREATE TABLE IF NOT EXISTS``) so re-running is safe.
+    """
+    # 1) resource_grants.requirement — per-group 'available' | 'required'
+    # enum. Default 'available' preserves pre-v49 semantics. Required-tier
+    # applies to data_package / memory_domain / memory_item grants;
+    # marketplace_plugin Required-tier stays on
+    # marketplace_plugins.is_system per D1.
+    conn.execute(
+        "ALTER TABLE resource_grants "
+        "ADD COLUMN IF NOT EXISTS requirement VARCHAR DEFAULT 'available'"
+    )
 
 
 _V33_TO_V34_MIGRATIONS = [
