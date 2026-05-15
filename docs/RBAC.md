@@ -180,6 +180,19 @@ No dual-write window. Either the schema is on v12 (old code) or v13 (new code).
 
 ---
 
+## Schema v49 — `requirement` enum + new resource types
+
+Schema v49 (unified Browse + My Stack for Data Packages and Memory):
+
+- `resource_grants` gains a `requirement VARCHAR DEFAULT 'available'` column. Enum: `'available'` | `'required'`. Applies to `data_package`, `memory_domain`, and `memory_item` grants. Per-group decision: same resource can be Required for Sales but Available for Engineering without duplicating the resource itself.
+- New resource types in `app.resource_types.ResourceType`:
+  - `DATA_PACKAGE` — admin-curated bundle of tables (`data_packages` table; M:N to `table_registry` via `data_package_tables`). Effective `TABLE` set for a user = `(direct TABLE grants) ∪ (tables in DATA_PACKAGE grants the user has)`.
+  - `MEMORY_ITEM` — per-group item-level Required override. Default for an item comes from `knowledge_items.is_required` flag; a `MEMORY_ITEM` grant flips that for the specified group.
+- `MEMORY_DOMAIN` grants migrated from slug strings to `memory_domains.id` references. Orphan grants (pointing at non-existent domains) preserved for admin cleanup.
+- Marketplace stays untouched — `marketplace_plugins.is_system` continues to control the mandatory tier for plugins.
+
+Effective Required = OR across grants. Any grant with `requirement='required'` wins for the user. Soft downgrade (`required → available` on `PUT /api/admin/grants/{id}`) eagerly materializes `user_stack_subscriptions` rows for every current group member in the same transaction so users don't silently lose the resource on next `agnes pull`.
+
 ## Schema v14 — FK constraints
 
 The v13→v14 migration adds DuckDB foreign-key constraints to `user_group_members` and `resource_grants`:

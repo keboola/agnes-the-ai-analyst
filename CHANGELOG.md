@@ -10,6 +10,127 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Data Packages** — admin-curated bundles of tables surface as a first-class
+  stack type under `/catalog` with the same card pattern + tab strip
+  (Browse / My Stack) + Required badge + Add to stack interaction as
+  Marketplace. New `/catalog/p/<slug>` drill-down lists the tables in a
+  package with their query_mode badge and last sync. Inline create flow
+  from the `/admin/tables` register/edit modal (chip-input typeahead with
+  `+ Create new` mini-modal + optional RBAC follow-up step).
+- **Memory** — promoted to a first-class user-facing nav slot (no longer
+  admin-only). Top-level `/corporate-memory` switches to a domain Browse
+  view with Browse / My Stack tabs + the shared card pattern. New
+  `/memory/d/<slug>` drill-down preserves every per-item affordance
+  (votes / contributors / tags / confidence / source-badge / status-badge
+  / admin Edit / Mark Personal / Dismiss), with Required items
+  visually pinned and non-dismissable.
+- **Required vs Available** — `resource_grants.requirement` enum
+  (`available` / `required`) replaces ad-hoc `is_system`-style flags for
+  DATA_PACKAGE + MEMORY_DOMAIN + MEMORY_ITEM grants. Per-grant Required
+  means "auto in stack, cannot remove"; per-grant Available means
+  "user opts in via Add to stack". OR precedence across grants — any
+  required grant wins. Memory item-level Required has its own
+  precedence (per-group MEMORY_ITEM grant override > `is_required` flag).
+- **Soft downgrade** — when admin flips a grant from `required → available`
+  on `PUT /api/admin/grants/{id}`, every user already-in-stack via that
+  required grant gets an explicit `user_stack_subscriptions` row
+  materialized in the same transaction, so they don't silently lose the
+  resource on the next `agnes pull`.
+- **`StackResolver` service** (`app/services/stack_resolver.py`) — single
+  source of truth for browse + stack + Required computation across
+  Data Packages and Memory Domains. Used by all `/api/stack/*`
+  endpoints + the manifest builder.
+- **`agnes stack` CLI** — `list [--type]`, `add <type> <id>`,
+  `remove <type> <id>` for Data Packages and Memory Domains. Plus
+  `agnes admin data-package {create,edit,delete,list,add-table,
+  remove-table}` and `agnes admin memory-domain
+  {create,edit,delete,list,add-item,remove-item}` with consistent
+  `--yes` confirmation on destructive ops. `agnes admin grant`
+  picks up `--requirement available|required`.
+- **`/api/sync/manifest` extended** with `data_packages[]`,
+  `memory_domains[]`, and `direct_tables[]` arrays. Legacy `tables[]`
+  shape preserved for older CLI clients.
+- **Reference-counted shared parquet store** — `agnes pull` keeps each
+  table parquet exactly once at `<workspace>/.claude/data/_shared/`
+  with symlinks from each stacked package directory. Removing a
+  package only deletes the package's symlink + the shared parquet
+  if no other stacked package still references it. Windows fallback:
+  hardlink, then file copy on further error.
+- **`GET /api/memory/bundle?domain=<slug>`** — per-domain rendered
+  markdown bundle for `agnes pull` to materialize at
+  `<workspace>/.claude/memory/<slug>/bundle.md`. Deterministic
+  ordering (id-sorted, required-then-approved); md5 published in the
+  manifest.
+- **Telemetry + audit** — every admin write to data_packages /
+  memory_domains / grants / mark-mandatory / mark-unmandatory writes
+  an `audit_log` row. Every user-side `stack.subscribe`,
+  `stack.unsubscribe`, `memory.dismiss`, `memory.undismiss`,
+  `data_package.view`, `memory_domain.view`, `sync.pull_started`,
+  `sync.pull_completed` emits to `usage_events`.
+- **chip-input** vanilla JS component (`app/web/static/js/components/
+  chip-input.js`) — multi-select typeahead with `+ Create new` hook.
+  Used on `/admin/tables` (Data Packages field) and
+  `/admin/corporate-memory` (Domains field). Fires `chip-create` so
+  in-page modals can intercept.
+
+### Changed
+- **BREAKING** — `knowledge_items.status='mandatory'` semantics moved
+  to new `knowledge_items.is_required BOOLEAN`. Existing mandatory
+  items auto-migrated to `is_required=TRUE, status='approved'`. The
+  `POST /api/memory/items/{id}/mark-mandatory` endpoint now writes
+  `is_required=TRUE` and returns `{is_required: true}` in the
+  response (legacy `status: "mandatory"` removed). New paired
+  endpoint `POST /api/memory/items/{id}/mark-unmandatory` for the
+  inverse path.
+- **BREAKING** — scalar `knowledge_items.domain` column dropped;
+  relations now live in `knowledge_item_domains` junction. Domains
+  themselves are first-class rows in the new `memory_domains` table
+  (CRUD via `/api/admin/memory-domains`). The `VALID_DOMAINS`
+  hardcoded enum at `app/api/memory.py:27` is gone; the canonical six
+  (finance / engineering / product / data / operations /
+  infrastructure) are seeded into `memory_domains` by the migration.
+  Item-on-write/read goes through the junction; the API surface and
+  the `_TREE_AXES = ("domain", ...)` axis are preserved.
+- **BREAKING** — `MEMORY_DOMAIN` grants in `resource_grants` switched
+  from slug string to `memory_domains.id` reference. Migration
+  re-points existing grants; orphan grants (pointing at non-existent
+  domain) preserved for admin cleanup.
+- `agnes pull` rewritten to a per-type loop
+  (`marketplace_plugins / direct_tables / data_packages /
+  memory_domains`). Reuses `cli/lib/pull.py` for marketplace +
+  legacy `tables[]` flow; new `cli/lib/pull_sync.py` handles the v49
+  manifest sections. Post-pull status block shows per-type
+  added / updated / removed counts.
+- Memory primary nav link is now visible to non-admin users. Admin
+  dropdown gets a separate "Curated memory reviews" link pointing
+  at the moderation queue.
+
+### Internal
+- Schema migration **v48 → v49** introduces `data_packages`,
+  `data_package_tables`, `memory_domains`, `knowledge_item_domains`,
+  `user_stack_subscriptions`; adds `resource_grants.requirement`
+  + `knowledge_items.is_required`; drops `knowledge_items.domain`.
+  End-to-end fidelity test seeded with realistic v48 fixture
+  including mandatory items + slug-keyed memory_domain grants +
+  marketplace telemetry tables.
+- `ResourceType` enum gains `DATA_PACKAGE` and `MEMORY_ITEM` with
+  matching `ResourceTypeSpec` entries in `RESOURCE_TYPES`.
+- `KnowledgeRepository` now routes `domain` through
+  `knowledge_item_domains` while preserving the public kwarg
+  signature; reads synthesize `item["domain"]` via
+  `_hydrate_domain` (alphabetic-first junction slug) for the
+  provenance/contradiction/duplicates/template callers that still
+  index on the scalar key.
+- Admin moderation queue (`admin_corporate_memory.html`) cards now
+  use the same `.memory-item__*` shape as the user-facing
+  `/memory/d/<slug>` drill-down, with admin-only action buttons
+  layered on top. Legacy `.knowledge-item` class kept on the same
+  DOM nodes so in-file JS (keyboard nav, bulk-edit selection)
+  keeps working without a rewrite.
+- Single PR cutover (no two-phase rollout). Legacy
+  `marketplace_plugins.is_system` + `user_plugin_optouts` retained
+  per spec D1 — Marketplace was deliberately not touched.
 ## [0.54.24] — 2026-05-16
 
 ### Fixed
