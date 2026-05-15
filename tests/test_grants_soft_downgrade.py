@@ -169,3 +169,108 @@ class TestRequiredToAvailableMaterializesSubscriptions:
             headers=_auth(seeded_app["analyst_token"]),
         )
         assert r.status_code == 403
+
+
+class TestSoftDowngradePerf:
+    """Section 4.5 perf gate (Phase 9 / Task 9.5).
+
+    1000-user group flipped from ``required`` → ``available`` MUST
+    materialize all 1000 ``user_stack_subscriptions`` rows inside a
+    single DuckDB transaction in under 1 second, and emit **exactly
+    one** audit row (not 1000) — the per-user fan-out is part of the
+    same admin action, not a sequence of separate operations.
+    """
+
+    SOFT_DOWNGRADE_PERF_BUDGET_S = float(
+        # Allow operators to dial the threshold via env without a code
+        # change — useful when the suite runs on a heavily-loaded shared
+        # box and the 1s target is too tight for one transient run.
+        __import__("os").environ.get("AGNES_PERF_SOFT_DOWNGRADE_S", "1.0")
+    )
+
+    def test_thousand_user_downgrade_under_one_second_single_audit(
+        self, seeded_app,
+    ):
+        import time as _time
+        from src.db import get_system_db
+
+        conn = get_system_db()
+
+        # Group + 1000 users + memberships. The downgrade fan-out is a
+        # ``INSERT INTO user_stack_subscriptions ... SELECT m.user_id ...
+        # WHERE m.group_id = ?`` — so the cost is dominated by the JOIN
+        # and the constraint check, not by individual Python writes.
+        conn.execute(
+            "INSERT INTO user_groups(id, name, description, created_by) "
+            "VALUES ('g_perf', 'PerfGroup', '', 'test')"
+        )
+        for i in range(1000):
+            uid = f"uperf_{i:04d}"
+            conn.execute(
+                "INSERT INTO users(id, email) VALUES (?, ?)",
+                [uid, f"{uid}@x.test"],
+            )
+            conn.execute(
+                "INSERT INTO user_group_members(user_id, group_id, source) "
+                "VALUES (?, 'g_perf', 'test')",
+                [uid],
+            )
+        conn.execute(
+            "INSERT INTO data_packages(id, slug, name) "
+            "VALUES ('pkg_perf', 'pkg-perf', 'PerfPkg')"
+        )
+        grant_id = _seed_grant(
+            conn, "g_perf", "data_package", "pkg_perf", "required",
+        )
+        # Baseline audit row count so we can isolate the rows produced by
+        # the soft-downgrade alone. Older test fixtures may have seeded
+        # other audit lines via the seeded_app setup (admin login bumps,
+        # etc.) — measure delta, not absolute count.
+        baseline_audit = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action = ?",
+            ["resource_grant.requirement_updated"],
+        ).fetchone()[0]
+        conn.close()
+
+        c = seeded_app["client"]
+        t0 = _time.perf_counter()
+        r = c.put(
+            f"/api/admin/grants/{grant_id}",
+            json={"requirement": "available"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        elapsed_s = _time.perf_counter() - t0
+        assert r.status_code == 200, r.text
+
+        conn = get_system_db()
+        try:
+            sub_count = conn.execute(
+                "SELECT COUNT(*) FROM user_stack_subscriptions "
+                "WHERE resource_type='data_package' AND resource_id='pkg_perf'"
+            ).fetchone()[0]
+            new_audit = conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = ?",
+                ["resource_grant.requirement_updated"],
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        print(
+            f"\nsoft-downgrade fan-out: {elapsed_s*1000:.1f} ms for 1000 users"
+        )
+        assert sub_count == 1000, (
+            f"expected 1000 subscription rows materialized, got {sub_count}"
+        )
+        # Exactly ONE audit row produced — the per-user fan-out is bundled
+        # into a single admin action audit line.
+        assert new_audit - baseline_audit == 1, (
+            f"expected 1 audit row for the requirement update; got "
+            f"{new_audit - baseline_audit} (baseline={baseline_audit}, "
+            f"after={new_audit})"
+        )
+        assert elapsed_s < self.SOFT_DOWNGRADE_PERF_BUDGET_S, (
+            f"soft-downgrade fan-out took {elapsed_s:.3f}s, exceeds "
+            f"{self.SOFT_DOWNGRADE_PERF_BUDGET_S}s. Threshold is a "
+            f"guidance target — document the actual time and tune in a "
+            f"follow-up if this is a persistent regression."
+        )
