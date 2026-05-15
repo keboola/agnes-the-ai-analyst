@@ -228,6 +228,13 @@ class PluginDetailResponse(BaseModel):
     video_url: Optional[str] = None             # v32: external (YouTube/Vimeo/Loom) embed URL
     bundle_size: Optional[int] = None           # bytes; None when unknown
     install_count: int = 0                      # flea only; curated leaves at 0
+    # stack_count: how many users currently have this plugin in their
+    # stack — curated reads user_plugin_optouts (post-v28 PRESENCE =
+    # subscribed; system plugins included via fanout), flea reads
+    # store_entities.install_count. Same field the listing chip
+    # renders as "N installed" — surfaced here so the detail hero
+    # can show the matching figure.
+    stack_count: int = 0
     released_at: Optional[str] = None           # ISO timestamp
     updated_at: Optional[str] = None            # ISO timestamp
     installed: bool = False
@@ -712,21 +719,23 @@ def _build_telemetry(
     conn: duckdb.DuckDBPyConnection,
     source: str,
     name: str,
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """Build the plugin-level telemetry dict for detail endpoints.
 
-    `name` is the plugin name (curated) or flea entity name. Returns None
-    when invocations_30d == 0 — caller renders an empty telemetry block.
+    `name` is the plugin name (curated) or flea entity name. Always
+    returns a dict (never None) so the frontend can render the chip
+    on the same field shape regardless of activity level — visibility
+    is decided client-side from (stack_count > 0 OR invocations_30d > 0),
+    matching the listing card. daily_series is always 30 entries (zero
+    padded) so the "Active days" / "Last used" derivations on the
+    sidebar are trivial.
     """
     stats = _load_invocation_stats(conn, source)
-    stat = stats.get(name)
-    inv30 = stat["invocations_30d"] if stat else 0
-    if inv30 == 0:
-        return None
+    stat = stats.get(name) or {}
     return {
-        "invocations_30d": inv30,
-        "distinct_users_30d": stat["distinct_users_30d"] if stat else 0,
-        "trend_pct": stat["trend_pct"] if stat else None,
+        "invocations_30d": int(stat.get("invocations_30d") or 0),
+        "distinct_users_30d": int(stat.get("distinct_users_30d") or 0),
+        "trend_pct": stat.get("trend_pct"),
         "daily_series": _load_plugin_daily_series(conn, source, name),
     }
 
@@ -1490,6 +1499,11 @@ async def curated_detail(
         is_system=bool(plugin_row.get("is_system")),
         **enrichment,
         telemetry=_build_telemetry(conn, "curated", plugin_name),
+        # stack_count mirrors what the listing card shows ("N installed")
+        # so the hero chip on this detail page renders the same figure.
+        stack_count=_load_curated_stack_counts(conn).get(
+            (marketplace_id, plugin_name), 0,
+        ),
     )
 
 
