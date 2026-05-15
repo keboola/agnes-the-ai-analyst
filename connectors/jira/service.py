@@ -23,6 +23,15 @@ from connectors.jira.validation import is_valid_issue_key, safe_join_under
 logger = logging.getLogger(__name__)
 
 
+class JiraFetchError(Exception):
+    """Raised by Jira fetch helpers when the API returns an auth (401/403)
+    or server (5xx) error. Callers that overlay the result onto cached
+    issue JSON (save_issue, backfill processors) MUST catch this and
+    skip the overlay; otherwise a transient outage silently wipes
+    existing parquet rows for that issue.
+    """
+
+
 class _JiraConfig:
     """Jira configuration from environment variables."""
     JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "")
