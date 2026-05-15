@@ -861,23 +861,26 @@ def _build_telemetry(
     conn: duckdb.DuckDBPyConnection,
     source: str,
     name: str,
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
     """Build the plugin-level telemetry dict for detail endpoints.
 
-    `name` is the plugin name (curated) or flea entity name. Always
-    returns a dict (never None) so the frontend can render the chip
-    on the same field shape regardless of activity level — visibility
-    is decided client-side from (stack_count > 0 OR invocations_30d > 0),
-    matching the listing card. daily_series is always 30 entries (zero
-    padded) so the "Active days" / "Last used" derivations on the
-    sidebar are trivial.
+    `name` is the plugin name (curated) or flea entity name. Returns
+    None when ``invocations_30d == 0`` so the caller can omit the chip
+    payload entirely; frontend hero / sidebar already handle a missing
+    `d.telemetry` (`d.telemetry || {}` guard + `if (!d.telemetry || …)`
+    on daily_series). When data IS present, ``daily_series`` is always a
+    30-entry zero-padded list so the "Active days" / "Last used"
+    derivations on the sidebar are trivial.
     """
     stats = _load_invocation_stats(conn, source)
-    stat = stats.get(name) or {}
+    stat = stats.get(name)
+    inv30 = int(stat["invocations_30d"]) if stat else 0
+    if inv30 == 0:
+        return None
     return {
-        "invocations_30d": int(stat.get("invocations_30d") or 0),
-        "distinct_users_30d": int(stat.get("distinct_users_30d") or 0),
-        "trend_pct": stat.get("trend_pct"),
+        "invocations_30d": inv30,
+        "distinct_users_30d": int(stat["distinct_users_30d"]) if stat else 0,
+        "trend_pct": stat.get("trend_pct") if stat else None,
         "daily_series": _load_plugin_daily_series(conn, source, name),
     }
 
