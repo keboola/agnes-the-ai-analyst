@@ -542,6 +542,18 @@ CREATE TABLE IF NOT EXISTS knowledge_item_domains (
 CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain
     ON knowledge_item_domains(domain_id);
 
+-- v49: generic per-user opt-in for resource_grants flagged
+-- ``requirement='available'``. Currently scoped to ``data_package`` /
+-- ``memory_domain`` resource types — Marketplace pluginy stay on the
+-- existing ``user_plugin_optouts`` opt-out shape per D1.
+CREATE TABLE IF NOT EXISTS user_stack_subscriptions (
+    user_id       VARCHAR NOT NULL,
+    resource_type VARCHAR NOT NULL,
+    resource_id   VARCHAR NOT NULL,
+    subscribed_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (user_id, resource_type, resource_id)
+);
+
 -- v22: reserved (formerly setup_banner — feature dropped, table kept for
 -- forward compatibility with already-migrated instances).
 CREATE TABLE IF NOT EXISTS setup_banner (
@@ -3316,6 +3328,23 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
                SELECT 1 FROM memory_domains
                 WHERE memory_domains.slug = resource_grants.resource_id
            )
+        """
+    )
+
+    # 8) ``user_stack_subscriptions`` — generic per-user opt-in for
+    # ``data_package`` and ``memory_domain`` grants flagged
+    # ``requirement='available'``. Composite PK (user_id, resource_type,
+    # resource_id) makes the insert idempotent. Marketplace pluginy stay
+    # on the existing ``user_plugin_optouts`` opt-out shape per D1.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_stack_subscriptions (
+            user_id       VARCHAR NOT NULL,
+            resource_type VARCHAR NOT NULL,
+            resource_id   VARCHAR NOT NULL,
+            subscribed_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (user_id, resource_type, resource_id)
+        )
         """
     )
 

@@ -247,3 +247,30 @@ def test_v48_to_v49_leaves_orphan_grants_intact():
     _v48_to_v49(conn)
     row = conn.execute("SELECT resource_id FROM resource_grants WHERE id='orphan'").fetchone()
     assert row[0] == "no-such-domain"  # unchanged
+
+
+def test_v48_to_v49_creates_user_stack_subscriptions():
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    _v48_to_v49(conn)
+
+    cols = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info('user_stack_subscriptions')").fetchall()
+    }
+    assert {"user_id", "resource_type", "resource_id", "subscribed_at"}.issubset(cols)
+
+
+def test_v48_to_v49_user_stack_subscriptions_composite_pk():
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    _v48_to_v49(conn)
+    conn.execute(
+        "INSERT INTO user_stack_subscriptions(user_id, resource_type, resource_id) "
+        "VALUES ('u1', 'data_package', 'pkg_sales')"
+    )
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute(
+            "INSERT INTO user_stack_subscriptions(user_id, resource_type, resource_id) "
+            "VALUES ('u1', 'data_package', 'pkg_sales')"
+        )
