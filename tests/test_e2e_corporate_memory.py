@@ -254,14 +254,14 @@ class TestCorporateMemoryAdminPage:
 
     def test_admin_page_loads(self, server, api, page):
         _seed_items(api)
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
 
         # Should have tab buttons
         assert page.locator(".tab-btn").count() >= 3
 
     def test_review_queue_shows_pending(self, server, api, page):
         _seed_items(api)
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
 
         # Wait for review queue to load
         page.wait_for_timeout(1500)
@@ -287,7 +287,7 @@ class TestCorporateMemoryAdminPage:
         assert pending_id in approved_ids
 
     def test_contradictions_tab_exists(self, server, api, page):
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
 
         # Find and click Contradictions tab
         contradictions_tab = page.locator(".tab-btn:has-text('Contradictions')")
@@ -302,7 +302,7 @@ class TestCorporateMemoryAdminPage:
 
     def test_all_items_tab_shows_items(self, server, api, page):
         _seed_items(api)
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
 
         # Click "All Items" tab
         page.locator(".tab-btn:has-text('All Items')").click()
@@ -314,7 +314,7 @@ class TestCorporateMemoryAdminPage:
 
     def test_audit_log_tab_loads(self, server, api, page):
         _seed_items(api)  # This triggers approve actions that create audit entries
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
 
         # Click Audit Log tab
         page.locator(".tab-btn:has-text('Audit Log')").click()
@@ -326,7 +326,7 @@ class TestCorporateMemoryAdminPage:
 
     def test_stats_bar_shows_counts(self, server, api, page):
         _seed_items(api)
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
 
         # Stats bar should show numbers
         stats = page.locator(".stats-bar .stat-item .value")
@@ -335,7 +335,7 @@ class TestCorporateMemoryAdminPage:
     def test_admin_stats_bar_shows_nonzero_counts(self, server, api, page):
         """Stats bar must show actual counts, not zeros -- catches API URL mismatches."""
         _seed_items(api)
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
         page.wait_for_timeout(1500)
 
         pending = page.locator("#statPending")
@@ -363,7 +363,7 @@ class TestCorporateMemoryAdminPage:
     def test_review_queue_renders_pending_items(self, server, api, page):
         """Review queue must actually render pending items, not just show empty state."""
         _seed_items(api)
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
         page.wait_for_timeout(1500)
 
         # Review queue should contain the pending item title
@@ -376,7 +376,7 @@ class TestCorporateMemoryAdminPage:
     def test_all_items_tab_renders_actual_items(self, server, api, page):
         """All Items tab must render knowledge items after JS fetch."""
         _seed_items(api)
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
 
         # Click "All Items" tab
         page.locator(".tab-btn:has-text('All Items')").click()
@@ -395,7 +395,7 @@ class TestCorporateMemoryAdminPage:
         console_errors = []
         page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
 
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
         page.wait_for_timeout(2000)
 
         # No fetch errors in console
@@ -579,7 +579,7 @@ class TestCorporateMemoryAuditLog:
         resp = api.post(f"/api/memory/admin/approve?item_id={ids[3]}")
         assert resp.status_code == 200
 
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
 
         # Switch to Audit Log tab
         page.locator(".tab-btn:has-text('Audit Log')").click()
@@ -601,7 +601,7 @@ class TestCorporateMemoryAuditLog:
         resp = api.post(f"/api/memory/admin/approve?item_id={ids[3]}")
         assert resp.status_code == 200
 
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
         page.locator(".tab-btn:has-text('Audit Log')").click()
         page.wait_for_timeout(1500)
 
@@ -620,7 +620,7 @@ class TestCorporateMemoryAuditLog:
         )
         assert resp.status_code == 200
 
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
         page.locator(".tab-btn:has-text('Audit Log')").click()
         page.wait_for_timeout(1500)
 
@@ -818,7 +818,7 @@ class TestVerifiedFactsSourceFilterUI:
     """Browser tests for the new Source dropdown on the admin All Items tab."""
 
     def _open_all_tab(self, server, page):
-        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.goto(f"{server['url']}/admin/corporate-memory")
         page.locator(".tab-btn:has-text('All Items')").click()
         page.wait_for_timeout(1500)
 

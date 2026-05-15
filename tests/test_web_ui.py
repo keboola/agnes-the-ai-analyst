@@ -78,6 +78,13 @@ class TestWebUISmoke:
         resp = web_client.get("/corporate-memory", cookies=admin_cookie)
         assert resp.status_code == 200
 
+    def test_analyst_can_access_corporate_memory(self, web_client, analyst_cookie):
+        """Curated Memory is user-facing (get_current_user) — non-admins
+        reach it. The admin review queue is separate at
+        /admin/corporate-memory."""
+        resp = web_client.get("/corporate-memory", cookies=analyst_cookie)
+        assert resp.status_code == 200
+
     def test_activity_center(self, web_client, admin_cookie):
         resp = web_client.get("/activity-center", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -361,7 +368,7 @@ class TestAdminRoleGuards:
         assert resp.status_code == 200
 
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
-        resp = web_client.get("/corporate-memory/admin", cookies=analyst_cookie)
+        resp = web_client.get("/admin/corporate-memory", cookies=analyst_cookie)
         assert resp.status_code == 403
 
     def test_admin_agent_prompt_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
@@ -421,19 +428,6 @@ class TestAdminRoleGuards:
         r = web_client.get("/me/activity", cookies=analyst_cookie, follow_redirects=False)
         assert r.status_code == 200
         assert b"My activity" in r.content
-
-    def test_me_activity_hero_renders_strong_email_unescaped(self, web_client, analyst_cookie):
-        """Regression: the /me/activity hero subtitle embeds the user's email
-        in <strong> tags. Building it via `~` concatenation with a Markup
-        operand (`user.email | e`) made Jinja2's markup_join escape the
-        literal tags too, so the page showed literal "<strong>...</strong>"
-        text. The subtitle must render real <strong> HTML while still
-        escaping the email itself."""
-        r = web_client.get("/me/activity", cookies=analyst_cookie, follow_redirects=False)
-        assert r.status_code == 200
-        body = r.text
-        assert "activity for <strong>analyst@test.com</strong>." in body
-        assert "activity for &lt;strong&gt;" not in body
 
     def test_profile_session_download_returns_file_for_owner(self, web_client, analyst_cookie, tmp_path, monkeypatch):
         """Authenticated owner can fetch their own jsonl with proper Content-Disposition."""

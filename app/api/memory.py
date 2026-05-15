@@ -213,13 +213,20 @@ async def list_knowledge(
     source_type: Optional[str] = None,
     search: Optional[str] = None,
     exclude_personal: bool = True,
+    upvoted_by_me: bool = False,
+    hide_dismissed: bool = False,
     page: int = 1,
     per_page: int = 50,
     sort: str = "updated_at",
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """List knowledge items with filtering, pagination, search."""
+    """List knowledge items with filtering, pagination, search.
+
+    ``upvoted_by_me=true`` narrows to items the caller upvoted (powers the
+    "My Upvotes" filter on /corporate-memory — replaces the old dead
+    "My Rules" category sentinel).
+    """
     repo = KnowledgeRepository(conn)
     page = max(page, 1)
     offset = (page - 1) * per_page
@@ -229,6 +236,11 @@ async def list_knowledge(
     effective_groups = _effective_groups(user, conn)
     granted_domains = _caller_granted_memory_domains(user, conn)
     statuses = [status_filter] if status_filter else None
+    upvoted_by_user_id = user["id"] if upvoted_by_me else None
+    # v46: caller's id is plumbed to repo filters when hide_dismissed=True so
+    # the SQL can NOT-EXISTS-subquery against knowledge_item_user_dismissed.
+    # Mandatory items are exempted by the subquery's status guard.
+    dismissed_by_user_id = user["id"]
     if search:
         items = repo.search(
             search,
@@ -239,9 +251,22 @@ async def list_knowledge(
             category=category,
             domain=domain,
             source_type=source_type,
+            dismissed_by_user=dismissed_by_user_id,
+            hide_dismissed=hide_dismissed,
             limit=per_page,
             offset=offset,
         )
+        if upvoted_by_user_id:
+            # Best-effort post-filter for the search() path (which doesn't
+            # plumb the upvote filter into its SQL). Search + "My Upvotes"
+            # is rare enough that a post-filter is fine.
+            upvoted_ids = {
+                r[0] for r in conn.execute(
+                    "SELECT item_id FROM knowledge_votes WHERE user_id = ? AND vote > 0",
+                    [upvoted_by_user_id],
+                ).fetchall()
+            }
+            items = [it for it in items if it["id"] in upvoted_ids]
     else:
         items = repo.list_items(
             statuses=statuses,
@@ -251,16 +276,23 @@ async def list_knowledge(
             exclude_personal=effective_exclude_personal,
             user_groups=effective_groups,
             granted_domains=granted_domains,
+            upvoted_by_user=upvoted_by_user_id,
+            dismissed_by_user=dismissed_by_user_id,
+            hide_dismissed=hide_dismissed,
             limit=per_page,
             offset=offset,
         )
 
-    # Enrich with votes
+    # Enrich with votes + per-user dismissal flag. The set lookup keeps the
+    # per-item annotation O(1); the frontend uses ``dismissed_by_me`` to
+    # render the gray-out state without a separate roundtrip.
+    dismissed_set = set(repo.list_dismissed_ids(user["id"]))
     for item in items:
         votes = repo.get_votes(item["id"])
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
         item["score"] = votes["upvotes"] - votes["downvotes"]
+        item["dismissed_by_me"] = item["id"] in dismissed_set
 
     import math
     total_count = repo.count_items(
@@ -272,6 +304,8 @@ async def list_knowledge(
         exclude_personal=effective_exclude_personal,
         user_groups=effective_groups,
         granted_domains=granted_domains,
+        dismissed_by_user=dismissed_by_user_id,
+        hide_dismissed=hide_dismissed,
     )
     total_pages = math.ceil(total_count / per_page) if per_page > 0 else 1
 
@@ -520,6 +554,48 @@ async def toggle_personal_flag(
         raise HTTPException(status_code=403, detail="Only the contributor can flag personal items")
     repo.set_personal(item_id, request.is_personal)
     return {"id": item_id, "is_personal": request.is_personal}
+
+
+@router.post("/{item_id}/dismiss")
+async def dismiss_item(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-user opt-out — remove an item from the caller's AI bundle.
+
+    Idempotent: re-dismissing an already-dismissed item is a no-op success.
+    Mandatory items can never be dismissed — the governance hard rule —
+    so a POST against one returns 400 with a clear detail message.
+    """
+    repo = KnowledgeRepository(conn)
+    item = repo.get_by_id(item_id)
+    if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
+        raise HTTPException(status_code=404, detail="Knowledge item not found")
+    if item.get("status") == "mandatory":
+        raise HTTPException(status_code=400, detail="Cannot dismiss a mandatory item")
+    repo.dismiss(user["id"], item_id)
+    return {"id": item_id, "dismissed": True}
+
+
+@router.delete("/{item_id}/dismiss")
+async def undismiss_item(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Idempotent un-dismiss — a second DELETE still returns 200.
+
+    Returns 404 if the item itself doesn't exist (consistent with the rest
+    of the per-item endpoints); the dismissal row's existence is not
+    consulted because absence is the success state.
+    """
+    repo = KnowledgeRepository(conn)
+    item = repo.get_by_id(item_id)
+    if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
+        raise HTTPException(status_code=404, detail="Knowledge item not found")
+    repo.undismiss(user["id"], item_id)
+    return {"id": item_id, "dismissed": False}
 
 
 @router.get("/{item_id}/provenance")
@@ -1275,11 +1351,19 @@ async def get_bundle(
     effective_groups = _effective_groups(user, conn)
     granted_domains = _caller_granted_memory_domains(user, conn)
 
+    # v46: the bundle is what AI agents inject as context, so the opt-out
+    # has real effect here — it's always-on for the calling user. Mandatory
+    # items are exempted by the EXISTS subquery's status guard inside
+    # ``list_items``; the user's dismissal row for a then-approved item is
+    # silently ignored if/when the item is later mandated.
+    dismissed_by_user_id = user["id"]
     mandatory = repo.list_items(
         statuses=["mandatory"],
         exclude_personal=True,
         user_groups=effective_groups,
         granted_domains=granted_domains,
+        dismissed_by_user=dismissed_by_user_id,
+        hide_dismissed=True,
         limit=1000,
         offset=0,
     )
@@ -1289,6 +1373,8 @@ async def get_bundle(
         exclude_personal=True,
         user_groups=effective_groups,
         granted_domains=granted_domains,
+        dismissed_by_user=dismissed_by_user_id,
+        hide_dismissed=True,
         limit=1000,
         offset=0,
     )

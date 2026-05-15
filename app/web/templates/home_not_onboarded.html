@@ -1290,17 +1290,16 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
             <div class="ttl">Curated data packages <span class="arrow">&rarr;</span></div>
             <div class="desc">Tables, schema, and metric definitions your team has registered. Subscribe and Claude can query them with documented business rules.</div>
         </a>
-        {# Corporate memory + Activity center are both admin-only — matches
-           the top-nav gating logic (the "Memory" link is hidden for
-           non-admin in _app_header.html, and the /corporate-memory route
-           is `require_admin`). Without this gate non-admin users would
-           see a Corporate memory tile that 403s when clicked. #}
-        {% if is_admin %}
+        {# Curated Memory is user-facing — the /corporate-memory route runs
+           on get_current_user, so the tile shows for everyone, matching
+           its primary-nav placement. #}
         <a class="what-is-item" href="/corporate-memory">
             <span class="ico">&#x1F9E0;</span>
-            <div class="ttl">Corporate memory <span class="arrow">&rarr;</span></div>
+            <div class="ttl">Curated memory <span class="arrow">&rarr;</span></div>
             <div class="desc">Shared analyst knowledge and prior solutions to draw from. Searchable, versioned, fed back into Claude's context on demand.</div>
         </a>
+        {# Activity center admin-only — matches the top-nav gating logic. #}
+        {% if is_admin %}
         <a class="what-is-item" href="/activity-center">
             <span class="ico">&#x1F4C8;</span>
             <div class="ttl">Activity center <span class="arrow">&rarr;</span></div>

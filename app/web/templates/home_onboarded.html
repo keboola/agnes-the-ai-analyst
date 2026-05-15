@@ -122,20 +122,20 @@
             <div class="ttl">Catalog</div>
             <div class="desc">Browse tables, schema, and metric definitions.</div>
         </a>
-        {# Activity Center + Corporate Memory both admin-only — parity
-           with the top-nav gating (Memory link hidden for non-admin in
-           _app_header.html, /corporate-memory route is `require_admin`,
-           same for the active /home not-onboarded view). #}
+        {# Curated Memory is user-facing — the /corporate-memory route runs
+           on get_current_user, so the card shows for everyone, matching
+           its primary-nav placement next to Data Packages. #}
+        <a class="quick-card" href="/corporate-memory">
+            <span class="ico">&#x1F9E0;</span>
+            <div class="ttl">Curated Memory</div>
+            <div class="desc">Shared analyst knowledge and prior solutions.</div>
+        </a>
+        {# Activity Center admin-only — parity with the top-nav gating. #}
         {% if is_admin %}
         <a class="quick-card" href="/activity-center">
             <span class="ico">&#x1F4C8;</span>
             <div class="ttl">Activity Center</div>
             <div class="desc">Per-user analytics on {{ instance_brand }} adoption.</div>
-        </a>
-        <a class="quick-card" href="/corporate-memory">
-            <span class="ico">&#x1F9E0;</span>
-            <div class="ttl">Corporate Memory</div>
-            <div class="desc">Shared analyst knowledge and prior solutions.</div>
         </a>
         {% endif %}
         {% if is_admin %}

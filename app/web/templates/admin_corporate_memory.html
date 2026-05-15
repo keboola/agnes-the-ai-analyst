@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Corporate Memory Admin - Data Analyst Portal{% endblock %}
+{% block title %}Memory Review - Data Analyst Portal{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -9,7 +9,7 @@
 <style>
         /* Corporate Memory Admin - Design System Styles */
         .container-memory {
-            max-width: 1000px;
+            max-width: var(--width-app);
             margin: 0 auto;
             padding: var(--space-6);
         }
@@ -796,10 +796,90 @@
                 display: none !important;
             }
         }
+
+        /* ─── Tag-input widget (edit modal) ─── */
+        .tag-input-widget {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+            padding: 4px 6px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg);
+            min-height: 34px;
+            cursor: text;
+        }
+        .tag-input-widget:focus-within {
+            border-color: var(--primary, #0073D1);
+            box-shadow: 0 0 0 2px rgba(0, 115, 209, 0.15);
+        }
+        .tag-input-widget .tag-pill {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 2px 4px 2px 10px;
+            background: var(--primary, #0073D1);
+            color: white;
+            border-radius: 999px;
+            font-size: 12px; font-weight: 500;
+            line-height: 1.4;
+            white-space: nowrap;
+        }
+        .tag-input-widget .tag-pill button {
+            background: rgba(255, 255, 255, 0.25);
+            color: white; border: none; cursor: pointer;
+            width: 16px; height: 16px; padding: 0;
+            border-radius: 50%;
+            font-size: 13px; line-height: 1;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .tag-input-widget .tag-pill button:hover {
+            background: rgba(255, 255, 255, 0.45);
+        }
+        .tag-input-widget input {
+            flex: 1; min-width: 120px;
+            border: none; outline: none; background: transparent;
+            color: var(--text); font: inherit; padding: 4px 6px;
+        }
+        /* Typeahead dropdown — popped under the widget when input has focus.
+           Filter against EXISTING_TAGS array (server-injected via tojson). */
+        .tag-suggestions {
+            position: absolute;
+            top: 100%; left: 0; right: 0;
+            margin-top: 2px;
+            background: var(--bg, white);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+            z-index: 2100;
+            max-height: 220px;
+            overflow-y: auto;
+            padding: 4px 0;
+        }
+        .tag-suggestion {
+            display: block; width: 100%; text-align: left;
+            padding: 6px 12px;
+            background: transparent;
+            border: none; cursor: pointer;
+            color: var(--text); font: inherit;
+            font-size: 13px;
+        }
+        .tag-suggestion:hover, .tag-suggestion.active {
+            background: var(--primary-light, #eef5fb);
+            color: var(--primary, #0073D1);
+        }
+        .tag-suggestion .hint {
+            color: var(--text-muted); font-size: 11px; margin-left: 8px;
+            font-weight: 500;
+        }
+        .tag-suggestion.new-tag .hint { color: var(--primary, #0073D1); }
+        .tag-suggestions .empty-hint {
+            padding: 8px 12px; color: var(--text-muted); font-size: 12px; font-style: italic;
+        }
     </style>
 {% endblock %}
 
 {% block layout %}
+    {% set page_hero_eyebrow = "Agent Experience" %}
+    {% set page_hero_title = "Memory Review" %}
+    {% set page_hero_subtitle = "Review pending knowledge items from analyst sessions — approve, mandate, or reject — and resolve contradictions and duplicate candidates. Approved items flow to the user-facing <a href=\"/corporate-memory\" style=\"color:inherit;text-decoration:underline;\">Curated Memory</a> page." %}
+    {% include "_page_hero.html" %}
 <div class="container-memory">
         <!-- Stats Bar -->
         <div class="stats-bar">
@@ -1046,7 +1126,19 @@
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Category</span>
-                            <input id="editItemCategory" type="text" placeholder="e.g. metric, dataset" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                            {# A <select> dropdown (clicks reliably across all
+                               browsers; <datalist> didn't — Firefox/Safari
+                               wouldn't open the suggestion list on the
+                               typeahead arrow click). The "+ Add new
+                               category…" pseudo-option reveals a sibling
+                               input so admins can still introduce a fresh
+                               slug without leaving the modal. #}
+                            <select id="editItemCategoryPick" onchange="onCategoryPickChange(this.value)" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                                <option value="">(unset)</option>
+                                {% for c in edit_categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+                                <option value="__NEW__">+ Add new category…</option>
+                            </select>
+                            <input id="editItemCategoryNew" type="text" placeholder="new category slug" style="display: none; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Domain</span>
@@ -1062,11 +1154,41 @@
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Audience</span>
-                            <input id="editItemAudience" type="text" placeholder="e.g. all or group:finance" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                            {# Audience is a closed enum: `(unset)` / `all` /
+                               `group:<name>` per RBAC group. The free-text
+                               input let admins typo `gourp:eng` and silently
+                               hide an item from everyone; a `<select>` rules
+                               that out. Groups come from the same source the
+                               mandate-form picker uses. #}
+                            <select id="editItemAudience" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                                <option value="">(unset)</option>
+                                <option value="all">all (every authenticated user)</option>
+                                {% for g in groups %}<option value="group:{{ g.name }}">group:{{ g.name }} ({{ g.members_count }} member{{ 's' if g.members_count != 1 else '' }})</option>{% endfor %}
+                            </select>
                         </label>
-                        <label style="display: flex; flex-direction: column; gap: 4px;">
-                            <span style="font-size: 12px; color: var(--text-muted);">Tags (comma-separated)</span>
-                            <input id="editItemTags" type="text" placeholder="tag1, tag2" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                        {# Tag widget with INLINE typeahead — focus the input or
+                           start typing and the dropdown right below the pill
+                           row lists matching existing tags. Click a match or
+                           ↑/↓ + Enter to add as pill; type a new value and
+                           Enter to add a brand-new tag. Backspace on empty
+                           input removes the last pill. The widget container
+                           is position:relative so the suggestion box pops
+                           directly under the pill row. #}
+                        <label style="display: flex; flex-direction: column; gap: 4px; grid-column: 1 / -1; position: relative;">
+                            <span style="font-size: 12px; color: var(--text-muted);">Tags <span style="color: var(--text-muted); font-weight: 400;">— pills below (× to remove). Focus to browse existing, type to filter, Enter to add new.</span></span>
+                            <div id="editItemTagsWidget" class="tag-input-widget" onclick="if(event.target===this) document.getElementById('editItemTagsInput').focus()">
+                                {# Pills inserted by tagWidgetAdd() at runtime.
+                                   The input stays last in DOM order so new
+                                   pills land before it. #}
+                                <input id="editItemTagsInput" type="text"
+                                       placeholder="type to filter existing tags or add new…"
+                                       oninput="onTagInputType()"
+                                       onfocus="onTagInputType()"
+                                       onkeydown="onTagInputKeydown(event)"
+                                       onblur="setTimeout(hideTagSuggestions, 150)"
+                                       autocomplete="off">
+                            </div>
+                            <div id="editItemTagSuggestions" class="tag-suggestions" hidden></div>
                         </label>
                     </div>
                 </div>
@@ -1109,6 +1231,10 @@
     // Configuration passed from server
     const GROUPS = {{ groups | tojson }};
     const GOVERNANCE_MODE = {{ governance_mode | tojson }};
+    // Tag autocomplete pool — populated from existing knowledge_items.tags
+    // (deduplicated, sorted server-side in router::corporate_memory_admin).
+    // Consumed by the tag-input widget on the edit modal.
+    const EXISTING_TAGS = {{ edit_tags | tojson }};
 
     // State
     let currentTab = 'review';
@@ -1330,13 +1456,27 @@
         _bulkEditState = { mode, ids };
         const titleEl = document.getElementById('bulkEditTitle');
         const bodyEl = document.getElementById('bulkEditBody');
+        // Bulk-edit pickers mirror the per-item edit modal — pick from
+        // existing values; "+ Add new…" reveals a sibling text input for a
+        // fresh slug. remove_tag is closed-set (only existing tags), so no
+        // "+ Add new". The select markup is rendered by Jinja at page load
+        // from edit_categories / edit_tags / groups (already passed into
+        // the template ctx).
+        const _selectStyle = 'width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);';
+        const _newInputStyle = 'display:none; margin-top: var(--space-2); width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);';
         if (mode === 'category') {
             titleEl.textContent = `Move ${ids.length} item(s) to category…`;
-            bodyEl.innerHTML = `<input type="text" id="bulkEditValue" placeholder="e.g. business_logic" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">`;
+            bodyEl.innerHTML = `
+                <select id="bulkEditValue" onchange="onBulkPickChange(this.value)" style="${_selectStyle}">
+                    <option value="">(unset)</option>
+                    {% for c in edit_categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+                    <option value="__NEW__">+ Add new category…</option>
+                </select>
+                <input id="bulkEditNewValue" type="text" placeholder="new category slug" style="${_newInputStyle}">`;
         } else if (mode === 'domain') {
             titleEl.textContent = `Move ${ids.length} item(s) to domain…`;
             bodyEl.innerHTML = `
-                <select id="bulkEditValue" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">
+                <select id="bulkEditValue" style="${_selectStyle}">
                     <option value="">(unset)</option>
                     <option value="finance">finance</option>
                     <option value="engineering">engineering</option>
@@ -1347,15 +1487,48 @@
                 </select>`;
         } else if (mode === 'audience') {
             titleEl.textContent = `Set audience for ${ids.length} item(s)…`;
-            bodyEl.innerHTML = `<input type="text" id="bulkEditValue" placeholder="e.g. all or group:finance" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">`;
+            bodyEl.innerHTML = `
+                <select id="bulkEditValue" style="${_selectStyle}">
+                    <option value="">(unset)</option>
+                    <option value="all">all (every authenticated user)</option>
+                    {% for g in groups %}<option value="group:{{ g.name }}">group:{{ g.name }} ({{ g.members_count }} member{{ 's' if g.members_count != 1 else '' }})</option>{% endfor %}
+                </select>`;
         } else if (mode === 'add_tag') {
             titleEl.textContent = `Add tag to ${ids.length} item(s)…`;
-            bodyEl.innerHTML = `<input type="text" id="bulkEditValue" placeholder="tag name" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">`;
+            bodyEl.innerHTML = `
+                <select id="bulkEditValue" onchange="onBulkPickChange(this.value)" style="${_selectStyle}">
+                    <option value="">— pick existing or add new —</option>
+                    {% for t in edit_tags %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+                    <option value="__NEW__">+ Add new tag…</option>
+                </select>
+                <input id="bulkEditNewValue" type="text" placeholder="new tag" style="${_newInputStyle}">`;
         } else if (mode === 'remove_tag') {
             titleEl.textContent = `Remove tag from ${ids.length} item(s)…`;
-            bodyEl.innerHTML = `<input type="text" id="bulkEditValue" placeholder="tag name" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">`;
+            {% if edit_tags %}
+            bodyEl.innerHTML = `
+                <select id="bulkEditValue" style="${_selectStyle}">
+                    <option value="">— pick tag to remove —</option>
+                    {% for t in edit_tags %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+                </select>`;
+            {% else %}
+            bodyEl.innerHTML = `<p style="color: var(--text-muted); font-size: 13px;">No tags exist yet to remove.</p>`;
+            {% endif %}
         }
         document.getElementById('bulkEditModal').style.display = 'block';
+    }
+
+    // Shared handler for bulk-edit selects that include "+ Add new…":
+    // reveals/hides the sibling text input for a fresh value.
+    function onBulkPickChange(value) {
+        const newInput = document.getElementById('bulkEditNewValue');
+        if (!newInput) return;
+        if (value === '__NEW__') {
+            newInput.style.display = '';
+            newInput.focus();
+        } else {
+            newInput.style.display = 'none';
+            newInput.value = '';
+        }
     }
 
     function closeBulkEditModal() {
@@ -1367,7 +1540,15 @@
         const { mode, ids } = _bulkEditState;
         if (!mode || ids.length === 0) return closeBulkEditModal();
         const valueEl = document.getElementById('bulkEditValue');
-        const value = (valueEl.value || '').trim();
+        if (!valueEl) return closeBulkEditModal();  // remove_tag with no tags → "No tags exist" placeholder, no input
+        let value = (valueEl.value || '').trim();
+        // "+ Add new…" route: read the sibling text input for the fresh slug.
+        // Applies to category / add_tag modes (remove_tag and domain are
+        // closed-set, audience is closed-set after the picker change).
+        if (value === '__NEW__') {
+            const newInput = document.getElementById('bulkEditNewValue');
+            value = ((newInput && newInput.value) || '').trim();
+        }
         // Domain allows the explicit "(unset)" option (empty string clears the field
         // — backend allows empty domain). Other modes still require a non-empty value.
         if (!value && mode !== 'domain') {
@@ -1421,17 +1602,196 @@
         _editingItemId = itemId;
         document.getElementById('editItemTitle').value = item.title || '';
         document.getElementById('editItemContent').value = item.content || '';
-        document.getElementById('editItemCategory').value = item.category || '';
+        // Category: pick the existing option if it matches one in the
+        // dropdown; otherwise dynamically add it as a one-off option so the
+        // current value is visible (and selected) even if it's a one-off
+        // slug that didn't exist when the page rendered.
+        const catSel = document.getElementById('editItemCategoryPick');
+        const catNewIn = document.getElementById('editItemCategoryNew');
+        const curCat = item.category || '';
+        const hasOpt = [...catSel.options].some(o => o.value === curCat);
+        if (curCat && !hasOpt) {
+            // Insert before the "+ Add new…" pseudo-option (always last).
+            const newOpt = new Option(curCat, curCat);
+            catSel.add(newOpt, catSel.options.length - 1);
+        }
+        catSel.value = curCat;
+        catNewIn.style.display = 'none';
+        catNewIn.value = '';
         document.getElementById('editItemDomain').value = item.domain || '';
         document.getElementById('editItemAudience').value = item.audience || '';
         const tagsArr = parseJsonField(item.tags);
-        document.getElementById('editItemTags').value = tagsArr.join(', ');
+        tagWidgetInit(tagsArr);
         document.getElementById('editItemModal').style.display = 'block';
+    }
+
+    // ─── Tag-input widget helpers ───
+    // The widget renders applied tags as pills before the typing <input>.
+    // We treat the DOM as the source of truth (no separate state array) —
+    // submitEditItem reads back via tagWidgetGetTags().
+    function tagWidgetInit(tags) {
+        const w = document.getElementById('editItemTagsWidget');
+        // Wipe old pills (keep the trailing input).
+        w.querySelectorAll('.tag-pill').forEach(p => p.remove());
+        document.getElementById('editItemTagsInput').value = '';
+        (tags || []).forEach(t => tagWidgetAdd(t));
+    }
+    function tagWidgetGetTags() {
+        return Array.from(document.querySelectorAll('#editItemTagsWidget .tag-pill'))
+            .map(p => p.dataset.tag);
+    }
+    function tagWidgetAdd(rawTag) {
+        const tag = (rawTag || '').trim();
+        if (!tag) return;
+        if (tagWidgetGetTags().includes(tag)) return;  // dedupe
+        const pill = document.createElement('span');
+        pill.className = 'tag-pill';
+        pill.dataset.tag = tag;
+        pill.appendChild(document.createTextNode(tag + ' '));
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.setAttribute('aria-label', `Remove tag ${tag}`);
+        btn.textContent = '×';
+        btn.addEventListener('click', (e) => { e.stopPropagation(); pill.remove(); });
+        pill.appendChild(btn);
+        const input = document.getElementById('editItemTagsInput');
+        input.parentNode.insertBefore(pill, input);
+        input.value = '';
+    }
+    function onTagInputKeydown(e) {
+        // Enter / ↓ / ↑ / Escape / Backspace handling. The typeahead dropdown
+        // (#editItemTagSuggestions) drives selection state via the
+        // .active class on a .tag-suggestion. Enter commits the highlighted
+        // suggestion when one is active, otherwise commits the typed value
+        // as a new pill (existing behavior). Arrows move the highlight.
+        const list = document.getElementById('editItemTagSuggestions');
+        const visible = list && !list.hidden;
+        if (e.key === 'ArrowDown') {
+            if (visible) { e.preventDefault(); moveTagSuggestion(1); }
+            return;
+        }
+        if (e.key === 'ArrowUp') {
+            if (visible) { e.preventDefault(); moveTagSuggestion(-1); }
+            return;
+        }
+        if (e.key === 'Escape') {
+            if (visible) { e.preventDefault(); hideTagSuggestions(); }
+            return;
+        }
+        if (e.key === 'Enter' || e.key === ',') {
+            e.preventDefault();
+            const active = visible ? list.querySelector('.tag-suggestion.active') : null;
+            if (active) {
+                selectTagSuggestion(active.dataset.tag);
+            } else {
+                const v = e.target.value.replace(/,$/, '').trim();
+                if (v) { tagWidgetAdd(v); hideTagSuggestions(); }
+            }
+            return;
+        }
+        if (e.key === 'Backspace' && !e.target.value) {
+            const pills = document.querySelectorAll('#editItemTagsWidget .tag-pill');
+            if (pills.length) pills[pills.length - 1].remove();
+        }
+    }
+
+    // Re-render the typeahead dropdown based on the current input value.
+    // Called on every keystroke (oninput) and on focus (so an empty focus
+    // lists ALL existing tags — "browse" mode).
+    function onTagInputType() {
+        const input = document.getElementById('editItemTagsInput');
+        const list = document.getElementById('editItemTagSuggestions');
+        if (!input || !list) return;
+        const q = (input.value || '').trim().toLowerCase();
+        const applied = new Set(tagWidgetGetTags());
+        // Filter pool: existing tags not yet applied, matching the query
+        // (case-insensitive substring; "" matches everything).
+        const pool = (typeof EXISTING_TAGS !== 'undefined' ? EXISTING_TAGS : [])
+            .filter(t => !applied.has(t))
+            .filter(t => !q || t.toLowerCase().includes(q));
+
+        // Build HTML: matching existing tags first; if the typed value is
+        // a fresh non-match (and non-empty, and not already a pill), offer
+        // it as an explicit "+ Add new" option at the bottom.
+        const exactMatch = q && pool.some(t => t.toLowerCase() === q);
+        const isFreshNew = q && !exactMatch && !applied.has(q);
+
+        if (pool.length === 0 && !isFreshNew) {
+            list.innerHTML = '<div class="empty-hint">No tags match — keep typing and press Enter to add a new tag.</div>';
+            list.hidden = false;
+            return;
+        }
+
+        const parts = pool.map((t, idx) => {
+            const safe = escapeHtml(t);
+            return `<button type="button" class="tag-suggestion${idx === 0 ? ' active' : ''}" data-tag="${safe}" onmousedown="event.preventDefault(); selectTagSuggestion('${escapeAttr(t)}')">${safe}</button>`;
+        });
+        if (isFreshNew) {
+            const safe = escapeHtml(q);
+            parts.push(`<button type="button" class="tag-suggestion new-tag${pool.length === 0 ? ' active' : ''}" data-tag="${safe}" onmousedown="event.preventDefault(); selectTagSuggestion('${escapeAttr(q)}')">+ Add new tag: <strong>${safe}</strong><span class="hint">Enter</span></button>`);
+        }
+        list.innerHTML = parts.join('');
+        list.hidden = false;
+    }
+
+    function moveTagSuggestion(delta) {
+        const list = document.getElementById('editItemTagSuggestions');
+        const items = Array.from(list.querySelectorAll('.tag-suggestion'));
+        if (items.length === 0) return;
+        let activeIdx = items.findIndex(b => b.classList.contains('active'));
+        if (activeIdx < 0) activeIdx = 0;
+        items[activeIdx].classList.remove('active');
+        const newIdx = (activeIdx + delta + items.length) % items.length;
+        items[newIdx].classList.add('active');
+        items[newIdx].scrollIntoView({ block: 'nearest' });
+    }
+
+    function selectTagSuggestion(tag) {
+        tagWidgetAdd(tag);
+        const input = document.getElementById('editItemTagsInput');
+        input.value = '';
+        // Re-render to drop the newly-applied tag from the pool while the
+        // input keeps focus — feels like a continuous picker.
+        onTagInputType();
+        input.focus();
+    }
+
+    function hideTagSuggestions() {
+        const list = document.getElementById('editItemTagSuggestions');
+        if (list) { list.hidden = true; list.innerHTML = ''; }
+    }
+
+    // Small helpers (avoids dependency on a single escape util shared
+    // across the file). escapeHtml is already defined elsewhere; escapeAttr
+    // is for single-quoted JS string contexts in inline onclick handlers.
+    function escapeAttr(s) {
+        return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    }
+
+    // Category picker handler — toggles the "new slug" input when the
+    // operator selects the "+ Add new category…" pseudo-option. Restores
+    // it on any other selection so a mis-click recovers cleanly.
+    function onCategoryPickChange(value) {
+        const newInput = document.getElementById('editItemCategoryNew');
+        if (value === '__NEW__') {
+            newInput.style.display = '';
+            newInput.focus();
+        } else {
+            newInput.style.display = 'none';
+            newInput.value = '';
+        }
     }
 
     function closeEditItemModal() {
         document.getElementById('editItemModal').style.display = 'none';
         _editingItemId = null;
+    }
+
+    // Click handler for the "+ tag" suggestion chips below the widget.
+    // Forwards to the widget's add — keeps a single code path for additions.
+    function appendEditTag(tag) {
+        tagWidgetAdd(tag);
+        document.getElementById('editItemTagsInput').focus();
     }
 
     async function submitEditItem() {
@@ -1453,14 +1813,21 @@
         // empty-string → null path.
         const orNull = (s) => (s && s.trim() ? s.trim() : null);
         const content = document.getElementById('editItemContent').value || null;
-        const category = orNull(document.getElementById('editItemCategory').value);
+        // Category: if "+ Add new" is selected, take the value from the
+        // sibling text input; otherwise use the picked dropdown value.
+        let categoryRaw = document.getElementById('editItemCategoryPick').value;
+        if (categoryRaw === '__NEW__') {
+            categoryRaw = document.getElementById('editItemCategoryNew').value;
+        }
+        const category = orNull(categoryRaw);
         const domain = orNull(document.getElementById('editItemDomain').value);
         const audience = orNull(document.getElementById('editItemAudience').value);
-        const tagsStr = document.getElementById('editItemTags').value;
-        const tags = tagsStr
-            .split(',')
-            .map(t => t.trim())
-            .filter(t => t.length > 0);
+        // Tags read directly from the pill widget DOM. Any uncommitted text
+        // still in the input (user typed but didn't press Enter) is salvaged
+        // here so a click-Save without Enter doesn't quietly drop it.
+        const tags = tagWidgetGetTags();
+        const pending = (document.getElementById('editItemTagsInput').value || '').trim();
+        if (pending && !tags.includes(pending)) tags.push(pending);
 
         const body = { title, content, category, domain, audience, tags };
         try {

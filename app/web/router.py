@@ -258,7 +258,7 @@ _URL_MAP = {
     "dashboard": "/dashboard",
     "catalog": "/catalog",
     "corporate_memory": "/corporate-memory",
-    "corporate_memory_admin": "/corporate-memory/admin",
+    "corporate_memory_admin": "/admin/corporate-memory",
     "activity_center": "/activity-center",
     "admin_activity": "/admin/activity",
     "index": "/",
@@ -963,50 +963,87 @@ async def catalog(
 @router.get("/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory(
     request: Request,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Corporate Memory web view — admin-only.
+    """Curated Memory web view — any authenticated user.
 
-    The page route gates on ``require_admin``; non-admin users see 403.
-    The Memory nav link in `_app_header.html` and the corporate-memory
-    widget on `/dashboard` are correspondingly hidden behind
-    ``{% if session.user.is_admin %}`` guards (defence in depth — the
-    backend is the authoritative gate).
+    This is the analyst-facing read surface for shared organizational
+    knowledge: it lists ``approved`` / ``mandatory`` items plus the
+    caller's own contributions, and sits in the primary nav next to
+    Data Packages. The admin review queue (pending items, contradictions,
+    duplicates) lives separately at ``/admin/corporate-memory`` behind
+    ``require_admin``.
 
-    **Asymmetry**: the underlying ``/api/memory/*`` endpoints stay on
-    ``get_current_user`` (not ``require_admin``). CLI / agent flows that
-    POST a knowledge item or read ``/api/memory`` keep working for any
-    authenticated user. The gating here is web-UI-only — the API is the
-    surface the agent rails care about (`agnes` CLI, knowledge-extract
-    pipeline), and locking it down would break the corporate-memory
-    feature outright. Operators who want to relax the web-UI gate can
-    either grant Admin to those users or revert this route to
-    ``get_current_user`` in their fork.
+    Gating matches the underlying ``/api/memory/*`` endpoints, which
+    already run on ``get_current_user`` — CLI / agent flows that POST a
+    knowledge item or read ``/api/memory`` work for any authenticated
+    user, so the web view does too. Admin-only affordances on this page
+    (the pending-review banner) stay gated server-side: ``is_admin_view``
+    zeroes ``pending_review_count`` for non-admins.
     """
     repo = KnowledgeRepository(conn)
+    # v46: server-side initial render mirrors the JS fetch contract — items
+    # are annotated with `dismissed_by_me` so the template can gray out the
+    # ones the caller dismissed without a second round-trip. The full list
+    # (incl. dismissed) is rendered; the toolbar "Hide dismissed" toggle
+    # client-side filters via FilterState (or a server refetch with
+    # hide_dismissed=true — both supported, JS uses fetch).
     items = repo.list_items(statuses=["approved", "mandatory"], limit=100)
+    dismissed_set = set(repo.list_dismissed_ids(user["id"])) if user.get("id") else set()
 
-    # Enrich with votes
+    def _build_source_users_display(it: dict) -> list[dict]:
+        """Derive ``[{name, initials}]`` from the stored ``source_user`` email.
+
+        The template (and the in-template JS) iterate `item.source_users_display`
+        to render contributor avatars; the repo only stores a single
+        `source_user` email. Building the list here (singleton today) keeps the
+        page from crashing with ``KeyError: slice(None, 3, None)`` when items
+        exist, and gives the design room for multi-contributor aggregation
+        later without another template churn.
+        """
+        su = (it.get("source_user") or "").strip()
+        if not su:
+            return []
+        name = su.split("@", 1)[0]
+        parts = [p for p in name.replace(".", " ").replace("_", " ").split() if p]
+        if len(parts) >= 2:
+            initials = (parts[0][0] + parts[1][0]).upper()
+        elif parts:
+            initials = parts[0][:2].upper()
+        else:
+            initials = name[:2].upper()
+        return [{"name": name, "initials": initials}]
+
+    # Enrich with votes + derived contributor-avatar list + per-item
+    # dismissed-by-me flag (used to gray the row out + flip the action button).
     for item in items:
         votes = repo.get_votes(item["id"])
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
+        item["source_users_display"] = _build_source_users_display(item)
+        item["dismissed_by_me"] = item["id"] in dismissed_set
 
     cm_config = get_corporate_memory_config()
     governance_mode = cm_config.get("distribution_mode")
 
     # Build stats + filter dropdowns from the full item set so the dropdowns
-    # match the data the page is rendering. `categories` and `domains` are
-    # consumed by the filter pickers in `corporate_memory.html`; without
-    # `domains` the "All domains" picker stays empty.
+    # match the data the page is rendering. `categories` is derived from
+    # what's actually in the store (free-text enum, grows over time).
+    # `domains` is a CLOSED enum on the backend (VALID_DOMAINS in
+    # app/api/memory.py), so we always offer the full list — earlier we
+    # filtered to only domains with ≥1 item, which made the dropdown
+    # collapse to a single "engineering" option on instances where only
+    # one domain had been used. Operators should be able to pick any
+    # valid domain even when the current store has none of it.
+    from app.api.memory import VALID_DOMAINS
     all_items = repo.list_items(limit=10000)
     categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
-    domains = sorted(set(i.get("domain", "") for i in all_items if i.get("domain")))
+    domains = list(VALID_DOMAINS)
 
     # #176: surface the pending review queue to admins. Without this the
     # main page silently filtered status='pending' items and operators had
-    # no breadcrumb to /corporate-memory/admin.
+    # no breadcrumb to /admin/corporate-memory.
     pending_count = sum(1 for i in all_items if i.get("status") == "pending")
 
     # "My contributions" — items the caller authored. Personal items are
@@ -1018,6 +1055,8 @@ async def corporate_memory(
         votes = repo.get_votes(item["id"])
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
+        item["source_users_display"] = _build_source_users_display(item)
+        item["dismissed_by_me"] = item["id"] in dismissed_set
 
     is_admin_view = is_user_admin(user["id"], conn)
     ctx = _build_context(
@@ -1027,7 +1066,16 @@ async def corporate_memory(
         governance={"mode": governance_mode, "groups": cm_config.get("groups", {})},
         categories=categories,
         domains=domains,
-        stats={"total": len(all_items), "approved": len([i for i in all_items if i.get("status") == "approved"])},
+        stats={
+            "total": len(all_items),
+            "approved": len([i for i in all_items if i.get("status") == "approved"]),
+            # Template-facing aliases. Without these, the stats bar at the
+            # top of /corporate-memory renders blank `value` divs ("Contributors"
+            # / "Knowledge Items" with no number under them) because Jinja's
+            # Undefined silently coerces to empty string.
+            "contributors": len({i.get("source_user") for i in all_items if i.get("source_user")}),
+            "knowledge_count": len([i for i in all_items if i.get("status") in ("approved", "mandatory")]),
+        },
         user_votes={},
         is_km_admin=is_admin_view,
         user_contributions=user_contributions,
@@ -1044,12 +1092,18 @@ async def corporate_memory(
     return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
 
-@router.get("/corporate-memory/admin", response_class=HTMLResponse)
+@router.get("/admin/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory_admin(
     request: Request,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """Curated Memory review queue — admin-only.
+
+    The governance surface paired with the user-facing ``/corporate-memory``
+    page: pending items awaiting review, contradictions, duplicate
+    candidates, and the audit trail. Reached from the Admin nav dropdown.
+    """
     repo = KnowledgeRepository(conn)
     pending = repo.list_items(statuses=["pending"], limit=100)
     all_items = repo.list_items(limit=10000)
@@ -1059,7 +1113,7 @@ async def corporate_memory_admin(
         status_counts[s] = status_counts.get(s, 0) + 1
 
     # Contradictions tab is server-rendered (no JS fetch on this tab — see
-    # corporate_memory_admin.html). Fetch the unresolved set and enrich each
+    # admin_corporate_memory.html). Fetch the unresolved set and enrich each
     # entry with the title/sensitivity of both sides so the template doesn't
     # need to re-query per row.
     contradictions = repo.list_contradictions(resolved=False)
@@ -1098,6 +1152,15 @@ async def corporate_memory_admin(
         for g in _groups_repo.list_all()
     ]
 
+    # Existing-value pools for the per-item edit form pickers. Before, Category /
+    # Audience / Tags were free-text required inputs — admins had to remember the
+    # exact category slug or audience expression, and tags couldn't be discovered.
+    # We surface what's already in the store as `<datalist>` suggestions (Category
+    # / Tags) and a `<select>` (Audience built from RBAC groups) without losing
+    # free-text entry for fresh values.
+    edit_categories = sorted({i.get("category") for i in all_items if i.get("category")})
+    edit_tags = sorted({t for i in all_items for t in (i.get("tags") or []) if t})
+
     ctx = _build_context(
         request, user=user,
         pending_items=pending,
@@ -1114,10 +1177,12 @@ async def corporate_memory_admin(
         },
         governance=get_corporate_memory_config(),
         groups=user_groups_for_ui,
+        edit_categories=edit_categories,
+        edit_tags=edit_tags,
         contradictions=contradictions,
         audit_entries=[],
     )
-    return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
+    return templates.TemplateResponse(request, "admin_corporate_memory.html", ctx)
 
 
 @router.get("/activity-center")
@@ -1368,44 +1433,40 @@ async def marketplace_flea_detail(
     from src.repositories.store_entities import StoreEntitiesRepository
     from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    repo = StoreEntitiesRepository(conn)
-    # Owner/admin get a version-status decorated entity so the versions
-    # card can gate the Restore button on past-version approval state.
-    # Plain viewers don't see the versions card at all, so the cheaper
-    # plain get() suffices.
-    base_entity = repo.get(entity_id)
-    if not base_entity:
+    entity = StoreEntitiesRepository(conn).get(entity_id)
+    if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
 
     # Refuse early — same gate as the API + the asset endpoints. 404
     # (not 403) so the entity's existence isn't leaked.
-    _enforce_visibility(base_entity, user, conn)
+    _enforce_visibility(entity, user, conn)
 
-    is_owner = base_entity.get("owner_user_id") == user.get("id")
+    is_owner = entity.get("owner_user_id") == user.get("id")
     is_admin = is_user_admin(user["id"], conn)
 
-    entity = (
-        repo.get_with_version_approvals(entity_id)
-        if (is_owner or is_admin) else base_entity
-    )
-
     # Pull the latest submission so the quarantine banner can render
-    # the most recent verdict (inline_checks + llm_findings). v37:
-    # always load for owner/admin, even when the entity itself is
-    # approved at a prior version — under deferred promotion, a v2+
-    # edit can leave the latest submission in `review_error` /
-    # `blocked_llm` while the entity row stays approved. Gating the
-    # fetch on `visibility_status != 'approved'` silently hid the
-    # failure from the owner.
+    # the most recent verdict (inline_checks + llm_findings). Skipped
+    # for plain non-owner non-admin viewers since they only see
+    # approved entities and don't need the diagnostic.
     quarantine_sub = None
-    if is_owner or is_admin:
+    if (is_owner or is_admin) and entity.get("visibility_status") != "approved":
         quarantine_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
 
-    # v37: the Edit button locks while a submission is under review.
-    edit_in_flight = bool(
-        quarantine_sub
-        and quarantine_sub.get("status") in ("pending_inline", "pending_llm")
-    )
+    # v37: even when entity is 'approved' (deferred promotion path —
+    # existing installers continue receiving the prior version),
+    # owner/admin needs to see if there's an edit-review in flight so
+    # the Edit button can lock + a small status surfaces. Look it up
+    # separately from quarantine_sub to keep the banner partial's
+    # gates intact.
+    edit_in_flight = False
+    if (is_owner or is_admin):
+        latest = (
+            StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        )
+        if latest and latest.get("status") in (
+            "pending_inline", "pending_llm",
+        ):
+            edit_in_flight = True
 
     common = dict(
         source="flea",
