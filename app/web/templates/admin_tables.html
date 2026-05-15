@@ -1872,9 +1872,100 @@
           if (_cdpHost && _cdpHost.addChip) {
             _cdpHost.addChip({ id: body.id, name: payload.name });
           }
-          closeCreateDataPackageModal();
+          // Carry host across the step-1 close so step 2's "Skip" returns
+          // focus to the chip-input. _cdpHost is reset by close(); we
+          // re-stash and re-attach AFTER hiding step 1.
+          const carriedHost = _cdpHost;
+          _cdpNewId = body.id;
+          _cdpNewName = payload.name;
+          document.getElementById('createDataPackageModal').style.display = 'none';
+          _cdpHost = carriedHost;
+          openCreateDataPackageRbacModal();
         } catch (e) {
           alert('Network error: ' + e.message);
+          btn.disabled = false;
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      // ── Step 2: per-group RBAC assign (Task 8.10b — spec 7.4) ───
+      // Renders a Group × Requirement matrix; rows POST /api/admin/grants
+      // individually with the chosen `available|required` tier. Skip
+      // short-circuits without grants — the package was already created
+      // in step 1 and the chip is in the chip-input.
+      let _cdpNewId = null;
+      let _cdpNewName = null;
+
+      async function openCreateDataPackageRbacModal() {
+        document.getElementById('cdp-rbac-name').textContent = _cdpNewName || '';
+        const rowsEl = document.getElementById('cdp-rbac-rows');
+        rowsEl.innerHTML = '<div class="loading" style="padding:12px; color:#5f6368;">Loading groups…</div>';
+        document.getElementById('createDataPackageRbacModal').style.display = 'flex';
+        try {
+          const r = await fetch('/api/admin/groups', { credentials: 'same-origin' });
+          if (!r.ok) throw new Error('groups fetch ' + r.status);
+          const body = await r.json();
+          const groups = Array.isArray(body) ? body : (body.groups || []);
+          rowsEl.innerHTML = groups.map(g => {
+            const gid = String(g.id || g.name || '');
+            const gname = String(g.name || gid);
+            return (
+              '<div data-group-id="' + gid + '" '
+              + 'style="display:flex; gap:8px; align-items:center; '
+              + 'padding:6px; border:1px solid #eceff1; border-radius:6px;">'
+              + '<span style="flex:1;">' + gname + '</span>'
+              + '<select class="cdp-rbac-req" style="padding:4px; border:1px solid #eceff1; border-radius:4px;">'
+              + '<option value="">(no grant)</option>'
+              + '<option value="available">available</option>'
+              + '<option value="required">required</option>'
+              + '</select>'
+              + '</div>'
+            );
+          }).join('') || '<div style="padding:12px; color:#5f6368;">No groups defined yet.</div>';
+        } catch (e) {
+          rowsEl.innerHTML = '<div style="padding:12px; color:#5f6368;">Failed to load groups: ' + e.message + '</div>';
+        }
+      }
+      function skipCreateDataPackageRbac() {
+        _cdpNewId = null;
+        _cdpNewName = null;
+        document.getElementById('createDataPackageRbacModal').style.display = 'none';
+      }
+      async function submitCreateDataPackageRbac() {
+        const btn = document.getElementById('cdp-rbac-save-btn');
+        btn.disabled = true;
+        try {
+          const rows = document.querySelectorAll('#cdp-rbac-rows [data-group-id]');
+          const calls = [];
+          rows.forEach(row => {
+            const gid = row.getAttribute('data-group-id');
+            const sel = row.querySelector('.cdp-rbac-req');
+            const req = sel && sel.value;
+            if (!req) return;
+            calls.push(fetch('/api/admin/grants', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({
+                group_id: gid,
+                resource_type: 'data_package',
+                resource_id: _cdpNewId,
+                requirement: req,
+              }),
+            }));
+          });
+          if (calls.length) {
+            const results = await Promise.allSettled(calls);
+            const fails = results.filter(r => r.status === 'rejected' || (r.value && !r.value.ok));
+            if (fails.length) {
+              alert(fails.length + ' grant(s) failed; rest succeeded.');
+            }
+          }
+          skipCreateDataPackageRbac();
+        } catch (e) {
+          alert('Network error: ' + e.message);
+        } finally {
           btn.disabled = false;
         }
       }
@@ -1888,6 +1979,35 @@
         }
       });
     </script>
+
+    <!-- ═══════════════ Create Data Package RBAC assign (Task 8.10b — step 2) ═══════════════
+         Optional second step rendered after the package is created.
+         Per-group Available | Required matrix; Skip short-circuits.
+         Mirrors the Memory Domain RBAC step in /admin/corporate-memory. -->
+    <div class="modal-overlay" id="createDataPackageRbacModal" style="display:none;">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-header">
+          <h2>Assign access to <span id="cdp-rbac-name"></span></h2>
+          <button class="modal-close" onclick="skipCreateDataPackageRbac()">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="form-hint" style="margin-bottom:12px;">
+            Optional. Grant per-group access tiers — <em>available</em> shows
+            the package in the group's Browse; <em>required</em> auto-installs
+            it into the group's stack on next pull.
+          </p>
+          <div id="cdp-rbac-rows" style="display:flex; flex-direction:column; gap:6px; max-height:50vh; overflow-y:auto;">
+            <div class="loading" style="padding:12px; color:#5f6368;">Loading groups…</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="skipCreateDataPackageRbac()">Skip</button>
+          <button class="btn btn-primary" id="cdp-rbac-save-btn" onclick="submitCreateDataPackageRbac()">
+            Save grants
+          </button>
+        </div>
+      </div>
+    </div>
 {% endblock %}
 
 {% block scripts %}
