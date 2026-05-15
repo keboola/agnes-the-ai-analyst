@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.55.0] — 2026-05-16
+
+### Added
 - **Data Packages** — admin-curated bundles of tables surface as a first-class
   stack type under `/catalog` with the same card pattern + tab strip
   (Browse / My Stack) + Required badge + Add to stack interaction as
