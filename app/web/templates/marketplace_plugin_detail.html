@@ -843,7 +843,6 @@
       <div class="meta">
         <h1 id="hero-name">{{ plugin_name }}</h1>
         <div class="tagline" id="hero-tagline">Loading…</div>
-        <div class="curator" id="hero-curator"></div>
         <div class="pills" id="hero-pills"></div>
         <!-- Telemetry funnel chip — same shape as the listing card so a
              user who clicks through from /marketplace sees identical
@@ -1021,16 +1020,9 @@
   const heroWindowLabel = document.getElementById('hero-window-label');
   if (heroWindowLabel) heroWindowLabel.textContent = heroTitle;
 
-  const curator = document.getElementById('hero-curator');
-  if (d.source === 'curated') {
-    if (d.author_name && d.author_name !== 'owner_todo') {
-      curator.innerHTML = 'Curator: <strong>' + esc(d.author_name) + '</strong>';
-    } else {
-      curator.innerHTML = 'Curator: <span class="todo">owner_todo</span>';
-    }
-  } else {
-    curator.innerHTML = 'by <strong>' + esc(d.author_name || '') + '</strong>';
-  }
+  // Hero curator line removed — the Details sidebar already carries
+  // the Curator row (renamed from "Owner"), so duplicating it under
+  // the h1 was visual noise.
 
   const pills = document.getElementById('hero-pills');
   const pillBits = [];
@@ -1373,13 +1365,13 @@
       }
     }
   }
-  // Owner: render real value when present; for curated keep the
+  // Curator: render real value when present; for curated keep the
   // `owner_todo` placeholder visible as a reminder to wire up curator
   // metadata (intentional — flea falls through silently).
   if (d.author_name && d.author_name !== 'owner_todo') {
-    detailRows.push(`<div class="row"><dt>Owner</dt><dd>${esc(d.author_name)}</dd></div>`);
+    detailRows.push(`<div class="row"><dt>Curator</dt><dd>${esc(d.author_name)}</dd></div>`);
   } else if (d.source === 'curated') {
-    detailRows.push(`<div class="row"><dt>Owner</dt><dd><span class="todo">owner_todo</span></dd></div>`);
+    detailRows.push(`<div class="row"><dt>Curator</dt><dd><span class="todo">owner_todo</span></dd></div>`);
   }
   const detailsEl = document.getElementById('details-list');
   if (detailRows.length) {
