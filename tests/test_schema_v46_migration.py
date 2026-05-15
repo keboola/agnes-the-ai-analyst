@@ -14,7 +14,7 @@ from src.db import SCHEMA_VERSION, _ensure_schema, _v45_to_v46, get_schema_versi
 
 
 def test_schema_version_is_46():
-    assert SCHEMA_VERSION == 47
+    assert SCHEMA_VERSION == 48
 
 
 def test_fresh_install_creates_dismissed_table(tmp_path):

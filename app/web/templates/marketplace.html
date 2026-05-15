@@ -311,11 +311,44 @@
     font-size: 11px; color: var(--text-secondary);
   }
   .mp-card .ver { font-variant-numeric: tabular-nums; }
+  /* Funnel chip — two groups on one row:
+     LEFT: active · calls · trend (engagement, time-bounded)
+     RIGHT: installed (passive adoption, all-time)
+     Installed is pushed to the trailing edge via margin-left:auto so
+     it visually reads as a separate category — it answers "how many
+     have this" while the left group answers "how is it used". */
   .mp-card .inv-chip {
-    display: inline-flex; align-items: center; gap: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 4px;
     font-size: 11px; color: var(--text-secondary);
-    margin-top: 2px;
+    margin-top: 6px;
+    line-height: 1.5;
   }
+  .mp-card .inv-chip-left { /* inline container for · -joined segments */
+    display: inline;
+  }
+  .mp-card .inv-chip > span,
+  .mp-card .inv-chip-left > span {
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .mp-card .inv-chip .seg-installed { margin-left: auto; }
+  .mp-card .inv-chip svg {
+    width: 12px; height: 12px;
+    flex-shrink: 0;
+  }
+  /* Per-segment icon colors — text stays neutral so the chip reads as
+     metadata, but the leading glyph is colour-coded so it scans fast.
+     Installed mirrors the amber accent of the My Stack tab (#F59F0A);
+     active is green for "real engagement"; calls is orange for energy. */
+  .mp-card .inv-chip .seg-installed > svg { color: #F59F0A; }
+  .mp-card .inv-chip .seg-active    > svg { color: #0e9b6a; }
+  .mp-card .inv-chip .seg-calls     > svg { color: #f97316; }
   .mp-card .inv-chip .trend-up   { color: #10b77f; font-weight: 600; }
   .mp-card .inv-chip .trend-down { color: #ef4444; font-weight: 600; }
 
@@ -333,9 +366,15 @@
   .mp-sort-select:hover { border-color: var(--primary); }
   .mp-sort-select:focus { outline: none; border-color: var(--primary); }
 
-  /* ── Most Popular section ────────────────────────────────────────── */
+  /* ── Section header (Most Popular + All plugins) ──────────────────── */
+  /* min-height pinned to the sort-select's box (font 13px + 7px*2
+     padding + 1px*2 border ≈ 32px) so the bare-text "Most Popular"
+     header sits at the same line-height as the "All plugins" header
+     that carries the dropdown. Without it the popular row was visibly
+     shorter and made the section spacing inconsistent. */
   .mp-section-header {
-    display: flex; align-items: baseline; gap: 10px; margin: 24px 0 12px;
+    display: flex; align-items: center; gap: 10px; margin: 20px 0 12px;
+    min-height: 32px;
   }
   .mp-section-header h2 {
     margin: 0; font-size: 16px; font-weight: 700; color: var(--text-primary);
@@ -343,6 +382,10 @@
   .mp-section-header .meta {
     font-size: 12px; color: var(--text-secondary);
   }
+  /* All-plugins header: title left, sort dropdown pinned right. The
+     margin-left:auto on the select handles the layout regardless of
+     whether Most Popular sits above. */
+  .mp-all-header > .mp-sort-select { margin-left: auto; }
 
   /* ── Pager + empty state ─────────────────────────────────────────── */
   .mp-pager { display: flex; gap: 6px; justify-content: center; margin: 32px 0 0; }
@@ -495,11 +538,6 @@
        only 4px between filters and cards. -->
   <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
     <div class="mp-filter-row" id="mp-cat-row" style="margin-bottom:0; flex:1 1 auto;"></div>
-    <select class="mp-sort-select" id="mp-sort-select" title="Sort by">
-      <option value="recent">Recent</option>
-      <option value="most_used">Most used (30d)</option>
-      <option value="trending">Trending</option>
-    </select>
   </div>
 
   <!-- Type filter (Flea + My — both surface skill/agent/plugin items) -->
@@ -514,13 +552,29 @@
   <div id="mp-popular-section" hidden>
     <div class="mp-section-header">
       <h2>Most Popular</h2>
-      <div class="meta">Last 30 days</div>
     </div>
     <div class="mp-grid" id="mp-popular-grid"></div>
   </div>
 
-  <!-- Main grid -->
-  <div class="mp-grid" id="mp-grid"></div>
+  <!-- Main section — wrapped in a div mirroring #mp-popular-section so the
+       header's margin-top collapses identically to its sibling above.
+       Without this wrapper the All-plugins header was a bare sibling of
+       the filter row and the margin computed differently from the Most
+       Popular header (which lives inside a wrapper). Title swaps per
+       tab via JS (curated → "All plugins"; flea + my mix all three
+       types so the label broadens). -->
+  <div id="mp-all-section">
+    <div id="mp-main-section-header" class="mp-section-header mp-all-header">
+      <h2 id="mp-main-section-title">All plugins</h2>
+      <select class="mp-sort-select" id="mp-sort-select" title="Sort by">
+        <option value="recent">Recent</option>
+        <option value="most_used">Most used (30d)</option>
+        <option value="most_adopted">Most adopted (30d)</option>
+        <option value="trending">Trending</option>
+      </select>
+    </div>
+    <div class="mp-grid" id="mp-grid"></div>
+  </div>
   <div class="mp-empty" id="mp-empty" hidden>
     <h3 id="mp-empty-title">Nothing here yet</h3>
     <p id="mp-empty-body"></p>
@@ -555,7 +609,7 @@ function loadFromURL() {
   state.category = p.get('category') || null;
   state.type = p.get('type') || null;
   const rawSort = p.get('sort') || 'recent';
-  state.sort = ['recent','most_used','trending'].includes(rawSort) ? rawSort : 'recent';
+  state.sort = ['recent','most_used','most_adopted','trending'].includes(rawSort) ? rawSort : 'recent';
   state.page = Math.max(1, parseInt(p.get('page') || '1', 10));
 }
 function syncURL() {
@@ -596,7 +650,7 @@ function renderCategories(items) {
   allBtn.textContent = 'All';
   allBtn.addEventListener('click', () => {
     state.category = null; state.page = 1; syncURL();
-    renderCategories(items); loadItems();
+    renderCategories(items); loadItems(); loadMostPopular();
   });
   row.appendChild(allBtn);
   for (const c of items) {
@@ -606,7 +660,7 @@ function renderCategories(items) {
     btn.innerHTML = `${categorySVG(c.name)} ${esc(c.name)} <span class="count">${c.count}</span>`;
     btn.addEventListener('click', () => {
       state.category = c.name; state.page = 1; syncURL();
-      renderCategories(items); loadItems();
+      renderCategories(items); loadItems(); loadMostPopular();
     });
     row.appendChild(btn);
   }
@@ -718,17 +772,57 @@ function buildCard(it) {
   const cardName = it.display_name || it.name;
   const cardDesc = it.tagline || it.description || '';
 
-  // Invocation chip: show only when there's usage data
+  // Funnel chip — installed (passive adoption) → active users (real
+  // engagement) → calls (volume) → trend (momentum). Hidden when both
+  // installed and 30d invocations are zero so brand-new plugins don't
+  // get visually penalised by a "0 · 0 · 0" row. Each segment carries
+  // a tooltip for screen-readers + curious hover. Heroicons outline
+  // 24×24, inline so they recolor via currentColor and don't pull
+  // an asset request per card.
+  const stackCount = it.stack_count || 0;
+  const activeUsers = it.distinct_users_30d || 0;
+  const calls = it.invocations_30d || 0;
+  const trend = it.trend_pct;
+  // Heroicons solid 24×24 — filled glyphs so the chip reads as a row
+  // of small colourful badges rather than thin outlines. fill-rule
+  // evenodd because rectangle-stack ships as multi-path.
+  const _svg = (path) =>
+    `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${path}"/></svg>`;
+  // rectangle-stack (solid) — same glyph as the My Stack tab (l. 451)
+  // but filled, so the "installed" segment visually echoes the tab.
+  const ICON_STACK = _svg("M5.566 4.657A4.505 4.505 0 0 1 6.75 4.5h10.5c.41 0 .806.055 1.183.157A3 3 0 0 0 15.75 3h-7.5a3 3 0 0 0-2.684 1.657ZM2.25 12a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3v-6ZM5.25 7.5c-.41 0-.806.055-1.184.157A3 3 0 0 1 6.75 6h10.5a3 3 0 0 1 2.683 1.657A4.505 4.505 0 0 0 18.75 7.5H5.25Z");
+  // user (solid) — filled silhouette for active users.
+  const ICON_USER = _svg("M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z");
+  // bolt (solid) — lightning for call volume / energy.
+  const ICON_BOLT = _svg("M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z");
+  // arrow-trending-up / -down (solid) — week-over-week momentum.
+  const ICON_TREND_UP   = _svg("M15.22 6.268a.75.75 0 0 1 .968-.432l5.942 2.28a.75.75 0 0 1 .431.97l-2.28 5.94a.75.75 0 1 1-1.4-.537l1.63-4.251-1.086.483a11.2 11.2 0 0 0-5.45 5.174.75.75 0 0 1-1.199.19L9 12.31l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75a.75.75 0 0 1 1.06 0l3.606 3.605a12.694 12.694 0 0 1 5.68-4.973l1.086-.484-4.251-1.631a.75.75 0 0 1-.432-.97Z");
+  const ICON_TREND_DOWN = _svg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
   let invChip = '';
-  if (it.invocations_30d > 0) {
-    let trendPart = '';
-    if (it.trend_pct != null) {
-      const sign = it.trend_pct >= 0 ? '+' : '';
-      const cls = it.trend_pct >= 0 ? 'trend-up' : 'trend-down';
-      const arrow = it.trend_pct >= 0 ? '↑' : '↓';
-      trendPart = ` · <span class="${cls}">${arrow} ${sign}${Math.round(it.trend_pct)}%</span>`;
+  if (stackCount > 0 || calls > 0) {
+    // Two semantic groups on one row:
+    //  - LEFT  (engagement, time-bounded): active · calls · trend
+    //  - RIGHT (passive adoption, all-time): installed
+    // Installed alone says little ("12 people installed it") without
+    // engagement context ("…but did anyone use it?"), so it lives
+    // visually separated on the trailing edge — flex margin-auto.
+    const leftSegs = [
+      `<span class="seg-active" title="${activeUsers} users invoked it in the last 30 days">${ICON_USER} ${fmtNum(activeUsers)} active</span>`,
+      `<span class="seg-calls" title="${calls} invocations in the last 30 days">${ICON_BOLT} ${fmtNum(calls)} calls</span>`,
+    ];
+    if (trend !== null && trend !== undefined) {
+      const up = trend >= 0;
+      const icon = up ? ICON_TREND_UP : ICON_TREND_DOWN;
+      const cls = up ? 'trend-up' : 'trend-down';
+      // Magnitude only — direction is in the arrow. Round to int
+      // (decimals add visual noise without precision value at glance scale).
+      leftSegs.push(`<span class="${cls}" title="Week-over-week change in invocations">${icon} ${Math.abs(Math.round(trend))}%</span>`);
     }
-    invChip = `<div class="inv-chip">🔥 ${fmtNum(it.invocations_30d)} uses${trendPart}</div>`;
+    const installedSeg = `<span class="seg-installed" title="Currently installed by ${stackCount} users">${ICON_STACK} ${fmtNum(stackCount)} installed</span>`;
+    invChip = `<div class="inv-chip">
+      <span class="inv-chip-left">${leftSegs.join(' · ')}</span>
+      ${installedSeg}
+    </div>`;
   }
 
   card.innerHTML = `
@@ -806,7 +900,7 @@ function renderPager(total) {
     b.textContent = label;
     if (active) b.classList.add('is-active');
     b.addEventListener('click', () => {
-      state.page = page; syncURL(); loadItems();
+      state.page = page; syncURL(); loadItems(); loadMostPopular();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
     return b;
@@ -860,10 +954,13 @@ async function loadItems() {
     const results = await Promise.all(fetches);
     const merged = [];
     let total = 0;
+    const availableUnion = new Set();
     for (const r of results) {
       merged.push(...(r.items || []));
       total += r.total || 0;
+      for (const s of (r.available_sorts || [])) availableUnion.add(s);
     }
+    applyAvailableSorts([...availableUnion]);
     // Client-side paginate the merged set: backend already paginated each
     // half so this is an approximate combined view, sufficient for search.
     renderGrid(merged);
@@ -871,8 +968,32 @@ async function loadItems() {
     return;
   }
   const r = await fetchOne(state.tab);
+  applyAvailableSorts(r.available_sorts || []);
   renderGrid(r.items || []);
   renderPager(r.total || 0);
+}
+
+// Toggle visibility of sort options the current response says aren't
+// available. Trending is the only conditional one — its DESC trend_pct
+// sort returns an empty grid when the prior-week threshold hasn't
+// cleared anywhere, so we hide the option instead. If the user is
+// already on a now-unavailable sort, reset to 'recent' and re-fetch.
+function applyAvailableSorts(available) {
+  const select = document.getElementById('mp-sort-select');
+  if (!select) return;
+  for (const opt of select.options) {
+    opt.hidden = !available.includes(opt.value);
+  }
+  if (!available.includes(state.sort)) {
+    state.sort = 'recent';
+    select.value = 'recent';
+    syncURL();
+    // Re-fetch on the recovered sort. Avoid recursing forever by only
+    // doing this when the response we just rendered was on the
+    // now-unavailable sort.
+    loadItems();
+    loadMostPopular();
+  }
 }
 
 async function fetchOne(tab, overrides = {}) {
@@ -898,15 +1019,59 @@ async function fetchOne(tab, overrides = {}) {
 
 // ── Most Popular loader ───────────────────────────────────────────────────
 async function loadMostPopular() {
-  // Only shown on curated tab, no search active, no category filter
+  // Shown on curated + flea tabs (the discovery tabs) and only on the
+  // first page — on page 2+ the user is past initial discovery and a
+  // top-of-list popularity strip becomes redundant noise above the
+  // actual results they paged into. Also hidden when a search query
+  // or category filter is active so the result list isn't shadowed
+  // by a stale popularity strip. The All-* header stays put
+  // regardless — only this section toggles.
   const section = document.getElementById('mp-popular-section');
-  if (state.tab !== 'curated' || state.q || state.category) {
+  if (!['curated', 'flea'].includes(state.tab) || state.q || state.category || (state.page || 1) > 1) {
     section.hidden = true;
     return;
   }
   try {
-    const r = await fetchOne('curated', { sort: 'most_used', page: 1, page_size: 8 });
-    const popular = (r.items || []).filter(it => it.invocations_30d > 0);
+    // Most Popular = top adopters over the **same 30d horizon** the
+    // rest of the listing uses. The card chip below already renders
+    // 30d numbers; sorting by a different window (7d) made the
+    // header label ("Last 7 days") promise something the cards
+    // weren't showing — cognitive mismatch. Unifying on 30d keeps a
+    // single mental model: every card means the same thing everywhere.
+    //
+    // Sort hierarchy — cascading tie-breakers prevent the "two cards
+    // with identical primary key swap on every refresh" UX bug:
+    //
+    //   1. distinct_users_30d DESC  ← adoption (the "popular" signal:
+    //      how many different people invoked it, not how many calls
+    //      one power user fired)
+    //   2. invocations_30d   DESC  ← volume given equal adoption
+    //   3. distinct_users_7d  DESC ← recency: among equally-adopted
+    //      30d plugins, the one with broader 7d adoption ranks higher
+    //   4. invocations_7d    DESC  ← recent volume
+    //   5. name               ASC  ← deterministic textual order
+    //   6. marketplace_slug   ASC  ← splits duplicate plugin names
+    //      across multiple marketplaces (e.g. `grpn` in `groupon-
+    //      marketplace` vs. test seeds)
+    const r = await fetchOne(state.tab, { sort: 'most_used', page: 1, page_size: 24 });
+    const cmp = (a, b) => {
+      const cmpN = (x, y) => (y || 0) - (x || 0);
+      let d = cmpN(a.distinct_users_30d, b.distinct_users_30d);
+      if (d) return d;
+      d = cmpN(a.invocations_30d, b.invocations_30d);
+      if (d) return d;
+      d = cmpN(a.distinct_users_7d, b.distinct_users_7d);
+      if (d) return d;
+      d = cmpN(a.invocations_7d, b.invocations_7d);
+      if (d) return d;
+      d = (a.name || '').localeCompare(b.name || '');
+      if (d) return d;
+      return (a.marketplace_slug || '').localeCompare(b.marketplace_slug || '');
+    };
+    const popular = (r.items || [])
+      .filter(it => (it.invocations_30d || 0) > 0)
+      .sort(cmp)
+      .slice(0, 4);
     if (!popular.length) { section.hidden = true; return; }
     const grid = document.getElementById('mp-popular-grid');
     grid.innerHTML = '';
@@ -957,7 +1122,18 @@ function setTab(tab) {
   // Reset sort dropdown on tab switch.
   document.getElementById('mp-sort-select').value = 'recent';
   syncURL();
+  applyAllSectionTitle();
   Promise.all([loadCategories(), loadItems(), loadMostPopular()]);
+}
+
+// All-plugins section title swaps per tab: curated lists only plugins,
+// flea + my mix skills/agents/plugins so the label needs to broaden.
+function applyAllSectionTitle() {
+  const el = document.getElementById('mp-main-section-title');
+  if (!el) return;
+  if (state.tab === 'curated') el.textContent = 'All plugins';
+  else if (state.tab === 'flea') el.textContent = 'All items';
+  else el.textContent = 'Your stack';
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────
@@ -982,6 +1158,7 @@ function runSearch() {
   state.page = 1;
   syncURL();
   loadItems();
+  loadMostPopular();
 }
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
@@ -1035,6 +1212,7 @@ document.getElementById('mp-scope-flea').addEventListener('change', () => {
   // Restore sort select
   const sortSel = document.getElementById('mp-sort-select');
   sortSel.value = state.sort || 'recent';
+  applyAllSectionTitle();
   await Promise.all([
     loadTabCounts(),
     loadCategories(),

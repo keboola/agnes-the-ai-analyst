@@ -116,27 +116,61 @@
   .item-detail .hero .meta {
     min-width: 0;
   }
-  .item-detail .hero .badges {
-    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  /* Pills — name + CSS structure copied from marketplace_plugin_detail.html
+     so plugin / skill / agent hero badges are visually identical except
+     for the per-item variants. Item-only addition: `.pill.type` (Skill /
+     Agent uppercase label) — plugin detail has no kind axis. */
+  .item-detail .hero .pills {
+    display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
     margin-top: 12px;
   }
-  .item-detail .type-badge {
-    display: inline-block;
+  .item-detail .pill {
+    background: rgba(255,255,255,0.16); color: #fff;
     padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+  }
+  .item-detail .pill.cat { background: rgba(255,255,255,0.22); }
+  .item-detail .pill.ver { font-family: var(--font-mono); }
+  .item-detail .pill.curated { background: #FEF3C7; color: #B45309; font-weight: 600; }
+  .item-detail .pill.flea    { background: #EDE9FE; color: #6D28D9; font-weight: 600; }
+  .item-detail .pill.muted   { background: transparent; color: rgba(255,255,255,0.72); padding-left: 0; }
+  .item-detail .pill.type {
     background: rgba(255,255,255,0.22); color: #fff;
-    font-size: 11px; font-weight: var(--font-semibold);
+    font-weight: var(--font-semibold);
     text-transform: uppercase; letter-spacing: 0.5px;
   }
-  .item-detail .source-badge {
-    font-size: 11px; padding: 3px 10px; border-radius: 999px;
-    font-weight: var(--font-semibold);
+  /* Hero telemetry chip — same shape as the plugin detail page, with
+     a "Plugin:" prefix on the installed segment because skills/agents
+     show the *parent plugin's* stack count (no per-skill subscription
+     model exists). Recoloured for the kind-tinted hero background. */
+  .item-detail .hero .hero-telemetry {
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: rgba(255,255,255,0.92);
+    line-height: 1.7;
   }
-  .item-detail .source-badge.curated { background: #FEF3C7; color: #B45309; }
-  .item-detail .source-badge.flea    { background: #EDE9FE; color: #6D28D9; }
-  .item-detail .cat-badge {
-    font-size: 11px; padding: 3px 10px; border-radius: 999px;
-    background: rgba(255,255,255,0.16); color: #fff;
+  .item-detail .hero .hero-telemetry > span {
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
+  .item-detail .hero .hero-telemetry svg {
+    width: 14px; height: 14px;
+    flex-shrink: 0;
+  }
+  /* Icon colors mirror the plugin detail page so the four-segment
+     chip reads identically across plugin + skill/agent surfaces. */
+  .item-detail .hero .hero-telemetry .seg-active    > svg { color: #6ee7b7; }
+  .item-detail .hero .hero-telemetry .seg-calls     > svg { color: #fdba74; }
+  .item-detail .hero .hero-telemetry .seg-installed > svg { color: #fde68a; }
+  .item-detail .hero .hero-telemetry .seg-installed .seg-installed-label {
+    opacity: 0.78;
+    font-weight: 600;
+    margin-right: 2px;
+  }
+  .item-detail .hero .hero-telemetry .trend-up   { color: #6ee7b7; font-weight: 600; }
+  .item-detail .hero .hero-telemetry .trend-down { color: #fca5a5; font-weight: 600; }
 
   .item-detail .hero h1 {
     margin: 0 0 6px; font-size: 28px; font-weight: var(--font-bold);
@@ -783,10 +817,18 @@
         <h1 id="hero-name">{{ inner_name or item_name or plugin_name }}</h1>
         <div class="hero-tagline" id="hero-tagline" hidden></div>
         <div class="meta-row" id="hero-meta-row"></div>
-        <div class="badges" id="hero-badges">
-          <span class="type-badge">{{ kind }}</span>
-          <span class="source-badge {{ source }}">{{ 'Curated' if source == 'curated' else 'Flea' }}</span>
+        <div class="pills" id="hero-pills">
+          <span class="pill type">{{ kind }}</span>
+          <span class="pill {{ source }}">{{ 'Curated' if source == 'curated' else 'Flea' }}</span>
         </div>
+        <!-- Telemetry funnel chip — same four segments as the plugin
+             detail page (active · calls · trend · Plugin: N installed).
+             The installed count is the *parent plugin's* stack count
+             with a "Plugin:" prefix because skills/agents don't have a
+             per-item subscription model; tooltip spells it out. JS
+             hides the slot when the parent isn't installed AND the
+             item has no 30d activity. -->
+        <div class="hero-telemetry" id="hero-telemetry" hidden></div>
       </div>
     </div>
     <!-- Actions absolutely anchored at the hero's top-right corner.
@@ -825,9 +867,7 @@
     </div>
     <aside class="panel details">
       <h2>Details</h2>
-      <dl id="details-list">
-        <div class="row"><dt>Type</dt><dd>{{ kind | capitalize }}</dd></div>
-      </dl>
+      <dl id="details-list"></dl>
     </aside>
   </div>
 
@@ -893,10 +933,13 @@
   const innerName = root.dataset.innerName;
 
   // Curated nested → /api/marketplace/curated/{mp}/{plugin}/{kind}/{name}
+  // Flea inner    → /api/marketplace/flea/{id}/{kind}/{name}  (skill/agent inside a flea plugin)
   // Flea standalone → /api/marketplace/flea/{id}/detail
   const apiURL = source === 'curated'
     ? `/api/marketplace/curated/${encodeURIComponent(marketplaceId)}/${encodeURIComponent(pluginName)}/${kind}/${encodeURIComponent(innerName)}`
-    : `/api/marketplace/flea/${encodeURIComponent(entityId)}/detail`;
+    : (innerName
+        ? `/api/marketplace/flea/${encodeURIComponent(entityId)}/${kind}/${encodeURIComponent(innerName)}`
+        : `/api/marketplace/flea/${encodeURIComponent(entityId)}/detail`);
 
   const ICON_DOC = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
   const ICON_DIR  = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
@@ -913,6 +956,14 @@
     if (n < 1024*1024) return (n/1024).toFixed(2) + ' KB';
     if (n < 1024*1024*1024) return (n/(1024*1024)).toFixed(2) + ' MB';
     return (n/(1024*1024*1024)).toFixed(2) + ' GB';
+  }
+  // Short integer formatter — matches the listing card + plugin detail
+  // so figures look identical across the three surfaces.
+  function fmtNum(n) {
+    if (!n) return '0';
+    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000)    return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
   }
   function fmtRelative(iso) {
     if (!iso) return '—';
@@ -966,12 +1017,34 @@
   document.title = `${heroTitle} — Marketplace`;
 
   // ── Breadcrumbs ────────────────────────────────────────────────────
+  // Mirror plugin detail shape: Marketplace › <Curated Marketplace /
+  // Flea Market> › <parent plugin display name> › <self>. The second
+  // segment is a generic clickable category label (links to the relevant
+  // marketplace tab), not the per-instance marketplace_name — analysts
+  // were finding the per-instance name opaque. Parent plugin segment
+  // (curated only) links to the plugin detail page so users can climb
+  // one level. Flea items have no parent plugin, so their path is
+  // Marketplace › Flea Market › <self>.
   const crumbs = document.getElementById('crumbs');
+  const parentPluginLabel = d.parent_display_name || d.manifest_name || pluginName;
   if (source === 'curated') {
     crumbs.innerHTML =
       `<a href="/marketplace?tab=curated">Marketplace</a>
        <span class="sep">›</span>
-       <a href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">${esc(pluginName)}</a>
+       <a href="/marketplace?tab=curated">Curated Marketplace</a>
+       <span class="sep">›</span>
+       <a href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">${esc(parentPluginLabel)}</a>
+       <span class="sep">›</span>
+       <span class="current">${esc(heroTitle)}</span>`;
+  } else if (innerName) {
+    // Flea inner skill/agent — 4-segment path mirroring curated inner:
+    //   Marketplace > Flea Market > <plugin display name> > <self>
+    crumbs.innerHTML =
+      `<a href="/marketplace?tab=flea">Marketplace</a>
+       <span class="sep">›</span>
+       <a href="/marketplace?tab=flea">Flea Market</a>
+       <span class="sep">›</span>
+       <a href="/marketplace/flea/${esc(entityId)}">${esc(d.parent_display_name || d.manifest_name || pluginName)}</a>
        <span class="sep">›</span>
        <span class="current">${esc(heroTitle)}</span>`;
   } else {
@@ -1007,13 +1080,20 @@
         data-fallback="${esc(initials)}">`;
   }
 
-  // Badges — keep type + source (already server-rendered), append category.
-  const badges = document.getElementById('hero-badges');
+  // Pills — same structure / class names as plugin detail hero so the two
+  // surfaces share `.pill.cat / .curated / .flea / .muted` CSS. Item-only
+  // addition: `.pill.type` (Skill / Agent uppercase, no parallel on plugin
+  // detail which has no kind axis).
+  const pills = document.getElementById('hero-pills');
   const sourceBadge = source === 'curated'
-    ? '<span class="source-badge curated">Curated</span>'
-    : '<span class="source-badge flea">Flea</span>';
-  const cat = d.category ? `<span class="cat-badge">${esc(d.category)}</span>` : '';
-  badges.innerHTML = `<span class="type-badge">${esc(kind)}</span>${sourceBadge}${cat}`;
+    ? '<span class="pill curated">Curated</span>'
+    : '<span class="pill flea">Flea</span>';
+  const cat = d.category ? `<span class="pill cat">${esc(d.category)}</span>` : '';
+  const updatedAt = source === 'curated' ? d.parent_updated_at : d.updated_at;
+  const updated = updatedAt
+    ? `<span class="pill muted">Updated ${esc(fmtRelative(updatedAt))}</span>`
+    : '';
+  pills.innerHTML = `<span class="pill type">${esc(kind)}</span>${sourceBadge}${cat}${updated}`;
 
   // Invocation block — lives inside the Description panel so the "how to
   // call it" cue sits right under "what it does". Flea entities ship as
@@ -1064,25 +1144,31 @@
   }
 
   // Meta-row.
+  //   * Curated inner (always nested under a parent plugin) → "part of …"
+  //   * Flea inner (skill/agent nested in a flea plugin)    → same layout,
+  //     parent link points at the flea plugin detail.
+  //   * Flea standalone (entity is itself the skill/agent)  → "by author ·
+  //     N installed · size".
   const metaRow = document.getElementById('hero-meta-row');
-  if (source === 'curated') {
+  if (source === 'curated' || innerName) {
     const author = (d.parent_author_name && d.parent_author_name !== 'owner_todo')
       ? `<strong>${esc(d.parent_author_name)}</strong>`
       : `<strong style="font-style:italic; color:var(--warn-color);">owner_todo</strong>`;
-    const updated = d.parent_updated_at ? `Updated ${esc(fmtRelative(d.parent_updated_at))}` : '';
+    const parentHref = source === 'curated'
+      ? `/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}`
+      : `/marketplace/flea/${esc(entityId)}`;
+    const parentLabel = d.parent_display_name || d.manifest_name || pluginName;
     metaRow.innerHTML =
-      `<span>part of <a href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}"><strong>${esc(pluginName)}</strong></a></span>
+      `<span>part of <a href="${parentHref}"><strong>${esc(parentLabel)}</strong></a></span>
        <span class="dot">·</span>
-       <span>by ${author}</span>
-       ${updated ? `<span class="dot">·</span><span>${updated}</span>` : ''}`;
+       <span>by ${author}</span>`;
   } else {
     const author = d.owner_display || d.author_name || '';
     metaRow.innerHTML =
       `<span>by <strong>${esc(author)}</strong></span>
        <span class="dot">·</span>
        <span>${d.install_count || 0} installed</span>
-       ${d.bundle_size != null ? `<span class="dot">·</span><span>${esc(fmtBytes(d.bundle_size))}</span>` : ''}
-       ${d.updated_at ? `<span class="dot">·</span><span>Updated ${esc(fmtRelative(d.updated_at))}</span>` : ''}`;
+       ${d.bundle_size != null ? `<span class="dot">·</span><span>${esc(fmtBytes(d.bundle_size))}</span>` : ''}`;
   }
 
   // Hero action — Curated nested redirects to parent plugin (no install at
@@ -1142,15 +1228,24 @@
     }
   }
 
-  if (source === 'curated') {
+  // Inner skills/agents (curated nested OR flea nested) can't be added to
+  // a user's stack on their own — they live inside a parent plugin bundle
+  // and adoption only happens at the plugin level. Render "Open parent
+  // plugin →" + helper text instead of the install/remove buttons. Flea
+  // standalone entities (else branch below) keep the normal install UX.
+  if (source === 'curated' || innerName) {
+    const parentHref = source === 'curated'
+      ? `/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}`
+      : `/marketplace/flea/${esc(entityId)}`;
+    const parentLabel = d.parent_display_name || d.manifest_name || pluginName;
     // Button alone in the actions-row (the row is flex-direction: row;
     // putting the helper inside it would lay them side-by-side). The
     // helper sits in #hero-helper, a sibling under the actions-row, so
     // the outer .actions flex-column stacks them: button → helper.
-    actions.innerHTML = `<a class="btn primary" href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">Open parent plugin →</a>`;
+    actions.innerHTML = `<a class="btn primary" href="${parentHref}">Open parent plugin →</a>`;
     const helperEl = document.getElementById('hero-helper');
     helperEl.innerHTML = `
-      This ${esc(kind === 'skill' ? 'skill' : 'agent')} is part of <strong>${esc(pluginName)}</strong>.<br>
+      This ${esc(kind === 'skill' ? 'skill' : 'agent')} is part of <strong>${esc(parentLabel)}</strong>.<br>
       Add the bundle to your stack to use it.`;
     helperEl.hidden = false;
   } else {
@@ -1213,6 +1308,66 @@
     heroTaglineEl.hidden = false;
   }
 
+  // ── Hero telemetry chip ───────────────────────────────────────────
+  // Four-segment funnel matching the plugin detail page, with one
+  // twist: the installed segment shows the *parent plugin's* stack
+  // count under a "Plugin:" label, because skills/agents inherit
+  // adoption from their plugin (no per-item subscription model). The
+  // tooltip spells out the relationship. Hidden when neither the
+  // parent is installed AND the item has no 30d activity.
+  (function renderInnerHeroTelemetry() {
+    const slot = document.getElementById('hero-telemetry');
+    if (!slot) return;
+    const tel = d.telemetry || {};
+    // Adoption source per scenario:
+    //   * Curated inner — `parent_stack_count` (parent plugin's subscribers).
+    //   * Flea inner    — `parent_stack_count` (backend fills it with the
+    //                      parent flea plugin's install_count — see
+    //                      `flea_skill_detail` / `flea_agent_detail`).
+    //   * Flea standalone (no innerName) — `install_count` directly on the
+    //                      entity.
+    const installedCount = (source === 'curated' || innerName)
+      ? (d.parent_stack_count || 0)
+      : (d.install_count || 0);
+    const activeUsers = tel.distinct_users_30d || 0;
+    const calls = tel.invocations_30d || 0;
+    const trend = tel.trend_pct;
+    if (installedCount === 0 && calls === 0) { slot.hidden = true; return; }
+    const svg = (path) =>
+      `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${path}"/></svg>`;
+    const ICON_USER = svg("M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z");
+    const ICON_BOLT = svg("M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z");
+    const ICON_STACK = svg("M5.566 4.657A4.505 4.505 0 0 1 6.75 4.5h10.5c.41 0 .806.055 1.183.157A3 3 0 0 0 15.75 3h-7.5a3 3 0 0 0-2.684 1.657ZM2.25 12a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3v-6ZM5.25 7.5c-.41 0-.806.055-1.184.157A3 3 0 0 1 6.75 6h10.5a3 3 0 0 1 2.683 1.657A4.505 4.505 0 0 0 18.75 7.5H5.25Z");
+    const ICON_TUP   = svg("M15.22 6.268a.75.75 0 0 1 .968-.432l5.942 2.28a.75.75 0 0 1 .431.97l-2.28 5.94a.75.75 0 1 1-1.4-.537l1.63-4.251-1.086.483a11.2 11.2 0 0 0-5.45 5.174.75.75 0 0 1-1.199.19L9 12.31l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75a.75.75 0 0 1 1.06 0l3.606 3.605a12.694 12.694 0 0 1 5.68-4.973l1.086-.484-4.251-1.631a.75.75 0 0 1-.432-.97Z");
+    const ICON_TDOWN = svg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
+    const segs = [
+      `<span class="seg-active" title="${activeUsers} users invoked this ${esc(kind)} in the last 30 days">${ICON_USER} ${fmtNum(activeUsers)} active</span>`,
+      `<span class="seg-calls" title="${calls} invocations of this ${esc(kind)} in the last 30 days">${ICON_BOLT} ${fmtNum(calls)} calls</span>`,
+    ];
+    if (trend !== null && trend !== undefined) {
+      const up = trend >= 0;
+      const cls = up ? 'trend-up' : 'trend-down';
+      const icon = up ? ICON_TUP : ICON_TDOWN;
+      segs.push(`<span class="${cls}" title="Week-over-week change in invocations of this ${esc(kind)}">${icon} ${Math.abs(Math.round(trend))}%</span>`);
+    }
+    // Installed segment differs per scenario:
+    //   * Curated inner / flea inner: parent plugin's stack count —
+    //     "Plugin:" prefix + tooltip make the semantic shift explicit.
+    //     We're not showing how many people use this skill; we're
+    //     showing how many have the parent plugin in their stack. The
+    //     funnel insight: "12 installed plugin → 2 actually use this skill".
+    //   * Flea standalone (no innerName): entity-level install_count.
+    //     Plain `N installed` matches the plugin detail flea hero.
+    if (source === 'curated' || innerName) {
+      const parentPluginLabel = esc(d.parent_display_name || d.manifest_name || pluginName || 'parent plugin');
+      segs.push(`<span class="seg-installed" title="Parent plugin (${parentPluginLabel}) currently installed by ${installedCount} users">${ICON_STACK} <span class="seg-installed-label">Plugin:</span> ${fmtNum(installedCount)} installed</span>`);
+    } else {
+      segs.push(`<span class="seg-installed" title="Installed by ${installedCount} users">${ICON_STACK} ${fmtNum(installedCount)} installed</span>`);
+    }
+    slot.innerHTML = segs.join(' · ');
+    slot.hidden = false;
+  })();
+
   // ── Description ────────────────────────────────────────────────────
   // When the curator authored a rich markdown body in marketplace-metadata.json,
   // the API renders + sanitizes it server-side and ships as
@@ -1268,29 +1423,54 @@
   // `owner_todo` placeholder for the Curator row stays as a deliberate
   // reminder to wire up curator metadata.
   const dl = document.getElementById('details-list');
-  if (source === 'curated') {
+  // Activity rows for the sidebar — Invocations + Users live in the
+  // hero chip now, no need to duplicate. Two derived signals only the
+  // daily series can give us:
+  //   * Active days — engagement consistency over the 30d window.
+  //   * Last used   — recency (answers "is this still being used?").
+  // Both rendered only when the item has at least one active day so a
+  // brand-new skill doesn't show "0 of 30" + "Last used —".
+  const telemetryRows = (() => {
+    if (!d.telemetry || !Array.isArray(d.telemetry.daily_series)) return '';
+    const series = d.telemetry.daily_series;
+    const activeDays = series.filter(p => (p.invocations || 0) > 0).length;
+    if (activeDays === 0) return '';
+    let lastIso = null;
+    for (let i = series.length - 1; i >= 0; i--) {
+      if ((series[i].invocations || 0) > 0) { lastIso = series[i].day; break; }
+    }
+    return `<div class="row"><dt>Active days</dt><dd>${activeDays} of ${series.length}</dd></div>`
+         + (lastIso
+            ? `<div class="row"><dt>Last used</dt><dd>${esc(fmtRelative(lastIso))}</dd></div>`
+            : '');
+  })();
+  if (source === 'curated' || innerName) {
+    // Nested skill/agent (curated OR flea-inner): the Details sidebar
+    // is parent-centric — Parent plugin / Bundle size / activity rows /
+    // authorship label. The authorship row label tracks the source
+    // (curated bundles have a Curator, flea bundles have an Owner) so
+    // the label vocabulary stays consistent with the plugin detail page.
     const author = (d.parent_author_name && d.parent_author_name !== 'owner_todo')
       ? esc(d.parent_author_name)
       : '<span class="todo">owner_todo</span>';
+    const authorLabel = source === 'curated' ? 'Curator' : 'Owner';
+    // Type already shown as a badge in the hero — skip the row here.
     dl.innerHTML = `
-      <div class="row"><dt>Type</dt><dd>${esc(kind === 'skill' ? 'Skill' : 'Agent')}</dd></div>
-      <div class="row"><dt>Parent plugin</dt><dd class="mono">${esc(pluginName)}</dd></div>
-      <div class="row"><dt>Marketplace</dt><dd>${esc(d.marketplace_name || marketplaceId)}</dd></div>
-      ${d.relpath ? `<div class="row"><dt>Path</dt><dd class="mono">${esc(d.relpath)}</dd></div>` : ''}
+      <div class="row"><dt>Parent plugin</dt><dd>${esc(d.parent_display_name || d.manifest_name || pluginName)}</dd></div>
       ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}
-      ${d.parent_updated_at ? `<div class="row"><dt>Updated</dt><dd>${esc(fmtRelative(d.parent_updated_at))}</dd></div>` : ''}
-      <div class="row"><dt>Curator</dt><dd>${author}</dd></div>`;
+      ${telemetryRows}
+      <div class="row"><dt>${authorLabel}</dt><dd>${author}</dd></div>`;
   } else {
     const ownerLabel = d.owner_display || d.author_name || '';
+    // Type already shown as a badge in the hero — skip the row here.
     dl.innerHTML = `
-      <div class="row"><dt>Type</dt><dd>${esc(kind === 'skill' ? 'Skill' : 'Agent')}</dd></div>
       ${ownerLabel ? `<div class="row"><dt>Owner</dt><dd>${esc(ownerLabel)}</dd></div>` : ''}
       ${d.version ? `<div class="row"><dt>Version</dt><dd class="mono">v${esc(d.version)}</dd></div>` : ''}
       ${d.category ? `<div class="row"><dt>Category</dt><dd>${esc(d.category)}</dd></div>` : ''}
       ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}
       <div class="row"><dt>Installs</dt><dd>${d.install_count || 0}</dd></div>
-      ${d.released_at ? `<div class="row"><dt>Released</dt><dd>${esc(fmtRelative(d.released_at))}</dd></div>` : ''}
-      ${d.updated_at ? `<div class="row"><dt>Updated</dt><dd>${esc(fmtRelative(d.updated_at))}</dd></div>` : ''}`;
+      ${telemetryRows}
+      ${d.released_at ? `<div class="row"><dt>Released</dt><dd>${esc(fmtRelative(d.released_at))}</dd></div>` : ''}`;
   }
 
   // ── Docs section ────────────────────────────────────────────────

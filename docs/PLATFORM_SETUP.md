@@ -64,11 +64,15 @@ All scheduler tasks call back into the app over HTTP (`SCHEDULER_API_TOKEN` in e
 
 1. Reads `${SESSION_DATA_DIR}/<user>/*.jsonl` (collected via `agnes push` / `SessionEnd` hook).
 2. Parses Claude Code session events — extracts skill/agent/tool/MCP/slash-command invocations.
-3. Writes to `usage_events` + `usage_session_summary`.
-4. Refreshes rollup tables `usage_tool_daily` + `usage_plugin_daily` after every successful tick.
+3. Writes to `usage_events` + `usage_session_summary` (`source` + `ref_id` resolved per-event by `MarketplaceItemLookup`).
+4. Refreshes rollup tables:
+   - `usage_marketplace_item_daily` — incremental DELETE+INSERT for the last 7 days.
+   - `usage_marketplace_item_window` `period_label='last_7d'` — full rebuild every tick.
+   - `usage_marketplace_item_window` `period_label='last_30d'` — full rebuild hourly (tracked in `session_processor_state` as `processor_name='marketplace_rollup_30d'`).
+   - `usage_tool_daily` — legacy rollup, candidate for removal (no product-UI consumer; kept temporarily for the `usage_ask` schema digest).
 5. Tracks progress in `session_processor_state` (processor = `usage`) — only new files are processed on subsequent runs.
 
-**Attribution** — `usage_attribution_skills`, `usage_attribution_agents`, `usage_attribution_commands` lookup tables are populated from plugin manifests at marketplace-sync time and store-entity create/update/delete. Curated > flea precedence. Builtin tools (`Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `TodoWrite`, `Task`, `Agent`, `NotebookEdit`, `WebFetch`, `WebSearch`, `ExitPlanMode`) attribute to `(builtin, None)`.
+**Attribution** — marketplace items (skill / agent / plugin-defined slash command) carry a `<plugin_name>:<local_name>` prefix in `usage_events.skill_name` / `subagent_type` / `command_name`. At write time, `MarketplaceItemLookup` (preloaded from `marketplace_plugins` + `store_entities`) splits the identifier on `:`, matches the prefix, and writes the resolved `source` (`curated` | `flea` | `builtin`) and `ref_id` (plain plugin name) columns. Items without a `:` (raw `Bash`, `Read`, built-in `/exit` etc.) attribute to `(builtin, NULL)`. Items whose prefix has no live plugin match also fall back to `(builtin, NULL)` and are excluded from marketplace rollups.
 
 ### Export
 
@@ -85,7 +89,7 @@ agnes admin usage export --format parquet --since 30d
 
 ### Retention
 
-`USAGE_EVENTS_RETENTION_DAYS` (default `0` = forever). When set > 0, the daily scheduler prune deletes `usage_events` rows older than that many days. Rollup tables (`usage_tool_daily`, `usage_plugin_daily`) are not pruned.
+`USAGE_EVENTS_RETENTION_DAYS` (default `0` = forever). When set > 0, the daily scheduler prune deletes `usage_events` rows older than that many days. Rollup tables (`usage_marketplace_item_daily`, `usage_marketplace_item_window`, `usage_tool_daily`) are not pruned.
 
 Manual prune:
 ```bash
@@ -116,7 +120,7 @@ agnes admin usage reprocess
 POST /api/admin/usage/reprocess
 ```
 
-This clears `session_processor_state` rows for the usage processor, `usage_events`, `usage_session_summary`, and rollup tables in one transaction, then triggers fresh extraction. The verification processor is untouched.
+This clears `session_processor_state` rows for `processor_name IN ('usage', 'marketplace_rollup_30d')`, `usage_events`, `usage_session_summary`, `usage_tool_daily`, `usage_marketplace_item_daily`, and `usage_marketplace_item_window` in one transaction, then triggers fresh extraction. The verification processor is untouched.
 
 ## 6. Privacy posture
 
@@ -143,8 +147,7 @@ agnes admin activity health
 ```
 
 **Usage insights:**
-- `/marketplace` → Most Popular tab — top 8 cards by invocations over the last 30 days.
-- Skill invocation chips on each card: `🔥 1,243 uses · ↑ 24%` (week-over-week trend; suppressed when prior week < 3 invocations).
+- `/marketplace` listing surfaces per-card `invocations_30d`, `distinct_users_30d`, and `trend_pct` via the API. The on-card chip is currently hidden pending UX finalisation; metrics are visible on the plugin / inner-item detail pages.
 - `/admin/users/<id>` → Sessions — drill into a specific analyst's session history (start time, duration, tool calls, errors, model). Per-file `.jsonl` or bulk `.zip` download (both audit-logged).
 
 **Ad-hoc questions:**

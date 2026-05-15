@@ -131,6 +131,37 @@
   .plugin-detail .pill.flea    { background: #EDE9FE; color: #6D28D9; font-weight: 600; }
   .plugin-detail .pill.muted   { background: transparent; color: rgba(255,255,255,0.72); padding-left: 0; }
 
+  /* Hero telemetry chip — mirrors the listing card chip shape but
+     restyled for the gradient hero background (white text, larger
+     14px glyphs than the 12px on cards). All four segments are
+     joined by ` · ` and sit inline; the listing card's left/right
+     split via margin-auto isn't reused here — the hero has space,
+     so a single coherent metadata strip reads cleaner. */
+  .plugin-detail .hero-telemetry {
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: rgba(255,255,255,0.92);
+    line-height: 1.7;
+  }
+  .plugin-detail .hero-telemetry > span {
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .plugin-detail .hero-telemetry svg {
+    width: 14px; height: 14px;
+    flex-shrink: 0;
+  }
+  /* On the dark hero we tint icons in lighter tokens so they read
+     as a visual accent rather than punctuation. The trend pill
+     keeps a real colour because direction-coding genuinely helps. */
+  .plugin-detail .hero-telemetry .seg-active    > svg { color: #6ee7b7; }
+  .plugin-detail .hero-telemetry .seg-calls     > svg { color: #fdba74; }
+  .plugin-detail .hero-telemetry .seg-installed > svg { color: #fde68a; }
+  .plugin-detail .hero-telemetry .trend-up   { color: #6ee7b7; font-weight: 600; }
+  .plugin-detail .hero-telemetry .trend-down { color: #fca5a5; font-weight: 600; }
+
   .plugin-detail .actions {
     /* Absolute on .hero — anchored at the top-right corner with equal
        22px offsets from top and right. Hint card stacks below the
@@ -641,6 +672,33 @@
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  /* Funnel chip on each inner card — lifted from marketplace.html
+     `.mp-card .inv-chip`, re-scoped to the plugin detail surface so
+     listing-card rules can evolve independently. Same colour mapping
+     so users carry mental model from listing → detail. */
+  .plugin-detail .inner-card .inv-chip {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 8px;
+    font-size: 11.5px; color: var(--text-secondary);
+    line-height: 1.4;
+  }
+  .plugin-detail .inner-card .inv-chip-left {
+    display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .plugin-detail .inner-card .inv-chip > span,
+  .plugin-detail .inner-card .inv-chip-left > span {
+    display: inline-flex; align-items: center; gap: 3px;
+    white-space: nowrap;
+  }
+  .plugin-detail .inner-card .inv-chip .seg-installed { margin-left: auto; }
+  .plugin-detail .inner-card .inv-chip svg {
+    width: 13px; height: 13px; flex-shrink: 0;
+  }
+  .plugin-detail .inner-card .inv-chip .seg-installed > svg { color: #F59F0A; }
+  .plugin-detail .inner-card .inv-chip .seg-active    > svg { color: #0e9b6a; }
+  .plugin-detail .inner-card .inv-chip .seg-calls     > svg { color: #f97316; }
+  .plugin-detail .inner-card .inv-chip .trend-up   { color: #10b77f; font-weight: 600; }
+  .plugin-detail .inner-card .inv-chip .trend-down { color: #ef4444; font-weight: 600; }
 
   /* Tables (commands, hooks, mcps) */
   .plugin-detail .substruct table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -795,7 +853,7 @@
     <div class="crumbs">
       <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}">Marketplace</a>
       <span class="sep">›</span>
-      <span id="crumb-mid">{{ source | capitalize }}</span>
+      <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}" id="crumb-mid">{{ 'Curated Marketplace' if source == 'curated' else 'Flea Market' }}</a>
       <span class="sep">›</span>
       <span id="crumb-name">{{ plugin_name }}</span>
     </div>
@@ -812,8 +870,14 @@
       <div class="meta">
         <h1 id="hero-name">{{ plugin_name }}</h1>
         <div class="tagline" id="hero-tagline">Loading…</div>
-        <div class="curator" id="hero-curator"></div>
         <div class="pills" id="hero-pills"></div>
+        <!-- Telemetry funnel chip — same shape as the listing card so a
+             user who clicks through from /marketplace sees identical
+             figures. Visibility decided by JS: hidden when stack_count
+             == 0 AND invocations_30d == 0 (brand-new plugin, no signals
+             yet). Lives at the bottom of meta so it reads as the last
+             "what is this" facet before the action buttons take over. -->
+        <div class="hero-telemetry" id="hero-telemetry" hidden></div>
       </div>
     </div>
     <!-- Actions absolutely anchored at the hero's top-right corner with
@@ -924,6 +988,14 @@
     if (n < 1024*1024*1024) return (n/(1024*1024)).toFixed(1) + ' MB';
     return (n/(1024*1024*1024)).toFixed(2) + ' GB';
   }
+  // Short integer formatter — matches the listing card's fmtNum so a
+  // user clicking from /marketplace sees the same shortened figures.
+  function fmtNum(n) {
+    if (!n) return '0';
+    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000)    return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
+  }
   function fmtRelative(iso) {
     if (!iso) return '—';
     const t = new Date(iso);
@@ -963,8 +1035,9 @@
   // when the curator hasn't filled the friendly tagline yet — preserves
   // the historical hero look for un-enriched plugins.
   const heroTitle = d.display_name || d.manifest_name || d.plugin_name;
-  document.getElementById('crumb-mid').textContent =
-    d.source === 'curated' ? (d.marketplace_name || d.marketplace_id) : 'Flea Market';
+  // crumb-mid is rendered server-side as the generic "Curated Marketplace"
+  // / "Flea Market" link — no JS update needed (was previously overwritten
+  // with the per-instance marketplace_name, which was opaque to analysts).
   document.getElementById('crumb-name').textContent = heroTitle;
   document.title = `${heroTitle} — Marketplace`;
 
@@ -975,16 +1048,9 @@
   const heroWindowLabel = document.getElementById('hero-window-label');
   if (heroWindowLabel) heroWindowLabel.textContent = heroTitle;
 
-  const curator = document.getElementById('hero-curator');
-  if (d.source === 'curated') {
-    if (d.author_name && d.author_name !== 'owner_todo') {
-      curator.innerHTML = 'Curator: <strong>' + esc(d.author_name) + '</strong>';
-    } else {
-      curator.innerHTML = 'Curator: <span class="todo">owner_todo</span>';
-    }
-  } else {
-    curator.innerHTML = 'by <strong>' + esc(d.author_name || '') + '</strong>';
-  }
+  // Hero curator line removed — the Details sidebar already carries
+  // the Curator row (renamed from "Owner"), so duplicating it under
+  // the h1 was visual noise.
 
   const pills = document.getElementById('hero-pills');
   const pillBits = [];
@@ -999,6 +1065,49 @@
   if (d.version) pillBits.push(`<span class="pill ver">${verLabel}</span>`);
   if (d.updated_at) pillBits.push(`<span class="pill muted">Updated ${esc(fmtRelative(d.updated_at))}</span>`);
   pills.innerHTML = pillBits.join('');
+
+  // ── Hero telemetry chip ───────────────────────────────────────────
+  // Identical funnel as the listing card chip — active · calls · trend
+  // on the left (time-bounded engagement, 30d), installed pinned right
+  // (passive adoption, all-time). Hidden when both stack_count and
+  // 30d invocations are zero. Heroicons solid inline so they recolour
+  // through the per-segment CSS rules above.
+  (function renderHeroTelemetry() {
+    const slot = document.getElementById('hero-telemetry');
+    if (!slot) return;
+    const tel = d.telemetry || {};
+    const stackCount = d.stack_count || 0;
+    const activeUsers = tel.distinct_users_30d || 0;
+    const calls = tel.invocations_30d || 0;
+    const trend = tel.trend_pct;
+    if (stackCount === 0 && calls === 0) { slot.hidden = true; return; }
+    const svg = (path) =>
+      `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${path}"/></svg>`;
+    const ICON_USER = svg("M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z");
+    const ICON_BOLT = svg("M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z");
+    const ICON_STACK = svg("M5.566 4.657A4.505 4.505 0 0 1 6.75 4.5h10.5c.41 0 .806.055 1.183.157A3 3 0 0 0 15.75 3h-7.5a3 3 0 0 0-2.684 1.657ZM2.25 12a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3v-6ZM5.25 7.5c-.41 0-.806.055-1.184.157A3 3 0 0 1 6.75 6h10.5a3 3 0 0 1 2.683 1.657A4.505 4.505 0 0 0 18.75 7.5H5.25Z");
+    const ICON_TUP   = svg("M15.22 6.268a.75.75 0 0 1 .968-.432l5.942 2.28a.75.75 0 0 1 .431.97l-2.28 5.94a.75.75 0 1 1-1.4-.537l1.63-4.251-1.086.483a11.2 11.2 0 0 0-5.45 5.174.75.75 0 0 1-1.199.19L9 12.31l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75a.75.75 0 0 1 1.06 0l3.606 3.605a12.694 12.694 0 0 1 5.68-4.973l1.086-.484-4.251-1.631a.75.75 0 0 1-.432-.97Z");
+    const ICON_TDOWN = svg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
+    // Hero variant — all four segments inline, separated by `·`. The
+    // listing card splits installed off to the right via flex auto-
+    // margin (helps a crowded card visually parse the funnel) but
+    // the hero has plenty of horizontal real estate, so keeping
+    // installed adjacent to the rest reads as one coherent metadata
+    // strip instead of two disjoint groups.
+    const segs = [
+      `<span class="seg-active" title="${activeUsers} users invoked it in the last 30 days">${ICON_USER} ${fmtNum(activeUsers)} active</span>`,
+      `<span class="seg-calls" title="${calls} invocations in the last 30 days">${ICON_BOLT} ${fmtNum(calls)} calls</span>`,
+    ];
+    if (trend !== null && trend !== undefined) {
+      const up = trend >= 0;
+      const cls = up ? 'trend-up' : 'trend-down';
+      const icon = up ? ICON_TUP : ICON_TDOWN;
+      segs.push(`<span class="${cls}" title="Week-over-week change in invocations">${icon} ${Math.abs(Math.round(trend))}%</span>`);
+    }
+    segs.push(`<span class="seg-installed" title="Currently installed by ${stackCount} users">${ICON_STACK} ${fmtNum(stackCount)} installed</span>`);
+    slot.innerHTML = segs.join(' · ');
+    slot.hidden = false;
+  })();
 
   // Hero window — macOS-style frame around the cover photo. The titlebar
   // label carries the plugin's manifest_name; the body holds the cover
@@ -1251,13 +1360,49 @@
   if (d.bundle_size != null) {
     detailRows.push(`<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>`);
   }
-  // Owner: render real value when present; for curated keep the
-  // `owner_todo` placeholder visible as a reminder to wire up curator
-  // metadata (intentional — flea falls through silently).
+  // Activity sidebar rows — Invocations + Users were moved into the
+  // hero chip above (no need to duplicate the same figures twice on
+  // one page). The sidebar now carries two *derived* signals from the
+  // daily series that the hero doesn't expose:
+  //   * Active days — engagement consistency over the 30d window.
+  //     "Active on 18 of 30 days" reads very differently from
+  //     "Active on 2 of 30 days" even when the raw call count is
+  //     similar; helps spot bursty vs. steady usage.
+  //   * Last used — recency, answering "is it still alive?". A
+  //     plugin with 12 installed users but last call 30 days ago is
+  //     stale; the hero chip can't surface that alone.
+  if (d.telemetry && Array.isArray(d.telemetry.daily_series)) {
+    const series = d.telemetry.daily_series;
+    const activeDays = series.filter(p => (p.invocations || 0) > 0).length;
+    if (activeDays > 0) {
+      detailRows.push(
+        `<div class="row"><dt>Active days</dt><dd>${activeDays} of ${series.length}</dd></div>`
+      );
+      // Last day with at least one invocation. Series is day-ascending
+      // (per _load_plugin_daily_series), so the final non-zero entry is
+      // the latest active day. Render relative ("2 days ago" / "Active
+      // today") via the same fmtRelative helper used elsewhere.
+      let lastIso = null;
+      for (let i = series.length - 1; i >= 0; i--) {
+        if ((series[i].invocations || 0) > 0) { lastIso = series[i].day; break; }
+      }
+      if (lastIso) {
+        detailRows.push(
+          `<div class="row"><dt>Last used</dt><dd>${esc(fmtRelative(lastIso))}</dd></div>`
+        );
+      }
+    }
+  }
+  // Authorship row label tracks the source: curated bundles have a
+  // curator (the marketplace operator), flea bundles have an owner
+  // (the analyst who uploaded). When `author_name` is the `owner_todo`
+  // placeholder the curated branch surfaces it visibly as a reminder
+  // to wire up curator metadata; flea falls through silently.
+  const authorLabel = d.source === 'curated' ? 'Curator' : 'Owner';
   if (d.author_name && d.author_name !== 'owner_todo') {
-    detailRows.push(`<div class="row"><dt>Owner</dt><dd>${esc(d.author_name)}</dd></div>`);
+    detailRows.push(`<div class="row"><dt>${authorLabel}</dt><dd>${esc(d.author_name)}</dd></div>`);
   } else if (d.source === 'curated') {
-    detailRows.push(`<div class="row"><dt>Owner</dt><dd><span class="todo">owner_todo</span></dd></div>`);
+    detailRows.push(`<div class="row"><dt>Curator</dt><dd><span class="todo">owner_todo</span></dd></div>`);
   }
   const detailsEl = document.getElementById('details-list');
   if (detailRows.length) {
@@ -1267,6 +1412,44 @@
   }
 
   // ── Internal structure ─────────────────────────────────────────
+  // Funnel chip on the inner skill/agent card — mirrors the marketplace
+  // listing card chip (same four segments, same icons, same gate). Inner
+  // items can't be installed standalone, so the "installed" segment reads
+  // the parent plugin's adoption count (curated stack_count or flea
+  // install_count, populated server-side as parent_stack_count).
+  const _innerSvg = (path) =>
+    `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${path}"/></svg>`;
+  const INNER_ICON_STACK = _innerSvg("M5.566 4.657A4.505 4.505 0 0 1 6.75 4.5h10.5c.41 0 .806.055 1.183.157A3 3 0 0 0 15.75 3h-7.5a3 3 0 0 0-2.684 1.657ZM2.25 12a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3v-6ZM5.25 7.5c-.41 0-.806.055-1.184.157A3 3 0 0 1 6.75 6h10.5a3 3 0 0 1 2.683 1.657A4.505 4.505 0 0 0 18.75 7.5H5.25Z");
+  const INNER_ICON_USER  = _innerSvg("M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z");
+  const INNER_ICON_BOLT  = _innerSvg("M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z");
+  const INNER_ICON_TUP   = _innerSvg("M15.22 6.268a.75.75 0 0 1 .968-.432l5.942 2.28a.75.75 0 0 1 .431.97l-2.28 5.94a.75.75 0 1 1-1.4-.537l1.63-4.251-1.086.483a11.2 11.2 0 0 0-5.45 5.174.75.75 0 0 1-1.199.19L9 12.31l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75a.75.75 0 0 1 1.06 0l3.606 3.605a12.694 12.694 0 0 1 5.68-4.973l1.086-.484-4.251-1.631a.75.75 0 0 1-.432-.97Z");
+  const INNER_ICON_TDOWN = _innerSvg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
+  function buildInnerCardChip(it) {
+    const stackCount = it.parent_stack_count || 0;
+    const activeUsers = it.distinct_users_30d || 0;
+    const calls = it.invocations_30d || 0;
+    const trend = it.trend_pct;
+    // Same gate as the listing card / hero chip — zero adoption AND
+    // zero 30d activity means brand-new bundle, don't visually penalise
+    // it with a "0 · 0 · 0" row.
+    if (stackCount === 0 && calls === 0) return '';
+    const leftSegs = [
+      `<span class="seg-active" title="${activeUsers} users invoked it in the last 30 days">${INNER_ICON_USER} ${fmtNum(activeUsers)} active</span>`,
+      `<span class="seg-calls" title="${calls} invocations in the last 30 days">${INNER_ICON_BOLT} ${fmtNum(calls)} calls</span>`,
+    ];
+    if (trend !== null && trend !== undefined) {
+      const up = trend >= 0;
+      const icon = up ? INNER_ICON_TUP : INNER_ICON_TDOWN;
+      const cls = up ? 'trend-up' : 'trend-down';
+      leftSegs.push(`<span class="${cls}" title="Week-over-week change in invocations">${icon} ${Math.abs(Math.round(trend))}%</span>`);
+    }
+    const installedSeg = `<span class="seg-installed" title="Parent plugin currently installed by ${stackCount} users">${INNER_ICON_STACK} ${fmtNum(stackCount)} installed</span>`;
+    return `<div class="inv-chip">
+      <span class="inv-chip-left">${leftSegs.join(' · ')}</span>
+      ${installedSeg}
+    </div>`;
+  }
+
   function buildCardSection(title, items, type) {
     if (!items || !items.length) return '';
     // Inner cards render the marketplace-metadata cover photo when present
@@ -1288,6 +1471,7 @@
           <span class="type-badge">${type}</span>
           <div class="name">${esc(it.name)}</div>
           <div class="desc">${esc(it.description || '')}</div>
+          ${buildInnerCardChip(it)}
         </div>
       </a>`;
     }).join('');
