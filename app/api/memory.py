@@ -6,12 +6,12 @@ import logging
 import uuid
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
-from app.auth.access import require_admin, is_user_admin
+from app.auth.access import require_admin, is_user_admin, can_access
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.memory_domains import MemoryDomainsRepository
 from src.repositories.audit import AuditRepository
@@ -1487,8 +1487,85 @@ async def get_tree(
 
 # ---- Bundle endpoint ----
 
+
+def _build_per_domain_markdown(
+    slug: str, user: dict, conn: duckdb.DuckDBPyConnection
+) -> Response:
+    """Render a deterministic markdown bundle for a single memory domain.
+
+    Used by ``agnes pull`` to write ``~/.claude/memory/<slug>/bundle.md``.
+    The bundle includes both ``is_required=TRUE`` and approved items so
+    the per-domain md5 in ``/api/sync/manifest`` (built from the same
+    item set in ``_build_memory_domains_section``) matches the md5 of
+    what the CLI just received. Items are sorted by ``id`` to mirror the
+    manifest's md5 computation byte-for-byte (Section 5.1 of the
+    unified-stack design).
+
+    RBAC: the caller must have a grant on the domain — admins bypass
+    via ``can_access``'s admin short-circuit. Anonymous or grantless
+    callers get 403.
+    """
+    repo = MemoryDomainsRepository(conn)
+    dom = repo.get_by_slug(slug)
+    if not dom:
+        raise HTTPException(status_code=404, detail="memory_domain_not_found")
+    if not can_access(user["id"], "memory_domain", dom["id"], conn):
+        raise HTTPException(status_code=403, detail="no_grant")
+
+    # Pull items the same way the manifest md5 helper does — id order,
+    # full payload (title/status/is_required pulled via the knowledge
+    # repository for content), no token-budget truncation.
+    items_meta = repo.list_items_of_domain(dom["id"], limit=10000)
+    if not items_meta:
+        body = f"# {dom['name']}\n\n_No items in this domain yet._\n"
+        return Response(content=body, media_type="text/markdown; charset=utf-8")
+
+    # Fetch full bodies — list_items_of_domain only returns id/title/status.
+    knowledge_repo = KnowledgeRepository(conn)
+    full_items: list = []
+    for meta in sorted(items_meta, key=lambda r: r["id"]):
+        full = knowledge_repo.get_by_id(meta["id"])
+        if not full:
+            continue
+        full_items.append(full)
+
+    lines: list = [f"# {dom['name']}", ""]
+    if dom.get("description"):
+        lines.append(dom["description"])
+        lines.append("")
+
+    required = [it for it in full_items if it.get("is_required")]
+    approved = [
+        it
+        for it in full_items
+        if not it.get("is_required") and it.get("status") == "approved"
+    ]
+
+    if required:
+        lines.append("## Required")
+        lines.append("")
+        for it in required:
+            lines.append(f"### {it.get('title', 'Untitled')}")
+            lines.append("")
+            lines.append(it.get("content", "") or "")
+            lines.append("")
+
+    if approved:
+        lines.append("## Approved")
+        lines.append("")
+        for it in approved:
+            lines.append(f"### {it.get('title', 'Untitled')}")
+            lines.append("")
+            lines.append(it.get("content", "") or "")
+            lines.append("")
+
+    body = "\n".join(lines).rstrip() + "\n"
+    return Response(content=body, media_type="text/markdown; charset=utf-8")
+
+
 @router.get("/bundle")
 async def get_bundle(
+    domain: Optional[str] = None,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -1498,8 +1575,21 @@ async def get_bundle(
     Approved items are confidence×recency-ranked and included until the budget
     is exhausted. Audience-filtered by the caller's group memberships (admins
     see everything).
+
+    v49: when ``?domain=<slug>`` is supplied the response shape switches
+    to ``text/markdown`` containing a deterministic per-domain bundle —
+    that's what ``agnes pull`` writes to ``~/.claude/memory/<slug>/bundle.md``.
+    RBAC: the caller must have a ``MEMORY_DOMAIN`` grant on the domain
+    (admins bypass per ``can_access``). The markdown body sorts items
+    alphabetically by title and includes both required and approved
+    items (required first, with a marker) so the bundle md5 in the
+    manifest matches what the CLI re-renders.
     """
     from datetime import datetime, timezone
+
+    # ----- Per-domain markdown variant (v49) -----
+    if domain:
+        return _build_per_domain_markdown(domain, user, conn)
 
     repo = KnowledgeRepository(conn)
     effective_groups = _effective_groups(user, conn)
