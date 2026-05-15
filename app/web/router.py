@@ -896,8 +896,21 @@ async def catalog(
     except Exception as e:
         logger.warning("could not enumerate data_packages: %s", e)
 
-    browse_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
-    stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
+    is_admin_view = is_user_admin(user["id"], conn)
+    if is_admin_view:
+        from app.services.stack_resolver import ResourceEntry
+        browse_entries = [
+            ResourceEntry(
+                id=p["id"], name=p["name"], description=p.get("description"),
+                icon=p.get("icon"), color=p.get("color"),
+                requirement="available", in_stack=False,
+            )
+            for p in pkg_repo.list()
+        ]
+        stack_entries = []
+    else:
+        browse_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
+        stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
 
     def _adapt(e):
         slug = None
@@ -1030,6 +1043,33 @@ def _human_size(n: int) -> str:
     return f"{n:.1f} PB"
 
 
+def _memory_domain_entry_dict(entry, drilldown_url: str,
+                               items_count: int = 0,
+                               required_count: int = 0) -> dict:
+    """Adapt a ResourceEntry (memory_domain) → template entry dict."""
+    meta_bits = []
+    if items_count:
+        meta_bits.append(f"{items_count} item{'s' if items_count != 1 else ''}")
+    if required_count:
+        meta_bits.append(f"{required_count} required")
+    return {
+        "id": entry.id,
+        "name": entry.name,
+        "description": entry.description,
+        "icon": entry.icon or "🎯",
+        "color": entry.color or "#dcfce7",
+        "requirement": entry.requirement,
+        "in_stack": entry.in_stack,
+        "meta": " · ".join(meta_bits) if meta_bits else None,
+        "tags": [],
+        "drilldown_url": drilldown_url,
+        "footer_left": (
+            f"View {items_count} item{'s' if items_count != 1 else ''} →"
+            if items_count else "Open →"
+        ),
+    }
+
+
 @router.get("/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory(
     request: Request,
@@ -1038,12 +1078,11 @@ async def corporate_memory(
 ):
     """Curated Memory web view — any authenticated user.
 
-    This is the analyst-facing read surface for shared organizational
-    knowledge: it lists ``approved`` / ``mandatory`` items plus the
-    caller's own contributions, and sits in the primary nav next to
-    Data Packages. The admin review queue (pending items, contradictions,
-    duplicates) lives separately at ``/admin/corporate-memory`` behind
-    ``require_admin``.
+    v49 (Task 8.4): the top-level page is a Browse of memory domains
+    using the shared `_stack_card.html` macro; the per-item richness
+    (votes, contributors, tags, edit, dismiss) moves to /memory/d/<slug>
+    (Task 8.5). The admin review queue lives separately at
+    /admin/corporate-memory behind require_admin.
 
     Gating matches the underlying ``/api/memory/*`` endpoints, which
     already run on ``get_current_user`` — CLI / agent flows that POST a
@@ -1052,116 +1091,90 @@ async def corporate_memory(
     (the pending-review banner) stay gated server-side: ``is_admin_view``
     zeroes ``pending_review_count`` for non-admins.
     """
-    repo = KnowledgeRepository(conn)
-    # v46: server-side initial render mirrors the JS fetch contract — items
-    # are annotated with `dismissed_by_me` so the template can gray out the
-    # ones the caller dismissed without a second round-trip. The full list
-    # (incl. dismissed) is rendered; the toolbar "Hide dismissed" toggle
-    # client-side filters via FilterState (or a server refetch with
-    # hide_dismissed=true — both supported, JS uses fetch).
-    # v49: ``mandatory`` is no longer a status — Required tier rides on
-    # ``is_required`` boolean. All previously-mandatory rows were migrated
-    # to status='approved' + is_required=TRUE, so a single status filter
-    # covers both buckets without losing rows.
-    items = repo.list_items(statuses=["approved"], limit=100)
-    dismissed_set = set(repo.list_dismissed_ids(user["id"])) if user.get("id") else set()
-
-    def _build_source_users_display(it: dict) -> list[dict]:
-        """Derive ``[{name, initials}]`` from the stored ``source_user`` email.
-
-        The template (and the in-template JS) iterate `item.source_users_display`
-        to render contributor avatars; the repo only stores a single
-        `source_user` email. Building the list here (singleton today) keeps the
-        page from crashing with ``KeyError: slice(None, 3, None)`` when items
-        exist, and gives the design room for multi-contributor aggregation
-        later without another template churn.
-        """
-        su = (it.get("source_user") or "").strip()
-        if not su:
-            return []
-        name = su.split("@", 1)[0]
-        parts = [p for p in name.replace(".", " ").replace("_", " ").split() if p]
-        if len(parts) >= 2:
-            initials = (parts[0][0] + parts[1][0]).upper()
-        elif parts:
-            initials = parts[0][:2].upper()
-        else:
-            initials = name[:2].upper()
-        return [{"name": name, "initials": initials}]
-
-    # Enrich with votes + derived contributor-avatar list + per-item
-    # dismissed-by-me flag (used to gray the row out + flip the action button).
-    for item in items:
-        votes = repo.get_votes(item["id"])
-        item["upvotes"] = votes["upvotes"]
-        item["downvotes"] = votes["downvotes"]
-        item["source_users_display"] = _build_source_users_display(item)
-        item["dismissed_by_me"] = item["id"] in dismissed_set
-
-    cm_config = get_corporate_memory_config()
-    governance_mode = cm_config.get("distribution_mode")
-
-    # Build stats + filter dropdowns from the full item set so the dropdowns
-    # match the data the page is rendering. `categories` is derived from
-    # what's actually in the store (free-text enum, grows over time).
-    # v49: domains live in the ``memory_domains`` table — we surface every
-    # row so the dropdown carries the full admin-administered set even
-    # when the store currently has no items of a given domain.
+    from app.services.stack_resolver import StackResolver
+    from app.resource_types import ResourceType
     from src.repositories.memory_domains import MemoryDomainsRepository
-    all_items = repo.list_items(limit=10000)
-    categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
-    domains = [d["slug"] for d in MemoryDomainsRepository(conn).list()]
 
-    # #176: surface the pending review queue to admins. Without this the
-    # main page silently filtered status='pending' items and operators had
-    # no breadcrumb to /admin/corporate-memory.
-    pending_count = sum(1 for i in all_items if i.get("status") == "pending")
+    resolver = StackResolver(conn)
+    domains_repo = MemoryDomainsRepository(conn)
+    repo = KnowledgeRepository(conn)
 
-    # "My contributions" — items the caller authored. Personal items are
-    # always visible to their author regardless of audience filtering;
-    # this is the surface the user uses to mark/unmark `is_personal`.
-    user_email = user.get("email") or ""
-    user_contributions = repo.get_user_contributions(user_email) if user_email else []
-    for item in user_contributions:
-        votes = repo.get_votes(item["id"])
-        item["upvotes"] = votes["upvotes"]
-        item["downvotes"] = votes["downvotes"]
-        item["source_users_display"] = _build_source_users_display(item)
-        item["dismissed_by_me"] = item["id"] in dismissed_set
+    # Per-domain counts (items + required) computed once and indexed by id.
+    dom_meta: dict[str, dict] = {}
+    try:
+        for d in domains_repo.list(limit=10000):
+            summaries = domains_repo.list_items_of_domain(d["id"], limit=10000)
+            item_ids = [s["id"] for s in summaries]
+            required = 0
+            if item_ids:
+                placeholders = ",".join(["?"] * len(item_ids))
+                required = conn.execute(
+                    f"SELECT COUNT(*) FROM knowledge_items "
+                    f"WHERE id IN ({placeholders}) AND is_required = TRUE",
+                    item_ids,
+                ).fetchone()[0]
+            dom_meta[d["id"]] = {
+                "items_count": len(summaries),
+                "required_count": required,
+                "slug": d["slug"],
+            }
+    except Exception as e:
+        logger.warning("could not enumerate memory_domains: %s", e)
 
     is_admin_view = is_user_admin(user["id"], conn)
+
+    # Admin god-mode: surface every domain regardless of group grants so
+    # admins can audit the full set without having to grant themselves each
+    # one. Non-admins use the resolver path (grants × subscriptions).
+    if is_admin_view:
+        from app.services.stack_resolver import ResourceEntry
+
+        def _all_entries():
+            return [
+                ResourceEntry(
+                    id=d["id"], name=d["name"], description=d.get("description"),
+                    icon=d.get("icon"), color=d.get("color"),
+                    requirement="available", in_stack=False,
+                )
+                for d in domains_repo.list(limit=10000)
+            ]
+        browse_entries = _all_entries()
+        stack_entries = []  # admin's "stack" stays clean; subscriptions still work
+    else:
+        browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
+        stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
+
+    def _adapt(e):
+        meta = dom_meta.get(e.id, {})
+        slug = meta.get("slug")
+        return _memory_domain_entry_dict(
+            e,
+            drilldown_url=f"/memory/d/{slug}" if slug else f"/corporate-memory#{e.id}",
+            items_count=meta.get("items_count", 0),
+            required_count=meta.get("required_count", 0),
+        )
+
+    entries = [_adapt(e) for e in browse_entries]
+    stack_entries_adapted = [_adapt(e) for e in stack_entries]
+
+    # Pending banner contract (issue #176) — admin-only, counts items in
+    # status='pending'. Kept identical to the legacy route so the page test
+    # (test_corporate_memory_page.py) keeps passing.
+    pending_count = 0
+    if is_admin_view:
+        try:
+            pending_count = conn.execute(
+                "SELECT COUNT(*) FROM knowledge_items WHERE status = 'pending'"
+            ).fetchone()[0]
+        except Exception:
+            pending_count = 0
+
     ctx = _build_context(
         request, user=user,
-        knowledge_items=items,
-        governance_mode=governance_mode,
-        governance={"mode": governance_mode, "groups": cm_config.get("groups", {})},
-        categories=categories,
-        domains=domains,
-        stats={
-            "total": len(all_items),
-            "approved": len([i for i in all_items if i.get("status") == "approved"]),
-            # Template-facing aliases. Without these, the stats bar at the
-            # top of /corporate-memory renders blank `value` divs ("Contributors"
-            # / "Knowledge Items" with no number under them) because Jinja's
-            # Undefined silently coerces to empty string.
-            "contributors": len({i.get("source_user") for i in all_items if i.get("source_user")}),
-            # v49: status='mandatory' is gone (Required tier moved to is_required
-            # boolean); previously-mandatory rows are status='approved'. Counting
-            # just 'approved' captures both buckets.
-            "knowledge_count": len([i for i in all_items if i.get("status") == "approved"]),
-        },
-        user_votes={},
+        entries=entries,
+        stack_entries=stack_entries_adapted,
+        pending_review_count=pending_count,
         is_km_admin=is_admin_view,
-        user_contributions=user_contributions,
-        user_stats={"authored": len(user_contributions), "votes_given": 0},
-        # Template expects knowledge as object with .items and .total_pages
-        knowledge={"items": items, "total_pages": 1, "page": 1, "per_page": 100, "total": len(items)},
-        total_pages=1,
-        current_page=1,
-        page=1,
-        per_page=100,
-        # #176: pending banner is admin-only.
-        pending_review_count=pending_count if is_admin_view else 0,
     )
     return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
