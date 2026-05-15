@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_44():
+def test_schema_version_is_47():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -102,7 +102,7 @@ def test_schema_version_is_44():
     # v44 → v45: user_id column on usage_session_summary + usage_events
     #            (stable RBAC filter — replaces the unstable email-local-part
     #            ``username`` column) plus matching indices.
-    # v45 → v46 (this PR): per-user opt-out (dismiss) for curated memory
+    # v45 → v46: per-user opt-out (dismiss) for curated memory
     #            items. New table ``knowledge_item_user_dismissed``
     #            ((user_id, item_id) PK, dismissed_at) + index on user_id
     #            for the EXISTS subquery used by list_items / search /
@@ -110,7 +110,17 @@ def test_schema_version_is_44():
     #            protected: the API rejects POSTs against them, and the
     #            SQL filter exempts ``status = 'mandatory'`` so any stale
     #            row from before an item was mandated is silently ignored.
-    assert SCHEMA_VERSION == 46
+    # v46 → v47 (this PR): marketplace telemetry refactor. Drops 4 legacy
+    #            tables (usage_attribution_skills/_agents/_commands,
+    #            usage_plugin_daily — all verified empty or derivable).
+    #            Adds usage_marketplace_item_daily (per-day fact with
+    #            count + distinct_users + error_count) and
+    #            usage_marketplace_item_window (sliding-window snapshot,
+    #            labels 'last_7d' refreshed every tick, 'last_30d' hourly).
+    #            New attribution logic = prefix split on `<plugin>:<local>`
+    #            identifier + live lookup against marketplace_plugins /
+    #            store_entities — no mapping tables needed.
+    assert SCHEMA_VERSION == 47
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

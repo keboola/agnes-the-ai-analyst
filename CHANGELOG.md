@@ -19,6 +19,233 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   / Reject stay scoped to Review per #129's scope decision (status
   flips belong with the per-row actions or the keyboard workflow).
   Closes #129.
+- Marketplace telemetry rollup tables (schema v47):
+  - `usage_marketplace_item_daily` — per-day fact (count, distinct_users,
+    error_count) keyed by (day, source, type, parent_plugin, name).
+  - `usage_marketplace_item_window` — sliding-window snapshot with true
+    cross-window distinct user counts; `period_label='last_7d'`
+    refreshed every UsageProcessor tick, `period_label='last_30d'`
+    refreshed hourly.
+- `InnerDetailResponse.telemetry` — 30-day invocation + distinct-user
+  metrics surfaced on curated inner skill / agent detail pages
+  (`/marketplace/curated/<mp>/<plugin>/skill/<skill>` and `…/agent/<agent>`).
+- `scripts/backfill_marketplace_rollup.py` — one-shot script to populate
+  the new rollup tables from historic `usage_events` after a v46 deploy.
+
+### Changed
+- **BREAKING (operator-facing)**: flea-market guardrail pipeline now
+  fail-CLOSED on misconfig. `get_guardrails_enabled()` previously
+  conflated operator intent (`guardrails.enabled` YAML) with provider
+  readiness (`ANTHROPIC_API_KEY` env) — when intent was True but the
+  env var was missing, the pipeline silently auto-fell-back to disabled
+  and every upload landed `approved` without an LLM review. Split into
+  `get_guardrails_enabled()` (intent only) and a new
+  `get_guardrails_llm_provider_ready()` (env only). Three-state matrix:
+  `enabled=false → auto-approve` (unchanged), `enabled=true + ready →
+  normal hold-for-review` (unchanged), `enabled=true + not-ready →
+  submissions sit at `pending_llm`, no auto-approval` (new — was
+  silent auto-approval). Admin **Retry review** action on
+  `/admin/store/submissions/<id>` now covers `pending_llm` too (was
+  `review_error` + `blocked_llm`). Boot-time `WARNING` banner surfaces
+  the misconfig in `app/main.py`. Operators who relied on the
+  auto-fallback for local-dev no-LLM setups must now explicitly set
+  `guardrails.enabled: false` in `instance.yaml` — same outcome,
+  explicit intent.
+- Flea-market admin **Override** action on
+  `/admin/store/submissions/<id>` now covers `pending_llm` submissions
+  too (was `blocked_inline` + `blocked_llm` + `review_error`). Closes
+  a UX gap created by the new fail-CLOSED behavior above: under
+  enabled-but-not-ready, a known-good submission would otherwise sit
+  indefinitely until the admin set credentials AND clicked **Retry
+  review**. Override already routes through `entity.version_history`
+  to resolve the correct version dir (and is now forward-only on
+  promote — see the Fixed bullet below), so it stays safe for v2+
+  deferred-promotion submissions.
+- The `/corporate-memory` domain filter dropdown now offers the full
+  `VALID_DOMAINS` enum (finance / engineering / product / data /
+  operations / infrastructure), not just domains that already have ≥1
+  item — the old behavior collapsed to a single option on fresh stores.
+- **BREAKING (UI):** the Curated Memory admin review queue moved from
+  `/corporate-memory/admin` to `/admin/corporate-memory` — no redirect.
+  It is now reached from the Admin nav dropdown ("Memory Review").
+- `/corporate-memory` (Curated Memory) is no longer admin-only — the
+  route runs on `get_current_user`, matching the already-open
+  `/api/memory/*` endpoints. The pending-review banner stays admin-only
+  (suppressed server-side for non-admins).
+- Both Curated Memory pages now render the shared `_page_hero.html`
+  header band instead of bespoke per-page chrome, matching catalog /
+  me-activity / admin pages.
+- **BREAKING:** `MarketplaceItem.unique_users_30d` renamed to
+  `distinct_users_30d` in the `/api/marketplace/items` response. The new
+  value is a true distinct count across the 30-day window (from the
+  `usage_marketplace_item_window` snapshot), not the old sum-of-daily
+  proxy that over-counted active multi-day users.
+- `usage_events.source` is now populated per-event by `MarketplaceItemLookup`
+  (live join against `marketplace_plugins` + `store_entities`). Previously
+  it sat at `'builtin'` for every row because the v42 `AttributionLookup`
+  matched skill/command names without the plugin prefix that Claude Code
+  actually writes — `usage_events.source = 'curated'` / `'flea'` /
+  `'builtin'` becomes meaningful for the first time.
+- `usage_events.ref_id` semantics — now stores the plain plugin name
+  (curated) instead of `<marketplace_id>/<plugin_name>`; flea entities
+  store `NULL` (no parent plugin). Admin telemetry endpoints
+  (`/api/admin/telemetry/{summary,query,facets,export}`) keep their
+  `GROUP BY ref_id` / `source` shapes — bucket values shift to the
+  new semantics.
+- The marketplace browse card no longer renders the invocation chip
+  (`🔥 N uses · ↑ X%`) pending UX finalisation. `invocations_30d`,
+  `distinct_users_30d`, and `trend_pct` remain in the API response for
+  the upcoming Most-Used / Trending sections and the detail pages.
+- `USAGE_PROCESSOR_VERSION` bumped 4 → 5 so the session-pipeline
+  reprocess loop re-attributes historic events to the new
+  source/ref_id semantics on the next tick.
+
+### Removed
+- **BREAKING:** four schema-v42 telemetry tables (v47 migration):
+  - `usage_attribution_skills`, `usage_attribution_agents`, and
+    `usage_attribution_commands` — replaced by live prefix-split lookup
+    against `marketplace_plugins` + `store_entities`. Verified empty or
+    derivable; no unique data lost.
+  - `usage_plugin_daily` — replaced by `usage_marketplace_item_daily`
+    + `_window`. Verified empty in production-shape data (the v42 rollup
+    INSERT was gated on `source IN ('curated','flea')` but the broken
+    attribution layer always produced `'builtin'`).
+- `src/repositories/usage_attribution.py`, `src/usage_attribution_helpers.py`,
+  `scripts/backfill_usage_attribution.py`, and their test fixtures
+  (`tests/test_usage_attribution.py`,
+  `tests/test_backfill_usage_attribution.py`) — no callers remain.
+
+### Fixed
+- **Unauthenticated browser requests to `GET /api/initial-workspace.zip` now redirect to `/login?next=/api/initial-workspace.zip` instead of returning a raw JSON 401** (#315). This is the one `/api/*` endpoint that's designed to be hit directly from a browser bookmark (the analyst clean-install zip), so it intentionally opts out of the global `_API_PATH_PREFIXES` "never redirect /api/*" contract in `app/main.py`. CLI / curl / other API clients (any `Accept` without `text/html` — including the `*/*` default) keep getting the 401 they can handle.
+- Flea-market LLM security review failed with `LLMFormatError: Response
+  truncated (max_tokens) for schema store_guardrails_review` when the
+  reviewer emitted many findings or content-quality issues. Raised the
+  output budget (2500 → 6000 tokens) and added a one-shot
+  retry-with-doubled-budget in the Anthropic provider (up to 4× initial)
+  so the verdict survives an occasional verbose response instead of
+  pinning the submission in `review_error`. (We initially added
+  `maxItems=20` to the schema's `findings` and `content_quality.issues`
+  arrays, but Anthropic's structured-output validator rejects `maxItems`
+  on array types — removed.)
+- Flea-market entity detail page surfaces the latest submission's
+  failure verdict even when a previously-approved version is still
+  serving (deferred-promotion path). The owner / admin used to see no
+  banner at all when a v2+ edit landed in `review_error`,
+  `blocked_llm`, or `blocked_inline` because the `_quarantine_banner`
+  partial gated on `entity.visibility_status != 'approved'`. The
+  banner now renders for those failure statuses too, with copy that
+  acknowledges the prior version is still live ("Latest edit failed
+  review — previously approved version (vN) keeps serving …").
+- Flea-market `/api/store/bundle.zip` export now filters by
+  `visibility_status='approved'` for non-admin non-owner callers.
+  Previously an authenticated user could call the bundle endpoint
+  and pull pending / blocked / hidden v1 bytes — bypassing the
+  publish gate the same way `_enforce_visibility` already prevents
+  on detail pages + install. Owners still see their own non-approved
+  entries (matches the browse-listing `include_owner_id` affordance);
+  admins still see everything. (Critical — surfaced by adversarial
+  review.)
+- Flea-market PUT (edit) + restore endpoints now serialize concurrent
+  writes against the same `entity_id` via a per-entity asyncio lock.
+  Two concurrent PUTs could previously both pass the
+  `latest_for_entity` pending gate, both bake into
+  `versions/v<N+1>/plugin/`, and both append a `version_history`
+  entry. The lock closes the window for single-process deployments;
+  multi-worker deployments still have a residual window (tracked in
+  the follow-up issue). (High — surfaced by adversarial review.)
+- Flea-market `StoreSubmissionsRepository.update_status` is now
+  compare-and-swap on terminal statuses (`approved`, `overridden`,
+  `blocked_inline`). A late background-task LLM verdict racing with
+  an admin override or with a more recent terminal verdict can no
+  longer silently clobber the row. Callers that legitimately need to
+  overwrite a terminal state pass `allow_terminal_overwrite=True`
+  explicitly. Returns a boolean indicating whether the write landed.
+  `runner.run_llm_review` now honors the bool on both its `approved`
+  and `blocked_llm` branches: a CAS no-op skips the downstream
+  cascade (visibility flip, version promote, the verdict-specific
+  audit entry that would otherwise contradict the row) and logs a
+  single `store.submission.bg_verdict_skipped` audit row instead,
+  so an operator reviewing the queue sees dropped verdicts
+  explicitly rather than via row-vs-audit contradiction.
+  (High — surfaced by adversarial review.)
+- Flea-market admin **Retry review** and **Rescan** now review the
+  STAGED version's bundle, not the live `plugin/` directory. For a
+  v2+ edit held at `pending_llm` / `blocked_llm` / `review_error`,
+  live still holds the prior approved version. Reviewing live would
+  produce a verdict against the WRONG bytes; the runner's hash-match
+  promotion would then advance the entity to staged bytes that were
+  never actually reviewed. Now resolves the staged
+  `versions/v<N>/plugin/` from the submission's `version_history`
+  entry. (Critical — surfaced by adversarial review.)
+- Flea-market admin **Override** is now forward-only on promotion.
+  Previously `target_version_no != current` would happily demote the
+  live bundle when admin overrode a stale v2 submission while v3 was
+  already approved + live. Changed to `target > current` so override
+  flips status + visibility on the row regardless, but on-disk
+  promotion only fires for newer versions. The same `> current`
+  guard is now applied defensively in `runner.run_llm_review` so a
+  late LLM verdict can't demote past a more recent approval either.
+  (High — surfaced by adversarial review.)
+- Flea-market admin **Override** on a v2+ edit/restore submission now
+  promotes the entity to the overridden version + swaps the on-disk
+  live bundle. Pre-fix the override only flipped
+  `visibility_status='approved'` and `submission.status='overridden'`,
+  leaving `entity.version_no` at the prior approved version — so
+  installers (and the marketplace UI) kept serving the OLD bytes the
+  admin just intended to replace. Mirrors the auto-approval branch in
+  `runner.run_llm_review`: look up the submission's version in
+  `version_history`, `promote_version` + `_swap_live_to_version` when
+  it differs from current. Initial-v1 overrides unchanged (no
+  promotion needed).
+- Flea-market Restore button + endpoint no longer allow restoring a
+  version that was never approved. The versions card hid the gate
+  entirely (showed Restore on any non-current row), and the backend
+  blocked only while the latest submission was `pending_*` — so a
+  `blocked_llm` / `review_error` version could be restored anyway.
+  Added `submission_status` decoration on `version_history` via a new
+  `StoreEntitiesRepository.get_with_version_approvals` helper, gated
+  the UI button on `submission_status in ('approved', None)`
+  (`None` is the legacy v1 seed, back-compat-treated as approved),
+  rendered status pills for blocked / errored / pending rows, and
+  added a 400 `version_not_approved` guard in
+  `POST /api/store/entities/{id}/versions/{n}/restore`.
+- `/me/activity` hero subtitle showed literal `<strong>…</strong>` tags
+  around the user's email instead of rendering them bold. The subtitle
+  was built by `~`-concatenating a `Markup` operand (`user.email | e`)
+  with HTML string literals, which made Jinja2's `markup_join` escape
+  the literal tags too. Switched to `{% set %}…{% endset %}` block
+  capture so the literal `<strong>` stays HTML while the email is still
+  autoescaped.
+
+### Internal
+- `StoreEntitiesRepository.get_with_version_approvals` now defensively
+  copies each `version_history` entry before annotating with
+  `submission_status`. `self.get()` re-parses JSON each call today so
+  this is belt-and-suspenders, but it protects any future caching layer
+  from leaking the annotated key into a subsequent plain `get()` call.
+- `corporate_memory_admin.html` renamed to `admin_corporate_memory.html`
+  to match the `admin_*` template convention; dropped dead `.ck-topbar` /
+  `.page-header` inline CSS (the latter collided with the design-system
+  `.page-header--hero` selector).
+- `usage_tool_daily` flagged as candidate for removal. The table is
+  still populated by `rebuild_rollups` for backwards compatibility with
+  the `usage_ask` schema digest, but has no product-UI consumer after
+  the v46 marketplace telemetry refactor. Will be evaluated for drop in
+  the next iteration.
+- CI test suite sharded for speed. The `test` job in `.github/workflows/ci.yml` is now a `test-shard` matrix — 4 parallel jobs via `pytest-split`, balanced by a committed `.test_durations` file — aggregated into a single `test` status check so branch protection needs no change. The duplicate full-suite `test` job in `release.yml` is removed (it re-ran the same ~10 min suite a second time on every push to main/feature branches); `release.yml` is now image-build only, with the advisory ruff/mypy steps moved to a lean `lint` job in `ci.yml`. Net: ~10 min → ~3 min wall-clock per push, and the suite runs once instead of twice. Adds `pytest-split` to the `dev` extra.
+- CI/release workflow polish (the still-salvageable subset of the
+  abandoned PR #139, after #311 obsoleted the test-job refactor):
+  `rollback.yml` extracts the `release.yml` smoke-test rollback into a
+  reusable + manually dispatchable workflow, with a warning guard on
+  non-`stable-*` `workflow_dispatch` inputs. `prune-dev-tags.yml` adds
+  weekly housekeeping (Sundays 04:00 UTC) of legacy CalVer git tags +
+  GHCR images outside a `KEEP_MONTHS` retention window; floating
+  aliases are git-tagless and never matched. `lint-workflows.yml` runs
+  `actionlint` on `.github/workflows/**` + `scripts/ops/**.sh` changes
+  (non-blocking initially). The superseded `deploy.yml` stub is removed.
+  Excludes #139's rejected pieces (Release Drafter, setuptools_scm,
+  run-number tag scheme, main-only release triggers, deletion of
+  `cli-wheel-clean-install`).
 
 ## [0.54.19] — 2026-05-15
 
@@ -130,156 +357,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `_version_no_for_submission`; falls back to live for legacy rows.
   (Low — surfaced by adversarial review.)
 
-### Changed
-- **BREAKING (operator-facing)**: flea-market guardrail pipeline now
-  fail-CLOSED on misconfig. `get_guardrails_enabled()` previously
-  conflated operator intent (`guardrails.enabled` YAML) with provider
-  readiness (`ANTHROPIC_API_KEY` env) — when intent was True but the
-  env var was missing, the pipeline silently auto-fell-back to disabled
-  and every upload landed `approved` without an LLM review. Split into
-  `get_guardrails_enabled()` (intent only) and a new
-  `get_guardrails_llm_provider_ready()` (env only). Three-state matrix:
-  `enabled=false → auto-approve` (unchanged), `enabled=true + ready →
-  normal hold-for-review` (unchanged), `enabled=true + not-ready →
-  submissions sit at `pending_llm`, no auto-approval` (new — was
-  silent auto-approval). Admin **Retry review** action on
-  `/admin/store/submissions/<id>` now covers `pending_llm` too (was
-  `review_error` + `blocked_llm`). Boot-time `WARNING` banner surfaces
-  the misconfig in `app/main.py`. Operators who relied on the
-  auto-fallback for local-dev no-LLM setups must now explicitly set
-  `guardrails.enabled: false` in `instance.yaml` — same outcome,
-  explicit intent.
-- Flea-market admin **Override** action on
-  `/admin/store/submissions/<id>` now covers `pending_llm` submissions
-  too (was `blocked_inline` + `blocked_llm` + `review_error`). Closes
-  a UX gap created by the new fail-CLOSED behavior above: under
-  enabled-but-not-ready, a known-good submission would otherwise sit
-  indefinitely until the admin set credentials AND clicked **Retry
-  review**. Override already routes through `entity.version_history`
-  to resolve the correct version dir (and is now forward-only on
-  promote — see the Fixed bullet below), so it stays safe for v2+
-  deferred-promotion submissions.
-- The `/corporate-memory` domain filter dropdown now offers the full
-  `VALID_DOMAINS` enum (finance / engineering / product / data /
-  operations / infrastructure), not just domains that already have ≥1
-  item — the old behavior collapsed to a single option on fresh stores.
-- **BREAKING (UI):** the Curated Memory admin review queue moved from
-  `/corporate-memory/admin` to `/admin/corporate-memory` — no redirect.
-  It is now reached from the Admin nav dropdown ("Memory Review").
-- `/corporate-memory` (Curated Memory) is no longer admin-only — the
-  route runs on `get_current_user`, matching the already-open
-  `/api/memory/*` endpoints. The pending-review banner stays admin-only
-  (suppressed server-side for non-admins).
-- Both Curated Memory pages now render the shared `_page_hero.html`
-  header band instead of bespoke per-page chrome, matching catalog /
-  me-activity / admin pages.
-
-### Fixed
-- **Unauthenticated browser requests to `GET /api/initial-workspace.zip` now redirect to `/login?next=/api/initial-workspace.zip` instead of returning a raw JSON 401** (#315). This is the one `/api/*` endpoint that's designed to be hit directly from a browser bookmark (the analyst clean-install zip), so it intentionally opts out of the global `_API_PATH_PREFIXES` "never redirect /api/*" contract in `app/main.py`. CLI / curl / other API clients (any `Accept` without `text/html` — including the `*/*` default) keep getting the 401 they can handle.
-- Flea-market LLM security review failed with `LLMFormatError: Response
-  truncated (max_tokens) for schema store_guardrails_review` when the
-  reviewer emitted many findings or content-quality issues. Raised the
-  output budget (2500 → 6000 tokens) and added a one-shot
-  retry-with-doubled-budget in the Anthropic provider (up to 4× initial)
-  so the verdict survives an occasional verbose response instead of
-  pinning the submission in `review_error`. (We initially added
-  `maxItems=20` to the schema's `findings` and `content_quality.issues`
-  arrays, but Anthropic's structured-output validator rejects `maxItems`
-  on array types — removed.)
-- Flea-market entity detail page surfaces the latest submission's
-  failure verdict even when a previously-approved version is still
-  serving (deferred-promotion path). The owner / admin used to see no
-  banner at all when a v2+ edit landed in `review_error`,
-  `blocked_llm`, or `blocked_inline` because the `_quarantine_banner`
-  partial gated on `entity.visibility_status != 'approved'`. The
-  banner now renders for those failure statuses too, with copy that
-  acknowledges the prior version is still live ("Latest edit failed
-  review — previously approved version (vN) keeps serving …").
-- Flea-market `/api/store/bundle.zip` export now filters by
-  `visibility_status='approved'` for non-admin non-owner callers.
-  Previously an authenticated user could call the bundle endpoint
-  and pull pending / blocked / hidden v1 bytes — bypassing the
-  publish gate the same way `_enforce_visibility` already prevents
-  on detail pages + install. Owners still see their own non-approved
-  entries (matches the browse-listing `include_owner_id` affordance);
-  admins still see everything. (Critical — surfaced by adversarial
-  review.)
-- Flea-market PUT (edit) + restore endpoints now serialize concurrent
-  writes against the same `entity_id` via a per-entity asyncio lock.
-  Two concurrent PUTs could previously both pass the
-  `latest_for_entity` pending gate, both bake into
-  `versions/v<N+1>/plugin/`, and both append a `version_history`
-  entry. The lock closes the window for single-process deployments;
-  multi-worker deployments still have a residual window (tracked in
-  the follow-up issue). (High — surfaced by adversarial review.)
-- Flea-market `StoreSubmissionsRepository.update_status` is now
-  compare-and-swap on terminal statuses (`approved`, `overridden`,
-  `blocked_inline`). A late background-task LLM verdict racing with
-  an admin override or with a more recent terminal verdict can no
-  longer silently clobber the row. Callers that legitimately need to
-  overwrite a terminal state pass `allow_terminal_overwrite=True`
-  explicitly. Returns a boolean indicating whether the write landed.
-  `runner.run_llm_review` now honors the bool on both its `approved`
-  and `blocked_llm` branches: a CAS no-op skips the downstream
-  cascade (visibility flip, version promote, the verdict-specific
-  audit entry that would otherwise contradict the row) and logs a
-  single `store.submission.bg_verdict_skipped` audit row instead,
-  so an operator reviewing the queue sees dropped verdicts
-  explicitly rather than via row-vs-audit contradiction.
-  (High — surfaced by adversarial review.)
-- Flea-market admin **Retry review** and **Rescan** now review the
-  STAGED version's bundle, not the live `plugin/` directory. For a
-  v2+ edit held at `pending_llm` / `blocked_llm` / `review_error`,
-  live still holds the prior approved version. Reviewing live would
-  produce a verdict against the WRONG bytes; the runner's hash-match
-  promotion would then advance the entity to staged bytes that were
-  never actually reviewed. Now resolves the staged
-  `versions/v<N>/plugin/` from the submission's `version_history`
-  entry. (Critical — surfaced by adversarial review.)
-- Flea-market admin **Override** is now forward-only on promotion.
-  Previously `target_version_no != current` would happily demote the
-  live bundle when admin overrode a stale v2 submission while v3 was
-  already approved + live. Changed to `target > current` so override
-  flips status + visibility on the row regardless, but on-disk
-  promotion only fires for newer versions. The same `> current`
-  guard is now applied defensively in `runner.run_llm_review` so a
-  late LLM verdict can't demote past a more recent approval either.
-  (High — surfaced by adversarial review.)
-- Flea-market admin **Override** on a v2+ edit/restore submission now
-  promotes the entity to the overridden version + swaps the on-disk
-  live bundle. Pre-fix the override only flipped
-  `visibility_status='approved'` and `submission.status='overridden'`,
-  leaving `entity.version_no` at the prior approved version — so
-  installers (and the marketplace UI) kept serving the OLD bytes the
-  admin just intended to replace. Mirrors the auto-approval branch in
-  `runner.run_llm_review`: look up the submission's version in
-  `version_history`, `promote_version` + `_swap_live_to_version` when
-  it differs from current. Initial-v1 overrides unchanged (no
-  promotion needed).
-- Flea-market Restore button + endpoint no longer allow restoring a
-  version that was never approved. The versions card hid the gate
-  entirely (showed Restore on any non-current row), and the backend
-  blocked only while the latest submission was `pending_*` — so a
-  `blocked_llm` / `review_error` version could be restored anyway.
-  Added `submission_status` decoration on `version_history` via a new
-  `StoreEntitiesRepository.get_with_version_approvals` helper, gated
-  the UI button on `submission_status in ('approved', None)`
-  (`None` is the legacy v1 seed, back-compat-treated as approved),
-  rendered status pills for blocked / errored / pending rows, and
-  added a 400 `version_not_approved` guard in
-  `POST /api/store/entities/{id}/versions/{n}/restore`.
-
-### Internal
-- `StoreEntitiesRepository.get_with_version_approvals` now defensively
-  copies each `version_history` entry before annotating with
-  `submission_status`. `self.get()` re-parses JSON each call today so
-  this is belt-and-suspenders, but it protects any future caching layer
-  from leaking the annotated key into a subsequent plain `get()` call.
-- `corporate_memory_admin.html` renamed to `admin_corporate_memory.html`
-  to match the `admin_*` template convention; dropped dead `.ck-topbar` /
-  `.page-header` inline CSS (the latter collided with the design-system
-  `.page-header--hero` selector).
-
 ## [0.54.17] — 2026-05-15
 
 ### Changed
@@ -294,31 +371,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the `/update-agnes-plugins` hint JSON on mismatch, silent on
   match). The slash-command and `--bootstrap` paths still do real
   `git fetch + reset --hard` — they actually need the objects.
-
-### Fixed
-- `/me/activity` hero subtitle showed literal `<strong>…</strong>` tags
-  around the user's email instead of rendering them bold. The subtitle
-  was built by `~`-concatenating a `Markup` operand (`user.email | e`)
-  with HTML string literals, which made Jinja2's `markup_join` escape
-  the literal tags too. Switched to `{% set %}…{% endset %}` block
-  capture so the literal `<strong>` stays HTML while the email is still
-  autoescaped.
-
-### Internal
-- CI test suite sharded for speed. The `test` job in `.github/workflows/ci.yml` is now a `test-shard` matrix — 4 parallel jobs via `pytest-split`, balanced by a committed `.test_durations` file — aggregated into a single `test` status check so branch protection needs no change. The duplicate full-suite `test` job in `release.yml` is removed (it re-ran the same ~10 min suite a second time on every push to main/feature branches); `release.yml` is now image-build only, with the advisory ruff/mypy steps moved to a lean `lint` job in `ci.yml`. Net: ~10 min → ~3 min wall-clock per push, and the suite runs once instead of twice. Adds `pytest-split` to the `dev` extra.
-- CI/release workflow polish (the still-salvageable subset of the
-  abandoned PR #139, after #311 obsoleted the test-job refactor):
-  `rollback.yml` extracts the `release.yml` smoke-test rollback into a
-  reusable + manually dispatchable workflow, with a warning guard on
-  non-`stable-*` `workflow_dispatch` inputs. `prune-dev-tags.yml` adds
-  weekly housekeeping (Sundays 04:00 UTC) of legacy CalVer git tags +
-  GHCR images outside a `KEEP_MONTHS` retention window; floating
-  aliases are git-tagless and never matched. `lint-workflows.yml` runs
-  `actionlint` on `.github/workflows/**` + `scripts/ops/**.sh` changes
-  (non-blocking initially). The superseded `deploy.yml` stub is removed.
-  Excludes #139's rejected pieces (Release Drafter, setuptools_scm,
-  run-number tag scheme, main-only release triggers, deletion of
-  `cli-wheel-clean-install`).
 
 ## [0.54.16] — 2026-05-14
 

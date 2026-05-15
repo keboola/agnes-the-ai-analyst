@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 47
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -788,6 +788,10 @@ CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(st
 -- idx_usage_session_user_id is created by _v44_to_v45, not here — see the
 -- note on idx_usage_events_user_id above.
 
+-- usage_tool_daily: legacy rollup of tool invocations by day/source. Currently
+-- only consumed by `src/usage_ask.py` SCHEMA_DIGEST + admin reprocess endpoint;
+-- has no product-UI consumer. Marked as candidate for removal in v46; will be
+-- evaluated for full drop in next telemetry refactor iteration.
 CREATE TABLE IF NOT EXISTS usage_tool_daily (
     day                 DATE NOT NULL,
     tool_name           VARCHAR NOT NULL,
@@ -799,39 +803,40 @@ CREATE TABLE IF NOT EXISTS usage_tool_daily (
     PRIMARY KEY (day, tool_name, source)
 );
 
-CREATE TABLE IF NOT EXISTS usage_plugin_daily (
-    day                 DATE NOT NULL,
-    source              VARCHAR NOT NULL,
-    ref_id              VARCHAR NOT NULL,
-    invocations         INTEGER DEFAULT 0,
-    distinct_users      INTEGER DEFAULT 0,
-    distinct_sessions   INTEGER DEFAULT 0,
-    PRIMARY KEY (day, source, ref_id)
+-- v46: marketplace item telemetry rollup. Per-day fact table; window snapshot
+-- is sibling `usage_marketplace_item_window`.
+-- `parent_plugin` is '' (empty string, not NULL) for type='plugin' rows and
+-- standalone flea entities — keeps composite PK well-defined without NULL gymnastics.
+CREATE TABLE IF NOT EXISTS usage_marketplace_item_daily (
+    day            DATE    NOT NULL,
+    source         VARCHAR NOT NULL,            -- 'curated' | 'flea' | 'builtin'
+    type           VARCHAR NOT NULL,            -- 'plugin' | 'skill' | 'agent'
+    parent_plugin  VARCHAR NOT NULL DEFAULT '', -- '' = no parent
+    name           VARCHAR NOT NULL,
+    count          INTEGER NOT NULL DEFAULT 0,
+    distinct_users INTEGER NOT NULL DEFAULT 0, -- per-day COUNT(DISTINCT user_id)
+    error_count    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, source, type, parent_plugin, name)
 );
+CREATE INDEX IF NOT EXISTS idx_mid_lookup ON usage_marketplace_item_daily(source, type, parent_plugin, name);
 
-CREATE TABLE IF NOT EXISTS usage_attribution_skills (
-    source       VARCHAR NOT NULL,
-    ref_id       VARCHAR NOT NULL,
-    skill_name   VARCHAR NOT NULL,
-    PRIMARY KEY (source, ref_id, skill_name)
+-- v46: sliding-window snapshot for marketplace items. Refreshed by
+-- `rebuild_rollups` — last_7d every UsageProcessor tick (~10 min),
+-- last_30d hourly. `distinct_users` here is the TRUE distinct count
+-- across the window (recomputed from usage_events at rebuild time),
+-- not a sum of per-day distincts.
+CREATE TABLE IF NOT EXISTS usage_marketplace_item_window (
+    period_label   VARCHAR NOT NULL,            -- 'last_7d' | 'last_30d' (extensible)
+    source         VARCHAR NOT NULL,
+    type           VARCHAR NOT NULL,
+    parent_plugin  VARCHAR NOT NULL DEFAULT '',
+    name           VARCHAR NOT NULL,
+    invocations    INTEGER NOT NULL DEFAULT 0,
+    distinct_users INTEGER NOT NULL DEFAULT 0,  -- true sliding-window distinct
+    refreshed_at   TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (period_label, source, type, parent_plugin, name)
 );
-CREATE INDEX IF NOT EXISTS idx_usage_attr_skill_lookup ON usage_attribution_skills(skill_name);
-
-CREATE TABLE IF NOT EXISTS usage_attribution_agents (
-    source       VARCHAR NOT NULL,
-    ref_id       VARCHAR NOT NULL,
-    agent_name   VARCHAR NOT NULL,
-    PRIMARY KEY (source, ref_id, agent_name)
-);
-CREATE INDEX IF NOT EXISTS idx_usage_attr_agent_lookup ON usage_attribution_agents(agent_name);
-
-CREATE TABLE IF NOT EXISTS usage_attribution_commands (
-    source       VARCHAR NOT NULL,
-    ref_id       VARCHAR NOT NULL,
-    command_name VARCHAR NOT NULL,
-    PRIMARY KEY (source, ref_id, command_name)
-);
-CREATE INDEX IF NOT EXISTS idx_usage_attr_command_lookup ON usage_attribution_commands(command_name);
+CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type);
 """
 
 
@@ -2964,6 +2969,70 @@ def _v45_to_v46(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _v46_to_v47(conn: duckdb.DuckDBPyConnection) -> None:
+    """v47: marketplace telemetry refactor.
+
+    The v42 attribution layer (``usage_attribution_skills``, ``_agents``,
+    ``_commands``) lookups on ``skill_name`` *without* the plugin prefix,
+    while Claude Code writes identifiers as ``<plugin_name>:<local_name>``
+    in JSONL — so the lookup never matched and every event was attributed
+    to ``('builtin', None)``. The downstream ``usage_plugin_daily`` rollup
+    was filtered ``WHERE source IN ('curated','flea')`` and therefore
+    always empty.
+
+    The fix: prefix-split + live lookup against ``marketplace_plugins`` /
+    ``store_entities`` makes the attribution layer redundant. The new
+    schema replaces all four tables with two purpose-built rollups:
+
+    - ``usage_marketplace_item_daily``: per-day fact with count +
+      per-day distinct_users + error_count, primary granularity for
+      sparkline charts and incremental refresh.
+    - ``usage_marketplace_item_window``: sliding-window snapshot with
+      true distinct_users per window (recomputed from usage_events at
+      rebuild time, can't be summed from daily distincts). Two labels
+      shipped: ``last_7d`` (refreshed every tick), ``last_30d``
+      (refreshed hourly).
+
+    Drop targets verified empty / derivable on production-shape data:
+    - ``usage_plugin_daily``: 0 rows (always — the attribution bug
+      meant the WHERE clause never matched).
+    - ``usage_attribution_*``: mapping tables, derivable from plugin
+      tree on disk if ever needed again.
+    """
+    conn.execute("DROP TABLE IF EXISTS usage_attribution_skills")
+    conn.execute("DROP TABLE IF EXISTS usage_attribution_agents")
+    conn.execute("DROP TABLE IF EXISTS usage_attribution_commands")
+    conn.execute("DROP TABLE IF EXISTS usage_plugin_daily")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_marketplace_item_daily (
+            day            DATE    NOT NULL,
+            source         VARCHAR NOT NULL,
+            type           VARCHAR NOT NULL,
+            parent_plugin  VARCHAR NOT NULL DEFAULT '',
+            name           VARCHAR NOT NULL,
+            count          INTEGER NOT NULL DEFAULT 0,
+            distinct_users INTEGER NOT NULL DEFAULT 0,
+            error_count    INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, source, type, parent_plugin, name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_marketplace_item_window (
+            period_label   VARCHAR NOT NULL,
+            source         VARCHAR NOT NULL,
+            type           VARCHAR NOT NULL,
+            parent_plugin  VARCHAR NOT NULL DEFAULT '',
+            name           VARCHAR NOT NULL,
+            invocations    INTEGER NOT NULL DEFAULT 0,
+            distinct_users INTEGER NOT NULL DEFAULT 0,
+            refreshed_at   TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (period_label, source, type, parent_plugin, name)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mid_lookup ON usage_marketplace_item_daily(source, type, parent_plugin, name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type)")
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -3249,6 +3318,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # curated memory items. _SYSTEM_SCHEMA already creates the
             # table on fresh installs; this call is a no-op there.
             _v45_to_v46(conn)
+            # v47 marketplace telemetry refactor — drops 4 legacy tables
+            # and creates 2 new rollups. _SYSTEM_SCHEMA already creates
+            # the new tables on fresh installs; the DROPs are no-ops
+            # there because the legacy tables aren't in _SYSTEM_SCHEMA
+            # anymore. Kept here for ladder readability.
+            _v46_to_v47(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3395,6 +3470,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v44_to_v45(conn)
             if current < 46:
                 _v45_to_v46(conn)
+            if current < 47:
+                _v46_to_v47(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
