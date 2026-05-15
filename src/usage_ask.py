@@ -66,14 +66,27 @@ TABLE usage_tool_daily
     distinct_sessions INTEGER
     PRIMARY KEY (day, tool_name, source)
 
-TABLE usage_plugin_daily
+TABLE usage_marketplace_item_daily
     day DATE NOT NULL
-    source VARCHAR NOT NULL
-    ref_id VARCHAR NOT NULL
-    invocations INTEGER
+    source VARCHAR NOT NULL              -- 'curated' | 'flea' | 'builtin'
+    type VARCHAR NOT NULL                -- 'plugin' | 'skill' | 'agent' | 'command'
+    parent_plugin VARCHAR NOT NULL       -- '' for top-level plugins; '<plugin>' for inner items
+    name VARCHAR NOT NULL
+    count INTEGER
     distinct_users INTEGER
-    distinct_sessions INTEGER
-    PRIMARY KEY (day, source, ref_id)
+    error_count INTEGER
+    PRIMARY KEY (day, source, type, parent_plugin, name)
+
+TABLE usage_marketplace_item_window
+    period_label VARCHAR NOT NULL        -- 'last_7d' | 'last_30d'
+    source VARCHAR NOT NULL
+    type VARCHAR NOT NULL
+    parent_plugin VARCHAR NOT NULL
+    name VARCHAR NOT NULL
+    invocations INTEGER
+    distinct_users INTEGER               -- TRUE distinct across the window (not summed from daily)
+    refreshed_at TIMESTAMP
+    PRIMARY KEY (period_label, source, type, parent_plugin, name)
 """
 
 SYSTEM_PROMPT = """You translate natural-language questions into DuckDB SELECT statements over a telemetry schema.
@@ -83,7 +96,7 @@ Rules:
 2. SELECT-only — never INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, ATTACH, COPY, PRAGMA, or any side-effect statement.
 3. No semicolons except optionally one at the end.
 4. No CTE that contains a write.
-5. Prefer rollup tables (`usage_tool_daily`, `usage_plugin_daily`) for date-range aggregations; use `usage_events` for forensic detail.
+5. Prefer rollup tables for date-range aggregations: `usage_tool_daily` (per-tool), `usage_marketplace_item_daily` (per marketplace item — plugin / skill / agent / command keyed by source + type + parent_plugin + name), and `usage_marketplace_item_window` (true-distinct counts across `last_7d` / `last_30d` snapshots). Use `usage_events` for forensic detail. The pre-v48 `usage_plugin_daily` and `usage_attribution_*` tables are gone — do not reference them.
 6. Use DuckDB-flavor SQL: `CURRENT_DATE`, `INTERVAL 7 DAY`, `DATE_TRUNC('week', ...)`, `EPOCH`, etc.
 7. Limit large result sets — default `LIMIT 100` unless the question asks for ALL rows.
 
