@@ -43,7 +43,9 @@ class ResourceType(StrEnum):
 
     MARKETPLACE_PLUGIN = "marketplace_plugin"
     TABLE = "table"
+    DATA_PACKAGE = "data_package"
     MEMORY_DOMAIN = "memory_domain"
+    MEMORY_ITEM = "memory_item"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
@@ -178,48 +180,120 @@ def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 
 
 # ---------------------------------------------------------------------------
+# Data package projection
+# ---------------------------------------------------------------------------
+
+
+def _data_package_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+    """Project ``data_packages`` into the (block → items) shape rendered by
+    the admin /access page.
+
+    Data packages are admin-curated bundles of tables (v49) and form the
+    grantable unit on the /catalog Browse + Stack views. One synthetic
+    block ``"Data packages"`` holds them; ``resource_id`` is
+    ``data_packages.id``.
+    """
+    rows = conn.execute(
+        """SELECT id, slug, name, description, icon, color
+           FROM data_packages
+           ORDER BY name"""
+    ).fetchall()
+    if not rows:
+        return []
+    return [{
+        "id": "data_packages",
+        "name": "Data packages",
+        "items": [
+            {
+                "resource_id": r[0],
+                "name": r[2],
+                "category": "data_package",
+                "description": r[3],
+                "icon": r[4],
+                "color": r[5],
+                "slug": r[1],
+            }
+            for r in rows
+        ],
+    }]
+
+
+# ---------------------------------------------------------------------------
 # Memory domain projection
 # ---------------------------------------------------------------------------
 
 
-# Mirrors VALID_DOMAINS in app/api/memory.py. Kept inline here to avoid
-# importing the FastAPI module at registry-load time (circular import risk).
-# If this list drifts from VALID_DOMAINS, add a runtime cross-check or merge
-# the two sources — for now they're tiny and reviewed together.
-_MEMORY_DOMAINS = (
-    "finance",
-    "engineering",
-    "product",
-    "data",
-    "operations",
-    "infrastructure",
-)
-
-
 def _memory_domain_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
-    """Project the (fixed) set of corporate-memory domains into the
-    (block → items) shape the admin UI renders.
+    """Project ``memory_domains`` rows into the (block → items) shape the
+    admin /access page renders.
 
-    Unlike marketplace plugins / tables, the grantable items are a fixed
-    enum, not a DB lookup — every deployment has the same 6 domains. One
-    synthetic block ``"Memory domains"`` holds them; ``resource_id`` is
-    the domain string (matches ``knowledge_items.domain``).
+    Pre-v49 the domain set was a fixed hardcoded enum mirroring
+    ``VALID_DOMAINS`` in ``app/api/memory.py``. v49 replaces the scalar
+    ``knowledge_items.domain`` column with a junction onto a row-backed
+    ``memory_domains`` table — admins can now CRUD domains. ``resource_id``
+    is the ``memory_domains.id`` (e.g. ``md_finance``), no longer the slug.
     """
+    rows = conn.execute(
+        """SELECT id, slug, name, description, icon, color
+           FROM memory_domains
+           ORDER BY name"""
+    ).fetchall()
+    if not rows:
+        return []
     return [{
         "id": "memory_domains",
         "name": "Memory domains",
         "items": [
             {
-                "resource_id": domain,
-                "name": domain,
-                "category": "domain",
-                "description": (
-                    f"Members of granted groups see all knowledge_items "
-                    f"with domain={domain!r}, in addition to the existing "
-                    f"audience filter."
-                ),
+                "resource_id": r[0],
+                "name": r[2],
+                "category": "memory_domain",
+                "description": r[3],
+                "icon": r[4],
+                "color": r[5],
+                "slug": r[1],
             }
-            for domain in _MEMORY_DOMAINS
+            for r in rows
+        ],
+    }]
+
+
+# ---------------------------------------------------------------------------
+# Memory item projection — per-group item-level Required override (v49)
+# ---------------------------------------------------------------------------
+
+
+def _memory_item_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+    """Project ``knowledge_items`` into the (block → items) shape for the
+    rare per-item grant override.
+
+    Default Required tier for a memory item is driven by
+    ``knowledge_items.is_required`` (the global flag). This resource type
+    exists for the per-group override: a group can be granted MEMORY_ITEM
+    on a specific item with ``requirement='required'`` (force-include) or
+    ``'available'`` (force-exclude — counter-acts the global flag for that
+    group). Surfaced as a flat list of approved items so admins can pick.
+    """
+    rows = conn.execute(
+        """SELECT id, title FROM knowledge_items
+           WHERE status IN ('approved', 'pending')
+             AND (is_personal = FALSE OR is_personal IS NULL)
+           ORDER BY title
+           LIMIT 1000"""
+    ).fetchall()
+    if not rows:
+        return []
+    return [{
+        "id": "memory_items",
+        "name": "Memory items",
+        "items": [
+            {
+                "resource_id": r[0],
+                "name": r[1] or r[0],
+                "category": "memory_item",
+                "description": None,
+            }
+            for r in rows
         ],
     }]
 
@@ -244,12 +318,32 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         id_format="<table_id>",
         list_blocks=_table_blocks,
     ),
+    ResourceType.DATA_PACKAGE: ResourceTypeSpec(
+        key=ResourceType.DATA_PACKAGE,
+        display_name="Data packages",
+        description="An admin-curated bundle of data tables.",
+        id_format="<package_id>",
+        list_blocks=_data_package_blocks,
+    ),
     ResourceType.MEMORY_DOMAIN: ResourceTypeSpec(
         key=ResourceType.MEMORY_DOMAIN,
         display_name="Memory domains",
-        description="A corporate-memory domain (knowledge_items.domain).",
-        id_format="<domain>",
+        description=(
+            "A corporate-memory domain — items belonging to a granted domain "
+            "are visible to members of the granted group."
+        ),
+        id_format="<memory_domain_id>",
         list_blocks=_memory_domain_blocks,
+    ),
+    ResourceType.MEMORY_ITEM: ResourceTypeSpec(
+        key=ResourceType.MEMORY_ITEM,
+        display_name="Memory items",
+        description=(
+            "Per-group override of an individual knowledge item's Required "
+            "flag — rare path; the global flag covers the common case."
+        ),
+        id_format="<knowledge_item_id>",
+        list_blocks=_memory_item_blocks,
     ),
 }
 

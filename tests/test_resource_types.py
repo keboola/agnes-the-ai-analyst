@@ -105,6 +105,82 @@ class TestResourceTypeRegistration:
         assert ResourceType.TABLE.value == "table"
 
 
+class TestMemoryItemResourceType:
+    """v49: ``memory_item`` exists for the per-group per-item Required override.
+    Global default Required tier still rides on ``knowledge_items.is_required``.
+    """
+
+    def test_memory_item_in_enum(self):
+        assert ResourceType.MEMORY_ITEM.value == "memory_item"
+
+    def test_memory_item_in_registry(self):
+        assert ResourceType.MEMORY_ITEM in RESOURCE_TYPES
+        spec = RESOURCE_TYPES[ResourceType.MEMORY_ITEM]
+        assert spec.key is ResourceType.MEMORY_ITEM
+        assert callable(spec.list_blocks)
+
+    def test_memory_item_blocks_empty_when_no_items(self, system_conn):
+        from app.resource_types import _memory_item_blocks
+        assert _memory_item_blocks(system_conn) == []
+
+
+class TestMemoryDomainResourceType:
+    """v49: domain projection now reads from ``memory_domains`` table, not the
+    hardcoded VALID_DOMAINS list. resource_id is the ``memory_domains.id``.
+    """
+
+    def test_memory_domain_blocks_empty_when_no_domains(self, system_conn):
+        # The v49 migration seeds canonical domains, but a fresh manual seed
+        # may exclude them — verify the projection scales from 0 upward.
+        from app.resource_types import _memory_domain_blocks
+        system_conn.execute("DELETE FROM memory_domains")
+        assert _memory_domain_blocks(system_conn) == []
+
+    def test_memory_domain_blocks_returns_id_not_slug(self, system_conn):
+        from app.resource_types import _memory_domain_blocks
+        system_conn.execute("DELETE FROM memory_domains")
+        system_conn.execute(
+            "INSERT INTO memory_domains(id, slug, name, icon, color) "
+            "VALUES ('md_test', 'test', 'Test domain', '🔬', '#abc')"
+        )
+        blocks = _memory_domain_blocks(system_conn)
+        assert len(blocks) == 1
+        items = blocks[0]["items"]
+        assert items[0]["resource_id"] == "md_test"
+        assert items[0]["slug"] == "test"
+        assert items[0]["name"] == "Test domain"
+
+
+class TestDataPackageResourceType:
+    """v49: ``data_package`` is the unit of Add-to-Stack on /catalog."""
+
+    def test_data_package_in_enum(self):
+        assert ResourceType.DATA_PACKAGE.value == "data_package"
+
+    def test_data_package_in_registry(self):
+        assert ResourceType.DATA_PACKAGE in RESOURCE_TYPES
+        spec = RESOURCE_TYPES[ResourceType.DATA_PACKAGE]
+        assert spec.key is ResourceType.DATA_PACKAGE
+        assert callable(spec.list_blocks)
+
+    def test_data_package_blocks_empty_when_no_packages(self, system_conn):
+        from app.resource_types import _data_package_blocks
+        assert _data_package_blocks(system_conn) == []
+
+    def test_data_package_blocks_includes_packages(self, system_conn):
+        from app.resource_types import _data_package_blocks
+
+        system_conn.execute(
+            "INSERT INTO data_packages(id, slug, name, description, icon, color) "
+            "VALUES ('pkg_sales', 'sales', 'Sales bundle', 'Sales tables', '📦', '#abc')"
+        )
+        blocks = _data_package_blocks(system_conn)
+        assert len(blocks) == 1
+        block = blocks[0]
+        assert block["items"][0]["resource_id"] == "pkg_sales"
+        assert block["items"][0]["name"] == "Sales bundle"
+
+
 class TestAccessOverviewIncludesTables:
     """v19+ — TABLE is unconditionally enabled (no env-gate)."""
 
