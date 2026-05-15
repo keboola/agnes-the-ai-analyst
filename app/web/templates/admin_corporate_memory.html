@@ -796,6 +796,47 @@
                 display: none !important;
             }
         }
+
+        /* ─── Tag-input widget (edit modal) ─── */
+        .tag-input-widget {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+            padding: 4px 6px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg);
+            min-height: 34px;
+            cursor: text;
+        }
+        .tag-input-widget:focus-within {
+            border-color: var(--primary, #0073D1);
+            box-shadow: 0 0 0 2px rgba(0, 115, 209, 0.15);
+        }
+        .tag-input-widget .tag-pill {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 2px 4px 2px 10px;
+            background: var(--primary, #0073D1);
+            color: white;
+            border-radius: 999px;
+            font-size: 12px; font-weight: 500;
+            line-height: 1.4;
+            white-space: nowrap;
+        }
+        .tag-input-widget .tag-pill button {
+            background: rgba(255, 255, 255, 0.25);
+            color: white; border: none; cursor: pointer;
+            width: 16px; height: 16px; padding: 0;
+            border-radius: 50%;
+            font-size: 13px; line-height: 1;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .tag-input-widget .tag-pill button:hover {
+            background: rgba(255, 255, 255, 0.45);
+        }
+        .tag-input-widget input {
+            flex: 1; min-width: 120px;
+            border: none; outline: none; background: transparent;
+            color: var(--text); font: inherit; padding: 4px 6px;
+        }
     </style>
 {% endblock %}
 
@@ -1090,16 +1131,19 @@
                                 {% for g in groups %}<option value="group:{{ g.name }}">group:{{ g.name }} ({{ g.members_count }} member{{ 's' if g.members_count != 1 else '' }})</option>{% endfor %}
                             </select>
                         </label>
-                        {# Tags moved OUT of the 2-col grid (used to share a row
-                           with Audience) — chip strip needs full width to
-                           render nicely. Datalist removed entirely: the arrow
-                           it shows in Chrome doesn't work in Firefox/Safari,
-                           which was misleading. The chip buttons below ARE the
-                           "pick existing" surface; the input is for typing
-                           new comma-separated tags. #}
+                        {# Real tag-input widget: applied tags render as pills
+                           (× to remove); the typing input sits at the end of
+                           the pill row. Enter or comma commits a typed value
+                           as a new pill; Backspace on empty input removes the
+                           last pill. Suggestion chips below click-to-add. #}
                         <label style="display: flex; flex-direction: column; gap: 4px; grid-column: 1 / -1;">
-                            <span style="font-size: 12px; color: var(--text-muted);">Tags <span style="color: var(--text-muted); font-weight: 400;">— current tags below; type new ones comma-separated, click chips to add existing</span></span>
-                            <input id="editItemTags" type="text" placeholder="e.g. metric, finance, q4" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                            <span style="font-size: 12px; color: var(--text-muted);">Tags <span style="color: var(--text-muted); font-weight: 400;">— current as pills (× to remove), type + Enter for new, click chips to add existing</span></span>
+                            <div id="editItemTagsWidget" class="tag-input-widget" onclick="if(event.target===this) document.getElementById('editItemTagsInput').focus()">
+                                {# Pills are inserted by tagWidgetAdd() at runtime;
+                                   container starts empty. The input stays last
+                                   in DOM order so new pills land before it. #}
+                                <input id="editItemTagsInput" type="text" placeholder="type tag + Enter…" onkeydown="onTagInputKeydown(event)" autocomplete="off">
+                            </div>
                             {% if edit_tags %}
                             <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; padding: 8px 10px; background: var(--bg-subtle, #f9fafb); border: 1px dashed var(--border); border-radius: var(--radius-sm);">
                                 <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; margin-right: 4px;">Add existing:</span>
@@ -1534,8 +1578,55 @@
         document.getElementById('editItemDomain').value = item.domain || '';
         document.getElementById('editItemAudience').value = item.audience || '';
         const tagsArr = parseJsonField(item.tags);
-        document.getElementById('editItemTags').value = tagsArr.join(', ');
+        tagWidgetInit(tagsArr);
         document.getElementById('editItemModal').style.display = 'block';
+    }
+
+    // ─── Tag-input widget helpers ───
+    // The widget renders applied tags as pills before the typing <input>.
+    // We treat the DOM as the source of truth (no separate state array) —
+    // submitEditItem reads back via tagWidgetGetTags().
+    function tagWidgetInit(tags) {
+        const w = document.getElementById('editItemTagsWidget');
+        // Wipe old pills (keep the trailing input).
+        w.querySelectorAll('.tag-pill').forEach(p => p.remove());
+        document.getElementById('editItemTagsInput').value = '';
+        (tags || []).forEach(t => tagWidgetAdd(t));
+    }
+    function tagWidgetGetTags() {
+        return Array.from(document.querySelectorAll('#editItemTagsWidget .tag-pill'))
+            .map(p => p.dataset.tag);
+    }
+    function tagWidgetAdd(rawTag) {
+        const tag = (rawTag || '').trim();
+        if (!tag) return;
+        if (tagWidgetGetTags().includes(tag)) return;  // dedupe
+        const pill = document.createElement('span');
+        pill.className = 'tag-pill';
+        pill.dataset.tag = tag;
+        pill.appendChild(document.createTextNode(tag + ' '));
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.setAttribute('aria-label', `Remove tag ${tag}`);
+        btn.textContent = '×';
+        btn.addEventListener('click', (e) => { e.stopPropagation(); pill.remove(); });
+        pill.appendChild(btn);
+        const input = document.getElementById('editItemTagsInput');
+        input.parentNode.insertBefore(pill, input);
+        input.value = '';
+    }
+    function onTagInputKeydown(e) {
+        // Enter or comma commits the typed value as a new pill. Backspace
+        // on empty input removes the last existing pill (familiar tag-input
+        // gesture — see GitHub label picker, Linear's tag widget).
+        if (e.key === 'Enter' || e.key === ',') {
+            e.preventDefault();
+            const v = e.target.value.replace(/,$/, '').trim();
+            if (v) tagWidgetAdd(v);
+        } else if (e.key === 'Backspace' && !e.target.value) {
+            const pills = document.querySelectorAll('#editItemTagsWidget .tag-pill');
+            if (pills.length) pills[pills.length - 1].remove();
+        }
     }
 
     // Category picker handler — toggles the "new slug" input when the
@@ -1557,15 +1648,11 @@
         _editingItemId = null;
     }
 
-    // Click handler for the "+ tag" suggestion chips below the Tags input.
-    // Appends `tag` to the comma-separated value if not already present.
+    // Click handler for the "+ tag" suggestion chips below the widget.
+    // Forwards to the widget's add — keeps a single code path for additions.
     function appendEditTag(tag) {
-        const el = document.getElementById('editItemTags');
-        const cur = (el.value || '').split(',').map(s => s.trim()).filter(Boolean);
-        if (cur.includes(tag)) return;
-        cur.push(tag);
-        el.value = cur.join(', ');
-        el.focus();
+        tagWidgetAdd(tag);
+        document.getElementById('editItemTagsInput').focus();
     }
 
     async function submitEditItem() {
@@ -1596,11 +1683,12 @@
         const category = orNull(categoryRaw);
         const domain = orNull(document.getElementById('editItemDomain').value);
         const audience = orNull(document.getElementById('editItemAudience').value);
-        const tagsStr = document.getElementById('editItemTags').value;
-        const tags = tagsStr
-            .split(',')
-            .map(t => t.trim())
-            .filter(t => t.length > 0);
+        // Tags read directly from the pill widget DOM. Any uncommitted text
+        // still in the input (user typed but didn't press Enter) is salvaged
+        // here so a click-Save without Enter doesn't quietly drop it.
+        const tags = tagWidgetGetTags();
+        const pending = (document.getElementById('editItemTagsInput').value || '').trim();
+        if (pending && !tags.includes(pending)) tags.push(pending);
 
         const body = { title, content, category, domain, audience, tags };
         try {

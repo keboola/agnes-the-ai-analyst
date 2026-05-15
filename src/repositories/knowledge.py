@@ -140,6 +140,7 @@ class KnowledgeRepository:
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
         granted_domains: Optional[List[str]] = None,
+        upvoted_by_user: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -152,6 +153,16 @@ class KnowledgeRepository:
         if category:
             query += " AND category = ?"
             params.append(category)
+        if upvoted_by_user:
+            # "My Upvotes" filter — items the caller has explicitly upvoted
+            # (vote > 0). Replaces the old dead "My Rules" category sentinel
+            # which never matched any row. Subquery rather than JOIN keeps
+            # this orthogonal to the other filters (no row duplication).
+            query += (
+                " AND id IN (SELECT item_id FROM knowledge_votes "
+                "WHERE user_id = ? AND vote > 0)"
+            )
+            params.append(upvoted_by_user)
         if domain:
             query += " AND domain = ?"
             params.append(domain)

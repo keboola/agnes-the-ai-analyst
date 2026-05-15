@@ -213,13 +213,19 @@ async def list_knowledge(
     source_type: Optional[str] = None,
     search: Optional[str] = None,
     exclude_personal: bool = True,
+    upvoted_by_me: bool = False,
     page: int = 1,
     per_page: int = 50,
     sort: str = "updated_at",
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """List knowledge items with filtering, pagination, search."""
+    """List knowledge items with filtering, pagination, search.
+
+    ``upvoted_by_me=true`` narrows to items the caller upvoted (powers the
+    "My Upvotes" filter on /corporate-memory — replaces the old dead
+    "My Rules" category sentinel).
+    """
     repo = KnowledgeRepository(conn)
     page = max(page, 1)
     offset = (page - 1) * per_page
@@ -229,6 +235,7 @@ async def list_knowledge(
     effective_groups = _effective_groups(user, conn)
     granted_domains = _caller_granted_memory_domains(user, conn)
     statuses = [status_filter] if status_filter else None
+    upvoted_by_user_id = user["id"] if upvoted_by_me else None
     if search:
         items = repo.search(
             search,
@@ -242,6 +249,17 @@ async def list_knowledge(
             limit=per_page,
             offset=offset,
         )
+        if upvoted_by_user_id:
+            # Best-effort post-filter for the search() path (which doesn't
+            # plumb the upvote filter into its SQL). Search + "My Upvotes"
+            # is rare enough that a post-filter is fine.
+            upvoted_ids = {
+                r[0] for r in conn.execute(
+                    "SELECT item_id FROM knowledge_votes WHERE user_id = ? AND vote > 0",
+                    [upvoted_by_user_id],
+                ).fetchall()
+            }
+            items = [it for it in items if it["id"] in upvoted_ids]
     else:
         items = repo.list_items(
             statuses=statuses,
@@ -251,6 +269,7 @@ async def list_knowledge(
             exclude_personal=effective_exclude_personal,
             user_groups=effective_groups,
             granted_domains=granted_domains,
+            upvoted_by_user=upvoted_by_user_id,
             limit=per_page,
             offset=offset,
         )

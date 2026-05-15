@@ -619,7 +619,11 @@
             </div>
             <div class="filter-group">
                 <button class="filter-btn active" data-category="" onclick="setFilter(this)">All</button>
-                <button class="filter-btn" data-category="my_rules" onclick="setFilter(this)">My Rules</button>
+                {# Special pseudo-category "my_upvotes" — gets translated to
+                   ?upvoted_by_me=true in loadKnowledge() and the tree filter.
+                   Replaces the old dead "My Rules" filter that sent
+                   ?category=my_rules (no row ever matched). #}
+                <button class="filter-btn" data-category="my_upvotes" onclick="setFilter(this)">My Upvotes</button>
                 {% for cat in categories %}
                 <button class="filter-btn" data-category="{{ cat }}" onclick="setFilter(this)">{{ cat|replace('_', ' ')|title }}</button>
                 {% endfor %}
@@ -854,7 +858,11 @@
 
         const html = data.groups.map(g => {
             const filtered = (g.items || []).filter(it => {
-                if (categoryFilter && categoryFilter !== 'my_rules' && it.category !== categoryFilter) return false;
+                // "my_upvotes" is a non-category pseudo-filter handled
+                // server-side via ?upvoted_by_me; the tree endpoint already
+                // returns the right subset, so we skip the category check
+                // when that pseudo-value is active.
+                if (categoryFilter && categoryFilter !== 'my_upvotes' && it.category !== categoryFilter) return false;
                 if (domainFilter && it.domain !== domainFilter) return false;
                 return true;
             });
@@ -895,8 +903,10 @@
 
     async function loadKnowledge(category, search, page, sort, domain) {
         const params = new URLSearchParams();
-        if (category && category !== 'my_rules') params.append('category', category);
-        if (category === 'my_rules') params.append('my_rules', 'true');
+        // "my_upvotes" pseudo-category is translated to the real
+        // ?upvoted_by_me=true filter the backend understands.
+        if (category && category !== 'my_upvotes') params.append('category', category);
+        if (category === 'my_upvotes') params.append('upvoted_by_me', 'true');
         if (search) params.append('search', search);
         if (sort) params.append('sort', sort);
         if (domain) params.append('domain', domain);
