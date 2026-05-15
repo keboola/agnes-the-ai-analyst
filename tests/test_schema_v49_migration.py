@@ -292,3 +292,51 @@ def test_v48_to_v49_drops_knowledge_items_domain_column():
         " WHERE kid.item_id = 'k1' AND md.slug = 'finance'"
     ).fetchone()
     assert row[0] == 1
+
+
+def test_schema_version_is_49():
+    from src.db import SCHEMA_VERSION
+    assert SCHEMA_VERSION == 49
+
+
+def test_v48_to_v49_bumps_schema_version_row():
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    _v48_to_v49(conn)
+    row = conn.execute("SELECT version FROM schema_version").fetchone()
+    assert row[0] == 49
+
+
+def test_fresh_install_lands_at_v49():
+    """End-to-end: a brand-new DB hitting ``_ensure_schema`` ends at v49 with
+    all new tables in place."""
+    from src.db import _ensure_schema, get_schema_version
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == 49
+
+    tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+        ).fetchall()
+    }
+    assert "data_packages" in tables
+    assert "data_package_tables" in tables
+    assert "memory_domains" in tables
+    assert "knowledge_item_domains" in tables
+    assert "user_stack_subscriptions" in tables
+
+    # ``requirement`` column present on a fresh ``resource_grants``.
+    rg_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info('resource_grants')").fetchall()
+    }
+    assert "requirement" in rg_cols
+
+    # ``is_required`` present and ``domain`` absent on a fresh ``knowledge_items``.
+    ki_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info('knowledge_items')").fetchall()
+    }
+    assert "is_required" in ki_cols
+    assert "domain" not in ki_cols

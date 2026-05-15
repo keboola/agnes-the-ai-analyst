@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 48
+SCHEMA_VERSION = 49
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -3160,7 +3160,18 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
     ``docs/brainstorms/2026-05-15-unified-stack-design.md`` section 8.1
     for the full step list. Idempotent (``ALTER ... ADD COLUMN IF NOT
     EXISTS``, ``CREATE TABLE IF NOT EXISTS``) so re-running is safe.
+
+    Steps 6 + 9b (junction populate + recreate) are conditional on the
+    legacy ``knowledge_items.domain`` column actually existing — fresh
+    installs come through ``_SYSTEM_SCHEMA`` which already creates the
+    post-v49 table shape (no ``domain`` column, ``knowledge_item_domains``
+    junction in place), so those steps no-op.
     """
+    has_legacy_domain_col = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'knowledge_items' AND column_name = 'domain'"
+    ).fetchone() is not None
+
     # 1) resource_grants.requirement — per-group 'available' | 'required'
     # enum. Default 'available' preserves pre-v49 semantics. Required-tier
     # applies to data_package / memory_domain / memory_item grants;
@@ -3267,38 +3278,43 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
     # Plus one row per non-canonical ``knowledge_items.domain`` value found
     # in the existing data (defensive — instances may have hand-set domains
     # outside the six). Slug normalization mirrors the junction populate
-    # query below so the join in task 1.6 matches deterministically.
-    conn.execute(
-        """
-        INSERT INTO memory_domains(id, slug, name, created_at)
-        SELECT
-            'md_' || lower(regexp_replace(domain, '[^a-z0-9]+', '_', 'g')),
-            lower(regexp_replace(domain, '[^a-z0-9]+', '-', 'g')),
-            domain,
-            current_timestamp
-          FROM (SELECT DISTINCT domain FROM knowledge_items
-                 WHERE domain IS NOT NULL AND domain <> ''
-                   AND domain NOT IN ('finance','engineering','product','data','operations','infrastructure'))
-        ON CONFLICT (slug) DO NOTHING
-        """
-    )
+    # query below so the join in task 1.6 matches deterministically. Only
+    # runs on an upgrade path where the legacy column still exists; fresh
+    # installs skip this since ``_SYSTEM_SCHEMA`` ships the post-v49 shape.
+    if has_legacy_domain_col:
+        conn.execute(
+            """
+            INSERT INTO memory_domains(id, slug, name, created_at)
+            SELECT
+                'md_' || lower(regexp_replace(domain, '[^a-z0-9]+', '_', 'g')),
+                lower(regexp_replace(domain, '[^a-z0-9]+', '-', 'g')),
+                domain,
+                current_timestamp
+              FROM (SELECT DISTINCT domain FROM knowledge_items
+                     WHERE domain IS NOT NULL AND domain <> ''
+                       AND domain NOT IN ('finance','engineering','product','data','operations','infrastructure'))
+            ON CONFLICT (slug) DO NOTHING
+            """
+        )
 
     # 6) Stash the legacy (item_id, domain_id) pairs in a temporary table
     # so we can recreate the relation after dropping the scalar column.
     # DuckDB blocks the DROP COLUMN as long as a child table FK-references
     # ``knowledge_items``, so the junction itself is created in step 9b
-    # below — after the column is gone.
-    conn.execute("DROP TABLE IF EXISTS _v49_item_domain_pairs")
-    conn.execute(
-        """
-        CREATE TEMP TABLE _v49_item_domain_pairs AS
-        SELECT ki.id AS item_id, md.id AS domain_id
-          FROM knowledge_items ki
-          JOIN memory_domains  md
-            ON md.slug = lower(regexp_replace(ki.domain, '[^a-z0-9]+', '-', 'g'))
-         WHERE ki.domain IS NOT NULL AND ki.domain <> ''
-        """
-    )
+    # below — after the column is gone. Skipped on fresh installs where
+    # the legacy column has never existed.
+    if has_legacy_domain_col:
+        conn.execute("DROP TABLE IF EXISTS _v49_item_domain_pairs")
+        conn.execute(
+            """
+            CREATE TEMP TABLE _v49_item_domain_pairs AS
+            SELECT ki.id AS item_id, md.id AS domain_id
+              FROM knowledge_items ki
+              JOIN memory_domains  md
+                ON md.slug = lower(regexp_replace(ki.domain, '[^a-z0-9]+', '-', 'g'))
+             WHERE ki.domain IS NOT NULL AND ki.domain <> ''
+            """
+        )
 
     # 7) Re-point ``MEMORY_DOMAIN`` grants — pre-v49 stored the domain slug
     # directly in ``resource_grants.resource_id``; v49+ stores
@@ -3381,6 +3397,14 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
             """
         )
         conn.execute("DROP TABLE _v49_item_domain_pairs")
+
+    # 10) bump schema_version row. Matches the pattern used by every
+    # prior in-function migration (e.g. _v30_to_v31_migrate, _v34_to_v35_migrate)
+    # — the per-step migrations declared as SQL lists rely on the
+    # outer ``UPDATE schema_version`` at the end of ``_ensure_schema``,
+    # but the ladder-internal function pattern keeps the bump local so a
+    # mid-ladder failure doesn't leave the version stale.
+    conn.execute("UPDATE schema_version SET version = 49")
 
 
 _V33_TO_V34_MIGRATIONS = [
@@ -3677,6 +3701,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # there because the legacy tables aren't in _SYSTEM_SCHEMA
             # anymore. Kept here for ladder readability.
             _v47_to_v48(conn)
+            # v49 unified stack — Data Packages + Memory Domains junction +
+            # requirement enum + is_required + user_stack_subscriptions.
+            # _SYSTEM_SCHEMA already creates the new tables on fresh
+            # installs; the migration body is idempotent (CREATE TABLE
+            # IF NOT EXISTS / ALTER ... ADD COLUMN IF NOT EXISTS), so
+            # this call no-ops apart from seeding canonical
+            # memory_domains and bumping the version row.
+            _v48_to_v49(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3827,6 +3859,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v46_to_v47(conn)
             if current < 48:
                 _v47_to_v48(conn)
+            if current < 49:
+                _v48_to_v49(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
