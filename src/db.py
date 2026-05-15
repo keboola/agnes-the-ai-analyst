@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 47
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -2935,6 +2935,47 @@ def _v44_to_v45(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id)")
 
 
+def _v46_to_v47(conn: duckdb.DuckDBPyConnection) -> None:
+    """v47: DuckDB FTS BM25 index over knowledge_items(title, content).
+
+    Replaces ``ILIKE '%q%'`` ranking-by-insertion-order in
+    ``KnowledgeRepository.search`` with BM25 relevance scoring (#121).
+
+    The migration is *soft* — and soft against *any* exception, not just
+    the ``duckdb.Error`` that ``ensure_knowledge_fts_index`` already
+    handles. A non-DuckDB exception escaping from the inner helper (for
+    example an ``OSError`` from an extension fetch that bypasses
+    DuckDB's wrapping in a sandboxed environment, or a future DuckDB
+    version surfacing a non-``Error`` subclass) would otherwise leave
+    the DB stuck at v46 forever. ``KnowledgeRepository.search`` falls
+    back to ILIKE on a missing index, so a soft-fail here is always
+    recoverable later (boot-time lifespan rebuild + per-mutation
+    ``create_fts_index(overwrite=1)`` both retry on every restart and
+    every write).
+
+    DuckDB FTS indexes are static snapshots — they don't track
+    base-table mutations automatically. The lifespan in ``app/main.py``
+    rebuilds once at boot as a safety net; ``create`` and title-or-
+    content ``update`` in the repo rebuild on every relevant mutation
+    via the same ``overwrite=1`` PRAGMA. At corpus sizes <few-thousand
+    rows this is sub-100ms.
+    """
+    try:
+        from src.fts import ensure_knowledge_fts_index
+        ensure_knowledge_fts_index(conn)
+    except Exception:  # noqa: BLE001 — best-effort migration, see docstring
+        # Logged at the call site (``ensure_knowledge_fts_index`` already
+        # WARNs on duckdb.Error); only surfaces here for non-DuckDB
+        # escapes. Schema bump must proceed regardless.
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "v47 FTS index creation raised non-duckdb exception during migration; "
+            "schema bumped to 47 anyway, search will fall back to ILIKE until "
+            "the next boot-time / per-mutation rebuild succeeds",
+            exc_info=True,
+        )
+
+
 def _v45_to_v46(conn: duckdb.DuckDBPyConnection) -> None:
     """v46: per-user opt-out (dismiss) for knowledge items.
 
@@ -3249,6 +3290,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # curated memory items. _SYSTEM_SCHEMA already creates the
             # table on fresh installs; this call is a no-op there.
             _v45_to_v46(conn)
+            # v47 fts index over knowledge_items — best-effort, silent
+            # fallback to ILIKE search if the fts extension can't load.
+            _v46_to_v47(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3395,6 +3439,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v44_to_v45(conn)
             if current < 46:
                 _v45_to_v46(conn)
+            if current < 47:
+                _v46_to_v47(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

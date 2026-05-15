@@ -11,6 +11,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Corporate Memory — BM25 relevance ranking on knowledge search.**
+  Replaces the `title ILIKE '%q%' OR content ILIKE '%q%'`
+  ranked-by-insertion-order query in `KnowledgeRepository.search`
+  with DuckDB's `fts` extension (BM25). Czech queries match across
+  diacritics (`cesky` → `česky`) via `strip_accents=1` + `lower=1`.
+  Schema v47 builds the initial index over `knowledge_items(title,
+  content)`; per-mutation rebuild fires only when `title` / `content`
+  change (status flips skip). The lifespan in `app/main.py` rebuilds
+  once at boot as a safety net for restarts on v47. Result rows now
+  carry a `bm25_score` column (always present — `None` on the ILIKE
+  fallback for shape uniformity). When the `fts` extension can't be
+  loaded (offline / sandboxed install) **or** the index is missing
+  (migration soft-fail, concurrent `overwrite=1` rebuild's drop-then-
+  create window), `search` and `count_items` transparently fall
+  through to the pre-#121 ILIKE query — same result-set membership,
+  ordering regresses to `updated_at DESC`. Closes #121.
 - **Corporate Memory — bulk-edit batch bar on the All Items tab.**
   Symmetric to the Review-tab bar shipped in #126; row checkboxes,
   "Select all" header, and the five bulk-edit actions (Move to
@@ -19,6 +35,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   / Reject stay scoped to Review per #129's scope decision (status
   flips belong with the per-row actions or the keyboard workflow).
   Closes #129.
+
+### Internal
+- **Schema v47** — adds DuckDB `fts` BM25 index over
+  `knowledge_items(title, content)`. Auto-migrates on first boot;
+  soft-fails to ILIKE if the extension repo is unreachable. Index is
+  a snapshot — see `src/fts.py` for the on-mutation / lifespan
+  rebuild contract.
 
 ## [0.54.19] — 2026-05-15
 
