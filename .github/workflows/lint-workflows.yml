@@ -1,0 +1,67 @@
+name: Lint workflows
+
+# Catches GitHub Actions / shellcheck issues in workflow YAMLs before they
+# break a real release. Runs on push/PR that touches anything under
+# .github/workflows/ and on manual workflow_dispatch. Keeps non-blocking
+# (warnings only) initially — flip to fail-fast when the existing inventory
+# is clean.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "scripts/ops/**.sh"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "scripts/ops/**.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run actionlint
+        run: |
+          # Pin to a specific actionlint version for reproducibility.
+          # Updates: bump the version string + verify rules in CHANGELOG.
+          ACTIONLINT_VERSION="1.7.7"
+          curl -sSL \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar xz actionlint
+          ./actionlint -color
+        # Continue-on-error initially: surface findings without blocking
+        # while the existing workflow inventory is being cleaned up. Flip
+        # to false (default) once the repo is actionlint-clean.
+        continue-on-error: true
+
+      - name: Run shellcheck on ops scripts
+        # actionlint above only walks `.github/workflows/**` + the shell
+        # snippets embedded inside their `run:` blocks; freestanding
+        # `scripts/ops/**/*.sh` files (which are also in this workflow's
+        # path filter via the `**.sh` glob) need their own pass.
+        # shellcheck is pre-installed on ubuntu-latest runners.
+        #
+        # `find` matches the recursive `**.sh` path filter above. A bare
+        # `scripts/ops/*.sh` glob would silently skip future scripts under
+        # subdirectories — the workflow would trigger on them (filter
+        # matches) but never lint them.
+        #
+        # `--severity=warning` blocks only on warning+ findings (actual
+        # bugs); info/style level passes silently. This lets the existing
+        # inventory's info-level findings (e.g. SC1091, SC2015 in
+        # agnes-auto-upgrade.sh / agnes-tls-rotate.sh) ride through while
+        # still catching real regressions in new scripts.
+        run: |
+          mapfile -t SCRIPTS < <(find scripts/ops -type f -name '*.sh' 2>/dev/null)
+          if [ "${#SCRIPTS[@]}" -gt 0 ]; then
+            shellcheck --severity=warning "${SCRIPTS[@]}"
+          else
+            echo "No scripts/ops/**/*.sh found — nothing to check."
+          fi

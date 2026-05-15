@@ -169,6 +169,14 @@ from a stale post-cut commit (we've shipped that race before).
   `Release`-pipeline, Devin Review) are advisory — green/red doesn't gate merge.
 - **`enforce_admins: true`** in branch protection means `--admin` flag on
   `gh pr merge` does NOT bypass. Don't try; just fix the underlying block.
+- **`lint-workflows.yml` is advisory.** Triggered on changes to
+  `.github/workflows/**` or `scripts/ops/**.sh`. Runs `actionlint` on
+  workflow YAMLs + `shellcheck --severity=warning` on freestanding ops
+  scripts. The `actionlint` step has `continue-on-error: true` initially
+  (pre-existing inventory has info-level findings); flip to fail-fast
+  once the repo is actionlint-clean. The `shellcheck` step IS blocking at
+  warning+ severity — info/style findings ride through, real bugs break
+  CI.
 
 ### Recovery when something derails
 
@@ -201,6 +209,54 @@ within ~5 min via the cron in `agnes-auto-upgrade.sh`. Convenient for
 per-developer dev VMs; **footgun for shared dev VMs** (last pusher wins,
 regardless of who).
 
+**Auto-rollback on smoke failure.** On `main` pushes, after `:stable` is
+published, the `smoke-test` job pulls the just-built image and runs
+`scripts/ops/post-deploy-smoke-test.sh` inside a docker-compose stack. If
+that job fails, the `rollback-on-smoke-fail` job calls the reusable
+`rollback.yml` workflow (see below) which re-points `:stable` to the
+previous known-good build, marks the failed image as `:deprecated-*`,
+and opens a tracking issue labeled `bug`.
+
+### `rollback.yml` — reusable + manual rollback
+
+Two entry points:
+- **`workflow_call`** from `release.yml`'s `rollback-on-smoke-fail` job
+  (auto-rollback path above).
+- **`workflow_dispatch`** for manual operator rollback when something
+  breaks post-deploy that the auto smoke-test missed.
+
+**Manual rollback** — flip `:stable` back to a previous good build:
+
+```bash
+gh workflow run rollback.yml \
+  --repo keboola/agnes-the-ai-analyst \
+  -f failed_image_tag=stable-YYYY.MM.N
+```
+
+By default `target_image_tag` resolves by walking back through `stable-*`
+git tags newest-first and picking the first that does NOT already carry a
+`:deprecated-<stripped>` GHCR alias (i.e. wasn't previously auto-rolled-
+back). That prevents cascading failures from re-pointing `:stable` at a
+known-broken image. To force a specific target:
+
+```bash
+gh workflow run rollback.yml \
+  --repo keboola/agnes-the-ai-analyst \
+  -f failed_image_tag=stable-2026.05.531 \
+  -f target_image_tag=stable-2026.04.474
+```
+
+Notes:
+- The workflow does NOT delete the failed git tag (CalVer immutability is
+  preserved) — only the GHCR `:stable` alias is re-pointed and the failed
+  image gains a `:deprecated-*` audit alias.
+- Re-tag order is `:stable` recovery first, then `:deprecated-*` audit, so
+  a mid-step interruption leaves production healthy with at-worst missing
+  audit metadata.
+- Concurrency: `cancel-in-progress: false` (overrides the caller workflow's
+  cancellation policy) so a subsequent push to `main` won't kill a
+  rollback mid-flight.
+
 ### `keboola-deploy.yml` — tag-triggered, explicit deploy only
 
 Runs **only** on git tags matching `keboola-deploy-*`. Publishes:
@@ -221,6 +277,40 @@ Use this when the consumer (e.g. a customer dev VM) needs
 **deploy-when-I-decide** semantics — no surprise rollouts from upstream branch
 pushes by other contributors. The infra repo pins
 `image_tag = "keboola-deploy-latest"` on the relevant VM.
+
+### `prune-dev-tags.yml` — weekly CalVer + GHCR housekeeping
+
+Cron `0 4 * * 0` (Sundays 04:00 UTC) + `workflow_dispatch`. Prunes legacy
+CalVer git tags (`dev-YYYY.MM.N`, `stable-YYYY.MM.N`) and the matching
+GHCR image versions older than `KEEP_MONTHS` (default `1` → keep current
++ previous month). Floating aliases (`:stable`, `:dev`, `*-latest`) are
+never matched: they are git-tagless, and the GHCR pass explicitly skips
+any version that shares a manifest with a floating alias to avoid
+collateral deletion of `:stable` after a rollback re-tag.
+
+**Manual preview** (no deletions, lists what would be pruned):
+
+```bash
+gh workflow run prune-dev-tags.yml \
+  --repo keboola/agnes-the-ai-analyst \
+  -f dry_run=true
+```
+
+**Force a wider window** (one-off aggressive cleanup):
+
+```bash
+gh workflow run prune-dev-tags.yml \
+  --repo keboola/agnes-the-ai-analyst \
+  -f keep_months=3
+```
+
+Scheduled (cron) runs always prune for real; `dry_run` is honored only on
+manual dispatch. The script tracks per-tag remote-push / GHCR-DELETE
+failures and exits non-zero on any failure, so a refused remote push (tag-
+protection rule, missing scope) or a GHCR API error turns the cron run
+red instead of silently swallowing it. Local `git tag -d` is gated on
+successful remote push, so a refused delete leaves the local tag in place
+for retry on the next run.
 
 ### Module versioning
 

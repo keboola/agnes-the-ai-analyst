@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.17] — 2026-05-15
+
 ### Changed
 - `agnes refresh-marketplace --check` (the SessionStart-hook detector
   that fires on every Claude Code session start in every workspace)
@@ -34,6 +36,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 - CI test suite sharded for speed. The `test` job in `.github/workflows/ci.yml` is now a `test-shard` matrix — 4 parallel jobs via `pytest-split`, balanced by a committed `.test_durations` file — aggregated into a single `test` status check so branch protection needs no change. The duplicate full-suite `test` job in `release.yml` is removed (it re-ran the same ~10 min suite a second time on every push to main/feature branches); `release.yml` is now image-build only, with the advisory ruff/mypy steps moved to a lean `lint` job in `ci.yml`. Net: ~10 min → ~3 min wall-clock per push, and the suite runs once instead of twice. Adds `pytest-split` to the `dev` extra.
+- CI/release workflow polish (the still-salvageable subset of the
+  abandoned PR #139, after #311 obsoleted the test-job refactor):
+  `rollback.yml` extracts the `release.yml` smoke-test rollback into a
+  reusable + manually dispatchable workflow, with a warning guard on
+  non-`stable-*` `workflow_dispatch` inputs. `prune-dev-tags.yml` adds
+  weekly housekeeping (Sundays 04:00 UTC) of legacy CalVer git tags +
+  GHCR images outside a `KEEP_MONTHS` retention window; floating
+  aliases are git-tagless and never matched. `lint-workflows.yml` runs
+  `actionlint` on `.github/workflows/**` + `scripts/ops/**.sh` changes
+  (non-blocking initially). The superseded `deploy.yml` stub is removed.
+  Excludes #139's rejected pieces (Release Drafter, setuptools_scm,
+  run-number tag scheme, main-only release triggers, deletion of
+  `cli-wheel-clean-install`).
 
 ## [0.54.16] — 2026-05-14
 
