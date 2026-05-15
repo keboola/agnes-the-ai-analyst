@@ -1547,6 +1547,15 @@ async def create_entity(
             file_size=bundle_meta.file_size,
             bundle_sha256=bundle_meta.sha256,
         )
+        # Backfill the v1 seed's submission_id so downstream lookups
+        # (`_version_no_for_submission`, admin queue v#, admin detail
+        # v# chip, restore reuse) can resolve v1 the same way they
+        # resolve v2+. Pre-fix this was deferred to a later
+        # `update_history_submission_id` call that never landed in
+        # the create path — leaving the v1 entry with
+        # `submission_id=None` and every "find v# for this submission"
+        # lookup silently failing for v1.
+        repo.update_history_submission_id(entity_id, 1, sub_id)
         _audit(
             conn, user["id"],
             "store.submission.accepted" if guardrails_on else "store.submission.approved",

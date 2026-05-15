@@ -451,10 +451,16 @@ class StoreSubmissionsRepository:
                 history = []
             item["entity_version_history"] = history
             item["version_no"] = None
-            sub_hash = item.get("version")
+            # Look up THIS submission's version_no by submission_id,
+            # NOT by hash. Hash-based lookup mislabeled every
+            # byte-identical reupload (and every reused-verdict
+            # restore — common after PR #332) as v1 because the loop
+            # picked the FIRST history entry with matching hash.
+            # Same fix-pattern as PR #330 for runner / override.
+            sub_id = item.get("id")
             for entry in history:
                 try:
-                    if entry.get("hash") == sub_hash:
+                    if entry.get("submission_id") == sub_id:
                         item["version_no"] = int(entry.get("n"))
                         break
                 except (TypeError, ValueError):

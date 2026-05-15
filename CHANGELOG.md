@@ -11,6 +11,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Fixed
+- Flea-market admin submissions UI now derives the per-submission
+  `v#` label by **submission_id**, not **hash**. Hash-based lookup
+  mislabeled every byte-identical reupload (and every reused-verdict
+  restore — common after the restore-reuse fix below) as `v1`
+  because the loop picked the FIRST history entry with matching
+  hash. Affected both the admin queue column (`v#`) and the per-
+  section chips on the detail page. Same fix pattern as PR #330
+  (runner / override paths).
+- Flea-market admin submission detail page gained a version-switcher
+  card listing every submission linked to the same entity with
+  status badge + reviewed_by_model + click-to-jump. Lets admins
+  compare verdicts across versions without bouncing back to the
+  queue.
+- Flea-market initial POST now backfills the v1 seed entry's
+  `submission_id` immediately after creating the v1 submission row.
+  Pre-fix the v1 history entry always carried `submission_id=None`
+  so downstream lookups (`_version_no_for_submission`, admin queue
+  v#, admin detail chip, restore-reuse) silently failed for v1.
 - Flea-market restore endpoint now reuses the prior approved
   submission's LLM verdict when the restored bundle is
   byte-identical to a history entry already reviewed by the same
