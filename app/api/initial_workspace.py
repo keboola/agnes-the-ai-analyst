@@ -30,7 +30,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
