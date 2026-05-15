@@ -663,27 +663,31 @@ def test_bootstrap_with_existing_clone_skips_clone_proceeds_to_refresh(
 # --- --check flag (SessionStart-hook detector mode) -----------------------------
 
 
-def _stage_rev_parse(monkeypatch, recorder, *, head: str, fetch_head: str) -> None:
-    """Wrap recorder.run so `git rev-parse HEAD` and
-    `git rev-parse FETCH_HEAD` return scripted SHAs while every other
-    command falls through to the recorder's normal handling.
+def _stage_rev_parse(monkeypatch, recorder, *, head: str, remote_head: str) -> None:
+    """Wrap recorder.run so `git rev-parse HEAD` returns the local SHA
+    and `git ls-remote origin HEAD` returns the remote SHA, while every
+    other command falls through to the recorder's normal handling.
 
-    Used by --check tests to drive the HEAD-vs-FETCH_HEAD comparison
-    independently of the (mocked) git fetch.
+    Used by --check tests to drive the local-HEAD vs remote-HEAD
+    comparison independently of the (mocked) git invocation.
     """
     real_run = recorder.run
 
     def staged_run(cmd, *args, **kwargs):
-        # Match the trailing rev-parse target so `-C <path>` injection
-        # doesn't break the prefix.
         if "rev-parse" in cmd:
             recorder.calls.append(
                 _RecordedCall(cmd=list(cmd), env=dict(kwargs.get("env") or {}))
             )
-            target = cmd[-1]
-            stdout = head if target == "HEAD" else fetch_head if target == "FETCH_HEAD" else ""
             return subprocess.CompletedProcess(
-                args=list(cmd), returncode=0, stdout=stdout + "\n", stderr="",
+                args=list(cmd), returncode=0, stdout=head + "\n", stderr="",
+            )
+        if "ls-remote" in cmd:
+            recorder.calls.append(
+                _RecordedCall(cmd=list(cmd), env=dict(kwargs.get("env") or {}))
+            )
+            return subprocess.CompletedProcess(
+                args=list(cmd), returncode=0,
+                stdout=f"{remote_head}\tHEAD\n", stderr="",
             )
         return real_run(cmd, *args, **kwargs)
 
@@ -693,13 +697,13 @@ def _stage_rev_parse(monkeypatch, recorder, *, head: str, fetch_head: str) -> No
 def test_check_emits_hook_json_when_remote_changed(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """`--check` + local HEAD differs from remote FETCH_HEAD →
+    """`--check` + local HEAD differs from remote HEAD →
     Claude Code hook JSON on stdout pointing the user at
     `/update-agnes-plugins`. The hook never installs anything itself."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
-    _stage_rev_parse(monkeypatch, recorder, head="abc123", fetch_head="def456")
+    _stage_rev_parse(monkeypatch, recorder, head="abc123", remote_head="def456")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
@@ -716,13 +720,13 @@ def test_check_emits_hook_json_when_remote_changed(
 def test_check_silent_when_remote_unchanged(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """`--check` + HEAD == FETCH_HEAD → silent exit 0, no JSON output.
-    Avoids spamming the user with "updates available" on every session
-    start when nothing actually changed."""
+    """`--check` + local HEAD == remote HEAD → silent exit 0, no JSON
+    output. Avoids spamming the user with "updates available" on every
+    session start when nothing actually changed."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
-    _stage_rev_parse(monkeypatch, recorder, head="samehash", fetch_head="samehash")
+    _stage_rev_parse(monkeypatch, recorder, head="samehash", remote_head="samehash")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
@@ -740,7 +744,7 @@ def test_check_does_not_call_claude_plugin_anything(
     workspace.mkdir()
     monkeypatch.chdir(workspace)
     # Even WITH a remote diff, --check must stay read-only.
-    _stage_rev_parse(monkeypatch, recorder, head="abc", fetch_head="def")
+    _stage_rev_parse(monkeypatch, recorder, head="abc", remote_head="def")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
@@ -766,7 +770,7 @@ def test_check_does_not_git_reset(
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
-    _stage_rev_parse(monkeypatch, recorder, head="abc", fetch_head="def")
+    _stage_rev_parse(monkeypatch, recorder, head="abc", remote_head="def")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
@@ -777,32 +781,46 @@ def test_check_does_not_git_reset(
     )
 
 
-def test_check_runs_git_fetch(
+def test_check_runs_git_ls_remote_not_fetch(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """`--check` must run `git fetch origin` (otherwise FETCH_HEAD is
-    stale and we'd compare against an old snapshot, missing real
-    remote changes)."""
+    """`--check` must use `git ls-remote origin HEAD` — one HTTPS
+    round-trip, no objects downloaded — and must NOT run `git fetch`.
+    This is the whole point of the SessionStart-hook detector: ~0.5–1 s
+    instead of ~8 s. If somebody regresses this back to fetch, this
+    test catches it."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
-    _stage_rev_parse(monkeypatch, recorder, head="abc", fetch_head="abc")
+    _stage_rev_parse(monkeypatch, recorder, head="abc", remote_head="abc")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
 
-    fetch_calls = [
+    ls_remote_calls = [
         c for c in recorder.calls
-        if c.cmd and c.cmd[0] == "git" and "fetch" in c.cmd and "origin" in c.cmd
+        if c.cmd and c.cmd[0] == "git" and "ls-remote" in c.cmd
+        and "origin" in c.cmd and "HEAD" in c.cmd
     ]
-    assert fetch_calls, (
-        f"--check must run `git fetch origin`; got: {[c.cmd for c in recorder.calls]!r}"
+    assert ls_remote_calls, (
+        f"--check must run `git ls-remote origin HEAD`; got: "
+        f"{[c.cmd for c in recorder.calls]!r}"
     )
     # Same credential helper wiring as the default mode — PAT in env, not argv.
-    fetch = fetch_calls[0]
-    assert "-c" in fetch.cmd
-    assert fetch.cmd[fetch.cmd.index("-c") + 1].startswith("credential.helper=")
-    assert fetch.env.get("AGNES_TOKEN") == with_token
+    ls_remote = ls_remote_calls[0]
+    assert "-c" in ls_remote.cmd
+    assert ls_remote.cmd[ls_remote.cmd.index("-c") + 1].startswith("credential.helper=")
+    assert ls_remote.env.get("AGNES_TOKEN") == with_token
+
+    # No `git fetch` — that's the slow path we replaced.
+    fetch_calls = [
+        c for c in recorder.calls
+        if c.cmd and c.cmd[0] == "git" and "fetch" in c.cmd
+    ]
+    assert fetch_calls == [], (
+        f"--check must NOT run `git fetch` (slow path); got: "
+        f"{[c.cmd for c in fetch_calls]!r}"
+    )
 
 
 def test_check_no_clone_silent_exit_zero(tmp_path, monkeypatch, with_token, recorder):
@@ -817,15 +835,19 @@ def test_check_no_clone_silent_exit_zero(tmp_path, monkeypatch, with_token, reco
     assert recorder.calls == []
 
 
-def test_check_fetch_failure_exits_one(
+def test_check_ls_remote_failure_exits_one(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """A failed `git fetch` (network down, auth rejected, etc.) → exit 1
-    so the surrounding `|| true` in the hook command swallows it cleanly.
-    No hook JSON is emitted (we don't know if the remote changed)."""
+    """A failed `git ls-remote` (network down, auth rejected, etc.) →
+    exit 1 so the surrounding `|| true` in the hook command swallows it
+    cleanly. No hook JSON is emitted (we don't know if the remote
+    changed)."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
+    # `("git", "-c")` matches the credential-helper wiring shared by
+    # ls-remote and fetch — fine here since ls-remote is the only git
+    # subprocess --check runs.
     recorder.script(("git", "-c"), returncode=1, stderr="fatal: unable to access ...")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])

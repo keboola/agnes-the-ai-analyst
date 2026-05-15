@@ -10,11 +10,13 @@ Three call paths share the same code:
     inside Claude Code so the user sees install/update progress in the
     transcript.
   - `agnes refresh-marketplace --check` — SessionStart hook context.
-    Lightweight detector: `git fetch` only (no reset, no plugin
-    install/update side effects), compares local `HEAD` vs `FETCH_HEAD`,
-    emits a Claude Code hook JSON message pointing the user at
-    `/update-agnes-plugins` when there are remote changes. Silent
-    otherwise.
+    Lightweight detector: `git ls-remote origin HEAD` only (no fetch,
+    no reset, no plugin install/update side effects), compares the
+    remote HEAD SHA against the local `HEAD` SHA, emits a Claude Code
+    hook JSON message pointing the user at `/update-agnes-plugins`
+    when they differ. Silent otherwise. ls-remote is ~0.5–1 s vs ~8 s
+    for fetch — matters because every Claude Code session start in
+    every workspace fires this hook.
 
 Reconcile (default + --bootstrap paths) is version-aware (install
 missing / update on version diff / skip on match). Server-side stack
@@ -58,13 +60,14 @@ def refresh_marketplace(
     check: bool = typer.Option(
         False, "--check",
         help=(
-            "Detect-only mode for the SessionStart hook. Runs `git fetch` "
-            "and compares local HEAD with remote FETCH_HEAD. When they "
-            "differ, emits a Claude Code hook JSON message hinting the "
-            "user at `/update-agnes-plugins`. No `git reset`, no plugin "
-            "install/update side effects — fast, invisible when nothing "
-            "changed, fully recoverable interactively via the slash "
-            "command."
+            "Detect-only mode for the SessionStart hook. Runs "
+            "`git ls-remote origin HEAD` and compares the returned SHA "
+            "with local HEAD. When they differ, emits a Claude Code "
+            "hook JSON message hinting the user at "
+            "`/update-agnes-plugins`. No `git fetch`, no `git reset`, "
+            "no plugin install/update side effects — fast, invisible "
+            "when nothing changed, fully recoverable interactively "
+            "via the slash command."
         ),
     ),
     bootstrap: bool = typer.Option(
@@ -128,11 +131,15 @@ def refresh_marketplace(
 
     # --check: lightweight detector. Don't fetch+reset, don't reconcile
     # plugins — that's the slash command's job. Just check whether the
-    # remote has new content and tell the user if so.
+    # remote has new content and tell the user if so. `git ls-remote`
+    # fetches one line of text (the remote HEAD ref) instead of all
+    # git objects — ~0.5–1 s vs ~8 s for `git fetch`.
     if check:
-        if not _git_fetch_only(token):
+        remote_sha = _remote_head_sha(token)
+        if remote_sha is None:
             raise typer.Exit(1)
-        if _has_remote_changes():
+        local_sha = _local_head_sha()
+        if local_sha is not None and local_sha != remote_sha:
             _emit_check_hook_message()
         raise typer.Exit(0)
 
@@ -366,27 +373,62 @@ def _git_fetch_only(token: str) -> bool:
     return True
 
 
-def _has_remote_changes() -> bool:
-    """Return True iff local HEAD differs from remote FETCH_HEAD.
+def _remote_head_sha(token: str) -> Optional[str]:
+    """Return the remote `HEAD` SHA via `git ls-remote`, or None on failure.
 
-    Caller must have already run `git fetch origin`. Any rev-parse failure
-    (missing FETCH_HEAD, broken repo) is treated as "no detectable changes"
-    so the hook stays quiet rather than surfacing a misleading hint.
+    `ls-remote` returns one line of text per ref (`<sha>\\tHEAD`); no git
+    objects are transferred — orders of magnitude cheaper than a full
+    `git fetch` for the SessionStart-hook detector path. Same PAT wiring
+    as `_git_fetch_only`: token in env, never on argv. Surfaces stderr
+    on failure so auth/network errors aren't swallowed silently — the
+    `--check` caller turns failure into exit 1.
+    """
+    env = {**os.environ, "AGNES_TOKEN": token}
+    cmd = [
+        "git",
+        "-c", f"credential.helper={_CREDENTIAL_HELPER}",
+        "-C", str(CLONE_DIR),
+        "ls-remote", "origin", "HEAD",
+    ]
+    try:
+        result = subprocess.run(
+            cmd, env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False,
+        )
+    except FileNotFoundError:
+        typer.echo("error: `git` not found in PATH; cannot check marketplace.", err=True)
+        return None
+    if result.returncode != 0:
+        if result.stdout:
+            typer.echo(result.stdout, err=True)
+        if result.stderr:
+            typer.echo(result.stderr, err=True)
+        return None
+    first_line = result.stdout.strip().splitlines()[:1]
+    if not first_line:
+        return None
+    sha = first_line[0].split()[0].strip()
+    return sha or None
+
+
+def _local_head_sha() -> Optional[str]:
+    """Return the local `HEAD` SHA, or None on any rev-parse failure.
+
+    None means "can't determine local state" — the `--check` caller
+    treats that as "stay silent" rather than emitting a misleading
+    updates-available hint built on a missing left-hand side.
     """
     try:
-        local = subprocess.run(
+        result = subprocess.run(
             ["git", "-C", str(CLONE_DIR), "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
-        remote = subprocess.run(
-            ["git", "-C", str(CLONE_DIR), "rev-parse", "FETCH_HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-        )
     except FileNotFoundError:
-        return False
-    if local.returncode != 0 or remote.returncode != 0:
-        return False
-    return local.stdout.strip() != remote.stdout.strip()
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
 
 
 def _git_fetch_and_reset(token: str) -> bool:
