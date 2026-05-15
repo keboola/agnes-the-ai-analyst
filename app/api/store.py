@@ -16,6 +16,7 @@ display name don't collide in Claude Code's flat namespace.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -25,6 +26,7 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -398,6 +400,40 @@ def _submission_plugin_dir(
     the entity to v2 bytes that were never actually reviewed.
     """
     return _entity_dir(entity_id) / "versions" / f"v{int(version_no)}" / "plugin"
+
+
+# Per-entity write lock. Serializes the "read latest submission → bake
+# new version dir → append history" critical section in PUT + restore
+# so two concurrent edits on the same entity_id can't both pass the
+# "no pending submission" gate, both append history rows, and race
+# on ``versions/v<N+1>/plugin/``. Surfaced by the adversarial review
+# of PR #316.
+#
+# Scope: single-process. Multi-worker uvicorn deployments still have
+# a window — a process-shared lock (DB advisory, filesystem flock)
+# would be the next step. For the typical single-worker corporate
+# deployment this closes the race; the publish-gate model is already
+# defense-in-depth (LLM tier won't approve duplicate bytes anyway).
+_entity_write_locks: Dict[str, asyncio.Lock] = {}
+_entity_write_locks_guard = asyncio.Lock()
+
+
+@asynccontextmanager
+async def _hold_entity_write_lock(entity_id: str):
+    """Serialize concurrent writes to a single flea-market entity.
+
+    Wrap the version-creating critical section in PUT + restore:
+    read latest submission status, bake new version dir, append
+    ``version_history``. Outside this section the request can hit the
+    DB freely.
+    """
+    async with _entity_write_locks_guard:
+        lock = _entity_write_locks.get(entity_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _entity_write_locks[entity_id] = lock
+    async with lock:
+        yield
 
 
 def _version_no_for_submission(
@@ -1479,6 +1515,30 @@ async def update_entity(
     * **Metadata-only edit** (no ``file`` posted) skips the bundle
       pipeline and the version bump.
     """
+    async with _hold_entity_write_lock(entity_id):
+        return await _update_entity_locked(
+            entity_id=entity_id,
+            background_tasks=background_tasks,
+            file=file, name=name, type=type, description=description,
+            category=category, video_url=video_url, photo=photo,
+            user=user, conn=conn,
+        )
+
+
+async def _update_entity_locked(
+    *,
+    entity_id: str,
+    background_tasks: BackgroundTasks,
+    file: Optional[UploadFile],
+    name: Optional[str],
+    type: Optional[str],
+    description: Optional[str],
+    category: Optional[str],
+    video_url: Optional[str],
+    photo: Optional[UploadFile],
+    user: dict,
+    conn: duckdb.DuckDBPyConnection,
+):
     repo = StoreEntitiesRepository(conn)
     entity = repo.get(entity_id)
     if not entity:
@@ -1887,7 +1947,26 @@ async def restore_version(
 
     Refuses while a prior version is under review (same
     ``prior_version_pending`` 409 as PUT).
+
+    Wrapped in the per-entity write lock so a concurrent PUT and
+    restore on the same entity can't both pass the pending-gate +
+    race on ``versions/v<N+1>/plugin/``.
     """
+    async with _hold_entity_write_lock(entity_id):
+        return await _restore_version_locked(
+            entity_id=entity_id, version_no=version_no,
+            background_tasks=background_tasks, user=user, conn=conn,
+        )
+
+
+async def _restore_version_locked(
+    *,
+    entity_id: str,
+    version_no: int,
+    background_tasks: BackgroundTasks,
+    user: dict,
+    conn: duckdb.DuckDBPyConnection,
+):
     repo = StoreEntitiesRepository(conn)
     entity = repo.get(entity_id)
     if not entity:
@@ -2422,6 +2501,24 @@ async def export_bundle(
     if owner == "me":
         owner = user["id"]
     repo = StoreEntitiesRepository(conn)
+    # Visibility filter mirrors the marketplace browse query: only
+    # `approved` is visible to non-admin non-owner callers. Without
+    # this filter, an authenticated non-admin could pull the entire
+    # store including pending / blocked / hidden v1 bytes — bypassing
+    # the publish gate the same way `_enforce_visibility` already
+    # prevents on the detail page + install endpoint. Surfaced by the
+    # adversarial review pass on PR #316.
+    is_admin = is_user_admin(user["id"], conn)
+    visibility_filter: Optional[List[str]] = (
+        None if is_admin else ["approved"]
+    )
+    # Owners always see their own non-approved entries in their
+    # export — same affordance the browse listing applies via the
+    # `include_owner_id` knob on `repo.list`. Admins skip the filter
+    # entirely.
+    include_owner_id: Optional[str] = (
+        None if is_admin else user["id"]
+    )
     # Page through everything. The 100/req limit on `list` is a UI
     # pagination affordance, not a backup constraint — for a bulk export
     # we want all matches.
@@ -2432,6 +2529,8 @@ async def export_bundle(
         page_items, _total = repo.list(
             skip=skip, limit=page, type=type, category=category,
             search=search, owner_user_id=owner,
+            visibility_status=visibility_filter,
+            include_owner_id=include_owner_id,
         )
         if not page_items:
             break
