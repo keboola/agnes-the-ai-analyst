@@ -13,7 +13,7 @@ from services.session_pipeline.contract import ProcessorResult
 from services.session_pipeline.lib import parse_jsonl
 from services.session_processors.usage_lib import (
     USAGE_PROCESSOR_VERSION,
-    AttributionLookup,
+    MarketplaceItemLookup,
     compute_summary,
     iter_events,
 )
@@ -46,10 +46,15 @@ class UsageProcessor:
                 session_id = sid
                 break
 
-        attr = AttributionLookup(conn)
+        lookup = MarketplaceItemLookup(conn)
         rows = []
         for e in events:
-            source, ref_id = attr.attribute(e)
+            source, parent_plugin, _local, _type = lookup.resolve(e)
+            # `usage_events.ref_id` carries the parent plugin name (curated)
+            # or '' (flea standalone / builtin). Empty string normalised to
+            # NULL for backwards compat with admin telemetry endpoints that
+            # filter `ref_id IS NOT NULL`.
+            ref_id = parent_plugin or None
             # Stable dedup key: session_id + event_uuid + tool_id + event_type + tool_name + command_name.
             # tool_id (tu_xxx) disambiguates parallel tool_use items in the same assistant turn
             # that share the same event_uuid, event_type, and tool_name.

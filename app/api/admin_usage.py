@@ -347,12 +347,14 @@ def reprocess_usage(
     """Force re-extraction of all sessions for the usage processor.
 
     DELETEs:
-      - session_processor_state WHERE processor_name='usage'
-        (so the next scheduler tick re-scans every JSONL)
+      - session_processor_state WHERE processor_name='usage' (so the next
+        scheduler tick re-scans every JSONL) + processor_name='marketplace_rollup_30d'
+        (forces 30d window rebuild on the next tick)
       - usage_events
       - usage_session_summary
-      - usage_tool_daily
-      - usage_plugin_daily
+      - usage_tool_daily (legacy)
+      - usage_marketplace_item_daily
+      - usage_marketplace_item_window
 
     Verification processor's state untouched (composite PK isolates each processor).
     Audit-logged with deleted-row counts.
@@ -361,7 +363,8 @@ def reprocess_usage(
     try:
         conn.execute("BEGIN")
         n_state = conn.execute(
-            "DELETE FROM session_processor_state WHERE processor_name = 'usage' RETURNING 1"
+            "DELETE FROM session_processor_state "
+            "WHERE processor_name IN ('usage', 'marketplace_rollup_30d') RETURNING 1"
         ).fetchall()
         counts["state_rows"] = len(n_state)
         n_events = conn.execute("DELETE FROM usage_events RETURNING 1").fetchall()
@@ -370,8 +373,14 @@ def reprocess_usage(
         counts["summaries"] = len(n_sum)
         n_tool = conn.execute("DELETE FROM usage_tool_daily RETURNING 1").fetchall()
         counts["tool_daily"] = len(n_tool)
-        n_plugin = conn.execute("DELETE FROM usage_plugin_daily RETURNING 1").fetchall()
-        counts["plugin_daily"] = len(n_plugin)
+        n_mp_daily = conn.execute(
+            "DELETE FROM usage_marketplace_item_daily RETURNING 1"
+        ).fetchall()
+        counts["marketplace_item_daily"] = len(n_mp_daily)
+        n_mp_window = conn.execute(
+            "DELETE FROM usage_marketplace_item_window RETURNING 1"
+        ).fetchall()
+        counts["marketplace_item_window"] = len(n_mp_window)
         conn.execute("COMMIT")
     except Exception as e:
         try:
