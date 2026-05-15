@@ -112,6 +112,13 @@ class ItemListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    # Sort options the listing UI should expose for this response. The
+    # first three are always available; "trending" only joins when at
+    # least one item in the response carries a non-null trend_pct (i.e.
+    # the prior-week threshold cleared somewhere). Frontend hides the
+    # trending dropdown option when it's missing instead of letting the
+    # user select a sort that would render an empty grid.
+    available_sorts: List[str] = ["recent", "most_used", "most_adopted"]
 
 
 class CategoryEntry(BaseModel):
@@ -709,19 +716,50 @@ def _build_telemetry(
     }
 
 
+def _available_sorts(stats_dicts: List[Dict[str, Dict]]) -> List[str]:
+    """Decide which sort options the listing UI should expose.
+
+    Recent / most_used / most_adopted always sort correctly (raw / count
+    columns are populated even when zero). Trending only joins when at
+    least one stat row carries a non-null trend_pct — that signals the
+    `prior_7d >= 3` threshold cleared somewhere in this tab's data set.
+
+    `stats_dicts` is the per-source stats map returned by
+    `_load_invocation_stats`; the my-tab passes both curated + flea
+    stats so the option is available when *either* source has trend data.
+    """
+    base = ["recent", "most_used", "most_adopted"]
+    for stats in stats_dicts:
+        if any(s.get("trend_pct") is not None for s in stats.values()):
+            base.append("trending")
+            break
+    return base
+
+
 def _apply_sort(
     items: List[MarketplaceItem],
     sort: str,
 ) -> List[MarketplaceItem]:
     """Sort a list of MarketplaceItem objects in-place and return it.
 
-    - ``recent``    — preserve existing order (no-op).
-    - ``most_used`` — DESC by invocations_30d, then DESC install_count, then name ASC.
-    - ``trending``  — DESC by trend_pct; items with trend_pct=None are excluded.
+    - ``recent``        — preserve existing order (no-op).
+    - ``most_used``     — DESC by invocations_30d, then name ASC.
+    - ``most_adopted``  — DESC by distinct_users_30d, then name ASC.
+                          Same shape as most_used but keyed on the true
+                          30d distinct user count — protects the listing
+                          from power-user skew (one user × 100 invokes
+                          can't beat 10 different users × 1 invoke).
+    - ``trending``      — DESC by trend_pct; items with trend_pct=None
+                          are excluded (the daily-fact threshold means
+                          missing trend = noisy data, not zero growth).
     """
     if sort == "most_used":
         items.sort(
             key=lambda it: (-it.invocations_30d, it.name.lower())
+        )
+    elif sort == "most_adopted":
+        items.sort(
+            key=lambda it: (-it.distinct_users_30d, it.name.lower())
         )
     elif sort == "trending":
         items = [it for it in items if it.trend_pct is not None]
@@ -735,7 +773,7 @@ async def list_items(
     q: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     type: Optional[Literal["skill", "agent", "plugin"]] = Query(None),
-    sort: Literal["recent", "most_used", "trending"] = Query("recent"),
+    sort: Literal["recent", "most_used", "most_adopted", "trending"] = Query("recent"),
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
     user: dict = Depends(get_current_user),
@@ -807,6 +845,7 @@ async def list_items(
             items = items[skip: skip + page_size]
         return ItemListResponse(
             items=items, total=total, page=page, page_size=page_size,
+            available_sorts=_available_sorts([curated_stats]),
         )
 
     if tab == "flea":
@@ -853,6 +892,7 @@ async def list_items(
             items = items[skip: skip + page_size]
         return ItemListResponse(
             items=items, total=total, page=page, page_size=page_size,
+            available_sorts=_available_sorts([flea_stats]),
         )
 
     # tab == "my" — see docstring; read directly from source-of-truth tables.
@@ -937,6 +977,7 @@ async def list_items(
     items = items[skip : skip + page_size]
     return ItemListResponse(
         items=items, total=total, page=page, page_size=page_size,
+        available_sorts=_available_sorts([curated_stats, flea_stats]),
     )
 
 
