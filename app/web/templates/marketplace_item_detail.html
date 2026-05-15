@@ -1444,16 +1444,22 @@
             ? `<div class="row"><dt>Last used</dt><dd>${esc(fmtRelative(lastIso))}</dd></div>`
             : '');
   })();
-  if (source === 'curated') {
+  if (source === 'curated' || innerName) {
+    // Nested skill/agent (curated OR flea-inner): the Details sidebar
+    // is parent-centric — Parent plugin / Bundle size / activity rows /
+    // authorship label. The authorship row label tracks the source
+    // (curated bundles have a Curator, flea bundles have an Owner) so
+    // the label vocabulary stays consistent with the plugin detail page.
     const author = (d.parent_author_name && d.parent_author_name !== 'owner_todo')
       ? esc(d.parent_author_name)
       : '<span class="todo">owner_todo</span>';
+    const authorLabel = source === 'curated' ? 'Curator' : 'Owner';
     // Type already shown as a badge in the hero — skip the row here.
     dl.innerHTML = `
       <div class="row"><dt>Parent plugin</dt><dd>${esc(d.parent_display_name || d.manifest_name || pluginName)}</dd></div>
       ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}
       ${telemetryRows}
-      <div class="row"><dt>Curator</dt><dd>${author}</dd></div>`;
+      <div class="row"><dt>${authorLabel}</dt><dd>${author}</dd></div>`;
   } else {
     const ownerLabel = d.owner_display || d.author_name || '';
     // Type already shown as a badge in the hero — skip the row here.
