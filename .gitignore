@@ -1,5 +1,7 @@
 # Claude Code
-.claude/
+.claude/*
+!.claude/agents/
+!.claude/skills/
 CLAUDE.local.md
 
 # Local dev data (copied from server for testing)
