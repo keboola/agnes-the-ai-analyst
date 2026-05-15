@@ -215,3 +215,35 @@ def test_v48_to_v49_populates_item_domains_junction():
     # NULL and empty-string domain → no junction row
     assert not any(r[0] == "k3" for r in junction)
     assert not any(r[0] == "k4" for r in junction)
+
+
+def test_v48_to_v49_repoints_memory_domain_grants_to_id():
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    conn.execute("INSERT INTO user_groups VALUES ('g1', 'Sales')")
+    # Pre-v49 grant: resource_id is the slug
+    conn.execute(
+        "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+        "VALUES ('grant1', 'g1', 'memory_domain', 'finance')"
+    )
+    _v48_to_v49(conn)
+
+    row = conn.execute(
+        "SELECT resource_id FROM resource_grants WHERE id='grant1'"
+    ).fetchone()
+    assert row[0] == "md_finance"
+
+
+def test_v48_to_v49_leaves_orphan_grants_intact():
+    """Grants pointing at a non-existent domain slug are left as-is for admin
+    cleanup per spec D14 (defensive — no silent data drop)."""
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    conn.execute("INSERT INTO user_groups VALUES ('g1', 'Sales')")
+    conn.execute(
+        "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+        "VALUES ('orphan', 'g1', 'memory_domain', 'no-such-domain')"
+    )
+    _v48_to_v49(conn)
+    row = conn.execute("SELECT resource_id FROM resource_grants WHERE id='orphan'").fetchone()
+    assert row[0] == "no-such-domain"  # unchanged

@@ -3299,6 +3299,26 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
+    # 7) Re-point ``MEMORY_DOMAIN`` grants — pre-v49 stored the domain slug
+    # directly in ``resource_grants.resource_id``; v49+ stores
+    # ``memory_domains.id``. Orphan grants (resource_id is a slug with no
+    # matching ``memory_domains`` row) are left untouched per spec D14 so
+    # an admin can decide whether to delete or re-create the domain.
+    conn.execute(
+        """
+        UPDATE resource_grants
+           SET resource_id = (
+               SELECT id FROM memory_domains
+                WHERE memory_domains.slug = resource_grants.resource_id
+           )
+         WHERE resource_type = 'memory_domain'
+           AND EXISTS (
+               SELECT 1 FROM memory_domains
+                WHERE memory_domains.slug = resource_grants.resource_id
+           )
+        """
+    )
+
 
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
