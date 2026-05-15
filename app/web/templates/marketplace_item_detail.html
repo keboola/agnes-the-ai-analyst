@@ -1268,6 +1268,16 @@
   // `owner_todo` placeholder for the Curator row stays as a deliberate
   // reminder to wire up curator metadata.
   const dl = document.getElementById('details-list');
+  // v46: per-item telemetry block, appended to whichever metadata rows
+  // get rendered below. Hidden when telemetry is null (no rollup row).
+  const telemetryRows = (() => {
+    if (!d.telemetry || d.telemetry.invocations_30d == null) return '';
+    const t = d.telemetry;
+    const users = t.distinct_users_30d != null
+      ? `<div class="row"><dt>Users (30d)</dt><dd>${t.distinct_users_30d.toLocaleString()}</dd></div>`
+      : '';
+    return `<div class="row"><dt>Invocations (30d)</dt><dd>${t.invocations_30d.toLocaleString()}</dd></div>${users}`;
+  })();
   if (source === 'curated') {
     const author = (d.parent_author_name && d.parent_author_name !== 'owner_todo')
       ? esc(d.parent_author_name)
@@ -1278,6 +1288,7 @@
       <div class="row"><dt>Marketplace</dt><dd>${esc(d.marketplace_name || marketplaceId)}</dd></div>
       ${d.relpath ? `<div class="row"><dt>Path</dt><dd class="mono">${esc(d.relpath)}</dd></div>` : ''}
       ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}
+      ${telemetryRows}
       ${d.parent_updated_at ? `<div class="row"><dt>Updated</dt><dd>${esc(fmtRelative(d.parent_updated_at))}</dd></div>` : ''}
       <div class="row"><dt>Curator</dt><dd>${author}</dd></div>`;
   } else {
@@ -1289,6 +1300,7 @@
       ${d.category ? `<div class="row"><dt>Category</dt><dd>${esc(d.category)}</dd></div>` : ''}
       ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}
       <div class="row"><dt>Installs</dt><dd>${d.install_count || 0}</dd></div>
+      ${telemetryRows}
       ${d.released_at ? `<div class="row"><dt>Released</dt><dd>${esc(fmtRelative(d.released_at))}</dd></div>` : ''}
       ${d.updated_at ? `<div class="row"><dt>Updated</dt><dd>${esc(fmtRelative(d.updated_at))}</dd></div>` : ''}`;
   }

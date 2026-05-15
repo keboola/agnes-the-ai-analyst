@@ -26,22 +26,42 @@ def _fresh_db(tmp_path, monkeypatch) -> duckdb.DuckDBPyConnection:
 
 
 def _seed_attribution(conn: duckdb.DuckDBPyConnection) -> None:
-    """Seed attribution rows the fixtures reference."""
+    """Seed marketplace_plugins + store_entities rows the fixtures reference.
+
+    After the v46 refactor, `MarketplaceItemLookup` resolves identifiers
+    by prefix-splitting on ``:`` and looking up the prefix in the live
+    `marketplace_plugins` (curated) and `store_entities` (flea) tables —
+    so we seed those instead of the removed attribution tables.
+
+    Fixtures use:
+    - curated plugin prefix `myplug` (for skills `myplug:my-skill`, agents
+      `myplug:my-agent`, slash commands `myplug:compound` — note slash
+      commands count as skills under the new rules, and `compound:debug`
+      uses `compound` as the plugin prefix).
+    - flea bundle prefix `agnes-store-bundle` + entity name `flea-skill`.
+    """
+    # Curated plugin — only `name` matters for the lookup; the rest is
+    # filler to satisfy NOT NULL constraints / referential expectations.
     conn.execute(
-        "INSERT OR IGNORE INTO usage_attribution_skills (source, ref_id, skill_name)"
-        " VALUES ('curated', 'mp/plug', 'my-skill')"
+        "INSERT OR IGNORE INTO marketplace_registry (id, name, url) "
+        "VALUES ('mp', 'TestMarket', 'https://example.test/mp.git')"
     )
     conn.execute(
-        "INSERT OR IGNORE INTO usage_attribution_skills (source, ref_id, skill_name)"
-        " VALUES ('flea', 'entity-1', 'flea-skill')"
+        "INSERT OR IGNORE INTO marketplace_plugins (marketplace_id, name) "
+        "VALUES ('mp', 'myplug')"
     )
+    # Second curated plugin used as the `compound:debug` slash-command prefix.
     conn.execute(
-        "INSERT OR IGNORE INTO usage_attribution_agents (source, ref_id, agent_name)"
-        " VALUES ('curated', 'mp/plug', 'my-agent')"
+        "INSERT OR IGNORE INTO marketplace_plugins (marketplace_id, name) "
+        "VALUES ('mp', 'compound')"
     )
+    # Flea entity — visibility_status='approved' is required (lookup filters
+    # on it). type='skill' so the resolver places the invocation under
+    # type='skill' in the rollup.
     conn.execute(
-        "INSERT OR IGNORE INTO usage_attribution_commands (source, ref_id, command_name)"
-        " VALUES ('curated', 'mp/plug', 'compound:debug')"
+        "INSERT OR IGNORE INTO store_entities "
+        "(id, owner_user_id, owner_username, type, name, version, visibility_status) "
+        "VALUES ('entity-1', 'u1', 'alice', 'skill', 'flea-skill', '1.0', 'approved')"
     )
 
 
@@ -97,6 +117,9 @@ class TestSimpleBash:
         _seed_attribution(conn)
         _process("simple_bash.jsonl", conn)
         evts = _events(conn)
+        # Bash has no plugin prefix → MarketplaceItemLookup falls through
+        # to the builtin tuple ('builtin', '', None, None), and the
+        # UsageProcessor normalises the empty parent_plugin to NULL ref_id.
         assert evts[0]["source"] == "builtin"
         assert evts[0]["ref_id"] is None
 
@@ -150,12 +173,15 @@ class TestCuratedSkill:
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_attribution(conn)
         _process("skill_curated.jsonl", conn)
+        # Fixture uses `myplug:my-skill` (plugin-prefixed). ref_id is the
+        # parent plugin name; the local skill name is preserved in
+        # `skill_name` for downstream rollup attribution.
         row = conn.execute(
-            "SELECT source, ref_id FROM usage_events WHERE skill_name = 'my-skill'"
+            "SELECT source, ref_id FROM usage_events WHERE skill_name = 'myplug:my-skill'"
         ).fetchone()
         assert row is not None
         assert row[0] == "curated"
-        assert row[1] == "mp/plug"
+        assert row[1] == "myplug"
 
     def test_skill_invocations_count(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
@@ -170,12 +196,15 @@ class TestFleaSkill:
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_attribution(conn)
         _process("skill_flea.jsonl", conn)
+        # Flea entity bundle prefix → ref_id is '' (no parent plugin),
+        # normalised to NULL by UsageProcessor.
         row = conn.execute(
-            "SELECT source, ref_id FROM usage_events WHERE skill_name = 'flea-skill'"
+            "SELECT source, ref_id FROM usage_events "
+            "WHERE skill_name = 'agnes-store-bundle:flea-skill'"
         ).fetchone()
         assert row is not None
         assert row[0] == "flea"
-        assert row[1] == "entity-1"
+        assert row[1] is None
 
 
 class TestSlashCommand:
@@ -189,7 +218,11 @@ class TestSlashCommand:
         assert slash_evts[0]["command_name"] == "compound:debug"
 
     def test_slash_command_attribution(self, tmp_path, monkeypatch):
-        """compound:debug is in attribution_commands → should resolve to curated."""
+        """`compound:debug` resolves to curated plugin `compound`.
+
+        Under v46 rules slash commands count as type='skill' in the rollup;
+        the lookup matches the `compound` prefix against marketplace_plugins.
+        """
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_attribution(conn)
         _process("slash_command.jsonl", conn)
@@ -198,7 +231,7 @@ class TestSlashCommand:
         ).fetchone()
         assert row is not None
         assert row[0] == "curated"
-        assert row[1] == "mp/plug"
+        assert row[1] == "compound"
 
     def test_slash_commands_in_summary(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
@@ -216,16 +249,16 @@ class TestSubagent:
         evts = _events(conn)
         assert len(evts) == 1
         assert evts[0]["event_type"] == "subagent"
-        assert evts[0]["subagent_type"] == "my-agent"
+        assert evts[0]["subagent_type"] == "myplug:my-agent"
 
     def test_subagent_attributed(self, tmp_path, monkeypatch):
-        """my-agent is in attribution_agents → curated."""
+        """`myplug:my-agent` resolves to curated plugin `myplug`."""
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_attribution(conn)
         _process("subagent.jsonl", conn)
         evts = _events(conn)
         assert evts[0]["source"] == "curated"
-        assert evts[0]["ref_id"] == "mp/plug"
+        assert evts[0]["ref_id"] == "myplug"
 
     def test_subagent_dispatches_in_summary(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
