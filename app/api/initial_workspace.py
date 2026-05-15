@@ -30,11 +30,12 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import _get_db, get_current_user, get_optional_user
 from app.secrets import persist_overlay_token
 from src.initial_workspace import (
     TemplateValidationError,
@@ -510,7 +511,8 @@ async def analyst_status(
 
 @router.get("/api/initial-workspace.zip")
 async def analyst_zip(
-    user: dict = Depends(get_current_user),
+    request: Request,
+    user: Optional[dict] = Depends(get_optional_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return the zip of the cloned template tree (sans ``.git/``).
@@ -524,6 +526,22 @@ async def analyst_zip(
     this; defense in depth). 503 when configured but never synced — the
     CLI then surfaces a typed error pointing at "Sync now".
     """
+    if user is None:
+        # Browser → redirect to /login (target preserved via ?next=).
+        # CLI / curl / API client → raw 401 they can handle.
+        # This endpoint is the one `/api/*` URL designed to be hit directly
+        # from a browser bookmark (analyst clean-install zip), so it
+        # intentionally opts out of the global `_API_PATH_PREFIXES`
+        # "never redirect /api/*" contract in `app/main.py`. Matching only
+        # `text/html` — NOT `*/*` — mirrors `_wants_html()` in `app/main.py`:
+        # `*/*` is curl's default and must keep getting the raw 401 so
+        # tooling that parses `{"detail": "..."}` doesn't silently break.
+        if "text/html" in request.headers.get("accept", ""):
+            return RedirectResponse(
+                url="/login?next=/api/initial-workspace.zip", status_code=302
+            )
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+
     section = _read_section()
     if not section.get("url"):
         raise HTTPException(status_code=404, detail={"kind": "not_configured"})
