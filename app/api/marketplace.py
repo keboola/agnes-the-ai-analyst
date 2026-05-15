@@ -105,6 +105,14 @@ class MarketplaceItem(BaseModel):
     invocations_7d: int = 0
     distinct_users_7d: int = 0
     trend_pct: Optional[float] = None
+    # stack_count = how many users have this item in their stack.
+    # - Curated: COUNT(*) on user_plugin_optouts (post-v28 PRESENCE = subscribed).
+    #   System pluginy are fanned out to every user via
+    #   fanout_system_for_user, so the COUNT naturally includes them too.
+    # - Flea: store_entities.install_count (bumped on /install).
+    # Frontend renders this alongside active_users_30d as a funnel:
+    # "12 stacked → 5 active → 143 calls".
+    stack_count: int = 0
 
 
 class ItemListResponse(BaseModel):
@@ -585,6 +593,7 @@ def _curated_to_item(
     subs: set,
     marketplace_meta: Dict[str, Dict[str, Optional[str]]],
     stats: Optional[Dict[str, Dict]] = None,
+    stack_counts: Optional[Dict[Tuple[str, str], int]] = None,
 ) -> MarketplaceItem:
     marketplace_id = plugin_row["marketplace_id"]
     plugin_name = plugin_row["name"]
@@ -633,6 +642,7 @@ def _curated_to_item(
         invocations_7d=stat.get("invocations_7d", 0),
         distinct_users_7d=stat.get("distinct_users_7d", 0),
         trend_pct=stat.get("trend_pct"),
+        stack_count=(stack_counts or {}).get((marketplace_id, plugin_name), 0),
     )
 
 
@@ -685,6 +695,11 @@ def _flea_to_item(
         invocations_7d=stat.get("invocations_7d", 0),
         distinct_users_7d=stat.get("distinct_users_7d", 0),
         trend_pct=stat.get("trend_pct"),
+        # Flea stack_count = persistent install counter on store_entities,
+        # bumped by POST /api/store/entities/{id}/install and decremented
+        # by DELETE. Mirrors the curated subscriber count semantically
+        # (how many users have this in their stack).
+        stack_count=int(entity.get("install_count") or 0),
     )
 
 
@@ -714,6 +729,26 @@ def _build_telemetry(
         "trend_pct": stat["trend_pct"] if stat else None,
         "daily_series": _load_plugin_daily_series(conn, source, name),
     }
+
+
+def _load_curated_stack_counts(conn: duckdb.DuckDBPyConnection) -> Dict[Tuple[str, str], int]:
+    """Return {(marketplace_id, plugin_name): subscriber_count} for every
+    curated plugin with at least one subscriber.
+
+    Reads from ``user_plugin_optouts`` — historically named but post-v28
+    row PRESENCE means the user is subscribed. ``fanout_system_for_user``
+    materialises rows for every is_system plugin × user pair, so the
+    COUNT naturally includes system plugins without a separate code path.
+    One query per page render — avoids N+1.
+    """
+    rows = conn.execute(
+        """
+        SELECT marketplace_id, plugin_name, COUNT(DISTINCT user_id)
+        FROM user_plugin_optouts
+        GROUP BY marketplace_id, plugin_name
+        """
+    ).fetchall()
+    return {(r[0], r[1]): int(r[2]) for r in rows}
 
 
 def _available_sorts(stats_dicts: List[Dict[str, Dict]]) -> List[str]:
@@ -831,11 +866,13 @@ async def list_items(
             for mp_id in distinct_ids:
                 marketplace_meta[mp_id] = _resolve_marketplace_meta(conn, mp_id)
         curated_stats = _load_invocation_stats(conn, "curated")
+        curated_stack_counts = _load_curated_stack_counts(conn)
         items = [
             _curated_to_item(
                 conn, r, subs=subs,
                 marketplace_meta=marketplace_meta,
                 stats=curated_stats,
+                stack_counts=curated_stack_counts,
             )
             for r in all_rows
         ]
@@ -918,6 +955,7 @@ async def list_items(
 
     curated_stats = _load_invocation_stats(conn, "curated")
     flea_stats = _load_invocation_stats(conn, "flea")
+    curated_stack_counts = _load_curated_stack_counts(conn)
 
     for p in granted:
         key = (p["marketplace_id"], p["original_name"])
@@ -948,7 +986,7 @@ async def list_items(
             }
         items.append(_curated_to_item(
             conn, plugin_row, subs=subs, marketplace_meta=marketplace_meta,
-            stats=curated_stats,
+            stats=curated_stats, stack_counts=curated_stack_counts,
         ))
 
     flea_installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
