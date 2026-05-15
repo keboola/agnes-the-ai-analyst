@@ -1054,6 +1054,69 @@ async def sync_manifest(
     return _build_manifest_for_user(conn, user)
 
 
+# ---- Pull confirm (Phase 7, Task 7.6) ----
+
+
+class PullConfirmTypeReport(BaseModel):
+    added: int = 0
+    updated: int = 0
+    removed: int = 0
+
+
+class PullConfirmRequest(BaseModel):
+    """Per-type aggregate the CLI submits after every pull finishes.
+
+    Pairs with the ``sync.pull_started`` event emitted by GET /manifest
+    so admin telemetry can compute pull-success rates + duration
+    distributions. Optional fields fall back to zero counts — older CLI
+    versions that don't track a section emit nothing for it.
+    """
+
+    duration_ms: Optional[int] = None
+    direct_tables: Optional[PullConfirmTypeReport] = None
+    data_packages: Optional[PullConfirmTypeReport] = None
+    memory_domains: Optional[PullConfirmTypeReport] = None
+    errors: int = 0
+
+
+@router.post("/pull-confirm")
+async def pull_confirm(
+    payload: PullConfirmRequest,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Telemetry hook the CLI fires at the end of every ``agnes pull``.
+
+    Best-effort: a telemetry insert failure must NOT bubble up to the
+    CLI (the user already has their parquets, the pull succeeded). The
+    response is a fixed shape ``{"recorded": True}`` so older clients
+    that ignore the body keep working when the field set evolves.
+    """
+    props: dict = {
+        "duration_ms": payload.duration_ms,
+        "errors": payload.errors,
+        "client_kind": client_kind_from_user(user),
+    }
+    for section in ("direct_tables", "data_packages", "memory_domains"):
+        section_payload = getattr(payload, section)
+        if section_payload is not None:
+            props[f"{section}_added"] = section_payload.added
+            props[f"{section}_updated"] = section_payload.updated
+            props[f"{section}_removed"] = section_payload.removed
+
+    try:
+        from src.repositories.usage import UsageRepository
+        UsageRepository(conn).emit_server_event(
+            event_type="sync.pull_completed",
+            user_id=user["id"],
+            username=user.get("email") or user["id"],
+            props=props,
+        )
+    except Exception:
+        logger.warning("usage_events emit failed for sync.pull_completed")
+    return {"recorded": True}
+
+
 # ---- Status ----
 
 @router.get("/status")
