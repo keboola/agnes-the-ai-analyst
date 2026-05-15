@@ -586,6 +586,26 @@ def test_analyst_status_configured_synced(web_client, fake_remote):
     assert "CLAUDE.md" in body["files"]
 
 
+def test_analyst_zip_browser_unauthenticated_redirects_to_login(web_client):
+    """Unauthenticated browser request (Accept: text/html) redirects to /login."""
+    r = web_client.get(
+        "/api/initial-workspace.zip",
+        headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert r.headers["location"] == "/login?next=/api/initial-workspace.zip"
+
+
+def test_analyst_zip_api_unauthenticated_returns_401(web_client):
+    """Unauthenticated API client (no text/html in Accept) still gets a JSON 401."""
+    r = web_client.get(
+        "/api/initial-workspace.zip",
+        headers={"Accept": "application/json"},
+    )
+    assert r.status_code == 401
+
+
 def test_analyst_zip_404_when_not_configured(web_client):
     """GET /api/initial-workspace.zip returns 404 when no template."""
     headers = _make_user(web_client)
