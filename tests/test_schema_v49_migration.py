@@ -274,3 +274,21 @@ def test_v48_to_v49_user_stack_subscriptions_composite_pk():
             "INSERT INTO user_stack_subscriptions(user_id, resource_type, resource_id) "
             "VALUES ('u1', 'data_package', 'pkg_sales')"
         )
+
+
+def test_v48_to_v49_drops_knowledge_items_domain_column():
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    conn.execute("INSERT INTO knowledge_items VALUES ('k1', 't1', 'approved', 'finance')")
+    _v48_to_v49(conn)
+
+    cols = [r[1] for r in conn.execute("PRAGMA table_info('knowledge_items')").fetchall()]
+    assert "domain" not in cols
+
+    # The migrated relation lives in the junction now.
+    row = conn.execute(
+        "SELECT COUNT(*) FROM knowledge_item_domains kid "
+        "  JOIN memory_domains md ON md.id = kid.domain_id "
+        " WHERE kid.item_id = 'k1' AND md.slug = 'finance'"
+    ).fetchone()
+    assert row[0] == 1
