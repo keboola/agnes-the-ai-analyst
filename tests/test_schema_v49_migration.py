@@ -93,3 +93,34 @@ def test_v48_to_v49_adds_is_required_default_false_for_new_rows():
     )
     row = conn.execute("SELECT is_required FROM knowledge_items WHERE id='k3'").fetchone()
     assert row[0] is False
+
+
+def test_v48_to_v49_creates_data_packages_tables():
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    _v48_to_v49(conn)
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('data_packages')").fetchall()}
+    assert {
+        "id",
+        "slug",
+        "name",
+        "description",
+        "icon",
+        "color",
+        "created_by",
+        "created_at",
+        "updated_at",
+    }.issubset(cols)
+
+    jt_cols = {r[1] for r in conn.execute("PRAGMA table_info('data_package_tables')").fetchall()}
+    assert {"package_id", "table_id", "added_at", "added_by"}.issubset(jt_cols)
+
+
+def test_v48_to_v49_data_packages_slug_unique():
+    conn = duckdb.connect(":memory:")
+    _seed_v48(conn)
+    _v48_to_v49(conn)
+    conn.execute("INSERT INTO data_packages(id, slug, name) VALUES ('p1', 'sales', 'Sales')")
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute("INSERT INTO data_packages(id, slug, name) VALUES ('p2', 'sales', 'Sales B')")
