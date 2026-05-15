@@ -1806,3 +1806,203 @@ class TestPromoteLookupByByteIdenticalBundles:
         assert ent_after["version"] == v1_hash, (
             "hash unchanged (bundle is byte-identical) but version_no DID move"
         )
+
+    def test_byte_identical_v3_after_different_v2(
+        self, web_client, monkeypatch,
+    ):
+        """v1 + v2 (different hash) + v3 byte-identical to v1.
+        Lookup must resolve v3 to n=3, not v1 (same hash) or v2 (the
+        most-recent approved). With current=2 and target=3 the
+        forward-only guard fires correctly only if target_n=3."""
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        from src.store_guardrails.runner import run_llm_review
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-v3-test")
+        owner_id, owner_cookies = _create_user(web_client, "v3hash@x.com")
+
+        body_a = (
+            "Body A line that is intentionally long enough to clear the "
+            "content threshold for skill bodies. " * 4
+        )
+        body_b = (
+            "Body B line that is intentionally DIFFERENT and also long "
+            "enough to clear the content threshold for skill bodies. " * 4
+        )
+
+        # v1 with body_a (guardrails OFF → approved at v1).
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("v1.zip", _make_skill_zip("v3hash", body=body_a),
+                            "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 201
+        eid = r.json()["id"]
+
+        # Flip guardrails ON; mock approve.
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+
+        def mock_approve(*a, **kw):
+            return {
+                "risk_level": "safe", "summary": "ok",
+                "findings": [], "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+                "content_quality": {"verdict": "pass", "issues": []},
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_approve,
+        )
+
+        # PUT v2 with body_b (different hash from v1).
+        v2_zip = _make_skill_zip("v3hash", body=body_b)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200
+        conn = get_system_db()
+        v2_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v2_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+        )
+        conn = get_system_db()
+        ent_at_v2 = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert ent_at_v2["version_no"] == 2
+
+        # PUT v3 with body_a again — same hash as v1.
+        v3_zip = _make_skill_zip("v3hash", body=body_a)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v3.zip", v3_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200
+        conn = get_system_db()
+        v3_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v3_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v3" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+        )
+        conn = get_system_db()
+        ent_at_v3 = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        # Pre-fix the runner would have matched v1's hash first
+        # (target_n=1), `1 > 2` False, no promote → stuck at v2.
+        assert ent_at_v3["version_no"] == 3, (
+            f"v3 must promote to current despite hash collision with v1; "
+            f"got version_no={ent_at_v3['version_no']}"
+        )
+
+
+class TestRescanPromotesNonCurrent:
+    """Codex adversarial-review follow-up: admin rescan with
+    guardrails disabled flipped status='approved' + visibility but
+    never called `promote_to_version`. A rescan that re-approved a
+    non-current v2+ submission left the entity stuck at the prior
+    approved version. Fix mirrors the inline-promote in
+    create / update / restore."""
+
+    def test_rescan_promotes_non_current_v2_when_guardrails_disabled(
+        self, web_client, monkeypatch,
+    ):
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        # v1 clean upload (guardrails OFF by autouse).
+        owner_id, owner_cookies = _create_user(web_client, "rescanpromote@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="rescanpromote")
+
+        # PUT v2 with guardrails ON + mocked-BLOCK so the submission
+        # lands blocked_llm and the entity stays at v1.
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-rescan-promote")
+        def mock_block(*a, **kw):
+            return {
+                "risk_level": "high", "summary": "mock block",
+                "findings": [{"severity": "high", "category": "test",
+                              "file": "x", "explanation": "mock"}],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_block,
+        )
+
+        v2 = _make_skill_zip("rescanpromote", body="V2 body content " * 30)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        from src.store_guardrails.runner import run_llm_review
+        conn = get_system_db()
+        v2_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v2_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+        )
+
+        # Sanity: v2 blocked, entity stuck at v1.
+        conn = get_system_db()
+        ent_before = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert ent_before["version_no"] == 1
+        v1_hash = ent_before["version"]
+
+        # Admin rescans the v2 submission. Flip guardrails OFF for
+        # the rescan so the rescan path takes the "guardrails
+        # disabled → auto-approve + promote inline" branch we're
+        # testing.
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: False,
+        )
+        monkeypatch.setattr(
+            "app.instance_config.get_guardrails_enabled", lambda: False,
+        )
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.post(
+            f"/api/admin/store/submissions/{v2_sub_id}/rescan",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "approved"
+
+        conn = get_system_db()
+        ent_after = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert ent_after["version_no"] == 2, (
+            f"rescan-approve of v2 must promote entity to v2 even when "
+            f"guardrails are disabled; got "
+            f"version_no={ent_after['version_no']}"
+        )
+        assert ent_after["version"] != v1_hash, (
+            "entity.version hash must move to v2 after rescan promote"
+        )

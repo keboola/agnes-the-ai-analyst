@@ -24,6 +24,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   rows. Both `runner.run_llm_review` (BG auto-approve) and
   `admin_override_store_submission` now reuse the existing
   `_version_no_for_submission` helper.
+- Flea-market admin **Rescan** of a non-current v2+ submission with
+  `guardrails.enabled: false` now promotes the entity forward
+  (mirrors the inline-promote in create / update / restore). Pre-fix
+  the rescan path flipped submission status to `approved` + entity
+  visibility to `approved` but never called `promote_to_version` —
+  the entity stayed at the prior version even though the rescan
+  intent was to publish the rescanned bytes. Surfaced by adversarial
+  review of PR #330. The guardrails-on path is unchanged: rescan
+  schedules an LLM review and promotion lands when the verdict
+  approves through `runner.run_llm_review`.
 - Flea-market: derive next version_no from `max(version_history.n) + 1`
   instead of `entity.version_no + 1` in PUT (edit) + restore. Under
   deferred promotion (v37+) `entity.version_no` stays at the last

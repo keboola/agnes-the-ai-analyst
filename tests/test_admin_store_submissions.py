@@ -1303,6 +1303,116 @@ class TestOverrideForwardOnly:
         # row itself is preserved; only the on-disk roll-back is gated).
         assert v2_sub_after["status"] == "overridden"
 
+    def test_override_byte_identical_v2_blocked_promotes_correctly(
+        self, web_client, monkeypatch,
+    ):
+        """Codex adversarial-review follow-up on PR #330: confirm
+        that override's submission_id-based lookup correctly resolves
+        v2 even when its hash collides with v1's. Pre-PR-330 the
+        override loop did hash-match-first-wins and stuck on v1's
+        n=1; forward-only `1 > 1` skipped the promote."""
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.repositories.store_entities import StoreEntitiesRepository
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        from src.store_guardrails.runner import run_llm_review
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-override-identical")
+        user_id, user_cookies = _create_user(web_client, "override-id@x.com")
+
+        import io as _io
+        import zipfile as _zip
+        identical_body = (
+            "Identical body content long enough to clear the inline "
+            "content-quality threshold for skill bodies. " * 4
+        )
+
+        def _identical_zip():
+            buf = _io.BytesIO()
+            with _zip.ZipFile(buf, "w") as zf:
+                zf.writestr(
+                    "overrideid/SKILL.md",
+                    "---\nname: overrideid\ndescription: "
+                    "Use when verifying override resolves v2 by "
+                    "submission_id even when v2 hash matches v1 hash\n---\n\n"
+                    + identical_body,
+                )
+            return buf.getvalue()
+
+        # v1 clean upload (guardrails OFF by autouse).
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _identical_zip(), "application/zip")},
+            data={"type": "skill",
+                  "description": (
+                      "Use when verifying override resolves v2 by "
+                      "submission_id even when v2 hash matches v1 hash"
+                  )},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+
+        # PUT v2 with IDENTICAL bytes + mock LLM block.
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+
+        def mock_block(*a, **kw):
+            return {
+                "risk_level": "high", "summary": "mock block",
+                "findings": [{"severity": "high", "category": "test",
+                              "file": "x", "explanation": "mock"}],
+                "template_placeholders_found": 0,
+                "reviewed_by_model": "mock", "error": None,
+            }
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", mock_block,
+        )
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", _identical_zip(), "application/zip")},
+            cookies=user_cookies,
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        v2_sub_id = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        run_llm_review(
+            v2_sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / "v2" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk", model_loader=lambda: "mock",
+        )
+
+        conn = get_system_db()
+        ent_before = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert ent_before["version_no"] == 1
+        v1_hash = ent_before["version"]
+
+        # Admin overrides v2. Must promote to v2 even though v2's
+        # hash matches v1's.
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.post(
+            f"/api/admin/store/submissions/{v2_sub_id}/override",
+            json={"reason": "false positive — cleared in offline review"},
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        ent_after = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert ent_after["version_no"] == 2, (
+            f"override must promote to v2 even when v2 hash matches v1's; "
+            f"got version_no={ent_after['version_no']}"
+        )
+        # Hash unchanged (identical bundle), but version_no DID move.
+        assert ent_after["version"] == v1_hash
+
 
 # ---------------------------------------------------------------------------
 # v30: Download bundle, Sort by size, Quota
