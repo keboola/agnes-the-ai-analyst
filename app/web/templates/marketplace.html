@@ -333,9 +333,15 @@
   .mp-sort-select:hover { border-color: var(--primary); }
   .mp-sort-select:focus { outline: none; border-color: var(--primary); }
 
-  /* ── Most Popular section ────────────────────────────────────────── */
+  /* ── Section header (Most Popular + All plugins) ──────────────────── */
+  /* min-height pinned to the sort-select's box (font 13px + 7px*2
+     padding + 1px*2 border ≈ 32px) so the bare-text "Most Popular"
+     header sits at the same line-height as the "All plugins" header
+     that carries the dropdown. Without it the popular row was visibly
+     shorter and made the section spacing inconsistent. */
   .mp-section-header {
-    display: flex; align-items: baseline; gap: 10px; margin: 24px 0 12px;
+    display: flex; align-items: center; gap: 10px; margin: 20px 0 12px;
+    min-height: 32px;
   }
   .mp-section-header h2 {
     margin: 0; font-size: 16px; font-weight: 700; color: var(--text-primary);
@@ -343,6 +349,10 @@
   .mp-section-header .meta {
     font-size: 12px; color: var(--text-secondary);
   }
+  /* All-plugins header: title left, sort dropdown pinned right. The
+     margin-left:auto on the select handles the layout regardless of
+     whether Most Popular sits above. */
+  .mp-all-header > .mp-sort-select { margin-left: auto; }
 
   /* ── Pager + empty state ─────────────────────────────────────────── */
   .mp-pager { display: flex; gap: 6px; justify-content: center; margin: 32px 0 0; }
@@ -495,11 +505,6 @@
        only 4px between filters and cards. -->
   <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
     <div class="mp-filter-row" id="mp-cat-row" style="margin-bottom:0; flex:1 1 auto;"></div>
-    <select class="mp-sort-select" id="mp-sort-select" title="Sort by">
-      <option value="recent">Recent</option>
-      <option value="most_used">Most used (30d)</option>
-      <option value="trending">Trending</option>
-    </select>
   </div>
 
   <!-- Type filter (Flea + My — both surface skill/agent/plugin items) -->
@@ -514,13 +519,29 @@
   <div id="mp-popular-section" hidden>
     <div class="mp-section-header">
       <h2>Most Popular</h2>
-      <div class="meta">Last 30 days</div>
+      <div class="meta">Last 7 days</div>
     </div>
     <div class="mp-grid" id="mp-popular-grid"></div>
   </div>
 
-  <!-- Main grid -->
-  <div class="mp-grid" id="mp-grid"></div>
+  <!-- Main section — wrapped in a div mirroring #mp-popular-section so the
+       header's margin-top collapses identically to its sibling above.
+       Without this wrapper the All-plugins header was a bare sibling of
+       the filter row and the margin computed differently from the Most
+       Popular header (which lives inside a wrapper). Title swaps per
+       tab via JS (curated → "All plugins"; flea + my mix all three
+       types so the label broadens). -->
+  <div id="mp-all-section">
+    <div id="mp-main-section-header" class="mp-section-header mp-all-header">
+      <h2 id="mp-main-section-title">All plugins</h2>
+      <select class="mp-sort-select" id="mp-sort-select" title="Sort by">
+        <option value="recent">Recent</option>
+        <option value="most_used">Most used (30d)</option>
+        <option value="trending">Trending</option>
+      </select>
+    </div>
+    <div class="mp-grid" id="mp-grid"></div>
+  </div>
   <div class="mp-empty" id="mp-empty" hidden>
     <h3 id="mp-empty-title">Nothing here yet</h3>
     <p id="mp-empty-body"></p>
@@ -891,15 +912,27 @@ async function fetchOne(tab, overrides = {}) {
 
 // ── Most Popular loader ───────────────────────────────────────────────────
 async function loadMostPopular() {
-  // Only shown on curated tab, no search active, no category filter
+  // Shown on curated + flea tabs (the discovery tabs). Hidden when a
+  // search query or category filter is active so the result list isn't
+  // shadowed by a stale popularity strip. The All-* header stays put
+  // regardless — only this section toggles.
   const section = document.getElementById('mp-popular-section');
-  if (state.tab !== 'curated' || state.q || state.category) {
+  if (!['curated', 'flea'].includes(state.tab) || state.q || state.category) {
     section.hidden = true;
     return;
   }
   try {
-    const r = await fetchOne('curated', { sort: 'most_used', page: 1, page_size: 8 });
-    const popular = (r.items || []).filter(it => it.invocations_30d > 0);
+    // Pull a wider page (server still sorts by 30d invocations) and
+    // re-sort + filter client-side on the 7d window so the strip
+    // reflects what's hot *right now*, not over the lifetime month.
+    // page_size of 24 gives plenty of headroom — items with no 7d
+    // activity get filtered out, the rest sort by invocations_7d DESC,
+    // and we keep the top 4.
+    const r = await fetchOne(state.tab, { sort: 'most_used', page: 1, page_size: 24 });
+    const popular = (r.items || [])
+      .filter(it => (it.invocations_7d || 0) > 0)
+      .sort((a, b) => (b.invocations_7d || 0) - (a.invocations_7d || 0))
+      .slice(0, 4);
     if (!popular.length) { section.hidden = true; return; }
     const grid = document.getElementById('mp-popular-grid');
     grid.innerHTML = '';
@@ -950,7 +983,18 @@ function setTab(tab) {
   // Reset sort dropdown on tab switch.
   document.getElementById('mp-sort-select').value = 'recent';
   syncURL();
+  applyAllSectionTitle();
   Promise.all([loadCategories(), loadItems(), loadMostPopular()]);
+}
+
+// All-plugins section title swaps per tab: curated lists only plugins,
+// flea + my mix skills/agents/plugins so the label needs to broaden.
+function applyAllSectionTitle() {
+  const el = document.getElementById('mp-main-section-title');
+  if (!el) return;
+  if (state.tab === 'curated') el.textContent = 'All plugins';
+  else if (state.tab === 'flea') el.textContent = 'All items';
+  else el.textContent = 'Your stack';
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────
@@ -1029,6 +1073,7 @@ document.getElementById('mp-scope-flea').addEventListener('change', () => {
   // Restore sort select
   const sortSel = document.getElementById('mp-sort-select');
   sortSel.value = state.sort || 'recent';
+  applyAllSectionTitle();
   await Promise.all([
     loadTabCounts(),
     loadCategories(),
