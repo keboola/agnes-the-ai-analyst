@@ -985,11 +985,35 @@ async def corporate_memory(
     repo = KnowledgeRepository(conn)
     items = repo.list_items(statuses=["approved", "mandatory"], limit=100)
 
-    # Enrich with votes
+    def _build_source_users_display(it: dict) -> list[dict]:
+        """Derive ``[{name, initials}]`` from the stored ``source_user`` email.
+
+        The template (and the in-template JS) iterate `item.source_users_display`
+        to render contributor avatars; the repo only stores a single
+        `source_user` email. Building the list here (singleton today) keeps the
+        page from crashing with ``KeyError: slice(None, 3, None)`` when items
+        exist, and gives the design room for multi-contributor aggregation
+        later without another template churn.
+        """
+        su = (it.get("source_user") or "").strip()
+        if not su:
+            return []
+        name = su.split("@", 1)[0]
+        parts = [p for p in name.replace(".", " ").replace("_", " ").split() if p]
+        if len(parts) >= 2:
+            initials = (parts[0][0] + parts[1][0]).upper()
+        elif parts:
+            initials = parts[0][:2].upper()
+        else:
+            initials = name[:2].upper()
+        return [{"name": name, "initials": initials}]
+
+    # Enrich with votes + derived contributor-avatar list.
     for item in items:
         votes = repo.get_votes(item["id"])
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
+        item["source_users_display"] = _build_source_users_display(item)
 
     cm_config = get_corporate_memory_config()
     governance_mode = cm_config.get("distribution_mode")
@@ -1016,6 +1040,7 @@ async def corporate_memory(
         votes = repo.get_votes(item["id"])
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
+        item["source_users_display"] = _build_source_users_display(item)
 
     is_admin_view = is_user_admin(user["id"], conn)
     ctx = _build_context(
