@@ -1019,12 +1019,18 @@ async def corporate_memory(
     governance_mode = cm_config.get("distribution_mode")
 
     # Build stats + filter dropdowns from the full item set so the dropdowns
-    # match the data the page is rendering. `categories` and `domains` are
-    # consumed by the filter pickers in `corporate_memory.html`; without
-    # `domains` the "All domains" picker stays empty.
+    # match the data the page is rendering. `categories` is derived from
+    # what's actually in the store (free-text enum, grows over time).
+    # `domains` is a CLOSED enum on the backend (VALID_DOMAINS in
+    # app/api/memory.py), so we always offer the full list — earlier we
+    # filtered to only domains with ≥1 item, which made the dropdown
+    # collapse to a single "engineering" option on instances where only
+    # one domain had been used. Operators should be able to pick any
+    # valid domain even when the current store has none of it.
+    from app.api.memory import VALID_DOMAINS
     all_items = repo.list_items(limit=10000)
     categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
-    domains = sorted(set(i.get("domain", "") for i in all_items if i.get("domain")))
+    domains = list(VALID_DOMAINS)
 
     # #176: surface the pending review queue to admins. Without this the
     # main page silently filtered status='pending' items and operators had

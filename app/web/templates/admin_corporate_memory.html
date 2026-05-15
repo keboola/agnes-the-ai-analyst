@@ -837,6 +837,41 @@
             border: none; outline: none; background: transparent;
             color: var(--text); font: inherit; padding: 4px 6px;
         }
+        /* Typeahead dropdown — popped under the widget when input has focus.
+           Filter against EXISTING_TAGS array (server-injected via tojson). */
+        .tag-suggestions {
+            position: absolute;
+            top: 100%; left: 0; right: 0;
+            margin-top: 2px;
+            background: var(--bg, white);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+            z-index: 2100;
+            max-height: 220px;
+            overflow-y: auto;
+            padding: 4px 0;
+        }
+        .tag-suggestion {
+            display: block; width: 100%; text-align: left;
+            padding: 6px 12px;
+            background: transparent;
+            border: none; cursor: pointer;
+            color: var(--text); font: inherit;
+            font-size: 13px;
+        }
+        .tag-suggestion:hover, .tag-suggestion.active {
+            background: var(--primary-light, #eef5fb);
+            color: var(--primary, #0073D1);
+        }
+        .tag-suggestion .hint {
+            color: var(--text-muted); font-size: 11px; margin-left: 8px;
+            font-weight: 500;
+        }
+        .tag-suggestion.new-tag .hint { color: var(--primary, #0073D1); }
+        .tag-suggestions .empty-hint {
+            padding: 8px 12px; color: var(--text-muted); font-size: 12px; font-style: italic;
+        }
     </style>
 {% endblock %}
 
@@ -1131,25 +1166,29 @@
                                 {% for g in groups %}<option value="group:{{ g.name }}">group:{{ g.name }} ({{ g.members_count }} member{{ 's' if g.members_count != 1 else '' }})</option>{% endfor %}
                             </select>
                         </label>
-                        {# Real tag-input widget: applied tags render as pills
-                           (× to remove); the typing input sits at the end of
-                           the pill row. Enter or comma commits a typed value
-                           as a new pill; Backspace on empty input removes the
-                           last pill. Suggestion chips below click-to-add. #}
-                        <label style="display: flex; flex-direction: column; gap: 4px; grid-column: 1 / -1;">
-                            <span style="font-size: 12px; color: var(--text-muted);">Tags <span style="color: var(--text-muted); font-weight: 400;">— current as pills (× to remove), type + Enter for new, click chips to add existing</span></span>
+                        {# Tag widget with INLINE typeahead — focus the input or
+                           start typing and the dropdown right below the pill
+                           row lists matching existing tags. Click a match or
+                           ↑/↓ + Enter to add as pill; type a new value and
+                           Enter to add a brand-new tag. Backspace on empty
+                           input removes the last pill. The widget container
+                           is position:relative so the suggestion box pops
+                           directly under the pill row. #}
+                        <label style="display: flex; flex-direction: column; gap: 4px; grid-column: 1 / -1; position: relative;">
+                            <span style="font-size: 12px; color: var(--text-muted);">Tags <span style="color: var(--text-muted); font-weight: 400;">— pills below (× to remove). Focus to browse existing, type to filter, Enter to add new.</span></span>
                             <div id="editItemTagsWidget" class="tag-input-widget" onclick="if(event.target===this) document.getElementById('editItemTagsInput').focus()">
-                                {# Pills are inserted by tagWidgetAdd() at runtime;
-                                   container starts empty. The input stays last
-                                   in DOM order so new pills land before it. #}
-                                <input id="editItemTagsInput" type="text" placeholder="type tag + Enter…" onkeydown="onTagInputKeydown(event)" autocomplete="off">
+                                {# Pills inserted by tagWidgetAdd() at runtime.
+                                   The input stays last in DOM order so new
+                                   pills land before it. #}
+                                <input id="editItemTagsInput" type="text"
+                                       placeholder="type to filter existing tags or add new…"
+                                       oninput="onTagInputType()"
+                                       onfocus="onTagInputType()"
+                                       onkeydown="onTagInputKeydown(event)"
+                                       onblur="setTimeout(hideTagSuggestions, 150)"
+                                       autocomplete="off">
                             </div>
-                            {% if edit_tags %}
-                            <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; padding: 8px 10px; background: var(--bg-subtle, #f9fafb); border: 1px dashed var(--border); border-radius: var(--radius-sm);">
-                                <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; margin-right: 4px;">Add existing:</span>
-                                {% for t in edit_tags %}<button type="button" onclick="appendEditTag('{{ t | replace("'", "\\'") }}')" style="cursor: pointer; padding: 4px 12px; background: var(--primary, #0073D1); color: white; border: none; border-radius: 999px; font-size: 12px; font-weight: 600;" onmouseover="this.style.background='var(--primary-dark, #0056A3)'" onmouseout="this.style.background='var(--primary, #0073D1)'">+ {{ t }}</button>{% endfor %}
-                            </div>
-                            {% endif %}
+                            <div id="editItemTagSuggestions" class="tag-suggestions" hidden></div>
                         </label>
                     </div>
                 </div>
@@ -1192,6 +1231,10 @@
     // Configuration passed from server
     const GROUPS = {{ groups | tojson }};
     const GOVERNANCE_MODE = {{ governance_mode | tojson }};
+    // Tag autocomplete pool — populated from existing knowledge_items.tags
+    // (deduplicated, sorted server-side in router::corporate_memory_admin).
+    // Consumed by the tag-input widget on the edit modal.
+    const EXISTING_TAGS = {{ edit_tags | tojson }};
 
     // State
     let currentTab = 'review';
@@ -1616,17 +1659,113 @@
         input.value = '';
     }
     function onTagInputKeydown(e) {
-        // Enter or comma commits the typed value as a new pill. Backspace
-        // on empty input removes the last existing pill (familiar tag-input
-        // gesture — see GitHub label picker, Linear's tag widget).
+        // Enter / ↓ / ↑ / Escape / Backspace handling. The typeahead dropdown
+        // (#editItemTagSuggestions) drives selection state via the
+        // .active class on a .tag-suggestion. Enter commits the highlighted
+        // suggestion when one is active, otherwise commits the typed value
+        // as a new pill (existing behavior). Arrows move the highlight.
+        const list = document.getElementById('editItemTagSuggestions');
+        const visible = list && !list.hidden;
+        if (e.key === 'ArrowDown') {
+            if (visible) { e.preventDefault(); moveTagSuggestion(1); }
+            return;
+        }
+        if (e.key === 'ArrowUp') {
+            if (visible) { e.preventDefault(); moveTagSuggestion(-1); }
+            return;
+        }
+        if (e.key === 'Escape') {
+            if (visible) { e.preventDefault(); hideTagSuggestions(); }
+            return;
+        }
         if (e.key === 'Enter' || e.key === ',') {
             e.preventDefault();
-            const v = e.target.value.replace(/,$/, '').trim();
-            if (v) tagWidgetAdd(v);
-        } else if (e.key === 'Backspace' && !e.target.value) {
+            const active = visible ? list.querySelector('.tag-suggestion.active') : null;
+            if (active) {
+                selectTagSuggestion(active.dataset.tag);
+            } else {
+                const v = e.target.value.replace(/,$/, '').trim();
+                if (v) { tagWidgetAdd(v); hideTagSuggestions(); }
+            }
+            return;
+        }
+        if (e.key === 'Backspace' && !e.target.value) {
             const pills = document.querySelectorAll('#editItemTagsWidget .tag-pill');
             if (pills.length) pills[pills.length - 1].remove();
         }
+    }
+
+    // Re-render the typeahead dropdown based on the current input value.
+    // Called on every keystroke (oninput) and on focus (so an empty focus
+    // lists ALL existing tags — "browse" mode).
+    function onTagInputType() {
+        const input = document.getElementById('editItemTagsInput');
+        const list = document.getElementById('editItemTagSuggestions');
+        if (!input || !list) return;
+        const q = (input.value || '').trim().toLowerCase();
+        const applied = new Set(tagWidgetGetTags());
+        // Filter pool: existing tags not yet applied, matching the query
+        // (case-insensitive substring; "" matches everything).
+        const pool = (typeof EXISTING_TAGS !== 'undefined' ? EXISTING_TAGS : [])
+            .filter(t => !applied.has(t))
+            .filter(t => !q || t.toLowerCase().includes(q));
+
+        // Build HTML: matching existing tags first; if the typed value is
+        // a fresh non-match (and non-empty, and not already a pill), offer
+        // it as an explicit "+ Add new" option at the bottom.
+        const exactMatch = q && pool.some(t => t.toLowerCase() === q);
+        const isFreshNew = q && !exactMatch && !applied.has(q);
+
+        if (pool.length === 0 && !isFreshNew) {
+            list.innerHTML = '<div class="empty-hint">No tags match — keep typing and press Enter to add a new tag.</div>';
+            list.hidden = false;
+            return;
+        }
+
+        const parts = pool.map((t, idx) => {
+            const safe = escapeHtml(t);
+            return `<button type="button" class="tag-suggestion${idx === 0 ? ' active' : ''}" data-tag="${safe}" onmousedown="event.preventDefault(); selectTagSuggestion('${escapeAttr(t)}')">${safe}</button>`;
+        });
+        if (isFreshNew) {
+            const safe = escapeHtml(q);
+            parts.push(`<button type="button" class="tag-suggestion new-tag${pool.length === 0 ? ' active' : ''}" data-tag="${safe}" onmousedown="event.preventDefault(); selectTagSuggestion('${escapeAttr(q)}')">+ Add new tag: <strong>${safe}</strong><span class="hint">Enter</span></button>`);
+        }
+        list.innerHTML = parts.join('');
+        list.hidden = false;
+    }
+
+    function moveTagSuggestion(delta) {
+        const list = document.getElementById('editItemTagSuggestions');
+        const items = Array.from(list.querySelectorAll('.tag-suggestion'));
+        if (items.length === 0) return;
+        let activeIdx = items.findIndex(b => b.classList.contains('active'));
+        if (activeIdx < 0) activeIdx = 0;
+        items[activeIdx].classList.remove('active');
+        const newIdx = (activeIdx + delta + items.length) % items.length;
+        items[newIdx].classList.add('active');
+        items[newIdx].scrollIntoView({ block: 'nearest' });
+    }
+
+    function selectTagSuggestion(tag) {
+        tagWidgetAdd(tag);
+        const input = document.getElementById('editItemTagsInput');
+        input.value = '';
+        // Re-render to drop the newly-applied tag from the pool while the
+        // input keeps focus — feels like a continuous picker.
+        onTagInputType();
+        input.focus();
+    }
+
+    function hideTagSuggestions() {
+        const list = document.getElementById('editItemTagSuggestions');
+        if (list) { list.hidden = true; list.innerHTML = ''; }
+    }
+
+    // Small helpers (avoids dependency on a single escape util shared
+    // across the file). escapeHtml is already defined elsewhere; escapeAttr
+    // is for single-quoted JS string contexts in inline onclick handlers.
+    function escapeAttr(s) {
+        return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     }
 
     // Category picker handler — toggles the "new slug" input when the
