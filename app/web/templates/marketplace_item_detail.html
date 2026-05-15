@@ -1144,13 +1144,22 @@
   }
 
   // Meta-row.
+  //   * Curated inner (always nested under a parent plugin) → "part of …"
+  //   * Flea inner (skill/agent nested in a flea plugin)    → same layout,
+  //     parent link points at the flea plugin detail.
+  //   * Flea standalone (entity is itself the skill/agent)  → "by author ·
+  //     N installed · size".
   const metaRow = document.getElementById('hero-meta-row');
-  if (source === 'curated') {
+  if (source === 'curated' || innerName) {
     const author = (d.parent_author_name && d.parent_author_name !== 'owner_todo')
       ? `<strong>${esc(d.parent_author_name)}</strong>`
       : `<strong style="font-style:italic; color:var(--warn-color);">owner_todo</strong>`;
+    const parentHref = source === 'curated'
+      ? `/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}`
+      : `/marketplace/flea/${esc(entityId)}`;
+    const parentLabel = d.parent_display_name || d.manifest_name || pluginName;
     metaRow.innerHTML =
-      `<span>part of <a href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}"><strong>${esc(pluginName)}</strong></a></span>
+      `<span>part of <a href="${parentHref}"><strong>${esc(parentLabel)}</strong></a></span>
        <span class="dot">·</span>
        <span>by ${author}</span>`;
   } else {
@@ -1219,15 +1228,24 @@
     }
   }
 
-  if (source === 'curated') {
+  // Inner skills/agents (curated nested OR flea nested) can't be added to
+  // a user's stack on their own — they live inside a parent plugin bundle
+  // and adoption only happens at the plugin level. Render "Open parent
+  // plugin →" + helper text instead of the install/remove buttons. Flea
+  // standalone entities (else branch below) keep the normal install UX.
+  if (source === 'curated' || innerName) {
+    const parentHref = source === 'curated'
+      ? `/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}`
+      : `/marketplace/flea/${esc(entityId)}`;
+    const parentLabel = d.parent_display_name || d.manifest_name || pluginName;
     // Button alone in the actions-row (the row is flex-direction: row;
     // putting the helper inside it would lay them side-by-side). The
     // helper sits in #hero-helper, a sibling under the actions-row, so
     // the outer .actions flex-column stacks them: button → helper.
-    actions.innerHTML = `<a class="btn primary" href="/marketplace/curated/${esc(marketplaceId)}/${esc(pluginName)}">Open parent plugin →</a>`;
+    actions.innerHTML = `<a class="btn primary" href="${parentHref}">Open parent plugin →</a>`;
     const helperEl = document.getElementById('hero-helper');
     helperEl.innerHTML = `
-      This ${esc(kind === 'skill' ? 'skill' : 'agent')} is part of <strong>${esc(pluginName)}</strong>.<br>
+      This ${esc(kind === 'skill' ? 'skill' : 'agent')} is part of <strong>${esc(parentLabel)}</strong>.<br>
       Add the bundle to your stack to use it.`;
     helperEl.hidden = false;
   } else {
