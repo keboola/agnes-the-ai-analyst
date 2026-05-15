@@ -22,6 +22,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the `/update-agnes-plugins` hint JSON on mismatch, silent on
   match). The slash-command and `--bootstrap` paths still do real
   `git fetch + reset --hard` — they actually need the objects.
+- `connectors/jira/scripts/consistency_check.py` — `AUTO_FIX_THRESHOLD`
+  bumped from 10 to 20. Auto-backfill now covers typical SLA-poller
+  hiccups before escalating to ERROR. `WARNING_THRESHOLD` unchanged.
 
 ### Fixed
 - `/me/activity` hero subtitle showed literal `<strong>…</strong>` tags
@@ -31,6 +34,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the literal tags too. Switched to `{% set %}…{% endset %}` block
   capture so the literal `<strong>` stays HTML while the email is still
   autoescaped.
+- `connectors/jira` — `fetch_remote_links` now raises `JiraFetchError`
+  on every non-200/non-404 status (auth 401/403, rate-limit 429, server
+  5xx, and any other unexpected code) plus on `httpx.RequestError`,
+  instead of silently returning `[]`. Applied to all three fetch sites
+  (`service.py`, `scripts/backfill.py`, `scripts/backfill_remote_links.py`).
+  Prevents a transient outage from wiping existing `remote_links`
+  parquet rows via the `save_issue` / backfill overlay path. The webhook
+  hot path raises on 429; the bulk backfill scripts retain their
+  existing `Retry-After` sleep+retry loop, which is appropriate for
+  non-interactive batch contexts.
+- `connectors/jira/transform.py` — `transform_remote_links` returns
+  `None` when the `_remote_links` key is absent OR explicitly `null`
+  (defensive — older JSONs or manual edits could leave a null there).
+  Both consumers (batch `transform.py` and incremental
+  `incremental_transform.py`) honor the new contract by skipping the
+  upsert. An empty list `[]` still means the issue legitimately has no
+  remote links and parquet rows are correctly refreshed (now covered by
+  an end-to-end test alongside the preservation test).
 
 ### Internal
 - CI test suite sharded for speed. The `test` job in `.github/workflows/ci.yml` is now a `test-shard` matrix — 4 parallel jobs via `pytest-split`, balanced by a committed `.test_durations` file — aggregated into a single `test` status check so branch protection needs no change. The duplicate full-suite `test` job in `release.yml` is removed (it re-ran the same ~10 min suite a second time on every push to main/feature branches); `release.yml` is now image-build only, with the advisory ruff/mypy steps moved to a lean `lint` job in `ci.yml`. Net: ~10 min → ~3 min wall-clock per push, and the suite runs once instead of twice. Adds `pytest-split` to the `dev` extra.
