@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.22] — 2026-05-15
+
 ### Fixed
 - **Flea-market — promote-on-approve + admin-override now look up
   the submission's `version_no` in `version_history` by
