@@ -87,9 +87,9 @@ def test_v43_to_v44_upgrade_is_idempotent(tmp_path):
     }
 
 
-def test_schema_version_constant_is_48():
+def test_schema_version_constant_is_49():
     """Belt + suspenders against schema_version regressions."""
-    assert SCHEMA_VERSION == 48
+    assert SCHEMA_VERSION == 49
 
 
 # ---------------------------------------------------------------------------

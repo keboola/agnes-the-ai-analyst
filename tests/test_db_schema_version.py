@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_48():
+def test_schema_version_is_49():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -125,7 +125,15 @@ def test_schema_version_is_48():
     #            New attribution logic = prefix split on `<plugin>:<local>`
     #            identifier + live lookup against marketplace_plugins /
     #            store_entities — no mapping tables needed.
-    assert SCHEMA_VERSION == 48
+    # v48 → v49: unified stack — Data Packages + Memory Domains. Adds
+    #            resource_grants.requirement enum, knowledge_items.is_required
+    #            (splitting the status='mandatory' overload), data_packages
+    #            + data_package_tables, memory_domains +
+    #            knowledge_item_domains junction, and
+    #            user_stack_subscriptions for per-user opt-in. Drops the
+    #            scalar knowledge_items.domain column. See spec at
+    #            docs/brainstorms/2026-05-15-unified-stack-design.md.
+    assert SCHEMA_VERSION == 49
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

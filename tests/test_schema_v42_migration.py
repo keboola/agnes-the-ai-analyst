@@ -9,7 +9,7 @@ def test_schema_version_is_42():
     # Test name preserved for git-blame continuity; the version-pinned
     # tests in test_db_schema_version.py, test_home_stats.py and
     # test_schema_v46_migration.py carry the current commentary.
-    assert SCHEMA_VERSION == 48
+    assert SCHEMA_VERSION == 49
 
 
 def test_v42_tables_exist_after_init(tmp_path):
@@ -74,7 +74,7 @@ def test_v41_to_v42_is_idempotent(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 48
+    assert v == 49
     conn.close()
 
 
@@ -95,7 +95,7 @@ def test_v41_db_upgrades_cleanly(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 48
+    assert v == 49
     # All 7 new v41 tables exist after the v40→v41 upgrade
     tables = {
         row[0]
@@ -126,7 +126,7 @@ def test_v30_db_ladders_all_the_way_up(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 48
+    assert v == 49
     cnt = conn.execute("SELECT COUNT(*) FROM audit_log WHERE id='vintage'").fetchone()[0]
     assert cnt == 1
     # New v41 table exists
