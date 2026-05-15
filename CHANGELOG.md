@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.19] — 2026-05-15
+
 ### Changed
 - `connectors/jira/scripts/consistency_check.py` —
   `AUTO_FIX_THRESHOLD` bumped from 10 to 20. Auto-backfill now covers
