@@ -709,11 +709,13 @@ class TestAudienceDistribution:
         from src.db import get_system_db
         conn = get_system_db()
         row = conn.execute(
-            "SELECT audience, status FROM knowledge_items WHERE id = 'aud_item1'"
+            "SELECT audience, is_required FROM knowledge_items WHERE id = 'aud_item1'"
         ).fetchone()
         conn.close()
         assert row[0] == "group:finance"
-        assert row[1] == "mandatory"
+        # v49: mandate flips ``is_required`` (Required tier); status stays
+        # on the lifecycle path (typically ``approved``).
+        assert row[1] is True
 
     def test_batch_mandate_persists_audience(self, seeded_app):
         """POST /admin/batch mandate action stores audience."""
@@ -857,19 +859,27 @@ class TestAudienceDistribution:
 
         conn = get_system_db()
         # Item is restricted by audience to a group the analyst is NOT in,
-        # but tagged with domain=engineering.
+        # but tagged with domain=engineering via the v49 junction.
         self._seed_item(
             conn, "dom_eng1", "Eng-only via domain grant",
             audience="group:admins-only",
         )
+        # v49: domain lives in the junction; resolve slug → id.
+        eng_row = conn.execute(
+            "SELECT id FROM memory_domains WHERE slug = 'engineering'"
+        ).fetchone()
+        eng_id = eng_row[0]
         conn.execute(
-            "UPDATE knowledge_items SET domain = ? WHERE id = ?",
-            ["engineering", "dom_eng1"],
+            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
+            "VALUES ('dom_eng1', ?, 'test') ON CONFLICT DO NOTHING",
+            [eng_id],
         )
 
         # The seeded analyst (id="analyst1") has no implicit Everyone
         # membership since 0.18.0 BREAKING change. Create a dedicated
         # group, add the analyst, then grant MEMORY_DOMAIN/engineering.
+        # v49: grant resource_id is the memory_domains.id (md_engineering),
+        # not the slug, per the migration re-point.
         gid = str(uuid.uuid4())
         conn.execute(
             """INSERT INTO user_groups (id, name, description, created_by, created_at)
@@ -883,8 +893,8 @@ class TestAudienceDistribution:
         )
         conn.execute(
             """INSERT INTO resource_grants (id, group_id, resource_type, resource_id, assigned_at, assigned_by)
-               VALUES (?, ?, 'memory_domain', 'engineering', ?, 'test')""",
-            [str(uuid.uuid4()), gid, datetime.now(timezone.utc)],
+               VALUES (?, ?, 'memory_domain', ?, ?, 'test')""",
+            [str(uuid.uuid4()), gid, eng_id, datetime.now(timezone.utc)],
         )
         conn.close()
 
@@ -953,13 +963,23 @@ class TestVoteRetract:
 
 class TestBundle:
     def _seed_item(self, conn, item_id: str, title: str, status: str, confidence: float = None):
+        """v49: ``status="mandatory"`` is no longer a lifecycle value — flip
+        it to ``approved`` + ``is_required=True`` so the bundle path picks
+        the item up via the new boolean filter."""
         from src.repositories.knowledge import KnowledgeRepository
         repo = KnowledgeRepository(conn)
-        repo.create(
-            id=item_id, title=title, content=f"Content for {title}",
-            category="engineering", status=status, confidence=confidence,
-        )
-        repo.update_status(item_id, status)
+        if status == "mandatory":
+            repo.create(
+                id=item_id, title=title, content=f"Content for {title}",
+                category="engineering", status="approved",
+                confidence=confidence, is_required=True,
+            )
+        else:
+            repo.create(
+                id=item_id, title=title, content=f"Content for {title}",
+                category="engineering", status=status, confidence=confidence,
+            )
+            repo.update_status(item_id, status)
 
     def test_bundle_requires_auth(self, seeded_app):
         r = seeded_app["client"].get("/api/memory/bundle")
@@ -1328,17 +1348,36 @@ class TestTreeEndpoint:
     def _seed_item_direct(conn, item_id, title, *, audience=None, source_type="user_verification",
                            status="approved", domain=None, category="business_logic",
                            source_user="admin@test.com"):
-        """Direct insert — POST /api/memory doesn't accept audience/source_type/status."""
+        """Direct insert — POST /api/memory doesn't accept audience/source_type/status.
+
+        v49: ``domain`` is no longer a scalar column on knowledge_items —
+        we INSERT without it and (if provided) write a junction row through
+        ``memory_domains.id`` resolution. Mandatory tier rides on
+        ``is_required``; pass ``status='mandatory'`` to flip both fields.
+        """
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
+        is_required = (status == "mandatory")
+        effective_status = "approved" if is_required else status
         conn.execute(
             """INSERT INTO knowledge_items
-               (id, title, content, category, domain, source_user, audience,
-                status, source_type, created_at, updated_at)
+               (id, title, content, category, source_user, audience,
+                status, source_type, is_required, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [item_id, title, f"content {title}", category, domain, source_user,
-             audience, status, source_type, now, now],
+            [item_id, title, f"content {title}", category, source_user,
+             audience, effective_status, source_type, is_required, now, now],
         )
+        if domain:
+            row = conn.execute(
+                "SELECT id FROM memory_domains WHERE slug = ?", [domain]
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Unknown memory domain slug {domain!r}")
+            conn.execute(
+                "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
+                "VALUES (?, ?, 'test') ON CONFLICT DO NOTHING",
+                [item_id, row[0]],
+            )
 
     def test_tree_audience_axis_privacy_non_admin(self, seeded_app):
         """Non-admin tree on audience axis sees only their own group buckets +
