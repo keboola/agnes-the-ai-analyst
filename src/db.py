@@ -3282,6 +3282,23 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
+    # 6) Populate the junction from the legacy scalar ``knowledge_items.domain``
+    # column. One row per non-null/non-empty domain value. NULLs (and the
+    # rare empty string from hand-edited rows) carry no domain relation, so
+    # they're filtered out — the junction stays sparse rather than emitting
+    # synthetic rows.
+    conn.execute(
+        """
+        INSERT INTO knowledge_item_domains(item_id, domain_id, added_at)
+        SELECT ki.id, md.id, current_timestamp
+          FROM knowledge_items ki
+          JOIN memory_domains  md
+            ON md.slug = lower(regexp_replace(ki.domain, '[^a-z0-9]+', '-', 'g'))
+         WHERE ki.domain IS NOT NULL AND ki.domain <> ''
+        ON CONFLICT DO NOTHING
+        """
+    )
+
 
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
