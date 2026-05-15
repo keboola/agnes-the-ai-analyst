@@ -3726,7 +3726,7 @@ async def admin_override_store_submission(
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
-    if sub["status"] not in {"blocked_inline", "blocked_llm", "review_error"}:
+    if sub["status"] not in {"blocked_inline", "blocked_llm", "review_error", "pending_llm"}:
         raise HTTPException(
             status_code=409,
             detail=f"cannot_override_status:{sub['status']}",

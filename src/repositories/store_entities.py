@@ -518,12 +518,20 @@ class StoreEntitiesRepository:
             ).fetchall()
             for sub_id, status in rows:
                 status_by_id[sub_id] = status
+        # Defensive copy of each history entry before mutating — today
+        # ``self.get()`` re-parses JSON each call so the mutation can't
+        # leak across calls, but copying costs nothing and protects any
+        # future caching layer from carrying the annotated
+        # ``submission_status`` key into a subsequent plain ``get()``.
+        annotated: List[Dict[str, Any]] = []
         for entry in history:
+            entry = dict(entry)
             sid = entry.get("submission_id")
             entry["submission_status"] = (
                 status_by_id.get(sid) if sid else None
             )
-        entity["version_history"] = history
+            annotated.append(entry)
+        entity["version_history"] = annotated
         return entity
 
     def get_by_owner_and_name(

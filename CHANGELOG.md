@@ -10,11 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-### Fixed
-- **Unauthenticated browser requests to `GET /api/initial-workspace.zip` now redirect to `/login?next=/api/initial-workspace.zip` instead of returning a raw JSON 401** (#315). This is the one `/api/*` endpoint that's designed to be hit directly from a browser bookmark (the analyst clean-install zip), so it intentionally opts out of the global `_API_PATH_PREFIXES` "never redirect /api/*" contract in `app/main.py`. CLI / curl / other API clients (any `Accept` without `text/html` — including the `*/*` default) keep getting the 401 they can handle.
-
-## [0.54.17] — 2026-05-15
-
 ### Changed
 - **BREAKING (operator-facing)**: flea-market guardrail pipeline now
   fail-CLOSED on misconfig. `get_guardrails_enabled()` previously
@@ -34,26 +29,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   auto-fallback for local-dev no-LLM setups must now explicitly set
   `guardrails.enabled: false` in `instance.yaml` — same outcome,
   explicit intent.
-- `agnes refresh-marketplace --check` (the SessionStart-hook detector
-  that fires on every Claude Code session start in every workspace)
-  now uses `git ls-remote origin HEAD` instead of `git fetch origin`
-  to learn whether the remote marketplace has changed. ls-remote
-  transfers one line of text (`<sha>\tHEAD`) over a single HTTPS
-  round-trip — no git objects, no metadata — so the hook completes
-  in ~0.5–1 s instead of the ~8 s a full fetch took. Detection logic
-  is unchanged (compare local `HEAD` SHA to remote `HEAD` SHA, emit
-  the `/update-agnes-plugins` hint JSON on mismatch, silent on
-  match). The slash-command and `--bootstrap` paths still do real
-  `git fetch + reset --hard` — they actually need the objects.
+- Flea-market admin **Override** action on
+  `/admin/store/submissions/<id>` now covers `pending_llm` submissions
+  too (was `blocked_inline` + `blocked_llm` + `review_error`). Closes
+  a UX gap created by the new fail-CLOSED behavior above: under
+  enabled-but-not-ready, a known-good submission would otherwise sit
+  indefinitely until the admin set credentials AND clicked **Retry
+  review**. Override already routes through `entity.version_history`
+  to resolve the correct version dir (and is now forward-only on
+  promote — see the Fixed bullet below), so it stays safe for v2+
+  deferred-promotion submissions.
 
 ### Fixed
-- `/me/activity` hero subtitle showed literal `<strong>…</strong>` tags
-  around the user's email instead of rendering them bold. The subtitle
-  was built by `~`-concatenating a `Markup` operand (`user.email | e`)
-  with HTML string literals, which made Jinja2's `markup_join` escape
-  the literal tags too. Switched to `{% set %}…{% endset %}` block
-  capture so the literal `<strong>` stays HTML while the email is still
-  autoescaped.
+- **Unauthenticated browser requests to `GET /api/initial-workspace.zip` now redirect to `/login?next=/api/initial-workspace.zip` instead of returning a raw JSON 401** (#315). This is the one `/api/*` endpoint that's designed to be hit directly from a browser bookmark (the analyst clean-install zip), so it intentionally opts out of the global `_API_PATH_PREFIXES` "never redirect /api/*" contract in `app/main.py`. CLI / curl / other API clients (any `Accept` without `text/html` — including the `*/*` default) keep getting the 401 they can handle.
 - Flea-market LLM security review failed with `LLMFormatError: Response
   truncated (max_tokens) for schema store_guardrails_review` when the
   reviewer emitted many findings or content-quality issues. Raised the
@@ -114,6 +102,37 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   rendered status pills for blocked / errored / pending rows, and
   added a 400 `version_not_approved` guard in
   `POST /api/store/entities/{id}/versions/{n}/restore`.
+
+### Internal
+- `StoreEntitiesRepository.get_with_version_approvals` now defensively
+  copies each `version_history` entry before annotating with
+  `submission_status`. `self.get()` re-parses JSON each call today so
+  this is belt-and-suspenders, but it protects any future caching layer
+  from leaking the annotated key into a subsequent plain `get()` call.
+
+## [0.54.17] — 2026-05-15
+
+### Changed
+- `agnes refresh-marketplace --check` (the SessionStart-hook detector
+  that fires on every Claude Code session start in every workspace)
+  now uses `git ls-remote origin HEAD` instead of `git fetch origin`
+  to learn whether the remote marketplace has changed. ls-remote
+  transfers one line of text (`<sha>\tHEAD`) over a single HTTPS
+  round-trip — no git objects, no metadata — so the hook completes
+  in ~0.5–1 s instead of the ~8 s a full fetch took. Detection logic
+  is unchanged (compare local `HEAD` SHA to remote `HEAD` SHA, emit
+  the `/update-agnes-plugins` hint JSON on mismatch, silent on
+  match). The slash-command and `--bootstrap` paths still do real
+  `git fetch + reset --hard` — they actually need the objects.
+
+### Fixed
+- `/me/activity` hero subtitle showed literal `<strong>…</strong>` tags
+  around the user's email instead of rendering them bold. The subtitle
+  was built by `~`-concatenating a `Markup` operand (`user.email | e`)
+  with HTML string literals, which made Jinja2's `markup_join` escape
+  the literal tags too. Switched to `{% set %}…{% endset %}` block
+  capture so the literal `<strong>` stays HTML while the email is still
+  autoescaped.
 
 ### Internal
 - CI test suite sharded for speed. The `test` job in `.github/workflows/ci.yml` is now a `test-shard` matrix — 4 parallel jobs via `pytest-split`, balanced by a committed `.test_durations` file — aggregated into a single `test` status check so branch protection needs no change. The duplicate full-suite `test` job in `release.yml` is removed (it re-ran the same ~10 min suite a second time on every push to main/feature branches); `release.yml` is now image-build only, with the advisory ruff/mypy steps moved to a lean `lint` job in `ci.yml`. Net: ~10 min → ~3 min wall-clock per push, and the suite runs once instead of twice. Adds `pytest-split` to the `dev` extra.
