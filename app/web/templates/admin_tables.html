@@ -2042,6 +2042,95 @@
       let _bulkAssignPackages = [];   // [{id, name, member_table_ids:Set}]
       let _bulkAssignTables = [];     // [{id, name, source_type, bucket}]
 
+      /* One-click factory: read table_registry → group by `bucket` →
+         create one Data Package per distinct bucket (skipping any whose
+         slug already exists) → bulk-assign its tables. Answers the
+         "why do I have to package by hand what's already grouped?"
+         friction for admins with many registered tables.
+
+         Sequential rather than parallel because the assign-table POSTs
+         depend on the package_id from the create POST. ~100ms per
+         bucket which is fine for the handful most instances have. */
+      async function groupTablesByBucket() {
+        if (!confirm('Create one Data Package per distinct bucket and assign its tables?\n\n'
+                   + 'Existing packages with a matching slug are skipped.\n'
+                   + 'Tables already in any package are left in place (no duplicates).'))
+          return;
+
+        const [tableResp, pkgResp] = await Promise.all([
+          fetch('/api/admin/registry', { credentials: 'same-origin' }),
+          fetch('/api/admin/data-packages', { credentials: 'same-origin' }),
+        ]);
+        if (!tableResp.ok || !pkgResp.ok) {
+          alert('Failed to load tables or packages.');
+          return;
+        }
+        const tables = await tableResp.json();
+        const existingPackages = await pkgResp.json();
+        const tableList = Array.isArray(tables) ? tables : (tables.items || tables.tables || []);
+        const existingSlugs = new Set((existingPackages || []).map(p => p.slug));
+
+        // Group tables by bucket — skip blanks + internal `agnes_*` buckets.
+        const buckets = {};
+        for (const t of tableList) {
+          const b = (t.bucket || '').trim();
+          if (!b || b.startsWith('agnes_')) continue;
+          buckets[b] = buckets[b] || [];
+          buckets[b].push(t);
+        }
+        const bucketNames = Object.keys(buckets).sort();
+        if (!bucketNames.length) {
+          alert('No buckets to group. Register some tables first.');
+          return;
+        }
+
+        // Slugify (lowercase, alnum + dashes) so two buckets with weird
+        // chars don't collide on the server's UNIQUE(slug) constraint.
+        const slugify = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+        const created = [], skipped = [], failed = [];
+        for (const bucket of bucketNames) {
+          const slug = slugify(bucket);
+          if (existingSlugs.has(slug)) {
+            skipped.push(`${bucket} (slug exists)`);
+            continue;
+          }
+          // Create the package — name is the bucket, description hints at the source.
+          const cResp = await fetch('/api/admin/data-packages', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: bucket,
+              slug,
+              description: `Auto-grouped from bucket \`${bucket}\` — ${buckets[bucket].length} tables.`,
+              icon: null,
+              color: '#fce7f3',
+            }),
+          });
+          if (!cResp.ok) { failed.push(bucket); continue; }
+          const pkg = await cResp.json();
+          // Assign tables — fire in parallel within a bucket.
+          await Promise.all(buckets[bucket].map(t =>
+            fetch(`/api/admin/data-packages/${pkg.id}/tables`, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ table_id: t.id }),
+            }).catch(() => {})
+          ));
+          created.push(`${bucket} (${buckets[bucket].length} tables)`);
+        }
+
+        const msg = [
+          created.length ? `✓ Created: ${created.join(', ')}` : null,
+          skipped.length ? `↷ Skipped: ${skipped.join(', ')}` : null,
+          failed.length ? `✗ Failed: ${failed.join(', ')}` : null,
+        ].filter(Boolean).join('\n');
+        alert(msg || 'Nothing to do.');
+        if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
+      }
+
       async function openBulkAssignModal(preselectPkgId) {
         document.getElementById('bulkAssignTablesModal').style.display = 'flex';
         document.getElementById('bulk-assign-search').value = '';
