@@ -10,6 +10,27 @@
   <div class="eyebrow">Knowledge</div>
   <h1>Memory</h1>
   <p class="sub">Browse curated knowledge domains. Add the ones your team relies on to your stack — required domains are added automatically.</p>
+
+  <div class="stack-hero__search-row">
+    <div class="stack-hero__search-wrap">
+      <svg class="stack-hero__search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+      <input id="memory-hero-search" type="search"
+             placeholder="Search Memory by name or description…">
+    </div>
+  </div>
+</div>
+
+{# Curator-style info block — mirrors marketplace .mp-curator-block. #}
+<div class="stack-curator-block">
+  <div class="stack-curator-block__title">Each Memory domain is curated by your admin.</div>
+  <div class="stack-curator-block__body">
+    Domains bundle related knowledge items (rules, playbooks, decisions) so
+    analysts can opt-in to a coherent body of context. Required domains are
+    added to your stack automatically.
+  </div>
 </div>
 
 {% if pending_review_count and pending_review_count > 0 %}
@@ -45,8 +66,13 @@
         My Stack <span class="count">{{ stack_entries|length }}</span>
       </button>
     </div>
+    {# Hidden row-level search — kept so the filter JS that reads from
+       #memory-search doesn't need to fork its source. Visible search
+       lives in the hero (mirrors marketplace + /catalog). Two-way-synced
+       in the script below. #}
     <input class="stack-search" type="search" id="memory-search"
-           placeholder="Search domains by name or description…">
+           placeholder="Search Memory by name or description…"
+           style="display:none;">
   </div>
 
   <div class="stack-filter-row" id="memory-filters">
@@ -210,6 +236,21 @@
     });
   });
   document.getElementById('memory-search').addEventListener('input', applyFilters);
+
+  // Hero-embedded search ↔ in-row search two-way sync (mirrors /catalog
+  // + marketplace's single-source-of-truth pattern; both inputs always
+  // show the same query, filtering pipeline reads from #memory-search).
+  var heroSearch = document.getElementById('memory-hero-search');
+  var rowSearch = document.getElementById('memory-search');
+  if (heroSearch && rowSearch) {
+    heroSearch.addEventListener('input', function() {
+      rowSearch.value = heroSearch.value;
+      applyFilters();
+    });
+    rowSearch.addEventListener('input', function() {
+      heroSearch.value = rowSearch.value;
+    });
+  }
 })();
 </script>
 {% endblock %}

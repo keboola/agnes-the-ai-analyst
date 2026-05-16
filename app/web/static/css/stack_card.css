@@ -86,6 +86,31 @@
   pointer-events: none;
 }
 
+/* ── Curator info block (marketplace .mp-curator-block) ──────────────── */
+/* Light card with a primary-blue left border + bold title + body text;
+ * mirrors the trust/info pattern marketplace uses below the hero to
+ * explain the page purpose. The slot sits between hero and tab strip
+ * so it feels like part of the page chrome, not a banner. */
+.stack-curator-block {
+  background: rgba(0, 115, 209, 0.06);
+  border: 1px solid rgba(0, 115, 209, 0.18);
+  border-left: 3px solid var(--primary, #0073D1);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+}
+.stack-curator-block__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #202124);
+  margin-bottom: 2px;
+}
+.stack-curator-block__body {
+  font-size: 13px;
+  color: var(--text-secondary, #5f6368);
+  line-height: 1.5;
+}
+
 /* ── Tab strip + filter chips (marketplace .mp-tabs / .mp-tabs-row) ──── */
 .stack-tabs-row {
   display: flex;
@@ -283,25 +308,16 @@
   color: var(--text-secondary, #5f6368);
 }
 
-/* Required state — yellow border + amber badge. Border 2px so the
- * accent reads at glance distance; meets WCAG AA 3:1 non-text contrast
- * (amber #f59e0b on white = 3.27:1). Mirrors marketplace .mp-card.is-installed
- * amber accent. */
-.stack-card.is-required {
-  border: 2px solid #f59e0b;
-}
-
-/* In-stack state — green border (#10b77f = 3.07:1 on white). */
+/* Required + In-stack state — both use amber accent for cross-page
+ * coherence with marketplace .mp-card.is-installed (single "in your
+ * stack" amber convention across all three pages — /marketplace,
+ * /catalog, /memory). Semantic distinction stays via the badge label
+ * (Required vs In stack), not via color. 1px low-opacity to mirror
+ * marketplace's border-color: rgba(245,159,10,0.55) — keeps the box
+ * geometry stable on state change (no 2px-vs-1px hover wiggle). */
+.stack-card.is-required,
 .stack-card.is-in-stack {
-  border: 2px solid #10b77f;
-}
-
-/* When a card is BOTH required and in-stack, required wins on the
- * border (the user can't remove it anyway). The "In stack" badge
- * variant is suppressed by the macro in that case — only one badge
- * renders. */
-.stack-card.is-required.is-in-stack {
-  border-color: #f59e0b;
+  border-color: rgba(245, 159, 10, 0.55);
 }
 
 .stack-card__req-badge {
@@ -318,8 +334,10 @@
   border: 1px solid rgba(255, 255, 255, 0.55);
   z-index: 2;
 }
+/* In-stack badge: same amber as required, distinguished only by label.
+ * Matches marketplace's amber "In stack" pill on .mp-card.is-installed. */
 .stack-card__req-badge--instack {
-  background: #10b77f;
+  background: #f59e0b;
 }
 
 /* Title — up to 2 lines (clamp), mirrors marketplace .mp-card .name.
