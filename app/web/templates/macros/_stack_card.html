@@ -1,16 +1,23 @@
 {# Shared stack card macro — visual parity with marketplace.html .mp-card.
 
-   Renders a single resource entry (data package or memory domain) using
-   the same skeleton marketplace plugin cards use:
+   Dense info-card layout (NOT a Pinterest tile). Mirrors the .mp-card
+   body structure marketplace uses for its list items:
 
-     [icon-box · title · meta]
-     [description (clamped to 2 lines)]
-     [tag pills]
-     [footer-left link · footer-right action button]
+     ┌──────────────────────────────────────┐
+     │ [icon] Sales bundle      [Required]  │  header row
+     │        12 tables                     │  meta line
+     │        Orders + line items …         │  description (clamp 2)
+     │        [keboola] [bigquery]          │  tags
+     │ ─────────────────────────────────── │
+     │ Open →                  [+ Add]      │  footer
+     └──────────────────────────────────────┘
+
+   The 36px icon-box sits inline with the title (NOT a top banner) so
+   the card reads as professional info-density, not a kids-app tile.
 
    States (dual-encoded: color border + text badge):
-     .stack-card.is-required → yellow border #f59e0b + "Required" badge top-right
-     .stack-card.is-in-stack → green  border #10b77f + Remove button
+     .stack-card.is-required → yellow border + "Required" badge top-right
+     .stack-card.is-in-stack → green border + Remove button
      default                  → neutral border + "+ Add to stack" button
 
    `entry` is a dict-like with keys:
@@ -31,25 +38,31 @@
     <div class="stack-card__req-badge stack-card__req-badge--instack" title="In your stack">In stack</div>
   {% endif %}
 
-  <div class="stack-card__icon-row">
-    <div class="stack-card__icon-box" style="background:{{ entry.color|default('#f3f4f6') }}">
-      {{ entry.icon|default('📦') }}
+  <div class="stack-card__body">
+    {# Header row: small coloured icon-box (36px) on the left, title +
+       optional meta on the right. Direct echo of marketplace's tight
+       title-row layout — no big top banner, no oversized emoji. #}
+    <div class="stack-card__header">
+      <div class="stack-card__icon-box"
+           style="background:{{ entry.color|default('#f3f4f6') }};">
+        {{ entry.icon|default('📦') }}
+      </div>
+      <div class="stack-card__heading">
+        <h3 class="stack-card__title">{{ entry.name }}</h3>
+        {% if entry.meta %}<div class="stack-card__meta">{{ entry.meta }}</div>{% endif %}
+      </div>
     </div>
-    <div class="stack-card__heading">
-      <h3 class="stack-card__title">{{ entry.name }}</h3>
-      {% if entry.meta %}<div class="stack-card__meta">{{ entry.meta }}</div>{% endif %}
-    </div>
+
+    {% if entry.description %}
+      <div class="stack-card__desc">{{ entry.description }}</div>
+    {% endif %}
+
+    {% if entry.tags %}
+      <div class="stack-card__tags">
+        {% for tag in entry.tags %}<span class="stack-card__tag">{{ tag }}</span>{% endfor %}
+      </div>
+    {% endif %}
   </div>
-
-  {% if entry.description %}
-    <div class="stack-card__desc">{{ entry.description }}</div>
-  {% endif %}
-
-  {% if entry.tags %}
-    <div class="stack-card__tags">
-      {% for tag in entry.tags %}<span class="stack-card__tag">{{ tag }}</span>{% endfor %}
-    </div>
-  {% endif %}
 
   <div class="stack-card__footer">
     {% if entry.drilldown_url %}
