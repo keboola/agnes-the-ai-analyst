@@ -845,19 +845,26 @@ async def setup_advanced_page(
 
 def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
                               source_types: Optional[list] = None) -> dict:
-    """Adapt a ResourceEntry → template entry dict for the _stack_card macro."""
-    meta_bits = []
-    if table_count:
-        meta_bits.append(f"{table_count} table{'s' if table_count != 1 else ''}")
+    """Adapt a ResourceEntry → template entry dict for the _stack_card macro.
+
+    Always renders a meta line (`N tables` — even `0 tables`) and a
+    description fallback so packages without an admin-authored
+    description don't render as half-empty cards.
+    """
+    meta = f"{table_count} table{'s' if table_count != 1 else ''}"
+    description = entry.description or (
+        f"Bundle of {table_count} table{'s' if table_count != 1 else ''}. "
+        f"Add to your stack so `agnes pull` syncs the data locally."
+    )
     return {
         "id": entry.id,
         "name": entry.name,
-        "description": entry.description,
+        "description": description,
         "icon": entry.icon or "📦",
         "color": entry.color or "#fce7f3",
         "requirement": entry.requirement,
         "in_stack": entry.in_stack,
-        "meta": " · ".join(meta_bits) if meta_bits else None,
+        "meta": meta,
         "tags": source_types or [],
         "drilldown_url": drilldown_url,
         "footer_left": (
@@ -1059,21 +1066,28 @@ def _human_size(n: int) -> str:
 def _memory_domain_entry_dict(entry, drilldown_url: str,
                                items_count: int = 0,
                                required_count: int = 0) -> dict:
-    """Adapt a ResourceEntry (memory_domain) → template entry dict."""
-    meta_bits = []
-    if items_count:
-        meta_bits.append(f"{items_count} item{'s' if items_count != 1 else ''}")
+    """Adapt a ResourceEntry (memory_domain) → template entry dict.
+
+    Always renders a meta line (`N items · K required` — even `0 items`)
+    and a description fallback so seeded canonical domains without an
+    admin-authored description don't render as half-empty cards.
+    """
+    meta = f"{items_count} item{'s' if items_count != 1 else ''}"
     if required_count:
-        meta_bits.append(f"{required_count} required")
+        meta += f" · {required_count} required"
+    description = entry.description or (
+        f"Curated knowledge for the {entry.name} domain. "
+        f"Add to your stack to include items in agnes pull."
+    )
     return {
         "id": entry.id,
         "name": entry.name,
-        "description": entry.description,
+        "description": description,
         "icon": entry.icon or "🎯",
         "color": entry.color or "#dcfce7",
         "requirement": entry.requirement,
         "in_stack": entry.in_stack,
-        "meta": " · ".join(meta_bits) if meta_bits else None,
+        "meta": meta,
         "tags": [],
         "drilldown_url": drilldown_url,
         "footer_left": (
