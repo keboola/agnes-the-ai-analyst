@@ -47,7 +47,13 @@
 {% else %}
   {% set _initials = _name[:2]|upper %}
 {% endif %}
-{% set _has_glyph = entry.icon and entry.icon != '📦' and entry.icon != '🎯' %}
+{# Per design review (2 independent assessments): emoji glyphs on cards
+   feel childish in a B2B context. Always render the 2-letter initials —
+   matches marketplace.html PL/SK/AG fallback exactly. The admin's
+   `entry.icon` is preserved on disk (admin/* edit screens still show it)
+   but not rendered on cards. Future polish: swap initials for Lucide
+   SVG icons keyed by `entry.icon`. #}
+{% set _has_glyph = False %}
 <div class="stack-card{{ _cls_required }}{{ _cls_instack }}"
      data-id="{{ entry.id }}"
      data-requirement="{{ entry.requirement|default('available') }}"
