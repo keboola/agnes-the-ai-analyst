@@ -918,8 +918,19 @@
               Data Packages
               <span id="dataPackagesCount" style="color:#5f6368; font-weight:500; font-size:14px; margin-left:4px;"></span>
             </h2>
-            <button class="btn btn-primary" type="button"
-                    onclick="openCreateDataPackageModal('', null)">+ New</button>
+            <div style="display:flex; gap:8px;">
+              {# Bulk-assign opens a modal with package dropdown + checkbox
+                 list of every registered table — drastically faster than
+                 the old "edit each table individually and add it via the
+                 chip-input inside its modal" flow. Reads ?assign_to=<id>
+                 from the URL on load (see initBulkAssignFromQuery) so the
+                 /catalog "0 tables — assign some →" CTA lands here with
+                 the right package pre-selected. #}
+              <button class="btn btn-secondary" type="button"
+                      onclick="openBulkAssignModal('')">Bulk assign tables</button>
+              <button class="btn btn-primary" type="button"
+                      onclick="openCreateDataPackageModal('', null)">+ New</button>
+            </div>
           </header>
           <div class="card-body">
             <p style="margin:0 0 12px; color:#5f6368; font-size:13px;">
@@ -2020,6 +2031,226 @@
           openCreateDataPackageModal(e.detail.typed, host);
         }
       });
+
+      // ── Bulk-assign tables → package ─────────────────────────
+      // Single round-trip per table on submit (the existing
+      // POST /api/admin/data-packages/{id}/tables endpoint takes one
+      // table_id per call) but parallel via Promise.allSettled so the
+      // user-visible latency is the slowest individual call rather
+      // than the sum. Idempotent on the server, so re-submitting after
+      // a partial failure only retries the ones that didn't land.
+      let _bulkAssignPackages = [];   // [{id, name, member_table_ids:Set}]
+      let _bulkAssignTables = [];     // [{id, name, source_type, bucket}]
+
+      async function openBulkAssignModal(preselectPkgId) {
+        document.getElementById('bulkAssignTablesModal').style.display = 'flex';
+        document.getElementById('bulk-assign-search').value = '';
+        // Load packages + tables in parallel.
+        const [pkgResp, tableResp] = await Promise.all([
+          fetch('/api/admin/data-packages', { credentials: 'same-origin' }),
+          fetch('/api/admin/registry', { credentials: 'same-origin' }),
+        ]);
+        const sel = document.getElementById('bulk-assign-package');
+        const list = document.getElementById('bulk-assign-list');
+        if (!pkgResp.ok) {
+          sel.innerHTML = '<option value="">Failed to load packages</option>';
+          list.innerHTML = '<div style="padding:12px; color:#b91c1c;">HTTP '
+            + pkgResp.status + ' on /api/admin/data-packages</div>';
+          return;
+        }
+        if (!tableResp.ok) {
+          sel.innerHTML = '<option value="">Failed to load tables</option>';
+          list.innerHTML = '<div style="padding:12px; color:#b91c1c;">HTTP '
+            + tableResp.status + ' on /api/admin/registry</div>';
+          return;
+        }
+        const pkgs = await pkgResp.json();
+        const tableBody = await tableResp.json();
+        // /api/admin/registry returns {tables, count}; defend against shape drift.
+        _bulkAssignTables = Array.isArray(tableBody)
+          ? tableBody
+          : (Array.isArray(tableBody.tables) ? tableBody.tables : []);
+        // Drop internal rows — same filter the /catalog empty-state uses.
+        _bulkAssignTables = _bulkAssignTables.filter(function(t) {
+          return (t.source_type || '') !== 'internal';
+        });
+        // Fetch each package's member tables in parallel so we can pre-check
+        // already-assigned rows (and gray them out — server is idempotent
+        // but skipping the no-op call keeps the audit log clean).
+        const memberFetches = pkgs.map(function(p) {
+          return fetch('/api/admin/data-packages/' + encodeURIComponent(p.id),
+                       { credentials: 'same-origin' })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .catch(function() { return null; });
+        });
+        const memberBodies = await Promise.all(memberFetches);
+        _bulkAssignPackages = pkgs.map(function(p, i) {
+          const det = memberBodies[i] || {};
+          const ids = new Set((det.tables || []).map(function(t) { return t.id; }));
+          return { id: p.id, name: p.name, member_table_ids: ids };
+        });
+        sel.innerHTML = '<option value="">— Choose a package —</option>'
+          + _bulkAssignPackages.map(function(p) {
+              return '<option value="' + escapeHtmlAttr(p.id) + '">'
+                + escapeHtml(p.name) + '</option>';
+            }).join('');
+        if (preselectPkgId && _bulkAssignPackages.some(function(p) { return p.id === preselectPkgId; })) {
+          sel.value = preselectPkgId;
+        }
+        renderBulkAssignList();
+        refreshBulkAssignAvailability();
+      }
+
+      function closeBulkAssignModal() {
+        document.getElementById('bulkAssignTablesModal').style.display = 'none';
+        // Drop the ?assign_to= query param so a manual refresh doesn't
+        // re-open the modal — but only when it was the param that opened
+        // us; otherwise leave the URL untouched.
+        if (window.location.search.indexOf('assign_to=') !== -1) {
+          history.replaceState(null, '', window.location.pathname + window.location.hash);
+        }
+      }
+
+      function renderBulkAssignList() {
+        const list = document.getElementById('bulk-assign-list');
+        if (!_bulkAssignTables.length) {
+          list.innerHTML = '<div style="padding:12px; color:#5f6368;">'
+            + 'No tables registered yet — register some via the connector tabs first.</div>';
+          return;
+        }
+        list.innerHTML = _bulkAssignTables.map(function(t) {
+          const id = String(t.id || '');
+          const name = String(t.name || id);
+          const st = String(t.source_type || '');
+          const bucket = String(t.bucket || '');
+          const meta = [st, bucket].filter(Boolean).join(' · ');
+          return ''
+            + '<label data-table-id="' + escapeHtmlAttr(id) + '" '
+            + '       data-table-name="' + escapeHtmlAttr(name.toLowerCase()) + '" '
+            + '       data-table-source="' + escapeHtmlAttr(st.toLowerCase()) + '" '
+            + '       style="display:flex; gap:8px; align-items:center; padding:6px; border-radius:4px; cursor:pointer;">'
+            + '  <input type="checkbox" class="bulk-assign-cb" value="' + escapeHtmlAttr(id) + '">'
+            + '  <span style="flex:1; font-family:var(--font-mono);">' + escapeHtml(name) + '</span>'
+            + (meta ? '  <span style="font-size:12px; color:#5f6368;">' + escapeHtml(meta) + '</span>' : '')
+            + '</label>';
+        }).join('');
+      }
+
+      // Re-render the per-row "already assigned" hints whenever the
+      // target package changes — keeps the UI in sync with reality
+      // without a re-fetch (member sets were cached at open time).
+      function refreshBulkAssignAvailability() {
+        const pkgId = document.getElementById('bulk-assign-package').value;
+        const pkg = _bulkAssignPackages.find(function(p) { return p.id === pkgId; });
+        const members = pkg ? pkg.member_table_ids : new Set();
+        document.querySelectorAll('#bulk-assign-list label').forEach(function(row) {
+          const tid = row.getAttribute('data-table-id');
+          const cb = row.querySelector('.bulk-assign-cb');
+          const already = members.has(tid);
+          // Wipe any existing badge before re-applying.
+          const oldBadge = row.querySelector('.bulk-assign-badge');
+          if (oldBadge) oldBadge.remove();
+          if (already) {
+            cb.checked = true;
+            cb.disabled = true;
+            row.style.opacity = '0.5';
+            const badge = document.createElement('span');
+            badge.className = 'bulk-assign-badge';
+            badge.textContent = 'already in package';
+            badge.style.cssText = 'font-size:11px; color:#10b77f; padding:2px 6px; '
+              + 'border:1px solid #10b77f33; border-radius:10px;';
+            row.appendChild(badge);
+          } else {
+            cb.disabled = false;
+            row.style.opacity = '';
+            // Only auto-uncheck rows that we previously force-checked —
+            // don't clobber the user's manual selection on package switch.
+          }
+        });
+      }
+
+      function filterBulkAssignList() {
+        const q = (document.getElementById('bulk-assign-search').value || '').toLowerCase();
+        document.querySelectorAll('#bulk-assign-list label').forEach(function(row) {
+          if (!q) { row.style.display = ''; return; }
+          const name = row.getAttribute('data-table-name') || '';
+          const src = row.getAttribute('data-table-source') || '';
+          row.style.display = (name.includes(q) || src.includes(q)) ? '' : 'none';
+        });
+      }
+
+      function toggleAllBulkAssign(checked) {
+        document.querySelectorAll('#bulk-assign-list label').forEach(function(row) {
+          if (row.style.display === 'none') return;
+          const cb = row.querySelector('.bulk-assign-cb');
+          if (cb && !cb.disabled) cb.checked = checked;
+        });
+      }
+
+      async function submitBulkAssign() {
+        const pkgId = document.getElementById('bulk-assign-package').value;
+        if (!pkgId) {
+          alert('Pick a target Data Package first.');
+          return;
+        }
+        const pkg = _bulkAssignPackages.find(function(p) { return p.id === pkgId; });
+        const alreadyMembers = pkg ? pkg.member_table_ids : new Set();
+        const tableIds = Array.from(
+          document.querySelectorAll('#bulk-assign-list .bulk-assign-cb:checked')
+        )
+          .map(function(cb) { return cb.value; })
+          // Skip the disabled-already-member rows — the server would no-op,
+          // but avoiding the call keeps audit_log noise down.
+          .filter(function(id) { return !alreadyMembers.has(id); });
+        if (!tableIds.length) {
+          alert('Nothing to assign — pick at least one table not already in the package.');
+          return;
+        }
+        const btn = document.getElementById('bulk-assign-submit-btn');
+        btn.disabled = true;
+        btn.textContent = 'Assigning ' + tableIds.length + '…';
+        try {
+          const calls = tableIds.map(function(tid) {
+            return fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId) + '/tables', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ table_id: tid }),
+            }).then(function(r) { return { tid: tid, ok: r.ok, status: r.status }; })
+              .catch(function(e) { return { tid: tid, ok: false, status: 0, err: String(e) }; });
+          });
+          const results = await Promise.all(calls);
+          const fails = results.filter(function(r) { return !r.ok; });
+          if (fails.length) {
+            alert(fails.length + ' of ' + results.length + ' failed. '
+              + 'First failure: ' + fails[0].tid + ' (HTTP ' + fails[0].status + ').');
+          }
+          closeBulkAssignModal();
+          // Refresh the top-level grid so newly-bundled package counts update.
+          if (typeof loadDataPackagesSection === 'function') {
+            loadDataPackagesSection();
+          }
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Assign selected';
+        }
+      }
+
+      // ── Auto-open Bulk Assign on ?assign_to=<pkg_id> ────────
+      // Lands here from the /catalog "0 tables — assign some →" CTA.
+      // Wait one tick so the loadDataPackagesSection hydrator has a
+      // chance to populate the package grid first (cosmetic — keeps
+      // the page background populated when the modal opens).
+      function initBulkAssignFromQuery() {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const pid = params.get('assign_to');
+          if (pid) {
+            setTimeout(function() { openBulkAssignModal(pid); }, 50);
+          }
+        } catch (e) { /* no-op */ }
+      }
+      document.addEventListener('DOMContentLoaded', initBulkAssignFromQuery);
     </script>
 
     <!-- ═══════════════ Create Data Package RBAC assign (Task 8.10b — step 2) ═══════════════
@@ -2046,6 +2277,61 @@
           <button class="btn btn-secondary" onclick="skipCreateDataPackageRbac()">Skip</button>
           <button class="btn btn-primary" id="cdp-rbac-save-btn" onclick="submitCreateDataPackageRbac()">
             Save grants
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════ Bulk-assign tables → package ═══════════════
+         Replaces the 50-clicks workflow ("edit each table individually
+         and add it via the chip-input inside its modal") with one
+         dropdown + multi-select submit. Driven by the "Bulk assign
+         tables" button on the Data Packages section header AND by the
+         /catalog "0 tables — assign some →" CTA which lands here with
+         ?assign_to=<pkg_id> (see initBulkAssignFromQuery). -->
+    <div class="modal-overlay" id="bulkAssignTablesModal" style="display:none;">
+      <div class="modal" style="max-width:680px;">
+        <div class="modal-header">
+          <h2>Bulk assign tables to package</h2>
+          <button class="modal-close" onclick="closeBulkAssignModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label" for="bulk-assign-package">Target Data Package</label>
+            <select id="bulk-assign-package" class="form-input"
+                    style="width:100%;"
+                    onchange="refreshBulkAssignAvailability()">
+              <option value="">— Loading packages —</option>
+            </select>
+            <div class="form-hint">Pick the package the selected tables should be bundled into.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Tables</label>
+            <div style="display:flex; gap:8px; align-items:center; margin:6px 0;">
+              <input id="bulk-assign-search" type="search" class="form-input"
+                     placeholder="Filter tables by name / source…"
+                     style="flex:1;" oninput="filterBulkAssignList()">
+              <button type="button" class="btn btn-secondary btn-sm"
+                      onclick="toggleAllBulkAssign(true)">Select visible</button>
+              <button type="button" class="btn btn-secondary btn-sm"
+                      onclick="toggleAllBulkAssign(false)">Clear</button>
+            </div>
+            <div id="bulk-assign-list"
+                 style="border:1px solid var(--border); border-radius:6px;
+                        max-height:50vh; overflow-y:auto; padding:6px;">
+              <div style="padding:12px; color:#5f6368;">Loading tables…</div>
+            </div>
+            <div class="form-hint" id="bulk-assign-hint">
+              Already-assigned tables are checked + disabled so re-submitting
+              this modal is a no-op against them.
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeBulkAssignModal()">Cancel</button>
+          <button class="btn btn-primary" id="bulk-assign-submit-btn"
+                  onclick="submitBulkAssign()">
+            Assign selected
           </button>
         </div>
       </div>
