@@ -2061,23 +2061,64 @@ async def admin_store_submission_detail_page(
     # Verdict (sub.status) is immutable forensic record; lifecycle
     # (entity.visibility_status) reflects current state — see plan
     # "Admin Submissions Filter: Use Entity Visibility, Not Denormalized Status".
-    # Also derive submission_version_no by matching sub.version (hash)
-    # against the entity's version_history (v37 edit feature).
+    # Resolve THIS submission's version_no via submission_id (NOT
+    # hash — multiple history entries can share a hash when the user
+    # re-uploads byte-identical bundles, and the hash-match-first-wins
+    # loop always picked v1, mislabeling every reupload as v1). Same
+    # fix as PR #330 for the runner / override paths; we missed this
+    # display site at the time.
     entity_visibility_status = None
     entity_version_no = None
     submission_version_no = None
+    sibling_submissions: list = []
     if sub.get("entity_id"):
         ent = StoreEntitiesRepository(conn).get(sub["entity_id"])
         if ent:
             entity_visibility_status = ent.get("visibility_status")
             entity_version_no = ent.get("version_no")
-            for entry in (ent.get("version_history") or []):
-                try:
-                    if entry.get("hash") == sub.get("version"):
-                        submission_version_no = int(entry.get("n"))
-                        break
-                except (TypeError, ValueError):
-                    continue
+            from app.api.store import _version_no_for_submission
+            submission_version_no = _version_no_for_submission(
+                ent, submission_id,
+            )
+            # Build a version-switcher: every submission row linked to
+            # this entity, sorted newest first, with its derived v#.
+            # Admin clicks a row → jumps to that submission's detail.
+            # Surfaces multi-version entities clearly + lets admin
+            # compare verdicts across versions without bouncing back
+            # to the queue.
+            history = ent.get("version_history") or []
+            history_by_sub: dict = {}
+            for entry in history:
+                sid = entry.get("submission_id")
+                if sid:
+                    try:
+                        history_by_sub[sid] = int(entry.get("n"))
+                    except (TypeError, ValueError):
+                        continue
+            # Direct query — list_for_admin doesn't filter by entity_id
+            # and we don't want to add a parameter for this one display
+            # need. Order by created_at DESC so newest is first in the
+            # switcher.
+            ent_sub_rows = [
+                dict(zip(["id", "status", "version", "created_at", "reviewed_by_model"], row))
+                for row in conn.execute(
+                    "SELECT id, status, version, created_at, reviewed_by_model "
+                    "FROM store_submissions "
+                    "WHERE entity_id = ? "
+                    "ORDER BY created_at DESC",
+                    [sub["entity_id"]],
+                ).fetchall()
+            ]
+            for row in ent_sub_rows:
+                sibling_submissions.append({
+                    "id": row["id"],
+                    "status": row.get("status"),
+                    "version": row.get("version"),
+                    "created_at": row.get("created_at"),
+                    "version_no": history_by_sub.get(row["id"]),
+                    "reviewed_by_model": row.get("reviewed_by_model"),
+                    "is_current": row["id"] == submission_id,
+                })
 
     other_count = StoreSubmissionsRepository(conn).count_for_submitter(
         sub["submitter_id"], exclude_id=submission_id,
@@ -2159,6 +2200,7 @@ async def admin_store_submission_detail_page(
         entity_visibility_status=entity_visibility_status,
         entity_version_no=entity_version_no,
         submission_version_no=submission_version_no,
+        sibling_submissions=sibling_submissions,
     )
     return templates.TemplateResponse(request, "admin_store_submission_detail.html", ctx)
 
