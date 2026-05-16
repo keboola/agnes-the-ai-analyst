@@ -4,29 +4,63 @@
 {% block title %}Data Packages — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
 
 {% block content %}
-{# Hero — eyebrow + title + subtitle, mirrors marketplace.html. #}
-{% set page_hero_eyebrow = "Data" %}
-{% set page_hero_title = "Data Packages" %}
-{% set page_hero_subtitle = "Browse curated data bundles. Add the ones you need to your stack — required bundles are added automatically." %}
-{% include "_page_hero.html" %}
+{# Hero — gradient banner mirroring marketplace.html .mp-hero so /catalog
+   and /marketplace read as one product. Eyebrow + h1 + sub layered on
+   the same blue gradient, plus an embedded search row identical to the
+   one on /marketplace. The hero search is wired to the same JS that
+   drives the per-card filter below, so typing here also narrows the grid. #}
+<div class="stack-hero">
+  <div class="eyebrow">Data</div>
+  <h1>Data Packages</h1>
+  <p class="sub">Browse curated data bundles. Add the ones you need to your stack — required bundles are added automatically.</p>
+
+  <div class="stack-hero__search-row">
+    <div class="stack-hero__search-wrap">
+      <svg class="stack-hero__search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+      <input id="catalog-hero-search" type="search"
+             placeholder="Search Data Packages by name or description…">
+    </div>
+  </div>
+</div>
 
 <div class="stack-page" id="catalog-page"
      data-resource-type="data_package"
      data-stack-endpoint="/api/stack"
      data-subscribe-endpoint="/api/stack/subscribe">
 
-  {# Tab strip + actions row (marketplace .mp-tabs-row parity). #}
+  {# Tab strip + actions row (marketplace .mp-tabs-row parity).
+     Icons mirror marketplace's tab icons: rectangle-stack (the My Stack
+     icon on /marketplace) for the My Stack tab; layout-grid for Browse. #}
   <div class="stack-tabs-row">
     <div class="stack-tabs" role="tablist">
       <button class="is-active" data-tab="browse" role="tab" aria-selected="true">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="7" rx="1"/>
+          <rect x="14" y="3" width="7" height="7" rx="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1"/>
+          <rect x="14" y="14" width="7" height="7" rx="1"/>
+        </svg>
         Browse <span class="count" data-count="browse">{{ entries|length }}</span>
       </button>
       <button data-tab="my" role="tab" aria-selected="false">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0-5.571 3-5.571-3"/>
+        </svg>
         My Stack <span class="count" data-count="my">{{ stack_entries|length }}</span>
       </button>
     </div>
+    {# Hidden row-level search input — kept so the existing filter JS
+       (which reads from #catalog-search) doesn't need to fork its query
+       source. The visible search lives in the hero (mirrors marketplace).
+       Two-way-synced in the script below. #}
     <input class="stack-search" type="search" id="catalog-search"
-           placeholder="Search packages by name or description…">
+           placeholder="Search packages by name or description…"
+           style="display:none;">
   </div>
 
   {# Filter chips — All / Required / Available / In stack + per-source-type chips. #}
@@ -52,13 +86,31 @@
       {% endfor %}
     </div>
     {% else %}
+    {# Empty state — friendly + actionable. Admins get a concrete CTA
+       (open /admin/tables with the N-registered-tables hint so they
+       know there IS data to package). Non-admins get a different copy
+       because the admin path is gated. #}
     <div class="stack-empty">
-      <h3>No data packages assigned</h3>
-      <p>Ask your admin to grant your group access to a package, then refresh this page.</p>
+      <span class="icon">📦</span>
+      <h3>No Data Packages yet</h3>
       {% if user.is_admin %}
+        {% if total_registered_tables and total_registered_tables > 0 %}
+        <p>You have <strong>{{ total_registered_tables }}</strong>
+           table{{ 's' if total_registered_tables != 1 else '' }} registered
+           in <code>/admin/tables</code> but no Data Packages grouping them.</p>
+        <p>Create your first package by editing any table and assigning it
+           to a new package — analysts opt-in to the package as a whole.</p>
+        {% else %}
+        <p>No tables registered yet either. Register your first source
+           table, then bundle related tables into a Data Package so analysts
+           can opt-in to them as a group.</p>
+        {% endif %}
       <div class="cta">
-        <a href="/admin/tables">Go to admin → Tables</a>
+        <a href="/admin/tables">Open /admin/tables →</a>
       </div>
+      {% else %}
+      <p>Ask your admin to create a Data Package or grant your group
+         access to an existing one, then refresh this page.</p>
       {% endif %}
     </div>
     {% endif %}
@@ -74,6 +126,7 @@
     </div>
     {% else %}
     <div class="stack-empty">
+      <span class="icon">🗂️</span>
       <h3>Your stack is empty</h3>
       <p>Browse available packages and click <strong>+ Add to stack</strong>.
          Required packages will appear here automatically.</p>
@@ -238,6 +291,21 @@
     });
   });
   document.getElementById('catalog-search').addEventListener('input', applyFilters);
+  // Hero-embedded search mirrors the in-row search box. Typing in either
+  // narrows the grid via the same filter pipeline; we two-way-sync the
+  // boxes so they always show the same query (matches marketplace's
+  // single-source-of-truth behaviour where the hero IS the search).
+  var heroSearch = document.getElementById('catalog-hero-search');
+  var rowSearch = document.getElementById('catalog-search');
+  if (heroSearch && rowSearch) {
+    heroSearch.addEventListener('input', function() {
+      rowSearch.value = heroSearch.value;
+      applyFilters();
+    });
+    rowSearch.addEventListener('input', function() {
+      heroSearch.value = rowSearch.value;
+    });
+  }
 })();
 </script>
 {% endblock %}
