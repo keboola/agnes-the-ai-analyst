@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.23] — 2026-05-16
+
 ### Fixed
 - Flea-market admin **Rescan** of a non-current v2+ submission with
   `guardrails.enabled: false` now promotes the entity forward
