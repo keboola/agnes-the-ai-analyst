@@ -360,27 +360,290 @@ verdict, persists nothing. Useful when:
 Default for `flea check` is **local** — fast, offline, no
 auth. `--server` is opt-in.
 
-#### `--fix` mode
+#### `--fix` mode — an interactive submission wizard
+
+`flea check --fix` is **not** a per-rule yes/no loop. It's a full
+guided wizard that walks the user through every issue with concrete
+proposals, examples, and choices — closer to `cargo init` or
+`rustup` setup than to a linter's autofix. The goal: bring a
+submission from "almost ready" to "best-in-class" in one focused
+session, without the user having to read the policy docs first.
 
 ```
-agnes flea check ./my-skill --fix
+$ agnes flea check ./my-skill --fix
+
+╭────────────────────────────────────────────────────────────────╮
+│  Flea-market Submission Wizard                                 │
+│  ./my-skill (skill · 23 files · 412 KB)                        │
+│                                                                │
+│  Found 2 blockers and 1 warning. Walk through them now? [Y/n]  │
+╰────────────────────────────────────────────────────────────────╯
 ```
 
-For each blocker / warning that has a deterministic fix path, the CLI
-proposes a concrete edit and asks `[y/N]`. Supported fixes today
-(extensible per check module):
+##### Wizard structure
 
-| Rule | Suggested fix |
-|---|---|
-| `description-too-short` | Open `$EDITOR` on `SKILL.md` with the cursor on the description line; pre-fills "Use when … to … (TODO expand)" |
-| `name-invalid-chars` | Replace with sanitized slug (`my-skill-v2!` → `my-skill-v2`) |
-| `body-short` | Print the current body + a TODO marker; reopen in `$EDITOR` |
-| `frontmatter-missing` | Inject a stub frontmatter block, reopen in `$EDITOR` |
+Linear walk through findings, sorted: **blockers first → warnings →
+polish suggestions**. Each step is a self-contained panel with the
+SAME information architecture so the user learns it once:
 
-Static-security findings are NEVER auto-fixed — a regex match like
-`eval $VAR` requires human judgment to know whether it's a real
-hazard or a false positive. The CLI prints the deny-list rule and the
-matched line, then exits letting the user decide.
+```
+[2/3] Description quality                                blocker
+─────────────────────────────────────────────────────────────────
+WHERE:    SKILL.md:3
+PROBLEM:  Description is too short (17 chars, need ≥60).
+WHY:      The wizard preview + browse listings render the
+          description verbatim. Below 60 chars there's not enough
+          signal for installers to decide whether to add it.
+
+CURRENT:
+  description: Use when staging
+
+What would you like to do?
+
+  [1] Generate proposals based on your skill body (recommended)
+  [2] Open SKILL.md in $EDITOR
+  [3] Paste / type a description directly here
+  [4] Skip this finding for now
+
+>
+```
+
+##### Proposal generation — three sources, layered
+
+The "[1] Generate proposals" path stacks three sources of suggestions
+in increasing cost/value, and the user picks the one that resonates:
+
+1. **Local heuristics (instant, free).** Static templates per rule —
+   for `description-too-short`, the CLI inspects the SKILL.md body
+   and synthesizes 2-3 candidates like:
+   ```
+   Proposal A (heuristic):
+     "Use when staging a clean reference bundle for admin-review
+      pipeline tests. Pre-fills frontmatter and emits a verdict
+      under one second."
+
+   Proposal B (heuristic):
+     "Stage a reproducible bundle for guardrail-pipeline tests —
+      no LLM call, no server round-trip, deterministic frontmatter."
+   ```
+   Generated from name + first 2 body sentences + the frontmatter
+   `description: too short` value. Deterministic, no network.
+
+2. **Server LLM helper (best quality).** When the local Agnes
+   instance is configured with `guardrails.review_model`, a new
+   endpoint `POST /api/store/entities/check/suggest` returns 3
+   LLM-crafted proposals. The wizard makes the call only when the
+   user picks "[1]" *and* the instance advertises the capability
+   (see §6.6 below). Output:
+   ```
+   Proposal C (Claude haiku):
+     "Use when validating Flea-market guardrail pipelines locally —
+      packs, hashes, and runs all four inline checks against a
+      folder without uploading anywhere."
+
+   Proposal D (Claude haiku):
+     "Lightweight CLI shim that mirrors the server's pre-bake +
+      inline-check pipeline; useful for catching manifest/content/
+      security/quality issues before submitting to /api/store."
+   ```
+
+3. **Corpus examples (inspiration).** "[1]" also surfaces 2-3
+   examples from currently-approved skills *of the same type* with
+   *roughly similar word counts*. Returned by the same suggest
+   endpoint, anonymized (owner removed):
+   ```
+   In similar approved skills, descriptions look like:
+     • "Use when … to …"        (43 of the top 50 approved skills)
+     • "X for Y"                 (12 of the top 50)
+     • "Lightweight … that …"    (8 of the top 50)
+   ```
+   Gives the submitter a *feel* for what passes, not just what's
+   required.
+
+The submitter picks one number, the wizard previews the diff, and
+asks for confirmation:
+
+```
+Apply proposal D to SKILL.md? [Y/e/n]
+  Y = apply, e = open in $EDITOR with this prefilled, n = pick again
+```
+
+##### Question-driven generation (the "wizard with questions" part)
+
+For findings where the right fix depends on user intent — not just
+the file content — the wizard asks structured questions BEFORE
+generating proposals. Example for `description-too-short`:
+
+```
+Quick context check (helps the proposals land closer to right):
+
+  1. Who's the typical user of this skill?
+     [a] A developer working in Claude Code
+     [b] A data analyst running ad-hoc queries
+     [c] An admin operating an Agnes instance
+     [d] Other (type it)
+
+  > b
+
+  2. What single action does it enable?
+     (free-text, 5-15 words)
+
+  > "estimate the row count of a remote BigQuery table"
+
+  3. What's the trigger for using it?
+     [a] User explicitly asks about it ("estimate this table")
+     [b] User mentions a related topic (vague match)
+     [c] Always, on every session
+     [d] Other
+
+  > a
+```
+
+Using the answers, the wizard generates proposals tuned to the
+intent — not blind templates. The answers are NOT persisted to the
+skill (they're inputs to the generator, then discarded), but they
+ARE stored in the wizard's resume state (see below) so if the user
+quits halfway and restarts, they don't re-answer.
+
+##### Per-rule wizard scripts
+
+Each check module declares its own wizard script — what questions to
+ask, how to generate proposals from answers, what diff to apply.
+A `WizardScript` is essentially:
+
+```python
+@dataclass
+class WizardScript:
+    rule_id: str                    # e.g. "description-too-short"
+    severity: Literal["blocker", "warning", "polish"]
+    questions: list[Question]       # zero or more
+    proposals_fn: Callable[[Context, dict[str, Any]], list[Proposal]]
+    apply_fn: Callable[[Path, Proposal], Diff]
+```
+
+The list of supported wizard scripts in phase 1.5b:
+
+| Rule | Questions | Proposal sources |
+|---|---|---|
+| `description-too-short` | user, action, trigger | heuristic + LLM + corpus |
+| `body-short` | "what are the main steps?" (free text) | heuristic + LLM expansion of the user's steps into a body |
+| `name-invalid-chars` | (none — purely mechanical) | heuristic only (slug sanitizer) |
+| `frontmatter-missing` | "name?", "description?" (free) | heuristic |
+| `quality/no-examples` | "list 1-3 typical user prompts" | heuristic (transforms prompts into an Examples section) |
+| `quality/vague-trigger` | "concrete user phrase that should trigger it?" | heuristic + LLM rephrase into "Use when …" form |
+
+Static-security findings (deny-list regex hits) are NEVER auto-fixed
+by the wizard — `eval $VAR` and similar require human judgment about
+whether it's a real hazard. Instead the wizard prints the rule
+rationale, the matched line, suggests three remediation patterns
+(allowlist dispatch, refuse-and-validate, fail-closed), and offers
+to mark the finding "intentional, awaiting admin review" with a
+`# agnes: keep` annotation — admins can still override the block at
+review time.
+
+##### Resumable state
+
+Wizard runs longer than other CLI commands (a user might answer 6-8
+questions per finding, across 3-5 findings). Crashes / Ctrl-C
+should never lose progress. State is persisted to the sidecar under
+a new `wizard_state` key:
+
+```json
+{
+  "wizard_state": {
+    "started_at": "2026-05-16T14:08:11Z",
+    "bundle_sha256_at_start": "abc...123",
+    "answered": {
+      "description-too-short": {
+        "user_type": "data-analyst",
+        "action": "estimate the row count of a remote BigQuery table",
+        "trigger": "explicit"
+      }
+    },
+    "applied": [
+      {"rule": "name-invalid-chars", "from": "my-skill!", "to": "my-skill"}
+    ],
+    "skipped": ["body-short"]
+  }
+}
+```
+
+On next `flea check --fix`, the CLI offers:
+
+```
+A previous wizard session is in progress (started 2 min ago, 1
+finding remaining). [c]ontinue, [r]estart, [a]bandon? [C/r/a]
+```
+
+State is wiped on successful `flea push` (the submission is done) or
+on explicit `--fresh-fix`.
+
+##### Final review screen
+
+At the end of the wizard:
+
+```
+╭────────────────────────────────────────────────────────────────╮
+│  Wizard summary                                                │
+╰────────────────────────────────────────────────────────────────╯
+
+  ✓ Fixed 2 blockers
+    • description-too-short → applied proposal D (LLM)
+    • name-invalid-chars    → applied sanitized slug "my-skill"
+
+  ✓ Addressed 1 warning
+    • body-short            → expanded body to 312 chars (was 187)
+
+Diff preview:
+─────────────────────────────────────────────────────────────────
+SKILL.md
+─────────────────────────────────────────────────────────────────
+ ---
+-name: my-skill!
+-description: Use when staging
++name: my-skill
++description: Use when validating Flea-market guardrail pipelines …
+ ---
+
+-Body that is intentionally long enough …
++Body that is intentionally long enough … More substantive content
++following the proposal from the wizard …
+
+[a]pply, [e]dit further, [c]ancel? [A/e/c]
+```
+
+Final apply runs a fresh `flea check` automatically — if it now
+passes, the wizard prints the submit command and exits clean:
+
+```
+✓ Pre-flight: passed (no blockers, no warnings).
+Submit with: agnes flea push ./my-skill
+```
+
+##### `--fix` non-interactive mode
+
+For CI / scripts:
+
+```
+agnes flea check --fix --non-interactive --apply heuristic
+```
+
+Picks proposal `[1]` (heuristic-only — no LLM call) for every
+finding that has one and applies it without prompting. Fails on any
+finding that *requires* a user question (intentional — CI shouldn't
+guess user intent). Useful in test suites and for the dev-loop case
+where the submitter trusts the heuristic baseline.
+
+##### Cost discipline
+
+The LLM-helper path costs the operator real money (per-call
+Anthropic invoice). Two safeguards:
+
+- The wizard ONLY calls the helper endpoint when the user explicitly
+  picks "[1] Generate proposals" for a given finding — the user is
+  always in the loop.
+- The helper endpoint enforces a per-user `60 calls/day` slowapi
+  limit. Heavy abuse would have to be intentional.
 
 #### `agnes flea watch <folder>` — continuous pre-flight
 
@@ -791,7 +1054,70 @@ authenticated user can call it. slowapi limit `10/min` per user
 return shape on inline failure, but never writes a row or keeps the
 bundle bytes. The CHANGELOG calls this out as a privacy property.
 
-### 6.5 Why not just use the existing `POST /entities/preview`?
+### 6.5 New endpoint `POST /api/store/entities/check/suggest` — wizard proposals
+
+Powers the "[1] Generate proposals" path in the `flea check --fix`
+wizard. Accepts a small JSON payload (no upload — caller already
+has the bundle):
+
+```json
+{
+  "type": "skill",
+  "rule_id": "description-too-short",
+  "current_value": "Use when staging",
+  "context": {
+    "name": "my-skill",
+    "body_excerpt": "<first 500 chars of SKILL.md body>",
+    "answers": {
+      "user_type": "data-analyst",
+      "action": "estimate the row count of a remote BigQuery table",
+      "trigger": "explicit"
+    }
+  },
+  "want_corpus_examples": true
+}
+```
+
+Response:
+
+```json
+{
+  "proposals": [
+    {"id": "C", "source": "llm-haiku", "value": "Use when validating Flea-market guardrail pipelines …"},
+    {"id": "D", "source": "llm-haiku", "value": "Lightweight CLI shim that mirrors the server's …"}
+  ],
+  "corpus_examples": [
+    {"pattern": "Use when … to …", "approx_count": 43},
+    {"pattern": "X for Y", "approx_count": 12}
+  ]
+}
+```
+
+**Server-side:**
+
+- Routes the prompt through the same `connectors/llm/factory.py`
+  `resolve_model_tier` that the existing guardrail review uses,
+  defaulting to Haiku for cost.
+- Corpus examples are pre-computed daily by a small scheduler job
+  that bucketizes the descriptions of currently-approved entities
+  (anonymized, owner-removed, prefix-stripped). Cached in
+  `${DATA_DIR}/state/corpus-summary.json`. The `want_corpus_examples`
+  flag triggers a read-from-cache; no per-request DB scan.
+- slowapi limit `60/day` per user (LLM cost gate). Returns 429 with
+  a `quota_exceeded` payload so the wizard can fall back to
+  heuristic-only mode gracefully.
+- Returns 404 / 501 when `guardrails.review_model` is unset (LLM
+  disabled for the instance) — the wizard falls back to heuristic
+  proposals only, with a one-line note.
+
+**Why not embed the prompt in the CLI client?**
+
+Same reason `flea check --server` exists: operators can customize
+the prompt + thresholds; the API key lives server-side; and we don't
+want CLI clients enumerating which LLM models are available. Server
+holds the policy.
+
+### 6.6 Why not just use the existing `POST /entities/preview`?
 
 The existing `/preview` only runs metadata extraction +
 `summarize_for_preview`. It exists for the wizard's step 1 ("here's
@@ -910,6 +1236,26 @@ the sidecar; older servers fall back to polling
   - **`flea check --fix` auto-fix** — folder with `name: my-skill!`
     (invalid chars). CLI proposes `my-skill`, user accepts, file is
     rewritten, second `flea check` passes.
+  - **Wizard end-to-end (heuristic)** —
+    `flea check --fix --non-interactive --apply heuristic` against a
+    folder with 2 blockers (description-too-short, name-invalid-chars)
+    produces a sidecar `wizard_state.applied[*]` log of both fixes
+    and a folder that passes a subsequent `flea check`.
+  - **Wizard resume** — start a wizard, answer the description
+    questions, Ctrl-C. Re-run `flea check --fix` → CLI prompts
+    "continue / restart / abandon"; choose continue → wizard skips
+    description questions, jumps to the next finding.
+  - **Wizard LLM suggest fallback** — mock the suggest endpoint to
+    return 404 (LLM disabled); wizard surfaces heuristic proposals
+    only with a one-line note. Mock the endpoint to return 429
+    `quota_exceeded`; same behavior with a different note.
+  - **Wizard security-finding handling** — folder with `eval $1` in
+    `scripts/run.sh`. Wizard shows the matched rule, the three
+    remediation patterns, offers the `# agnes: keep` annotation, but
+    refuses to mutate the offending line.
+  - **Wizard state survives crash mid-apply** — kill the process
+    after answering questions but before the final `apply` confirm.
+    Re-run → state shows answers preserved, applied list empty.
 
 ---
 
@@ -928,7 +1274,7 @@ the sidecar; older servers fall back to polling
   the auto-fall-back-to-POST path when the server reports archived /
   deleted
 
-### Phase 1.5 — `flea check` + `flea watch` (1 day)
+### Phase 1.5a — `flea check` + `flea watch` (1 day)
 
 - `cli/lib/flea_check.py` — wraps `src.store_guardrails.{manifest,
   content,static_scan,quality}_check.check()` and aggregates into a
@@ -937,10 +1283,6 @@ the sidecar; older servers fall back to polling
   watch mode / push pre-flight / `--json` consumers.
 - `cli/lib/flea_render.py` — traffic-light renderer + JSON renderer.
   Plain rich-style output by default; `--no-color` honored.
-- `cli/lib/flea_fix.py` — small library of deterministic auto-fixes
-  (description stub, name sanitizer, frontmatter injector). Each fix
-  is a `(rule_id, suggest_fn(path) -> proposed_patch)` pair. New
-  rules add a new entry; CLI dispatch is data-driven.
 - `cli/commands/flea.py` gets `check`, `watch` subcommands. `push`
   gets `--no-precheck` flag (default = run pre-flight before
   uploading).
@@ -948,19 +1290,64 @@ the sidecar; older servers fall back to polling
   fixture; the watch loop is tested headless by feeding fake fsnotify
   events through a stub.
 
-### Phase 2 — Server endpoints (1 day)
+### Phase 1.5b — wizard `--fix` (2 days)
+
+- `cli/lib/flea_wizard.py` — `WizardScript` per rule (questions,
+  proposal generator, applier). Initial scripts: description-too-short,
+  body-short, name-invalid-chars, frontmatter-missing,
+  quality/no-examples, quality/vague-trigger. Static-security
+  findings get a *guidance-only* script (no auto-fix, just
+  remediation patterns + the "intentional, awaiting admin review"
+  annotation path).
+- `cli/lib/flea_wizard_render.py` — TUI panels (the `[N/M] Rule
+  name` header, the proposals list, the final-summary diff preview).
+  Built on `rich`, fall-back to plain text on dumb terminals.
+- `cli/lib/flea_proposals.py` — heuristic proposal generators
+  (templates, slug sanitizer, body expansion stubs). Pure functions,
+  unit-tested per rule.
+- `cli/v2_client.py` gains `api_post_suggest(rule_id, payload)`
+  thin wrapper. The wizard guards the call behind capability
+  probing — older servers without the endpoint fall back to
+  heuristic-only mode silently.
+- Sidecar schema bump to v2: adds `wizard_state` key with
+  `started_at`, `bundle_sha256_at_start`, `answered`, `applied`,
+  `skipped`. Round-trips through the existing read/write helpers.
+- `--non-interactive --apply heuristic` mode for CI / scripts.
+- Tests:
+  - Each wizard script: question prompts produce expected proposals
+    (golden-file).
+  - Resume from saved state mid-finding correctly skips already-
+    answered questions.
+  - LLM-helper endpoint mock returns proposals; wizard surfaces
+    them under the right "[N]" key; falls back to heuristic on 404 /
+    quota_exceeded.
+  - End-to-end: starting from a folder with two blockers, the
+    wizard's `--non-interactive --apply heuristic` produces a
+    folder whose subsequent `flea check` exits 0.
+
+### Phase 2 — Server endpoints (1-1.5 days)
 
 - `GET /api/store/submissions/{id}` — submitter-facing submission
   status (see §6.1).
 - `POST /api/store/entities/check` — dry-run pre-flight that runs the
   full `run_inline_checks` and returns the verdict without persisting
-  (see §6.4). The phase-1.5 CLI `flea check --server` mode consumes
+  (see §6.4). The phase-1.5a CLI `flea check --server` mode consumes
   this.
-- `SubmissionStatusResponse` + `PreflightCheckResponse` pydantic models.
+- `POST /api/store/entities/check/suggest` — wizard proposal generator
+  (see §6.5). Powers the phase-1.5b `flea check --fix` interactive
+  experience.
+- `SubmissionStatusResponse` + `PreflightCheckResponse` +
+  `SuggestProposalsResponse` pydantic models.
 - LLM findings summarization helper (`_redact_llm_findings(...)`) that
   returns a one-line human summary.
+- `connectors/llm/prompts/wizard_*.txt` — per-rule prompt templates,
+  versioned alongside the existing guardrail prompts.
+- Daily scheduler job that bakes `corpus-summary.json` from the
+  current approved-entity descriptions (anonymized, owner-stripped,
+  pattern-bucketed). Cached at `${DATA_DIR}/state/corpus-summary.json`.
 - `tests/test_store_submission_status_endpoint.py`,
-  `tests/test_store_preflight_check_endpoint.py`.
+  `tests/test_store_preflight_check_endpoint.py`,
+  `tests/test_store_wizard_suggest_endpoint.py`.
 
 ### Phase 3 — Wire `--watch` to new endpoint (½ day)
 
@@ -1079,6 +1466,37 @@ fast enough).
     server LLM tier is the second gate. `flea check` is explicit
     about this in its closing line.
 
+15. **Wizard ergonomics — choice numbers vs arrow keys.** TUIs that
+    use arrow-key navigation feel modern but break over SSH, in CI,
+    and inside `claude --remote-control` tmux sessions. **Tentative
+    answer:** Numbered choices, `[Y/n]` confirmations, free-text
+    inputs. Arrow-key polish is a future opt-in (`--rich-tui`)
+    when the underlying terminal-detection is reliable.
+
+16. **Wizard's effect on git history.** The wizard rewrites
+    SKILL.md and the like — if the folder is under git, the user
+    will want clean commits. **Tentative answer:** No special git
+    integration in phase 1.5b. Each wizard apply prints the diff;
+    the user runs their own `git diff` / `git add -p` / commit
+    afterwards. Stretch goal in a later phase: `--commit-on-apply`
+    that stages and commits each fix individually with a
+    descriptive message.
+
+17. **Cost cap for wizard LLM calls.** The Anthropic invoice is the
+    operator's bill, not the submitter's. **Tentative answer:**
+    Two safeguards (already in §6.5): the call is user-initiated
+    (the wizard never auto-fires), and a 60/day per-user slowapi
+    limit hard-caps abuse. Operators can disable the helper
+    entirely by leaving `guardrails.review_model` unset; the wizard
+    silently degrades to heuristic-only.
+
+18. **Wizard scripts as plugins.** Should third parties be able to
+    register their own wizard scripts (e.g. for organization-
+    specific naming conventions)? **Tentative answer:** Phase 1.5b
+    ships a fixed registry baked into `cli/lib/flea_wizard.py`.
+    Plugin-style extension is a future concern once we have demand
+    + a stable `WizardScript` interface.
+
 ---
 
 ## 12. Acceptance criteria
@@ -1120,6 +1538,15 @@ fast enough).
   best-effort on Windows.
 - `agnes flea check --json` returns a stable LSP-style diagnostic
   shape suitable for editor / Claude Code integration.
+- `agnes flea check --fix` walks the user through every finding with
+  intent-driven questions and 2-3 concrete proposals (heuristic +
+  LLM + corpus). The user picks a number; the wizard previews the
+  diff and asks one final confirmation before writing.
+- The wizard resumes cleanly after Ctrl-C / crash: `wizard_state` in
+  the sidecar captures answers, applied diffs, and skipped findings.
+- Static-security findings are never auto-mutated by the wizard;
+  they get remediation guidance + an "intentional" annotation
+  path admins can review.
 - All four phases above ship with green CI on the full pytest suite.
 
 ---
