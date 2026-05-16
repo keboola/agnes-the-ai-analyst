@@ -122,9 +122,16 @@ Behavior:
    is in a terminal-good state (`approved`), exit with
    `up-to-date, status=approved`.
 4. **Look up** — read `<folder>/.agnes-flea.json` (see §4). If a mapping
-   exists for the current `instance_url`, this is an **update** (PUT);
-   otherwise a **create** (POST). `--force-new` skips the lookup and
-   forces POST.
+   exists for the current `instance_url`:
+   - `last_status` is non-archived → **update** (PUT).
+   - `last_status='archived'` or `archived_at` is set → fall back to
+     **create** (POST). PUT to an archived entity is refused
+     server-side; the CLI doesn't even try. The old `entity_id`
+     migrates into `history[]` and the new one becomes current.
+   - `last_status='deleted'` (hard-deleted out of band) → same: POST,
+     migrate to history.
+   Otherwise (no mapping) → **create** (POST). `--force-new` short-circuits
+   the lookup and forces POST regardless.
 5. **Upload** — calls `api_post_multipart` or `api_put_multipart` via
    the existing v2 client.
 6. **Persist** — on 2xx, writes `entity_id`, `submission_id`,
@@ -167,7 +174,72 @@ across all known sidecars. Walks a per-user index file
 (`~/.config/agnes/flea-uploads.json`) maintained alongside the sidecars
 (see §4). Useful for "what have I published from this laptop?"
 
-### 3.5 `agnes flea diff <folder>`
+### 3.5 `agnes flea archive <folder>`
+
+```
+agnes flea archive <folder> [--instance URL] [--all-instances] [--yes]
+```
+
+Soft-archives the entity that this folder published to the current
+Agnes instance. Server-side this maps to
+`DELETE /api/store/entities/{entity_id}` (no `?hard=true`), which:
+
+- Flips `visibility_status='archived'`.
+- Renames the server-side entity to
+  `<original-name>__archived__<epoch>` so the `(owner, name)` and
+  `<name>-by-<owner_username>` slug slots free up for a fresh upload
+  under the same name.
+- Keeps the on-disk bundle + existing `user_store_installs` intact so
+  users who already installed the plugin keep getting it through
+  `marketplace.zip` / `marketplace.git`.
+
+Behavior:
+
+1. Reads sidecar; refuses if no mapping for the chosen instance.
+2. Confirms (interactive prompt or `--yes`) — destructive-ish (frees
+   the name slot, can't be undone via the CLI; see §3.7).
+3. Calls `api_delete(f"/api/store/entities/{entity_id}")`.
+4. **Updates sidecar** — the instance entry stays but its `last_status`
+   flips to `archived`, and a new field `archived_at` is stamped.
+   The `entity_id` is preserved so `flea status` can still surface
+   "this folder was archived as ent_abc123 on 2026-05-17".
+5. Next `agnes flea push <folder>` on the same instance creates a NEW
+   entity (POST), because PUT to an archived entity_id is refused
+   server-side. Sidecar's old `entity_id` is replaced on success.
+
+Server preconditions enforced for the CLI to relay clearly:
+
+| Server reject | CLI behavior |
+|---|---|
+| 404 `entity_not_found` (already hard-deleted by admin) | Treat as success: update sidecar `last_status='deleted'`, exit 0 with note |
+| 403 `not_owner` | Print "you don't own this entity on this instance — owner-only operation" |
+| 403 `quarantined_owner_cannot_delete` | Print the server hint verbatim ("under quarantine while admins review") |
+| 403 with `hard_delete_admin_only` | Cannot happen — CLI never passes `hard=true` on the `archive` subcommand |
+
+`--all-instances`: archives the entity on every instance the folder
+has been pushed to. Useful when retiring a skill globally.
+
+### 3.6 `agnes flea delete <folder>` (admin-only hard delete)
+
+```
+agnes flea delete <folder> [--instance URL] [--yes-i-mean-it]
+```
+
+Wraps `DELETE /api/store/entities/{entity_id}?hard=true`. **Admin-only**
+server-side. The CLI:
+
+1. Refuses without the explicit `--yes-i-mean-it` flag.
+2. Surfaces the server's `403 hard_delete_admin_only` cleanly for
+   non-admin callers (the same payload that the UI shows).
+3. On success, sidecar instance entry is removed entirely (not just
+   marked archived) — the bytes are gone server-side and the
+   `entity_id` is no longer valid for anything.
+
+This is intentionally distinct from `archive` so the destructive
+variant requires deliberate intent. Most submitter workflows should
+use `archive`; `delete` is the legal/privacy escape hatch.
+
+### 3.7 `agnes flea diff <folder>`
 
 ```
 agnes flea diff <folder> [--instance URL]
@@ -194,7 +266,16 @@ Stretch goal — phase 2.
       "submission_id": "sub_xyz789",
       "last_bundle_sha256": "abc...123",
       "last_uploaded_at": "2026-05-16T12:34:56Z",
-      "last_status": "approved"
+      "last_status": "approved",
+      "archived_at": null,
+      "history": [
+        {
+          "entity_id": "ent_old111",
+          "name": "my-skill",
+          "archived_at": "2026-04-02T09:15:00Z",
+          "reason": "cli_archive"
+        }
+      ]
     },
     "https://other-agnes.internal": {
       "entity_id": "ent_def456",
@@ -203,11 +284,24 @@ Stretch goal — phase 2.
       "submission_id": "sub_uvw012",
       "last_bundle_sha256": "abc...123",
       "last_uploaded_at": "2026-05-10T08:21:11Z",
-      "last_status": "pending_llm"
+      "last_status": "pending_llm",
+      "archived_at": null,
+      "history": []
     }
   }
 }
 ```
+
+Fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `entity_id` | str | Current server-side entity id. Replaced on every successful POST. |
+| `submission_id` | str | Latest submission row; what `flea status` / `--watch` polls. |
+| `last_bundle_sha256` | hex str | Bundle-content hash of the last successful upload — drives the "skip if unchanged" short-circuit on re-push. |
+| `last_status` | enum | One of `pending_inline | pending_llm | approved | blocked_llm | review_error | overridden | archived | deleted`. Mirrors server `store_submissions.status` plus the entity-level lifecycle states. |
+| `archived_at` | ISO timestamp \| null | Stamped when `flea archive` succeeds (or when push detects a server-side archive). `null` while the entity is live. Co-presence with non-archived `last_status` means a third party (admin) re-published under the same id — should never happen normally. |
+| `history[]` | list of older entity ids | Every previous entity_id this folder published, paired with its archive timestamp and reason. Lets `flea list --history <folder>` reconstruct the chain across renames / archives. |
 
 **Why a sidecar (not a global file)?**
 
@@ -437,7 +531,9 @@ if user["id"] != sub["submitter_id"] and not is_admin(user, conn):
 | `validation_failed` (inline) | 422 `{code, checks: {manifest, content, quality}}` | Pretty-print which check failed + suggest fix (e.g. "description too short — need ≥60 chars") |
 | `security_blocked` (inline) | 422 `{code, checks: {static_security}}` | Print matched rule(s) + URL to security policy doc |
 | `blocked_llm` (post-pending) | 422 returned on `flea status` if `--strict`; otherwise structured exit 2 with summary | Same |
-| Stale `entity_id` (deleted server-side) | 404 on PUT | Suggest `--force-new` to re-create, or `agnes flea unlink ./folder` first |
+| Stale `entity_id` (deleted server-side) | 404 on PUT | Auto-fall-back to POST (create new), migrate old id into `history[]`, sidecar `last_status='deleted'`, print one-line note. No `--force-new` needed. |
+| Entity archived server-side (by admin or other channel) | 400 / 409 on PUT | Same auto-fall-back as above — `history[]` gets the old id with `reason="archived_server_side"` |
+| Owner mismatch on PUT (entity transferred / orphaned) | 403 `not_owner` | Print server detail; do NOT silently re-create. Suggest `agnes flea unlink` if user really wants to fork off a new entity under their own ownership. |
 | Network error | curl-level failure | Retry once, then surface error verbatim — sidecar is NOT updated on failure |
 | Empty folder | n/a (caught client-side) | Pre-flight refuse with "no skill / agent / plugin marker found" |
 | Folder with `.git/` and no excludes config | Default exclude tuple covers it | Silent, no warning |
@@ -495,8 +591,23 @@ the sidecar; older servers fall back to polling
     matches new content.
   - Re-push unchanged → CLI exits 0 without an upload (HTTP intercept
     asserts no POST/PUT called).
-  - Delete entity server-side, re-push → 404 → CLI suggests
-    `--force-new` → with `--force-new` succeeds and overwrites sidecar.
+  - Delete entity server-side, re-push → 404 → auto-fall-back to POST,
+    old `entity_id` lands in sidecar `history[]`.
+  - **Archive lifecycle** — push folder, then `flea archive` → server
+    flips visibility to `archived`, sidecar `last_status='archived'`,
+    `archived_at` populated. Re-push → creates a NEW entity (POST,
+    different `entity_id`), history[] contains the old id.
+  - **Archive `--all-instances`** — push to two mocked instances, then
+    archive --all-instances → both instance entries flip status; if
+    one mock returns 5xx, the other still succeeds.
+  - **Hard delete refused for non-admin** — `flea delete
+    --yes-i-mean-it` as non-admin returns the server's
+    `hard_delete_admin_only` payload; sidecar unchanged.
+  - **Hard delete as admin** — sidecar instance entry removed entirely
+    (not migrated to history) because the bytes are gone.
+  - **Quarantined-entity archive blocked** — admin pushes a bundle that
+    lands `blocked_llm`; owner tries `flea archive` → server returns
+    `quarantined_owner_cannot_delete` → CLI relays the hint verbatim.
 
 ---
 
@@ -504,12 +615,16 @@ the sidecar; older servers fall back to polling
 
 ### Phase 1 — CLI (1-2 days)
 
-- `cli/commands/flea.py` with `push`, `status`, `unlink`, `list`
-- `cli/lib/flea_state.py` (sidecar read/write, global index)
+- `cli/commands/flea.py` with `push`, `status`, `archive`, `delete`,
+  `unlink`, `list`
+- `cli/lib/flea_state.py` (sidecar read/write, global index,
+  history[] migration on archive/server-archive-detected)
 - `cli/lib/flea_pack.py` (deterministic ZIP)
 - `cli/lib/flea_types.py` (type detection)
 - Register `flea_app` in `cli/main.py`
-- Unit + integration tests
+- Unit + integration tests covering create/update/archive/delete +
+  the auto-fall-back-to-POST path when the server reports archived /
+  deleted
 
 ### Phase 2 — Server endpoint (½ day)
 
@@ -580,6 +695,31 @@ fast enough).
    that's by design. Server-side owner check is the gate; both
    teammates have to be the entity owner or in the Admin group.
 
+8. **Archive vs delete naming.** Most submitter workflows want
+   `archive` (free the name slot, keep existing installs working) —
+   but the server endpoint is `DELETE /api/store/entities/{id}` with
+   `?hard=true` as the destructive variant, so "DELETE = soft" is a
+   surprising default if you read the API. **Tentative answer:** The
+   CLI shadows the API's defaults with clearer names: `flea archive`
+   = the soft default, `flea delete --yes-i-mean-it` = the
+   admin-only hard delete. The existing `agnes store delete` keeps
+   the API-shaped semantics for backward compat; `flea` is the
+   user-friendly layer.
+
+9. **Sidecar archive history retention.** Should `history[]` be capped
+   (e.g. last 10 archived entity_ids)? Uncapped lists grow forever
+   for a folder pushed-and-archived many times. **Tentative answer:**
+   Uncapped for now — entries are small (~80 bytes each); revisit if
+   real-world sidecars cross 100 KB.
+
+10. **`flea archive --all-instances` partial failures.** If three
+    instances are linked and one returns 5xx, what state does the
+    sidecar end up in? **Tentative answer:** Per-instance independent
+    commit — successful archives are persisted, failed ones stay
+    `last_status='approved'` with an error printed. Caller re-runs
+    `flea archive` to retry the failures. Same semantics as
+    `agnes pull` partial-table failures today.
+
 ---
 
 ## 12. Acceptance criteria
@@ -600,6 +740,15 @@ fast enough).
 - Validation-tier inline failures produce a clear, fixable error;
   security-tier failures produce a clear, NOT-fixable error pointing
   at the matched static-security rule.
+- `agnes flea archive ./skill-folder` flips the server-side
+  visibility to `archived` and frees the `(owner, name)` slot;
+  re-pushing the same folder afterwards creates a fresh entity
+  (POST) and migrates the old `entity_id` into the sidecar
+  `history[]`. The old archived entity remains available to users
+  who had already installed it.
+- `agnes flea delete --yes-i-mean-it` requires admin and is refused
+  cleanly (with the `hard_delete_admin_only` server hint) for
+  non-admin callers.
 - All four phases above ship with green CI on the full pytest suite.
 
 ---
@@ -609,6 +758,7 @@ fast enough).
 - PR #290 — `feat(store): hard-reject inline guardrail failures, trace security only` — established the two-tier reject contract this proposal consumes
 - PR #295 — `fix(store-guardrails): post-#290 review follow-up` — locked the `validation_failed` / `security_blocked` JSON contract via the new test
 - `app/api/store.py:_reject_inline_or_continue` — the gate that this CLI polls behind
+- `app/api/store.py:delete_entity` (line 2336) — soft-archive semantics, name-slot freeing, `?hard=true` admin gate, quarantined-owner refusal — what `flea archive` and `flea delete` ride on
 - `cli/commands/store.py` — existing primitives this proposal wraps
 - `cli/lib/pull.py:529` — existing per-workspace state convention (`~/.config/agnes/sync_state.json`)
 - `docs/STORE_GUARDRAILS.md` — server-side guardrail design (status & findings semantics)
