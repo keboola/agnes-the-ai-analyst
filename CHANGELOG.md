@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.24] — 2026-05-16
+
 ### Fixed
 - Flea-market admin submissions UI now derives the per-submission
   `v#` label by **submission_id**, not **hash**. Hash-based lookup
