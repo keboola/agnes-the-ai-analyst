@@ -233,41 +233,42 @@
   transform: translateY(-2px);
 }
 
-/* Body (marketplace .mp-card .body). Dense info-card layout — NO top
- * banner. The icon sits inline with the title in .stack-card__header so
- * the card reads as professional info-density. */
+/* Photo banner (marketplace .mp-card .photo). 120px tall full-width
+ * gradient header with centered 2-letter initials in 26px bold — the
+ * single dominant visual element of each card, replacing the previous
+ * tiny inline icon-box. Mirrors marketplace.html .mp-card .photo
+ * pixel-for-pixel so /catalog, /memory and /marketplace tiles look
+ * identical at glance distance. The gradient `background` is set
+ * inline on the element from `entry.color` so each card scopes to its
+ * package/domain palette. */
+.stack-card__photo {
+  width: 100%;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary, #0073D1);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  /* Background gradient set inline on the element via `style=` so each
+   * card can pick its own primary stop from `entry.color`. */
+}
+/* When the banner contains an admin-supplied emoji glyph instead of
+ * letter initials, drop the size + letter-spacing slightly so the
+ * glyph reads as a domain marker rather than a giant emoji. */
+.stack-card__photo--glyph {
+  font-size: 30px;
+  letter-spacing: 0;
+}
+
+/* Body (marketplace .mp-card .body). Sits below the photo banner. */
 .stack-card__body {
   padding: 14px 16px 12px;
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-/* Header row — small (36px) icon-box on the left + title/meta on the right.
- * Direct mirror of marketplace's title-row pattern, just with a coloured
- * icon-box prepended to scope each card to its package/domain. */
-.stack-card__header {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-}
-.stack-card__icon-box {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
-  flex-shrink: 0;
-}
-.stack-card__heading {
-  flex: 1;
-  min-width: 0;
-  /* Leave room for the absolutely-positioned req-badge in the top-right
-   * corner (10px from edge + ~70px wide). */
-  padding-right: 72px;
+  gap: 6px;
 }
 
 /* Footer (marketplace .mp-card .footer): meta on the left, action on the right. */

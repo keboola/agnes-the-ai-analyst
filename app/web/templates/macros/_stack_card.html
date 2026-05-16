@@ -1,23 +1,33 @@
 {# Shared stack card macro — visual parity with marketplace.html .mp-card.
 
-   Dense info-card layout (NOT a Pinterest tile). Mirrors the .mp-card
-   body structure marketplace uses for its list items:
+   Vertical tile (mirrors mp-card pixel-for-pixel):
 
      ┌──────────────────────────────────────┐
-     │ [icon] Sales bundle      [Required]  │  header row
-     │        12 tables                     │  meta line
-     │        Orders + line items …         │  description (clamp 2)
-     │        [keboola] [bigquery]          │  tags
-     │ ─────────────────────────────────── │
-     │ Open →                  [+ Add]      │  footer
+     │                                      │
+     │             SA                       │  ← 120px photo banner,
+     │      (26px bold initials)            │     gradient bg, centered
+     │                                      │
+     ├──────────────────────────────────────┤
+     │ Sales bundle                         │  ← title (15px bold, clamp 2)
+     │ 12 tables                            │  ← meta (11px secondary)
+     │ Orders + line items …                │  ← description (clamp 2)
+     │ [keboola] [bigquery]                 │  ← optional tags
+     ├──────────────────────────────────────┤
+     │ Open →                  [+ Add]      │  ← footer
      └──────────────────────────────────────┘
 
-   The 36px icon-box sits inline with the title (NOT a top banner) so
-   the card reads as professional info-density, not a kids-app tile.
+   The 120px coloured banner with 2-letter initials replaces the old
+   tiny inline icon-box. This matches marketplace.html .mp-card .photo
+   exactly so /catalog, /memory and /marketplace read as one product.
+
+   Initials default to the first two letters of `entry.name` (uppercase).
+   When `entry.icon` is provided AND is a single emoji glyph the admin
+   set explicitly, we render it instead — at 30px so it doesn't dwarf
+   the rest of the card.
 
    States (dual-encoded: color border + text badge):
-     .stack-card.is-required → yellow border + "Required" badge top-right
-     .stack-card.is-in-stack → green border + Remove button
+     .stack-card.is-required → amber border + "Required" badge top-right
+     .stack-card.is-in-stack → green border + "In stack" badge top-right
      default                  → neutral border + "+ Add to stack" button
 
    `entry` is a dict-like with keys:
@@ -28,6 +38,20 @@
 {% macro card(entry) %}
 {% set _cls_required = ' is-required' if entry.requirement == 'required' else '' %}
 {% set _cls_instack = ' is-in-stack' if entry.in_stack else '' %}
+{# Compute 2-letter initials from the entry name. First non-space char +
+   the next non-space char after the first whitespace, when available
+   (so "Sales bundle" → "SB" not "SA"); otherwise first two letters. #}
+{% set _name = (entry.name or '?')|string %}
+{% set _name_parts = _name.split() %}
+{% if _name_parts|length >= 2 %}
+  {% set _initials = (_name_parts[0][0] ~ _name_parts[1][0])|upper %}
+{% else %}
+  {% set _initials = _name[:2]|upper %}
+{% endif %}
+{# Icon-glyph mode: when the admin set an emoji icon, render it instead
+   of the initials at smaller size so it reads as a domain glyph, not
+   as the banner's dominant element. #}
+{% set _has_glyph = entry.icon and entry.icon != '📦' and entry.icon != '🎯' %}
 <div class="stack-card{{ _cls_required }}{{ _cls_instack }}"
      data-id="{{ entry.id }}"
      data-requirement="{{ entry.requirement|default('available') }}"
@@ -38,25 +62,22 @@
     <div class="stack-card__req-badge stack-card__req-badge--instack" title="In your stack">In stack</div>
   {% endif %}
 
-  <div class="stack-card__body">
-    {# Header row: small coloured icon-box (36px) on the left, title +
-       optional meta on the right. Direct echo of marketplace's tight
-       title-row layout — no big top banner, no oversized emoji. #}
-    <div class="stack-card__header">
-      <div class="stack-card__icon-box"
-           style="background:{{ entry.color|default('#f3f4f6') }};">
-        {{ entry.icon|default('📦') }}
-      </div>
-      <div class="stack-card__heading">
-        <h3 class="stack-card__title">{{ entry.name }}</h3>
-        {% if entry.meta %}<div class="stack-card__meta">{{ entry.meta }}</div>{% endif %}
-      </div>
-    </div>
+  {# Photo banner — 120px tall, full-width gradient with centered
+     initials (or admin-supplied emoji glyph). The gradient base colour
+     comes from `entry.color`; the second stop is a soft pink so the
+     palette feels consistent across cards even when admins pick
+     mismatched primaries. Mirrors marketplace .mp-card .photo. #}
+  <div class="stack-card__photo{% if _has_glyph %} stack-card__photo--glyph{% endif %}"
+       style="background: linear-gradient(135deg, {{ entry.color|default('#fce7f3') }} 0%, #fce7f3 100%);">
+    {% if _has_glyph %}{{ entry.icon }}{% else %}{{ _initials }}{% endif %}
+  </div>
 
+  <div class="stack-card__body">
+    <h3 class="stack-card__title">{{ entry.name }}</h3>
+    {% if entry.meta %}<div class="stack-card__meta">{{ entry.meta }}</div>{% endif %}
     {% if entry.description %}
       <div class="stack-card__desc">{{ entry.description }}</div>
     {% endif %}
-
     {% if entry.tags %}
       <div class="stack-card__tags">
         {% for tag in entry.tags %}<span class="stack-card__tag">{{ tag }}</span>{% endfor %}
