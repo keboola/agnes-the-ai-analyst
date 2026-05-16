@@ -844,19 +844,24 @@ async def setup_advanced_page(
 
 
 def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
-                              source_types: Optional[list] = None) -> dict:
+                              source_types: Optional[list] = None,
+                              is_admin_view: bool = False) -> dict:
     """Adapt a ResourceEntry → template entry dict for the _stack_card macro.
 
     Always renders a meta line (`N tables` — even `0 tables`) and a
     description fallback so packages without an admin-authored
     description don't render as half-empty cards.
+
+    Empty-package CTA: when ``table_count == 0`` AND the viewer is admin,
+    the meta line becomes an inline link to ``/admin/tables?assign_to=<id>``
+    so admins can jump straight into the bulk-assign flow without first
+    having to discover the chip-input hidden in each table's edit modal.
     """
-    meta = f"{table_count} table{'s' if table_count != 1 else ''}"
     description = entry.description or (
         f"Bundle of {table_count} table{'s' if table_count != 1 else ''}. "
         f"Add to your stack so `agnes pull` syncs the data locally."
     )
-    return {
+    out = {
         "id": entry.id,
         "name": entry.name,
         "description": description,
@@ -864,7 +869,7 @@ def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
         "color": entry.color or "#fce7f3",
         "requirement": entry.requirement,
         "in_stack": entry.in_stack,
-        "meta": meta,
+        "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
         "tags": source_types or [],
         "drilldown_url": drilldown_url,
         "footer_left": (
@@ -872,6 +877,15 @@ def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
             if table_count else "Open →"
         ),
     }
+    if table_count == 0 and is_admin_view:
+        # `entry.id` is a server-generated uuid (data_packages.id), safe to
+        # inline. `assign_to` is read by admin_tables.html on load to auto-
+        # open the Bulk Assign modal with this package pre-selected.
+        out["meta_html"] = (
+            f'0 tables — <a href="/admin/tables?assign_to={entry.id}" '
+            f'style="color:#0073D1;">assign some →</a>'
+        )
+    return out
 
 
 @router.get("/catalog", response_class=HTMLResponse)
@@ -933,6 +947,7 @@ async def catalog(
             drilldown_url=f"/catalog/p/{slug}" if slug else f"/catalog#{e.id}",
             table_count=meta.get("table_count", 0),
             source_types=meta.get("source_types", []),
+            is_admin_view=is_admin_view,
         )
 
     entries = [_adapt(e) for e in browse_entries]
