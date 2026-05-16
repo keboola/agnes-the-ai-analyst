@@ -239,7 +239,223 @@ This is intentionally distinct from `archive` so the destructive
 variant requires deliberate intent. Most submitter workflows should
 use `archive`; `delete` is the legal/privacy escape hatch.
 
-### 3.7 `agnes flea diff <folder>`
+### 3.7 `agnes flea check <folder>` — local pre-flight
+
+```
+agnes flea check <folder> [--type TYPE] [--json]
+                          [--explain RULE] [--fix]
+                          [--server] [--strict] [--quiet]
+```
+
+The point of this command is to give the submitter the *exact same
+verdict the server would return*, in well under a second, **without
+uploading anything**. Local execution is possible because the four
+inline check modules — `src.store_guardrails.{manifest_check,
+content_check, static_scan, quality_check}` — are pure Python
+functions of `plugin_dir: Path`. The CLI ships the same package the
+server runs, so `agnes flea check` imports the exact same modules
+and gets bit-identical verdicts. **No re-implementation, no drift.**
+
+The one piece local checks cannot do is the **async LLM review**
+(needs an Anthropic API key on the server, plus the server's
+content-safety prompt + denylist). That step only happens server-side
+after `flea push`. `flea check` is explicit about this gap — the
+final line of every output is either:
+
+```
+✓ pre-flight passed. submit with: agnes flea push ./my-skill
+  (LLM security review will run server-side after upload)
+```
+
+or, when a blocker is found:
+
+```
+✗ 2 blocker(s) — fix locally before submitting.
+```
+
+#### What `flea check` actually runs
+
+```
+1. detect_type(folder)        → fail-fast on layout mistakes
+2. (optional) bake locally    → replicate server's _bake_plugin_tree
+3. manifest_check.check()     → "is this the shape of a skill/agent/plugin?"
+4. content_check.check()      → "are names + descriptions long enough?"
+5. static_scan.check()        → "do any files hit the deny-list regex?"
+6. quality_check.check()      → "is the body substantive?"
+```
+
+The combined verdict is the same `InlineResult` shape the server
+uses on the hard-reject path (`{manifest, content, static_security,
+quality}` each with `status: pass|warn|fail` + `findings[]`).
+
+#### Output — traffic light + actionable findings
+
+```
+$ agnes flea check ./my-skill
+flea check: ./my-skill (skill, 23 files, 412 KB)
+
+  ⛔ BLOCKERS (2)
+  ────────────────────────────────────────────────────────────
+  ● SKILL.md:3  description-too-short
+    "Use when staging"  (17 chars, need ≥60)
+    The wizard surfaces a one-line banner with this exact reason
+    on submit. Pad the description to read like a one-sentence
+    user-intent summary — "Use when … to …".
+    Fix:  agnes flea check ./my-skill --explain description-too-short
+
+  ● scripts/run.sh:1  static-scan/eval-shell-injection
+    Pattern matched:  eval $1
+    The deny-list flags `eval $VAR` because it lets the bundle
+    execute arbitrary attacker-controlled strings. The server
+    will mark this as security_blocked + write an audit-log
+    entry. Rewrite the script to dispatch on a fixed allowlist.
+    Fix:  agnes flea check ./my-skill --explain eval-shell-injection
+
+  ⚠ WARNINGS (1)
+  ────────────────────────────────────────────────────────────
+  ● SKILL.md:11  body-short
+    Body is 187 chars (recommended ≥200). Won't block the
+    submission — but skills with short bodies are visibly less
+    discoverable in the wizard preview.
+
+  ✓ Manifest layout
+  ✓ Name conventions
+  ✗ Description quality   (1 blocker)
+  ✗ Static security       (1 blocker)
+  ⚠ Body quality          (1 warning)
+
+  ────────────────────────────────────────────────────────────
+  ✗ 2 blocker(s) — fix locally before submitting.
+```
+
+#### Pretty-printing rules (the user-friendly bit)
+
+| Pattern | Example |
+|---|---|
+| **WHAT, WHERE, WHY, HOW** | each finding is exactly four lines: 1-line summary, file:line, why-the-rule-exists, suggested fix |
+| **Severity icons** | ⛔ blocker (fail) · ⚠ warning (warn) · ✓ pass — no emoji needed for color-blind terminals, the icon prefix is enough |
+| **One verdict line per check** | bottom-of-output checklist so the user sees at a glance which of the four buckets passed |
+| **`--explain RULE`** | long-form: rule rationale, examples of good vs bad, link to the policy doc |
+| **`--json`** | machine-readable; same shape the wizard's frontend reads. Lets editor integrations (VS Code, Claude Code) surface findings inline. |
+| **Color is opt-out** | TTY-detect; `--no-color` for piping; `NO_COLOR` env var honored |
+| **No "AI slop" findings text** | every finding string is hand-written in the check module (not LLM-generated). Local checks are deterministic and quotable. |
+
+#### `--server` mode (paranoid users)
+
+```
+agnes flea check ./my-skill --server
+```
+
+Same UX, but the CLI uploads the deterministic ZIP to a new
+**`POST /api/store/entities/check`** endpoint (see §6.2). That
+endpoint runs the *exact same* `run_inline_checks` and returns the
+verdict, persists nothing. Useful when:
+
+- The user's local Agnes package is out-of-date and they want the
+  server's current rule set.
+- The deployment has operator-customized check thresholds
+  (`content.min_desc_chars` overridden in `instance.yaml`).
+- Belt-and-suspenders before a particularly large/risky upload.
+
+Default for `flea check` is **local** — fast, offline, no
+auth. `--server` is opt-in.
+
+#### `--fix` mode
+
+```
+agnes flea check ./my-skill --fix
+```
+
+For each blocker / warning that has a deterministic fix path, the CLI
+proposes a concrete edit and asks `[y/N]`. Supported fixes today
+(extensible per check module):
+
+| Rule | Suggested fix |
+|---|---|
+| `description-too-short` | Open `$EDITOR` on `SKILL.md` with the cursor on the description line; pre-fills "Use when … to … (TODO expand)" |
+| `name-invalid-chars` | Replace with sanitized slug (`my-skill-v2!` → `my-skill-v2`) |
+| `body-short` | Print the current body + a TODO marker; reopen in `$EDITOR` |
+| `frontmatter-missing` | Inject a stub frontmatter block, reopen in `$EDITOR` |
+
+Static-security findings are NEVER auto-fixed — a regex match like
+`eval $VAR` requires human judgment to know whether it's a real
+hazard or a false positive. The CLI prints the deny-list rule and the
+matched line, then exits letting the user decide.
+
+#### `agnes flea watch <folder>` — continuous pre-flight
+
+```
+agnes flea watch <folder> [--quiet]
+```
+
+File-watcher loop: re-runs `flea check` on every save (using
+`watchdog` or an inotify-equivalent abstraction). Redraws a TUI panel
+with the latest verdict. Conceptually equivalent to "lint on save"
+in an IDE, but for the Flea Market guardrail rules. Editor-friendly:
+
+- Output stream `--json` mode is line-delimited so an LSP-style
+  integration can consume it.
+- Exit on Ctrl-C; print a one-line "watched N changes, last verdict
+  ✓" summary on exit.
+
+#### `flea push` auto-runs `flea check` as pre-flight
+
+By default, `flea push` runs the local checks first and **refuses to
+upload** if any blocker is found. Skips the round-trip + spares the
+user the server's 422 response with the same finding text. Opt out
+with `--no-precheck` (e.g. when iterating against `--server`
+checks against an in-tree dev build with newer rules than the local
+client).
+
+```
+$ agnes flea push ./my-skill
+flea: pre-flight check (manifest/content/static-security/quality)...
+flea: ✗ 1 blocker — refusing to upload.
+       SKILL.md:3  description-too-short  (17 chars, need ≥60)
+       Run `agnes flea check ./my-skill` for details.
+       Pass --no-precheck to skip and let the server reject it instead.
+```
+
+#### Strictness
+
+| Flag | Effect |
+|---|---|
+| (default) | Exit 0 on warnings, exit 2 on blockers |
+| `--strict` | Exit 2 on warnings as well — useful for CI |
+| `--quiet` | Suppress findings output, only the final verdict line + exit code |
+
+#### Editor / Claude Code integration
+
+`--json` output shape is intentionally LSP-diagnostic-shaped:
+
+```json
+{
+  "verdict": "blocked",
+  "diagnostics": [
+    {
+      "range": {"file": "SKILL.md", "line": 3, "col": 13},
+      "severity": "error",
+      "code": "description-too-short",
+      "message": "description is 17 chars; minimum is 60",
+      "suggestion": "Expand to a one-sentence user-intent summary."
+    }
+  ],
+  "buckets": {
+    "manifest": "pass",
+    "content":  "fail",
+    "static_security": "pass",
+    "quality":  "warn"
+  }
+}
+```
+
+So a Claude Code skill (or a VS Code extension) can shell out to
+`agnes flea check --json` and turn each diagnostic into an inline
+editor squiggle. This is the smallest possible surface area to make
+the experience IDE-native — no LSP server, no plugin lifecycle, just
+a single CLI call.
+
+### 3.8 `agnes flea diff <folder>`
 
 ```
 agnes flea diff <folder> [--instance URL]
@@ -521,6 +737,71 @@ if user["id"] != sub["submitter_id"] and not is_admin(user, conn):
 - slowapi limit: `60/min` per user (more than enough for `flea push
   --watch` exponential backoff, low enough to bound polling abuse).
 
+### 6.4 New endpoint `POST /api/store/entities/check` — server-side pre-flight (for `flea check --server`)
+
+```python
+@router.post(
+    "/entities/check",
+    response_model=PreflightCheckResponse,
+)
+async def check_entity_preflight(
+    file: UploadFile = File(...),
+    type: str = Form(...),
+    description: Optional[str] = Form(None),
+    user: dict = Depends(get_current_user),
+) -> PreflightCheckResponse:
+    """Dry-run the create pipeline: bake → run_inline_checks → return
+    verdict. Persists nothing — tmp dirs are wiped before the response.
+
+    Same code path as POST /entities up through _reject_inline_or_continue
+    but instead of raising on fail, returns the structured verdict so
+    the wizard / CLI can render it.
+    """
+```
+
+Response model:
+
+```python
+class PreflightCheckResponse(BaseModel):
+    verdict: str   # pass | validation_failed | security_blocked
+    type: str
+    name: Optional[str]
+    description: Optional[str]
+    checks: dict   # {manifest, content, static_security, quality}
+    bundle: dict   # {sha256, file_size, file_count}
+```
+
+**Why this is necessary on top of local checks:**
+
+- Operators may configure per-instance thresholds
+  (`guardrails.content.min_desc_chars`, deny-list patches in
+  `static_scan`) that a stale client doesn't know about. The server
+  endpoint guarantees current-truth.
+- Some checks may someday depend on server-side context (e.g.
+  "is the proposed slug colliding with another user's existing
+  entity?"). Local checks can't know.
+
+**Auth:** standard `get_current_user`. The endpoint cannot enumerate
+existing entities (just validates the uploaded bundle), so any
+authenticated user can call it. slowapi limit `10/min` per user
+(uploads are heavier than status reads).
+
+**Persistence:** *None.* The endpoint is the dry-run sibling of
+`POST /entities` — same scratch + bake + check pipeline, identical
+return shape on inline failure, but never writes a row or keeps the
+bundle bytes. The CHANGELOG calls this out as a privacy property.
+
+### 6.5 Why not just use the existing `POST /entities/preview`?
+
+The existing `/preview` only runs metadata extraction +
+`summarize_for_preview`. It exists for the wizard's step 1 ("here's
+what we found in your ZIP"); it doesn't run the four inline checks.
+Reshaping `/preview` to also run inline would break the wizard's
+contract (its frontend expects the `PreviewResponse` shape with
+`components[]`). Cleaner to add `/check` as a new sibling endpoint
+whose verdict shape matches what the CLI + future Claude Code
+integration consume directly.
+
 ---
 
 ## 7. Error handling
@@ -608,12 +889,33 @@ the sidecar; older servers fall back to polling
   - **Quarantined-entity archive blocked** — admin pushes a bundle that
     lands `blocked_llm`; owner tries `flea archive` → server returns
     `quarantined_owner_cannot_delete` → CLI relays the hint verbatim.
+  - **Pre-flight catches blockers offline** — folder with a
+    too-short SKILL.md description → `flea check` exits 2, output
+    contains `description-too-short` + `(N chars, need ≥60)`. No
+    HTTP call is made (asserts via mocked transport).
+  - **Pre-flight verdict parity** — same folder pushed through the
+    server's `POST /entities/check` endpoint returns an identical
+    `checks` dict to the local run.
+  - **`flea push` auto-precheck blocks** — folder with a blocker:
+    `flea push` exits 2 before any upload; sidecar untouched. With
+    `--no-precheck` the same folder hits the server and gets the
+    same 422 `validation_failed` reject.
+  - **`flea check --json` LSP shape** — output parses as JSON,
+    contains `verdict`, `diagnostics[]`, `buckets`, with
+    `diagnostics[*].range.file/line/col` populated when the source
+    rule has positional info.
+  - **`flea watch`** — feed two simulated save events into the
+    watcher; assert the re-check fires twice and the latest verdict
+    is the most recent file state.
+  - **`flea check --fix` auto-fix** — folder with `name: my-skill!`
+    (invalid chars). CLI proposes `my-skill`, user accepts, file is
+    rewritten, second `flea check` passes.
 
 ---
 
 ## 10. Implementation phases
 
-### Phase 1 — CLI (1-2 days)
+### Phase 1 — CLI core (1-2 days)
 
 - `cli/commands/flea.py` with `push`, `status`, `archive`, `delete`,
   `unlink`, `list`
@@ -626,13 +928,39 @@ the sidecar; older servers fall back to polling
   the auto-fall-back-to-POST path when the server reports archived /
   deleted
 
-### Phase 2 — Server endpoint (½ day)
+### Phase 1.5 — `flea check` + `flea watch` (1 day)
 
-- `GET /api/store/submissions/{id}` with submitter / admin auth gate
-- `SubmissionStatusResponse` pydantic model
+- `cli/lib/flea_check.py` — wraps `src.store_guardrails.{manifest,
+  content,static_scan,quality}_check.check()` and aggregates into a
+  `LocalPreflightResult` shaped like the server's `InlineResult`.
+  Pure-Python, no Typer-specific glue here so it's reusable from
+  watch mode / push pre-flight / `--json` consumers.
+- `cli/lib/flea_render.py` — traffic-light renderer + JSON renderer.
+  Plain rich-style output by default; `--no-color` honored.
+- `cli/lib/flea_fix.py` — small library of deterministic auto-fixes
+  (description stub, name sanitizer, frontmatter injector). Each fix
+  is a `(rule_id, suggest_fn(path) -> proposed_patch)` pair. New
+  rules add a new entry; CLI dispatch is data-driven.
+- `cli/commands/flea.py` gets `check`, `watch` subcommands. `push`
+  gets `--no-precheck` flag (default = run pre-flight before
+  uploading).
+- Tests: each check rule has a positive (passes) and negative (fails)
+  fixture; the watch loop is tested headless by feeding fake fsnotify
+  events through a stub.
+
+### Phase 2 — Server endpoints (1 day)
+
+- `GET /api/store/submissions/{id}` — submitter-facing submission
+  status (see §6.1).
+- `POST /api/store/entities/check` — dry-run pre-flight that runs the
+  full `run_inline_checks` and returns the verdict without persisting
+  (see §6.4). The phase-1.5 CLI `flea check --server` mode consumes
+  this.
+- `SubmissionStatusResponse` + `PreflightCheckResponse` pydantic models.
 - LLM findings summarization helper (`_redact_llm_findings(...)`) that
-  returns a one-line human summary
-- `tests/test_store_submission_status_endpoint.py`
+  returns a one-line human summary.
+- `tests/test_store_submission_status_endpoint.py`,
+  `tests/test_store_preflight_check_endpoint.py`.
 
 ### Phase 3 — Wire `--watch` to new endpoint (½ day)
 
@@ -720,6 +1048,37 @@ fast enough).
     `flea archive` to retry the failures. Same semantics as
     `agnes pull` partial-table failures today.
 
+11. **Local pre-flight drift risk.** If the CLI is installed via
+    `uv tool install agnes-the-ai-analyst==0.54.9` and the server is
+    on `0.54.15`, local checks may miss new rules. Should `flea
+    check` warn? **Tentative answer:** Yes — `cli/update_check.py`
+    already exists to surface "newer version available" notices; add
+    a one-line warning at the top of `flea check` output when the
+    client is more than 2 patch versions behind the server. Doesn't
+    block — `--server` mode is the always-fresh fallback.
+
+12. **Auto-fix scope.** Should `flea check --fix` ever modify
+    user files non-interactively? **Tentative answer:** Never.
+    Every fix proposes a diff and asks `[y/N]` (default no). Even
+    `--yes` short-circuits the confirmation but still prints the
+    diff first. Auto-fixing creative work without showing the diff
+    is a non-starter.
+
+13. **Watch-mode polling on Windows.** `watchdog` library uses
+    `ReadDirectoryChangesW` on Windows which has known issues
+    (silent drops on rapid saves, no symlink follow). **Tentative
+    answer:** Phase-1.5 supports macOS + Linux only; Windows users
+    get a polite "use `agnes flea check` after each save manually"
+    fallback. Revisit if there's demand.
+
+14. **LLM verdict findings in `flea check`?** Could local pre-flight
+    also gate against the LLM rules? **Tentative answer:** No — the
+    LLM review is content-judgment-heavy (prompt injection,
+    deceptive descriptions) and needs the Anthropic API key the
+    server holds. Local pre-flight catches mechanical issues; the
+    server LLM tier is the second gate. `flea check` is explicit
+    about this in its closing line.
+
 ---
 
 ## 12. Acceptance criteria
@@ -749,6 +1108,18 @@ fast enough).
 - `agnes flea delete --yes-i-mean-it` requires admin and is refused
   cleanly (with the `hard_delete_admin_only` server hint) for
   non-admin callers.
+- `agnes flea check ./folder` runs in well under one second on a
+  laptop and surfaces every server-side hard-reject reason BEFORE
+  any HTTP call. Verdict shape is bit-identical to a real
+  `POST /entities/check` against the same bundle.
+- `agnes flea push ./folder` refuses to upload when local pre-flight
+  finds blockers; `--no-precheck` bypasses for parity testing
+  against in-tree dev builds.
+- `agnes flea watch ./folder` re-runs the pre-flight on every file
+  save and redraws a TUI panel; works on macOS + Linux (watchdog),
+  best-effort on Windows.
+- `agnes flea check --json` returns a stable LSP-style diagnostic
+  shape suitable for editor / Claude Code integration.
 - All four phases above ship with green CI on the full pytest suite.
 
 ---
@@ -762,3 +1133,5 @@ fast enough).
 - `cli/commands/store.py` — existing primitives this proposal wraps
 - `cli/lib/pull.py:529` — existing per-workspace state convention (`~/.config/agnes/sync_state.json`)
 - `docs/STORE_GUARDRAILS.md` — server-side guardrail design (status & findings semantics)
+- `src/store_guardrails/runner.py:91 — run_inline_checks` — pure entrypoint that the CLI imports for local pre-flight
+- `src/store_guardrails/{manifest_check,content_check,static_scan,quality_check}.py` — the four check modules, each exposing a pure `check(plugin_dir) -> Dict[str, Any]`; same modules used server-side and client-side, zero duplication
