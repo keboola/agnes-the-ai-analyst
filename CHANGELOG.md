@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- Added `TestFullLifecycleFromInstaller` integration test class
+  (`tests/test_store_entity_versions.py`) covering the full
+  flea-market lifecycle from issuer / admin / subscribed-user
+  perspectives. Main test walks v1 upload → installer subscribes →
+  v2 promote → v3 blocked → admin force-overrides → restore v1,
+  asserting BOTH entity state AND served `marketplace.zip` bytes +
+  ETag at each transition. Plus 5 corner cases:
+  unsubscribed-user negative control, late-subscriber-during-
+  quarantine, non-owner privacy gate, second-restore reuse path
+  (PR #332 lifecycle validation), and archived-entity-keeps-
+  serving-installs (CLAUDE.md contract).
+
 ## [0.54.24] — 2026-05-16
 
 ### Fixed
