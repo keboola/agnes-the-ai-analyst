@@ -2210,3 +2210,525 @@ class TestRestoreReusesApprovedVerdict:
         assert (v3_sub["llm_findings"] or {}).get(
             "reused_from_submission_id"
         ) is None
+
+
+# Mock LLM payloads used by the lifecycle integration test class below.
+_MOCK_APPROVE_LIFECYCLE = {
+    "risk_level": "safe", "summary": "ok",
+    "findings": [], "template_placeholders_found": 0,
+    "reviewed_by_model": "mock-haiku", "error": None,
+    "content_quality": {"verdict": "pass", "issues": []},
+}
+_MOCK_BLOCK_LIFECYCLE = {
+    "risk_level": "high", "summary": "mock block — security issue",
+    "findings": [{"severity": "high", "category": "exfiltration",
+                  "file": "run.sh", "explanation": "mock-block"}],
+    "template_placeholders_found": 0,
+    "reviewed_by_model": "mock-haiku", "error": None,
+    "content_quality": {"verdict": "pass", "issues": []},
+}
+
+
+class TestFullLifecycleFromInstaller:
+    """Integration test for the full flea-market lifecycle from
+    issuer, admin, and subscribed-user perspectives.
+
+    Walks v1 upload → installer subscribes → v2 promote → v3 blocked
+    → admin force-overrides → restore v1. Asserts BOTH entity state
+    AND served `marketplace.zip` bytes + ETag at each transition.
+
+    Plan: ~/.claude/plans/peppy-napping-rose.md.
+    """
+
+    @staticmethod
+    def _install(client, eid, cookies):
+        r = client.post(f"/api/store/entities/{eid}/install", cookies=cookies)
+        assert r.status_code == 200, r.text
+
+    @staticmethod
+    def _serve_zip(client, cookies, if_none_match=None):
+        import io as _io
+        import zipfile as _zip
+        headers = {}
+        if if_none_match:
+            headers["If-None-Match"] = f'"{if_none_match}"'
+        r = client.get("/marketplace.zip", cookies=cookies, headers=headers)
+        etag = r.headers.get("etag", "").strip('"')
+        if r.status_code == 304:
+            return etag, None, 304
+        assert r.status_code == 200, r.text
+        with _zip.ZipFile(_io.BytesIO(r.content)) as zf:
+            contents = {n: zf.read(n) for n in zf.namelist()}
+        return etag, contents, 200
+
+    @staticmethod
+    def _drive_llm(monkeypatch, eid, sub_id, version_no, mock):
+        from pathlib import Path
+        from app.utils import get_store_dir
+        from src.store_guardrails.runner import run_llm_review
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle",
+            lambda *a, **kw: mock,
+        )
+        run_llm_review(
+            sub_id,
+            plugin_dir=Path(get_store_dir()) / eid / "versions" / f"v{version_no}" / "plugin",
+            conn_factory=get_system_db,
+            api_key_loader=lambda: "sk",
+            model_loader=lambda: "mock-haiku",
+        )
+
+    @staticmethod
+    def _latest_sub_id(eid):
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        conn = get_system_db()
+        sid = StoreSubmissionsRepository(conn).latest_for_entity(eid)["id"]
+        conn.close()
+        return sid
+
+    @staticmethod
+    def _ent(eid):
+        conn = get_system_db()
+        e = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        return e
+
+    @staticmethod
+    def _installs(installer_id):
+        from src.repositories.user_store_installs import UserStoreInstallsRepository
+        conn = get_system_db()
+        installs = UserStoreInstallsRepository(conn).list_for_user(installer_id)
+        conn.close()
+        return installs
+
+    @staticmethod
+    def _setup_guardrails_on(monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-lifecycle")
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_enabled", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_llm_provider_ready", lambda: True,
+        )
+        monkeypatch.setattr(
+            "app.api.store.get_guardrails_review_model",
+            lambda: "mock-haiku",
+        )
+        monkeypatch.setattr(
+            "app.api.store._schedule_llm_review", lambda *a, **kw: None,
+        )
+
+    def test_main_lifecycle_v1_v2_v3blocked_override_restorev1(
+        self, web_client, monkeypatch,
+    ):
+        """User's exact spec, end-to-end."""
+        self._setup_guardrails_on(monkeypatch)
+        owner_id, owner_cookies = _create_user(web_client, "lc-owner@x.com")
+        installer_id, installer_cookies = _create_user(web_client, "lc-installer@x.com")
+        _, admin_cookies = _create_admin(web_client, "lc-admin@x.com")
+
+        # ── Phase 1 ── v1 upload (clean, mock approve)
+        v1_zip = _make_skill_zip("lifecycle", body="V1 body content explaining when to use this skill in detail. " * 6)
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("v1.zip", v1_zip, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+        v1_sub_id = self._latest_sub_id(eid)
+        self._drive_llm(monkeypatch, eid, v1_sub_id, 1, _MOCK_APPROVE_LIFECYCLE)
+
+        ent = self._ent(eid)
+        assert ent["visibility_status"] == "approved"
+        assert ent["version_no"] == 1
+        v1_hash = ent["version"]
+
+        # ── Phase 2 ── installer subscribes
+        self._install(web_client, eid, installer_cookies)
+        installs = self._installs(installer_id)
+        assert {r["id"] for r in installs} == {eid}
+        assert installs[0]["version"] == v1_hash
+
+        etag_v1, contents_v1, _ = self._serve_zip(web_client, installer_cookies)
+        # Skills/agents land bundled under plugins/store-bundle/<skill_slug>/.
+        # The suffixed name `lifecycle-by-lc-owner` identifies our entity.
+        skill_files_v1 = [n for n in contents_v1 if "lifecycle-by-lc-owner" in n]
+        assert skill_files_v1, (
+            f"v1 bytes missing from marketplace.zip; got {list(contents_v1)[:5]}"
+        )
+
+        # ── Phase 3 ── v2 PUT (approve) → promote
+        v2_zip = _make_skill_zip("lifecycle", body="V2 body upgraded with more detail for the skill body content. " * 6)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        v2_sub_id = self._latest_sub_id(eid)
+        self._drive_llm(monkeypatch, eid, v2_sub_id, 2, _MOCK_APPROVE_LIFECYCLE)
+
+        ent = self._ent(eid)
+        assert ent["version_no"] == 2
+        v2_hash = ent["version"]
+        assert v2_hash != v1_hash
+
+        installs = self._installs(installer_id)
+        assert installs[0]["version"] == v2_hash
+
+        etag_v2, contents_v2, _ = self._serve_zip(web_client, installer_cookies)
+        assert etag_v2 != etag_v1, "etag must flip on v2 promote"
+
+        # ── Phase 4 ── v3 PUT (mock block) → stays at v2
+        v3_zip = _make_skill_zip("lifecycle", body="V3 body risky content that the LLM mock will mark as exfiltration. " * 6)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v3.zip", v3_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        v3_sub_id = self._latest_sub_id(eid)
+        self._drive_llm(monkeypatch, eid, v3_sub_id, 3, _MOCK_BLOCK_LIFECYCLE)
+
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        conn = get_system_db()
+        v3_sub = StoreSubmissionsRepository(conn).get(v3_sub_id)
+        ent = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert v3_sub["status"] == "blocked_llm"
+        assert ent["version_no"] == 2
+        assert ent["version"] == v2_hash
+
+        installs = self._installs(installer_id)
+        assert installs[0]["version"] == v2_hash
+
+        etag_v3_check, _, _ = self._serve_zip(web_client, installer_cookies)
+        assert etag_v3_check == etag_v2, (
+            "etag must NOT flip on blocked submission"
+        )
+
+        # ── Phase 5 ── admin overrides v3 → promotes
+        r = web_client.post(
+            f"/api/admin/store/submissions/{v3_sub_id}/override",
+            json={"reason": "false positive cleared offline by admin team"},
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        ent = self._ent(eid)
+        assert ent["version_no"] == 3
+        v3_hash = ent["version"]
+        assert v3_hash != v2_hash
+
+        installs = self._installs(installer_id)
+        assert installs[0]["version"] == v3_hash
+
+        etag_override, _, _ = self._serve_zip(web_client, installer_cookies)
+        assert etag_override != etag_v2
+
+        # ── Phase 6 ── restore v1 → v4 with v1 bytes
+        r = web_client.post(
+            f"/api/store/entities/{eid}/versions/1/restore",
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        v4_sub_id = self._latest_sub_id(eid)
+        conn = get_system_db()
+        v4_pre = StoreSubmissionsRepository(conn).get(v4_sub_id)
+        conn.close()
+        # PR #332 reuse path may fire if v1 was approved by same model.
+        # If not, drive LLM manually.
+        if v4_pre["status"] == "pending_llm":
+            self._drive_llm(monkeypatch, eid, v4_sub_id, 4, _MOCK_APPROVE_LIFECYCLE)
+
+        ent = self._ent(eid)
+        assert ent["version_no"] == 4
+        assert ent["version"] == v1_hash, (
+            "v4 bytes byte-identical to v1 — entity.version (hash) "
+            "should match v1's"
+        )
+
+        installs = self._installs(installer_id)
+        assert installs[0]["version"] == v1_hash, (
+            "installer should receive v1 bytes through v4 promotion"
+        )
+
+        etag_restore, contents_restore, _ = self._serve_zip(web_client, installer_cookies)
+        assert etag_restore != etag_override
+        v1_skill = {n: b for n, b in contents_v1.items() if "SKILL.md" in n and "lifecycle-by-lc-owner" in n}
+        rs_skill = {n: b for n, b in contents_restore.items() if "SKILL.md" in n and "lifecycle-by-lc-owner" in n}
+        assert v1_skill == rs_skill, (
+            "restored SKILL.md byte-equal v1's SKILL.md"
+        )
+
+    # ── Corner cases ────────────────────────────────────────────────
+
+    def test_unsubscribed_user_does_not_get_entity(
+        self, web_client, monkeypatch,
+    ):
+        """G1 negative control: a third user who never installs the
+        entity must NEVER see it in list_for_user — regardless of
+        which phase the lifecycle is in."""
+        self._setup_guardrails_on(monkeypatch)
+        owner_id, owner_cookies = _create_user(web_client, "unsub-owner@x.com")
+        unsub_id, unsub_cookies = _create_user(web_client, "unsub-other@x.com")
+
+        v1_zip = _make_skill_zip("unsubme", body="Body content for unsubscribed-user negative test that's long enough to clear threshold. " * 4)
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("v1.zip", v1_zip, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+        self._drive_llm(monkeypatch, eid, self._latest_sub_id(eid), 1, _MOCK_APPROVE_LIFECYCLE)
+
+        installs = self._installs(unsub_id)
+        assert eid not in {row["id"] for row in installs}, (
+            "non-subscribed user must not receive entity in list_for_user"
+        )
+
+        # marketplace.zip for the non-subscriber must NOT contain the bundle.
+        _, contents, _ = self._serve_zip(web_client, unsub_cookies)
+        skill_files = [n for n in contents if "unsubme-by-unsub-owner" in n]
+        assert not skill_files, (
+            f"non-subscriber's marketplace.zip leaked the bundle: {skill_files}"
+        )
+
+    def test_late_subscriber_during_quarantine_gets_v2(
+        self, web_client, monkeypatch,
+    ):
+        """G2: subscriber installs AFTER v3 is blocked but BEFORE
+        override. Must get v2 bytes (entity.version_no=2 at install
+        time)."""
+        self._setup_guardrails_on(monkeypatch)
+        owner_id, owner_cookies = _create_user(web_client, "lateinst-owner@x.com")
+
+        v1_zip = _make_skill_zip("lateinst", body="V1 body for late-subscriber test. " * 6)
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("v1.zip", v1_zip, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+        self._drive_llm(monkeypatch, eid, self._latest_sub_id(eid), 1, _MOCK_APPROVE_LIFECYCLE)
+
+        v2_zip = _make_skill_zip("lateinst", body="V2 body content advanced for late-subscriber test. " * 5)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200
+        self._drive_llm(monkeypatch, eid, self._latest_sub_id(eid), 2, _MOCK_APPROVE_LIFECYCLE)
+        v2_hash = self._ent(eid)["version"]
+
+        # PUT v3 + block.
+        v3_zip = _make_skill_zip("lateinst", body="V3 body content risky for late-subscriber test. " * 5)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v3.zip", v3_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200
+        self._drive_llm(monkeypatch, eid, self._latest_sub_id(eid), 3, _MOCK_BLOCK_LIFECYCLE)
+
+        # Late subscriber installs DURING quarantine. Should get v2.
+        late_id, late_cookies = _create_user(web_client, "lateinst-late@x.com")
+        self._install(web_client, eid, late_cookies)
+        installs = self._installs(late_id)
+        assert installs[0]["version"] == v2_hash, (
+            f"late subscriber during quarantine must get v2 hash; "
+            f"got {installs[0]['version'][:8]}"
+        )
+
+    def test_non_owner_does_not_see_quarantine_banner(
+        self, web_client, monkeypatch,
+    ):
+        """G3 privacy gate: during v3-blocked phase, a non-owner
+        non-admin third user hits /marketplace/flea/<eid>. Banner is
+        owner+admin-only — third user must see the public approved
+        view without 'Latest edit failed review' copy."""
+        self._setup_guardrails_on(monkeypatch)
+        owner_id, owner_cookies = _create_user(web_client, "priv-owner@x.com")
+
+        v1_zip = _make_skill_zip("priv", body="V1 body for privacy-gate test that's long enough. " * 5)
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("v1.zip", v1_zip, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+        self._drive_llm(monkeypatch, eid, self._latest_sub_id(eid), 1, _MOCK_APPROVE_LIFECYCLE)
+
+        # PUT v2 + block.
+        v2_zip = _make_skill_zip("priv", body="V2 body content risky for privacy-gate test that's long. " * 5)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200
+        self._drive_llm(monkeypatch, eid, self._latest_sub_id(eid), 2, _MOCK_BLOCK_LIFECYCLE)
+
+        # Third user (not owner, not admin) hits detail page.
+        _, third_cookies = _create_user(web_client, "priv-third@x.com")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=third_cookies)
+        assert r.status_code == 200, r.text
+        body = r.text
+        assert "Latest edit failed review" not in body, (
+            "third user must NOT see the v2+-edit failure banner"
+        )
+        assert "blocked_llm" not in body, (
+            "third user must NOT see blocked-status detail"
+        )
+        # Sanity: owner DOES see the banner.
+        r_owner = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r_owner.status_code == 200
+        assert "Latest edit failed review" in r_owner.text, (
+            "owner must see the banner for the same in-flight failure"
+        )
+
+    def test_second_restore_of_v1_triggers_reuse_path(
+        self, web_client, monkeypatch,
+    ):
+        """G4 (live agnes-development bug, PR #332 lifecycle
+        validation): owner restores v1 → v4. Then restores v1 AGAIN
+        → v5. The PR #332 reuse path must fire because v4 was
+        approved by same model. v5 submission must NOT make a new
+        LLM call AND must carry reused_from_submission_id marker."""
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+        self._setup_guardrails_on(monkeypatch)
+        owner_id, owner_cookies = _create_user(web_client, "reuse2-owner@x.com")
+
+        v1_zip = _make_skill_zip("reuse2", body="V1 body content for second-restore reuse test. " * 5)
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("v1.zip", v1_zip, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+        v1_sub_id = self._latest_sub_id(eid)
+        self._drive_llm(monkeypatch, eid, v1_sub_id, 1, _MOCK_APPROVE_LIFECYCLE)
+
+        # PUT v2 → approve → entity at v2 (so v1 is no longer current).
+        v2_zip = _make_skill_zip("reuse2", body="V2 body content different from v1 for restore test. " * 5)
+        r = web_client.put(
+            f"/api/store/entities/{eid}",
+            files={"file": ("v2.zip", v2_zip, "application/zip")},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200
+        self._drive_llm(monkeypatch, eid, self._latest_sub_id(eid), 2, _MOCK_APPROVE_LIFECYCLE)
+        assert self._ent(eid)["version_no"] == 2
+
+        # First restore v1 → v3 with v1 bytes. Reuse may or may not
+        # fire depending on whether v1's reviewed_by_model matches.
+        # (It does: both were stamped 'mock-haiku' via our drive_llm.)
+        r = web_client.post(
+            f"/api/store/entities/{eid}/versions/1/restore",
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        v3_sub_id = self._latest_sub_id(eid)
+        conn = get_system_db()
+        v3_sub = StoreSubmissionsRepository(conn).get(v3_sub_id)
+        conn.close()
+        if v3_sub["status"] == "pending_llm":
+            self._drive_llm(monkeypatch, eid, v3_sub_id, 3, _MOCK_APPROVE_LIFECYCLE)
+        # By now v3 is approved + promoted. version_no=3.
+        assert self._ent(eid)["version_no"] == 3
+
+        # Count LLM calls BEFORE second restore.
+        call_count = {"n": 0}
+        def counting_mock(*a, **kw):
+            call_count["n"] += 1
+            return _MOCK_APPROVE_LIFECYCLE
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle", counting_mock,
+        )
+
+        # Second restore v1 → v4 with v1 bytes. PR #332 reuse path
+        # MUST fire because v3 (just promoted, byte-identical to v1)
+        # OR v1 itself qualifies (same hash, approved, same model).
+        r = web_client.post(
+            f"/api/store/entities/{eid}/versions/1/restore",
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+        v4_sub_id = self._latest_sub_id(eid)
+        conn = get_system_db()
+        v4_sub = StoreSubmissionsRepository(conn).get(v4_sub_id)
+        conn.close()
+        assert v4_sub["status"] == "approved", (
+            f"v4 must be approved via reuse path; got status={v4_sub['status']}"
+        )
+        assert (v4_sub["llm_findings"] or {}).get("reused_from_submission_id"), (
+            "v4 must carry reused_from_submission_id marker (PR #332)"
+        )
+        assert call_count["n"] == 0, (
+            f"second restore must NOT call LLM; count={call_count['n']}"
+        )
+
+    def test_archived_entity_keeps_serving_installed_subscribers(
+        self, web_client, monkeypatch,
+    ):
+        """G5: owner soft-archives entity → already-subscribed users
+        STILL get bundle served (per CLAUDE.md contract). Browse
+        listing for a third user does NOT include the entity."""
+        from src.repositories.store_entities import StoreEntitiesRepository
+        self._setup_guardrails_on(monkeypatch)
+        owner_id, owner_cookies = _create_user(web_client, "arch-owner@x.com")
+        installer_id, installer_cookies = _create_user(web_client, "arch-installer@x.com")
+
+        v1_zip = _make_skill_zip("archme", body="V1 body content for archive behavior test that's long. " * 5)
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("v1.zip", v1_zip, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+        self._drive_llm(monkeypatch, eid, self._latest_sub_id(eid), 1, _MOCK_APPROVE_LIFECYCLE)
+        v1_hash = self._ent(eid)["version"]
+
+        self._install(web_client, eid, installer_cookies)
+        installs = self._installs(installer_id)
+        assert installs[0]["version"] == v1_hash
+
+        # Owner soft-archives.
+        r = web_client.delete(
+            f"/api/store/entities/{eid}", cookies=owner_cookies,
+        )
+        assert r.status_code == 200, r.text
+
+        conn = get_system_db()
+        ent_after = StoreEntitiesRepository(conn).get(eid)
+        conn.close()
+        assert ent_after["visibility_status"] == "archived"
+
+        # Already-installed user STILL has the entity in list_for_user.
+        installs_after = self._installs(installer_id)
+        assert eid in {row["id"] for row in installs_after}, (
+            "soft-archive must NOT cascade to existing user_store_installs "
+            "(CLAUDE.md contract)"
+        )
+
+        # Third user browsing marketplace must NOT see the entity.
+        _, third_cookies = _create_user(web_client, "arch-third@x.com")
+        r = web_client.get("/api/store/entities", cookies=third_cookies)
+        assert r.status_code == 200
+        ids = {item["id"] for item in r.json().get("items", [])}
+        assert eid not in ids, (
+            "archived entity must NOT appear in browse listing"
+        )
