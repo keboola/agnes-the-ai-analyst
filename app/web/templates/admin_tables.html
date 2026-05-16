@@ -900,6 +900,42 @@
             </div>
         </section>
 
+        {# ─── Data Packages (top-level, discoverable) ───
+           Admins discovering Data Packages used to have to open a table's
+           edit modal to even know packages existed (the chip-input lives
+           inside the BQ register/edit form). This section surfaces the
+           packages list at page level + offers a "+ New" CTA that opens
+           the existing Create Data Package modal directly, so package
+           creation no longer requires touching a table first.
+
+           Hydrated client-side from GET /api/admin/data-packages. The card
+           grid reuses the .stack-grid / .stack-card classes shared with
+           /catalog + /memory so all three "package" surfaces read the same. #}
+        <section id="dataPackagesCard" class="card" style="margin-bottom: 20px;">
+          <header class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <h2 style="margin:0;">
+              <span style="margin-right:6px;">📦</span>
+              Data Packages
+              <span id="dataPackagesCount" style="color:#5f6368; font-weight:500; font-size:14px; margin-left:4px;"></span>
+            </h2>
+            <button class="btn btn-primary" type="button"
+                    onclick="openCreateDataPackageModal('', null)">+ New</button>
+          </header>
+          <div class="card-body">
+            <p style="margin:0 0 12px; color:#5f6368; font-size:13px;">
+              Bundle related tables into a Data Package so analysts can opt-in
+              to them as a group (and required packages auto-install on next
+              <code>agnes pull</code>).
+              <a href="/catalog" style="color:#0073D1;">View on /catalog →</a>
+            </p>
+            <div id="dataPackagesGrid" class="stack-grid">
+              <div style="grid-column:1/-1; padding:24px; text-align:center; color:#5f6368; font-size:13px;">
+                Loading…
+              </div>
+            </div>
+          </div>
+        </section>
+
         {# Phase D: tab-split scaffold. Per-connector tabs (BigQuery /
            Keboola / Jira) replace the single mixed form. Each tab has its
            own Register button + listing div + (later) form modals. The
@@ -1931,6 +1967,12 @@
         _cdpNewId = null;
         _cdpNewName = null;
         document.getElementById('createDataPackageRbacModal').style.display = 'none';
+        // Refresh the top-level Data Packages grid so the newly-created
+        // package shows up without a full page reload. No-op when the
+        // hydrator isn't loaded yet (e.g. very first render).
+        if (typeof loadDataPackagesSection === 'function') {
+          loadDataPackagesSection();
+        }
       }
       async function submitCreateDataPackageRbac() {
         const btn = document.getElementById('cdp-rbac-save-btn');
@@ -3804,6 +3846,80 @@
     }
 
     document.addEventListener('DOMContentLoaded', cacheWarmupInit);
+
+    // ── Top-level Data Packages section hydration ───────────────
+    // Discovery fix: before this section existed, admins had to open a
+    // table's edit modal to even know Data Packages were a thing (the
+    // chip-input lives inside the BQ register/edit form). This block
+    // surfaces the package list above the connector tabs + adds a
+    // "+ New" entry point that opens the existing Create Data Package
+    // modal directly. The card grid reuses the .stack-grid + .stack-card
+    // classes shared with /catalog + /memory.
+    async function loadDataPackagesSection() {
+        var grid = document.getElementById('dataPackagesGrid');
+        var count = document.getElementById('dataPackagesCount');
+        if (!grid) return;
+        try {
+            var r = await fetch('/api/admin/data-packages', { credentials: 'same-origin' });
+            if (!r.ok) {
+                grid.innerHTML = '<div style="grid-column:1/-1; padding:24px; text-align:center; color:#5f6368; font-size:13px;">Failed to load (HTTP ' + r.status + ').</div>';
+                return;
+            }
+            var pkgs = await r.json();
+            count.textContent = pkgs.length ? '(' + pkgs.length + ')' : '';
+            if (!pkgs.length) {
+                grid.innerHTML = '<div style="grid-column:1/-1; padding:24px; text-align:center; color:#5f6368; font-size:13px;">'
+                    + 'No Data Packages yet. Click <strong>+ New</strong> to create one — or assign tables to a package from the BigQuery / Keboola / Jira tabs below.'
+                    + '</div>';
+                return;
+            }
+            // Fetch table counts in parallel — best-effort, falls back to —.
+            var detailFetches = pkgs.map(function(p) {
+                return fetch('/api/admin/data-packages/' + encodeURIComponent(p.id),
+                             { credentials: 'same-origin' })
+                    .then(function(rr) { return rr.ok ? rr.json() : null; })
+                    .catch(function() { return null; });
+            });
+            var details = await Promise.all(detailFetches);
+            grid.innerHTML = pkgs.map(function(p, i) {
+                var det = details[i] || {};
+                var tcount = (det.tables || []).length;
+                var iconRaw = p.icon || '📦';
+                var color = p.color || '#f3f4f6';
+                var name = String(p.name || '');
+                var slug = String(p.slug || '');
+                var desc = String(p.description || '');
+                var drilldown = slug ? ('/catalog/p/' + encodeURIComponent(slug)) : '#';
+                // Same dense layout the /catalog and /memory cards use:
+                // small icon-box left + title + meta + description + footer.
+                // Mirrors macros/_stack_card.html so all three surfaces feel
+                // visually unified.
+                return ''
+                  + '<div class="stack-card" data-id="' + escapeHtmlAttr(p.id) + '">'
+                  + '  <div class="stack-card__body">'
+                  + '    <div class="stack-card__header">'
+                  + '      <div class="stack-card__icon-box" style="background:' + escapeHtmlAttr(color) + ';">'
+                  +          escapeHtml(iconRaw)
+                  + '      </div>'
+                  + '      <div class="stack-card__heading">'
+                  + '        <h3 class="stack-card__title">' + escapeHtml(name) + '</h3>'
+                  + '        <div class="stack-card__meta">' + tcount + ' table' + (tcount === 1 ? '' : 's') + '</div>'
+                  + '      </div>'
+                  + '    </div>'
+                  + (desc ? ('    <div class="stack-card__desc">' + escapeHtml(desc) + '</div>') : '')
+                  + '  </div>'
+                  + '  <div class="stack-card__footer">'
+                  + '    <a class="stack-card__drilldown" href="' + escapeHtmlAttr(drilldown) + '">Open →</a>'
+                  + '    <button class="stack-card__btn" type="button" '
+                  +          'onclick="window.location=\'' + escapeHtmlAttr(drilldown) + '\'">View</button>'
+                  + '  </div>'
+                  + '</div>';
+            }).join('');
+        } catch (e) {
+            grid.innerHTML = '<div style="grid-column:1/-1; padding:24px; text-align:center; color:#b91c1c; font-size:13px;">Network error: ' + escapeHtml(e.message) + '</div>';
+        }
+    }
+    document.addEventListener('DOMContentLoaded', loadDataPackagesSection);
 
     </script>
 {% endblock %}
