@@ -646,7 +646,22 @@
             background: var(--surface);
             border-radius: 12px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            /* BLOCKER fix (UX review #1): cap height at 90vh + scroll
+             * the body so Create + Edit Data Package modals don't push
+             * the Submit footer off-screen on 720px viewports. Flex
+             * layout keeps header + footer pinned and grows the body. */
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
             overflow: hidden;
+        }
+        .modal .modal-body {
+            overflow-y: auto;
+            flex: 1 1 auto;
+        }
+        .modal .modal-header,
+        .modal .modal-footer {
+            flex: 0 0 auto;
         }
 
         .modal-header {
@@ -928,6 +943,16 @@
                  the right package pre-selected. #}
               <button class="btn btn-secondary" type="button"
                       onclick="openBulkAssignModal('')">Bulk assign tables</button>
+              {# Group-by-bucket — one-click factory that creates one
+                 Data Package per distinct bucket in table_registry and
+                 bulk-assigns its tables. For most instances the bucket
+                 IS the intended grouping; this saves admin from doing
+                 it by hand. Idempotent (skips existing slugs). #}
+              <button class="btn btn-secondary" type="button"
+                      onclick="groupTablesByBucket()"
+                      title="One-click: create one Data Package per distinct bucket and assign all its tables">
+                Group tables by bucket
+              </button>
               <button class="btn btn-primary" type="button"
                       onclick="openCreateDataPackageModal('', null)">+ New</button>
             </div>
