@@ -187,8 +187,11 @@ class TestEmptyMemoryBrowseBanner:
         )
         assert r.status_code == 200, r.text
         body = r.text
-        assert "No memory domains assigned" in body, body[:1000]
-        assert "Ask your admin to grant" in body
+        # Empty state was redesigned for visual parity with /marketplace
+        # in the unified-stack hardening pass: friendlier copy + CTA, but
+        # the non-admin branch still routes to "ask your admin".
+        assert "No Memory Domains yet" in body, body[:1000]
+        assert "Ask your admin" in body
 
 
 # ---------------------------------------------------------------------------

@@ -4,10 +4,13 @@
 {% block title %}Memory — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
 
 {% block content %}
-{% set page_hero_eyebrow = "Knowledge" %}
-{% set page_hero_title = "Memory" %}
-{% set page_hero_subtitle = "Browse curated knowledge domains. Add the ones your team relies on to your stack — required domains are added automatically." %}
-{% include "_page_hero.html" %}
+{# Hero — gradient banner mirroring marketplace.html .mp-hero so /memory
+   and /marketplace read as one product. #}
+<div class="stack-hero">
+  <div class="eyebrow">Knowledge</div>
+  <h1>Memory</h1>
+  <p class="sub">Browse curated knowledge domains. Add the ones your team relies on to your stack — required domains are added automatically.</p>
+</div>
 
 {% if pending_review_count and pending_review_count > 0 %}
 <div style="background:#fef3c7; border:1px solid #fde68a; border-radius:8px;
@@ -25,9 +28,20 @@
   <div class="stack-tabs-row">
     <div class="stack-tabs" role="tablist">
       <button class="is-active" data-tab="browse" role="tab" aria-selected="true">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="7" rx="1"/>
+          <rect x="14" y="3" width="7" height="7" rx="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1"/>
+          <rect x="14" y="14" width="7" height="7" rx="1"/>
+        </svg>
         Browse <span class="count">{{ entries|length }}</span>
       </button>
       <button data-tab="my" role="tab" aria-selected="false">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0-5.571 3-5.571-3"/>
+        </svg>
         My Stack <span class="count">{{ stack_entries|length }}</span>
       </button>
     </div>
@@ -50,9 +64,22 @@
       {% endfor %}
     </div>
     {% else %}
+    {# Empty state — friendly + actionable, same shape as /catalog. #}
     <div class="stack-empty">
-      <h3>No memory domains assigned</h3>
-      <p>Ask your admin to grant your group access to a domain, then refresh this page.</p>
+      <span class="icon">🧠</span>
+      <h3>No Memory Domains yet</h3>
+      {% if user.is_admin %}
+      <p>Memory Domains bundle related knowledge items (playbooks, runbooks,
+         shared context) so analysts can opt-in to a coherent body of
+         knowledge — instead of cherry-picking individual notes.</p>
+      <p>Create your first domain from the admin moderation queue.</p>
+      <div class="cta">
+        <a href="/admin/corporate-memory">Open /admin/corporate-memory →</a>
+      </div>
+      {% else %}
+      <p>Ask your admin to create a Memory Domain or grant your group
+         access to an existing one, then refresh this page.</p>
+      {% endif %}
     </div>
     {% endif %}
   </div>
@@ -66,6 +93,7 @@
     </div>
     {% else %}
     <div class="stack-empty">
+      <span class="icon">🗂️</span>
       <h3>Your stack is empty</h3>
       <p>Browse available domains and click <strong>+ Add to stack</strong>.
          Required domains will appear here automatically.</p>

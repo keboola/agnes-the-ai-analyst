@@ -935,11 +935,24 @@ async def catalog(
     # drives the per-source chip row in catalog.html.
     source_type_chips = sorted({st for e in entries for st in (e.get("tags") or [])})
 
+    # Empty-state hint: when no packages exist, the page tells admins how
+    # many tables are already registered (so the CTA "go to /admin/tables
+    # and group them" lands with concrete context). Non-internal tables
+    # only — the agnes_* internal rows aren't analyst-facing.
+    total_registered_tables = 0
+    try:
+        total_registered_tables = conn.execute(
+            "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
+        ).fetchone()[0]
+    except Exception:
+        total_registered_tables = 0
+
     ctx = _build_context(
         request, user=user,
         entries=entries,
         stack_entries=stack_entries_adapted,
         source_type_chips=source_type_chips,
+        total_registered_tables=total_registered_tables,
     )
     return templates.TemplateResponse(request, "catalog.html", ctx)
 
