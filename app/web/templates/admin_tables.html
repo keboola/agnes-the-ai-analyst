@@ -1887,19 +1887,136 @@
         _cdpHost = null;
         document.getElementById('createDataPackageModal').style.display = 'none';
       }
+
+      // ── Edit Data Package modal ──────────────────────────────────────
+      // Opened from the Edit button on each /admin/tables package card.
+      // Loads pkg metadata + member tables; lets admin rename / change
+      // description / icon / color / delete; remove member tables inline.
+      async function openEditDataPackageModal(pkgId) {
+        document.getElementById('editDataPackageModal').style.display = 'flex';
+        document.getElementById('edp-id').value = pkgId;
+        document.getElementById('edp-tables-list').innerHTML =
+          '<div style="padding:12px; color:#5f6368;">Loading…</div>';
+        try {
+          const r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId),
+                                { credentials: 'same-origin' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const pkg = await r.json();
+          document.getElementById('edp-name').value = pkg.name || '';
+          document.getElementById('edp-slug').value = pkg.slug || '';
+          document.getElementById('edp-desc').value = pkg.description || '';
+          document.getElementById('edp-icon').value = pkg.icon || '';
+          document.getElementById('edp-color').value = pkg.color || '#fce7f3';
+          renderEdpTablesList(pkg.tables || []);
+        } catch (e) {
+          alert('Failed to load package: ' + e.message);
+          closeEditDataPackageModal();
+        }
+      }
+      function closeEditDataPackageModal() {
+        document.getElementById('editDataPackageModal').style.display = 'none';
+      }
+      function renderEdpTablesList(tables) {
+        const el = document.getElementById('edp-tables-list');
+        if (!tables.length) {
+          el.innerHTML = '<div style="padding:12px; color:#5f6368; font-size:13px;">'
+            + 'No tables in this package yet. Click <strong>+ Add tables</strong> above.</div>';
+          return;
+        }
+        el.innerHTML = tables.map(function(t) {
+          const id = String(t.id || '');
+          const name = String(t.name || id);
+          return ''
+            + '<div style="display:flex; align-items:center; justify-content:space-between; '
+            +           'padding:8px 12px; border-bottom:1px solid var(--border-light, #f0f0f0);">'
+            + '  <span style="font-size:13px; color:#202124;">' + escapeHtml(name) + '</span>'
+            + '  <button class="btn" type="button" style="padding:3px 10px; font-size:11px; color:#b91c1c;" '
+            +          'onclick="removeTableFromPackage(\'' + escapeHtmlAttr(id) + '\')">Remove</button>'
+            + '</div>';
+        }).join('');
+      }
+      async function removeTableFromPackage(tableId) {
+        const pkgId = document.getElementById('edp-id').value;
+        if (!confirm('Remove this table from the package?')) return;
+        const r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId)
+                              + '/tables/' + encodeURIComponent(tableId),
+                              { method: 'DELETE', credentials: 'same-origin' });
+        if (!r.ok) { alert('Remove failed: HTTP ' + r.status); return; }
+        // Refresh the table list inline.
+        const r2 = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId),
+                               { credentials: 'same-origin' });
+        if (r2.ok) renderEdpTablesList((await r2.json()).tables || []);
+      }
+      async function submitEditDataPackage() {
+        const btn = document.getElementById('edp-save-btn');
+        btn.disabled = true;
+        try {
+          const pkgId = document.getElementById('edp-id').value;
+          const payload = {
+            name: document.getElementById('edp-name').value.trim(),
+            description: document.getElementById('edp-desc').value.trim() || null,
+            icon: document.getElementById('edp-icon').value.trim() || null,
+            color: document.getElementById('edp-color').value.trim() || null,
+          };
+          const r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId), {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const detail = await r.json().catch(function() { return {}; });
+            alert('Save failed: ' + (detail.detail || r.statusText));
+            btn.disabled = false;
+            return;
+          }
+          closeEditDataPackageModal();
+          if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
+        } catch (e) {
+          alert('Network error: ' + e.message);
+          btn.disabled = false;
+        }
+      }
+      async function deleteEditDataPackage() {
+        const pkgId = document.getElementById('edp-id').value;
+        const name = document.getElementById('edp-name').value.trim();
+        if (!confirm('Delete the package "' + name + '"?\n\nTables are NOT deleted — they just leave this package.')) return;
+        const r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId),
+                              { method: 'DELETE', credentials: 'same-origin' });
+        if (!r.ok) { alert('Delete failed: HTTP ' + r.status); return; }
+        closeEditDataPackageModal();
+        if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
+      }
+      // Auto-derive a url-safe slug from a Name string. Mirrors the
+      // server-side normalisation used by the seed step in _v48_to_v49.
+      function _deriveSlug(name) {
+        return (name || '').toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '');
+      }
       async function submitCreateDataPackage() {
         const btn = document.getElementById('cdp-submit-btn');
         btn.disabled = true;
         try {
+          const nameVal = document.getElementById('cdp-name').value.trim();
+          // Auto-derive slug from name when the slug field is blank —
+          // fixes the silent-fail-on-empty-slug bug where the form just
+          // stayed open with no error if the user typed Name and clicked
+          // Create without focusing-out of the Name input.
+          let slugVal = document.getElementById('cdp-slug').value.trim();
+          if (!slugVal && nameVal) {
+            slugVal = _deriveSlug(nameVal);
+            document.getElementById('cdp-slug').value = slugVal;
+          }
           const payload = {
-            name: document.getElementById('cdp-name').value.trim(),
-            slug: document.getElementById('cdp-slug').value.trim(),
+            name: nameVal,
+            slug: slugVal,
             description: document.getElementById('cdp-desc').value.trim() || null,
             icon: document.getElementById('cdp-icon').value.trim() || null,
             color: document.getElementById('cdp-color').value.trim() || null,
           };
           if (!payload.name || !payload.slug) {
-            alert('Name and slug are required.');
+            alert('Name is required (slug auto-derives from it).');
             btn.disabled = false;
             return;
           }
@@ -2178,11 +2295,53 @@
           const ids = new Set((det.tables || []).map(function(t) { return t.id; }));
           return { id: p.id, name: p.name, member_table_ids: ids };
         });
+        // Inline "+ Create new package…" as a sentinel value. The change
+        // handler below intercepts __create__ and runs a tiny prompt-based
+        // flow (name → POST → re-list → re-select) so the user can spawn
+        // a target without leaving the bulk-assign workflow.
         sel.innerHTML = '<option value="">— Choose a package —</option>'
+          + '<option value="__create__" style="font-weight:600;">+ Create new package…</option>'
           + _bulkAssignPackages.map(function(p) {
               return '<option value="' + escapeHtmlAttr(p.id) + '">'
                 + escapeHtml(p.name) + '</option>';
             }).join('');
+        sel.onchange = async function() {
+          if (sel.value !== '__create__') { refreshBulkAssignAvailability(); return; }
+          const name = prompt('Name for the new Data Package:');
+          if (!name || !name.trim()) { sel.value = ''; return; }
+          const slug = _deriveSlug(name.trim());
+          const r = await fetch('/api/admin/data-packages', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: name.trim(),
+              slug,
+              description: null,
+              icon: null,
+              color: '#fce7f3',
+            }),
+          });
+          if (!r.ok) {
+            const detail = await r.json().catch(function() { return {}; });
+            alert('Create failed: ' + (detail.detail || r.statusText));
+            sel.value = '';
+            return;
+          }
+          const created = await r.json();
+          // Append to the in-memory list + the <select>; preserve any
+          // already-checked table rows by NOT re-rendering the list.
+          _bulkAssignPackages.push({
+            id: created.id, name: name.trim(),
+            member_table_ids: new Set(),
+          });
+          const opt = document.createElement('option');
+          opt.value = created.id;
+          opt.textContent = name.trim();
+          sel.appendChild(opt);
+          sel.value = created.id;
+          refreshBulkAssignAvailability();
+        };
         if (preselectPkgId && _bulkAssignPackages.some(function(p) { return p.id === preselectPkgId; })) {
           sel.value = preselectPkgId;
         }
@@ -2378,6 +2537,65 @@
          tables" button on the Data Packages section header AND by the
          /catalog "0 tables — assign some →" CTA which lands here with
          ?assign_to=<pkg_id> (see initBulkAssignFromQuery). -->
+    <!-- ═══════════════ Edit Data Package modal ═══════════════
+         Opened from the Edit button on each card in the Data Packages
+         section. Lets admin rename + change description / icon / color,
+         see + remove member tables, and delete the package. -->
+    <div class="modal-overlay" id="editDataPackageModal" style="display:none;">
+      <div class="modal" style="max-width:680px;">
+        <div class="modal-header">
+          <h2>Edit Data Package</h2>
+          <button class="modal-close" onclick="closeEditDataPackageModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="edp-id">
+          <div class="form-group">
+            <label class="form-label">Name</label>
+            <input id="edp-name" type="text" class="form-input">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Slug</label>
+            <input id="edp-slug" type="text" class="form-input" disabled
+                   style="opacity:0.6;" title="Slug is permanent — used in URLs and grants">
+            <div class="form-hint">Slug is permanent.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Description</label>
+            <textarea id="edp-desc" class="form-input" rows="2"></textarea>
+          </div>
+          <div class="form-group" style="display:flex; gap:12px;">
+            <div style="flex:1;">
+              <label class="form-label">Icon</label>
+              <input id="edp-icon" type="text" class="form-input" maxlength="4">
+            </div>
+            <div style="flex:1;">
+              <label class="form-label">Color</label>
+              <input id="edp-color" type="text" class="form-input">
+            </div>
+          </div>
+
+          <div class="form-group" style="border-top:1px solid var(--border); padding-top:14px; margin-top:14px;">
+            <label class="form-label" style="display:flex; align-items:center; justify-content:space-between;">
+              <span>Tables in this package</span>
+              <button class="btn btn-secondary" type="button" style="padding:4px 10px; font-size:12px;"
+                      onclick="closeEditDataPackageModal(); openBulkAssignModal(document.getElementById('edp-id').value);">
+                + Add tables
+              </button>
+            </label>
+            <div id="edp-tables-list" class="card-body" style="padding:0; max-height:240px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;"></div>
+          </div>
+        </div>
+        <div class="modal-footer" style="justify-content:space-between;">
+          <button class="btn" type="button" style="color:#b91c1c; border-color:#fca5a5;"
+                  onclick="deleteEditDataPackage()">Delete package</button>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-secondary" onclick="closeEditDataPackageModal()">Cancel</button>
+            <button class="btn btn-primary" id="edp-save-btn" onclick="submitEditDataPackage()">Save changes</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="modal-overlay" id="bulkAssignTablesModal" style="display:none;">
       <div class="modal" style="max-width:680px;">
         <div class="modal-header">
@@ -4284,9 +4502,11 @@
                   + (desc ? ('    <div class="stack-card__desc">' + escapeHtml(desc) + '</div>') : '')
                   + '  </div>'
                   + '  <div class="stack-card__footer">'
-                  + '    <a class="stack-card__drilldown" href="' + escapeHtmlAttr(drilldown) + '">Open →</a>'
+                  + '    <a class="stack-card__drilldown" href="' + escapeHtmlAttr(drilldown) + '" '
+                  +          'title="See this package as analysts will (/catalog/p/' + escapeHtmlAttr(slug) + ')">'
+                  +          'View as analyst →</a>'
                   + '    <button class="stack-card__btn" type="button" '
-                  +          'onclick="window.location=\'' + escapeHtmlAttr(drilldown) + '\'">View</button>'
+                  +          'onclick="openEditDataPackageModal(\'' + escapeHtmlAttr(p.id) + '\')">Edit</button>'
                   + '  </div>'
                   + '</div>';
             }).join('');

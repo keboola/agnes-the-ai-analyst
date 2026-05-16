@@ -129,9 +129,9 @@
     {% for t in tables %}
       <tr>
         <td>
-          <a href="/catalog/t/{{ t.id }}" style="color: var(--primary, #0073D1); text-decoration: none;">
-            <code>{{ t.name }}</code>
-          </a>
+          {# Per-table detail page doesn't exist yet (#follow-up); render
+             the name as a plain code-tag for now instead of a 404 link. #}
+          <code>{{ t.name }}</code>
         </td>
         <td><span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span></td>
         <td>{{ t.last_sync_display or '—' }}</td>
