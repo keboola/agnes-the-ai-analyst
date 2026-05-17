@@ -11,10 +11,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **PATCH /api/memory/admin/{id}** accepts a new `domain_ids: list[str]`
+  field that atomically replaces the item's full memory-domain membership
+  via `knowledge_item_domains`. The admin item-edit modal now sends this
+  on save so chip-input domain selections actually persist — previously
+  the chip-input was decorative (legacy single-domain `<select>` was the
+  only thing saved).
+- **Edit affordance** for memory domains on the `/admin/corporate-memory`
+  Domains tab — opens a modal pre-populated from
+  `GET /api/admin/memory-domains/{id}` and saves via PUT. Slug stays
+  read-only (it's referenced by `/memory/d/<slug>`, junction rows, and
+  resource grants).
 - **Memory Domains tab** on `/admin/corporate-memory` — first-class admin
-  CRUD UI for memory domains. Renders a list of all domains with Open/Delete
-  affordances, hosts the "+ New Memory Domain" entry point in the tab strip
-  + empty state, and refreshes after create. The user-facing
+  CRUD UI for memory domains. Renders a list of all domains with
+  Open/Edit/Delete affordances, hosts the "+ New Memory Domain" entry
+  point in the tab strip header (single button — duplicate removed), and
+  refreshes after create. The user-facing
   `/corporate-memory` "Manage domains →" link now deep-links to this tab
   (`#domains`). Closes the "I can't see/edit the domains anywhere in admin"
   feedback.
@@ -30,6 +42,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   package membership without leaving the edit dialog.
 
 ### Changed
+- **`/corporate-memory` hides empty memory domains.** A memory domain
+  with zero items has nothing for an analyst to opt-into; admins manage
+  empty placeholders from `/admin/corporate-memory#domains`. Required
+  domains stay visible even when empty so a mandate is honored after the
+  last item gets deleted.
 - **`/admin/tables`** — page-centric rewrite. Data Packages are now the
   primary organising structure: every registered table appears under
   either a Data Package (collapsible `<details>` section with member

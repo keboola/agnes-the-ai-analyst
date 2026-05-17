@@ -1370,15 +1370,12 @@
 
         <!-- Domains Tab — admin-side CRUD of memory_domains. The user-facing
              /corporate-memory page consumes the same rows; this is where
-             they're created/edited/deleted. -->
+             they're created/edited/deleted. The "+ New Memory Domain" CTA
+             lives in the tab strip header (top right) — not duplicated here. -->
         <div id="tab-domains" class="tab-content">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                <p style="margin:0; color:var(--text-secondary); font-size:13px;">
-                    Memory domains bundle related items (playbooks, runbooks, shared context) so analysts can opt-in to a coherent body of knowledge.
-                </p>
-                <button class="btn btn-mandate"
-                        onclick="openCreateMemoryDomainModal('', null)">+ New Memory Domain</button>
-            </div>
+            <p style="margin:0 0 12px; color:var(--text-secondary); font-size:13px;">
+                Memory domains bundle related items (playbooks, runbooks, shared context) so analysts can opt-in to a coherent body of knowledge.
+            </p>
             <div id="domainsList">
                 <div class="loading">Loading domains…</div>
             </div>
@@ -1409,6 +1406,72 @@
 
     <!-- Toast notification -->
     <div id="toast" class="toast"></div>
+
+    <!-- ═══════════════ Edit Memory Domain modal ═══════════════
+         Mirrors the Create modal but PUTs to /api/admin/memory-domains/{id}.
+         Slug is shown read-only (it's the stable identifier referenced by
+         /memory/d/<slug>, knowledge_item_domains rows, and resource_grants —
+         renaming would orphan all of those). -->
+    <div id="editMemoryDomainModal"
+         style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+      <div style="background: var(--surface); max-width: 520px; margin: 80px auto;
+                  padding: var(--space-5); border-radius: var(--radius-lg);
+                  border: 1px solid var(--border);">
+        <h3 style="margin-bottom: var(--space-3);">Edit Memory Domain</h3>
+        <input type="hidden" id="emd-id">
+        <div style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Name</span>
+            <input id="emd-name" type="text"
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm);
+                          background:var(--bg); color:var(--text);">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+            <input id="emd-slug" type="text" disabled
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm); opacity:0.6;
+                          background:var(--bg); color:var(--text);">
+            <span style="font-size:11px; color:var(--text-secondary);">
+              Slug is permanent — used in URLs, grants, and item junctions.
+            </span>
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">
+              Description <span style="color:var(--text-secondary);">(optional)</span>
+            </span>
+            <textarea id="emd-desc" rows="2"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);
+                             font-family:inherit; resize:vertical;"></textarea>
+          </label>
+          <div style="display:flex; gap:var(--space-3);">
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Icon</span>
+              <input id="emd-icon" type="text" maxlength="4"
+                     style="padding:6px; border:1px solid var(--border);
+                            border-radius:var(--radius-sm);
+                            background:var(--bg); color:var(--text);">
+            </label>
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Color</span>
+              <input id="emd-color" type="color"
+                     style="padding:2px; border:1px solid var(--border);
+                            border-radius:var(--radius-sm);
+                            background:var(--bg); height:38px; cursor:pointer;">
+            </label>
+          </div>
+        </div>
+        <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
+                    margin-top:var(--space-4);">
+          <button class="btn" onclick="closeEditMemoryDomainModal()">Cancel</button>
+          <button class="btn btn-mandate" id="emd-submit-btn"
+                  onclick="submitEditMemoryDomain()">Save</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ═══════════════ Create Memory Domain modal (Task 8.10b) ═══════════════
          Fired from the chip-input's `chip-create` event in the item-edit
@@ -1867,7 +1930,8 @@
                         : '')
                     + '  </div>'
                     + '  <a class="btn" href="/memory/d/' + slug + '" target="_blank" style="font-size:12px;">Open →</a>'
-                    + '  <button class="btn btn-reject" onclick="deleteMemoryDomain(\'' + escapeHtml(d.id) + '\', \'' + name.replace(/\'/g, "\\'") + '\')" style="font-size:12px;">Delete</button>'
+                    + '  <button class="btn" onclick="openEditMemoryDomainModal(\'' + esc(d.id) + '\')" style="font-size:12px;">Edit</button>'
+                    + '  <button class="btn btn-reject" onclick="deleteMemoryDomain(\'' + esc(d.id) + '\', \'' + name.replace(/\'/g, "\\'") + '\')" style="font-size:12px;">Delete</button>'
                     + '</div>';
             }).join('');
         } catch (e) {
@@ -1888,6 +1952,64 @@
             loadDomainsTab();
         } catch (e) {
             alert('Network error: ' + e.message);
+        }
+    }
+
+    async function openEditMemoryDomainModal(id) {
+        // Fetch fresh so concurrent edits don't stomp each other.
+        try {
+            const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id),
+                { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const d = await r.json();
+            document.getElementById('emd-id').value = d.id;
+            document.getElementById('emd-name').value = d.name || '';
+            document.getElementById('emd-slug').value = d.slug || '';
+            document.getElementById('emd-desc').value = d.description || '';
+            document.getElementById('emd-icon').value = d.icon || '🎯';
+            document.getElementById('emd-color').value = d.color || '#e0f2fe';
+            document.getElementById('editMemoryDomainModal').style.display = 'block';
+        } catch (e) {
+            alert('Failed to load domain: ' + e.message);
+        }
+    }
+
+    function closeEditMemoryDomainModal() {
+        document.getElementById('editMemoryDomainModal').style.display = 'none';
+    }
+
+    async function submitEditMemoryDomain() {
+        const btn = document.getElementById('emd-submit-btn');
+        btn.disabled = true;
+        try {
+            const id = document.getElementById('emd-id').value;
+            const payload = {
+                name: document.getElementById('emd-name').value.trim() || null,
+                description: document.getElementById('emd-desc').value.trim() || null,
+                icon: document.getElementById('emd-icon').value.trim() || null,
+                color: document.getElementById('emd-color').value.trim() || null,
+            };
+            const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify(payload),
+            });
+            if (!r.ok) {
+                const detail = await r.json().catch(() => ({}));
+                let msg = detail.detail || r.statusText;
+                // Pydantic validation errors come back as a list of {loc, msg}.
+                if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
+                alert('Failed: ' + msg);
+                return;
+            }
+            closeEditMemoryDomainModal();
+            showToast('Domain updated', 'success');
+            loadDomainsTab();
+        } catch (e) {
+            alert('Network error: ' + e.message);
+        } finally {
+            btn.disabled = false;
         }
     }
 
@@ -2442,7 +2564,24 @@
         const pending = (document.getElementById('editItemTagsInput').value || '').trim();
         if (pending && !tags.includes(pending)) tags.push(pending);
 
+        // M:N domain membership lives in the chip-input — read its hidden
+        // JSON input rather than re-querying the chip-input host. Falls
+        // back to `null` (don't touch the junction) when the chip-input
+        // isn't on the page.
+        let domainIds = null;
+        const domainHidden = document.querySelector('input[name="domain_ids"]');
+        if (domainHidden) {
+            try {
+                domainIds = JSON.parse(domainHidden.value || '[]');
+            } catch (_) {
+                domainIds = [];
+            }
+        }
+
         const body = { title, content, category, domain, audience, tags };
+        if (domainIds !== null) {
+            body.domain_ids = domainIds;
+        }
         try {
             const resp = await fetch(`/api/memory/admin/${encodeURIComponent(_editingItemId)}`, {
                 method: 'PATCH',

@@ -1225,8 +1225,17 @@ async def corporate_memory(
             required_count=meta.get("required_count", 0),
         )
 
-    entries = [_adapt(e) for e in browse_entries]
-    stack_entries_adapted = [_adapt(e) for e in stack_entries]
+    # Hide empty domains from the user-facing browse list — a domain with
+    # zero items has nothing for an analyst to opt-into. Admins manage
+    # empty placeholders from /admin/corporate-memory#domains. Required
+    # domains (items_count == 0 but still mandated) stay visible so the
+    # mandate is honored even if the items were just deleted.
+    def _has_content(e):
+        meta = dom_meta.get(e.id, {})
+        return meta.get("items_count", 0) > 0 or e.requirement == "required"
+
+    entries = [_adapt(e) for e in browse_entries if _has_content(e)]
+    stack_entries_adapted = [_adapt(e) for e in stack_entries if _has_content(e)]
 
     # Pending banner contract (issue #176) — admin-only, counts items in
     # status='pending'. Kept identical to the legacy route so the page test

@@ -202,11 +202,20 @@ class PatchItemRequest(BaseModel):
     Replaces the narrow ``EditRequest`` (title + content only). Any field
     left as ``None`` is unchanged. Domain is validated against
     ``VALID_DOMAINS`` when supplied.
+
+    ``domain_ids`` is the M:N junction write path (knowledge_item_domains)
+    used by the admin item-edit modal's chip-input — pass a list of
+    memory_domains.id strings and the endpoint replaces the item's full
+    domain membership atomically. Empty list ``[]`` clears all
+    memberships. Supplying both ``domain`` and ``domain_ids`` is allowed
+    (the legacy single ``domain`` write happens first, the junction
+    replace overrides it).
     """
     title: Optional[str] = None
     content: Optional[str] = None
     category: Optional[str] = None
     domain: Optional[str] = None
+    domain_ids: Optional[List[str]] = None
     tags: Optional[List[str]] = None
     audience: Optional[str] = None
 
@@ -1216,7 +1225,14 @@ async def admin_patch_item(
     # at the boundary so the caller gets a 400 with a clear message instead.
     if "title" in updates and updates["title"] is None:
         raise HTTPException(status_code=400, detail="title cannot be null")
-    if not updates:
+
+    # M:N domain membership lives in ``knowledge_item_domains`` and is
+    # written via a separate junction repo call — strip from the legacy
+    # ``repo.update(**)`` kwargs since the knowledge_items row has no
+    # ``domain_ids`` column.
+    domain_ids = updates.pop("domain_ids", None)
+
+    if not updates and domain_ids is None:
         return {"id": item_id, "updated": []}
 
     # tags is a list — JSON-encode to match the column type, mirroring create().
@@ -1225,15 +1241,48 @@ async def admin_patch_item(
         repo_kwargs["tags"] = (
             json.dumps(repo_kwargs["tags"]) if repo_kwargs["tags"] else None
         )
-    repo.update(item_id, **repo_kwargs)
+    if repo_kwargs:
+        repo.update(item_id, **repo_kwargs)
+
+    # Junction write — replace the item's full domain membership atomically.
+    # Resolve ids → slugs because replace_domains_for_item takes slugs;
+    # unknown ids raise 400 (admin's chip-input only picks from
+    # /api/admin/memory-domains so a missing id means a race or an
+    # already-deleted domain).
+    if domain_ids is not None:
+        from src.repositories.memory_domains import MemoryDomainsRepository
+        dom_repo = MemoryDomainsRepository(conn)
+        if domain_ids:
+            placeholders = ",".join(["?"] * len(domain_ids))
+            rows = conn.execute(
+                f"SELECT id, slug FROM memory_domains WHERE id IN ({placeholders})",
+                domain_ids,
+            ).fetchall()
+            id_to_slug = {r[0]: r[1] for r in rows}
+            missing = [i for i in domain_ids if i not in id_to_slug]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unknown_domain_ids: {missing}",
+                )
+            slugs = [id_to_slug[i] for i in domain_ids]
+        else:
+            slugs = []
+        dom_repo.replace_domains_for_item(
+            item_id, slugs, added_by=user["email"]
+        )
+
+    audit_keys = sorted(updates.keys())
+    if domain_ids is not None:
+        audit_keys.append("domain_ids")
     _audit_action(
         conn,
         user["email"],
         "update_item",
         item_id,
-        {"updated_fields": sorted(updates.keys())},
+        {"updated_fields": audit_keys},
     )
-    return {"id": item_id, "updated": sorted(updates.keys())}
+    return {"id": item_id, "updated": audit_keys}
 
 
 @router.post("/admin/bulk-update")

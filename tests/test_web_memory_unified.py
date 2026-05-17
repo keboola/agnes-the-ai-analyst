@@ -13,16 +13,37 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _make_domain(slug: str = "qa", name: str = "QA") -> str:
+def _make_domain(slug: str = "qa", name: str = "QA", *,
+                 with_item: bool = True) -> str:
+    """Create a memory domain and (by default) attach one approved item to
+    it. Empty domains are hidden from /corporate-memory by design — a
+    domain with no items has nothing for an analyst to opt-into — so tests
+    asserting visibility must seed at least one item. Pass
+    ``with_item=False`` to test the empty-hidden contract explicitly."""
     from src.db import get_system_db
     from src.repositories.memory_domains import MemoryDomainsRepository
+    from src.repositories.knowledge import KnowledgeRepository
 
     conn = get_system_db()
     try:
-        return MemoryDomainsRepository(conn).create(
+        domain_id = MemoryDomainsRepository(conn).create(
             slug=slug, name=name, description=f"{name} desc",
             icon="🎯", color="#dcfce7", created_by="test",
         )
+        if with_item:
+            kr = KnowledgeRepository(conn)
+            item_id = str(uuid.uuid4())
+            kr.create(
+                id=item_id,
+                title=f"{name} starter item",
+                content="seeded for visibility test",
+                category="convention",
+                domain=slug,
+                source_type="manual",
+                source_user="test",
+            )
+            kr.update_status(item_id, "approved")
+        return domain_id
     finally:
         conn.close()
 
