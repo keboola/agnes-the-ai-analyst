@@ -294,12 +294,18 @@ def test_v48_to_v49_drops_knowledge_items_domain_column():
     assert row[0] == 1
 
 
-def test_schema_version_is_49():
+def test_schema_version_is_at_least_49():
+    """After v50 cover_image_url bump, SCHEMA_VERSION should be >= 49 — the
+    v49 unified-stack tables shipped at v49 and remain present through the
+    cover-image bump. The exact-current-version guard lives in
+    test_db_schema_version.py."""
     from src.db import SCHEMA_VERSION
-    assert SCHEMA_VERSION == 49
+    assert SCHEMA_VERSION >= 49
 
 
 def test_v48_to_v49_bumps_schema_version_row():
+    """The v49 migration body itself stamps the schema_version row to 49.
+    The v50 bump runs separately via the outer ladder driver."""
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
     _v48_to_v49(conn)
@@ -307,14 +313,14 @@ def test_v48_to_v49_bumps_schema_version_row():
     assert row[0] == 49
 
 
-def test_fresh_install_lands_at_v49():
-    """End-to-end: a brand-new DB hitting ``_ensure_schema`` ends at v49 with
-    all new tables in place."""
-    from src.db import _ensure_schema, get_schema_version
+def test_fresh_install_lands_at_current_version():
+    """End-to-end: a brand-new DB hitting ``_ensure_schema`` ends at
+    SCHEMA_VERSION with all v49 unified-stack tables in place."""
+    from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
 
     conn = duckdb.connect(":memory:")
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 49
+    assert get_schema_version(conn) == SCHEMA_VERSION
 
     tables = {
         r[0]

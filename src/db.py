@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 49
+SCHEMA_VERSION = 50
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -497,15 +497,19 @@ CREATE TABLE IF NOT EXISTS resource_grants (
 -- direct TABLE grants ∪ tables in DATA_PACKAGE grants. See
 -- ``docs/brainstorms/2026-05-15-unified-stack-design.md`` section 3.3.
 CREATE TABLE IF NOT EXISTS data_packages (
-    id          VARCHAR PRIMARY KEY,
-    slug        VARCHAR UNIQUE NOT NULL,
-    name        VARCHAR NOT NULL,
-    description TEXT,
-    icon        VARCHAR,
-    color       VARCHAR,
-    created_by  VARCHAR,
-    created_at  TIMESTAMP DEFAULT current_timestamp,
-    updated_at  TIMESTAMP DEFAULT current_timestamp
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    icon            VARCHAR,
+    color           VARCHAR,
+    -- v50: admin-uploaded cover image (served from /uploads/covers/<sha>.<ext>).
+    -- Closes the visual gap with /marketplace cards which render real
+    -- JPGs/PNGs; cards fall back to 2-letter initials when this is NULL.
+    cover_image_url VARCHAR,
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS data_package_tables (
@@ -523,15 +527,18 @@ CREATE INDEX IF NOT EXISTS idx_data_package_tables_table
 -- to multiple domains; admin can create non-canonical domains beyond the
 -- legacy ``VALID_DOMAINS`` six. See spec section 3.4.
 CREATE TABLE IF NOT EXISTS memory_domains (
-    id          VARCHAR PRIMARY KEY,
-    slug        VARCHAR UNIQUE NOT NULL,
-    name        VARCHAR NOT NULL,
-    description TEXT,
-    icon        VARCHAR,
-    color       VARCHAR,
-    created_by  VARCHAR,
-    created_at  TIMESTAMP DEFAULT current_timestamp,
-    updated_at  TIMESTAMP DEFAULT current_timestamp
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    icon            VARCHAR,
+    color           VARCHAR,
+    -- v50: admin-uploaded cover image — same path / fallback contract as
+    -- data_packages.cover_image_url above.
+    cover_image_url VARCHAR,
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_item_domains (
@@ -3259,15 +3266,16 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS data_packages (
-            id          VARCHAR PRIMARY KEY,
-            slug        VARCHAR UNIQUE NOT NULL,
-            name        VARCHAR NOT NULL,
-            description TEXT,
-            icon        VARCHAR,
-            color       VARCHAR,
-            created_by  VARCHAR,
-            created_at  TIMESTAMP DEFAULT current_timestamp,
-            updated_at  TIMESTAMP DEFAULT current_timestamp
+            id              VARCHAR PRIMARY KEY,
+            slug            VARCHAR UNIQUE NOT NULL,
+            name            VARCHAR NOT NULL,
+            description     TEXT,
+            icon            VARCHAR,
+            color           VARCHAR,
+            cover_image_url VARCHAR,
+            created_by      VARCHAR,
+            created_at      TIMESTAMP DEFAULT current_timestamp,
+            updated_at      TIMESTAMP DEFAULT current_timestamp
         )
         """
     )
@@ -3296,15 +3304,16 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS memory_domains (
-            id          VARCHAR PRIMARY KEY,
-            slug        VARCHAR UNIQUE NOT NULL,
-            name        VARCHAR NOT NULL,
-            description TEXT,
-            icon        VARCHAR,
-            color       VARCHAR,
-            created_by  VARCHAR,
-            created_at  TIMESTAMP DEFAULT current_timestamp,
-            updated_at  TIMESTAMP DEFAULT current_timestamp
+            id              VARCHAR PRIMARY KEY,
+            slug            VARCHAR UNIQUE NOT NULL,
+            name            VARCHAR NOT NULL,
+            description     TEXT,
+            icon            VARCHAR,
+            color           VARCHAR,
+            cover_image_url VARCHAR,
+            created_by      VARCHAR,
+            created_at      TIMESTAMP DEFAULT current_timestamp,
+            updated_at      TIMESTAMP DEFAULT current_timestamp
         )
         """
     )
@@ -3679,6 +3688,33 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v49_to_v50(conn: duckdb.DuckDBPyConnection) -> None:
+    """v50: ``cover_image_url`` on ``data_packages`` + ``memory_domains``.
+
+    Closes the visual gap with /marketplace cards: marketplace items render
+    real JPGs/PNGs from ``cover_photo_url`` while /catalog + /memory have
+    been stuck with 2-letter initials. The upload endpoint at
+    ``POST /api/admin/uploads/cover-image`` returns a relative URL that
+    callers stash here; cards render ``<img>`` when set, fall back to the
+    initials banner when NULL.
+
+    Idempotent (``ADD COLUMN IF NOT EXISTS``) — re-running is safe. Bumps
+    the version row locally so the fresh-install path (which calls every
+    migration in sequence and relies on each step to stamp its own number
+    — see _v48_to_v49 step 10) lands at 50 even if a future step in the
+    same ladder fails before the outer driver gets to its UPDATE.
+    """
+    conn.execute(
+        "ALTER TABLE data_packages "
+        "ADD COLUMN IF NOT EXISTS cover_image_url VARCHAR"
+    )
+    conn.execute(
+        "ALTER TABLE memory_domains "
+        "ADD COLUMN IF NOT EXISTS cover_image_url VARCHAR"
+    )
+    conn.execute("UPDATE schema_version SET version = 50")
+
+
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed.
 
@@ -3786,6 +3822,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # this call no-ops apart from seeding canonical
             # memory_domains and bumping the version row.
             _v48_to_v49(conn)
+            # v50 cover_image_url on data_packages + memory_domains.
+            # _SYSTEM_SCHEMA already includes the column on fresh installs;
+            # the migration's IF NOT EXISTS ALTERs no-op there.
+            _v49_to_v50(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3938,6 +3978,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v47_to_v48(conn)
             if current < 49:
                 _v48_to_v49(conn)
+            if current < 50:
+                _v49_to_v50(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

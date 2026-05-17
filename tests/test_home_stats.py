@@ -87,9 +87,12 @@ def test_v43_to_v44_upgrade_is_idempotent(tmp_path):
     }
 
 
-def test_schema_version_constant_is_49():
-    """Belt + suspenders against schema_version regressions."""
-    assert SCHEMA_VERSION == 49
+def test_schema_version_constant_is_at_least_49():
+    """Belt + suspenders against schema_version regressions. v49 shipped the
+    unified-stack tables home-stats depends on; subsequent bumps must keep
+    them present. The exact-current-version guard lives in
+    test_db_schema_version.py."""
+    assert SCHEMA_VERSION >= 49
 
 
 # ---------------------------------------------------------------------------

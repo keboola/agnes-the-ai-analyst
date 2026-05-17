@@ -287,6 +287,27 @@
   letter-spacing: 0;
 }
 
+/* v50: admin-uploaded cover image fills the photo banner. ``object-fit:
+ * cover`` clips overflow so any aspect ratio works without distortion;
+ * ``display: block`` removes the inline-baseline gap that would otherwise
+ * leave a 4px ghost stripe below the image. */
+.stack-card__photo img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+/* When the <img> 404s the JS swap clears the parent's child and writes
+ * the initials as plain text — we want the same centered + 26px-bold
+ * look as the no-cover initials path. The parent already has the
+ * background color set inline; this rule just keeps the text geometry
+ * stable across the failure boundary. */
+.stack-card__photo--failed {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
 /* Body (marketplace .mp-card .body). Sits below the photo banner. */
 .stack-card__body {
   padding: 14px 16px 12px;

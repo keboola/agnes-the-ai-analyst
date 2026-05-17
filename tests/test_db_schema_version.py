@@ -133,7 +133,13 @@ def test_schema_version_is_49():
     #            user_stack_subscriptions for per-user opt-in. Drops the
     #            scalar knowledge_items.domain column. See spec at
     #            docs/brainstorms/2026-05-15-unified-stack-design.md.
-    assert SCHEMA_VERSION == 49
+    # v49 → v50: cover_image_url on data_packages + memory_domains. Closes
+    #            the visual gap with /marketplace cards (which have always
+    #            rendered uploaded JPGs/PNGs) — /catalog + /memory cards
+    #            now render <img> when set, fall back to letter initials.
+    #            Upload endpoint at POST /api/admin/uploads/cover-image
+    #            persists files under ${DATA_DIR}/uploads/covers/<sha>.<ext>.
+    assert SCHEMA_VERSION == 50
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

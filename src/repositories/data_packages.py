@@ -32,6 +32,7 @@ class DataPackagesRepository:
         icon: Optional[str],
         color: Optional[str],
         created_by: str,
+        cover_image_url: Optional[str] = None,
     ) -> str:
         """Insert a new package; returns the generated id.
 
@@ -41,15 +42,17 @@ class DataPackagesRepository:
         """
         pkg_id = "pkg_" + uuid4().hex[:12]
         self.conn.execute(
-            "INSERT INTO data_packages(id, slug, name, description, icon, color, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [pkg_id, slug, name, description, icon, color, created_by],
+            "INSERT INTO data_packages"
+            "(id, slug, name, description, icon, color, cover_image_url, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [pkg_id, slug, name, description, icon, color, cover_image_url, created_by],
         )
         return pkg_id
 
     def get(self, pkg_id: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
-            "SELECT id, slug, name, description, icon, color, created_by, created_at, updated_at "
+            "SELECT id, slug, name, description, icon, color, cover_image_url, "
+            "created_by, created_at, updated_at "
             "FROM data_packages WHERE id = ?",
             [pkg_id],
         ).fetchone()
@@ -57,6 +60,7 @@ class DataPackagesRepository:
             return None
         cols = [
             "id", "slug", "name", "description", "icon", "color",
+            "cover_image_url",
             "created_by", "created_at", "updated_at",
         ]
         return dict(zip(cols, row))
@@ -74,8 +78,8 @@ class DataPackagesRepository:
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
         query = (
-            "SELECT id, slug, name, description, icon, color, created_by, "
-            "created_at, updated_at FROM data_packages"
+            "SELECT id, slug, name, description, icon, color, cover_image_url, "
+            "created_by, created_at, updated_at FROM data_packages"
         )
         params: List[Any] = []
         if search:
@@ -86,6 +90,7 @@ class DataPackagesRepository:
         rows = self.conn.execute(query, params).fetchall()
         cols = [
             "id", "slug", "name", "description", "icon", "color",
+            "cover_image_url",
             "created_by", "created_at", "updated_at",
         ]
         return [dict(zip(cols, r)) for r in rows]
@@ -98,7 +103,12 @@ class DataPackagesRepository:
         description: Optional[str] = None,
         icon: Optional[str] = None,
         color: Optional[str] = None,
+        cover_image_url: Optional[str] = None,
+        clear_cover_image: bool = False,
     ) -> None:
+        """Partial update. ``cover_image_url`` follows the same Optional-is-no-op
+        contract as the rest; pass ``clear_cover_image=True`` to actively NULL
+        the column (admin removed the uploaded image)."""
         fields: List[str] = []
         params: List[Any] = []
         if name is not None:
@@ -113,6 +123,11 @@ class DataPackagesRepository:
         if color is not None:
             fields.append("color = ?")
             params.append(color)
+        if clear_cover_image:
+            fields.append("cover_image_url = NULL")
+        elif cover_image_url is not None:
+            fields.append("cover_image_url = ?")
+            params.append(cover_image_url)
         if not fields:
             return
         fields.append("updated_at = current_timestamp")
@@ -180,7 +195,8 @@ class DataPackagesRepository:
     def list_packages_of_table(self, table_id: str) -> List[Dict[str, Any]]:
         """Packages a given table belongs to (name-ordered)."""
         rows = self.conn.execute(
-            "SELECT dp.id, dp.slug, dp.name, dp.description, dp.icon, dp.color "
+            "SELECT dp.id, dp.slug, dp.name, dp.description, dp.icon, dp.color, "
+            "       dp.cover_image_url "
             "FROM data_package_tables dpt "
             "JOIN data_packages dp ON dp.id = dpt.package_id "
             "WHERE dpt.table_id = ? ORDER BY dp.name",
@@ -190,6 +206,7 @@ class DataPackagesRepository:
             {
                 "id": r[0], "slug": r[1], "name": r[2],
                 "description": r[3], "icon": r[4], "color": r[5],
+                "cover_image_url": r[6],
             }
             for r in rows
         ]

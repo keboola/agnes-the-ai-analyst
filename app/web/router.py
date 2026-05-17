@@ -867,6 +867,11 @@ def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
         "description": description,
         "icon": entry.icon or "📦",
         "color": entry.color or "#e0f2fe",
+        # v50: cover image (admin-uploaded JPG/PNG/WebP). _stack_card.html
+        # renders it as <img> when set, falling back to the flat-color +
+        # initials banner when None. Closes the visual gap with
+        # /marketplace cards that have always shown real cover photos.
+        "cover_image_url": getattr(entry, "cover_image_url", None),
         "requirement": entry.requirement,
         "in_stack": entry.in_stack,
         "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
@@ -924,6 +929,7 @@ async def catalog(
             ResourceEntry(
                 id=p["id"], name=p["name"], description=p.get("description"),
                 icon=p.get("icon"), color=p.get("color"),
+                cover_image_url=p.get("cover_image_url"),
                 requirement="available", in_stack=False,
             )
             for p in pkg_repo.list()
@@ -1109,6 +1115,8 @@ def _memory_domain_entry_dict(entry, drilldown_url: str,
         "description": description,
         "icon": entry.icon or "🎯",
         "color": entry.color or "#e0f2fe",
+        # v50: see _data_package_entry_dict for the cover_image_url contract.
+        "cover_image_url": getattr(entry, "cover_image_url", None),
         "requirement": entry.requirement,
         "in_stack": entry.in_stack,
         "meta": meta,
@@ -1185,6 +1193,7 @@ async def corporate_memory(
                 ResourceEntry(
                     id=d["id"], name=d["name"], description=d.get("description"),
                     icon=d.get("icon"), color=d.get("color"),
+                    cover_image_url=d.get("cover_image_url"),
                     requirement="available", in_stack=False,
                 )
                 for d in domains_repo.list(limit=10000)

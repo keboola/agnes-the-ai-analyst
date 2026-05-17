@@ -32,6 +32,7 @@ class MemoryDomainsRepository:
         icon: Optional[str],
         color: Optional[str],
         created_by: str,
+        cover_image_url: Optional[str] = None,
     ) -> str:
         """Insert a new domain; returns the generated id (``md_<uuid12>``).
 
@@ -40,15 +41,17 @@ class MemoryDomainsRepository:
         """
         domain_id = "md_" + uuid4().hex[:12]
         self.conn.execute(
-            "INSERT INTO memory_domains(id, slug, name, description, icon, color, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [domain_id, slug, name, description, icon, color, created_by],
+            "INSERT INTO memory_domains"
+            "(id, slug, name, description, icon, color, cover_image_url, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [domain_id, slug, name, description, icon, color, cover_image_url, created_by],
         )
         return domain_id
 
     def get(self, domain_id: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
-            "SELECT id, slug, name, description, icon, color, created_by, created_at, updated_at "
+            "SELECT id, slug, name, description, icon, color, cover_image_url, "
+            "       created_by, created_at, updated_at "
             "FROM memory_domains WHERE id = ?",
             [domain_id],
         ).fetchone()
@@ -56,6 +59,7 @@ class MemoryDomainsRepository:
             return None
         cols = [
             "id", "slug", "name", "description", "icon", "color",
+            "cover_image_url",
             "created_by", "created_at", "updated_at",
         ]
         return dict(zip(cols, row))
@@ -84,8 +88,8 @@ class MemoryDomainsRepository:
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
         query = (
-            "SELECT id, slug, name, description, icon, color, created_by, "
-            "created_at, updated_at FROM memory_domains"
+            "SELECT id, slug, name, description, icon, color, cover_image_url, "
+            "created_by, created_at, updated_at FROM memory_domains"
         )
         params: List[Any] = []
         if search:
@@ -96,6 +100,7 @@ class MemoryDomainsRepository:
         rows = self.conn.execute(query, params).fetchall()
         cols = [
             "id", "slug", "name", "description", "icon", "color",
+            "cover_image_url",
             "created_by", "created_at", "updated_at",
         ]
         return [dict(zip(cols, r)) for r in rows]
@@ -108,7 +113,12 @@ class MemoryDomainsRepository:
         description: Optional[str] = None,
         icon: Optional[str] = None,
         color: Optional[str] = None,
+        cover_image_url: Optional[str] = None,
+        clear_cover_image: bool = False,
     ) -> None:
+        """Partial update. ``cover_image_url`` follows the same Optional-is-no-op
+        contract as the rest; pass ``clear_cover_image=True`` to actively NULL
+        the column."""
         fields: List[str] = []
         params: List[Any] = []
         if name is not None:
@@ -123,6 +133,11 @@ class MemoryDomainsRepository:
         if color is not None:
             fields.append("color = ?")
             params.append(color)
+        if clear_cover_image:
+            fields.append("cover_image_url = NULL")
+        elif cover_image_url is not None:
+            fields.append("cover_image_url = ?")
+            params.append(cover_image_url)
         if not fields:
             return
         fields.append("updated_at = current_timestamp")
@@ -191,14 +206,15 @@ class MemoryDomainsRepository:
     def list_domains_of_item(self, item_id: str) -> List[Dict[str, Any]]:
         """Domains an item is tagged with (name-ordered)."""
         rows = self.conn.execute(
-            "SELECT md.id, md.slug, md.name, md.icon, md.color "
+            "SELECT md.id, md.slug, md.name, md.icon, md.color, md.cover_image_url "
             "FROM knowledge_item_domains kid "
             "JOIN memory_domains md ON md.id = kid.domain_id "
             "WHERE kid.item_id = ? ORDER BY md.name",
             [item_id],
         ).fetchall()
         return [
-            {"id": r[0], "slug": r[1], "name": r[2], "icon": r[3], "color": r[4]}
+            {"id": r[0], "slug": r[1], "name": r[2], "icon": r[3], "color": r[4],
+             "cover_image_url": r[5]}
             for r in rows
         ]
 

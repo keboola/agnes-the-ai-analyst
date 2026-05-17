@@ -1833,6 +1833,29 @@
               <input id="cdp-color" type="text" class="form-input" value="#e0f2fe" placeholder="#e0f2fe">
             </div>
           </div>
+          {# Cover image upload (v50). When set, the /catalog card renders
+             <img src=cover_image_url> instead of letter initials — closes
+             the visual gap with /marketplace cards. PNG/JPEG/GIF/WebP, 5
+             MiB cap server-side. #}
+          <div class="form-group">
+            <label class="form-label">Cover image <span class="optional">(optional)</span></label>
+            <div style="display:flex; gap:12px; align-items:center;">
+              <div id="cdp-cover-preview"
+                   style="width:120px; height:72px; border-radius:8px;
+                          border:1px solid var(--border); background:#f1f5f9;
+                          display:flex; align-items:center; justify-content:center;
+                          font-size:12px; color:var(--text-secondary); overflow:hidden;">
+                No image
+              </div>
+              <div style="flex:1;">
+                <input id="cdp-cover-file" type="file"
+                       accept="image/png,image/jpeg,image/gif,image/webp"
+                       onchange="onCoverFilePicked(this, 'cdp')">
+                <input id="cdp-cover-url" type="hidden" value="">
+                <div class="form-hint">PNG / JPEG / GIF / WebP, max 5 MiB. Uploads on Save.</div>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" onclick="closeCreateDataPackageModal()">Cancel</button>
@@ -1844,6 +1867,78 @@
     </div>
 
     <script>
+      // ── Cover image upload helpers (v50) ─────────────────────────────
+      // Shared between Create / Edit Data Package modals. The `prefix`
+      // arg is the modal's id prefix (`cdp` or `edp`); same DOM-id
+      // convention `<prefix>-cover-file`, `<prefix>-cover-url`,
+      // `<prefix>-cover-preview`. Uploads on file pick (not on Save) so
+      // the admin gets an immediate preview + failure-feedback loop;
+      // the URL stashed in the hidden input rides along on the eventual
+      // Save POST/PUT body.
+      async function onCoverFilePicked(input, prefix) {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const previewEl = document.getElementById(prefix + '-cover-preview');
+        const urlEl = document.getElementById(prefix + '-cover-url');
+        if (file.size > 5 * 1024 * 1024) {
+          alert('Image is too large (max 5 MiB).');
+          input.value = '';
+          return;
+        }
+        previewEl.innerHTML = '<span style="font-size:11px;">Uploading…</span>';
+        try {
+          const fd = new FormData();
+          fd.append('file', file);
+          const r = await fetch('/api/admin/uploads/cover-image', {
+            method: 'POST',
+            credentials: 'same-origin',
+            body: fd,
+          });
+          if (!r.ok) {
+            const detail = await r.json().catch(function() { return {}; });
+            alert('Upload failed: ' + (detail.detail || r.statusText));
+            previewEl.textContent = 'No image';
+            input.value = '';
+            return;
+          }
+          const body = await r.json();
+          urlEl.value = body.url;
+          previewEl.innerHTML = '';
+          var img = document.createElement('img');
+          img.src = body.url;
+          img.alt = '';
+          img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+          previewEl.appendChild(img);
+        } catch (e) {
+          alert('Network error: ' + e.message);
+          previewEl.textContent = 'No image';
+          input.value = '';
+        }
+      }
+      function clearCoverImage(prefix) {
+        // Empty string is the API contract for "remove the existing cover".
+        // The Save handler reads the hidden input and ships it as-is.
+        document.getElementById(prefix + '-cover-url').value = '';
+        document.getElementById(prefix + '-cover-file').value = '';
+        var p = document.getElementById(prefix + '-cover-preview');
+        p.innerHTML = 'No image';
+        p.dataset.cleared = '1';
+      }
+      function _renderCoverPreview(prefix, url) {
+        var p = document.getElementById(prefix + '-cover-preview');
+        if (!p) return;
+        if (url) {
+          p.innerHTML = '';
+          var img = document.createElement('img');
+          img.src = url;
+          img.alt = '';
+          img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+          p.appendChild(img);
+        } else {
+          p.innerHTML = 'No image';
+        }
+      }
+
       // Track which chip-input host triggered the create flow so we can
       // append the new chip back into it on success.
       let _cdpHost = null;
@@ -1856,6 +1951,13 @@
         document.getElementById('cdp-desc').value = '';
         document.getElementById('cdp-icon').value = '📦';
         document.getElementById('cdp-color').value = '#e0f2fe';
+        // Reset cover image inputs on every open so a previous typed-and-
+        // cancelled value doesn't leak into the new package.
+        var coverUrl = document.getElementById('cdp-cover-url');
+        var coverFile = document.getElementById('cdp-cover-file');
+        if (coverUrl) coverUrl.value = '';
+        if (coverFile) coverFile.value = '';
+        _renderCoverPreview('cdp', '');
         document.getElementById('createDataPackageModal').style.display = 'flex';
       }
       function closeCreateDataPackageModal() {
@@ -1882,7 +1984,20 @@
           document.getElementById('edp-desc').value = pkg.description || '';
           document.getElementById('edp-icon').value = pkg.icon || '';
           document.getElementById('edp-color').value = pkg.color || '#e0f2fe';
+          // v50: hydrate cover image (URL + preview); clear the file
+          // input so a previous typed-and-cancelled file doesn't leak.
+          var coverUrl = document.getElementById('edp-cover-url');
+          var coverFile = document.getElementById('edp-cover-file');
+          var coverPreview = document.getElementById('edp-cover-preview');
+          if (coverPreview) delete coverPreview.dataset.cleared;
+          if (coverFile) coverFile.value = '';
+          if (coverUrl) coverUrl.value = pkg.cover_image_url || '';
+          _renderCoverPreview('edp', pkg.cover_image_url || '');
           renderEdpTablesList(pkg.tables || []);
+          // Reset inline-add panel state (hidden + empty list) so it
+          // starts clean each open.
+          var addPanel = document.getElementById('edp-inline-add');
+          if (addPanel) addPanel.style.display = 'none';
         } catch (e) {
           alert('Failed to load package: ' + e.message);
           closeEditDataPackageModal();
@@ -1927,11 +2042,23 @@
         btn.disabled = true;
         try {
           const pkgId = document.getElementById('edp-id').value;
+          // v50 cover image semantics:
+          //  - cleared via Remove button → preview has dataset.cleared, send ""
+          //  - new image uploaded         → hidden input has the new URL
+          //  - left unchanged             → hidden input still holds the
+          //                                 previous URL, send it unchanged
+          //                                 (no-op on the server because the
+          //                                 value matches)
+          var coverPreview = document.getElementById('edp-cover-preview');
+          var coverUrl = document.getElementById('edp-cover-url').value;
+          var coverField = (coverPreview && coverPreview.dataset.cleared === '1')
+            ? '' : (coverUrl || null);
           const payload = {
             name: document.getElementById('edp-name').value.trim(),
             description: document.getElementById('edp-desc').value.trim() || null,
             icon: document.getElementById('edp-icon').value.trim() || null,
             color: document.getElementById('edp-color').value.trim() || null,
+            cover_image_url: coverField,
           };
           const r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId), {
             method: 'PUT',
@@ -1952,6 +2079,133 @@
           btn.disabled = false;
         }
       }
+      // ── Inline +Add-tables picker (v50) ─────────────────────────────
+      // User feedback: the legacy "+ Add tables" button closed Edit and
+      // opened Bulk Assign, losing the admin's mental context. The
+      // picker below stays inline: pulls /api/admin/registry, filters
+      // out tables already in this package + internal rows, lets the
+      // admin tick what they want, then POSTs each to the package
+      // without closing the modal.
+      let _edpInlineAddTables = [];
+      function toggleEdpInlineAdd() {
+        var panel = document.getElementById('edp-inline-add');
+        if (!panel) return;
+        if (panel.style.display === 'block') {
+          panel.style.display = 'none';
+          return;
+        }
+        panel.style.display = 'block';
+        loadEdpInlineAddTables();
+      }
+      async function loadEdpInlineAddTables() {
+        var listEl = document.getElementById('edp-inline-add-list');
+        var pkgId = document.getElementById('edp-id').value;
+        listEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">'
+          + 'Loading unassigned tables…</div>';
+        try {
+          // Pull all tables and the current package member set in parallel.
+          var [allResp, pkgResp] = await Promise.all([
+            fetch('/api/admin/registry', { credentials: 'same-origin' }),
+            fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId),
+                  { credentials: 'same-origin' }),
+          ]);
+          if (!allResp.ok || !pkgResp.ok) {
+            listEl.innerHTML = '<div style="padding:8px; color:#b91c1c;">'
+              + 'Failed to load tables (' + allResp.status + ' / ' + pkgResp.status + ').</div>';
+            return;
+          }
+          var allBody = await allResp.json();
+          var allTables = Array.isArray(allBody)
+            ? allBody
+            : (Array.isArray(allBody.tables) ? allBody.tables : []);
+          var pkg = await pkgResp.json();
+          var memberIds = new Set((pkg.tables || []).map(function(t) { return t.id; }));
+          // Show only non-internal tables that aren't already in the package.
+          _edpInlineAddTables = allTables.filter(function(t) {
+            return (t.source_type || '') !== 'internal' && !memberIds.has(t.id);
+          });
+          renderEdpInlineAddList();
+        } catch (e) {
+          listEl.innerHTML = '<div style="padding:8px; color:#b91c1c;">'
+            + 'Network error: ' + escapeHtml(e.message) + '</div>';
+        }
+      }
+      function renderEdpInlineAddList() {
+        var listEl = document.getElementById('edp-inline-add-list');
+        if (!_edpInlineAddTables.length) {
+          listEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">'
+            + 'All non-internal tables are already in this package.</div>';
+          return;
+        }
+        listEl.innerHTML = _edpInlineAddTables.map(function(t) {
+          var id = String(t.id || '');
+          var name = String(t.name || id);
+          var st = String(t.source_type || '');
+          var bucket = String(t.bucket || '');
+          var meta = [st, bucket].filter(Boolean).join(' · ');
+          return ''
+            + '<label data-edp-add-id="' + escapeHtmlAttr(id) + '" '
+            + '       data-edp-add-name="' + escapeHtmlAttr(name.toLowerCase()) + '" '
+            + '       style="display:flex; gap:8px; align-items:center; padding:4px 6px; '
+            +              'border-radius:4px; cursor:pointer; font-size:13px;">'
+            + '  <input type="checkbox" class="edp-add-cb" value="' + escapeHtmlAttr(id) + '">'
+            + '  <span style="flex:1; font-family:var(--font-mono);">' + escapeHtml(name) + '</span>'
+            + (meta ? '  <span style="font-size:11px; color:var(--text-secondary);">'
+                       + escapeHtml(meta) + '</span>' : '')
+            + '</label>';
+        }).join('');
+      }
+      function filterEdpInlineAdd() {
+        var q = (document.getElementById('edp-inline-add-search').value || '').toLowerCase();
+        document.querySelectorAll('#edp-inline-add-list label[data-edp-add-id]').forEach(function(row) {
+          var name = row.getAttribute('data-edp-add-name') || '';
+          row.style.display = (!q || name.indexOf(q) !== -1) ? '' : 'none';
+        });
+      }
+      async function submitEdpInlineAdd() {
+        var pkgId = document.getElementById('edp-id').value;
+        var btn = document.getElementById('edp-inline-add-submit-btn');
+        var selected = Array.from(document.querySelectorAll('.edp-add-cb:checked'))
+          .map(function(cb) { return cb.value; });
+        if (!selected.length) {
+          alert('Pick at least one table to add.');
+          return;
+        }
+        btn.disabled = true;
+        try {
+          // POST each table_id; idempotent on the server so retrying after
+          // partial failure is safe. Parallel — the user-visible latency
+          // is the slowest individual call, not the sum.
+          var calls = selected.map(function(tid) {
+            return fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId) + '/tables', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ table_id: tid }),
+            }).then(function(r) { return { tid: tid, ok: r.ok, status: r.status }; });
+          });
+          var results = await Promise.all(calls);
+          var fails = results.filter(function(r) { return !r.ok; });
+          if (fails.length) {
+            alert(fails.length + ' of ' + results.length + ' add(s) failed.');
+          }
+          // Refresh the package's table list inline (no modal close).
+          var r2 = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId),
+                               { credentials: 'same-origin' });
+          if (r2.ok) renderEdpTablesList((await r2.json()).tables || []);
+          // Reload the inline-add candidate list so the just-added rows
+          // disappear (member set has changed).
+          await loadEdpInlineAddTables();
+          // Background-refresh the top-level Data Packages section so
+          // the new table counts show up after the user closes the modal.
+          if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
+        } catch (e) {
+          alert('Network error: ' + e.message);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
       async function deleteEditDataPackage() {
         const pkgId = document.getElementById('edp-id').value;
         const name = document.getElementById('edp-name').value.trim();
@@ -1983,12 +2237,17 @@
             slugVal = _deriveSlug(nameVal);
             document.getElementById('cdp-slug').value = slugVal;
           }
+          // v50: cover_image_url is set by onCoverFilePicked() when the
+          // admin selects + uploads a file. If they didn't, it stays
+          // empty — send null so the server doesn't see "".
+          var cdpCoverUrl = document.getElementById('cdp-cover-url').value;
           const payload = {
             name: nameVal,
             slug: slugVal,
             description: document.getElementById('cdp-desc').value.trim() || null,
             icon: document.getElementById('cdp-icon').value.trim() || null,
             color: document.getElementById('cdp-color').value.trim() || null,
+            cover_image_url: cdpCoverUrl || null,
           };
           if (!payload.name || !payload.slug) {
             alert('Name is required (slug auto-derives from it).');
@@ -2548,15 +2807,72 @@
               <input id="edp-color" type="text" class="form-input">
             </div>
           </div>
+          {# Cover image upload (v50). Preview shows the current cover when
+             one is set, with an inline Remove button that sends ""
+             (empty-string-means-clear contract in the PUT endpoint). #}
+          <div class="form-group">
+            <label class="form-label">Cover image <span class="optional">(optional)</span></label>
+            <div style="display:flex; gap:12px; align-items:center;">
+              <div id="edp-cover-preview"
+                   style="width:120px; height:72px; border-radius:8px;
+                          border:1px solid var(--border); background:#f1f5f9;
+                          display:flex; align-items:center; justify-content:center;
+                          font-size:12px; color:var(--text-secondary); overflow:hidden;">
+                No image
+              </div>
+              <div style="flex:1;">
+                <input id="edp-cover-file" type="file"
+                       accept="image/png,image/jpeg,image/gif,image/webp"
+                       onchange="onCoverFilePicked(this, 'edp')">
+                <input id="edp-cover-url" type="hidden" value="">
+                <div class="form-hint">
+                  PNG / JPEG / GIF / WebP, max 5 MiB.
+                  <button type="button" class="btn btn-secondary btn-sm"
+                          style="margin-left:6px; padding:2px 8px; font-size:11px;"
+                          onclick="clearCoverImage('edp')">Remove image</button>
+                </div>
+              </div>
+            </div>
+          </div>
 
+          {# v50: inline +Add-tables picker. The old "Add tables" button
+             closed this Edit modal and opened Bulk Assign, losing the
+             admin's mental context. The picker below stays inline: a
+             multi-select of unassigned tables + an Add-selected button
+             that POSTs without closing the modal. The legacy Bulk Assign
+             modal stays available from the section header outside the
+             Edit modal. #}
           <div class="form-group" style="border-top:1px solid var(--border); padding-top:14px; margin-top:14px;">
             <label class="form-label" style="display:flex; align-items:center; justify-content:space-between;">
               <span>Tables in this package</span>
               <button class="btn btn-secondary" type="button" style="padding:4px 10px; font-size:12px;"
-                      onclick="closeEditDataPackageModal(); openBulkAssignModal(document.getElementById('edp-id').value);">
+                      onclick="toggleEdpInlineAdd()">
                 + Add tables
               </button>
             </label>
+            <div id="edp-inline-add" style="display:none; margin-bottom:8px; padding:8px;
+                 border:1px dashed var(--border); border-radius:6px; background:var(--background);">
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <input id="edp-inline-add-search" type="search" class="form-input"
+                       placeholder="Filter unassigned tables…"
+                       style="flex:1;" oninput="filterEdpInlineAdd()">
+              </div>
+              <div id="edp-inline-add-list"
+                   style="max-height:180px; overflow-y:auto; padding:4px;
+                          background:var(--surface); border:1px solid var(--border-light);
+                          border-radius:4px;">
+                <div style="padding:8px; color:var(--text-secondary); font-size:12px;">
+                  Loading unassigned tables…
+                </div>
+              </div>
+              <div style="display:flex; justify-content:flex-end; gap:6px; margin-top:6px;">
+                <button class="btn btn-secondary btn-sm" type="button"
+                        onclick="toggleEdpInlineAdd()">Cancel</button>
+                <button class="btn btn-primary btn-sm" type="button"
+                        id="edp-inline-add-submit-btn"
+                        onclick="submitEdpInlineAdd()">Add selected</button>
+              </div>
+            </div>
             <div id="edp-tables-list" class="card-body" style="padding:0; max-height:240px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;"></div>
           </div>
         </div>

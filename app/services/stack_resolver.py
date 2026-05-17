@@ -55,6 +55,11 @@ class ResourceEntry:
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    # v50: optional admin-uploaded cover image URL (served from /uploads/).
+    # When set the card renders an <img>; when None the card falls back to
+    # the flat-color + initials banner. Symmetric for Data Packages and
+    # Memory Domains.
+    cover_image_url: Optional[str] = None
     requirement: Literal["available", "required"] = "available"
     in_stack: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -258,14 +263,14 @@ class StackResolver:
         placeholders = ",".join(["?"] * len(ids))
         if resource_type == ResourceType.DATA_PACKAGE:
             rows = self.conn.execute(
-                f"""SELECT id, name, description, icon, color
+                f"""SELECT id, name, description, icon, color, cover_image_url
                        FROM data_packages WHERE id IN ({placeholders})
                        ORDER BY name""",
                 list(ids),
             ).fetchall()
         elif resource_type == ResourceType.MEMORY_DOMAIN:
             rows = self.conn.execute(
-                f"""SELECT id, name, description, icon, color
+                f"""SELECT id, name, description, icon, color, cover_image_url
                        FROM memory_domains WHERE id IN ({placeholders})
                        ORDER BY name""",
                 list(ids),
@@ -277,6 +282,7 @@ class StackResolver:
         return [
             ResourceEntry(
                 id=r[0], name=r[1], description=r[2], icon=r[3], color=r[4],
+                cover_image_url=r[5],
                 requirement=(
                     "required" if r[0] in required_ids else "available"
                 ),

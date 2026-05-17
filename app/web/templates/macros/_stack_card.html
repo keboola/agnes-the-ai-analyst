@@ -64,14 +64,24 @@
     <div class="stack-card__req-badge stack-card__req-badge--instack" title="In your stack">In stack</div>
   {% endif %}
 
-  {# Photo banner — 120px tall, FLAT solid color (was: random pastel→pink
-     gradient, user feedback "vošklivé, divné"). The admin's `entry.color`
-     fills the whole banner; if not set, fall back to a neutral surface
-     tint so cards from different admins / migrations still read as one
-     curated set, not as a rainbow. #}
+  {# Photo banner — 120px tall.
+     - If `entry.cover_image_url` is set (v50 admin-uploaded cover), render
+       it as an <img> filling the banner. Mirrors marketplace.html's
+       cover_photo path (templates/marketplace.html:702-707) so /catalog
+       and /memory cards visually match the marketplace cards.
+     - If the <img> 404s (file deleted, mid-deploy file-server lag, etc.),
+       the `onerror` swap replaces the broken-image icon with the same
+       FLAT-color + initials fallback used when no cover is set at all.
+     - No cover → flat solid color from `entry.color` (was: pastel→pink
+       gradient, user feedback "vošklivé, divné") + 2-letter initials. #}
   <div class="stack-card__photo{% if _has_glyph %} stack-card__photo--glyph{% endif %}"
        style="background: {{ entry.color|default('#f1f5f9') }};">
-    {% if _has_glyph %}{{ entry.icon }}{% else %}{{ _initials }}{% endif %}
+    {% if entry.cover_image_url %}
+      <img src="{{ entry.cover_image_url }}" alt=""
+           onerror="this.parentElement.classList.add('stack-card__photo--failed');
+                    this.parentElement.textContent=this.dataset.fallback;"
+           data-fallback="{{ _initials }}">
+    {% elif _has_glyph %}{{ entry.icon }}{% else %}{{ _initials }}{% endif %}
   </div>
 
   <div class="stack-card__body">

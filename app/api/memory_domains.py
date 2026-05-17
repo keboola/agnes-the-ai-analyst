@@ -46,6 +46,7 @@ class CreateMemoryDomainRequest(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    cover_image_url: Optional[str] = None
 
 
 class UpdateMemoryDomainRequest(BaseModel):
@@ -53,6 +54,9 @@ class UpdateMemoryDomainRequest(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    # v50: see app/api/data_packages.py for the empty-string-means-clear
+    # contract; same semantics here.
+    cover_image_url: Optional[str] = None
 
 
 class AddItemRequest(BaseModel):
@@ -92,6 +96,7 @@ def _serialize(d: Dict[str, Any]) -> Dict[str, Any]:
         "description": d.get("description"),
         "icon": d.get("icon"),
         "color": d.get("color"),
+        "cover_image_url": d.get("cover_image_url"),
         "created_by": d.get("created_by"),
         "created_at": d["created_at"].isoformat() if d.get("created_at") else None,
         "updated_at": d["updated_at"].isoformat() if d.get("updated_at") else None,
@@ -132,6 +137,7 @@ async def create_memory_domain(
             description=payload.description,
             icon=payload.icon,
             color=payload.color,
+            cover_image_url=payload.cover_image_url,
             created_by=user.get("email") or user["id"],
         )
     except duckdb.ConstraintException:
@@ -179,13 +185,17 @@ async def update_memory_domain(
         "description": existing.get("description"),
         "icon": existing.get("icon"),
         "color": existing.get("color"),
+        "cover_image_url": existing.get("cover_image_url"),
     }
+    clear_cover = payload.cover_image_url == ""
     repo.update(
         domain_id,
         name=payload.name,
         description=payload.description,
         icon=payload.icon,
         color=payload.color,
+        cover_image_url=None if clear_cover else payload.cover_image_url,
+        clear_cover_image=clear_cover,
     )
     fresh = repo.get(domain_id)
     after = {
@@ -193,6 +203,7 @@ async def update_memory_domain(
         "description": fresh.get("description") if fresh else None,
         "icon": fresh.get("icon") if fresh else None,
         "color": fresh.get("color") if fresh else None,
+        "cover_image_url": fresh.get("cover_image_url") if fresh else None,
     }
     _audit(
         conn,

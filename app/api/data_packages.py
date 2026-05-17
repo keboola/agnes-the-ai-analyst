@@ -46,6 +46,7 @@ class CreateDataPackageRequest(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    cover_image_url: Optional[str] = None
 
 
 class UpdateDataPackageRequest(BaseModel):
@@ -53,6 +54,10 @@ class UpdateDataPackageRequest(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    # v50: cover image override. Sending `""` clears the cover (admin
+    # pressed Remove); sending a non-empty string sets it; omitting the
+    # field leaves it unchanged (Optional-is-no-op contract).
+    cover_image_url: Optional[str] = None
 
 
 class AddTableRequest(BaseModel):
@@ -93,6 +98,7 @@ def _serialize(pkg: Dict[str, Any]) -> Dict[str, Any]:
         "description": pkg.get("description"),
         "icon": pkg.get("icon"),
         "color": pkg.get("color"),
+        "cover_image_url": pkg.get("cover_image_url"),
         "created_by": pkg.get("created_by"),
         "created_at": pkg["created_at"].isoformat() if pkg.get("created_at") else None,
         "updated_at": pkg["updated_at"].isoformat() if pkg.get("updated_at") else None,
@@ -135,6 +141,7 @@ async def create_data_package(
             description=payload.description,
             icon=payload.icon,
             color=payload.color,
+            cover_image_url=payload.cover_image_url,
             created_by=user.get("email") or user["id"],
         )
     except duckdb.ConstraintException:
@@ -185,13 +192,21 @@ async def update_data_package(
         "description": existing.get("description"),
         "icon": existing.get("icon"),
         "color": existing.get("color"),
+        "cover_image_url": existing.get("cover_image_url"),
     }
+    # v50: a literal empty string from the client means "remove the cover
+    # image" (the modal's Remove button POSTs ""); a non-empty string sets
+    # it; None / omitted leaves it unchanged. Map to the repo's explicit
+    # clear flag so the SQL stays unambiguous.
+    clear_cover = payload.cover_image_url == ""
     repo.update(
         pkg_id,
         name=payload.name,
         description=payload.description,
         icon=payload.icon,
         color=payload.color,
+        cover_image_url=None if clear_cover else payload.cover_image_url,
+        clear_cover_image=clear_cover,
     )
     fresh = repo.get(pkg_id)
     after = {
@@ -199,6 +214,7 @@ async def update_data_package(
         "description": fresh.get("description") if fresh else None,
         "icon": fresh.get("icon") if fresh else None,
         "color": fresh.get("color") if fresh else None,
+        "cover_image_url": fresh.get("cover_image_url") if fresh else None,
     }
     _audit(
         conn,

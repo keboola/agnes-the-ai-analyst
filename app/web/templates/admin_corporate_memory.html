@@ -1441,6 +1441,32 @@
                             background:var(--bg); color:var(--text);">
             </label>
           </div>
+          {# Cover image upload (v50) — mirrors the Data Package modal.
+             When set, the /memory card renders <img> instead of letter
+             initials. PNG/JPEG/GIF/WebP, 5 MiB cap server-side. #}
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">
+              Cover image <span style="color:var(--text-secondary);">(optional)</span>
+            </span>
+            <div style="display:flex; gap:12px; align-items:center;">
+              <div id="cmd-cover-preview"
+                   style="width:120px; height:72px; border-radius:8px;
+                          border:1px solid var(--border); background:#f1f5f9;
+                          display:flex; align-items:center; justify-content:center;
+                          font-size:12px; color:var(--text-secondary); overflow:hidden;">
+                No image
+              </div>
+              <div style="flex:1;">
+                <input id="cmd-cover-file" type="file"
+                       accept="image/png,image/jpeg,image/gif,image/webp"
+                       onchange="onCoverFilePickedCmd(this)">
+                <input id="cmd-cover-url" type="hidden" value="">
+                <div style="font-size:11px; color:var(--text-secondary); margin-top:4px;">
+                  PNG / JPEG / GIF / WebP, max 5 MiB. Uploads on Save.
+                </div>
+              </div>
+            </div>
+          </label>
         </div>
         <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
                     margin-top:var(--space-4);">
@@ -1491,6 +1517,47 @@
       let _cmdNewDomainId = null;
       let _cmdNewDomainName = null;
 
+      // v50: cover image upload. Streamlined single-modal-scoped variant
+      // of the helper in admin_tables.html — this template doesn't host
+      // an Edit modal yet, so we don't need the prefix-based generic.
+      async function onCoverFilePickedCmd(input) {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const preview = document.getElementById('cmd-cover-preview');
+        const urlEl = document.getElementById('cmd-cover-url');
+        if (file.size > 5 * 1024 * 1024) {
+          alert('Image is too large (max 5 MiB).');
+          input.value = '';
+          return;
+        }
+        preview.innerHTML = '<span style="font-size:11px;">Uploading…</span>';
+        try {
+          const fd = new FormData();
+          fd.append('file', file);
+          const r = await fetch('/api/admin/uploads/cover-image', {
+            method: 'POST', credentials: 'same-origin', body: fd,
+          });
+          if (!r.ok) {
+            const detail = await r.json().catch(function() { return {}; });
+            alert('Upload failed: ' + (detail.detail || r.statusText));
+            preview.textContent = 'No image';
+            input.value = '';
+            return;
+          }
+          const body = await r.json();
+          urlEl.value = body.url;
+          preview.innerHTML = '';
+          var img = document.createElement('img');
+          img.src = body.url; img.alt = '';
+          img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+          preview.appendChild(img);
+        } catch (e) {
+          alert('Network error: ' + e.message);
+          preview.textContent = 'No image';
+          input.value = '';
+        }
+      }
+
       function openCreateMemoryDomainModal(typed, host) {
         _cmdHost = host;
         document.getElementById('cmd-name').value = typed || '';
@@ -1500,6 +1567,13 @@
         document.getElementById('cmd-desc').value = '';
         document.getElementById('cmd-icon').value = '🎯';
         document.getElementById('cmd-color').value = '#e0f2fe';
+        // Reset cover image state on every open.
+        var coverUrl = document.getElementById('cmd-cover-url');
+        var coverFile = document.getElementById('cmd-cover-file');
+        var preview = document.getElementById('cmd-cover-preview');
+        if (coverUrl) coverUrl.value = '';
+        if (coverFile) coverFile.value = '';
+        if (preview) preview.innerHTML = 'No image';
         document.getElementById('createMemoryDomainModal').style.display = 'block';
       }
       function closeCreateMemoryDomainModal() {
@@ -1510,12 +1584,16 @@
         const btn = document.getElementById('cmd-submit-btn');
         btn.disabled = true;
         try {
+          // v50: cover_image_url is populated by onCoverFilePickedCmd when
+          // the admin selects + uploads a file; send null if unset.
+          var cmdCoverUrl = document.getElementById('cmd-cover-url').value;
           const payload = {
             name: document.getElementById('cmd-name').value.trim(),
             slug: document.getElementById('cmd-slug').value.trim(),
             description: document.getElementById('cmd-desc').value.trim() || null,
             icon: document.getElementById('cmd-icon').value.trim() || null,
             color: document.getElementById('cmd-color').value.trim() || null,
+            cover_image_url: cmdCoverUrl || null,
           };
           if (!payload.name || !payload.slug) {
             alert('Name and slug are required.');

@@ -13,8 +13,12 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, _v45_to_v46, get_schema_version
 
 
-def test_schema_version_is_46():
-    assert SCHEMA_VERSION == 49
+def test_schema_version_is_at_least_46():
+    """v46 (knowledge_item_user_dismissed) shipped here; current bumps may
+    push the SCHEMA_VERSION higher (see test_db_schema_version.py for the
+    exact-current-version guard). The point of this file is the v46
+    migration body itself, not the constant."""
+    assert SCHEMA_VERSION >= 46
 
 
 def test_fresh_install_creates_dismissed_table(tmp_path):
