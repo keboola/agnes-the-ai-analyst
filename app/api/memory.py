@@ -7,7 +7,7 @@ import uuid
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
@@ -147,9 +147,14 @@ def _can_view_item(user: dict, item: dict, is_priv: bool) -> bool:
 class CreateKnowledgeRequest(BaseModel):
     title: str
     content: str
+    # Allow callers to POST either `domain_slug` (new canonical name,
+    # matching admin/repo/template layers) or `domain` (legacy alias kept
+    # for one release so existing API callers don't break — Pydantic v2
+    # accepts the alias on input, Python code reads `request.domain_slug`).
+    model_config = ConfigDict(populate_by_name=True)
     category: str
     tags: Optional[List[str]] = None
-    domain: Optional[str] = None
+    domain_slug: Optional[str] = Field(default=None, alias="domain")
     entities: Optional[List[str]] = None
     source_type: Optional[str] = None
 
@@ -502,7 +507,7 @@ async def create_knowledge(
     # so an item can't be created with a domain it can't be patched to. Empty /
     # missing domain is fine — only reject non-empty values outside the allowlist.
     # See PR #126 review.
-    _validate_domain_slug(request.domain, conn)
+    _validate_domain_slug(request.domain_slug, conn)
     repo = KnowledgeRepository(conn)
     item_id = str(uuid.uuid4())
 
@@ -537,7 +542,7 @@ async def create_knowledge(
         category=request.category,
         source_user=user.get("email"),
         tags=tags or None,
-        domain=request.domain,
+        domain=request.domain_slug,
         entities=request.entities,
         confidence=0.50,
     )
