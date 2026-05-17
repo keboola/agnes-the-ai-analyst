@@ -129,10 +129,20 @@ class StackResolver:
     def stack(
         self, user_id: str, resource_type: ResourceType
     ) -> List[ResourceEntry]:
-        """The user's effective stack — required ∪ (subscribed ∩ available)."""
+        """The user's effective stack — required ∪ (subscribed ∩ available)
+        for regular users; admin (god-mode) gets ALL their subscriptions
+        regardless of group grants, because admins legitimately POST
+        /api/stack/subscribe without first granting themselves a group.
+        Filtering admin's subscriptions through the available-grant join
+        was the "Add to stack worked but My Stack stays empty" bug."""
         groups = self._user_group_ids(user_id)
         required_ids, available_ids = self._grants(groups, resource_type)
-        subscribed_ids = self._subscribed_ids(user_id, resource_type) & available_ids
+        raw_subscribed = self._subscribed_ids(user_id, resource_type)
+        # Admin god-mode: zombie-subscription protection doesn't apply —
+        # admin sees all their actual subscriptions even without a grant.
+        from app.auth.access import is_user_admin
+        admin_bypass = is_user_admin(user_id, self.conn)
+        subscribed_ids = raw_subscribed if admin_bypass else (raw_subscribed & available_ids)
         effective_ids = required_ids | subscribed_ids
         entries = self._fetch_entries(resource_type, effective_ids, required_ids)
         # In stack() every entry is by definition in_stack=True.
@@ -144,7 +154,9 @@ class StackResolver:
         self, user_id: str, resource_type: ResourceType
     ) -> List[ResourceEntry]:
         """All resources the user could see — required + available, annotated
-        with ``in_stack`` so the UI can render Add/Remove affordances."""
+        with ``in_stack`` so the UI can render Add/Remove affordances.
+        Admin uses route-handler god-mode for the full list; this method
+        stays grants-based so non-admin browse is correct."""
         groups = self._user_group_ids(user_id)
         required_ids, available_ids = self._grants(groups, resource_type)
         all_ids = required_ids | available_ids

@@ -924,17 +924,26 @@ async def catalog(
 
     is_admin_view = is_user_admin(user["id"], conn)
     if is_admin_view:
+        # Admin god-mode for BROWSE only: surface every package regardless
+        # of group grants so admins can audit the full set. For MY STACK we
+        # still call the resolver — admins legitimately subscribe to packages
+        # (POST /api/stack/subscribe) and expect to see them in their stack
+        # tab. Hard-coding stack_entries=[] was the "I clicked Add to stack,
+        # green toast, then My Stack is empty" bug user reported.
         from app.services.stack_resolver import ResourceEntry
+        actual_stack = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
+        stack_ids = {e.id for e in actual_stack}
         browse_entries = [
             ResourceEntry(
                 id=p["id"], name=p["name"], description=p.get("description"),
                 icon=p.get("icon"), color=p.get("color"),
                 cover_image_url=p.get("cover_image_url"),
-                requirement="available", in_stack=False,
+                requirement="available",
+                in_stack=(p["id"] in stack_ids),
             )
             for p in pkg_repo.list()
         ]
-        stack_entries = []
+        stack_entries = actual_stack
     else:
         browse_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
         stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
@@ -1182,24 +1191,26 @@ async def corporate_memory(
 
     is_admin_view = is_user_admin(user["id"], conn)
 
-    # Admin god-mode: surface every domain regardless of group grants so
-    # admins can audit the full set without having to grant themselves each
-    # one. Non-admins use the resolver path (grants × subscriptions).
+    # Admin god-mode for BROWSE only: surface every domain regardless of
+    # group grants so admins can audit the full set. For MY STACK we still
+    # call the resolver — admins who POST /api/stack/subscribe expect to
+    # see those subscriptions in their stack tab. Hard-coding stack=[] was
+    # the "Add to stack works but My Stack stays empty" bug.
     if is_admin_view:
         from app.services.stack_resolver import ResourceEntry
-
-        def _all_entries():
-            return [
-                ResourceEntry(
-                    id=d["id"], name=d["name"], description=d.get("description"),
-                    icon=d.get("icon"), color=d.get("color"),
-                    cover_image_url=d.get("cover_image_url"),
-                    requirement="available", in_stack=False,
-                )
-                for d in domains_repo.list(limit=10000)
-            ]
-        browse_entries = _all_entries()
-        stack_entries = []  # admin's "stack" stays clean; subscriptions still work
+        actual_stack = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
+        stack_ids = {e.id for e in actual_stack}
+        browse_entries = [
+            ResourceEntry(
+                id=d["id"], name=d["name"], description=d.get("description"),
+                icon=d.get("icon"), color=d.get("color"),
+                cover_image_url=d.get("cover_image_url"),
+                requirement="available",
+                in_stack=(d["id"] in stack_ids),
+            )
+            for d in domains_repo.list(limit=10000)
+        ]
+        stack_entries = actual_stack
     else:
         browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
         stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
