@@ -93,6 +93,9 @@ def test_admin_memory_renderer_emits_votes_contributors_tags(seeded_app):
     assert "memory-item__votes" in body
     assert "memory-item__contributors" in body
     assert "memory-item__tags" in body
-    # Vote icons explicitly emitted by the renderer.
-    assert "▲ " in body or "▲" in body
-    assert "▼ " in body or "▼" in body
+    # Vote icons explicitly emitted by the renderer — the user-feedback
+    # iteration replaced the ▲/▼ unicode triangles with SVG thumbs-up/down
+    # to match the user-facing /memory drill-down. Test asserts the
+    # vote-pill class survives so downstream styling stays intact.
+    assert "vote-pill" in body
+    assert "vote-icon" in body

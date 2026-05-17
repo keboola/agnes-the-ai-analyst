@@ -11,6 +11,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Memory Domains tab** on `/admin/corporate-memory` — first-class admin
+  CRUD UI for memory domains. Renders a list of all domains with Open/Delete
+  affordances, hosts the "+ New Memory Domain" entry point in the tab strip
+  + empty state, and refreshes after create. The user-facing
+  `/corporate-memory` "Manage domains →" link now deep-links to this tab
+  (`#domains`). Closes the "I can't see/edit the domains anywhere in admin"
+  feedback.
+- **Domain badge** on `/admin/corporate-memory` item cards — every queue row
+  now shows which memory domain (if any) the item belongs to as a blue
+  📂 chip alongside the existing category/source/status badges.
+- **Filter by domain** dropdown on the All Items tab — admins can narrow
+  the queue to a single domain (or "(no domain)" for unassigned items),
+  hydrated from `/api/admin/memory-domains`.
+- **Data Packages chip-input** on the legacy table edit modal — parity
+  with the BigQuery modal. Edits compute the minimal add/remove delta
+  against `/api/admin/data-packages/{id}/tables` so admins can manage
+  package membership without leaving the edit dialog.
 
 ### Changed
 - **`/admin/tables`** — page-centric rewrite. Data Packages are now the
@@ -24,8 +41,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   layout. Cache freshness collapsed into a one-line summary in the
   action bar. Addresses the "data packages handled on the side / weird
   / everything must live within a group" UX feedback.
+- **Color inputs** on Create/Edit Data Package + Create Memory Domain
+  modals switched from free-text `<input type="text">` to native
+  `<input type="color">` swatch picker. Server now validates the hex
+  format too (`^#[0-9a-fA-F]{6}$`) — admins can no longer save malformed
+  values like `#ff5733#e0f2fe` that broke the card layout downstream.
 
 ### Fixed
+- **chip-input "+ Create new" was silently dead** —
+  `app/web/static/js/components/chip-input.js` dispatched the
+  `chip-create` CustomEvent without `bubbles: true`, so the
+  document-level listeners in `/admin/tables` and
+  `/admin/corporate-memory` never fired. Adding `bubbles: true` restores
+  the inline create flow.
+- **"Data Package created but didn't appear"** — the Create Data Package
+  flow now fires a fire-and-forget refresh of the packages section
+  immediately after step 1 succeeds (instead of waiting for the optional
+  step-2 RBAC modal to close), shows a success toast on step-1 close, and
+  re-titles the step-2 modal with an explicit "✓ created — assign access?
+  (optional)" header so the modal transition isn't silent.
 
 ### Removed
 

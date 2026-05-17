@@ -1790,6 +1790,23 @@
                     <input type="text" class="form-input" id="editFolder" placeholder="e.g. crm, finance, marketing">
                     <div class="form-hint">Logical grouping for catalog organization (does not affect storage).</div>
                 </div>
+
+                {# Data Packages chip-input — parity with the BigQuery
+                   edit modal. saveTableEdit() diffs the chip selection
+                   against the current membership and emits add/remove
+                   junction calls so admins can manage package membership
+                   without leaving the edit modal. #}
+                <div class="form-group">
+                    <label class="form-label">Data Packages <span class="optional">(optional)</span></label>
+                    <div class="chip-input"
+                         id="editLegacyPackagesChips"
+                         data-source-url="/api/admin/data-packages"
+                         data-allow-create="true"
+                         data-name="legacy_package_ids"
+                         data-placeholder="Type to search or create…"
+                         data-chip-input="data_package"></div>
+                    <div class="form-hint">Bundle this table into one or more Data Packages so analysts can opt-in to it as a group.</div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
@@ -1843,7 +1860,12 @@
             </div>
             <div style="flex:1;">
               <label class="form-label">Color</label>
-              <input id="cdp-color" type="text" class="form-input" value="#e0f2fe" placeholder="#e0f2fe">
+              {# type=color forces the native swatch picker so admins can't
+                 type/append a malformed hex into the field (E2E found a
+                 text input letting "#ff5733#e0f2fe" reach the DB). Server
+                 also validates with a regex now — belt + suspenders. #}
+              <input id="cdp-color" type="color" class="form-input" value="#e0f2fe"
+                     style="height:38px; padding:2px; cursor:pointer;">
             </div>
           </div>
           {# Cover image upload (v50). When set, the /catalog card renders
@@ -2291,6 +2313,18 @@
           _cdpNewName = payload.name;
           document.getElementById('createDataPackageModal').style.display = 'none';
           _cdpHost = carriedHost;
+          // Fire-and-forget refresh: even if the admin lingers on the
+          // step-2 RBAC modal (or closes it via the backdrop), the
+          // package card appears in the list underneath. Was the
+          // "I created it but it didn't appear" E2E bug.
+          if (typeof loadDataPackagesSection === 'function') {
+            try { loadDataPackagesSection(); } catch (_) {}
+          }
+          // Visible success feedback before the silent step-1 → step-2
+          // modal transition (another E2E complaint).
+          if (typeof showToast === 'function') {
+            showToast('Data Package "' + payload.name + '" created', 'success');
+          }
           openCreateDataPackageRbacModal();
         } catch (e) {
           alert('Network error: ' + e.message);
@@ -2755,14 +2789,18 @@
     <div class="modal-overlay" id="createDataPackageRbacModal" style="display:none;">
       <div class="modal" style="max-width:560px;">
         <div class="modal-header">
-          <h2>Assign access to <span id="cdp-rbac-name"></span></h2>
+          <h2 style="display:flex; align-items:center; gap:8px;">
+            <span style="display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:#dcfce7; color:#15803d;">✓</span>
+            <span><span id="cdp-rbac-name"></span> created — assign access? <span style="color:#5f6368; font-weight:normal; font-size:14px;">(optional)</span></span>
+          </h2>
           <button class="modal-close" onclick="skipCreateDataPackageRbac()">×</button>
         </div>
         <div class="modal-body">
           <p class="form-hint" style="margin-bottom:12px;">
-            Optional. Grant per-group access tiers — <em>available</em> shows
+            Grant per-group access tiers — <em>available</em> shows
             the package in the group's Browse; <em>required</em> auto-installs
-            it into the group's stack on next pull.
+            it into the group's stack on next pull. You can skip this and
+            grant access later from <a href="/admin/access">Access control</a>.
           </p>
           <div id="cdp-rbac-rows" style="display:flex; flex-direction:column; gap:6px; max-height:50vh; overflow-y:auto;">
             <div class="loading" style="padding:12px; color:#5f6368;">Loading groups…</div>
@@ -2817,7 +2855,8 @@
             </div>
             <div style="flex:1;">
               <label class="form-label">Color</label>
-              <input id="edp-color" type="text" class="form-input">
+              <input id="edp-color" type="color" class="form-input"
+                     style="height:38px; padding:2px; cursor:pointer;">
             </div>
           </div>
           {# Cover image upload (v50). Preview shows the current cover when
@@ -4138,10 +4177,16 @@
         _editOriginalQueryMode = null;
     }
 
+    // Tracks the set of Data Package ids the legacy-edit modal was opened
+    // with, so saveTableEdit() can emit the minimal add/remove deltas
+    // against /api/admin/data-packages/{id}/tables instead of replaying
+    // every chip.
+    var _editLegacyOriginalPackageIds = new Set();
+
     function _openEditLegacyModal(table) {
         // Legacy fallback for source_types that aren't bigquery or keboola
         // (e.g. jira). Carries the Strategy + Primary Key + Description +
-        // Folder fields only.
+        // Folder fields and a Data Packages chip-input (parity with BQ).
         currentEditTableId = table.id;
         document.getElementById('editTableId').value = table.id || '';
         var sourceType = (table.source_type || '').toLowerCase();
@@ -4152,7 +4197,58 @@
         document.getElementById('editPrimaryKey').value = (table.primary_key || []).join(', ');
         _editOriginalQueryMode = null;
         document.getElementById('editSubmitBtn').disabled = false;
+
+        // Hydrate Data Packages chip-input with current memberships.
+        // chip-input.js inits idempotently at DOMContentLoaded; we add
+        // chips via the public `.addChip()` API after a fresh memberships
+        // fetch, after clearing whatever was left from a prior edit.
+        _editLegacyOriginalPackageIds = new Set();
+        var chipHost = document.getElementById('editLegacyPackagesChips');
+        if (chipHost) {
+            // Reset chips between edits — clear hidden + visible state.
+            var hidden = chipHost.querySelector('input[type="hidden"]');
+            if (hidden) hidden.value = '[]';
+            var chipsRow = chipHost.querySelector('div');
+            if (chipsRow) chipsRow.innerHTML = '';
+            // selected[] is closure-private in chip-input.js — easiest way
+            // to clear it is Backspace simulation, but that's brittle.
+            // Instead we wire a `clearChips()` helper if exposed; fall
+            // back to wiping `dataset.selected` and re-init.
+            if (typeof chipHost.clearChips === 'function') {
+                chipHost.clearChips();
+            }
+            _hydrateLegacyEditPackagesChips(table.id, chipHost);
+        }
+
         document.getElementById('editModal').classList.add('active');
+    }
+
+    async function _hydrateLegacyEditPackagesChips(tableId, chipHost) {
+        try {
+            var r = await fetch('/api/admin/data-packages', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            var pkgs = await r.json();
+            // For each package, fetch members in parallel and keep ones
+            // containing this table. ~N small calls; admins rarely have
+            // >50 packages on a single instance.
+            var members = await Promise.all(pkgs.map(function(p) {
+                return fetch('/api/admin/data-packages/' + encodeURIComponent(p.id),
+                             { credentials: 'same-origin' })
+                    .then(function(rr) { return rr.ok ? rr.json() : null; })
+                    .catch(function() { return null; });
+            }));
+            members.forEach(function(det, i) {
+                if (!det) return;
+                var ids = (det.tables || []).map(function(t) { return t.id; });
+                if (ids.indexOf(tableId) === -1) return;
+                _editLegacyOriginalPackageIds.add(pkgs[i].id);
+                if (chipHost.addChip) {
+                    chipHost.addChip({ id: pkgs[i].id, name: pkgs[i].name });
+                }
+            });
+        } catch (_) {
+            // Non-fatal: the field stays empty and admin can re-pick.
+        }
     }
 
     function onEditBqAccessModeChange() {
@@ -4207,7 +4303,7 @@
         _editOriginalQueryMode = null;
     }
 
-    function saveTableEdit() {
+    async function saveTableEdit() {
         // Legacy save handler — runs only for source_types that aren't
         // bigquery (handled by saveBqTabEdit) or keboola (handled by
         // saveKeboolaTabEdit). Currently the catch-all for jira-style rows.
@@ -4229,27 +4325,67 @@
             folder: document.getElementById('editFolder').value.trim() || null,
         };
 
-        fetch('/api/admin/registry/' + encodeURIComponent(currentEditTableId), {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        })
-        .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || d.error || 'Update failed'); });
-            return r.json();
-        })
-        .then(function(data) {
+        try {
+            var r = await fetch('/api/admin/registry/' + encodeURIComponent(currentEditTableId), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!r.ok) {
+                var d = await r.json().catch(function() { return {}; });
+                throw new Error(d.detail || d.error || 'Update failed');
+            }
+
+            // Diff Data Package chip selection vs original — emit minimal
+            // add/remove calls to keep the junction table in sync. Errors
+            // here are surfaced via toast but don't roll back the table
+            // PUT (admins can retry membership from the package side).
+            var chipHost = document.getElementById('editLegacyPackagesChips');
+            if (chipHost && chipHost.getSelectedIds) {
+                var nowIds = new Set(chipHost.getSelectedIds());
+                var origIds = _editLegacyOriginalPackageIds;
+                var tableId = currentEditTableId;
+                var calls = [];
+                nowIds.forEach(function(id) {
+                    if (!origIds.has(id)) {
+                        calls.push(fetch('/api/admin/data-packages/' + encodeURIComponent(id) + '/tables', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'same-origin',
+                            body: JSON.stringify({ table_id: tableId }),
+                        }));
+                    }
+                });
+                origIds.forEach(function(id) {
+                    if (!nowIds.has(id)) {
+                        calls.push(fetch('/api/admin/data-packages/' + encodeURIComponent(id)
+                                          + '/tables/' + encodeURIComponent(tableId),
+                                          { method: 'DELETE', credentials: 'same-origin' }));
+                    }
+                });
+                if (calls.length) {
+                    var results = await Promise.allSettled(calls);
+                    var fails = results.filter(function(x) {
+                        return x.status === 'rejected' || (x.value && !x.value.ok);
+                    });
+                    if (fails.length) {
+                        showToast(fails.length + ' package membership change(s) failed', 'error');
+                    }
+                }
+            }
+
             closeEditModal();
             showToast('Table updated successfully', 'success');
             loadRegistry();
-        })
-        .catch(function(err) {
+            if (typeof loadAdminTablesLayout === 'function') {
+                loadAdminTablesLayout();
+            }
+        } catch (err) {
             showToast('Update failed: ' + err.message, 'error');
-        })
-        .finally(function() {
+        } finally {
             btn.disabled = false;
             btn.textContent = 'Save Changes';
-        });
+        }
     }
 
     function saveBqTabEdit() {

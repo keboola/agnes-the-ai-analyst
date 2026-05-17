@@ -22,8 +22,9 @@ from typing import Any, Dict, List, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
+from app.api.data_packages import _validate_color
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from src.repositories.audit import AuditRepository
@@ -48,6 +49,11 @@ class CreateMemoryDomainRequest(BaseModel):
     color: Optional[str] = None
     cover_image_url: Optional[str] = None
 
+    @field_validator("color")
+    @classmethod
+    def _check_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_color(v)
+
 
 class UpdateMemoryDomainRequest(BaseModel):
     name: Optional[str] = None
@@ -57,6 +63,11 @@ class UpdateMemoryDomainRequest(BaseModel):
     # v50: see app/api/data_packages.py for the empty-string-means-clear
     # contract; same semantics here.
     cover_image_url: Optional[str] = None
+
+    @field_validator("color")
+    @classmethod
+    def _check_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_color(v)
 
 
 class AddItemRequest(BaseModel):

@@ -141,7 +141,13 @@
         createRow.dataset.name = filter;
         createRow.addEventListener('mousedown', (e) => {
           e.preventDefault();
+          // bubbles:true is required — the document-level listeners in
+          // admin_tables.html and admin_corporate_memory.html catch this
+          // and open the appropriate Create-X modal. Without bubbles
+          // the event dies on the host and the "+ Create new" affordance
+          // is silently dead. (E2E-caught regression.)
           host.dispatchEvent(new CustomEvent('chip-create', {
+            bubbles: true,
             detail: { typed: filter, host: host },
           }));
         });
@@ -231,6 +237,23 @@
       syncHiddenAndEmit();
       renderChips();
       closeDropdown();
+    };
+
+    // Clear all selected chips — used by the legacy edit-table modal in
+    // admin_tables.html, which re-uses one DOM node across edits and needs
+    // to wipe state between opens.
+    host.clearChips = function() {
+      selected = [];
+      input.value = '';
+      syncHiddenAndEmit();
+      renderChips();
+      closeDropdown();
+    };
+
+    // Read the current chip selection (id list). Used by save handlers
+    // that need to diff against the originally-loaded membership set.
+    host.getSelectedIds = function() {
+      return selected.map(s => s.id);
     };
 
     renderChips();

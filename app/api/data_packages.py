@@ -18,11 +18,31 @@ Every mutation writes an ``audit_log`` row (see Section 9.1 of the design).
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+# Six-digit hex colors only — the /catalog cards use the value directly as
+# a CSS background, so accepting anything else lets malformed input land in
+# the DB and break the card layout (E2E found "#ff5733#e0f2fe" stored
+# verbatim after the create modal's text input concatenated values).
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _validate_color(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if not _HEX_COLOR_RE.match(value):
+        raise ValueError(
+            "color must be a 6-digit hex like '#e0f2fe'"
+        )
+    return value.lower()
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
@@ -48,6 +68,11 @@ class CreateDataPackageRequest(BaseModel):
     color: Optional[str] = None
     cover_image_url: Optional[str] = None
 
+    @field_validator("color")
+    @classmethod
+    def _check_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_color(v)
+
 
 class UpdateDataPackageRequest(BaseModel):
     name: Optional[str] = None
@@ -58,6 +83,11 @@ class UpdateDataPackageRequest(BaseModel):
     # pressed Remove); sending a non-empty string sets it; omitting the
     # field leaves it unchanged (Optional-is-no-op contract).
     cover_image_url: Optional[str] = None
+
+    @field_validator("color")
+    @classmethod
+    def _check_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_color(v)
 
 
 class AddTableRequest(BaseModel):

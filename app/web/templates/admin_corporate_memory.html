@@ -1031,8 +1031,10 @@
             </div>
         </div>
 
-        <!-- Tab Navigation -->
-        <div class="tab-nav">
+        <!-- Tab Navigation — Domains tab + "+ New Memory Domain" button
+             on the right edge (E2E found admins had no UI to create a
+             domain even though the API existed). -->
+        <div class="tab-nav" style="display:flex; align-items:center; gap:0;">
             <button class="tab-btn active" data-tab="review" onclick="switchTab('review')">
                 Review Queue
                 <span class="tab-badge" id="pendingBadge" style="{% if not stats.pending_count %}display:none{% endif %}">{{ stats.pending_count|default(0) }}</span>
@@ -1051,9 +1053,17 @@
             <button class="tab-btn" data-tab="browse" onclick="switchTab('browse')">
                 Browse
             </button>
+            <button class="tab-btn" data-tab="domains" onclick="switchTab('domains')">
+                Domains
+                <span class="tab-badge" id="domainsBadge" style="display:none;"></span>
+            </button>
             <button class="tab-btn" data-tab="audit" onclick="switchTab('audit')">
                 Audit Log
             </button>
+            <div style="flex:1;"></div>
+            <button class="btn btn-mandate"
+                    onclick="openCreateMemoryDomainModal('', null)"
+                    style="margin-left:auto;">+ New Memory Domain</button>
         </div>
 
         <!-- Review Queue Tab -->
@@ -1128,6 +1138,12 @@
                     <option value="">All sources</option>
                     <option value="user_verification">Verified facts (from sessions)</option>
                     <option value="claude_local_md">CLAUDE.local.md</option>
+                </select>
+                {# Domain filter — closes the "domains never visible in admin
+                   queue" E2E gap. Options are hydrated by loadDomainsFilterOptions(). #}
+                <label for="domainFilter" style="margin-left: var(--space-4);">Domain:</label>
+                <select class="filter-select" id="domainFilter" onchange="loadAllItems(1)">
+                    <option value="">All domains</option>
                 </select>
             </div>
             <div id="allList" class="knowledge-list">
@@ -1352,6 +1368,22 @@
             </div>
         </div>
 
+        <!-- Domains Tab — admin-side CRUD of memory_domains. The user-facing
+             /corporate-memory page consumes the same rows; this is where
+             they're created/edited/deleted. -->
+        <div id="tab-domains" class="tab-content">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <p style="margin:0; color:var(--text-secondary); font-size:13px;">
+                    Memory domains bundle related items (playbooks, runbooks, shared context) so analysts can opt-in to a coherent body of knowledge.
+                </p>
+                <button class="btn btn-mandate"
+                        onclick="openCreateMemoryDomainModal('', null)">+ New Memory Domain</button>
+            </div>
+            <div id="domainsList">
+                <div class="loading">Loading domains…</div>
+            </div>
+        </div>
+
         <!-- Audit Log Tab -->
         <div id="tab-audit" class="tab-content">
             <div class="filter-bar">
@@ -1435,10 +1467,12 @@
             </label>
             <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
               <span style="font-size:12px; color:var(--text-muted);">Color</span>
-              <input id="cmd-color" type="text" value="#e0f2fe" placeholder="#e0f2fe"
-                     style="padding:6px; border:1px solid var(--border);
+              {# type=color — same rationale as the Data Package create
+                 modal (admin_tables.html). Server validates hex too. #}
+              <input id="cmd-color" type="color" value="#e0f2fe"
+                     style="padding:2px; border:1px solid var(--border);
                             border-radius:var(--radius-sm);
-                            background:var(--bg); color:var(--text);">
+                            background:var(--bg); height:38px; cursor:pointer;">
             </label>
           </div>
           {# Cover image upload (v50) — mirrors the Data Package modal.
@@ -1623,6 +1657,11 @@
           _cmdNewDomainName = payload.name;
           document.getElementById('createMemoryDomainModal').style.display = 'none';
           _cmdHost = carriedHost;
+          // Fire-and-forget refresh of the Domains tab so the new row
+          // appears even if the admin closes the RBAC step via backdrop.
+          if (typeof loadDomainsTab === 'function') {
+            try { loadDomainsTab(); } catch (_) {}
+          }
           openCreateMemoryDomainRbacModal();
         } catch (e) {
           alert('Network error: ' + e.message);
@@ -1667,6 +1706,10 @@
         _cmdNewDomainId = null;
         _cmdNewDomainName = null;
         document.getElementById('createMemoryDomainRbacModal').style.display = 'none';
+        // Refresh the Domains tab list (no-op if user is on a different tab).
+        if (typeof loadDomainsTab === 'function') {
+          try { loadDomainsTab(); } catch (_) {}
+        }
       }
       async function submitCreateMemoryDomainRbac() {
         const btn = document.getElementById('cmd-rbac-save-btn');
@@ -1770,6 +1813,82 @@
         else if (tab === 'audit') loadAuditLog(auditPage);
         else if (tab === 'duplicates') loadDuplicateCandidates();
         else if (tab === 'browse') loadBrowseTree();
+        else if (tab === 'domains') loadDomainsTab();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Domains tab — admin CRUD on memory_domains. The user-facing
+    // /corporate-memory page reads from the same /api/admin/memory-domains
+    // endpoint; this tab is where admins create, edit, or delete the
+    // domain rows. Was the missing piece behind "Manage domains →" link
+    // and the "I can't see/edit the domains anywhere" E2E feedback.
+    // ─────────────────────────────────────────────────────────────
+
+    async function loadDomainsTab() {
+        const wrap = document.getElementById('domainsList');
+        if (!wrap) return;
+        wrap.innerHTML = '<div class="loading">Loading domains…</div>';
+        try {
+            const r = await fetch('/api/admin/memory-domains', { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const rows = await r.json();
+            const badge = document.getElementById('domainsBadge');
+            if (badge) {
+                badge.textContent = String(rows.length);
+                badge.style.display = rows.length ? '' : 'none';
+            }
+            if (!rows.length) {
+                wrap.innerHTML = '<div class="empty-state" style="padding:24px; text-align:center;">'
+                    + '<p><strong>No memory domains yet.</strong></p>'
+                    + '<p style="font-size:13px; color:var(--text-secondary);">Domains bundle related memory items so analysts can opt-in as a group.</p>'
+                    + '<button class="btn btn-mandate" onclick="openCreateMemoryDomainModal(\'\', null)">+ New Memory Domain</button>'
+                    + '</div>';
+                return;
+            }
+            wrap.innerHTML = rows.map(d => {
+                const color = d.color || '#e0f2fe';
+                const icon = d.icon || '🎯';
+                const name = escapeHtml(d.name || d.slug || '');
+                const slug = escapeHtml(d.slug || '');
+                const desc = escapeHtml(d.description || '');
+                return ''
+                    + '<div data-domain-id="' + escapeHtml(d.id) + '" '
+                    +      'style="display:flex; gap:12px; align-items:center; padding:12px 16px; '
+                    +             'background:var(--surface); border:1px solid var(--border); '
+                    +             'border-radius:10px; margin-bottom:8px;">'
+                    + '  <span style="display:inline-flex; align-items:center; justify-content:center; '
+                    +                'width:36px; height:36px; border-radius:8px; flex-shrink:0; '
+                    +                'background:' + escapeHtml(color) + ';">' + escapeHtml(icon) + '</span>'
+                    + '  <div style="flex:1; min-width:0;">'
+                    + '    <div style="font-weight:600; font-size:14px;">' + name
+                    +      ' <code style="font-size:11px; color:var(--text-secondary); margin-left:6px;">' + slug + '</code></div>'
+                    + (desc
+                        ? '    <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">' + desc + '</div>'
+                        : '')
+                    + '  </div>'
+                    + '  <a class="btn" href="/memory/d/' + slug + '" target="_blank" style="font-size:12px;">Open →</a>'
+                    + '  <button class="btn btn-reject" onclick="deleteMemoryDomain(\'' + escapeHtml(d.id) + '\', \'' + name.replace(/\'/g, "\\'") + '\')" style="font-size:12px;">Delete</button>'
+                    + '</div>';
+            }).join('');
+        } catch (e) {
+            wrap.innerHTML = '<div class="empty-state" style="color:var(--error);">Failed to load domains: ' + e.message + '</div>';
+        }
+    }
+
+    async function deleteMemoryDomain(id, name) {
+        if (!confirm('Delete memory domain "' + name + '"? Items remain but get unassigned.')) return;
+        try {
+            const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id),
+                { method: 'DELETE', credentials: 'same-origin' });
+            if (!r.ok && r.status !== 204) {
+                const detail = await r.json().catch(() => ({}));
+                alert('Failed: ' + (detail.detail || r.statusText));
+                return;
+            }
+            loadDomainsTab();
+        } catch (e) {
+            alert('Network error: ' + e.message);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2371,6 +2490,14 @@
         const pagination = document.getElementById('allPagination');
         const status = document.getElementById('statusFilter').value;
         const sourceType = document.getElementById('sourceTypeFilter').value;
+        const domainEl = document.getElementById('domainFilter');
+        const domain = domainEl ? domainEl.value : '';
+
+        // Hydrate domain dropdown on first call.
+        if (domainEl && !domainEl.dataset.hydrated) {
+            domainEl.dataset.hydrated = '1';
+            hydrateDomainFilterOptions();
+        }
 
         try {
             const params = new URLSearchParams({page, _t: Date.now()});
@@ -2380,12 +2507,34 @@
             if (sourceType) {
                 params.append('source_type', sourceType);
             }
+            if (domain) {
+                params.append('domain', domain);
+            }
             const resp = await fetch(`/api/memory?${params}`);
             const data = await resp.json();
             renderAllItems(data, list, pagination);
         } catch (e) {
             console.error('Failed to load all items:', e);
             list.innerHTML = '<div class="empty-state"><p>Error loading items.</p></div>';
+        }
+    }
+
+    async function hydrateDomainFilterOptions() {
+        const sel = document.getElementById('domainFilter');
+        if (!sel) return;
+        try {
+            const r = await fetch('/api/admin/memory-domains', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            const rows = await r.json();
+            const current = sel.value;
+            sel.innerHTML = '<option value="">All domains</option>'
+                + '<option value="(none)">(no domain)</option>'
+                + rows.map(d =>
+                    `<option value="${escapeHtml(d.slug)}">${escapeHtml(d.name || d.slug)}</option>`
+                  ).join('');
+            sel.value = current;
+        } catch (_) {
+            // Non-fatal — filter just stays with "All domains" only.
         }
     }
 
@@ -2613,6 +2762,7 @@
                     <h3 class="memory-item__title knowledge-title">${escapeHtml(item.title || 'Untitled')}</h3>
                     <div class="memory-item__badges">
                         ${isRequired ? '<span class="badge badge--required">Required</span>' : ''}
+                        ${item.domain ? `<span class="badge" style="background:#e8f0fe; color:#1a73e8; border:1px solid #c7d8f5;" title="Memory domain">📂 ${escapeHtml(item.domain)}</span>` : ''}
                         ${item.category ? `<span class="badge badge--category">${escapeHtml(categoryDisplay)}</span>` : ''}
                         ${item.source_type ? `<span class="badge badge--source">${escapeHtml(item.source_type)}</span>` : ''}
                         ${(status && status !== 'approved') ? `<span class="badge badge--status status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
@@ -3100,9 +3250,18 @@
     }
 
     // ─────────────────────────────────────────────────────────────
-    // Initial load
+    // Initial load — honor #tab in the URL hash so deep links from
+    // /corporate-memory "Manage domains →" land on the right tab.
     // ─────────────────────────────────────────────────────────────
 
-    loadReviewQueue(1);
+    (function() {
+        const hash = (window.location.hash || '').replace(/^#/, '');
+        const validTabs = ['review','all','contradictions','duplicates','browse','domains','audit'];
+        if (hash && validTabs.indexOf(hash) !== -1) {
+            switchTab(hash);
+        } else {
+            loadReviewQueue(1);
+        }
+    })();
     </script>
 {% endblock %}
