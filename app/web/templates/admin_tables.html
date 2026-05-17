@@ -966,6 +966,19 @@
            survive as inline tags but no longer drive the layout. #}
         <section id="adminTablesLayout" class="card" style="margin-bottom: 16px;">
           <div class="card-body" id="adminTablesLayoutBody" style="padding:16px;">
+            {# Search bar — UX parity with /catalog + /memory. Filters the
+               package details + the table rows inside them; an unpackaged
+               row matches by table name / source_type / bucket. Hides any
+               package whose name doesn't match AND has zero matching rows. #}
+            <div style="margin-bottom: 12px; display:flex; align-items:center; gap:8px;">
+              <input id="adminTablesSearch" type="search"
+                     class="form-input"
+                     placeholder="Filter packages and tables by name, source, or bucket…"
+                     oninput="filterAdminTablesLayout()"
+                     style="flex:1; max-width:520px;">
+              <span id="adminTablesSearchHint"
+                    style="font-size:12px; color:var(--text-secondary);"></span>
+            </div>
             <div id="adminTablesLayoutPackages">
               <div style="padding:16px; color:var(--text-secondary); font-size:13px; text-align:center;">
                 Loading packages…
@@ -4934,7 +4947,13 @@
             var bucket = String(t.bucket || '');
             var editUrl = '/admin/tables?edit=' + encodeURIComponent(id);
             var isInternal = (src === 'internal');
-            html += '<tr data-table-id="' + escapeHtmlAttr(id) + '">';
+            // data-table-row-{name,source,bucket} attributes power the
+            // filterAdminTablesLayout() search; lower-case once at render
+            // time so the filter can use plain substring matching.
+            html += '<tr data-table-id="' + escapeHtmlAttr(id) + '" '
+                  + 'data-table-row-name="' + escapeHtmlAttr(name.toLowerCase()) + '" '
+                  + 'data-table-row-source="' + escapeHtmlAttr(src.toLowerCase()) + '" '
+                  + 'data-table-row-bucket="' + escapeHtmlAttr(bucket.toLowerCase()) + '">';
             html += '<td class="col-id" title="' + escapeHtml(id) + '">'
                   + '<a href="' + escapeHtmlAttr(editUrl) + '" '
                   +    'style="color:var(--primary); text-decoration:none;">'
@@ -5005,6 +5024,63 @@
     // before the rewrite still call loadDataPackagesSection() to refresh.
     var loadDataPackagesSection = loadAdminTablesLayout;
     window.loadDataPackagesSection = loadDataPackagesSection;
+
+    // ── Search filter for the /admin/tables layout ───────────────────
+    // Mirrors the /catalog + /memory hero-search pattern: one input
+    // narrows both packages and table rows in place. A package is
+    // visible when its name matches OR any of its member tables match;
+    // an unpackaged row is visible when its name / source / bucket
+    // matches.
+    function filterAdminTablesLayout() {
+      var input = document.getElementById('adminTablesSearch');
+      var hint = document.getElementById('adminTablesSearchHint');
+      var q = (input && input.value || '').toLowerCase().trim();
+      var matched = 0;
+      var total = 0;
+      // Per-package <details> filtering — show the package if its name
+      // matches, OR any of the rows inside match.
+      document.querySelectorAll(
+        '#adminTablesLayoutPackages details[data-package-id]'
+      ).forEach(function(d) {
+        var pkgName = ((d.querySelector('summary strong')||{}).textContent || '').toLowerCase();
+        var rows = d.querySelectorAll('[data-table-row-name]');
+        var anyRow = false;
+        rows.forEach(function(r) {
+          total += 1;
+          var rn = (r.getAttribute('data-table-row-name') || '').toLowerCase();
+          var rs = (r.getAttribute('data-table-row-source') || '').toLowerCase();
+          var rb = (r.getAttribute('data-table-row-bucket') || '').toLowerCase();
+          var hit = !q || rn.indexOf(q) !== -1 || rs.indexOf(q) !== -1 || rb.indexOf(q) !== -1;
+          r.style.display = hit ? '' : 'none';
+          if (hit) { anyRow = true; matched += 1; }
+        });
+        var pkgHit = !q || pkgName.indexOf(q) !== -1 || anyRow;
+        d.style.display = pkgHit ? '' : 'none';
+        // When the query hits the package name only, expand it; when the
+        // query is empty leave the user's open/closed state alone.
+        if (q && pkgHit && (anyRow || pkgName.indexOf(q) !== -1)) {
+          d.open = true;
+        }
+      });
+      // Unpackaged rows live outside the per-package <details>.
+      document.querySelectorAll(
+        '#adminTablesLayoutUnpackaged [data-table-row-name]'
+      ).forEach(function(r) {
+        total += 1;
+        var rn = (r.getAttribute('data-table-row-name') || '').toLowerCase();
+        var rs = (r.getAttribute('data-table-row-source') || '').toLowerCase();
+        var rb = (r.getAttribute('data-table-row-bucket') || '').toLowerCase();
+        var hit = !q || rn.indexOf(q) !== -1 || rs.indexOf(q) !== -1 || rb.indexOf(q) !== -1;
+        r.style.display = hit ? '' : 'none';
+        if (hit) matched += 1;
+      });
+      if (hint) {
+        hint.textContent = q
+          ? matched + ' of ' + total + ' table' + (total === 1 ? '' : 's')
+          : '';
+      }
+    }
+    window.filterAdminTablesLayout = filterAdminTablesLayout;
 
     document.addEventListener('DOMContentLoaded', loadAdminTablesLayout);
 

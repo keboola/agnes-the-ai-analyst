@@ -66,13 +66,9 @@
         My Stack <span class="count">{{ stack_entries|length }}</span>
       </button>
     </div>
-    {# Hidden row-level search — kept so the filter JS that reads from
-       #memory-search doesn't need to fork its source. Visible search
-       lives in the hero (mirrors marketplace + /catalog). Two-way-synced
-       in the script below. #}
-    <input class="stack-search" type="search" id="memory-search"
-           placeholder="Search Memory by name or description…"
-           style="display:none;">
+    {# Single search input lives in the hero (#memory-hero-search). The
+       filter JS reads from it directly — no hidden mirror, no two-way
+       sync. #}
   </div>
 
   <div class="stack-filter-row" id="memory-filters">
@@ -214,7 +210,9 @@
 
   let activeFilter = 'all';
   function applyFilters() {
-    const q = (document.getElementById('memory-search').value || '').toLowerCase();
+    // Single source of truth — the hero search input.
+    const heroEl = document.getElementById('memory-hero-search');
+    const q = (heroEl && heroEl.value || '').toLowerCase();
     document.querySelectorAll('.stack-card').forEach(card => {
       const req = card.dataset.requirement;
       const inStack = card.dataset.inStack === '1';
@@ -235,21 +233,10 @@
       applyFilters();
     });
   });
-  document.getElementById('memory-search').addEventListener('input', applyFilters);
-
-  // Hero-embedded search ↔ in-row search two-way sync (mirrors /catalog
-  // + marketplace's single-source-of-truth pattern; both inputs always
-  // show the same query, filtering pipeline reads from #memory-search).
+  // Single hero search input drives the filter pipeline directly.
   var heroSearch = document.getElementById('memory-hero-search');
-  var rowSearch = document.getElementById('memory-search');
-  if (heroSearch && rowSearch) {
-    heroSearch.addEventListener('input', function() {
-      rowSearch.value = heroSearch.value;
-      applyFilters();
-    });
-    rowSearch.addEventListener('input', function() {
-      heroSearch.value = rowSearch.value;
-    });
+  if (heroSearch) {
+    heroSearch.addEventListener('input', applyFilters);
   }
 })();
 </script>

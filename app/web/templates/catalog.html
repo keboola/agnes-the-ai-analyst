@@ -64,13 +64,9 @@
         My Stack <span class="count" data-count="my">{{ stack_entries|length }}</span>
       </button>
     </div>
-    {# Hidden row-level search input — kept so the existing filter JS
-       (which reads from #catalog-search) doesn't need to fork its query
-       source. The visible search lives in the hero (mirrors marketplace).
-       Two-way-synced in the script below. #}
-    <input class="stack-search" type="search" id="catalog-search"
-           placeholder="Search packages by name or description…"
-           style="display:none;">
+    {# Single search input lives in the hero (#catalog-hero-search). The
+       filter JS reads from it directly — no hidden mirror, no two-way
+       sync to keep in lockstep. #}
   </div>
 
   {# Filter chips — All / Required / Available / In stack + per-source-type chips. #}
@@ -260,7 +256,10 @@
   let activeFilter = 'all';
   let activeSourceFilter = null;
   function applyFilters() {
-    const q = (document.getElementById('catalog-search').value || '').toLowerCase();
+    // Single source of truth — the hero search input. No hidden mirror
+    // input to fall out of sync.
+    const heroEl = document.getElementById('catalog-hero-search');
+    const q = (heroEl && heroEl.value || '').toLowerCase();
     document.querySelectorAll('.stack-card').forEach(card => {
       const req = card.dataset.requirement;
       const inStack = card.dataset.inStack === '1';
@@ -300,21 +299,10 @@
       applyFilters();
     });
   });
-  document.getElementById('catalog-search').addEventListener('input', applyFilters);
-  // Hero-embedded search mirrors the in-row search box. Typing in either
-  // narrows the grid via the same filter pipeline; we two-way-sync the
-  // boxes so they always show the same query (matches marketplace's
-  // single-source-of-truth behaviour where the hero IS the search).
+  // Single hero search input drives the filter pipeline directly.
   var heroSearch = document.getElementById('catalog-hero-search');
-  var rowSearch = document.getElementById('catalog-search');
-  if (heroSearch && rowSearch) {
-    heroSearch.addEventListener('input', function() {
-      rowSearch.value = heroSearch.value;
-      applyFilters();
-    });
-    rowSearch.addEventListener('input', function() {
-      heroSearch.value = rowSearch.value;
-    });
+  if (heroSearch) {
+    heroSearch.addEventListener('input', applyFilters);
   }
 })();
 </script>
