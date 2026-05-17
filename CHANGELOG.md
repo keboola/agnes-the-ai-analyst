@@ -42,6 +42,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   package membership without leaving the edit dialog.
 
 ### Changed
+- **Admin sidebar** — the "Data" section heading was renamed to "Data
+  Packages" so the parent matches the noun used everywhere else
+  (`/catalog`, `/admin/tables` package-centric layout, `agnes catalog`).
 - **`/corporate-memory` hides empty memory domains.** A memory domain
   with zero items has nothing for an analyst to opt-into; admins manage
   empty placeholders from `/admin/corporate-memory#domains`. Required
@@ -65,6 +68,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   values like `#ff5733#e0f2fe` that broke the card layout downstream.
 
 ### Fixed
+- **chip-input dropdown was empty for memory domains.** `loadCandidates`
+  expected `[]` or `{items}`, but `/api/memory/domains` wraps in
+  `{domains}` → fell through to the empty-array default. Existing
+  domains never showed up in the picker, so admins could only ever
+  "+ Create new". Now the loader unwraps any of `items` / `domains` /
+  `data_packages` / `results`, and normalizes `{id, name|slug}` rows so
+  domain entries actually render their name.
+- **`#item-<id>` deep link from `/memory/d/<slug>` Edit didn't open
+  the edit modal** — the admin page's hash handler only recognized tab
+  names, so `#item-XXX` silently fell through to the Review queue. Now
+  the page parses `item-<id>`, switches to All Items, polls for the
+  matching row, and opens the edit modal once it's in `_itemsById`.
+- **Unpackaged-table Edit icon overflowed into the Mode column.** The
+  "+ Add to package" text button overran the fixed 120px col-actions
+  width; with `justify-end` the Edit icon got pushed left into the
+  neighbouring cell. Replaced the wide text button with an icon button
+  (folder-with-plus) matching the visual rhythm of the other row icons.
 - **chip-input "+ Create new" was silently dead** —
   `app/web/static/js/components/chip-input.js` dispatched the
   `chip-create` CustomEvent without `bubbles: true`, so the

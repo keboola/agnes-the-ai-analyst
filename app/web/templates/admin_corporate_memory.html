@@ -3390,13 +3390,48 @@
 
     // ─────────────────────────────────────────────────────────────
     // Initial load — honor #tab in the URL hash so deep links from
-    // /corporate-memory "Manage domains →" land on the right tab.
+    // /corporate-memory "Manage domains →" land on the right tab,
+    // and #item-XXX from /memory/d/<slug>'s Edit link to open the
+    // item edit modal directly.
     // ─────────────────────────────────────────────────────────────
+
+    function _waitForItemAndOpenEdit(itemId, deadlineMs) {
+        // _itemsById is populated as items render. Poll briefly so the
+        // hash-deep-link can race the All-Items fetch. Bail with a
+        // helpful toast if the item isn't in the loaded page (likely
+        // it's beyond page 1 of pagination, or got revoked).
+        const tick = 200;
+        const start = Date.now();
+        const check = () => {
+            if (_itemsById && _itemsById.get && _itemsById.get(itemId)) {
+                openEditItemModal(itemId);
+                return;
+            }
+            if (Date.now() - start > deadlineMs) {
+                showToast(
+                    'Item ' + itemId.substring(0, 8) +
+                    '… not in first page — search for it in All Items.',
+                    'error'
+                );
+                return;
+            }
+            setTimeout(check, tick);
+        };
+        check();
+    }
 
     (function() {
         const hash = (window.location.hash || '').replace(/^#/, '');
         const validTabs = ['review','all','contradictions','duplicates','browse','domains','audit'];
-        if (hash && validTabs.indexOf(hash) !== -1) {
+        const itemMatch = hash.match(/^item-(.+)$/);
+        if (itemMatch) {
+            // Deep link from /memory/d/<slug> Edit button. The item could
+            // have any status (the user-facing page lists approved+mandatory)
+            // so jump to All Items, load, and open the edit modal once the
+            // item is in the rendered set.
+            switchTab('all');
+            _waitForItemAndOpenEdit(itemMatch[1], 4000);
+        } else if (hash && validTabs.indexOf(hash) !== -1) {
             switchTab(hash);
         } else {
             loadReviewQueue(1);

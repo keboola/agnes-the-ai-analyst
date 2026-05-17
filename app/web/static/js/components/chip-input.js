@@ -185,7 +185,24 @@
       const url = sourceUrl + (params.toString() ? '?' + params.toString() : '');
       return fetch(url, { credentials: 'same-origin' })
         .then(r => r.ok ? r.json() : [])
-        .then(data => Array.isArray(data) ? data : (data.items || []))
+        .then(data => {
+          // Tolerant shape extraction — accept either a bare array
+          // (/api/admin/data-packages) or a typed envelope
+          // ({"items":[...]} / {"domains":[...]} / {"data_packages":[...]}).
+          // /api/memory/domains wraps in `domains` so the chip-input
+          // showed an empty dropdown until this was added.
+          if (Array.isArray(data)) return data;
+          return data.items || data.domains || data.data_packages
+              || data.results || [];
+        })
+        // chip-input keys candidates by `{id, name}` — normalize the
+        // memory_domains row shape (`id`, `slug`, `name`) so the name
+        // column actually shows in the dropdown even if upstream omits
+        // it (fall back to slug to avoid blank rows).
+        .then(rows => rows.map(r => ({
+          id: r.id,
+          name: r.name || r.slug || r.id,
+        })))
         .catch(() => []);
     }
 
