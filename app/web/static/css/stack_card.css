@@ -120,6 +120,33 @@
   margin-bottom: 16px;
   flex-wrap: wrap;
 }
+/* Right-of-tabs action slot (marketplace .mp-actions parity). The
+ * tab strip is the left child of .stack-tabs-row; this slot sits on
+ * the right with the admin-only CTA (+ New Data Package on /catalog,
+ * Manage domains → on /memory). Hidden gracefully when no admin
+ * actions render. */
+.stack-tabs-row__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.stack-tabs-row__actions .btn {
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #eceff1);
+  background: var(--surface, #fff);
+  color: var(--text-primary, #202124);
+  text-decoration: none;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+.stack-tabs-row__actions .btn:hover {
+  border-color: var(--primary, #0073D1);
+  color: var(--primary, #0073D1);
+}
 .stack-tabs {
   display: flex;
   gap: 4px;

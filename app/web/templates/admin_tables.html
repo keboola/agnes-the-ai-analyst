@@ -5084,6 +5084,26 @@
 
     document.addEventListener('DOMContentLoaded', loadAdminTablesLayout);
 
+    // Auto-open the Create Data Package modal when the page is opened with
+    // `?new_package=1` — drives the /catalog right-of-tabs admin action
+    // (which redirects here rather than duplicating the modal scaffolding).
+    document.addEventListener('DOMContentLoaded', function() {
+      var qs = new URLSearchParams(window.location.search);
+      if (qs.get('new_package') !== '1') return;
+      // Wait a tick so the layout's deferred load completes (the modal
+      // doesn't actually depend on it, but the page feels less janky if
+      // the layout has rendered first).
+      setTimeout(function() {
+        if (typeof openCreateDataPackageModal === 'function') {
+          openCreateDataPackageModal('', null);
+        }
+      }, 50);
+      // Strip the query param so a manual refresh doesn't re-open the
+      // modal (mirrors closeBulkAssignModal's URL hygiene).
+      history.replaceState(null, '',
+        window.location.pathname + window.location.hash);
+    });
+
     // Auto-open the source-typed edit modal when the page is opened with
     // `?edit=<table_id>` — closes the /catalog/p/<slug> drill-down loop
     // where each table name is now an admin-only link landing here.

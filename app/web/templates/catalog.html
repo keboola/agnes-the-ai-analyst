@@ -26,24 +26,20 @@
   </div>
 </div>
 
-{# Curator-style info block — mirrors marketplace .mp-curator-block. #}
-<div class="stack-curator-block">
-  <div class="stack-curator-block__title">Each Data Package is curated by your admin.</div>
-  <div class="stack-curator-block__body">
-    Packages bundle related tables on a single topic (Sales, Finance, …) so
-    analysts can pull a coherent dataset with one click. Required packages
-    are added to your stack automatically.
-  </div>
-</div>
-
 <div class="stack-page" id="catalog-page"
      data-resource-type="data_package"
      data-stack-endpoint="/api/stack"
      data-subscribe-endpoint="/api/stack/subscribe">
 
-  {# Tab strip + actions row (marketplace .mp-tabs-row parity).
-     Icons mirror marketplace's tab icons: rectangle-stack (the My Stack
-     icon on /marketplace) for the My Stack tab; layout-grid for Browse. #}
+  {# Tab strip + right-of-tabs actions row (marketplace .mp-tabs-row
+     parity). Section order locked to match /marketplace exactly:
+     hero → tabs-row (+ admin actions) → curator-block → filter pills →
+     grid → empty state. The pre-v50 ordering (curator-block before
+     tabs) read as a content banner squatting above the navigation;
+     marketplace's order makes the curator block feel like a trust
+     stamp on the active tab, not a header.
+     Icons mirror marketplace's tab icons: layout-grid for Browse;
+     rectangle-stack for My Stack. #}
   <div class="stack-tabs-row">
     <div class="stack-tabs" role="tablist">
       <button class="is-active" data-tab="browse" role="tab" aria-selected="true">
@@ -64,9 +60,28 @@
         My Stack <span class="count" data-count="my">{{ stack_entries|length }}</span>
       </button>
     </div>
-    {# Single search input lives in the hero (#catalog-hero-search). The
-       filter JS reads from it directly — no hidden mirror, no two-way
-       sync to keep in lockstep. #}
+    {# Admin-only right-of-tabs action — matches marketplace's "Submit
+       a skill or plugin" affordance on the right edge of .mp-tabs-row.
+       Routes admins straight into the Create Data Package modal on
+       /admin/tables; the query param is read on page-load by the
+       admin page (?new_package=1). #}
+    {% if user.is_admin %}
+    <div class="stack-tabs-row__actions">
+      <a class="btn btn-secondary" href="/admin/tables?new_package=1">+ New Data Package</a>
+    </div>
+    {% endif %}
+  </div>
+
+  {# Curator-style info block — mirrors marketplace .mp-curator-block.
+     Sits BELOW the tab strip per the unified section order — same
+     position marketplace.html uses (marketplace.html:497). #}
+  <div class="stack-curator-block">
+    <div class="stack-curator-block__title">Each Data Package is curated by your admin.</div>
+    <div class="stack-curator-block__body">
+      Packages bundle related tables on a single topic (Sales, Finance, …) so
+      analysts can pull a coherent dataset with one click. Required packages
+      are added to your stack automatically.
+    </div>
   </div>
 
   {# Filter chips — All / Required / Available / In stack + per-source-type chips. #}
