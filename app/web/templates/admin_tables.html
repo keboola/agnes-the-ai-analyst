@@ -3093,8 +3093,17 @@
                 showToast('' + err.message, 'error');
             });
     }
+    {% endif %}{# data_source_type == 'keboola' — discover JS only #}
 
-    // ── Keboola tab edit modal (Phase F2) ──────────────────────────
+    // ── Keboola edit modal lifecycle (always rendered) ──────────────
+    // Pre-rewrite this whole block lived inside the Jinja
+    // data_source_type guard above, which was fine when the modal was
+    // only reachable from the (then) Keboola tab. With the package-
+    // centric layout, Edit on any Keboola row opens this modal
+    // regardless of the instance's primary data_source.type, so the
+    // lifecycle helpers must be available unconditionally. The
+    // discover/prefill helpers (which hit the keboola-typed
+    // /api/admin/discover-tables endpoint) stay gated above + below.
 
     function _getEditKbSyncMode() {
         var el = document.querySelector('input[name="editKbSyncMode"]:checked');
@@ -3325,6 +3334,11 @@
             });
     }
 
+    {% if data_source_type == 'keboola' %}
+    // prefillFromKeboolaTable stays gated on instance type — it only fires
+    // from a button inside the Keboola Edit modal that itself is only
+    // rendered when data_source_type == 'keboola' (the Jinja guard
+    // around the modal's "Use table as base" button in the markup).
     function prefillFromKeboolaTable(textareaId) {
         // Edit-modal callers may pass an editKbBucket / editKbSourceTable
         // pair instead of the Register modal's kbBucket / kbSourceTable.
