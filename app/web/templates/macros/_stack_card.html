@@ -64,10 +64,13 @@
     <div class="stack-card__req-badge stack-card__req-badge--instack" title="In your stack">In stack</div>
   {% endif %}
 
-  {# Photo banner — 120px tall, full-width gradient with centered
-     initials (or admin-supplied emoji glyph). Mirrors marketplace .mp-card .photo. #}
+  {# Photo banner — 120px tall, FLAT solid color (was: random pastel→pink
+     gradient, user feedback "vošklivé, divné"). The admin's `entry.color`
+     fills the whole banner; if not set, fall back to a neutral surface
+     tint so cards from different admins / migrations still read as one
+     curated set, not as a rainbow. #}
   <div class="stack-card__photo{% if _has_glyph %} stack-card__photo--glyph{% endif %}"
-       style="background: linear-gradient(135deg, {{ entry.color|default('#fce7f3') }} 0%, #fce7f3 100%);">
+       style="background: {{ entry.color|default('#f1f5f9') }};">
     {% if _has_glyph %}{{ entry.icon }}{% else %}{{ _initials }}{% endif %}
   </div>
 

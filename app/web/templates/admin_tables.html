@@ -1880,7 +1880,7 @@
             </div>
             <div style="flex:1;">
               <label class="form-label">Color</label>
-              <input id="cdp-color" type="text" class="form-input" value="#fce7f3" placeholder="#fce7f3">
+              <input id="cdp-color" type="text" class="form-input" value="#e0f2fe" placeholder="#e0f2fe">
             </div>
           </div>
         </div>
@@ -1905,7 +1905,7 @@
           (typed || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
         document.getElementById('cdp-desc').value = '';
         document.getElementById('cdp-icon').value = '📦';
-        document.getElementById('cdp-color').value = '#fce7f3';
+        document.getElementById('cdp-color').value = '#e0f2fe';
         document.getElementById('createDataPackageModal').style.display = 'flex';
       }
       function closeCreateDataPackageModal() {
@@ -1931,7 +1931,7 @@
           document.getElementById('edp-slug').value = pkg.slug || '';
           document.getElementById('edp-desc').value = pkg.description || '';
           document.getElementById('edp-icon').value = pkg.icon || '';
-          document.getElementById('edp-color').value = pkg.color || '#fce7f3';
+          document.getElementById('edp-color').value = pkg.color || '#e0f2fe';
           renderEdpTablesList(pkg.tables || []);
         } catch (e) {
           alert('Failed to load package: ' + e.message);
@@ -2247,7 +2247,7 @@
               slug,
               description: `Auto-grouped from bucket \`${bucket}\` — ${buckets[bucket].length} tables.`,
               icon: null,
-              color: '#fce7f3',
+              color: '#e0f2fe',
             }),
           });
           if (!cResp.ok) { failed.push(bucket); continue; }
@@ -2344,7 +2344,7 @@
               slug,
               description: null,
               icon: null,
-              color: '#fce7f3',
+              color: '#e0f2fe',
             }),
           });
           if (!r.ok) {
