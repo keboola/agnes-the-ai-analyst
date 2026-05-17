@@ -878,127 +878,110 @@
 {% block layout %}
 <!-- ═══════════════ PAGE TITLE ═══════════════ -->
     <div class="page-title">
-        <h1>Table Management</h1>
-        <p>Discover, register, and manage data tables from your source</p>
+        <h1>Tables &amp; Data Packages</h1>
+        <p>Group registered tables into Data Packages so analysts can opt-in to bundles.</p>
     </div>
 
     <!-- ═══════════════ CONTENT ═══════════════ -->
     <div class="content">
 
-        <section id="cacheWarmupCard" class="card" style="margin-bottom: 20px;">
-            <header class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <h2>Cache freshness</h2>
-                <button class="btn btn-secondary" id="cacheWarmupRunBtn" onclick="cacheWarmupRun()">
-                    Re-warm all
-                </button>
-            </header>
-            <div class="card-body">
-                <div id="cacheWarmupProgress" style="margin-bottom: 8px;">
-                    <span id="cacheWarmupSummary">Loading…</span>
-                </div>
-                <progress id="cacheWarmupBar" max="100" value="0" style="width: 100%; display: none;"></progress>
-                <details id="cacheWarmupDetails" style="margin-top: 8px;">
-                    <summary style="cursor: pointer; user-select: none;">Show log</summary>
-                    <p id="cacheWarmupHint" style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 8px 0 0;">
-                        Live log from <em>Re-warm all</em>. Each row reports
-                        <code>[hh:mm:ss] ok/error  &lt;table_id&gt; (duration)</code>
-                        as the BQ metadata refresh streams in via SSE. Only
-                        <code>query_mode='remote'</code> BigQuery tables are
-                        warmed (e.g. <code>product_inventory_remote</code>);
-                        materialized + internal tables don't need it.
-                        Historical runs aren't persisted; check
-                        <a href="/admin/activity">/admin/activity</a> for the
-                        audit trail.
-                    </p>
-                    <pre id="cacheWarmupLog" style="background: #0a0a0a; color: #dcdcdc; font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding: 8px; max-height: 240px; overflow-y: auto; margin-top: 8px; border-radius: 4px;"></pre>
-                </details>
-            </div>
-        </section>
-
-        {# ─── Data Packages (top-level, discoverable) ───
-           Admins discovering Data Packages used to have to open a table's
-           edit modal to even know packages existed (the chip-input lives
-           inside the BQ register/edit form). This section surfaces the
-           packages list at page level + offers a "+ New" CTA that opens
-           the existing Create Data Package modal directly, so package
-           creation no longer requires touching a table first.
-
-           Hydrated client-side from GET /api/admin/data-packages. The card
-           grid reuses the .stack-grid / .stack-card classes shared with
-           /catalog + /memory so all three "package" surfaces read the same. #}
-        <section id="dataPackagesCard" class="card" style="margin-bottom: 20px;">
-          <header class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
-            <h2 style="margin:0;">
-              <span style="margin-right:6px;">📦</span>
-              Data Packages
-              <span id="dataPackagesCount" style="color:#5f6368; font-weight:500; font-size:14px; margin-left:4px;"></span>
-            </h2>
-            <div style="display:flex; gap:8px;">
-              {# Bulk-assign opens a modal with package dropdown + checkbox
-                 list of every registered table — drastically faster than
-                 the old "edit each table individually and add it via the
-                 chip-input inside its modal" flow. Reads ?assign_to=<id>
-                 from the URL on load (see initBulkAssignFromQuery) so the
-                 /catalog "0 tables — assign some →" CTA lands here with
-                 the right package pre-selected. #}
-              <button class="btn btn-secondary" type="button"
-                      onclick="openBulkAssignModal('')">Bulk assign tables</button>
-              {# Group-by-bucket — one-click factory that creates one
-                 Data Package per distinct bucket in table_registry and
-                 bulk-assigns its tables. For most instances the bucket
-                 IS the intended grouping; this saves admin from doing
-                 it by hand. Idempotent (skips existing slugs). #}
-              <button class="btn btn-secondary" type="button"
-                      onclick="groupTablesByBucket()"
-                      title="One-click: create one Data Package per distinct bucket and assign all its tables">
-                Group tables by bucket
+        {# ─── Top action bar (package-centric, replaces connector-tab nav) ───
+           Single row of high-level actions. The "+ Register new table"
+           dropdown picks a connector → opens the matching modal (BQ /
+           Keboola / Jira) instead of letting the connector drive the
+           page layout. #}
+        <section id="adminTablesActionBar" class="card" style="margin-bottom: 16px;">
+          <div class="card-body" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px 16px;">
+            <div style="position:relative;">
+              <button id="registerNewTableBtn" class="btn btn-primary" type="button"
+                      onclick="toggleRegisterNewTableMenu(event)">
+                + Register new table ▾
               </button>
-              <button class="btn btn-primary" type="button"
-                      onclick="openCreateDataPackageModal('', null)">+ New</button>
-            </div>
-          </header>
-          <div class="card-body">
-            <p style="margin:0 0 12px; color:#5f6368; font-size:13px;">
-              Bundle related tables into a Data Package so analysts can opt-in
-              to them as a group (and required packages auto-install on next
-              <code>agnes pull</code>).
-              <a href="/catalog" style="color:#0073D1;">View on /catalog →</a>
-            </p>
-            <div id="dataPackagesGrid" class="stack-grid">
-              <div style="grid-column:1/-1; padding:24px; text-align:center; color:#5f6368; font-size:13px;">
-                Loading…
+              <div id="registerNewTableMenu"
+                   style="display:none; position:absolute; top:100%; left:0; margin-top:4px;
+                          background:var(--surface); border:1px solid var(--border); border-radius:8px;
+                          box-shadow:var(--shadow-md); min-width:220px; z-index:20; padding:6px;">
+                <button class="btn btn-secondary" type="button" data-register-source="bigquery"
+                        style="display:block; width:100%; text-align:left; margin-bottom:4px;"
+                        onclick="closeRegisterNewTableMenu(); openRegisterModal('bigquery')">
+                  BigQuery
+                </button>
+                <button class="btn btn-secondary" type="button" data-register-source="keboola"
+                        style="display:block; width:100%; text-align:left; margin-bottom:4px;"
+                        onclick="closeRegisterNewTableMenu(); openRegisterModal('keboola')">
+                  Keboola
+                </button>
+                <a class="btn btn-secondary" type="button"
+                   href="docs/connectors/jira.md"
+                   style="display:block; width:100%; text-align:left; text-decoration:none;"
+                   onclick="closeRegisterNewTableMenu()">
+                  Jira (webhook-driven — see docs)
+                </a>
               </div>
             </div>
+            <button class="btn btn-secondary" type="button" onclick="groupTablesByBucket()"
+                    title="One-click: create one Data Package per distinct bucket and assign its tables">
+              Group tables by bucket
+            </button>
+            <button class="btn btn-secondary" type="button" onclick="openBulkAssignModal('')">
+              Bulk assign tables
+            </button>
+            <button class="btn btn-secondary" type="button" onclick="openCreateDataPackageModal('', null)">
+              + New Data Package
+            </button>
+            <span style="flex:1;"></span>
+            <details id="cacheWarmupCard" style="margin:0;">
+              <summary style="cursor:pointer; user-select:none; font-size:13px; color:var(--text-secondary);">
+                <span id="cacheWarmupSummary">Cache freshness — loading…</span>
+              </summary>
+              <div style="margin-top:8px; padding:12px; background:var(--background); border-radius:8px;">
+                <div id="cacheWarmupProgress" style="margin-bottom:8px;"></div>
+                <progress id="cacheWarmupBar" max="100" value="0" style="width:100%; display:none;"></progress>
+                <button class="btn btn-secondary btn-sm" id="cacheWarmupRunBtn" onclick="cacheWarmupRun()"
+                        style="margin-top:8px;">
+                  Re-warm all
+                </button>
+                <details id="cacheWarmupDetails" style="margin-top:8px;">
+                  <summary style="cursor:pointer; user-select:none; font-size:12px;">Show log</summary>
+                  <p id="cacheWarmupHint" style="font-size:11px; color:var(--text-secondary); margin:6px 0 0;">
+                    Live log from <em>Re-warm all</em>. Historical runs aren't persisted; check
+                    <a href="/admin/activity">/admin/activity</a> for the audit trail.
+                  </p>
+                  <pre id="cacheWarmupLog" style="background:#0a0a0a; color:#dcdcdc; font-family:ui-monospace, Menlo, monospace; font-size:11px; padding:6px; max-height:200px; overflow-y:auto; margin-top:6px; border-radius:4px;"></pre>
+                </details>
+              </div>
+            </details>
           </div>
         </section>
 
-        {# Phase D: tab-split scaffold. Per-connector tabs (BigQuery /
-           Keboola / Jira) replace the single mixed form. Each tab has its
-           own Register button + listing div + (later) form modals. The
-           initial active tab matches data_source.type from instance.yaml;
-           the operator can still switch tabs to manage a secondary source.
+        {# ─── Package-centric layout (replaces the connector-tab nav) ───
+           Hydrated client-side by loadAdminTablesLayout(): pulls both
+           /api/admin/data-packages and /api/admin/registry, renders one
+           collapsible <details> per package containing its member tables,
+           then an "Unpackaged tables" section for everything else.
 
-           Phase E moves the BQ form into #tab-content-bigquery; Phase F
-           builds the Keboola form inside #tab-content-keboola. For now
-           the existing Jinja-branched panels below stay in place. #}
-        {% set initial_tab = data_source_type if data_source_type in ['bigquery', 'keboola', 'jira'] else 'keboola' %}
-
-        <nav class="tab-nav" role="tablist">
-            <button data-tab="bigquery" aria-selected="{{ 'true' if initial_tab == 'bigquery' else 'false' }}" class="tab" onclick="switchTab('bigquery')">BigQuery</button>
-            <button data-tab="keboola" aria-selected="{{ 'true' if initial_tab == 'keboola' else 'false' }}" class="tab" onclick="switchTab('keboola')">Keboola</button>
-            <button data-tab="jira" aria-selected="{{ 'true' if initial_tab == 'jira' else 'false' }}" class="tab" onclick="switchTab('jira')">Jira</button>
-            <button data-tab="internal" aria-selected="false" class="tab" onclick="switchTab('internal')">Agnes internal</button>
-        </nav>
-
-        <section id="tab-content-bigquery" class="tab-content"
-                 style="display: {% if initial_tab == 'bigquery' %}block{% else %}none{% endif %};">
-            <div class="tab-actions">
-                <button id="bqRegisterBtn" class="btn btn-primary"
-                        onclick="openRegisterModal('bigquery')">Register BigQuery table</button>
+           "On the side" data-packages was the wrong framing — packages ARE
+           the org structure now, so every table appears under either a
+           package or the explicit Unpackaged bucket. Bucket / source_type
+           survive as inline tags but no longer drive the layout. #}
+        <section id="adminTablesLayout" class="card" style="margin-bottom: 16px;">
+          <div class="card-body" id="adminTablesLayoutBody" style="padding:16px;">
+            <div id="adminTablesLayoutPackages">
+              <div style="padding:16px; color:var(--text-secondary); font-size:13px; text-align:center;">
+                Loading packages…
+              </div>
             </div>
-            <div id="bqTableListing"></div>
+            <div id="adminTablesLayoutUnpackaged" style="margin-top:20px;"></div>
+          </div>
+        </section>
 
-            <!-- ── BigQuery Register Modal (Phase E relocation) ── -->
+        {# Register modals (BigQuery / Keboola) live as top-level overlays,
+           reachable via the "+ Register new table" dropdown in the action
+           bar above. The connector tabs that used to drive the page layout
+           were dropped — every table now appears in the package-centric
+           layout regardless of source_type. #}
+
+            <!-- ── BigQuery Register Modal ── -->
             <div class="modal-overlay" id="registerBqModal">
                 <div class="modal">
                     <div class="modal-header">
@@ -1321,17 +1304,8 @@
                     </div>
                 </div>
             </div>
-        </section>
 
-        <section id="tab-content-keboola" class="tab-content"
-                 style="display: {% if initial_tab == 'keboola' %}block{% else %}none{% endif %};">
-            <div class="tab-actions">
-                <button id="kbRegisterBtn" class="btn btn-primary"
-                        onclick="openRegisterModal('keboola')">Register Keboola table</button>
-            </div>
-            <div id="kbTableListing"></div>
-
-            <!-- ── Keboola Register Modal (Phase F1) ── -->
+            <!-- ── Keboola Register Modal ── -->
             <div class="modal-overlay" id="registerKeboolaModal">
                 <div class="modal">
                     <div class="modal-header">
@@ -1739,43 +1713,19 @@
                     </div>
                 </div>
             </div>
-        </section>
-
-        <section id="tab-content-jira" class="tab-content"
-                 style="display: {% if initial_tab == 'jira' %}block{% else %}none{% endif %};">
-            <p class="hint" style="margin-bottom: 16px;">Jira tables are populated by webhooks.
-                To register a new Jira webhook integration, see
-                <code>docs/connectors/jira.md</code>.</p>
-            <div id="jiraTableListing"></div>
-        </section>
-
-        {# Fourth tab: Agnes internal data source. Auto-seeded read-only
-           rows backed by system.duckdb (agnes_sessions / agnes_telemetry /
-           agnes_audit). No Register button — these are seeded on every
-           app boot from connectors/internal/registry.py. The
-           tab-content visibility matches the BQ/Keboola/Jira pattern
-           above so switchTab() handles it without code changes. #}
-        <section id="tab-content-internal" class="tab-content" style="display: none;">
-            <p class="hint" style="margin-bottom: 16px;">
-                System tables — sessions, telemetry, audit. Also available
-                locally for analysis. Read-only here; Edit / Delete are
-                hidden because the rows are seeded on every app boot.
-            </p>
-            <div id="internalTableListing"></div>
-        </section>
-
-        {# Legacy out-of-tab panels (BQ Register card, Keboola Discovery card,
-           shared Registered Tables wrapper) removed — each tab now owns its
-           own header (with Register button) and listing div. The Refresh
-           action is implicit: registration / edit / delete flows already
-           call loadRegistry(), which re-renders all three per-tab listings. #}
 
     </div>
 
-    {# C3: legacy #registerModal removed. The Phase E #registerBqModal
-       (inside #tab-content-bigquery) and Phase F #registerKeboolaModal
-       (inside #tab-content-keboola) own the Register flows now. The
-       data-source-type marker moved to <body> so DATA_SOURCE_TYPE still
+    {# Connector-based listings (Jira read-only hint, internal tables
+       section, per-tab Register buttons) lived inside the now-deleted
+       tab-content sections. Their content is folded into the
+       package-centric layout above: every table — including jira/* and
+       internal — appears under a Data Package or in Unpackaged tables.
+
+       Register modals (registerBqModal / registerKeboolaModal) remain in
+       DOM as top-level overlays and are opened from the
+       "+ Register new table" dropdown in the action bar. The
+       data-source-type marker lives on <body> so DATA_SOURCE_TYPE still
        has somewhere to read from. #}
 
     <!-- ═══════════════ EDIT MODAL (legacy fallback — Keboola-only fields
@@ -2676,29 +2626,27 @@
        Admin Tables - JavaScript
        ═══════════════════════════════════════════════════════════════ */
 
-    // ── Tab nav (Phase D) ───────────────────────────────────────
-    function switchTab(tab) {
-        document.querySelectorAll('.tab').forEach(function(b) {
-            b.setAttribute('aria-selected', b.dataset.tab === tab ? 'true' : 'false');
-        });
-        document.querySelectorAll('.tab-content').forEach(function(c) {
-            c.style.display = (c.id === ('tab-content-' + tab)) ? 'block' : 'none';
-        });
-        history.replaceState(null, '', '#' + tab);
+    // ── Register-new-table dropdown ─────────────────────────────
+    // Replaces the per-connector tab nav. The user picks the connector
+    // here only to choose which register modal to open; otherwise the
+    // page is package-centric and source_type is just an inline tag.
+    function toggleRegisterNewTableMenu(evt) {
+        if (evt) evt.stopPropagation();
+        var menu = document.getElementById('registerNewTableMenu');
+        if (!menu) return;
+        menu.style.display = (menu.style.display === 'block') ? 'none' : 'block';
     }
-
-    function getActiveTabFromHash() {
-        var hash = window.location.hash.replace(/^#/, '');
-        if (hash === 'bigquery' || hash === 'keboola' || hash === 'jira' || hash === 'internal') {
-            return hash;
-        }
-        return null;
+    function closeRegisterNewTableMenu() {
+        var menu = document.getElementById('registerNewTableMenu');
+        if (menu) menu.style.display = 'none';
     }
-
-    (function initTabFromHash() {
-        var t = getActiveTabFromHash();
-        if (t) switchTab(t);
-    })();
+    document.addEventListener('click', function(e) {
+        var btn = document.getElementById('registerNewTableBtn');
+        var menu = document.getElementById('registerNewTableMenu');
+        if (!btn || !menu) return;
+        if (btn.contains(e.target) || menu.contains(e.target)) return;
+        menu.style.display = 'none';
+    });
 
     // State
     let registryData = null;
@@ -4043,48 +3991,17 @@
         });
     }
 
-    // ── Registry ────────────────────────────────────────────────
-
+    // ── Registry (legacy shim) ──────────────────────────────────
+    // Pre-rewrite, loadRegistry() filled four per-tab listing divs
+    // (bqTableListing, kbTableListing, jiraTableListing, internalTableListing).
+    // Those listings were deleted with the connector tabs. Existing register /
+    // edit / delete flows still call loadRegistry() to refresh the page after
+    // a mutation — delegate to loadAdminTablesLayout() which now renders the
+    // unified package-centric view from the same /api/admin/registry payload.
     function loadRegistry() {
-        fetch('/api/admin/registry')
-            .then(function(r) {
-                if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Load failed'); });
-                return r.json();
-            })
-            .then(function(data) {
-                registryData = data;
-                registryVersion = data.version;
-                var tables = data.tables || [];
-                var subtitle = document.getElementById('registrySubtitle');
-                if (subtitle) {
-                    subtitle.textContent = tables.length + ' table' + (tables.length !== 1 ? 's' : '') + ' configured for sync';
-                }
-                renderRegistryListing(
-                    document.getElementById('bqTableListing'),
-                    tables.filter(function(t) { return t.source_type === 'bigquery'; })
-                );
-                renderRegistryListing(
-                    document.getElementById('kbTableListing'),
-                    tables.filter(function(t) { return t.source_type === 'keboola'; })
-                );
-                renderRegistryListing(
-                    document.getElementById('jiraTableListing'),
-                    tables.filter(function(t) { return t.source_type === 'jira'; })
-                );
-                renderRegistryListing(
-                    document.getElementById('internalTableListing'),
-                    tables.filter(function(t) { return t.source_type === 'internal'; })
-                );
-            })
-            .catch(function(err) {
-                var msg = '<div class="panel-body-empty" style="color: var(--error);">Failed to load registry: ' + escapeHtml(err.message) + '</div>';
-                [
-                    document.getElementById('bqTableListing'),
-                    document.getElementById('kbTableListing'),
-                    document.getElementById('jiraTableListing'),
-                    document.getElementById('internalTableListing'),
-                ].forEach(function(target) { if (target) target.innerHTML = msg; });
-            });
+        if (typeof loadAdminTablesLayout === 'function') {
+            return loadAdminTablesLayout();
+        }
     }
 
     function renderModeBadge(mode) {
@@ -4473,25 +4390,44 @@
     // "+ New" entry point that opens the existing Create Data Package
     // modal directly. The card grid reuses the .stack-grid + .stack-card
     // classes shared with /catalog + /memory.
-    async function loadDataPackagesSection() {
-        var grid = document.getElementById('dataPackagesGrid');
-        var count = document.getElementById('dataPackagesCount');
-        if (!grid) return;
+    // ── Package-centric layout hydrator ──────────────────────────
+    // Replaces the prior loadDataPackagesSection (card grid) + the four
+    // per-tab listing renders. Pulls /api/admin/data-packages and
+    // /api/admin/registry in parallel, then renders:
+    //   1. one collapsible <details> per package containing its member tables
+    //   2. an "Unpackaged tables" callout for everything else
+    // Source_type appears as an inline tag on each row but no longer
+    // drives the layout (the user's "everything must live within some
+    // group in data packages" feedback).
+    async function loadAdminTablesLayout() {
+        var pkgsEl = document.getElementById('adminTablesLayoutPackages');
+        var unpkEl = document.getElementById('adminTablesLayoutUnpackaged');
+        if (!pkgsEl || !unpkEl) return;
         try {
-            var r = await fetch('/api/admin/data-packages', { credentials: 'same-origin' });
-            if (!r.ok) {
-                grid.innerHTML = '<div style="grid-column:1/-1; padding:24px; text-align:center; color:#5f6368; font-size:13px;">Failed to load (HTTP ' + r.status + ').</div>';
+            var [pkgResp, tableResp] = await Promise.all([
+                fetch('/api/admin/data-packages', { credentials: 'same-origin' }),
+                fetch('/api/admin/registry', { credentials: 'same-origin' }),
+            ]);
+            if (!pkgResp.ok) {
+                pkgsEl.innerHTML = '<div class="panel-body-empty" style="color:var(--error);">Failed to load Data Packages (HTTP ' + pkgResp.status + ').</div>';
+                unpkEl.innerHTML = '';
                 return;
             }
-            var pkgs = await r.json();
-            count.textContent = pkgs.length ? '(' + pkgs.length + ')' : '';
-            if (!pkgs.length) {
-                grid.innerHTML = '<div style="grid-column:1/-1; padding:24px; text-align:center; color:#5f6368; font-size:13px;">'
-                    + 'No Data Packages yet. Click <strong>+ New</strong> to create one — or assign tables to a package from the BigQuery / Keboola / Jira tabs below.'
-                    + '</div>';
+            if (!tableResp.ok) {
+                pkgsEl.innerHTML = '<div class="panel-body-empty" style="color:var(--error);">Failed to load registry (HTTP ' + tableResp.status + ').</div>';
+                unpkEl.innerHTML = '';
                 return;
             }
-            // Fetch table counts in parallel — best-effort, falls back to —.
+            var pkgs = await pkgResp.json();
+            var registryBody = await tableResp.json();
+            registryData = registryBody;
+            registryVersion = registryBody.version;
+            var allTables = Array.isArray(registryBody)
+                ? registryBody
+                : (registryBody.tables || []);
+
+            // Fetch each package's member table-id list so we can place
+            // each table under a package + compute the Unpackaged set.
             var detailFetches = pkgs.map(function(p) {
                 return fetch('/api/admin/data-packages/' + encodeURIComponent(p.id),
                              { credentials: 'same-origin' })
@@ -4499,51 +4435,253 @@
                     .catch(function() { return null; });
             });
             var details = await Promise.all(detailFetches);
-            grid.innerHTML = pkgs.map(function(p, i) {
+
+            // Build a map: table_id → [pkg names], so each row shows which
+            // packages it belongs to (a table can live in multiple).
+            var tableById = {};
+            allTables.forEach(function(t) { tableById[t.id] = t; });
+            var packagedIds = new Set();
+            var pkgsWithTables = pkgs.map(function(p, i) {
                 var det = details[i] || {};
-                var tcount = (det.tables || []).length;
-                var iconRaw = p.icon || '📦';
-                var color = p.color || '#f3f4f6';
-                var name = String(p.name || '');
-                var slug = String(p.slug || '');
-                var desc = String(p.description || '');
-                var drilldown = slug ? ('/catalog/p/' + encodeURIComponent(slug)) : '#';
-                // Same dense layout the /catalog and /memory cards use:
-                // small icon-box left + title + meta + description + footer.
-                // Mirrors macros/_stack_card.html so all three surfaces feel
-                // visually unified.
-                return ''
-                  + '<div class="stack-card" data-id="' + escapeHtmlAttr(p.id) + '">'
-                  + '  <div class="stack-card__body">'
-                  + '    <div class="stack-card__header">'
-                  + '      <div class="stack-card__icon-box" style="background:' + escapeHtmlAttr(color) + ';">'
-                  +          escapeHtml(iconRaw)
-                  + '      </div>'
-                  + '      <div class="stack-card__heading">'
-                  + '        <h3 class="stack-card__title">' + escapeHtml(name) + '</h3>'
-                  + '        <div class="stack-card__meta">' + tcount + ' table' + (tcount === 1 ? '' : 's') + '</div>'
-                  + '      </div>'
-                  + '    </div>'
-                  + (desc ? ('    <div class="stack-card__desc">' + escapeHtml(desc) + '</div>') : '')
-                  + '  </div>'
-                  + '  <div class="stack-card__footer">'
-                  + '    <a class="stack-card__drilldown" href="' + escapeHtmlAttr(drilldown) + '" '
-                  +          'title="See this package as analysts will (/catalog/p/' + escapeHtmlAttr(slug) + ')">'
-                  +          'View as analyst →</a>'
-                  + '    <button class="stack-card__btn" type="button" '
-                  +          'onclick="openEditDataPackageModal(\'' + escapeHtmlAttr(p.id) + '\')">Edit</button>'
-                  + '  </div>'
-                  + '</div>';
-            }).join('');
+                var memberIds = (det.tables || []).map(function(t) { return t.id; });
+                memberIds.forEach(function(id) { packagedIds.add(id); });
+                var memberRows = memberIds
+                    .map(function(id) { return tableById[id]; })
+                    .filter(Boolean);
+                return Object.assign({}, p, { _members: memberRows });
+            });
+
+            // ── Render packages ──
+            if (!pkgsWithTables.length) {
+                pkgsEl.innerHTML = ''
+                    + '<div style="padding:24px; text-align:center; color:var(--text-secondary); '
+                    +            'background:var(--background); border:1px dashed var(--border); '
+                    +            'border-radius:8px;">'
+                    + '  <p style="margin:0 0 8px; font-size:14px; color:var(--text-primary);">'
+                    + '    <strong>No Data Packages yet</strong>'
+                    + '  </p>'
+                    + '  <p style="margin:0 0 12px; font-size:13px;">'
+                    + '    Bundle related tables so analysts can opt-in to them as a group.'
+                    + '  </p>'
+                    + '  <button class="btn btn-primary" type="button" '
+                    + '          onclick="openCreateDataPackageModal(\'\', null)">+ New Data Package</button>'
+                    + '  <button class="btn btn-secondary" type="button" '
+                    + '          onclick="groupTablesByBucket()" style="margin-left:8px;">'
+                    + '    Group tables by bucket'
+                    + '  </button>'
+                    + '</div>';
+            } else {
+                pkgsEl.innerHTML = pkgsWithTables.map(function(p) {
+                    var iconRaw = p.icon || '📦';
+                    var color = p.color || '#f3f4f6';
+                    var name = String(p.name || '');
+                    var slug = String(p.slug || '');
+                    var desc = String(p.description || '');
+                    var tcount = (p._members || []).length;
+                    var rowsHtml = (p._members || []).length
+                        ? _renderPackageTableRows(p._members, p.id)
+                        : '<div class="panel-body-empty" style="padding:16px; font-size:12px;">'
+                          + 'No tables in this package yet. Click <strong>+ Add tables</strong> above.</div>';
+                    return ''
+                      + '<details open data-package-id="' + escapeHtmlAttr(p.id) + '" '
+                      +          'style="margin-bottom:12px; border:1px solid var(--border); '
+                      +                 'border-radius:10px; background:var(--surface);">'
+                      + '  <summary style="display:flex; align-items:center; gap:12px; padding:12px 16px; '
+                      +                  'cursor:pointer; user-select:none; list-style:none;">'
+                      + '    <span style="display:inline-flex; align-items:center; justify-content:center; '
+                      +                  'width:32px; height:32px; border-radius:8px; flex-shrink:0; '
+                      +                  'background:' + escapeHtmlAttr(color) + ';">'
+                      +        escapeHtml(iconRaw)
+                      + '    </span>'
+                      + '    <span style="flex:1; min-width:0;">'
+                      + '      <strong style="font-size:14px;">' + escapeHtml(name) + '</strong>'
+                      +        (desc ? ('<div style="font-size:12px; color:var(--text-secondary); '
+                      +                       'margin-top:2px;">' + escapeHtml(desc) + '</div>') : '')
+                      + '    </span>'
+                      + '    <span style="font-size:12px; color:var(--text-secondary);">'
+                      +        tcount + ' table' + (tcount === 1 ? '' : 's') + '</span>'
+                      + '    <button class="btn btn-secondary btn-sm" type="button" '
+                      +            'onclick="event.preventDefault(); event.stopPropagation(); '
+                      +                     'openBulkAssignModal(\'' + escapeHtmlAttr(p.id) + '\')">'
+                      + '      + Add tables'
+                      + '    </button>'
+                      + '    <button class="btn btn-secondary btn-sm" type="button" '
+                      +            'onclick="event.preventDefault(); event.stopPropagation(); '
+                      +                     'openEditDataPackageModal(\'' + escapeHtmlAttr(p.id) + '\')">'
+                      + '      Edit package'
+                      + '    </button>'
+                      + '    <a class="btn btn-secondary btn-sm" '
+                      +       'href="/catalog/p/' + escapeHtmlAttr(slug) + '" '
+                      +       'onclick="event.stopPropagation()" '
+                      +       'title="See this package as analysts will">'
+                      + '      View as analyst'
+                      + '    </a>'
+                      + '  </summary>'
+                      + '  <div style="padding:0 12px 12px;">' + rowsHtml + '</div>'
+                      + '</details>';
+                }).join('');
+            }
+
+            // ── Render Unpackaged tables ──
+            // Exclude internal/agnes_* rows from "needs packaging" — they're
+            // auto-seeded and shouldn't be auto-bundled. Still listed in a
+            // separate read-only group below.
+            var unpackagedNeedsAttention = allTables.filter(function(t) {
+                return !packagedIds.has(t.id)
+                    && (t.source_type || '') !== 'internal';
+            });
+            var internalUnpackaged = allTables.filter(function(t) {
+                return !packagedIds.has(t.id)
+                    && (t.source_type || '') === 'internal';
+            });
+
+            var unpkParts = [];
+            if (unpackagedNeedsAttention.length) {
+                unpkParts.push(''
+                    + '<section id="adminTablesUnpackaged" style="border:1px solid #FCD34D; '
+                    +          'background:rgba(255,247,205,0.4); border-radius:10px;">'
+                    + '  <header style="display:flex; align-items:center; gap:12px; '
+                    +                 'padding:12px 16px; border-bottom:1px solid #FCD34D;">'
+                    + '    <span style="font-size:16px;">⚠️</span>'
+                    + '    <strong style="flex:1; font-size:14px;">Unpackaged tables '
+                    +      '<span style="color:var(--text-secondary); font-weight:500;">'
+                    +      '(' + unpackagedNeedsAttention.length + ' — needs packaging)</span></strong>'
+                    + '    <button class="btn btn-secondary btn-sm" type="button" '
+                    +            'onclick="groupTablesByBucket()">Group by bucket</button>'
+                    + '    <button class="btn btn-primary btn-sm" type="button" '
+                    +            'onclick="openBulkAssignModal(\'\')">Bulk assign</button>'
+                    + '  </header>'
+                    + '  <div style="padding:0 12px 12px;">'
+                    +      _renderPackageTableRows(unpackagedNeedsAttention, null)
+                    + '  </div>'
+                    + '</section>');
+            }
+            if (internalUnpackaged.length) {
+                unpkParts.push(''
+                    + '<section style="margin-top:16px; border:1px solid var(--border); '
+                    +          'background:var(--background); border-radius:10px;">'
+                    + '  <header style="display:flex; align-items:center; gap:12px; '
+                    +                 'padding:12px 16px; border-bottom:1px solid var(--border);">'
+                    + '    <strong style="flex:1; font-size:13px; color:var(--text-secondary);">'
+                    + '      Agnes internal tables '
+                    +      '<span style="font-weight:500;">(read-only; seeded on app boot)</span>'
+                    + '    </strong>'
+                    + '  </header>'
+                    + '  <div style="padding:0 12px 12px;">'
+                    +      _renderPackageTableRows(internalUnpackaged, null)
+                    + '  </div>'
+                    + '</section>');
+            }
+            unpkEl.innerHTML = unpkParts.join('');
         } catch (e) {
-            grid.innerHTML = '<div style="grid-column:1/-1; padding:24px; text-align:center; color:#b91c1c; font-size:13px;">Network error: ' + escapeHtml(e.message) + '</div>';
+            pkgsEl.innerHTML = '<div class="panel-body-empty" style="color:var(--error);">'
+                + 'Network error: ' + escapeHtml(e.message) + '</div>';
+            unpkEl.innerHTML = '';
         }
     }
-    document.addEventListener('DOMContentLoaded', loadDataPackagesSection);
+
+    // Render a list of table rows for the package-centric layout. Each row:
+    //   [name link → /admin/tables?edit=<id>] [source_type tag] [bucket] [mode]
+    //   [Edit] [Remove from package | + Add to package ▾]
+    // pkgIdOrNull → when non-null, rows expose a "Remove from package" action;
+    //               when null (Unpackaged section), rows expose "+ Add to package".
+    function _renderPackageTableRows(tables, pkgIdOrNull) {
+        if (!tables || !tables.length) {
+            return '<div class="panel-body-empty">No tables here yet.</div>';
+        }
+        var html = '<table class="registry-table" style="margin-top:8px;">';
+        html += '<thead><tr>';
+        html += '<th class="col-id">Table</th>';
+        html += '<th>Source</th>';
+        html += '<th>Bucket</th>';
+        html += '<th class="col-mode">Mode</th>';
+        html += '<th class="col-actions">Actions</th>';
+        html += '</tr></thead><tbody>';
+        tables.forEach(function(t) {
+            var id = String(t.id || '');
+            var name = String(t.name || id);
+            var src = String(t.source_type || '');
+            var bucket = String(t.bucket || '');
+            var editUrl = '/admin/tables?edit=' + encodeURIComponent(id);
+            var isInternal = (src === 'internal');
+            html += '<tr data-table-id="' + escapeHtmlAttr(id) + '">';
+            html += '<td class="col-id" title="' + escapeHtml(id) + '">'
+                  + '<a href="' + escapeHtmlAttr(editUrl) + '" '
+                  +    'style="color:var(--primary); text-decoration:none;">'
+                  + escapeHtml(name) + '</a></td>';
+            html += '<td><span class="badge badge-available" style="font-size:11px;">'
+                  + escapeHtml(src || '—') + '</span></td>';
+            html += '<td style="font-family:var(--font-mono); font-size:12px; color:var(--text-secondary);">'
+                  + escapeHtml(bucket || '—') + '</td>';
+            html += '<td class="col-mode">' + renderModeBadge(t.query_mode) + '</td>';
+            html += '<td class="col-actions"><div style="display:flex; gap:4px; justify-content:flex-end;">';
+            if (!isInternal) {
+                html += '<button class="btn-icon" title="Edit" '
+                      + 'onclick=\'openEditModal(' + escapeHtmlAttr(JSON.stringify(t)) + ')\'>'
+                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
+                      + '</button>';
+            }
+            if (pkgIdOrNull && !isInternal) {
+                html += '<button class="btn-icon danger" title="Remove from package" '
+                      + 'onclick="removeTableFromPackageById(&#39;' + escapeHtmlAttr(pkgIdOrNull) + '&#39;, &#39;' + escapeHtmlAttr(id) + '&#39;)">'
+                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>'
+                      + '</button>';
+            } else if (!pkgIdOrNull && !isInternal) {
+                html += '<button class="btn btn-primary btn-sm" type="button" '
+                      + 'onclick="openBulkAssignFromRow(&#39;' + escapeHtmlAttr(id) + '&#39;)">'
+                      + '+ Add to package</button>';
+            }
+            html += '</div></td></tr>';
+        });
+        html += '</tbody></table>';
+        return html;
+    }
+
+    // Remove a single table from a package, then refresh the layout.
+    async function removeTableFromPackageById(pkgId, tableId) {
+        if (!confirm('Remove this table from the package? (The table itself is not deleted.)')) return;
+        var r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId)
+                            + '/tables/' + encodeURIComponent(tableId),
+                            { method: 'DELETE', credentials: 'same-origin' });
+        if (!r.ok) { alert('Remove failed: HTTP ' + r.status); return; }
+        if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
+    }
+
+    // Open bulk-assign modal pre-checking a single table — the "+ Add to
+    // package" CTA on each unpackaged row. Defers to the existing modal so
+    // the operator can pick the target package without leaving the page.
+    function openBulkAssignFromRow(tableId) {
+        openBulkAssignModal('');
+        // Once the modal's table list has rendered, pre-check the requested
+        // row. The modal renders synchronously via renderBulkAssignList after
+        // its async fetches resolve, so poll briefly.
+        var tries = 0;
+        var tick = setInterval(function() {
+            tries += 1;
+            var cb = document.querySelector(
+                '#bulk-assign-list .bulk-assign-cb[value="' + tableId.replace(/"/g, '') + '"]'
+            );
+            if (cb) {
+                cb.checked = true;
+                cb.scrollIntoView({ block: 'center' });
+                clearInterval(tick);
+            } else if (tries > 50) {
+                clearInterval(tick);
+            }
+        }, 50);
+    }
+
+    // Backward-compat alias — Edit/Create/Delete-package flows declared
+    // before the rewrite still call loadDataPackagesSection() to refresh.
+    var loadDataPackagesSection = loadAdminTablesLayout;
+    window.loadDataPackagesSection = loadDataPackagesSection;
+
+    document.addEventListener('DOMContentLoaded', loadAdminTablesLayout);
 
     // Auto-open the source-typed edit modal when the page is opened with
     // `?edit=<table_id>` — closes the /catalog/p/<slug> drill-down loop
     // where each table name is now an admin-only link landing here.
+    // Package-centric rewrite: no more switchTab; the modal opens directly.
     document.addEventListener('DOMContentLoaded', async function() {
       var qs = new URLSearchParams(window.location.search);
       var editId = qs.get('edit');
@@ -4558,14 +4696,8 @@
           alert('Table not found (id=' + editId + '). It may have been deleted.');
           return;
         }
-        // Switch to the right connector tab so the modal lands in context.
-        var st = (t.source_type || '').toLowerCase();
-        if (st && typeof switchTab === 'function') {
-          switchTab(st === 'bigquery' ? 'bigquery'
-                  : st === 'keboola' ? 'keboola'
-                  : st === 'jira' ? 'jira' : 'internal');
-        }
-        // Small delay so the tab's listing has time to mount; then open.
+        // Small delay so the layout has time to mount; then open the source-
+        // dispatched edit modal directly. No tab nav anymore.
         setTimeout(function() {
           if (typeof openEditModal === 'function') openEditModal(t);
         }, 200);

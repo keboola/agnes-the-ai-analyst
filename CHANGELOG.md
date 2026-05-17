@@ -13,6 +13,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- **`/admin/tables`** — page-centric rewrite. Data Packages are now the
+  primary organising structure: every registered table appears under
+  either a Data Package (collapsible `<details>` section with member
+  table list) or in an "Unpackaged tables (N — needs packaging)" yellow
+  callout. The per-connector tabs (BigQuery / Keboola / Jira / Agnes
+  internal) that used to drive the layout were folded into a single
+  `+ Register new table ▾` dropdown in the action bar — picking a
+  connector opens its register modal but no longer steers the page
+  layout. Cache freshness collapsed into a one-line summary in the
+  action bar. Addresses the "data packages handled on the side / weird
+  / everything must live within a group" UX feedback.
 
 ### Fixed
 
