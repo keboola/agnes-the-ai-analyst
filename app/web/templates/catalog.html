@@ -95,43 +95,6 @@
         {{ card(entry) }}
       {% endfor %}
     </div>
-    {% if direct_table_entries %}
-    {# Direct tables — table_registry rows surfaced individually because
-       (a) the non-admin caller has a `table`-typed grant on them with no
-       covering Data Package, or (b) the admin god-mode view is listing
-       every registered, non-internal table not yet attached to any
-       package. Same .stack-card visual pattern as packages, smaller-feeling
-       (📊 icon + light blue tile). Helper copy doubles as the explicit
-       "tables exist but aren't bundled yet" signal for admins. #}
-    <section class="stack-direct-tables" style="margin-top:32px;">
-      <header style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px;">
-        <h2 style="margin:0; font-size:18px;">
-          Direct tables
-          <span style="color:var(--text-secondary, #6B7280); font-weight:500; font-size:14px;">
-            ({{ direct_table_entries|length }})
-          </span>
-        </h2>
-        {% if user.is_admin %}
-        <a href="/admin/tables" style="color:#0073D1; font-size:13px;">
-          Manage in /admin/tables →
-        </a>
-        {% endif %}
-      </header>
-      <p style="margin:0 0 12px; color:var(--text-secondary, #6B7280); font-size:13px;">
-        Tables not yet grouped into a Data Package.
-        {% if user.is_admin %}
-          Bundle related ones into a package so analysts can opt-in as a group.
-        {% else %}
-          Granted directly to your group.
-        {% endif %}
-      </p>
-      <div class="stack-grid" id="catalog-grid-direct">
-        {% for entry in direct_table_entries %}
-          {{ card(entry) }}
-        {% endfor %}
-      </div>
-    </section>
-    {% endif %}
     {% else %}
     {# Empty state — friendly + actionable. Admins get a concrete CTA
        (open /admin/tables with the N-registered-tables hint so they
@@ -160,40 +123,6 @@
          access to an existing one, then refresh this page.</p>
       {% endif %}
     </div>
-    {% if direct_table_entries %}
-    {# Even with zero packages, surface direct tables so analysts (or admins
-       in god-mode) can see the data that already exists — the previous
-       behaviour was to render only the "no packages" empty card and hide
-       these rows entirely, which made registered tables look invisible. #}
-    <section class="stack-direct-tables" style="margin-top:32px;">
-      <header style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px;">
-        <h2 style="margin:0; font-size:18px;">
-          Direct tables
-          <span style="color:var(--text-secondary, #6B7280); font-weight:500; font-size:14px;">
-            ({{ direct_table_entries|length }})
-          </span>
-        </h2>
-        {% if user.is_admin %}
-        <a href="/admin/tables" style="color:#0073D1; font-size:13px;">
-          Manage in /admin/tables →
-        </a>
-        {% endif %}
-      </header>
-      <p style="margin:0 0 12px; color:var(--text-secondary, #6B7280); font-size:13px;">
-        Tables not yet grouped into a Data Package.
-        {% if user.is_admin %}
-          Bundle related ones into a package so analysts can opt-in as a group.
-        {% else %}
-          Granted directly to your group.
-        {% endif %}
-      </p>
-      <div class="stack-grid" id="catalog-grid-direct-empty">
-        {% for entry in direct_table_entries %}
-          {{ card(entry) }}
-        {% endfor %}
-      </div>
-    </section>
-    {% endif %}
     {% endif %}
   </div>
 

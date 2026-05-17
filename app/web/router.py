@@ -969,104 +969,14 @@ async def catalog(
     except Exception:
         total_registered_tables = 0
 
-    # Direct (unbundled) tables — Section 5.1 mirror of the manifest's
-    # `direct_tables[]`. Two audiences:
-    #   - non-admin: tables granted via `resource_type='table'` to one of
-    #     the user's groups, minus anything reachable through a package
-    #     they can already see (packaged tables show up under the package
-    #     card; direct tables are a separate grid below).
-    #   - admin (god-mode): every registered, non-internal table not yet
-    #     attached to any package — so admins can spot the "I registered
-    #     50 tables but only packaged 3" gap on the same surface analysts
-    #     consume, without bouncing to /admin/tables to count manually.
-    direct_table_entries: list[dict] = []
-    try:
-        packaged_ids: set = set()
-        for pkg in pkg_repo.list():
-            for t in pkg_repo.list_tables(pkg["id"]):
-                tid = t.get("id")
-                if tid:
-                    packaged_ids.add(tid)
-
-        if is_admin_view:
-            rows = conn.execute(
-                "SELECT id, name, source_type, bucket, query_mode "
-                "FROM table_registry "
-                "WHERE COALESCE(source_type, '') != 'internal' "
-                "ORDER BY name"
-            ).fetchall()
-            direct_rows = [
-                {"id": r[0], "name": r[1], "source_type": r[2] or "",
-                 "bucket": r[3] or "", "query_mode": r[4] or "local"}
-                for r in rows
-                if r[0] not in packaged_ids
-            ]
-        else:
-            # Resolve via user's groups → TABLE-typed grants. The same join
-            # pattern `_build_direct_tables_section` in app/api/sync.py uses
-            # for the manifest, kept local here to avoid leaking manifest
-            # imports into the web router.
-            group_ids = [
-                r[0] for r in conn.execute(
-                    "SELECT group_id FROM user_group_members WHERE user_id = ?",
-                    [user["id"]],
-                ).fetchall()
-            ]
-            direct_rows = []
-            if group_ids:
-                placeholders = ",".join(["?"] * len(group_ids))
-                granted_ids = {
-                    r[0] for r in conn.execute(
-                        f"""SELECT DISTINCT resource_id FROM resource_grants
-                            WHERE group_id IN ({placeholders})
-                              AND resource_type = 'table'""",
-                        group_ids,
-                    ).fetchall()
-                } - packaged_ids
-                if granted_ids:
-                    rid_placeholders = ",".join(["?"] * len(granted_ids))
-                    rows = conn.execute(
-                        f"""SELECT id, name, source_type, bucket, query_mode
-                              FROM table_registry
-                             WHERE id IN ({rid_placeholders})
-                               AND COALESCE(source_type, '') != 'internal'
-                             ORDER BY name""",
-                        list(granted_ids),
-                    ).fetchall()
-                    direct_rows = [
-                        {"id": r[0], "name": r[1], "source_type": r[2] or "",
-                         "bucket": r[3] or "", "query_mode": r[4] or "local"}
-                        for r in rows
-                    ]
-
-        for r in direct_rows:
-            st = r["source_type"]
-            bucket = r["bucket"]
-            qm = r["query_mode"]
-            # Card description: explain shape in one line — source + bucket +
-            # query mode. Mirrors the package card density (≤2 lines).
-            desc_parts = [p for p in (st, bucket) if p]
-            desc = " · ".join(desc_parts) if desc_parts else "Registered table"
-            if qm and qm != "local":
-                desc = f"{desc} ({qm})"
-            direct_table_entries.append({
-                "id": r["id"],
-                "name": r["name"],
-                "description": desc,
-                "icon": "📊",
-                "color": "#e0f2fe",
-                "requirement": "available",
-                "in_stack": True,
-                "meta": st or "table",
-                "tags": [t for t in (st,) if t],
-                # No drill-down page for raw tables yet; admins can edit
-                # via /admin/tables. Cards stay visual-only for non-admins.
-                "drilldown_url": "/admin/tables" if is_admin_view else "",
-                "footer_left": "Edit →" if is_admin_view else "",
-            })
-    except Exception:
-        logger.exception("could not enumerate direct (unbundled) tables")
-        direct_table_entries = []
+    # Direct (unbundled) tables on /catalog were dropped per user feedback:
+    # "nemít Direct Tables zvlášť. Potřebujeme to mít celé v nějaké
+    # skupině v těch data packages." Everything an analyst sees here must
+    # belong to a Data Package — admin's job is to package unbundled
+    # tables via Group-by-bucket (one-click) or Bulk-assign on
+    # /admin/tables. The manifest endpoint at /api/sync/manifest still
+    # emits `direct_tables[]` so existing CLI clients with `table`-typed
+    # RBAC grants keep working (BC, not a web surface).
 
     ctx = _build_context(
         request, user=user,
@@ -1074,7 +984,6 @@ async def catalog(
         stack_entries=stack_entries_adapted,
         source_type_chips=source_type_chips,
         total_registered_tables=total_registered_tables,
-        direct_table_entries=direct_table_entries,
     )
     return templates.TemplateResponse(request, "catalog.html", ctx)
 

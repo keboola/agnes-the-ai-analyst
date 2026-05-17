@@ -129,9 +129,19 @@
     {% for t in tables %}
       <tr>
         <td>
-          {# Per-table detail page doesn't exist yet (#follow-up); render
-             the name as a plain code-tag for now instead of a 404 link. #}
-          <code>{{ t.name }}</code>
+          {# Admins click through to /admin/tables?edit=<id> which auto-opens
+             the source-typed edit modal (BQ / Keboola / Jira / legacy).
+             Non-admins get plain text — the per-table detail page is a
+             follow-up (no inline browser yet). #}
+          {% if user.is_admin %}
+            <a href="/admin/tables?edit={{ t.id }}"
+               style="color: var(--primary, #0073D1); text-decoration: none;"
+               title="Edit this table in /admin/tables">
+              <code>{{ t.name }}</code>
+            </a>
+          {% else %}
+            <code>{{ t.name }}</code>
+          {% endif %}
         </td>
         <td><span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span></td>
         <td>{{ t.last_sync_display or '—' }}</td>

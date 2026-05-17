@@ -4541,5 +4541,38 @@
     }
     document.addEventListener('DOMContentLoaded', loadDataPackagesSection);
 
+    // Auto-open the source-typed edit modal when the page is opened with
+    // `?edit=<table_id>` — closes the /catalog/p/<slug> drill-down loop
+    // where each table name is now an admin-only link landing here.
+    document.addEventListener('DOMContentLoaded', async function() {
+      var qs = new URLSearchParams(window.location.search);
+      var editId = qs.get('edit');
+      if (!editId) return;
+      try {
+        var r = await fetch('/api/admin/registry', { credentials: 'same-origin' });
+        if (!r.ok) return;
+        var body = await r.json();
+        var tables = Array.isArray(body) ? body : (body.tables || []);
+        var t = tables.find(function(x) { return String(x.id) === String(editId); });
+        if (!t) {
+          alert('Table not found (id=' + editId + '). It may have been deleted.');
+          return;
+        }
+        // Switch to the right connector tab so the modal lands in context.
+        var st = (t.source_type || '').toLowerCase();
+        if (st && typeof switchTab === 'function') {
+          switchTab(st === 'bigquery' ? 'bigquery'
+                  : st === 'keboola' ? 'keboola'
+                  : st === 'jira' ? 'jira' : 'internal');
+        }
+        // Small delay so the tab's listing has time to mount; then open.
+        setTimeout(function() {
+          if (typeof openEditModal === 'function') openEditModal(t);
+        }, 200);
+      } catch (e) {
+        console.warn('?edit auto-open failed:', e);
+      }
+    });
+
     </script>
 {% endblock %}
