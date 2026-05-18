@@ -1477,6 +1477,30 @@
               <option value="draft">Draft — admin-only</option>
             </select>
           </label>
+
+          {# Inline Group Access matrix — mirror of the Data Package
+             Edit modal. Lazy-load on first <details> open; pre-filled
+             from existing resource_grants for this domain. Diff on
+             save (POST + DELETE /api/admin/grants). #}
+          <details id="emd-rbac-details"
+                   style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+            <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
+              Group access
+              <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">— mark required / available per group</span>
+            </summary>
+            <p style="margin:8px 0; color:var(--text-secondary); font-size:12px;">
+              <em>required</em> auto-installs the domain into the group's
+              stack; <em>available</em> shows it in their Browse;
+              <em>(no grant)</em> hides it. Changes apply when you click
+              <strong>Save</strong>.
+            </p>
+            <div id="emd-rbac-rows"
+                 style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
+              <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
+                Click to load groups…
+              </div>
+            </div>
+          </details>
         </div>
         <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
                     margin-top:var(--space-4);">
@@ -2211,7 +2235,133 @@
     }
 
     function closeEditMemoryDomainModal() {
+        // Reset RBAC matrix state alongside the modal close — mirror
+        // of admin_tables.html's Edit DP close behavior.
+        const det = document.getElementById('emd-rbac-details');
+        if (det) det.open = false;
+        _emdRbacLoaded = false;
+        _emdRbacOriginal = {};
         document.getElementById('editMemoryDomainModal').style.display = 'none';
+    }
+
+    // ── Edit Memory Domain RBAC matrix (lazy hydrate + diff on save) ──
+    // Mirror of admin_tables.html _edpHydrateRbacMatrix / _edpDiffApplyGrants.
+    // resource_type is 'memory_domain' instead of 'data_package'; otherwise
+    // the wire shape is identical.
+    let _emdRbacLoaded = false;
+    let _emdRbacOriginal = {};
+    async function _emdHydrateRbacMatrix() {
+        if (_emdRbacLoaded) return;
+        const domainId = document.getElementById('emd-id').value;
+        const rowsEl = document.getElementById('emd-rbac-rows');
+        rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups + grants…</div>';
+        try {
+            const [gResp, grResp] = await Promise.all([
+                fetch('/api/admin/groups', { credentials: 'same-origin' }),
+                fetch('/api/admin/grants?resource_type=memory_domain',
+                      { credentials: 'same-origin' }),
+            ]);
+            if (!gResp.ok) throw new Error('groups HTTP ' + gResp.status);
+            if (!grResp.ok) throw new Error('grants HTTP ' + grResp.status);
+            const gBody = await gResp.json();
+            const groups = Array.isArray(gBody) ? gBody : (gBody.groups || []);
+            const grants = await grResp.json();
+            const current = {};
+            (grants || []).forEach(g => {
+                if (g.resource_id !== domainId) return;
+                current[g.group_id] = g.requirement;
+            });
+            _emdRbacOriginal = Object.assign({}, current);
+
+            if (!groups.length) {
+                rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+                return;
+            }
+            rowsEl.innerHTML = groups.map(g => {
+                const gid = String(g.id || g.name || '');
+                const gname = String(g.name || gid);
+                const cur = current[gid] || '';
+                const opt = (v, label) =>
+                    '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + label + '</option>';
+                return (
+                    '<div data-group-id="' + gid + '" '
+                    + 'style="display:flex; gap:8px; align-items:center; '
+                    +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
+                    + '<span style="flex:1;">' + gname + '</span>'
+                    + '<select class="emd-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
+                    +   opt('', '(no grant)')
+                    +   opt('available', 'available')
+                    +   opt('required', 'required')
+                    + '</select>'
+                    + '</div>'
+                );
+            }).join('');
+            _emdRbacLoaded = true;
+        } catch (e) {
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load: ' + e.message + '</div>';
+        }
+    }
+    document.addEventListener('toggle', (e) => {
+        if (e.target && e.target.id === 'emd-rbac-details' && e.target.open) {
+            _emdHydrateRbacMatrix();
+        }
+    }, true);
+
+    async function _emdDiffApplyGrants(domainId) {
+        if (!_emdRbacLoaded) return 0;
+        const rows = document.querySelectorAll('#emd-rbac-rows [data-group-id]');
+        const wantDelete = [];
+        const wantWrite = [];
+        rows.forEach(row => {
+            const gid = row.getAttribute('data-group-id');
+            const sel = row.querySelector('.emd-rbac-req');
+            const cur = (sel && sel.value) || '';
+            const orig = _emdRbacOriginal[gid] || '';
+            if (cur === orig) return;
+            if (!cur) wantDelete.push(gid);
+            else {
+                if (orig) wantDelete.push(gid);
+                wantWrite.push({ group_id: gid, requirement: cur });
+            }
+        });
+        if (!wantDelete.length && !wantWrite.length) return 0;
+
+        let grantIdByGroup = {};
+        if (wantDelete.length) {
+            const lr = await fetch('/api/admin/grants?resource_type=memory_domain',
+                                   { credentials: 'same-origin' });
+            if (lr.ok) {
+                const arr = await lr.json();
+                arr.forEach(g => {
+                    if (g.resource_id !== domainId) return;
+                    grantIdByGroup[g.group_id] = g.id;
+                });
+            }
+        }
+        const calls = [];
+        wantDelete.forEach(gid => {
+            const grantId = grantIdByGroup[gid];
+            if (!grantId) return;
+            calls.push(fetch('/api/admin/grants/' + encodeURIComponent(grantId),
+                             { method: 'DELETE', credentials: 'same-origin' }));
+        });
+        wantWrite.forEach(w => {
+            calls.push(fetch('/api/admin/grants', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    group_id: w.group_id,
+                    resource_type: 'memory_domain',
+                    resource_id: domainId,
+                    requirement: w.requirement,
+                }),
+            }));
+        });
+        const results = await Promise.allSettled(calls);
+        return results.filter(
+            r => r.status === 'rejected' || (r.value && !r.value.ok)
+        ).length;
     }
 
     async function submitEditMemoryDomain() {
@@ -2239,6 +2389,11 @@
                 if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
                 alert('Failed: ' + msg);
                 return;
+            }
+            // Apply any RBAC matrix changes after the metadata PUT.
+            const rbacFails = await _emdDiffApplyGrants(id);
+            if (rbacFails > 0) {
+                showToast(rbacFails + ' group access change(s) failed', 'error');
             }
             closeEditMemoryDomainModal();
             showToast('Domain updated', 'success');
