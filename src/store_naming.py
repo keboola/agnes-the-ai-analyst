@@ -125,3 +125,61 @@ def _iter_files(root: Path) -> Iterable[Path]:
     if not root.is_dir():
         return []
     return sorted(p for p in root.rglob("*") if p.is_file())
+
+
+# Canonical case for tokens that should keep their casing in humanized titles.
+# Lookup key is lowercased token; value is the canonical form. Extend the list
+# as new acronyms enter the codebase (kept small on purpose — large lists
+# silently re-case unrelated user words).
+TITLE_ACRONYMS = {
+    "ai": "AI",
+    "api": "API",
+    "aws": "AWS",
+    "bm25": "BM25",
+    "bq": "BQ",
+    "ci": "CI",
+    "cd": "CD",
+    "css": "CSS",
+    "db": "DB",
+    "fts": "FTS",
+    "gcp": "GCP",
+    "html": "HTML",
+    "js": "JS",
+    "json": "JSON",
+    "jwt": "JWT",
+    "mcp": "MCP",
+    "oauth": "OAuth",
+    "rbac": "RBAC",
+    "rpc": "RPC",
+    "s3": "S3",
+    "sql": "SQL",
+    "sso": "SSO",
+    "ts": "TS",
+    "ui": "UI",
+    "url": "URL",
+    "ux": "UX",
+    "xml": "XML",
+}
+
+
+def humanize_name(name: str) -> str:
+    """Convert a kebab-case identifier to a user-friendly Title Case string.
+
+    Splits on ``-``, drops empty tokens (handles double dashes), and either
+    looks the token up in ``TITLE_ACRONYMS`` (case-insensitive) or
+    title-cases it. Joined with spaces.
+
+        humanize_name("code-review")     -> "Code Review"
+        humanize_name("mcp-builder")     -> "MCP Builder"
+        humanize_name("oauth-server-v2") -> "OAuth Server V2"
+        humanize_name("api")             -> "API"
+        humanize_name("")                -> ""
+    """
+    if not name:
+        return ""
+    tokens = [t for t in name.split("-") if t]
+    out = []
+    for tok in tokens:
+        canonical = TITLE_ACRONYMS.get(tok.lower())
+        out.append(canonical if canonical is not None else tok.title())
+    return " ".join(out)

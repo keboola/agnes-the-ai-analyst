@@ -404,6 +404,131 @@ class TestStoreUpload:
         assert r.json()["detail"] in {"zip_looks_like_plugin", "zip_looks_like_skill"}
 
 
+class TestStoreV49Metadata:
+    """v49 phase-1 — title, tagline, synthetic_name fields end-to-end.
+
+    Preview returns humanized title; POST accepts user-supplied title/tagline
+    and falls back to the humanizer; PUT round-trips the partial update; the
+    response always carries the v49 columns.
+    """
+
+    def test_preview_returns_humanized_title(self, web_client):
+        _, cookies = _create_user(web_client, "preview@x.com")
+        zip_bytes = _make_skill_zip("mcp-builder")
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={"type": "skill"},
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["name"] == "mcp-builder"
+        assert body["title"] == "MCP Builder", body
+
+    def test_post_with_explicit_title_and_tagline(self, web_client):
+        _, cookies = _create_user(web_client, "v49post@x.com")
+        zip_bytes = _make_skill_zip("code-review")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={
+                "type": "skill",
+                "description": _OK_DESC,
+                "title": "PR Reviewer (custom)",
+                "tagline": "Spots missing tests and weak assertions.",
+            },
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["title"] == "PR Reviewer (custom)"
+        assert body["tagline"] == "Spots missing tests and weak assertions."
+        assert body["synthetic_name"] == "code-review-by-v49post"
+
+    def test_post_falls_back_to_humanized_title_when_omitted(self, web_client):
+        _, cookies = _create_user(web_client, "fallback@x.com")
+        zip_bytes = _make_skill_zip("oauth-server")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        # Server-side humanize fallback uses the same acronym dict as JS.
+        assert body["title"] == "OAuth Server"
+        assert body["tagline"] is None
+        assert body["synthetic_name"] == "oauth-server-by-fallback"
+
+    def test_post_rejects_oversize_title(self, web_client):
+        _, cookies = _create_user(web_client, "oversize@x.com")
+        zip_bytes = _make_skill_zip("long-title")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC, "title": "x" * 101},
+            cookies=cookies,
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "title_too_long"
+
+    def test_post_rejects_oversize_tagline(self, web_client):
+        _, cookies = _create_user(web_client, "oversizetag@x.com")
+        zip_bytes = _make_skill_zip("long-tag")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={
+                "type": "skill", "description": _OK_DESC,
+                "tagline": "x" * 201,
+            },
+            cookies=cookies,
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "tagline_too_long"
+
+    def test_put_updates_title_and_tagline_and_recomputes_synthetic_on_rename(
+        self, web_client,
+    ):
+        _, cookies = _create_user(web_client, "v49put@x.com")
+        zip_bytes = _make_skill_zip("starter-name")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+
+        # Pure metadata edit: title + tagline.
+        e = web_client.put(
+            f"/api/store/entities/{eid}",
+            data={
+                "title": "New Title",
+                "tagline": "A pithy tagline",
+            },
+            cookies=cookies,
+        )
+        assert e.status_code == 200, e.text
+        body = e.json()
+        assert body["title"] == "New Title"
+        assert body["tagline"] == "A pithy tagline"
+        # name unchanged → synthetic unchanged.
+        assert body["synthetic_name"] == "starter-name-by-v49put"
+
+        # Rename: synthetic_name must follow.
+        e2 = web_client.put(
+            f"/api/store/entities/{eid}",
+            data={"name": "renamed-thing"},
+            cookies=cookies,
+        )
+        assert e2.status_code == 200, e2.text
+        assert e2.json()["synthetic_name"] == "renamed-thing-by-v49put"
+
+
 class TestStoreSecurityFixes:
     """Regression tests for the three security blockers and one correctness
     bug found in PR #180 review (F1, F2, F4, F5)."""

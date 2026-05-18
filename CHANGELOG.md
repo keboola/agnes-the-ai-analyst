@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- Flea-market upload + edit forms now collect a user-friendly **Title**
+  (humanized from the kebab-case `name`, acronym-aware: `mcp-builder` →
+  `MCP Builder`, `oauth-server-v2` → `OAuth Server V2`), an optional
+  **Short description** (`tagline`, ≤200 chars), and show a read-only
+  live preview of the final synthetic invocation slug
+  (`/<name>-by-<owner_username>`) next to the Name field. Phase 1 of a
+  larger Flea refactor — fields are persisted on `store_entities` but
+  not yet rendered on marketplace cards / detail pages (Phase 2). Schema
+  v49 adds `title NOT NULL`, `tagline`, and `synthetic_name NOT NULL`
+  columns; backfill humanizes existing names (archive-suffix stripped
+  first) and composes synthetic from the deterministic formula.
+
 ## [0.54.28] — 2026-05-18
 
 ### Fixed
@@ -91,20 +104,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   now rejects `tables` dicts with more than 500 entries (ADV-008, ADV-009).
 - `GET /api/catalog/tables` now has a typed `response_model` (`CatalogTablesResponse`)
   so Swagger generates an accurate schema for that endpoint (ADV-007).
-
-### Internal
-- Added `TestFullLifecycleFromInstaller` integration test class
-  (`tests/test_store_entity_versions.py`) covering the full
-  flea-market lifecycle from issuer / admin / subscribed-user
-  perspectives. Main test walks v1 upload → installer subscribes →
-  v2 promote → v3 blocked → admin force-overrides → restore v1,
-  asserting BOTH entity state AND served `marketplace.zip` bytes +
-  ETag at each transition. Plus 5 corner cases:
-  unsubscribed-user negative control, late-subscriber-during-
-  quarantine, non-owner privacy gate, second-restore reuse path
-  (PR #332 lifecycle validation), and archived-entity-keeps-
-  serving-installs (CLAUDE.md contract).
-
 ## [0.54.24] — 2026-05-16
 
 ### Fixed

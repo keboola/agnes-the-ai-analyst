@@ -210,6 +210,47 @@
   }
   .desc-counter.ok { color: #16a34a; }
   .desc-counter.warn { color: #b45309; }
+
+  /* v49 phase-1: name row pairs the editable kebab-case input with a
+     read-only dark "what Claude Code will see" preview. Visual language
+     matches the dark .invocation block on marketplace_item_detail.html
+     (Catppuccin Mocha #1e1e2e bg, #cdd6f4 fg, #a6e3a1 prompt) so the
+     two surfaces read as the same concept. No copy button here — this
+     is a live preview, not an artifact to copy. */
+  .name-row {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .name-row input[type="text"] {
+    flex: 0 1 320px;
+    min-width: 220px;
+  }
+  .invocation-preview {
+    flex: 1 1 320px;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    border-radius: 8px;
+    padding: 0 14px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .invocation-preview .prompt {
+    color: #a6e3a1;
+    user-select: none;
+    margin-right: 2px;
+  }
+  .invocation-preview #synthetic-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .guidelines {
     margin-bottom: 14px;
     background: var(--background, #f9fafb);
@@ -466,9 +507,30 @@
         </div>
 
         <div class="field">
+          <label class="field-label" for="title">Title</label>
+          <input type="text" id="title" maxlength="100" required
+                 placeholder="My Awesome Skill"
+                 data-user-edited="false">
+          <div class="field-hint">Human-friendly name shown on marketplace cards. Pre-filled from Name, edit freely.</div>
+        </div>
+
+        <div class="field">
           <label class="field-label" for="name">Name</label>
-          <input type="text" id="name" required placeholder="my-awesome-skill">
-          <div class="field-hint">Lowercase letters, digits, hyphens. Max 64 characters.</div>
+          <div class="name-row">
+            <input type="text" id="name" required placeholder="my-awesome-skill">
+            <div class="invocation-preview" id="synthetic-preview" aria-live="polite">
+              <span class="prompt">/</span><span id="synthetic-text">your-name-by-{{ owner_username|default("you") }}</span>
+            </div>
+          </div>
+          <div class="field-hint">Lowercase letters, digits, hyphens. Max 64 characters. Final invocation shown to the right.</div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="tagline">Short description <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
+          <input type="text" id="tagline" maxlength="200"
+                 placeholder="One-line summary shown alongside the entity name">
+          <div id="tagline-counter" class="desc-counter">0 / 200 max</div>
+          <div class="field-hint">Max 200 characters. Renders next to the title on marketplace listings.</div>
         </div>
 
         <div class="field">
@@ -559,9 +621,72 @@ const photoLabel = document.getElementById('photo-label');
 const addDocBtn = document.getElementById('add-doc-btn');
 const docInput = document.getElementById('doc-input');
 const docList = document.getElementById('doc-list');
+// v49 phase-1 — Title + Tagline inputs and the read-only synthetic preview.
+const titleInput = document.getElementById('title');
+const taglineInput = document.getElementById('tagline');
+const taglineCounter = document.getElementById('tagline-counter');
+const nameInput = document.getElementById('name');
+const syntheticText = document.getElementById('synthetic-text');
+
+// Acronym dict + owner username injected from the route handler so JS
+// humanize stays in sync with the Python TITLE_ACRONYMS source.
+const TITLE_ACRONYMS = {{ title_acronyms|tojson if title_acronyms else "{}" }};
+const OWNER_USERNAME = {{ owner_username|tojson if owner_username else '""' }};
 
 let zipFile = null;
 let docs = [];
+
+// Replicates src/store_naming.py:humanize_name(). Split on `-`, drop empty
+// tokens, replace each token with its canonical acronym form (case-insensitive
+// lookup) or Title Case it. Join with spaces.
+function humanizeName(name) {
+  if (!name) return '';
+  const tokens = String(name).split('-').filter(Boolean);
+  return tokens.map(tok => {
+    const canonical = TITLE_ACRONYMS[tok.toLowerCase()];
+    if (canonical !== undefined) return canonical;
+    return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
+  }).join(' ');
+}
+
+// Updates the read-only `/<name>-by-<owner>` preview as the user types
+// in the Name field. Empty name shows a placeholder.
+function updateSyntheticPreview() {
+  const name = (nameInput.value || '').trim();
+  if (!name) {
+    syntheticText.textContent = 'your-name-by-' + (OWNER_USERNAME || 'you');
+  } else {
+    syntheticText.textContent = name + '-by-' + (OWNER_USERNAME || 'you');
+  }
+}
+
+// Auto-fill Title from Name unless the user has manually edited Title.
+// We track manual edits via a `data-user-edited` flag on the input so
+// flipping back to auto-fill is possible by clearing the title.
+function maybeAutoFillTitle() {
+  if (titleInput.dataset.userEdited === 'true') return;
+  const name = (nameInput.value || '').trim();
+  titleInput.value = humanizeName(name);
+}
+
+titleInput.addEventListener('input', () => {
+  titleInput.dataset.userEdited = titleInput.value.trim() ? 'true' : 'false';
+});
+nameInput.addEventListener('input', () => {
+  updateSyntheticPreview();
+  maybeAutoFillTitle();
+});
+
+// Tagline counter (mirror desc-counter pattern).
+function updateTaglineCounter() {
+  const len = (taglineInput.value || '').length;
+  taglineCounter.textContent = `${len} / 200 max`;
+  taglineCounter.classList.toggle('warn', len > 200);
+}
+taglineInput.addEventListener('input', updateTaglineCounter);
+// Initialize on load.
+updateSyntheticPreview();
+updateTaglineCounter();
 
 // Server returns short machine codes in `detail`. Map them to human-friendly
 // sentences here. Any unknown code falls back to a generic prefix + the raw
@@ -595,6 +720,9 @@ const ERROR_MESSAGES = {
     'Couldn\'t derive a username from your email. Contact your administrator.',
   conflict_owner_name:
     'You already have a Store entity with this name. Each owner needs unique names — pick a different one or delete the existing entity first.',
+  title_required: 'Title is required.',
+  title_too_long: 'Title is too long — max 100 characters.',
+  tagline_too_long: 'Short description is too long — max 200 characters.',
 
   // Step 2 — photo
   photo_unsupported_format: 'Photo must be JPG, PNG, or WebP.',
@@ -1052,7 +1180,14 @@ nextBtn.addEventListener('click', async () => {
     const preview = await res.json();
     document.getElementById('name').value = preview.name || '';
     document.getElementById('description').value = preview.description || '';
+    // v49: pre-fill Title from server-computed humanize unless the user
+    // already touched the field (e.g. came back via Back). Keep the
+    // user-edited flag stable so re-entering step 2 doesn't clobber.
+    if (titleInput.dataset.userEdited !== 'true') {
+      titleInput.value = preview.title || humanizeName(preview.name || '');
+    }
     updateDescCounter();
+    updateSyntheticPreview();
     renderComponents(preview.components || []);
     showStep(2);
   } catch (err) {
@@ -1070,6 +1205,9 @@ finishBtn.addEventListener('click', async () => {
   clearBanner();
   const name = document.getElementById('name').value.trim();
   if (!name) { showError('Name is required.'); return; }
+  // v49: Title is required (NOT NULL in DB). Auto-fill should have set
+  // it; this guards manual clears.
+  if (!titleInput.value.trim()) { showError('Title is required.'); return; }
 
   function isContentBlock(detail) {
     if (!detail || !detail.checks) return false;
@@ -1091,6 +1229,10 @@ finishBtn.addEventListener('click', async () => {
     fd.append('type', type);
     fd.append('name', name);
     fd.append('description', document.getElementById('description').value);
+    // v49: title required, tagline optional.
+    fd.append('title', titleInput.value.trim());
+    const tag = taglineInput.value.trim();
+    if (tag) fd.append('tagline', tag);
     const cat = document.getElementById('category').value;
     if (cat) fd.append('category', cat);
     const vurl = document.getElementById('video_url').value.trim();

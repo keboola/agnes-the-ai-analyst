@@ -1315,10 +1315,17 @@ async def store_new(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from src.store_categories import STORE_CATEGORIES
+    from src.store_naming import TITLE_ACRONYMS, sanitize_username
+    try:
+        owner_username = sanitize_username(user.get("email") or "")
+    except ValueError:
+        owner_username = ""
     ctx = _build_context(
         request, user=user,
         categories=list(STORE_CATEGORIES),
         guardrail=_guardrail_thresholds(),
+        title_acronyms=TITLE_ACRONYMS,
+        owner_username=owner_username,
     )
     return templates.TemplateResponse(request, "store_upload.html", ctx)
 
@@ -1375,6 +1382,7 @@ async def store_edit(
         if latest and latest.get("status") in ("pending_inline", "pending_llm"):
             pending_sub = latest
 
+    from src.store_naming import TITLE_ACRONYMS
     ctx = _build_context(
         request, user=user,
         entity=entity,
@@ -1382,6 +1390,8 @@ async def store_edit(
         is_owner=entity["owner_user_id"] == user["id"],
         categories=list(STORE_CATEGORIES),
         pending_sub=pending_sub,
+        title_acronyms=TITLE_ACRONYMS,
+        owner_username=entity.get("owner_username") or "",
     )
     return templates.TemplateResponse(request, "store_edit.html", ctx)
 

@@ -177,6 +177,14 @@ class StoreEntityResponse(BaseModel):
     # v32+ quarantine: surface visibility so /store browse can render
     # the corner badge on the submitter's own non-approved cards.
     visibility_status: Optional[str] = None
+    # v49 phase-1 Flea refactor — user-facing metadata. `title` is a
+    # humanized display name (acronym-aware), `tagline` is an optional
+    # 200-char short description, `synthetic_name` is the deterministic
+    # <name>-by-<owner> baked into served bundles. Phase 1 only writes
+    # them; consuming surfaces (cards, detail, Claude Code) come later.
+    title: Optional[str] = None
+    tagline: Optional[str] = None
+    synthetic_name: Optional[str] = None
 
 
 class StoreEntityListResponse(BaseModel):
@@ -204,6 +212,10 @@ class PreviewResponse(BaseModel):
     type: str
     name: Optional[str] = None
     description: Optional[str] = None
+    # v49: humanized form of `name` for pre-filling the Title input on
+    # the upload form. Computed server-side so the acronym dict has a
+    # single source of truth (src/store_naming.py:TITLE_ACRONYMS).
+    title: Optional[str] = None
     components: list[PreviewComponent] = []
 
 
@@ -555,6 +567,9 @@ def _entity_to_response(
         updated_at=_to_iso(entity.get("updated_at")),
         invocation_name=suffixed_name(entity["name"], entity["owner_username"]),
         visibility_status=entity.get("visibility_status") or "approved",
+        title=entity.get("title"),
+        tagline=entity.get("tagline"),
+        synthetic_name=entity.get("synthetic_name"),
     )
 
 
@@ -1313,10 +1328,13 @@ async def preview_entity(
     finally:
         Path(tmp.name).unlink(missing_ok=True)
 
+    from src.store_naming import humanize_name
+    extracted_name = meta.get("name")
     return PreviewResponse(
         type=type,
-        name=meta.get("name"),
+        name=extracted_name,
         description=meta.get("description"),
+        title=humanize_name(extracted_name) if extracted_name else None,
         components=[
             PreviewComponent(
                 type=row["type"],
@@ -1345,6 +1363,10 @@ async def create_entity(
     description: Optional[str] = Form(None),
     category: Optional[str] = Form(None),
     video_url: Optional[str] = Form(None),
+    # v49 phase-1: user-facing metadata fields. Upload form pre-fills
+    # `title` from a humanizer over `name`; `tagline` is optional.
+    title: Optional[str] = Form(None),
+    tagline: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
     docs: List[UploadFile] = File(default=[]),
     user: dict = Depends(get_current_user),
@@ -1427,6 +1449,18 @@ async def create_entity(
         if not _NAME_RE.match(final_name):
             raise HTTPException(status_code=400, detail="invalid_name_format")
         final_description = description or meta.get("description")
+
+        # v49: Title is user-supplied; pre-filled in the upload form by
+        # JS humanize_name() with the same acronym dict the server uses,
+        # but always editable. Fall back to server-side humanize when the
+        # client omits the field (e.g. legacy uploaders, API integrations).
+        from src.store_naming import humanize_name
+        final_title = (title or "").strip() or humanize_name(final_name) or final_name
+        if len(final_title) > 100:
+            raise HTTPException(status_code=400, detail="title_too_long")
+        final_tagline = (tagline or "").strip() or None
+        if final_tagline is not None and len(final_tagline) > 200:
+            raise HTTPException(status_code=400, detail="tagline_too_long")
 
         repo = StoreEntitiesRepository(conn)
         # Skip archived rows: archive renames the row to free the slot,
@@ -1519,6 +1553,8 @@ async def create_entity(
             owner_username=username,
             type=type,
             name=final_name,
+            title=final_title,
+            synthetic_name=suffixed,
             description=final_description,
             category=category,
             version=version,
@@ -1527,6 +1563,7 @@ async def create_entity(
             doc_paths=doc_rels,
             file_size=file_size,
             visibility_status=initial_visibility,
+            tagline=final_tagline,
         )
         _audit(
             conn,
@@ -1596,6 +1633,11 @@ async def update_entity(
     description: Optional[str] = Form(None),
     category: Optional[str] = Form(None),
     video_url: Optional[str] = Form(None),
+    # v49 phase-1 metadata. ``title`` and ``tagline`` are partial-update
+    # fields: omit to leave unchanged, send empty string to clear (only
+    # meaningful for ``tagline``; empty ``title`` is rejected).
+    title: Optional[str] = Form(None),
+    tagline: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1634,6 +1676,7 @@ async def update_entity(
             background_tasks=background_tasks,
             file=file, name=name, type=type, description=description,
             category=category, video_url=video_url, photo=photo,
+            title=title, tagline=tagline,
             user=user, conn=conn,
         )
 
@@ -1649,6 +1692,8 @@ async def _update_entity_locked(
     category: Optional[str],
     video_url: Optional[str],
     photo: Optional[UploadFile],
+    title: Optional[str],
+    tagline: Optional[str],
     user: dict,
     conn: duckdb.DuckDBPyConnection,
 ):
@@ -1702,6 +1747,24 @@ async def _update_entity_locked(
         raise HTTPException(status_code=400, detail="invalid_category")
 
     video_url = _validate_video_url(video_url)
+
+    # v49 phase-1: validate metadata fields. ``title`` left None means "no
+    # change"; empty string is rejected (title is NOT NULL). ``tagline``
+    # supports empty-string clear via the repository sentinel.
+    new_title: Optional[str] = None
+    if title is not None:
+        stripped = title.strip()
+        if not stripped:
+            raise HTTPException(status_code=400, detail="title_required")
+        if len(stripped) > 100:
+            raise HTTPException(status_code=400, detail="title_too_long")
+        new_title = stripped
+    new_tagline: Optional[str] = None
+    if tagline is not None:
+        stripped_tagline = tagline.strip()
+        if len(stripped_tagline) > 200:
+            raise HTTPException(status_code=400, detail="tagline_too_long")
+        new_tagline = stripped_tagline  # "" clears (repo treats falsy as NULL)
 
     # Display-name change handled at the end (after bundle bake) so the
     # rename can target the version-bumped or current bundle dir.
@@ -1907,6 +1970,13 @@ async def _update_entity_locked(
     # Metadata-only column updates (name, description, category, photo,
     # video) — never bundle-derived (version / file_size) because the
     # new version isn't promoted to current until the LLM approves.
+    # v49: when ``rename_to`` is set, synthetic_name must move in lockstep
+    # so attribution lookups + the global suffix-uniqueness check stay
+    # accurate. owner_username is immutable, so the new synthetic is a
+    # pure function of the new name.
+    new_synthetic: Optional[str] = None
+    if rename_to is not None:
+        new_synthetic = suffixed_name(rename_to, entity["owner_username"])
     repo.update(
         entity_id,
         name=rename_to,
@@ -1914,6 +1984,9 @@ async def _update_entity_locked(
         category=category,
         photo_path=photo_rel,
         video_url=video_url,
+        title=new_title,
+        tagline=new_tagline,
+        synthetic_name=new_synthetic,
     )
 
     # v46: rename no longer needs an explicit attribution refresh — the
