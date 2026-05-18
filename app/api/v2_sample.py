@@ -144,7 +144,7 @@ def build_sample(
     if cached is not None:
         return cached
 
-    if source_type == "bigquery":
+    if source_type == "bigquery" and (row.get("query_mode") or "") != "materialized":
         rows = _fetch_bq_sample(bq, row.get("bucket") or "", row.get("source_table") or table_id, n)
     else:
         from app.utils import get_data_dir
