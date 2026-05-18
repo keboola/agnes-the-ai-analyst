@@ -392,7 +392,8 @@ class TestStackUnsubscribeParity:
             f"/api/stack/subscription/data_package/{pkg_id}",
             headers=_auth(parity_env["analyst_token"]),
         )
-        assert r.status_code == 200
+        # 0.54.26 design-rules pass moved this endpoint to 204.
+        assert r.status_code == 204
         conn = get_system_db()
         delta_api = _snapshot_table(
             conn,

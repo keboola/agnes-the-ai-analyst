@@ -187,7 +187,9 @@ class TestStackUnsubscribe:
             f"/api/stack/subscription/data_package/{pkg_id}",
             headers=_auth(seeded_app["analyst_token"]),
         )
-        assert resp.status_code == 200
+        # 0.54.26 design-rules pass bumped DELETE → 204 (idempotent
+        # removal, empty body).
+        assert resp.status_code == 204
         events = _telemetry_for("stack.unsubscribe", "analyst1")
         assert any(e["props"]["resource_id"] == pkg_id for e in events)
 

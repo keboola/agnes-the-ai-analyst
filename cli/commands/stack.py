@@ -172,7 +172,9 @@ def stack_remove(
     """
     rt = _validate_type(resource_type)
     resp = api_delete(f"/api/stack/subscription/{rt}/{resource_id}")
-    if resp.status_code != 200:
+    # 0.54.26 design-rules pass moved this endpoint to 204; treat any
+    # 2xx as success (covers both old and new servers).
+    if resp.status_code >= 300:
         try:
             body = resp.json()
         except Exception:

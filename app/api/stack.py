@@ -154,7 +154,7 @@ async def subscribe(
     return {"subscribed": True}
 
 
-@router.delete("/subscription/{resource_type}/{resource_id}", status_code=200)
+@router.delete("/subscription/{resource_type}/{resource_id}", status_code=204)
 async def unsubscribe(
     resource_type: str,
     resource_id: str,
@@ -162,7 +162,13 @@ async def unsubscribe(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Opt out of an ``available`` grant. Returns 400 ``cannot_remove_required``
-    when the resource is required for any of the user's groups."""
+    when the resource is required for any of the user's groups.
+
+    Returns 204 No Content on success — DELETE idempotency convention
+    enforced by the API design rules test. Callers should treat 204 as
+    "removed", 400 + ``cannot_remove_required`` as "still subscribed
+    because Required tier blocks opt-out".
+    """
     rt = _validate_type(resource_type)
     resolver = StackResolver(conn)
     try:
@@ -178,4 +184,3 @@ async def unsubscribe(
             "resource_id": resource_id,
         },
     )
-    return {"subscribed": False}

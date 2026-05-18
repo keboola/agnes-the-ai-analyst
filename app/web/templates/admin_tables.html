@@ -4122,11 +4122,12 @@
         })();
     }
 
-    {% if data_source_type == 'keboola' %}
-    // prefillFromKeboolaTable stays gated on instance type — it only fires
-    // from a button inside the Keboola Edit modal that itself is only
-    // rendered when data_source_type == 'keboola' (the Jinja guard
-    // around the modal's "Use table as base" button in the markup).
+    // prefillFromKeboolaTable is already inside the outer Phase F2
+    // guard (the data_source_type keboola Jinja `if` above) — it only
+    // fires from a button inside the Keboola Edit modal that itself
+    // only renders when data_source_type == 'keboola'. The redundant
+    // nested guard was dropped during the rebase onto main; main
+    // never had it.
     function prefillFromKeboolaTable(textareaId) {
         // Edit-modal callers may pass an editKbBucket / editKbSourceTable
         // pair instead of the Register modal's kbBucket / kbSourceTable.
