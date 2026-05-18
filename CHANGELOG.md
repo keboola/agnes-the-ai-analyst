@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.28] — 2026-05-18
+
+### Fixed
+- `/api/v2/sample` (and `agnes describe`) no longer returns HTTP 500
+  for materialized BigQuery tables (`source_type='bigquery'`,
+  `query_mode='materialized'`). The handler previously routed any
+  `source_type='bigquery'` row to `_fetch_bq_sample` regardless of
+  query mode, attempting a live BigQuery query for data that lives
+  locally as parquet. Fix mirrors the existing guard in
+  `app/api/v2_schema.py` from #261 — materialized tables fall through
+  to the local parquet read path. Regression-locked by
+  `test_materialized_bq_table_reads_parquet_not_bq`. Closes #341.
+
 ## [0.54.27] — 2026-05-18
 
 ### Fixed
