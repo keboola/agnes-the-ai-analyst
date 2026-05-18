@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 50
+SCHEMA_VERSION = 51
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -507,6 +507,15 @@ CREATE TABLE IF NOT EXISTS data_packages (
     -- Closes the visual gap with /marketplace cards which render real
     -- JPGs/PNGs; cards fall back to 2-letter initials when this is NULL.
     cover_image_url VARCHAR,
+    -- v51: lifecycle + classification surface for /catalog cards. The
+    -- card eyebrow renders ``category``; the cover-corner status pill
+    -- renders ``status``. Hero filter checkboxes filter by status.
+    -- ``status`` is a soft enum ('prod' default; 'poc'; 'coming-soon';
+    -- 'draft' admin-only). ``category`` is free-form text for the
+    -- eyebrow line — admins should keep it short and consistent
+    -- (e.g. "Sessions & Traffic", "Customer Insights").
+    status          VARCHAR DEFAULT 'prod',
+    category        VARCHAR,
     created_by      VARCHAR,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
@@ -536,6 +545,11 @@ CREATE TABLE IF NOT EXISTS memory_domains (
     -- v50: admin-uploaded cover image — same path / fallback contract as
     -- data_packages.cover_image_url above.
     cover_image_url VARCHAR,
+    -- v51: lifecycle ``status`` only ('prod' / 'poc' / 'coming-soon' /
+    -- 'draft'). Memory Domains don't carry ``category`` because the
+    -- domain itself IS the classification — adding a second-level
+    -- category would be redundant.
+    status          VARCHAR DEFAULT 'prod',
     created_by      VARCHAR,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
@@ -3688,6 +3702,34 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v50_to_v51(conn: duckdb.DuckDBPyConnection) -> None:
+    """v51: lifecycle ``status`` + per-package ``category`` columns.
+
+    Adds the surfaces the /catalog mockup audit identified as gaps:
+    a small status pill on each card (driven by hero filter checkboxes)
+    and an eyebrow line above the title (data_packages only — memory
+    domains don't need a second-level category since the domain itself
+    classifies its items).
+
+    All ADD COLUMN IF NOT EXISTS — idempotent re-run is safe. The fresh
+    install path picks the columns up from _SYSTEM_SCHEMA directly; this
+    migration covers the sequential-upgrade path off an earlier version.
+    """
+    conn.execute(
+        "ALTER TABLE data_packages "
+        "ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'prod'"
+    )
+    conn.execute(
+        "ALTER TABLE data_packages "
+        "ADD COLUMN IF NOT EXISTS category VARCHAR"
+    )
+    conn.execute(
+        "ALTER TABLE memory_domains "
+        "ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'prod'"
+    )
+    conn.execute("UPDATE schema_version SET version = 51")
+
+
 def _v49_to_v50(conn: duckdb.DuckDBPyConnection) -> None:
     """v50: ``cover_image_url`` on ``data_packages`` + ``memory_domains``.
 
@@ -3826,6 +3868,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already includes the column on fresh installs;
             # the migration's IF NOT EXISTS ALTERs no-op there.
             _v49_to_v50(conn)
+            # v51 status + category on data_packages, status on
+            # memory_domains. Same fresh-install no-op pattern.
+            _v50_to_v51(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3980,6 +4025,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v48_to_v49(conn)
             if current < 50:
                 _v49_to_v50(conn)
+            if current < 51:
+                _v50_to_v51(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

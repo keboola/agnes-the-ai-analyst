@@ -872,6 +872,10 @@ def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
         # initials banner when None. Closes the visual gap with
         # /marketplace cards that have always shown real cover photos.
         "cover_image_url": getattr(entry, "cover_image_url", None),
+        # v51: lifecycle status + classification category. Drive the
+        # cover-corner status pill and the eyebrow line above the title.
+        "status": getattr(entry, "status", None) or "prod",
+        "category": getattr(entry, "category", None),
         "requirement": entry.requirement,
         "in_stack": entry.in_stack,
         "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
@@ -938,6 +942,8 @@ async def catalog(
                 id=p["id"], name=p["name"], description=p.get("description"),
                 icon=p.get("icon"), color=p.get("color"),
                 cover_image_url=p.get("cover_image_url"),
+                status=p.get("status") or "prod",
+                category=p.get("category"),
                 requirement="available",
                 in_stack=(p["id"] in stack_ids),
             )
@@ -1126,6 +1132,10 @@ def _memory_domain_entry_dict(entry, drilldown_url: str,
         "color": entry.color or "#e0f2fe",
         # v50: see _data_package_entry_dict for the cover_image_url contract.
         "cover_image_url": getattr(entry, "cover_image_url", None),
+        # v51: status surfaces as the cover-corner pill. Memory Domains
+        # have no per-card category (the domain IS the category).
+        "status": getattr(entry, "status", None) or "prod",
+        "category": None,
         "requirement": entry.requirement,
         "in_stack": entry.in_stack,
         "meta": meta,
@@ -1205,6 +1215,8 @@ async def corporate_memory(
                 id=d["id"], name=d["name"], description=d.get("description"),
                 icon=d.get("icon"), color=d.get("color"),
                 cover_image_url=d.get("cover_image_url"),
+                status=d.get("status") or "prod",
+                category=None,
                 requirement="available",
                 in_stack=(d["id"] in stack_ids),
             )

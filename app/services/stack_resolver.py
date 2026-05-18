@@ -60,6 +60,11 @@ class ResourceEntry:
     # the flat-color + initials banner. Symmetric for Data Packages and
     # Memory Domains.
     cover_image_url: Optional[str] = None
+    # v51: lifecycle ``status`` (drives hero filter checkboxes + cover
+    # status pill) and ``category`` (drives card eyebrow line — Data
+    # Packages only; Memory Domains pass None).
+    status: Optional[str] = "prod"
+    category: Optional[str] = None
     requirement: Literal["available", "required"] = "available"
     in_stack: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -273,16 +278,21 @@ class StackResolver:
         if not ids:
             return []
         placeholders = ",".join(["?"] * len(ids))
+        # v51: pull status + category. Memory Domains have status but no
+        # category; we SELECT NULL for category in that branch so the
+        # downstream ResourceEntry constructor sees the same 8-tuple shape.
         if resource_type == ResourceType.DATA_PACKAGE:
             rows = self.conn.execute(
-                f"""SELECT id, name, description, icon, color, cover_image_url
+                f"""SELECT id, name, description, icon, color, cover_image_url,
+                           status, category
                        FROM data_packages WHERE id IN ({placeholders})
                        ORDER BY name""",
                 list(ids),
             ).fetchall()
         elif resource_type == ResourceType.MEMORY_DOMAIN:
             rows = self.conn.execute(
-                f"""SELECT id, name, description, icon, color, cover_image_url
+                f"""SELECT id, name, description, icon, color, cover_image_url,
+                           status, NULL AS category
                        FROM memory_domains WHERE id IN ({placeholders})
                        ORDER BY name""",
                 list(ids),
@@ -295,6 +305,8 @@ class StackResolver:
             ResourceEntry(
                 id=r[0], name=r[1], description=r[2], icon=r[3], color=r[4],
                 cover_image_url=r[5],
+                status=r[6] or "prod",
+                category=r[7],
                 requirement=(
                     "required" if r[0] in required_ids else "available"
                 ),

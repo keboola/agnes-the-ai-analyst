@@ -48,11 +48,18 @@ class CreateMemoryDomainRequest(BaseModel):
     icon: Optional[str] = None
     color: Optional[str] = None
     cover_image_url: Optional[str] = None
+    status: Optional[str] = None  # v51
 
     @field_validator("color")
     @classmethod
     def _check_color(cls, v: Optional[str]) -> Optional[str]:
         return _validate_color(v)
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, v: Optional[str]) -> Optional[str]:
+        from app.api.data_packages import _validate_status
+        return _validate_status(v)
 
 
 class UpdateMemoryDomainRequest(BaseModel):
@@ -63,11 +70,18 @@ class UpdateMemoryDomainRequest(BaseModel):
     # v50: see app/api/data_packages.py for the empty-string-means-clear
     # contract; same semantics here.
     cover_image_url: Optional[str] = None
+    status: Optional[str] = None  # v51
 
     @field_validator("color")
     @classmethod
     def _check_color(cls, v: Optional[str]) -> Optional[str]:
         return _validate_color(v)
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, v: Optional[str]) -> Optional[str]:
+        from app.api.data_packages import _validate_status
+        return _validate_status(v)
 
 
 class AddItemRequest(BaseModel):
@@ -108,6 +122,7 @@ def _serialize(d: Dict[str, Any]) -> Dict[str, Any]:
         "icon": d.get("icon"),
         "color": d.get("color"),
         "cover_image_url": d.get("cover_image_url"),
+        "status": d.get("status") or "prod",  # v51 default for legacy rows
         "created_by": d.get("created_by"),
         "created_at": d["created_at"].isoformat() if d.get("created_at") else None,
         "updated_at": d["updated_at"].isoformat() if d.get("updated_at") else None,
@@ -149,6 +164,7 @@ async def create_memory_domain(
             icon=payload.icon,
             color=payload.color,
             cover_image_url=payload.cover_image_url,
+            status=payload.status or "prod",
             created_by=user.get("email") or user["id"],
         )
     except duckdb.ConstraintException:
@@ -197,6 +213,7 @@ async def update_memory_domain(
         "icon": existing.get("icon"),
         "color": existing.get("color"),
         "cover_image_url": existing.get("cover_image_url"),
+        "status": existing.get("status"),
     }
     clear_cover = payload.cover_image_url == ""
     repo.update(
@@ -207,6 +224,7 @@ async def update_memory_domain(
         color=payload.color,
         cover_image_url=None if clear_cover else payload.cover_image_url,
         clear_cover_image=clear_cover,
+        status=payload.status,
     )
     fresh = repo.get(domain_id)
     after = {
@@ -215,6 +233,7 @@ async def update_memory_domain(
         "icon": fresh.get("icon") if fresh else None,
         "color": fresh.get("color") if fresh else None,
         "cover_image_url": fresh.get("cover_image_url") if fresh else None,
+        "status": fresh.get("status") if fresh else None,
     }
     _audit(
         conn,

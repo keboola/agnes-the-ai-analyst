@@ -60,6 +60,25 @@ router = APIRouter(prefix="/api/admin/data-packages", tags=["data-packages"])
 # ---------------------------------------------------------------------------
 
 
+# v51: lifecycle status enum — used by the hero filter checkboxes on
+# /catalog. Kept as a frozen tuple so the validator + tests share one
+# source of truth.
+_PACKAGE_STATUSES = ("prod", "poc", "coming-soon", "draft")
+
+
+def _validate_status(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if not v:
+        return None
+    if v not in _PACKAGE_STATUSES:
+        raise ValueError(
+            f"status must be one of {sorted(_PACKAGE_STATUSES)}"
+        )
+    return v
+
+
 class CreateDataPackageRequest(BaseModel):
     name: str
     slug: str
@@ -67,11 +86,19 @@ class CreateDataPackageRequest(BaseModel):
     icon: Optional[str] = None
     color: Optional[str] = None
     cover_image_url: Optional[str] = None
+    # v51: lifecycle + classification surface for /catalog cards.
+    status: Optional[str] = None
+    category: Optional[str] = None
 
     @field_validator("color")
     @classmethod
     def _check_color(cls, v: Optional[str]) -> Optional[str]:
         return _validate_color(v)
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_status(v)
 
 
 class UpdateDataPackageRequest(BaseModel):
@@ -83,11 +110,20 @@ class UpdateDataPackageRequest(BaseModel):
     # pressed Remove); sending a non-empty string sets it; omitting the
     # field leaves it unchanged (Optional-is-no-op contract).
     cover_image_url: Optional[str] = None
+    # v51: status follows the same enum allowlist; category accepts free
+    # text. Sending `""` for category clears it; omitting leaves it.
+    status: Optional[str] = None
+    category: Optional[str] = None
 
     @field_validator("color")
     @classmethod
     def _check_color(cls, v: Optional[str]) -> Optional[str]:
         return _validate_color(v)
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_status(v)
 
 
 class AddTableRequest(BaseModel):
@@ -129,6 +165,11 @@ def _serialize(pkg: Dict[str, Any]) -> Dict[str, Any]:
         "icon": pkg.get("icon"),
         "color": pkg.get("color"),
         "cover_image_url": pkg.get("cover_image_url"),
+        # v51: status defaults to 'prod' for legacy rows where the
+        # ALTER's DEFAULT didn't backfill (older DuckDB versions don't
+        # apply DEFAULT to existing rows on ADD COLUMN).
+        "status": pkg.get("status") or "prod",
+        "category": pkg.get("category"),
         "created_by": pkg.get("created_by"),
         "created_at": pkg["created_at"].isoformat() if pkg.get("created_at") else None,
         "updated_at": pkg["updated_at"].isoformat() if pkg.get("updated_at") else None,
@@ -172,6 +213,8 @@ async def create_data_package(
             icon=payload.icon,
             color=payload.color,
             cover_image_url=payload.cover_image_url,
+            status=payload.status or "prod",
+            category=(payload.category or "").strip() or None,
             created_by=user.get("email") or user["id"],
         )
     except duckdb.ConstraintException:
@@ -223,12 +266,16 @@ async def update_data_package(
         "icon": existing.get("icon"),
         "color": existing.get("color"),
         "cover_image_url": existing.get("cover_image_url"),
+        "status": existing.get("status"),
+        "category": existing.get("category"),
     }
     # v50: a literal empty string from the client means "remove the cover
     # image" (the modal's Remove button POSTs ""); a non-empty string sets
     # it; None / omitted leaves it unchanged. Map to the repo's explicit
-    # clear flag so the SQL stays unambiguous.
+    # clear flag so the SQL stays unambiguous. v51 applies the same
+    # empty-string-clears contract to category.
     clear_cover = payload.cover_image_url == ""
+    clear_category = payload.category == ""
     repo.update(
         pkg_id,
         name=payload.name,
@@ -237,6 +284,9 @@ async def update_data_package(
         color=payload.color,
         cover_image_url=None if clear_cover else payload.cover_image_url,
         clear_cover_image=clear_cover,
+        status=payload.status,
+        category=None if clear_category else payload.category,
+        clear_category=clear_category,
     )
     fresh = repo.get(pkg_id)
     after = {
@@ -245,6 +295,8 @@ async def update_data_package(
         "icon": fresh.get("icon") if fresh else None,
         "color": fresh.get("color") if fresh else None,
         "cover_image_url": fresh.get("cover_image_url") if fresh else None,
+        "status": fresh.get("status") if fresh else None,
+        "category": fresh.get("category") if fresh else None,
     }
     _audit(
         conn,

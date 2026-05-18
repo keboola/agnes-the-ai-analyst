@@ -54,9 +54,20 @@
    but not rendered on cards. Future polish: swap initials for Lucide
    SVG icons keyed by `entry.icon`. #}
 {% set _has_glyph = False %}
+{# v51 status pill — only the non-default values surface as a visible
+   pill. 'prod' is the assumed-good default and would just be noise on
+   every card. Map drives both the visible label and a per-status CSS
+   class for tint. #}
+{% set _status = entry.status|default('prod') %}
+{% set _status_meta = {
+  'poc':         {'label': 'POC',         'cls': 'stack-card__status-pill--poc'},
+  'coming-soon': {'label': 'Coming soon', 'cls': 'stack-card__status-pill--coming'},
+  'draft':       {'label': 'Draft',       'cls': 'stack-card__status-pill--draft'}
+}.get(_status) %}
 <div class="stack-card{{ _cls_required }}{{ _cls_instack }}"
      data-id="{{ entry.id }}"
      data-requirement="{{ entry.requirement|default('available') }}"
+     data-status="{{ _status }}"
      data-in-stack="{{ '1' if entry.in_stack else '0' }}">
   {% if entry.requirement == 'required' %}
     <div class="stack-card__req-badge" title="Required by your organization">Required</div>
@@ -76,6 +87,10 @@
        gradient, user feedback "vošklivé, divné") + 2-letter initials. #}
   <div class="stack-card__photo{% if _has_glyph %} stack-card__photo--glyph{% endif %}"
        style="background: {{ entry.color|default('#f1f5f9') }};">
+    {% if _status_meta %}
+      <span class="stack-card__status-pill {{ _status_meta.cls }}"
+            title="Lifecycle status: {{ _status_meta.label }}">{{ _status_meta.label }}</span>
+    {% endif %}
     {% if entry.cover_image_url %}
       <img src="{{ entry.cover_image_url }}" alt=""
            onerror="this.parentElement.classList.add('stack-card__photo--failed');
@@ -85,6 +100,9 @@
   </div>
 
   <div class="stack-card__body">
+    {% if entry.category %}
+      <div class="stack-card__eyebrow">{{ entry.category }}</div>
+    {% endif %}
     <h3 class="stack-card__title">{{ entry.name }}</h3>
     {# `meta_html` (server-built, trusted) wins over `meta` (plain text)
        so callers can render an inline action link on the meta line —

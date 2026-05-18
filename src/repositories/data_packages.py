@@ -23,6 +23,16 @@ class DataPackagesRepository:
 
     # -- CRUD --------------------------------------------------------------
 
+    # v51: column list — kept as a single constant so the SELECT in every
+    # method stays in sync after future schema additions. Touch this when
+    # adding columns.
+    _COLS = [
+        "id", "slug", "name", "description", "icon", "color",
+        "cover_image_url", "status", "category",
+        "created_by", "created_at", "updated_at",
+    ]
+    _SELECT = ", ".join(_COLS)
+
     def create(
         self,
         *,
@@ -33,6 +43,8 @@ class DataPackagesRepository:
         color: Optional[str],
         created_by: str,
         cover_image_url: Optional[str] = None,
+        status: str = "prod",
+        category: Optional[str] = None,
     ) -> str:
         """Insert a new package; returns the generated id.
 
@@ -43,27 +55,22 @@ class DataPackagesRepository:
         pkg_id = "pkg_" + uuid4().hex[:12]
         self.conn.execute(
             "INSERT INTO data_packages"
-            "(id, slug, name, description, icon, color, cover_image_url, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [pkg_id, slug, name, description, icon, color, cover_image_url, created_by],
+            "(id, slug, name, description, icon, color, cover_image_url, "
+            " status, category, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [pkg_id, slug, name, description, icon, color, cover_image_url,
+             status or "prod", category, created_by],
         )
         return pkg_id
 
     def get(self, pkg_id: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
-            "SELECT id, slug, name, description, icon, color, cover_image_url, "
-            "created_by, created_at, updated_at "
-            "FROM data_packages WHERE id = ?",
+            f"SELECT {self._SELECT} FROM data_packages WHERE id = ?",
             [pkg_id],
         ).fetchone()
         if not row:
             return None
-        cols = [
-            "id", "slug", "name", "description", "icon", "color",
-            "cover_image_url",
-            "created_by", "created_at", "updated_at",
-        ]
-        return dict(zip(cols, row))
+        return dict(zip(self._COLS, row))
 
     def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
@@ -77,10 +84,7 @@ class DataPackagesRepository:
         search: Optional[str] = None,
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
-        query = (
-            "SELECT id, slug, name, description, icon, color, cover_image_url, "
-            "created_by, created_at, updated_at FROM data_packages"
-        )
+        query = f"SELECT {self._SELECT} FROM data_packages"
         params: List[Any] = []
         if search:
             query += " WHERE name ILIKE ?"
@@ -88,12 +92,7 @@ class DataPackagesRepository:
         query += " ORDER BY name LIMIT ?"
         params.append(limit)
         rows = self.conn.execute(query, params).fetchall()
-        cols = [
-            "id", "slug", "name", "description", "icon", "color",
-            "cover_image_url",
-            "created_by", "created_at", "updated_at",
-        ]
-        return [dict(zip(cols, r)) for r in rows]
+        return [dict(zip(self._COLS, r)) for r in rows]
 
     def update(
         self,
@@ -105,10 +104,14 @@ class DataPackagesRepository:
         color: Optional[str] = None,
         cover_image_url: Optional[str] = None,
         clear_cover_image: bool = False,
+        status: Optional[str] = None,
+        category: Optional[str] = None,
+        clear_category: bool = False,
     ) -> None:
         """Partial update. ``cover_image_url`` follows the same Optional-is-no-op
         contract as the rest; pass ``clear_cover_image=True`` to actively NULL
-        the column (admin removed the uploaded image)."""
+        the column (admin removed the uploaded image). ``clear_category`` is
+        the same NULL-clearing escape hatch for the v51 category field."""
         fields: List[str] = []
         params: List[Any] = []
         if name is not None:
@@ -128,6 +131,14 @@ class DataPackagesRepository:
         elif cover_image_url is not None:
             fields.append("cover_image_url = ?")
             params.append(cover_image_url)
+        if status is not None:
+            fields.append("status = ?")
+            params.append(status)
+        if clear_category:
+            fields.append("category = NULL")
+        elif category is not None:
+            fields.append("category = ?")
+            params.append(category)
         if not fields:
             return
         fields.append("updated_at = current_timestamp")

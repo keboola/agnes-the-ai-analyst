@@ -23,6 +23,15 @@ class MemoryDomainsRepository:
 
     # -- CRUD --------------------------------------------------------------
 
+    # v51: column list — keep in sync after schema additions. Mirrors the
+    # DataPackagesRepository pattern.
+    _COLS = [
+        "id", "slug", "name", "description", "icon", "color",
+        "cover_image_url", "status",
+        "created_by", "created_at", "updated_at",
+    ]
+    _SELECT = ", ".join(_COLS)
+
     def create(
         self,
         *,
@@ -33,6 +42,7 @@ class MemoryDomainsRepository:
         color: Optional[str],
         created_by: str,
         cover_image_url: Optional[str] = None,
+        status: str = "prod",
     ) -> str:
         """Insert a new domain; returns the generated id (``md_<uuid12>``).
 
@@ -42,27 +52,22 @@ class MemoryDomainsRepository:
         domain_id = "md_" + uuid4().hex[:12]
         self.conn.execute(
             "INSERT INTO memory_domains"
-            "(id, slug, name, description, icon, color, cover_image_url, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [domain_id, slug, name, description, icon, color, cover_image_url, created_by],
+            "(id, slug, name, description, icon, color, cover_image_url, "
+            " status, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [domain_id, slug, name, description, icon, color,
+             cover_image_url, status or "prod", created_by],
         )
         return domain_id
 
     def get(self, domain_id: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
-            "SELECT id, slug, name, description, icon, color, cover_image_url, "
-            "       created_by, created_at, updated_at "
-            "FROM memory_domains WHERE id = ?",
+            f"SELECT {self._SELECT} FROM memory_domains WHERE id = ?",
             [domain_id],
         ).fetchone()
         if not row:
             return None
-        cols = [
-            "id", "slug", "name", "description", "icon", "color",
-            "cover_image_url",
-            "created_by", "created_at", "updated_at",
-        ]
-        return dict(zip(cols, row))
+        return dict(zip(self._COLS, row))
 
     def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
@@ -87,10 +92,7 @@ class MemoryDomainsRepository:
         search: Optional[str] = None,
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
-        query = (
-            "SELECT id, slug, name, description, icon, color, cover_image_url, "
-            "created_by, created_at, updated_at FROM memory_domains"
-        )
+        query = f"SELECT {self._SELECT} FROM memory_domains"
         params: List[Any] = []
         if search:
             query += " WHERE name ILIKE ?"
@@ -98,12 +100,7 @@ class MemoryDomainsRepository:
         query += " ORDER BY name LIMIT ?"
         params.append(limit)
         rows = self.conn.execute(query, params).fetchall()
-        cols = [
-            "id", "slug", "name", "description", "icon", "color",
-            "cover_image_url",
-            "created_by", "created_at", "updated_at",
-        ]
-        return [dict(zip(cols, r)) for r in rows]
+        return [dict(zip(self._COLS, r)) for r in rows]
 
     def update(
         self,
@@ -115,6 +112,7 @@ class MemoryDomainsRepository:
         color: Optional[str] = None,
         cover_image_url: Optional[str] = None,
         clear_cover_image: bool = False,
+        status: Optional[str] = None,
     ) -> None:
         """Partial update. ``cover_image_url`` follows the same Optional-is-no-op
         contract as the rest; pass ``clear_cover_image=True`` to actively NULL
@@ -138,6 +136,9 @@ class MemoryDomainsRepository:
         elif cover_image_url is not None:
             fields.append("cover_image_url = ?")
             params.append(cover_image_url)
+        if status is not None:
+            fields.append("status = ?")
+            params.append(status)
         if not fields:
             return
         fields.append("updated_at = current_timestamp")
