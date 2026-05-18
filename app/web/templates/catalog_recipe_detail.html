@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block title %}{{ recipe.title }} — Recipe{% endblock %}
+
+{% block head %}
+<style>
+  .rcp-back {
+    display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text-secondary, #5f6368); text-decoration: none;
+    font-size: 13px; margin-bottom: 12px;
+  }
+  .rcp-back:hover { color: var(--primary, #0073D1); }
+  .rcp-header {
+    display: flex; align-items: flex-start; gap: 16px;
+    padding: 24px; background: var(--surface, #fff);
+    border: 1px solid var(--border); border-radius: 12px;
+    margin-bottom: 20px;
+  }
+  .rcp-header__icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 56px; height: 56px; border-radius: 12px; flex-shrink: 0;
+    font-size: 22px; font-weight: 700; color: #fff;
+    background: var(--primary, #0073D1);
+  }
+  .rcp-header h1 {
+    margin: 0 0 6px; font-size: 22px; font-weight: 700;
+    letter-spacing: -0.2px;
+  }
+  .rcp-header .desc {
+    color: var(--text-primary); font-size: 14px; line-height: 1.5;
+    margin: 0;
+  }
+  .rcp-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; margin-bottom: 16px;
+  }
+  .rcp-section h2 {
+    margin: 0 0 12px; font-size: 14px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-secondary, #5f6368);
+  }
+  .rcp-sql {
+    background: #0a0a0a; color: #dcdcdc;
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-size: 12px; line-height: 1.5;
+    padding: 14px; border-radius: 8px;
+    overflow-x: auto; white-space: pre;
+  }
+  .rcp-related-tables {
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .rcp-related-tables a {
+    display: inline-block; padding: 6px 12px;
+    background: var(--border-light, #f3f4f6);
+    border-radius: 6px; text-decoration: none;
+    color: var(--text-primary); font-size: 13px;
+  }
+  .rcp-related-tables a:hover {
+    background: var(--primary-light, #e0f2fe);
+    color: var(--primary, #0073D1);
+  }
+  .rcp-empty { color: var(--text-secondary); font-style: italic; font-size: 13px; }
+  .rcp-copy-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 10px; border-radius: 6px;
+    background: var(--border-light, #f3f4f6);
+    border: 1px solid var(--border); cursor: pointer;
+    font-size: 12px; color: var(--text-primary);
+    margin-bottom: 8px;
+  }
+  .rcp-copy-btn:hover { background: var(--primary-light, #e0f2fe); }
+</style>
+{% endblock %}
+
+{% block content %}
+<a class="rcp-back" href="/catalog#recipes">← Back to recipes</a>
+
+<div class="rcp-header">
+  <div class="rcp-header__icon" style="background: {{ recipe.color or '#0073D1' }};">
+    {% set _name_parts = (recipe.title or '?').split() %}
+    {% if _name_parts|length >= 2 %}
+      {{ (_name_parts[0][0] ~ _name_parts[1][0])|upper }}
+    {% else %}
+      {{ (recipe.title or '?')[:2]|upper }}
+    {% endif %}
+  </div>
+  <div style="flex:1;">
+    <h1>{{ recipe.title }}</h1>
+    {% if recipe.description %}
+    <p class="desc">{{ recipe.description }}</p>
+    {% endif %}
+  </div>
+</div>
+
+{# SQL template — copyable. The template is meant to be adapted, not
+   executed as-is; render in a code block with a copy button. #}
+<section class="rcp-section">
+  <h2>Query template</h2>
+  {% if recipe.sql_template %}
+  <button class="rcp-copy-btn" type="button" onclick="copyRecipeSql(this)">Copy SQL</button>
+  <pre class="rcp-sql" id="rcp-sql">{{ recipe.sql_template }}</pre>
+  <script>
+    function copyRecipeSql(btn) {
+      const sql = document.getElementById('rcp-sql').textContent;
+      navigator.clipboard.writeText(sql).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = '✓ Copied';
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+      });
+    }
+  </script>
+  {% else %}
+  <p class="rcp-empty">No SQL template authored yet.</p>
+  {% endif %}
+</section>
+
+<section class="rcp-section">
+  <h2>Touches tables</h2>
+  {% if related_tables %}
+  <div class="rcp-related-tables">
+    {% for t in related_tables %}
+      <a href="/catalog/t/{{ t.id }}">{{ t.name }}</a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="rcp-empty">No related tables linked.</p>
+  {% endif %}
+</section>
+{% endblock %}

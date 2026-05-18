@@ -2764,6 +2764,16 @@ async def update_table(
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
 
+        # v52: per-table docs fields (sample_questions / things_to_know /
+        # pairs_well_with) live on table_registry but have their own
+        # PATCH /registry/{id}/docs endpoint. ``repo.register()`` doesn't
+        # know them; stripping here keeps the read-modify-write loop the
+        # PUT handler relies on (existing → merged → register) from
+        # blowing up with TypeError when the docs columns are populated.
+        for _docs_key in ("sample_questions", "things_to_know",
+                          "pairs_well_with"):
+            merged.pop(_docs_key, None)
+
         # When switching the merged record away from materialized mode, drop
         # the stale source_query — the request validator can't clear it via
         # the `if v is not None` filter above. Without this, a remote/local
@@ -2846,6 +2856,50 @@ async def update_table(
     invalidate_for_table(table_id)
 
     return {"id": table_id, "updated": list(updates.keys())}
+
+
+class TableDocsRequest(BaseModel):
+    """v52: per-table docs surface for /catalog/t/<id>. All fields
+    optional; sending `[]` for the list fields clears them, sending an
+    empty string for ``things_to_know`` clears it. Omitting a field
+    leaves it untouched (Optional-is-no-op contract)."""
+    sample_questions: Optional[List[str]] = None
+    things_to_know: Optional[str] = None
+    pairs_well_with: Optional[List[str]] = None
+
+
+@router.patch("/registry/{table_id}/docs")
+async def update_table_docs(
+    table_id: str,
+    payload: TableDocsRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Write the admin-authored docs fields (sample questions, things to
+    know, pairs well with) read by the user-facing /catalog/t/<id>
+    page. Separated from PUT /registry/{id} so admins can flip these
+    fields without re-submitting the whole big registration payload."""
+    repo = TableRegistryRepository(conn)
+    if not repo.get(table_id):
+        raise HTTPException(status_code=404, detail="table_not_found")
+    # Empty-string ``things_to_know`` clears; explicit `[]` clears lists.
+    clear_things = payload.things_to_know == ""
+    clear_questions = payload.sample_questions == []
+    clear_pairs = payload.pairs_well_with == []
+    repo.update_docs(
+        table_id,
+        sample_questions=(
+            None if clear_questions else payload.sample_questions
+        ),
+        things_to_know=(None if clear_things else payload.things_to_know),
+        pairs_well_with=(
+            None if clear_pairs else payload.pairs_well_with
+        ),
+        clear_sample_questions=clear_questions,
+        clear_things_to_know=clear_things,
+        clear_pairs_well_with=clear_pairs,
+    )
+    return {"id": table_id}
 
 
 @router.delete("/registry/{table_id}", status_code=204)

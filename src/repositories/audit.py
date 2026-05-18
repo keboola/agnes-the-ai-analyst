@@ -60,6 +60,7 @@ class AuditRepository:
         action_prefix: Optional[str] = None,
         action_in: Optional[List[str]] = None,
         resource: Optional[str] = None,
+        resource_prefix: Optional[str] = None,
         result_pattern: Optional[str] = None,
         correlation_id: Optional[str] = None,
         q: Optional[str] = None,
@@ -91,6 +92,8 @@ class AuditRepository:
             params.extend(action_in)
         if resource is not None:
             where.append("resource = ?"); params.append(resource)
+        if resource_prefix is not None:
+            where.append("resource LIKE ?"); params.append(resource_prefix + "%")
         if result_pattern is not None:
             where.append("result LIKE ?"); params.append(result_pattern)
         if correlation_id is not None:

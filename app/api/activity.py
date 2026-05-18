@@ -84,6 +84,7 @@ def activity_timeline(
     user_id: Optional[str] = None,
     action_prefix: Optional[str] = None,
     resource: Optional[str] = None,
+    resource_prefix: Optional[str] = None,
     result_pattern: Optional[str] = None,
     q: Optional[str] = None,
     cursor_ts: Optional[datetime] = None,
@@ -100,6 +101,7 @@ def activity_timeline(
         user_id=user_id,
         action_prefix=action_prefix,
         resource=resource,
+        resource_prefix=resource_prefix,
         result_pattern=result_pattern,
         q=q,
         cursor=cursor,
@@ -126,7 +128,8 @@ def activity_timeline(
     _audit_read(conn, user, "timeline", {
         "since_minutes": since_minutes,
         "user_id": user_id, "action_prefix": action_prefix,
-        "resource": resource, "result_pattern": result_pattern, "q": q,
+        "resource": resource, "resource_prefix": resource_prefix,
+        "result_pattern": result_pattern, "q": q,
     })
     return {
         "rows": rows,
@@ -139,6 +142,7 @@ def activity_timeline(
             "user_id": user_id,
             "action_prefix": action_prefix,
             "resource": resource,
+            "resource_prefix": resource_prefix,
             "result_pattern": result_pattern,
             "q": q,
         },

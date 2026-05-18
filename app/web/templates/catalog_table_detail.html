@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+
+{% block title %}{{ table.name }} — Table detail{% endblock %}
+
+{% block head %}
+<style>
+  .tbl-detail-back {
+    display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text-secondary, #5f6368); text-decoration: none;
+    font-size: 13px; margin-bottom: 12px;
+  }
+  .tbl-detail-back:hover { color: var(--primary, #0073D1); }
+  .tbl-detail-header {
+    display: flex; align-items: flex-start; gap: 16px;
+    padding: 24px; background: var(--surface, #fff);
+    border: 1px solid var(--border); border-radius: 12px;
+    margin-bottom: 20px;
+  }
+  .tbl-detail-header h1 {
+    margin: 0 0 4px; font-size: 22px; font-weight: 700;
+    letter-spacing: -0.2px;
+  }
+  .tbl-detail-header .meta {
+    color: var(--text-secondary); font-size: 13px;
+  }
+  .tbl-detail-header .pkg-link {
+    color: var(--primary, #0073D1); text-decoration: none;
+    font-weight: 600;
+  }
+  .tbl-detail-header .pkg-link:hover { text-decoration: underline; }
+  .tbl-detail-mode-badge {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 999px; font-size: 11px; font-weight: 600;
+    background: var(--border-light, #f3f4f6);
+    color: var(--text-secondary);
+  }
+  .tbl-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; margin-bottom: 16px;
+  }
+  .tbl-section h2 {
+    margin: 0 0 12px; font-size: 14px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-secondary, #5f6368);
+  }
+  .tbl-questions-list { margin: 0; padding-left: 18px; }
+  .tbl-questions-list li {
+    margin: 6px 0; line-height: 1.5; font-size: 14px;
+  }
+  .tbl-columns-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  .tbl-columns-table th, .tbl-columns-table td {
+    text-align: left; padding: 6px 8px;
+    border-bottom: 1px solid var(--border-light, #f0f0f0);
+  }
+  .tbl-columns-table th {
+    color: var(--text-secondary); font-weight: 600;
+    text-transform: uppercase; font-size: 11px;
+    letter-spacing: 0.5px;
+  }
+  .tbl-columns-table code {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--primary, #0073D1);
+  }
+  .tbl-pairs-list { display: flex; gap: 8px; flex-wrap: wrap; }
+  .tbl-pairs-list a {
+    display: inline-block; padding: 6px 12px;
+    background: var(--border-light, #f3f4f6);
+    border-radius: 6px; text-decoration: none;
+    color: var(--text-primary); font-size: 13px;
+  }
+  .tbl-pairs-list a:hover {
+    background: var(--primary-light, #e0f2fe);
+    color: var(--primary, #0073D1);
+  }
+  .tbl-empty {
+    color: var(--text-secondary); font-size: 13px; font-style: italic;
+  }
+  .tbl-admin-edit {
+    margin-top: 12px; padding-top: 12px;
+    border-top: 1px dashed var(--border);
+  }
+  .tbl-admin-edit textarea, .tbl-admin-edit input[type="text"] {
+    width: 100%; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 6px;
+    font-family: inherit; font-size: 13px;
+    background: var(--bg); color: var(--text-primary);
+  }
+  .tbl-admin-edit textarea { resize: vertical; min-height: 80px; }
+  .tbl-admin-edit .hint {
+    color: var(--text-secondary); font-size: 11px; margin-top: 4px;
+  }
+  .tbl-admin-edit-row {
+    display: flex; gap: 6px; margin-top: 6px;
+  }
+  .tbl-admin-edit-row input { flex: 1; }
+</style>
+{% endblock %}
+
+{% block content %}
+<a class="tbl-detail-back" href="{% if parent_packages %}/catalog/p/{{ parent_packages[0].slug }}{% else %}/catalog{% endif %}">← Back to {% if parent_packages %}{{ parent_packages[0].name }}{% else %}catalog{% endif %}</a>
+
+<div class="tbl-detail-header">
+  <div style="flex:1;">
+    <h1>{{ table.name }}</h1>
+    <div class="meta">
+      <code style="font-family:var(--font-mono); font-size:12px;">{{ table.id }}</code>
+      · <span class="tbl-detail-mode-badge">{{ table.query_mode or 'local' }}</span>
+      {% if table.source_type %} · {{ table.source_type }}{% endif %}
+      {% if table.bucket %} · <code>{{ table.bucket }}{% if table.source_table %}.{{ table.source_table }}{% endif %}</code>{% endif %}
+    </div>
+    {% if table.description %}
+    <p style="margin:12px 0 0; color:var(--text-primary); font-size:14px;">{{ table.description }}</p>
+    {% endif %}
+    {% if parent_packages %}
+    <div style="margin-top:8px; font-size:12px; color:var(--text-secondary);">
+      Part of:
+      {% for p in parent_packages %}
+        <a class="pkg-link" href="/catalog/p/{{ p.slug }}">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if last_sync_display %}
+    <div style="margin-top:4px; font-size:11px; color:var(--text-secondary);">
+      Last synced: {{ last_sync_display }}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Sample questions ───────────────────────────────────────── #}
+<section class="tbl-section">
+  <h2>Sample questions you can ask</h2>
+  {% if sample_questions %}
+  <ul class="tbl-questions-list">
+    {% for q in sample_questions %}<li>{{ q }}</li>{% endfor %}
+  </ul>
+  {% else %}
+  <p class="tbl-empty">No sample questions seeded yet{% if user.is_admin %} — add some below to help analysts get started{% endif %}.</p>
+  {% endif %}
+  {% if user.is_admin %}
+  <div class="tbl-admin-edit">
+    <textarea id="tbl-sample-questions"
+              placeholder="One question per line.">{{ sample_questions|join('\n') if sample_questions else '' }}</textarea>
+    <div class="hint">One question per line. Saved as a JSON array of strings.</div>
+    <button class="btn btn-primary" onclick="saveTableDocs('sample_questions')" style="margin-top:6px;">Save questions</button>
+  </div>
+  {% endif %}
+</section>
+
+{# ── Columns ────────────────────────────────────────────────── #}
+<section class="tbl-section">
+  <h2>What's inside</h2>
+  {% if columns %}
+  <table class="tbl-columns-table">
+    <thead><tr><th>Column</th><th>Type</th><th>Nullable</th></tr></thead>
+    <tbody>
+      {% for c in columns %}
+      <tr>
+        <td><code>{{ c.name }}</code></td>
+        <td>{{ c.type or '—' }}</td>
+        <td>{{ 'yes' if c.nullable else 'no' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="tbl-empty">No column profile available yet. Run a sync to populate the profile.</p>
+  {% endif %}
+</section>
+
+{# ── Things to know ─────────────────────────────────────────── #}
+<section class="tbl-section">
+  <h2>Things to know</h2>
+  {% if things_to_know %}
+  <div style="white-space:pre-wrap; line-height:1.5; font-size:14px;">{{ things_to_know }}</div>
+  {% else %}
+  <p class="tbl-empty">No notes yet{% if user.is_admin %} — add caveats, common joins, gotchas{% endif %}.</p>
+  {% endif %}
+  {% if user.is_admin %}
+  <div class="tbl-admin-edit">
+    <textarea id="tbl-things-to-know"
+              placeholder="Caveats, common joins, gotchas, deprecated columns…">{{ things_to_know or '' }}</textarea>
+    <button class="btn btn-primary" onclick="saveTableDocs('things_to_know')" style="margin-top:6px;">Save notes</button>
+  </div>
+  {% endif %}
+</section>
+
+{# ── Pairs well with ───────────────────────────────────────── #}
+<section class="tbl-section">
+  <h2>Pairs well with</h2>
+  {% if pairs_well_with %}
+  <div class="tbl-pairs-list">
+    {% for p in pairs_well_with %}
+      <a href="/catalog/t/{{ p.id }}">{{ p.name }}</a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="tbl-empty">No related tables suggested yet.</p>
+  {% endif %}
+  {% if user.is_admin %}
+  <div class="tbl-admin-edit">
+    <input id="tbl-pairs-input" type="text"
+           value="{{ pairs_well_with|map(attribute='id')|join(',') }}"
+           placeholder="Comma-separated table ids — e.g. tbl_abc,tbl_def">
+    <div class="hint">Comma-separated <code>table_registry.id</code> values. Unknown ids are silently dropped on render.</div>
+    <button class="btn btn-primary" onclick="saveTableDocs('pairs_well_with')" style="margin-top:6px;">Save related tables</button>
+  </div>
+  {% endif %}
+</section>
+
+{% if user.is_admin %}
+<script>
+  // Inline admin save handler — single PATCH per section so the admin
+  // can iterate one field at a time without re-submitting the others.
+  async function saveTableDocs(field) {
+    const body = {};
+    if (field === 'sample_questions') {
+      const lines = document.getElementById('tbl-sample-questions').value
+        .split('\n').map(s => s.trim()).filter(Boolean);
+      body.sample_questions = lines;
+    } else if (field === 'things_to_know') {
+      body.things_to_know = document.getElementById('tbl-things-to-know').value;
+    } else if (field === 'pairs_well_with') {
+      const ids = document.getElementById('tbl-pairs-input').value
+        .split(',').map(s => s.trim()).filter(Boolean);
+      body.pairs_well_with = ids;
+    }
+    try {
+      const r = await fetch('/api/admin/registry/{{ table.id }}/docs', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert('Save failed: ' + (d.detail || r.statusText));
+        return;
+      }
+      // Reload to render the saved value through the server-side template
+      // path; cheap + correct, and side-steps any per-field rendering
+      // edge cases (e.g. unknown pairs_well_with ids silently dropped).
+      window.location.reload();
+    } catch (e) {
+      alert('Network error: ' + e.message);
+    }
+  }
+</script>
+{% endif %}
+{% endblock %}

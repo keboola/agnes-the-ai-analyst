@@ -113,11 +113,14 @@ class TestSchemaV8Migration:
                 "WHERE table_name = 'knowledge_items'"
             ).fetchall()
         }
+        # v49: ``domain`` scalar column dropped; v8 metadata is otherwise intact.
+        # The junction lives in ``knowledge_item_domains`` now.
         new_columns = {
-            "confidence", "domain", "entities", "source_type", "source_ref",
+            "confidence", "entities", "source_type", "source_ref",
             "valid_from", "valid_until", "supersedes", "sensitivity", "is_personal",
         }
         assert new_columns.issubset(columns), f"Missing: {new_columns - columns}"
+        assert "domain" not in columns, "v49 dropped knowledge_items.domain scalar"
         conn.close()
 
     def test_schema_version_matches_constant(self, tmp_path, monkeypatch):

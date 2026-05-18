@@ -748,14 +748,13 @@ class TestAdminTablesUI:
         # Cron-style schedule examples are surfaced near the field
         # (operator-facing copy explains the syntax).
         assert "every 6h" in body or "daily 03:00" in body
-        # BQ tab content section (legacy out-of-tab BQ register panel was
-        # removed when the user-visible cleanup landed — each tab now owns
-        # its own header + Register button).
-        assert 'id="tab-content-bigquery"' in body
-        assert 'id="bqRegisterBtn"' in body
-        # Phase E: BQ + Keboola modals are now both always rendered (each
-        # inside its own tab). On a BQ instance the BQ tab is the visible
-        # one; the Keboola modal is just hidden in a non-active tab.
+        # Package-centric rewrite: the per-connector tab nav and its
+        # `tab-content-bigquery` section + per-tab `#bqRegisterBtn`
+        # button were dropped. The BQ register modal stays in DOM as a
+        # top-level overlay (#registerBqModal) and is reachable from
+        # the `+ Register new table ▾` action-bar dropdown.
+        assert 'id="registerBqModal"' in body
+        assert "openRegisterModal('bigquery')" in body
 
     def test_renders_keboola_fields_when_data_source_keboola(self, seeded_app, monkeypatch):
         from app.instance_config import reset_cache
@@ -775,22 +774,24 @@ class TestAdminTablesUI:
             assert resp.status_code == 200
             body = resp.text
             assert 'data-source-type="keboola"' in body
-            # Keboola tab content section + Register-Keboola button (legacy
-            # global Discovery panel was removed when the user-visible
-            # cleanup landed — Keboola discovery is per-modal now).
-            assert 'id="tab-content-keboola"' in body
-            assert 'id="kbRegisterBtn"' in body
+            # Package-centric rewrite: the per-connector tab nav and its
+            # `tab-content-keboola` + `#kbRegisterBtn` were dropped.
+            # The Keboola register modal stays in DOM and is reachable
+            # from the `+ Register new table ▾` action-bar dropdown.
+            assert 'id="registerKeboolaModal"' in body
+            assert "openRegisterModal('keboola')" in body
             # C3: legacy #registerModal is gone; the Phase F Keboola modal
             # at #registerKeboolaModal owns the Keboola register flow now.
             assert 'id="registerModal"' not in body
             assert 'id="regBucket"' not in body
             assert 'id="regTableName"' not in body
-            # The Phase F Keboola modal's inputs are present.
+            # The Keboola modal's inputs are present.
             assert 'id="kbBucket"' in body
             assert 'id="kbViewName"' in body
-            # Phase E: BQ form now always rendered (inside #tab-content-bigquery)
-            # — operator can switch tabs to register a BQ table on a Keboola
-            # instance. Tab is hidden by default but the form is in the DOM.
+            # BQ register modal is also rendered (operator can switch
+            # connectors via the action-bar dropdown on a Keboola
+            # instance).
+            assert 'id="registerBqModal"' in body
         finally:
             reset_cache()
 

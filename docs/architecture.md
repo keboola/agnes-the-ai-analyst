@@ -214,7 +214,7 @@ Files NOT to modify: `connectors/jira/file_lock.py`, `connectors/jira/transform.
 
 ### system.duckdb — `{DATA_DIR}/state/system.duckdb`
 
-Current schema version: **19** (auto-migrated from any earlier version on startup — see `src/db.py`).
+Current schema version: **49** (auto-migrated from any earlier version on startup — see `src/db.py`).
 
 | Table | Purpose |
 |-------|---------|
@@ -228,7 +228,7 @@ Current schema version: **19** (auto-migrated from any earlier version on startu
 | `user_sync_settings` | Per-user dataset enable/disable preferences |
 | `table_registry` | Registered tables: source_type, bucket, source_table, query_mode, sync_schedule |
 | `table_profiles` | JSON data profiles (stats, nulls, cardinality) per table |
-| `knowledge_items` | Corporate memory knowledge entries (V1 columns: `confidence`, `domain`, `entities`, `source_type`, `source_ref`, `valid_from`/`valid_until`, `supersedes`, `sensitivity`, `is_personal`) |
+| `knowledge_items` | Corporate memory knowledge entries (`confidence`, `entities`, `source_type`, `source_ref`, `valid_from`/`valid_until`, `supersedes`, `sensitivity`, `is_personal`, `is_required` — v49 dropped the scalar `domain` column; relations live in `knowledge_item_domains`) |
 | `knowledge_votes` | Up/down votes on knowledge items |
 | `knowledge_contradictions` | Pairs of items the LLM judge flagged as contradictory; carries `severity` and `suggested_resolution` (JSON-encoded structured action — see ADR Decision 4) |
 | `verification_evidence` | One row per detected verification — persists `user_quote`, `detection_type`, and `source_ref` so future Bayesian re-calibration has raw signal (ADR Decision 3) |
@@ -237,6 +237,11 @@ Current schema version: **19** (auto-migrated from any earlier version on startu
 | `telegram_links` | Telegram chat_id linked to user_id |
 | `pending_codes` | Telegram link confirmation codes |
 | `script_registry` | Deployed Python notification scripts |
+| `data_packages` | Admin-curated bundles of tables (id, slug, name, icon, color). Distributed as a single "stack" unit; tables M:N via `data_package_tables`. |
+| `data_package_tables` | M:N junction between `data_packages` and `table_registry`. |
+| `memory_domains` | First-class memory domain rows (id, slug, name, icon, color). Replaces the scalar `knowledge_items.domain` column dropped in v49. |
+| `knowledge_item_domains` | M:N junction between `knowledge_items` and `memory_domains`. One item can live in multiple domains. |
+| `user_stack_subscriptions` | Per-user opt-in for available-tier Data Packages + Memory Domains (`(user_id, resource_type, resource_id)`). Marketplace plugins keep their legacy `user_plugin_optouts` table. |
 
 Connections: `get_system_db()` returns a cursor on a **single shared connection** per
 `DATA_DIR` (protected by `threading.Lock`). Callers `close()` the cursor, not the

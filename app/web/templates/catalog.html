@@ -1,2510 +1,1178 @@
 {% extends "base.html" %}
-
-{% block title %}Data Packages - Data Analyst Portal{% endblock %}
-
-{% block head_extra %}
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-        :root {
-            /* Colors - Design System */
-            --primary: #0073D1;
-            --primary-light: rgba(0, 115, 209, 0.1);
-            --text-primary: #1A253C;
-            --text-secondary: #6B7280;
-            --background: #F5F7FA;
-            --surface: #FFFFFF;
-            --border: #E5E7EB;
-            --border-light: #F3F4F6;
-            --success: #10B77F;
-            --warning: #F59F0A;
-            --error: #EA580C;
-
-            /* Typography */
-            --font-primary: 'Inter', system-ui, sans-serif;
-            --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-
-            /* Shadows */
-            --shadow-sm: rgba(0, 0, 0, 0.05) 0px 1px 2px 0px;
-            --shadow-md: rgba(0, 0, 0, 0.1) 0px 4px 6px -1px;
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: var(--font-primary);
-            font-size: 14px;
-            color: var(--text-primary);
-            background: var(--background);
-            line-height: 1.5;
-        }
-
-        /* ── Header (dashboard-style) ── */
-        .header {
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            padding: 0 32px;
-            height: 72px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-        }
-
-        .header-left {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-
-        .header-back {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 32px;
-            height: 32px;
-            border-radius: 6px;
-            color: var(--text-secondary);
-            text-decoration: none;
-            transition: all 0.15s ease;
-        }
-
-        .header-back:hover {
-            background: var(--border-light);
-            color: var(--text-primary);
-        }
-
-        .header-logo-group {
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            gap: 2px;
-        }
-
-        .header-logo svg {
-            display: block;
-        }
-
-        .header-subtitle {
-            font-size: 11px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            letter-spacing: 0.4px;
-            text-transform: uppercase;
-            margin-top: 2px;
-        }
-
-        .header-right {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        /* ── Page Title ── */
-
-
-
-        /* ── Source Cards ── */
-        .source-cards {
-            max-width: var(--width-app);
-            margin: 0 auto;
-            padding: 0 24px 32px;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
-
-        .source-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: var(--shadow-sm);
-        }
-
-        .source-card-header {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            padding: 20px 24px;
-            gap: 16px;
-        }
-
-        .source-card-left {
-            display: flex;
-            gap: 14px;
-            flex: 1;
-            min-width: 0;
-        }
-
-        .source-card-icon {
-            width: 42px;
-            height: 42px;
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-shrink: 0;
-        }
-
-        .source-card-icon.primary {
-            background: var(--primary-light);
-        }
-
-        .source-card-icon.jira {
-            background: rgba(107, 114, 128, 0.1);
-        }
-
-        .source-card-info {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .source-card-name {
-            font-size: 16px;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin-bottom: 2px;
-        }
-
-        .source-card-desc {
-            font-size: 13px;
-            color: var(--text-secondary);
-            margin-bottom: 6px;
-        }
-
-        .source-card-meta {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        .source-card-right {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex-shrink: 0;
-        }
-
-        /* ── Toggle Switch ── */
-        .toggle-switch {
-            position: relative;
-            width: 36px;
-            height: 20px;
-        }
-
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .toggle-slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #E5E7EB;
-            transition: .2s;
-            border-radius: 20px;
-        }
-
-        .toggle-slider:before {
-            position: absolute;
-            content: "";
-            height: 14px;
-            width: 14px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: .2s;
-            border-radius: 50%;
-        }
-
-        input:checked + .toggle-slider {
-            background-color: var(--primary);
-        }
-
-        input:checked + .toggle-slider:before {
-            transform: translateX(16px);
-        }
-
-        .toggle-switch.locked .toggle-slider {
-            cursor: not-allowed;
-            background-color: var(--primary);
-            opacity: 0.6;
-        }
-
-        .toggle-switch.locked .toggle-slider:before {
-            transform: translateX(16px);
-        }
-
-        input:disabled + .toggle-slider {
-            cursor: not-allowed;
-            opacity: 0.6;
-        }
-
-        /* ── Badges ── */
-        .badge-included {
-            flex-shrink: 0;
-            font-size: 11px;
-            font-weight: 500;
-            color: var(--primary);
-            background: var(--primary-light);
-            border-radius: 6px;
-            padding: 4px 10px;
-            white-space: nowrap;
-        }
-
-        .badge-subscribed {
-            flex-shrink: 0;
-            font-size: 11px;
-            font-weight: 500;
-            color: var(--primary);
-            background: var(--primary-light);
-            border-radius: 6px;
-            padding: 4px 10px;
-            white-space: nowrap;
-        }
-
-        .badge-unsubscribed {
-            flex-shrink: 0;
-            font-size: 11px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            background: var(--border-light);
-            border-radius: 6px;
-            padding: 4px 10px;
-            white-space: nowrap;
-        }
-
-        /* ── Accordion ── */
-        .accordion-category {
-            border-top: 1px solid var(--border-light);
-        }
-
-        .accordion-trigger {
-            width: 100%;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 12px 24px;
-            background: none;
-            border: none;
-            cursor: pointer;
-            font-family: var(--font-primary);
-            font-size: 14px;
-            font-weight: 500;
-            color: var(--text-primary);
-            text-align: left;
-            transition: background 0.1s ease;
-        }
-
-        .accordion-trigger:hover {
-            background: var(--border-light);
-        }
-
-        .accordion-chevron {
-            width: 16px;
-            height: 16px;
-            color: var(--text-secondary);
-            transition: transform 0.2s ease;
-            flex-shrink: 0;
-        }
-
-        .accordion-trigger.expanded .accordion-chevron {
-            transform: rotate(90deg);
-        }
-
-        .accordion-count {
-            font-size: 11px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            background: var(--border-light);
-            padding: 1px 7px;
-            border-radius: 9999px;
-            margin-left: auto;
-        }
-
-        .accordion-content {
-            display: none;
-        }
-
-        .accordion-content.expanded {
-            display: block;
-        }
-
-        /* ── Table Rows inside Accordion ── */
-        .table-row {
-            display: flex;
-            align-items: center;
-            padding: 10px 24px 10px 50px;
-            border-top: 1px solid var(--border-light);
-            cursor: pointer;
-            transition: background 0.1s ease;
-        }
-
-        .table-row:hover {
-            background: rgba(243, 244, 246, 0.5);
-        }
-
-        /* Request-access modal CSS dropped in v0.25 — feature removed. */
-
-        .table-row-left {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .table-row-name {
-            font-weight: 500;
-            font-family: var(--font-mono);
-            font-size: 13px;
-            color: var(--text-primary);
-        }
-
-        .table-row-desc {
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-top: 1px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        .table-row-right {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            flex-shrink: 0;
-            margin-left: 16px;
-        }
-
-        .rows-badge {
-            font-size: 12px;
-            font-weight: 500;
-            padding: 2px 8px;
-            border-radius: 4px;
-            background: var(--border-light);
-            color: var(--text-secondary);
-            font-variant-numeric: tabular-nums;
-            white-space: nowrap;
-        }
-
-        .rows-badge.large {
-            background: rgba(245, 159, 10, 0.1);
-            color: #B45309;
-        }
-
-        /* ── Query Mode Badges ── */
-        .query-mode-badge {
-            font-size: 10px;
-            font-weight: 600;
-            padding: 2px 7px;
-            border-radius: 4px;
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            white-space: nowrap;
-        }
-        .query-mode-badge.local {
-            background: var(--primary-light);
-            color: var(--primary);
-        }
-        .query-mode-badge.live {
-            background: rgba(16, 183, 127, 0.1);
-            color: #047857;
-        }
-
-        .table-sync-info {
-            font-size: 11px;
-            color: var(--text-secondary);
-            margin-top: 2px;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        .table-sync-info .live-dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: #10B77F;
-            animation: pulse-live 2s ease-in-out infinite;
-            flex-shrink: 0;
-        }
-        @keyframes pulse-live {
-            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(16, 183, 127, 0.4); }
-            50% { opacity: 0.7; box-shadow: 0 0 0 3px rgba(16, 183, 127, 0); }
-        }
-
-        .data-freshness-note {
-            padding: 8px 24px;
-            font-size: 12px;
-            color: var(--text-secondary);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            border-top: 1px solid var(--border-light);
-        }
-        .data-freshness-note svg {
-            flex-shrink: 0;
-            opacity: 0.5;
-        }
-
-        .profile-link {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            font-size: 11px;
-            color: var(--primary);
-            opacity: 0.4;
-            transition: opacity 0.15s;
-            white-space: nowrap;
-        }
-
-        .table-row:hover .profile-link {
-            opacity: 1;
-        }
-
-        /* ── Jira Unsubscribed State ── */
-        .source-card-unsubscribed {
-            padding: 16px 24px;
-            border-top: 1px solid var(--border-light);
-            font-size: 13px;
-            color: var(--text-secondary);
-            background: var(--border-light);
-        }
-
-        /* ── Jira Attachments Option ── */
-        .jira-attachment-option {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 14px 24px;
-            border-top: 1px solid var(--border-light);
-            background: var(--background);
-        }
-
-        .jira-attachment-label {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .jira-attachment-label span:first-child {
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text-primary);
-        }
-
-        .jira-attachment-label span:last-child {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        /* ── Footer ── */
-        .footer {
-            text-align: center;
-            padding: 24px;
-            color: var(--text-secondary);
-            font-size: 12px;
-        }
-
-        .footer a {
-            color: var(--primary);
-            text-decoration: none;
-        }
-
-        .footer a:hover {
-            text-decoration: underline;
-        }
-
-        /* ── Responsive ── */
-        @media (max-width: 640px) {
-            .source-card-header {
-                flex-direction: column;
-            }
-
-            .source-card-right {
-                align-self: flex-end;
-            }
-
-            .table-row {
-                padding-left: 24px;
-            }
-
-            .table-row-desc {
-                white-space: normal;
-            }
-        }
-
-        /* ═══════════════════════════════════════════════ */
-        /* Profiler Modal - preserved from original        */
-        /* ═══════════════════════════════════════════════ */
-        .profiler-overlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 1000;
-            padding: 40px 24px;
-            overflow: hidden;
-        }
-
-        .profiler-overlay.active {
-            display: flex;
-            align-items: flex-start;
-            justify-content: center;
-        }
-
-        .profiler-modal {
-            max-width: 1100px;
-            width: 100%;
-            max-height: calc(100vh - 80px);
-            background: var(--surface);
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .profiler-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 20px 24px;
-            border-bottom: 1px solid var(--border);
-            background: var(--background);
-        }
-
-        .profiler-header-left {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .profiler-header h2 {
-            font-size: 20px;
-            font-weight: 600;
-            font-family: var(--font-mono);
-        }
-
-        .profiler-close {
-            width: 32px;
-            height: 32px;
-            border: none;
-            background: none;
-            cursor: pointer;
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-secondary);
-            transition: all 0.15s;
-        }
-
-        .profiler-close:hover {
-            background: var(--border-light);
-            color: var(--text-primary);
-        }
-
-        .profiler-body {
-            padding: 24px;
-            overflow-y: auto;
-            overflow-x: hidden;
-            flex: 1;
-            min-height: 0;
-        }
-
-        /* Alert badges */
-        .alert-badge {
-            display: inline-flex;
-            align-items: center;
-            font-size: 11px;
-            font-weight: 600;
-            padding: 2px 8px;
-            border-radius: 4px;
-            text-transform: uppercase;
-            letter-spacing: 0.02em;
-        }
-
-        .alert-badge.constant { background: #FEF3C7; color: #92400E; }
-        .alert-badge.unique { background: #EDE9FE; color: #5B21B6; }
-        .alert-badge.high_missing { background: #FEE2E2; color: #991B1B; }
-        .alert-badge.missing { background: #FEF3C7; color: #92400E; }
-        .alert-badge.imbalance { background: #DBEAFE; color: #1E40AF; }
-        .alert-badge.zeros { background: #DBEAFE; color: #1E40AF; }
-        .alert-badge.high_cardinality { background: #E0E7FF; color: #3730A3; }
-
-        /* Quality badge */
-        .quality-badge {
-            font-size: 12px;
-            font-weight: 600;
-            padding: 3px 10px;
-            border-radius: 9999px;
-        }
-
-        .quality-badge.good { background: #D1FAE5; color: #065F46; }
-        .quality-badge.warning { background: #FEF3C7; color: #92400E; }
-        .quality-badge.poor { background: #FEE2E2; color: #991B1B; }
-
-        /* Profiler navigation tabs */
-        .profiler-tabs {
-            display: flex;
-            gap: 0;
-            border-bottom: 1px solid var(--border);
-            padding: 0 24px;
-            flex-shrink: 0;
-        }
-
-        .profiler-tab {
-            padding: 10px 20px;
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            background: none;
-            border: none;
-            cursor: pointer;
-            border-bottom: 2px solid transparent;
-            transition: all 0.15s;
-        }
-
-        .profiler-tab:hover {
-            color: var(--text-primary);
-            background: var(--border-light);
-        }
-
-        .profiler-tab.active {
-            color: var(--primary);
-            border-bottom-color: var(--primary);
-        }
-
-        .profiler-tab .tab-count {
-            font-size: 11px;
-            font-weight: 600;
-            background: var(--border-light);
-            padding: 1px 6px;
-            border-radius: 9999px;
-            margin-left: 6px;
-        }
-
-        .profiler-tab.active .tab-count {
-            background: rgba(0, 115, 209, 0.1);
-            color: var(--primary);
-        }
-
-        .profiler-section {
-            display: none;
-        }
-
-        .profiler-section.active {
-            display: block;
-        }
-
-        /* Overview section */
-        .overview-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 24px;
-            margin-bottom: 24px;
-        }
-
-        .overview-stats-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        .overview-stats-table td {
-            padding: 8px 12px;
-            font-size: 13px;
-            border-bottom: 1px solid var(--border-light);
-        }
-
-        .overview-stats-table td:first-child {
-            font-weight: 500;
-            color: var(--text-primary);
-            width: 55%;
-        }
-
-        .overview-stats-table td:last-child {
-            color: var(--text-secondary);
-            text-align: right;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .overview-stats-table .highlight {
-            color: #DC2626;
-            font-weight: 500;
-        }
-
-        .overview-title {
-            font-size: 15px;
-            font-weight: 600;
-            margin-bottom: 12px;
-            color: var(--text-primary);
-        }
-
-        /* Variable cards */
-        .variable-card {
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            margin-bottom: 16px;
-            overflow: hidden;
-        }
-
-        .variable-header {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 12px 16px;
-            background: var(--background);
-            border-bottom: 1px solid var(--border);
-        }
-
-        .variable-name {
-            font-weight: 600;
-            font-family: var(--font-mono);
-            font-size: 14px;
-            color: var(--primary);
-        }
-
-        .variable-type {
-            font-size: 11px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            background: var(--border-light);
-            padding: 2px 8px;
-            border-radius: 4px;
-        }
-
-        .variable-body {
-            display: grid;
-            grid-template-columns: auto 1fr;
-            gap: 0;
-        }
-
-        .variable-stats {
-            padding: 12px 16px;
-            min-width: 0;
-        }
-
-        .variable-stats table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        .variable-stats td {
-            padding: 4px 0;
-            font-size: 13px;
-            white-space: nowrap;
-        }
-
-        .variable-stats td:first-child {
-            color: var(--text-secondary);
-            padding-right: 12px;
-        }
-
-        .variable-stats td:last-child {
-            text-align: right;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .variable-chart {
-            padding: 12px 16px;
-            display: flex;
-            align-items: flex-start;
-            justify-content: center;
-            min-height: 120px;
-            min-width: 0;
-        }
-
-        .variable-chart canvas {
-            max-width: 100%;
-            max-height: 150px;
-        }
-
-        /* Numeric range bar visualization */
-        .num-viz {
-            width: 100%;
-            font-size: 12px;
-        }
-
-        .num-range {
-            margin-bottom: 10px;
-        }
-
-        .num-range-labels {
-            display: flex;
-            justify-content: space-between;
-            font-size: 11px;
-            color: var(--text-secondary);
-            margin-bottom: 4px;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .num-range-track {
-            position: relative;
-            height: 14px;
-            background: var(--border-light);
-            border-radius: 7px;
-            margin-bottom: 6px;
-        }
-
-        .num-range-whisker {
-            position: absolute;
-            top: 0;
-            height: 100%;
-            background: rgba(0, 115, 209, 0.15);
-            border-radius: 7px;
-        }
-
-        .num-range-iqr {
-            position: absolute;
-            top: 0;
-            height: 100%;
-            background: rgba(0, 115, 209, 0.45);
-            border-radius: 5px;
-        }
-
-        .num-range-marker {
-            position: absolute;
-            top: -3px;
-            width: 2px;
-            height: 20px;
-            border-radius: 1px;
-        }
-
-        .num-range-legend {
-            display: flex;
-            gap: 10px;
-            font-size: 10px;
-            color: var(--text-secondary);
-            margin-top: 2px;
-            position: relative;
-            overflow: visible;
-        }
-
-        .num-range-legend span::before {
-            content: '';
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 2px;
-            margin-right: 3px;
-            vertical-align: middle;
-        }
-
-        .num-range-legend .legend-mean::before { background: #DC2626; }
-        .num-range-legend .legend-median::before { background: #059669; }
-        .num-range-legend .legend-iqr::before { background: rgba(0, 115, 209, 0.45); }
-
-        .num-constant {
-            text-align: center;
-            padding: 12px 0;
-            color: var(--text-secondary);
-            font-size: 13px;
-        }
-
-        .num-constant strong {
-            color: var(--text-primary);
-            font-variant-numeric: tabular-nums;
-        }
-
-        .num-stats-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            margin-top: 10px;
-        }
-
-        .num-stat {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            background: var(--border-light);
-            border-radius: 10px;
-            padding: 3px 8px;
-            font-size: 11px;
-            line-height: 1.3;
-            cursor: help;
-            position: relative;
-        }
-
-        /* Tooltip trigger styling */
-        [data-tip] {
-            cursor: help;
-        }
-
-        /* Floating tooltip element (appended to body via JS) */
-        .tip-box {
-            position: fixed;
-            background: var(--text-primary);
-            color: #fff;
-            font-size: 11px;
-            font-weight: 400;
-            font-family: var(--font-primary);
-            line-height: 1.4;
-            padding: 6px 10px;
-            border-radius: 6px;
-            max-width: 260px;
-            pointer-events: none;
-            opacity: 0;
-            transition: opacity 0.15s ease;
-            z-index: 9999;
-        }
-
-        .tip-box.visible {
-            opacity: 1;
-        }
-
-        .num-stat-label {
-            color: var(--text-secondary);
-        }
-
-        .num-stat-value {
-            font-weight: 500;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .num-stat.alert-zeros .num-stat-value {
-            color: #DC2626;
-        }
-
-        /* Categorical bar chart */
-        .cat-bars {
-            width: 100%;
-            padding: 8px 0;
-        }
-
-        .cat-bar-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 4px;
-            font-size: 12px;
-        }
-
-        .cat-bar-label {
-            width: 100px;
-            text-align: right;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            color: var(--text-secondary);
-            flex-shrink: 0;
-        }
-
-        .cat-bar-track {
-            flex: 1;
-            height: 18px;
-            background: var(--border-light);
-            border-radius: 2px;
-            overflow: hidden;
-            position: relative;
-        }
-
-        .cat-bar-fill {
-            height: 100%;
-            background: var(--primary);
-            border-radius: 2px;
-            display: flex;
-            align-items: center;
-            padding: 0 6px;
-            min-width: 30px;
-        }
-
-        .cat-bar-count {
-            font-size: 11px;
-            font-weight: 500;
-            color: white;
-            white-space: nowrap;
-        }
-
-        .cat-bar-count.outside {
-            color: var(--text-secondary);
-            margin-left: 6px;
-        }
-
-        /* Boolean bar */
-        .bool-bar {
-            display: flex;
-            height: 24px;
-            border-radius: 4px;
-            overflow: hidden;
-            width: 100%;
-            margin-top: 8px;
-        }
-
-        .bool-bar .true-part {
-            background: var(--primary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 11px;
-            font-weight: 600;
-        }
-
-        .bool-bar .false-part {
-            background: #E5E7EB;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-secondary);
-            font-size: 11px;
-            font-weight: 600;
-        }
-
-        /* Insights list */
-        .insight-group {
-            margin-bottom: 16px;
-            border-radius: 8px;
-            border: 1px solid var(--border-light);
-            overflow: hidden;
-        }
-        .insight-group.border-imbalance { border-left: 3px solid #3B82F6; }
-        .insight-group.border-unique { border-left: 3px solid #7C3AED; }
-        .insight-group.border-high_missing { border-left: 3px solid #DC2626; }
-        .insight-group.border-missing { border-left: 3px solid #D97706; }
-        .insight-group.border-zeros { border-left: 3px solid #3B82F6; }
-        .insight-group.border-high_cardinality { border-left: 3px solid #4338CA; }
-        .insight-group.border-constant { border-left: 3px solid #D97706; }
-
-        .insight-group-header {
-            display: flex;
-            align-items: baseline;
-            gap: 10px;
-            padding: 10px 16px;
-            background: var(--background);
-        }
-
-        .alert-explanation {
-            font-size: 12px;
-            color: var(--text-secondary);
-            line-height: 1.4;
-        }
-
-        .insight-items {
-            padding: 0;
-        }
-
-        .insight-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 7px 16px;
-            border-top: 1px solid var(--border-light);
-            font-size: 13px;
-        }
-
-        .insight-col {
-            font-weight: 500;
-            font-family: var(--font-mono);
-            color: var(--primary);
-            cursor: pointer;
-            text-decoration: none;
-        }
-
-        .insight-col:hover {
-            text-decoration: underline;
-        }
-
-        .insight-detail {
-            color: var(--text-secondary);
-            font-size: 12px;
-        }
-
-        .variable-highlight {
-            animation: highlightPulse 2s ease-out;
-        }
-
-        @keyframes highlightPulse {
-            0% { box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.4); }
-            100% { box-shadow: none; }
-        }
-
-        /* Missing values chart */
-        .missing-chart-container {
-            height: 200px;
-            margin-bottom: 24px;
-        }
-
-        /* Relationships */
-        .relationship-card {
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 12px;
-        }
-
-        .relationship-header {
-            font-size: 13px;
-            font-weight: 600;
-            margin-bottom: 8px;
-        }
-
-        .relationship-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 0;
-            font-size: 13px;
-            color: var(--text-secondary);
-        }
-
-        .relationship-table-link {
-            font-family: var(--font-mono);
-            font-weight: 500;
-            color: var(--primary);
-            cursor: pointer;
-            text-decoration: none;
-        }
-
-        .relationship-table-link:hover {
-            text-decoration: underline;
-        }
-
-        .relationship-direction {
-            font-size: 11px;
-            padding: 1px 6px;
-            border-radius: 4px;
-            font-weight: 500;
-        }
-
-        .relationship-direction.belongs_to { background: #DBEAFE; color: #1E40AF; }
-        .relationship-direction.has_many { background: #D1FAE5; color: #065F46; }
-
-        /* Relationship Mermaid diagram */
-        .relationship-diagram-wrap {
-            background: var(--background);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 16px;
-            overflow-x: auto;
-        }
-
-        .relationship-diagram-wrap .mermaid {
-            display: flex;
-            justify-content: center;
-        }
-
-        .relationship-diagram-wrap svg {
-            max-width: 100%;
-            height: auto;
-        }
-
-        .relationship-diagram-wrap svg .node.clickable-node {
-            cursor: pointer;
-        }
-
-        .relationship-diagram-wrap svg .node.clickable-node:hover {
-            filter: brightness(0.92);
-            transition: filter 0.15s ease;
-        }
-
-        .relationship-legend {
-            display: flex;
-            gap: 16px;
-            justify-content: center;
-            margin-top: 10px;
-            font-size: 11px;
-            color: var(--text-secondary);
-        }
-
-        .relationship-legend-item {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
-        .relationship-legend-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            display: inline-block;
-        }
-
-        .relationship-legend-dot.current { background: #2563eb; }
-        .relationship-legend-dot.parent { background: #DBEAFE; border: 1px solid #93C5FD; }
-        .relationship-legend-dot.child { background: #D1FAE5; border: 1px solid #6EE7B7; }
-        .relationship-legend-dot.metric { background: #FEF3C7; border: 1px solid #FCD34D; }
-
-        /* Metrics badges */
-        .metric-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            font-size: 12px;
-            font-weight: 500;
-            padding: 4px 10px;
-            background: rgba(0, 115, 209, 0.08);
-            color: var(--primary);
-            border-radius: 6px;
-            margin: 4px 4px 4px 0;
-        }
-
-        /* Sample data table */
-        .sample-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-            overflow-x: auto;
-            display: block;
-        }
-
-        .sample-table th {
-            font-weight: 600;
-            background: var(--background);
-            padding: 8px 12px;
-            border: 1px solid var(--border);
-            white-space: nowrap;
-            font-family: var(--font-mono);
-            font-size: 11px;
-        }
-
-        .sample-table td {
-            padding: 6px 12px;
-            border: 1px solid var(--border-light);
-            max-width: 200px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            font-variant-numeric: tabular-nums;
-        }
-
-        /* Loading spinner */
-        .profiler-loading {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 60px;
-            color: var(--text-secondary);
-            gap: 12px;
-        }
-
-        .spinner {
-            width: 32px;
-            height: 32px;
-            border: 3px solid var(--border);
-            border-top-color: var(--primary);
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        /* Empty state */
-        .profiler-empty {
-            text-align: center;
-            padding: 48px;
-            color: var(--text-secondary);
-        }
-
-        .profiler-empty p {
-            margin-top: 8px;
-            font-size: 13px;
-        }
-    </style>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/metric_modal.css', v=git_version) }}">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.min.css">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-{% endblock %}
-
-{% block layout %}
-<!-- ═══════════════ PAGE TITLE ═══════════════ -->
-    {% set page_hero_eyebrow = "Data" %}
-    {% set page_hero_title = "Data Packages" %}
-    {% set page_hero_subtitle = "Browse the data sources available to your AI agents." %}
-    {% include "_page_hero.html" %}
-
-    <!-- ═══════════════ SOURCE CARDS ═══════════════ -->
-    <div class="source-cards">
-
-        {# ── Data Packages: one source-card per bucket ─────────────────────
-           Previously all buckets were nested as accordions under a single
-           "Core Business Data" wrapper card. Each bucket is now its own
-           top-level Data Package card, matching the page hero title and
-           the bucket grain of the table_registry. The Internal and
-           Business Metrics cards below follow the same flat-list pattern. #}
-        {% for category in catalog_data %}
-        <div class="source-card">
-            <div class="source-card-header">
-                <div class="source-card-left">
-                    <div class="source-card-icon primary">
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0073D1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                            <polyline points="14 2 14 8 20 8"/>
-                            <line x1="16" y1="13" x2="8" y2="13"/>
-                            <line x1="16" y1="17" x2="8" y2="17"/>
-                            <polyline points="10 9 9 9 8 9"/>
-                        </svg>
-                    </div>
-                    <div class="source-card-info">
-                        <div class="source-card-name">{{ category.name }}</div>
-                        <div class="source-card-meta">{{ category.count }} table{{ 's' if category.count != 1 else '' }}</div>
-                    </div>
-                </div>
-            </div>
-
-            {# Plain list — tables shown directly; no accordion since the card IS the package. #}
-            <div class="accordion-content expanded" style="display: block;">
-                {% for table in category.tables %}
-                <div class="table-row" {% if table.query_mode != 'remote' %}onclick="openProfiler('{{ table.name }}')"{% endif %}>
-                    <div class="table-row-left">
-                        <div class="table-row-name">
-                            {{ table.name }}
-                            {% if table.query_mode == 'remote' %}
-                            <span class="query-mode-badge live">Live</span>
-                            {% else %}
-                            <span class="query-mode-badge local">Local</span>
-                            {% endif %}
-                        </div>
-                        <div class="table-row-desc">{{ table.description }}</div>
-                        <div class="table-sync-info">
-                            {% if table.query_mode == 'remote' %}
-                            <span class="live-dot"></span> Queried directly from BigQuery
-                            {% elif table.last_sync %}
-                            Synced {{ table.last_sync }}
-                            {% endif %}
-                        </div>
-                    </div>
-                    <div class="table-row-right">
-                        <span class="rows-badge{{ ' large' if table.rows_large }}">{{ table.rows_display }}</span>
-                        {% if table.query_mode != 'remote' %}
-                        <span class="profile-link">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-                            Profile
-                        </span>
-                        {% endif %}
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-        {% endfor %}
-
-        {# ── Card: Agnes Internal ─────────────────────────────────────────
-           Renders the three system tables (agnes_sessions / agnes_telemetry /
-           agnes_audit) in their own card so they don't pollute the
-           Core Business Data header counters. Read-only — no profiler
-           click, no `In stack` toggle; analysts query them via
-           `agnes query`. #}
-        {% if internal_card %}
-        <div class="source-card">
-            <div class="source-card-header">
-                <div class="source-card-left">
-                    <div class="source-card-icon" style="background: rgba(15, 118, 110, 0.1);">
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0F766E" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                            <ellipse cx="12" cy="5" rx="9" ry="3"/>
-                            <path d="M3 5v14a9 3 0 0 0 18 0V5"/>
-                            <path d="M3 12a9 3 0 0 0 18 0"/>
-                        </svg>
-                    </div>
-                    <div class="source-card-info">
-                        <div class="source-card-name">Agnes Internal</div>
-                        <div class="source-card-desc">System data — sessions, telemetry, audit. Also available locally for analysis.</div>
-                        <div class="source-card-meta">{{ internal_card.count }} table{{ 's' if internal_card.count != 1 else '' }}</div>
-                    </div>
-                </div>
-            </div>
-
-            {# Plain list — no accordion, no profile, no In stack toggle. #}
-            <div class="accordion-content expanded" style="display: block;">
-                {% for table in internal_card.tables %}
-                <div class="table-row" style="cursor: default;">
-                    <div class="table-row-left">
-                        <div class="table-row-name">
-                            <code>{{ table.id }}</code>
-                        </div>
-                        <div class="table-row-desc">{{ table.description }}</div>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-        {% endif %}
-
-        <!-- ── Card: Business Metrics ── -->
-        {% if metrics_data %}
-        {% set metrics_total = namespace(n=0) %}
-        {% for c in metrics_data %}{% set metrics_total.n = metrics_total.n + c.metrics|length %}{% endfor %}
-        <div class="source-card">
-            <div class="source-card-header">
-                <div class="source-card-left">
-                    <div class="source-card-icon primary">
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0073D1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M3 3v18h18"/>
-                            <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/>
-                        </svg>
-                    </div>
-                    <div class="source-card-info">
-                        <div class="source-card-name">Business Metrics</div>
-                        <div class="source-card-desc">Standardized metric definitions with SQL examples and documentation</div>
-                        <div class="source-card-meta">{{ metrics_total.n }} metrics &middot; {{ metrics_data|length }} categories</div>
-                    </div>
-                </div>
-            </div>
-
-            {% if data_stats and data_stats.last_updated %}
-            <div class="data-freshness-note">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                Calculated from data synced {{ data_stats.last_updated }}
-            </div>
-            {% endif %}
-
-            {% for category in metrics_data %}
-            <div class="accordion-category">
-                <button class="accordion-trigger" onclick="toggleAccordion(this)">
-                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="9 18 15 12 9 6"/>
-                    </svg>
-                    <span class="category-tag {{ category.css }}">{{ category.label }}</span>
-                    <span class="accordion-count">{{ category.metrics|length }} metric{{ 's' if category.metrics|length != 1 }}</span>
-                </button>
-                <div class="accordion-content">
-                    {% for metric in category.metrics %}
-                    <div class="table-row" onclick="openMetricModal('{{ metric.path }}')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">{{ metric.display_name }}</div>
-                            <div class="table-row-desc">{{ metric.description }}</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">{{ metric.grain }}</span>
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endfor %}
-        </div>
-        {% endif %}
-
+{% from "macros/_stack_card.html" import card %}
+
+{% block title %}Data Packages — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
+
+{% block content %}
+{# Hero — gradient banner mirroring marketplace.html .mp-hero so /catalog
+   and /marketplace read as one product. Eyebrow + h1 + sub layered on
+   the same blue gradient, plus an embedded search row identical to the
+   one on /marketplace. The hero search is wired to the same JS that
+   drives the per-card filter below, so typing here also narrows the grid. #}
+<div class="stack-hero">
+  <div class="eyebrow">Data</div>
+  <h1>What data are you looking for?</h1>
+  <p class="sub">Browse curated data packages your team has approved. Add the ones you need to your stack — required packages are added automatically.</p>
+
+  <div class="stack-hero__search-row">
+    <div class="stack-hero__search-wrap">
+      <svg class="stack-hero__search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+      <input id="catalog-hero-search" type="search"
+             placeholder="Search Data Packages by name or description…">
     </div>
+  </div>
 
-
-    </div>
-
-    <!-- ═══════════════ PROFILER MODAL (preserved 1:1) ═══════════════ -->
-    <div id="profilerOverlay" class="profiler-overlay" onclick="if(event.target===this)closeProfiler()">
-        <div class="profiler-modal">
-            <div class="profiler-header">
-                <div class="profiler-header-left">
-                    <h2 id="profilerTitle">-</h2>
-                    <span id="profilerQuality" class="quality-badge"></span>
-                    <span id="profilerAlertSummary"></span>
-                </div>
-                <button class="profiler-close" onclick="closeProfiler()">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M18 6L6 18M6 6l12 12"/>
-                    </svg>
-                </button>
-            </div>
-            <!-- Tabs (outside scrollable body so they stay fixed) -->
-            <div class="profiler-tabs" id="profilerTabs" style="display:none;">
-                <button class="profiler-tab active" onclick="switchTab('overview')">Overview</button>
-                <button class="profiler-tab" onclick="switchTab('variables')" id="tabVariables">Columns</button>
-                <button class="profiler-tab" onclick="switchTab('alerts')" id="tabAlerts">Insights</button>
-                <button class="profiler-tab" onclick="switchTab('missing')" id="tabMissing">Missing Values</button>
-                <button class="profiler-tab" onclick="switchTab('relationships')" id="tabRelationships">Relationships</button>
-                <button class="profiler-tab" onclick="switchTab('sample')" id="tabSample">Sample</button>
-            </div>
-            <div class="profiler-body">
-                <div id="profilerLoading" class="profiler-loading">
-                    <div class="spinner"></div>
-                    <span>Loading profile data...</span>
-                </div>
-                <div id="profilerContent" style="display:none;">
-
-                    <!-- Overview Section -->
-                    <div id="sectionOverview" class="profiler-section active"></div>
-
-                    <!-- Variables Section -->
-                    <div id="sectionVariables" class="profiler-section"></div>
-
-                    <!-- Alerts Section -->
-                    <div id="sectionAlerts" class="profiler-section"></div>
-
-                    <!-- Missing Values Section -->
-                    <div id="sectionMissing" class="profiler-section">
-                        <div class="missing-chart-container">
-                            <canvas id="missingChart"></canvas>
-                        </div>
-                    </div>
-
-                    <!-- Relationships Section -->
-                    <div id="sectionRelationships" class="profiler-section"></div>
-
-                    <!-- Sample Section -->
-                    <div id="sectionSample" class="profiler-section"></div>
-                </div>
-                <div id="profilerError" class="profiler-empty" style="display:none;">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.5" opacity="0.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
-                    <p id="profilerErrorMsg">Profile data not available for this table.</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <footer class="footer">
-        <p>&copy; {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }} &middot; Updated daily</p>
-        </footer>
-
-
-<!-- ═══════════════ METRIC MODAL ═══════════════ -->
-<div id="metricModalOverlay" class="metric-modal-overlay">
-    <div id="metricModal" class="metric-modal" onclick="event.stopPropagation()">
-        <!-- Header -->
-        <div class="metric-modal-header">
-            <div class="metric-modal-title-section">
-                <h2 id="metricModalTitle" class="metric-modal-title"></h2>
-                <div id="metricModalMetadata" class="metric-metadata-chips"></div>
-            </div>
-            <button class="metric-modal-close" onclick="closeMetricModal()" aria-label="Close modal">
-                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
-                </svg>
-            </button>
-        </div>
-
-        <!-- Tabs -->
-        <nav class="metric-tabs">
-            <button class="metric-tab active" data-tab="tabOverview" onclick="switchMetricTab('tabOverview')">
-                Overview
-            </button>
-            <button class="metric-tab" data-tab="tabHowToUse" onclick="switchMetricTab('tabHowToUse')">
-                How to Use
-            </button>
-            <button class="metric-tab" data-tab="tabSQLExamples" onclick="switchMetricTab('tabSQLExamples')">
-                SQL Examples
-            </button>
-            <button class="metric-tab" data-tab="tabTechnical" onclick="switchMetricTab('tabTechnical')">
-                Metric Details
-            </button>
-        </nav>
-
-        <!-- Body -->
-        <div id="metricModalBody" class="metric-modal-body">
-            <!-- Content loaded dynamically -->
-        </div>
-    </div>
+  {# v51 lifecycle status filter — show / hide cards by per-package
+     ``data-status``. Default opt-in: Prod + POC checked (the analyst-
+     ready buckets). Coming-soon stays unchecked so the catalog isn't
+     polluted with placeholders. Empty selection = no filter (show all). #}
+  <div class="stack-hero__status-row" id="catalog-status-filter">
+    <span class="stack-hero__status-label">Show:</span>
+    <label><input type="checkbox" value="prod" checked> Prod-ready</label>
+    <label><input type="checkbox" value="poc" checked> POC</label>
+    <label><input type="checkbox" value="coming-soon"> Coming soon</label>
+    {% if user.is_admin %}
+    <label title="Admin-only — hidden from analysts"><input type="checkbox" value="draft"> Draft <span style="opacity:.6;">(admin)</span></label>
+    {% endif %}
+  </div>
 </div>
 
-<!-- Prism.js for SQL syntax highlighting -->
+<div class="stack-page" id="catalog-page"
+     data-resource-type="data_package"
+     data-stack-endpoint="/api/stack"
+     data-subscribe-endpoint="/api/stack/subscribe">
 
+  {# Tab strip + right-of-tabs actions row (marketplace .mp-tabs-row
+     parity). Section order locked to match /marketplace exactly:
+     hero → tabs-row (+ admin actions) → curator-block → filter pills →
+     grid → empty state. The pre-v50 ordering (curator-block before
+     tabs) read as a content banner squatting above the navigation;
+     marketplace's order makes the curator block feel like a trust
+     stamp on the active tab, not a header.
+     Icons mirror marketplace's tab icons: layout-grid for Browse;
+     rectangle-stack for My Stack. #}
+  <div class="stack-tabs-row">
+    <div class="stack-tabs" role="tablist">
+      <button class="is-active" data-tab="browse" role="tab" aria-selected="true">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="7" rx="1"/>
+          <rect x="14" y="3" width="7" height="7" rx="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1"/>
+          <rect x="14" y="14" width="7" height="7" rx="1"/>
+        </svg>
+        Browse <span class="count" data-count="browse">{{ entries|length }}</span>
+      </button>
+      <button data-tab="my" role="tab" aria-selected="false">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0-5.571 3-5.571-3"/>
+        </svg>
+        My Stack <span class="count" data-count="my">{{ stack_entries|length }}</span>
+      </button>
+      {# v53 Recipes tab — query templates analysts copy + adapt.
+         Sibling concept to Data Packages but not stack-subscribable.
+         Count hydrates on first visit; starts empty (--) until then. #}
+      <button data-tab="recipes" role="tab" aria-selected="false">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 7h12M3 12h12M3 17h7"/><circle cx="18" cy="17" r="3"/>
+        </svg>
+        Recipes <span class="count" data-count="recipes">—</span>
+      </button>
+    </div>
+    {% if user.is_admin %}
+    <div class="stack-tabs-row__actions" style="display:flex; gap:8px;">
+      <button class="btn btn-secondary" onclick="openCreateRecipeModal()" type="button">
+        + New Recipe <span style="opacity:.6; font-weight:normal;">(admin)</span>
+      </button>
+      <a class="btn btn-secondary" href="/admin/tables?new_package=1">+ New Data Package <span style="opacity:.6; font-weight:normal;">(admin)</span></a>
+    </div>
+    {% endif %}
+  </div>
 
+  {# Curator-style info block — mirrors marketplace .mp-curator-block.
+     Sits BELOW the tab strip per the unified section order — same
+     position marketplace.html uses (marketplace.html:497). #}
+  <div class="stack-curator-block">
+    <div class="stack-curator-block__title">Each Data Package is curated by your admin.</div>
+    <div class="stack-curator-block__body">
+      Packages bundle related tables on a single topic (Sales, Finance, …) so
+      analysts can pull a coherent dataset with one click. Required packages
+      are added to your stack automatically.
+    </div>
+  </div>
 
+  {# Filter chips — All / Required / Available / In stack + per-source-type chips. #}
+  <div class="stack-filter-row" id="catalog-filters">
+    <button class="pill is-active" data-filter="all">All</button>
+    <button class="pill" data-filter="required">Required</button>
+    <button class="pill" data-filter="available">Available</button>
+    <button class="pill" data-filter="in_stack">In stack</button>
+    {% if source_type_chips %}
+    <span style="margin-left: 12px; color: var(--text-secondary); font-size: 12px;">Source:</span>
+    {% for st in source_type_chips %}
+    <button class="pill" data-filter-source="{{ st }}">{{ st }}</button>
+    {% endfor %}
+    {% endif %}
+  </div>
 
-<!-- Mermaid.js for relationship diagrams -->
-{% endblock %}
+  {# Browse view — every package the user has any grant on. #}
+  <div data-view="browse">
+    {% if entries %}
+    <div class="stack-grid" id="catalog-grid-browse">
+      {% for entry in entries %}
+        {{ card(entry) }}
+      {% endfor %}
+    </div>
+    {% else %}
+    {# Empty state — friendly + actionable. Admins get a concrete CTA
+       (open /admin/tables with the N-registered-tables hint so they
+       know there IS data to package). Non-admins get a different copy
+       because the admin path is gated. #}
+    <div class="stack-empty">
+      <span class="icon">📦</span>
+      <h3>No Data Packages yet</h3>
+      {% if user.is_admin %}
+        {% if total_registered_tables and total_registered_tables > 0 %}
+        <p>You have <strong>{{ total_registered_tables }}</strong>
+           table{{ 's' if total_registered_tables != 1 else '' }} registered
+           in <code>/admin/tables</code> but no Data Packages grouping them.</p>
+        <p>Create your first package by editing any table and assigning it
+           to a new package — analysts opt-in to the package as a whole.</p>
+        {% else %}
+        <p>No tables registered yet either. Register your first source
+           table, then bundle related tables into a Data Package so analysts
+           can opt-in to them as a group.</p>
+        {% endif %}
+      <div class="cta">
+        <a href="/admin/tables">Open /admin/tables →</a>
+      </div>
+      {% else %}
+      <p>Ask your admin to create a Data Package or grant your group
+         access to an existing one, then refresh this page.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
 
-{% block scripts %}
+  {# My Stack view — required + subscribed. #}
+  <div data-view="my" hidden>
+    {% if stack_entries %}
+    <div class="stack-grid" id="catalog-grid-my">
+      {% for entry in stack_entries %}
+        {{ card(entry) }}
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="stack-empty">
+      <span class="icon">🗂️</span>
+      <h3>Your stack is empty</h3>
+      <p>Browse available packages and click <strong>+ Add to stack</strong>.
+         Required packages will appear here automatically.</p>
+      <div class="cta">
+        <a href="/catalog">Browse all →</a>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  {# v53 Recipes view — populated client-side on first tab open from
+     /api/recipes so the page render isn't blocked by a second DB query
+     when most users land on Browse. Card-grid uses the same .stack-grid
+     class for visual parity, but recipe cards are simpler (no
+     Add-to-stack, no Required/in-stack badges — recipes aren't
+     subscribable). #}
+  <div data-view="recipes" hidden>
+    <div class="stack-grid" id="catalog-grid-recipes">
+      <div class="stack-empty" id="catalog-recipes-loading">
+        <span class="icon">📑</span>
+        <h3>Loading recipes…</h3>
+      </div>
+    </div>
+  </div>
+
+  {% if user.is_admin %}
+  {# v53 Create Recipe modal — opened from the "+ New Recipe" admin
+     button in the tab strip. Single-step (no inline RBAC matrix yet —
+     recipes are visible to any authenticated user). #}
+  <div id="createRecipeModal"
+       style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+    <div style="background:var(--surface); max-width:560px; margin:60px auto;
+                padding:20px 24px; border-radius:12px; border:1px solid var(--border);
+                max-height:85vh; overflow-y:auto;">
+      <h3 style="margin:0 0 12px;">New Recipe</h3>
+      <p style="margin:0 0 16px; color:var(--text-secondary); font-size:13px;">
+        Recipes are query templates analysts copy + adapt. Link the
+        tables they touch so analysts can drill into each.
+      </p>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Title</span>
+          <input id="rcp-title" type="text" placeholder="Top revenue by region (last 30 days)"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+          <input id="rcp-slug" type="text" placeholder="top-revenue-by-region"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+          <span style="font-size:11px; color:var(--text-secondary);">
+            URL-safe; auto-derived from title if left blank.
+          </span>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Description</span>
+          <textarea id="rcp-desc" rows="2"
+                    placeholder="What question this recipe answers; key caveats."
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">SQL template</span>
+          <textarea id="rcp-sql" rows="7"
+                    placeholder="SELECT region, SUM(revenue) AS rev&#10;FROM orders&#10;WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)&#10;GROUP BY 1 ORDER BY 2 DESC"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:var(--font-mono); font-size:12px; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Related table ids</span>
+          <input id="rcp-related" type="text"
+                 placeholder="Comma-separated table_registry ids — e.g. tbl_orders,tbl_users"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+          <span style="font-size:11px; color:var(--text-secondary);">
+            Drives the "Touches tables" links on the drilldown.
+          </span>
+        </label>
+        <div style="display:flex; gap:12px;">
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Color</span>
+            <div class="cf-palette-row" data-target="rcp-color"></div>
+            <input id="rcp-color" type="color" value="#0073D1"
+                   style="padding:2px; border:1px solid var(--border); border-radius:6px;
+                          height:32px; cursor:pointer;">
+          </label>
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="rcp-status"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
+              <option value="prod" selected>Prod</option>
+              <option value="poc">POC</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft (admin-only)</option>
+            </select>
+          </label>
+        </div>
+        {# v55 Recipes RBAC matrix on Create — same inline pattern as
+           Create Memory Domain. Optional; with no rows ticked, the new
+           recipe is admin-only (default-closed). Admins can grant later
+           via Edit Recipe or /admin/access. #}
+        <details id="rcp-rbac-details"
+                 style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+          <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
+            Group access
+            <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">(optional)</span>
+          </summary>
+          <p style="margin:8px 0; color:var(--text-secondary); font-size:12px;">
+            Grant per-group access tiers — <em>available</em> surfaces
+            the recipe on the group's Recipes tab; <em>required</em>
+            pins it. Leave blank to manage later from
+            <a href="/admin/access">Resource access</a>.
+          </p>
+          <div id="rcp-rbac-rows"
+               style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
+            <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
+              Click to load groups…
+            </div>
+          </div>
+        </details>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+        <button class="btn" type="button" onclick="closeCreateRecipeModal()">Cancel</button>
+        <button class="btn btn-primary" type="button" id="rcp-submit-btn"
+                onclick="submitCreateRecipe()">Create</button>
+      </div>
+    </div>
+  </div>
+
+  {# v53 Edit Recipe modal — pre-fills from GET /api/admin/recipes/{id}.
+     Slug is locked (it's the stable URL identifier referenced by
+     /catalog/r/<slug> + any pinned links). Delete lives on the card
+     footer, not in the modal, so admins can drop a recipe without
+     opening the editor. #}
+  <div id="editRecipeModal"
+       style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+    <div style="background:var(--surface); max-width:560px; margin:60px auto;
+                padding:20px 24px; border-radius:12px; border:1px solid var(--border);
+                max-height:85vh; overflow-y:auto;">
+      <h3 style="margin:0 0 12px;">Edit Recipe</h3>
+      <input type="hidden" id="ercp-id">
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Title</span>
+          <input id="ercp-title" type="text"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+          <input id="ercp-slug" type="text" disabled
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                        opacity:0.6;">
+          <span style="font-size:11px; color:var(--text-secondary);">
+            Slug is permanent — used in /catalog/r/&lt;slug&gt; URLs.
+          </span>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Description</span>
+          <textarea id="ercp-desc" rows="2"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">SQL template</span>
+          <textarea id="ercp-sql" rows="7"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:var(--font-mono); font-size:12px; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Related table ids</span>
+          <input id="ercp-related" type="text"
+                 placeholder="Comma-separated table_registry ids"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <div style="display:flex; gap:12px;">
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Color</span>
+            <div class="cf-palette-row" data-target="ercp-color"></div>
+            <input id="ercp-color" type="color"
+                   style="padding:2px; border:1px solid var(--border); border-radius:6px;
+                          height:32px; cursor:pointer;">
+          </label>
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="ercp-status"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
+              <option value="prod">Prod</option>
+              <option value="poc">POC</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft (admin-only)</option>
+            </select>
+          </label>
+        </div>
+        {# v55 Recipes RBAC matrix — same lazy-hydrate + diff-on-save pattern
+           as Edit Memory Domain. Hidden until the admin expands it; loads
+           groups + grants on first toggle, diffs against the original on
+           submit, and POSTs/DELETEs only the deltas. #}
+        <details id="ercp-rbac-details"
+                 style="border:1px solid var(--border); border-radius:8px; padding:8px 12px; margin-top:4px;">
+          <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
+            Group access
+            <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">— mark required / available per group</span>
+          </summary>
+          <p style="margin:8px 0; color:var(--text-secondary); font-size:12px;">
+            <em>required</em> pins the recipe to the group's stack;
+            <em>available</em> surfaces it on their Recipes tab;
+            <em>(no grant)</em> hides it entirely. Changes apply when you
+            click <strong>Save</strong>.
+          </p>
+          <div id="ercp-rbac-rows"
+               style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
+            <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
+              Click to load groups…
+            </div>
+          </div>
+        </details>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+        <button class="btn" type="button" onclick="closeEditRecipeModal()">Cancel</button>
+        <button class="btn btn-primary" type="button" id="ercp-submit-btn"
+                onclick="submitEditRecipe()">Save</button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# Toast for ephemeral feedback (Add/Remove success/failure). #}
+  <div id="stack-toast" role="status" aria-live="polite" hidden
+       style="position:fixed; bottom:24px; right:24px; padding:12px 18px;
+              background:#202124; color:#fff; border-radius:8px;
+              box-shadow:0 6px 20px rgba(0,0,0,.2); font-size:13px; z-index:1000;"></div>
+</div>
+
 <script>
-/* ═══════════════ ACCORDION ═══════════════ */
-function toggleAccordion(trigger) {
-    const content = trigger.nextElementSibling;
-    const isExpanded = trigger.classList.contains('expanded');
-
-    if (isExpanded) {
-        trigger.classList.remove('expanded');
-        content.classList.remove('expanded');
-    } else {
-        trigger.classList.add('expanded');
-        content.classList.add('expanded');
-    }
-}
-
-/* ═══════════════ DATASET SUBSCRIPTIONS ═══════════════ */
-/* ═══════════════ PROFILER (preserved 1:1) ═══════════════ */
-let currentCharts = [];
-let currentProfile = null;
-let mermaidDiagramRendered = false;
-let currentDiagramNodeMap = {};
-
-function openProfiler(tableName, initialTab) {
-    const overlay = document.getElementById('profilerOverlay');
-    const loading = document.getElementById('profilerLoading');
-    const content = document.getElementById('profilerContent');
-    const error = document.getElementById('profilerError');
-
-    overlay.classList.add('active');
-    loading.style.display = 'flex';
-    content.style.display = 'none';
-    document.getElementById('profilerTabs').style.display = 'none';
-    error.style.display = 'none';
-    document.body.style.overflow = 'hidden';
-
-    document.getElementById('profilerTitle').textContent = tableName;
-
-    fetch(`/api/catalog/profile/${tableName}`)
-        .then(r => {
-            if (!r.ok) throw new Error('not found');
-            return r.json();
-        })
-        .then(data => {
-            currentProfile = data;
-            loading.style.display = 'none';
-            content.style.display = 'block';
-            document.getElementById('profilerTabs').style.display = 'flex';
-            renderProfile(data, initialTab);
-        })
-        .catch(err => {
-            loading.style.display = 'none';
-            document.getElementById('profilerTabs').style.display = 'none';
-            error.style.display = 'block';
-        });
-}
-
-function closeProfiler() {
-    document.getElementById('profilerOverlay').classList.remove('active');
-    document.getElementById('profilerTabs').style.display = 'none';
-    document.body.style.overflow = '';
-    destroyCharts();
-    currentProfile = null;
-    mermaidDiagramRendered = false;
-    currentDiagramNodeMap = {};
-}
-
-function destroyCharts() {
-    currentCharts.forEach(c => c.destroy());
-    currentCharts = [];
-}
-
-function switchTab(tabName) {
-    document.querySelectorAll('.profiler-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.profiler-section').forEach(s => s.classList.remove('active'));
-    event.target.classList.add('active');
-    document.getElementById('section' + tabName.charAt(0).toUpperCase() + tabName.slice(1)).classList.add('active');
-
-    // Lazy-render Mermaid diagram when Relationships tab is first shown
-    if (tabName === 'relationships' && !mermaidDiagramRendered && typeof mermaid !== 'undefined') {
-        const mermaidEl = document.querySelector('#sectionRelationships .mermaid');
-        if (mermaidEl && !mermaidEl.getAttribute('data-processed')) {
-            mermaid.run({ nodes: [mermaidEl] }).then(() => {
-                attachDiagramClickHandlers();
-            });
-            mermaidDiagramRendered = true;
-        }
-    }
-}
-
-function navigateToVariable(columnName) {
-    // Switch to Columns tab
-    document.querySelectorAll('.profiler-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.profiler-section').forEach(s => s.classList.remove('active'));
-    const varTab = document.querySelector('#tabVariables');
-    if (varTab) varTab.classList.add('active');
-    document.getElementById('sectionVariables').classList.add('active');
-
-    // Scroll to the variable card within the modal body
-    const card = document.getElementById('var_' + columnName);
-    if (card) {
-        // Use scrollIntoView within the scrollable .profiler-body container
-        setTimeout(() => {
-            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            card.classList.add('variable-highlight');
-            setTimeout(() => card.classList.remove('variable-highlight'), 2000);
-        }, 50);
-    }
-}
-
-function navigateToInsight(insightType) {
-    // Switch to Insights tab
-    document.querySelectorAll('.profiler-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.profiler-section').forEach(s => s.classList.remove('active'));
-    const tab = document.querySelector('#tabAlerts');
-    if (tab) tab.classList.add('active');
-    document.getElementById('sectionAlerts').classList.add('active');
-
-    const group = document.getElementById('insight_' + insightType);
-    if (group) {
-        setTimeout(() => {
-            group.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            group.classList.add('variable-highlight');
-            setTimeout(() => group.classList.remove('variable-highlight'), 2000);
-        }, 50);
-    }
-}
-
-function formatNumber(n) {
-    if (n === null || n === undefined) return '-';
-    if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-    if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-    if (Number.isInteger(n)) return n.toLocaleString();
-    return Number(n).toFixed(2);
-}
-
-const INSIGHT_TOOLTIPS = {
-    unique: "Every value in this column is different. This is typical for ID columns and usually means this column can uniquely identify each row.",
-    high_cardinality: "This column has a very large number of distinct values. It may be an ID or free-text field. Not ideal for grouping or filtering in reports.",
-    high_missing: "Most values in this column are empty. Consider whether this data is collected consistently or if this column is only relevant for specific records.",
-    missing: "Some values in this column are empty. Check if the gaps are expected (e.g. optional fields) or indicate a data collection issue.",
-    zeros: "A large portion of values are zero. This may be normal (e.g. no change periods) or could indicate missing data entered as zero.",
-    imbalance: "One value dominates this column (appears in 90%+ of rows). This is normal for status or flag columns but limits analytical usefulness.",
-    constant: "This column has the same value in every row. It provides no analytical value and can usually be ignored in analysis.",
-};
-
-function renderAlertBadge(alert, clickable) {
-    const tooltip = INSIGHT_TOOLTIPS[alert] || '';
-    const label = alert.replace('_', ' ');
-    if (clickable) {
-        return `<span class="alert-badge ${alert}" title="${tooltip}" style="cursor:pointer;" onclick="event.stopPropagation();navigateToInsight('${alert}')">${label}</span>`;
-    }
-    return `<span class="alert-badge ${alert}" title="${tooltip}">${label}</span>`;
-}
-
-function renderProfile(data, initialTab) {
-    destroyCharts();
-
-    // Header badges
-    const quality = data.avg_completeness || 0;
-    const qBadge = document.getElementById('profilerQuality');
-    qBadge.textContent = quality.toFixed(1) + '% complete';
-    qBadge.className = 'quality-badge ' + (quality >= 95 ? 'good' : quality >= 80 ? 'warning' : 'poor');
-
-    const alertCount = (data.alerts || []).length;
-    document.getElementById('profilerAlertSummary').innerHTML = alertCount > 0
-        ? `<span class="alert-badge imbalance">${alertCount} insight${alertCount > 1 ? 's' : ''}</span>`
-        : '';
-
-    // Tab counts
-    const cols = data.columns || [];
-    document.getElementById('tabVariables').innerHTML = `Columns <span class="tab-count">${cols.length}</span>`;
-    document.getElementById('tabAlerts').innerHTML = `Insights <span class="tab-count">${alertCount}</span>`;
-
-    renderOverview(data);
-    renderVariables(data);
-    renderAlerts(data);
-    renderMissing(data);
-    renderRelationships(data);
-    renderSample(data);
-
-    // Set active tab (default: overview)
-    const targetTab = initialTab || 'overview';
-    document.querySelectorAll('.profiler-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.profiler-section').forEach(s => s.classList.remove('active'));
-
-    const targetSection = document.getElementById('section' + targetTab.charAt(0).toUpperCase() + targetTab.slice(1));
-    if (targetSection) {
-        targetSection.classList.add('active');
-        // Activate matching tab button
-        document.querySelectorAll('.profiler-tab').forEach(t => {
-            if (t.getAttribute('onclick') && t.getAttribute('onclick').includes("'" + targetTab + "'")) {
-                t.classList.add('active');
-            }
-        });
-        // Trigger lazy Mermaid render if opening relationships tab directly
-        if (targetTab === 'relationships' && !mermaidDiagramRendered && typeof mermaid !== 'undefined') {
-            const mermaidEl = document.querySelector('#sectionRelationships .mermaid');
-            if (mermaidEl && !mermaidEl.getAttribute('data-processed')) {
-                mermaid.run({ nodes: [mermaidEl] }).then(() => {
-                    attachDiagramClickHandlers();
-                });
-                mermaidDiagramRendered = true;
-            }
-        }
-    } else {
-        // Fallback to overview
-        document.querySelector('.profiler-tab').classList.add('active');
-        document.getElementById('sectionOverview').classList.add('active');
-    }
-}
-
-function renderOverview(data) {
-    const vt = data.variable_types || {};
-    const vtHtml = Object.entries(vt).map(([t, c]) =>
-        `<tr><td>${t}</td><td>${c}</td></tr>`
-    ).join('');
-
-    const missingPct = data.missing_cells_pct || 0;
-    const missingClass = missingPct > 20 ? ' class="highlight"' : '';
-
-    const dr = data.date_range;
-    const dateRow = dr ? `<tr><td>Date Coverage</td><td>${dr.earliest} to ${dr.latest}</td></tr>` : '';
-
-    // Catalog enrichment section
-    let catalogHtml = '';
-    if (data.catalog) {
-        const cat = data.catalog;
-        const tagsHtml = (cat.tags || []).length > 0
-            ? `<div style="margin-top:8px;"><span style="font-size:11px;color:var(--text-secondary);font-weight:500;">Tags:</span> ${cat.tags.map(t => `<span class="metric-badge" style="display:inline-block;margin:2px 4px 2px 0;">${t}</span>`).join('')}</div>`
-            : '';
-        const ownersHtml = (cat.owners || []).length > 0
-            ? `<div style="margin-top:8px;"><span style="font-size:11px;color:var(--text-secondary);font-weight:500;">Owners:</span> ${cat.owners.join(', ')}</div>`
-            : '';
-        const tierHtml = cat.tier
-            ? `<div style="margin-top:8px;"><span style="font-size:11px;color:var(--text-secondary);font-weight:500;">Tier:</span> <strong>${cat.tier}</strong></div>`
-            : '';
-        const urlHtml = cat.url
-            ? `<div style="margin-top:8px;"><a href="${cat.url}" target="_blank" style="font-size:11px;color:var(--primary);text-decoration:none;">View in Data Catalog →</a></div>`
-            : '';
-
-        catalogHtml = `<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px;"><div class="overview-title">Data Catalog</div>${tierHtml}${ownersHtml}${tagsHtml}${urlHtml}</div>`;
-    }
-
-    document.getElementById('sectionOverview').innerHTML = `
-        <div class="overview-grid">
-            <div>
-                <div class="overview-title">Dataset Statistics</div>
-                <table class="overview-stats-table">
-                    <tr><td>Number of variables</td><td>${data.column_count || 0}</td></tr>
-                    <tr><td>Number of observations</td><td>${formatNumber(data.row_count || 0)}</td></tr>
-                    <tr><td>Missing cells</td><td${missingClass}>${formatNumber(data.missing_cells || 0)}</td></tr>
-                    <tr><td>Missing cells (%)</td><td${missingClass}>${missingPct.toFixed(1)}%</td></tr>
-                    <tr><td>Duplicate rows</td><td>${formatNumber(data.duplicate_rows || 0)}</td></tr>
-                    <tr><td>File size</td><td>${(data.file_size_mb || 0).toFixed(2)} MB</td></tr>
-                    ${dateRow}
-                    <tr><td>Last sync</td><td>${data.last_sync ? data.last_sync.substring(0, 16).replace('T', ' ') : '-'}</td></tr>
-                </table>
-            </div>
-            <div>
-                <div class="overview-title">Variable Types</div>
-                <table class="overview-stats-table">${vtHtml}</table>
-                ${data.description ? `<div style="margin-top:16px;"><div class="overview-title">Description</div><p style="font-size:13px;color:var(--text-secondary);">${data.description}</p></div>` : ''}
-                ${(data.used_by_metrics || []).length > 0 ? `<div style="margin-top:16px;"><div class="overview-title">Used by Metrics</div><div>${data.used_by_metrics.map(m => m.file ? `<a class="metric-badge" style="cursor:pointer;text-decoration:none;" onclick="openMetricModal('${m.file}')">${m.name}</a>` : `<span class="metric-badge">${typeof m === 'string' ? m : m.name}</span>`).join('')}</div></div>` : ''}
-                ${catalogHtml}
-            </div>
-        </div>`;
-}
-
-function buildNumericViz(ns, idx) {
-    const hasRange = ns.min != null && ns.max != null;
-    const isConstant = hasRange && ns.min === ns.max;
-
-    let rangeHtml = '';
-
-    if (isConstant) {
-        rangeHtml = `<div class="num-constant">Constant value: <strong>${formatNumber(ns.min)}</strong></div>`;
-    } else if (hasRange) {
-        const range = ns.max - ns.min;
-        const pos = (val) => Math.max(0, Math.min(100, ((val - ns.min) / range) * 100));
-
-        // Whisker (p5 -> p95)
-        let whiskerHtml = '';
-        if (ns.p5 != null && ns.p95 != null) {
-            const wLeft = pos(ns.p5);
-            const wWidth = pos(ns.p95) - wLeft;
-            whiskerHtml = `<div class="num-range-whisker" style="left:${wLeft}%;width:${wWidth}%"></div>`;
-        }
-
-        // IQR box (p25 -> p75)
-        let iqrHtml = '';
-        if (ns.p25 != null && ns.p75 != null) {
-            const iLeft = pos(ns.p25);
-            const iWidth = pos(ns.p75) - iLeft;
-            iqrHtml = `<div class="num-range-iqr" style="left:${iLeft}%;width:${iWidth}%"></div>`;
-        }
-
-        // Mean marker (red)
-        let meanMarker = '';
-        if (ns.mean != null) {
-            meanMarker = `<div class="num-range-marker" style="left:${pos(ns.mean)}%;background:#DC2626;transform:translateX(-50%)"></div>`;
-        }
-
-        // Median marker (green)
-        let medianMarker = '';
-        if (ns.median != null) {
-            medianMarker = `<div class="num-range-marker" style="left:${pos(ns.median)}%;background:#059669;transform:translateX(-50%)"></div>`;
-        }
-
-        rangeHtml = `<div class="num-range">
-            <div class="num-range-labels">
-                <span>${formatNumber(ns.min)}</span>
-                <span>${formatNumber(ns.max)}</span>
-            </div>
-            <div class="num-range-track">
-                ${whiskerHtml}${iqrHtml}${meanMarker}${medianMarker}
-            </div>
-            <div class="num-range-legend">
-                <span class="legend-mean" data-tip="Average value. If far from Median, data is skewed by extreme values.">Mean</span>
-                <span class="legend-median" data-tip="Middle value. Half of records are above, half below this point.">Median</span>
-                <span class="legend-iqr" data-tip="Where 50% of your data falls. Narrow = consistent values, wide = high variation.">Typical range</span>
-            </div>
-        </div>`;
-    }
-
-    // Stat pills with business-friendly tooltips
-    const PILL_TIPS = {
-        mean: 'Average value across all rows. Useful for understanding the typical size, but can be skewed by extreme values.',
-        median: 'The middle value when sorted. More reliable than Mean when data has outliers \u2014 if Mean and Median differ a lot, you have skewed data.',
-        std: 'Standard Deviation \u2014 how spread out the values are. Low = values cluster near the mean. High = wide variation across records.',
-        zeros: 'How many records have value zero. High percentage may indicate missing data entered as zero, or genuinely inactive records.',
-        negative: 'Records with negative values. Could indicate returns, corrections, or data entry errors depending on the business context.',
-    };
-    const pills = [];
-    if (ns.mean != null) pills.push(`<span class="num-stat" data-tip="${PILL_TIPS.mean}"><span class="num-stat-label">Mean</span><span class="num-stat-value">${formatNumber(ns.mean)}</span></span>`);
-    if (ns.median != null) pills.push(`<span class="num-stat" data-tip="${PILL_TIPS.median}"><span class="num-stat-label">Median</span><span class="num-stat-value">${formatNumber(ns.median)}</span></span>`);
-    if (ns.stddev != null) pills.push(`<span class="num-stat" data-tip="${PILL_TIPS.std}"><span class="num-stat-label">Std</span><span class="num-stat-value">${formatNumber(ns.stddev)}</span></span>`);
-    if (ns.zeros) {
-        const alertClass = ns.zeros_pct > 50 ? ' alert-zeros' : '';
-        pills.push(`<span class="num-stat${alertClass}" data-tip="${PILL_TIPS.zeros}"><span class="num-stat-label">Zeros</span><span class="num-stat-value">${formatNumber(ns.zeros)} (${ns.zeros_pct.toFixed(1)}%)</span></span>`);
-    }
-    if (ns.negative) {
-        pills.push(`<span class="num-stat" data-tip="${PILL_TIPS.negative}"><span class="num-stat-label">Negative</span><span class="num-stat-value">${formatNumber(ns.negative)} (${ns.negative_pct.toFixed(1)}%)</span></span>`);
-    }
-
-    return `<div class="num-viz">
-        ${rangeHtml}
-        <div style="height:140px;"><canvas id="hist_${idx}"></canvas></div>
-        <div class="num-stats-row">${pills.join('')}</div>
-    </div>`;
-}
-
-function renderVariables(data) {
-    const cols = data.columns || [];
-    let html = '';
-
-    cols.forEach((col, idx) => {
-        const alerts = (col.alerts || []).map(a => renderAlertBadge(a, true)).join(' ');
-        const type = col.type || 'STRING';
-        const simplifiedType = type.includes('TIMESTAMP') ? 'DateTime' :
-            type === 'DATE' ? 'Date' :
-            type === 'BOOLEAN' ? 'Boolean' :
-            type === 'NUMERIC' || type.includes('INT') || type.includes('FLOAT') || type.includes('DOUBLE') ? 'Numeric' :
-            'Text';
-
-        const missingPct = 100 - (col.completeness_pct || 100);
-        const missingClass = missingPct > 30 ? ' class="highlight"' : missingPct > 5 ? ' style="color:#B45309;"' : '';
-
-        const distinctPct = col.unique_pct || 0;
-        const distinctClass = distinctPct >= 99.9 ? ' style="color:#DC2626;"' : '';
-
-        let chartHtml = '';
-
-        // Categorical bar chart
-        if (col.string_stats && col.string_stats.top_values && col.string_stats.top_values.length > 0) {
-            const topVals = col.string_stats.top_values.slice(0, 8);
-            const maxCount = topVals[0].count;
-            chartHtml = '<div class="cat-bars">' + topVals.map(v => {
-                const pct = (v.count / maxCount) * 100;
-                const label = v.value.length > 15 ? v.value.substring(0, 15) + '...' : v.value;
-                const countStr = formatNumber(v.count);
-                const showInside = pct > 25;
-                return `<div class="cat-bar-row">
-                    <span class="cat-bar-label" title="${v.value}">${label}</span>
-                    <div class="cat-bar-track">
-                        <div class="cat-bar-fill" style="width:${Math.max(pct, 3)}%">
-                            ${showInside ? `<span class="cat-bar-count">${countStr}</span>` : ''}
-                        </div>
-                    </div>
-                    ${!showInside ? `<span class="cat-bar-count outside">${countStr}</span>` : ''}
-                </div>`;
-            }).join('') + '</div>';
-        }
-
-        // Numeric stats with range bar visualization
-        if (col.numeric_stats) {
-            const ns = col.numeric_stats;
-            chartHtml = buildNumericViz(ns, idx);
-        }
-
-        // Date stats - labels beside chart for maximum chart size
-        if (col.date_stats) {
-            const ds = col.date_stats;
-            chartHtml = `<div style="display:flex;gap:16px;align-items:stretch;width:100%;padding:8px 0;">
-                <div style="font-size:12px;min-width:130px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;gap:6px;">
-                    <div><span style="color:var(--text-secondary);display:block;font-size:10px;">Earliest</span><span style="font-weight:500;">${ds.earliest}</span></div>
-                    <div><span style="color:var(--text-secondary);display:block;font-size:10px;">Latest</span><span style="font-weight:500;">${ds.latest}</span></div>
-                    <div><span style="color:var(--text-secondary);display:block;font-size:10px;">Span</span><span style="font-weight:500;">${formatNumber(ds.span_days)} days</span></div>
-                </div>
-                <div style="flex:1;min-height:140px;"><canvas id="datehist_${idx}"></canvas></div>
-            </div>`;
-        }
-
-        // Boolean bar
-        if (col.boolean_stats) {
-            const bs = col.boolean_stats;
-            const truePct = bs.true_pct || 0;
-            chartHtml = `<div style="padding:8px 0;width:100%;">
-                <div class="bool-bar">
-                    <div class="true-part" style="width:${truePct}%">${truePct > 15 ? `True ${truePct.toFixed(1)}%` : ''}</div>
-                    <div class="false-part" style="width:${100 - truePct}%">${(100 - truePct) > 15 ? `False ${(100 - truePct).toFixed(1)}%` : ''}</div>
-                </div>
-                <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);margin-top:4px;">
-                    <span>True: ${formatNumber(bs.true_count)}</span>
-                    <span>False: ${formatNumber(bs.false_count)}</span>
-                </div>
-            </div>`;
-        }
-
-        // Fallback: sample values
-        if (!chartHtml && col.sample_values && col.sample_values.length > 0) {
-            chartHtml = `<div style="font-size:12px;padding:8px 0;color:var(--text-secondary);overflow:hidden;width:100%;">
-                <div style="font-weight:500;margin-bottom:4px;">Sample values</div>
-                ${col.sample_values.slice(0, 5).map(v => `<div style="font-family:var(--font-mono);font-size:11px;padding:2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${String(v).replace(/"/g, '&quot;')}">${v}</div>`).join('')}
-            </div>`;
-        }
-
-        html += `
-        <div class="variable-card" id="var_${col.name}">
-            <div class="variable-header">
-                <span class="variable-name">${col.name}</span>
-                <span class="variable-type">${simplifiedType}</span>
-                ${col.is_primary_key ? '<span class="alert-badge unique">PK</span>' : ''}
-                ${alerts}
-            </div>
-            <div class="variable-body">
-                <div class="variable-stats">
-                    <table>
-                        <tr><td>Distinct</td><td${distinctClass}>${formatNumber(col.unique_count)}</td></tr>
-                        <tr><td>Distinct (%)</td><td${distinctClass}>${distinctPct.toFixed(1)}%</td></tr>
-                        <tr><td>Missing</td><td${missingClass}>${formatNumber(col.null_count || 0)}</td></tr>
-                        <tr><td>Missing (%)</td><td${missingClass}>${missingPct.toFixed(1)}%</td></tr>
-                    </table>
-                </div>
-                <div class="variable-chart">${chartHtml}</div>
-            </div>
-        </div>`;
-    });
-
-    document.getElementById('sectionVariables').innerHTML = html;
-
-    // Render Chart.js histograms for numeric columns
-    cols.forEach((col, idx) => {
-        if (col.numeric_stats && col.numeric_stats.histogram) {
-            const canvas = document.getElementById(`hist_${idx}`);
-            if (canvas) {
-                const h = col.numeric_stats.histogram;
-                const chart = new Chart(canvas, {
-                    type: 'bar',
-                    data: {
-                        labels: h.bins || h.counts.map((_, i) => i),
-                        datasets: [{
-                            data: h.counts,
-                            backgroundColor: 'rgba(0, 115, 209, 0.6)',
-                            borderRadius: 2,
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
-                        scales: {
-                            x: { display: false },
-                            y: { display: false }
-                        }
-                    }
-                });
-                currentCharts.push(chart);
-            }
-        }
-
-        if (col.date_stats && col.date_stats.histogram) {
-            const canvas = document.getElementById(`datehist_${idx}`);
-            if (canvas) {
-                const h = col.date_stats.histogram;
-                const chart = new Chart(canvas, {
-                    type: 'bar',
-                    data: {
-                        labels: h.bins || h.counts.map((_, i) => i),
-                        datasets: [{
-                            data: h.counts,
-                            backgroundColor: 'rgba(0, 115, 209, 0.6)',
-                            borderRadius: 2,
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
-                        scales: {
-                            x: { ticks: { maxTicksLimit: 6, font: { size: 9 } } },
-                            y: { display: false }
-                        }
-                    }
-                });
-                currentCharts.push(chart);
-            }
-        }
-    });
-}
-
-function extractInsightDetail(alert) {
-    // Strip column name prefix from message to avoid redundancy
-    const msg = alert.message || '';
-    const col = alert.column || '';
-    const rest = msg.startsWith(col) ? msg.substring(col.length).trim() : msg;
-    // Clean up leading connectors like "is", "has"
-    return rest.replace(/^(is|has)\s+/, '');
-}
-
-function renderAlerts(data) {
-    const alerts = data.alerts || [];
-    if (alerts.length === 0) {
-        document.getElementById('sectionAlerts').innerHTML = '<div class="profiler-empty"><p>No data quality insights detected.</p></div>';
-        return;
-    }
-
-    // Group alerts by type for cleaner display
-    const byType = {};
-    alerts.forEach(a => {
-        if (!byType[a.type]) byType[a.type] = [];
-        byType[a.type].push(a);
-    });
-
-    let html = '';
-    Object.entries(byType).forEach(([type, items]) => {
-        const tip = INSIGHT_TOOLTIPS[type] || '';
-        html += `<div class="insight-group border-${type}" id="insight_${type}">
-            <div class="insight-group-header">
-                ${renderAlertBadge(type)}
-                ${tip ? `<span class="alert-explanation">${tip}</span>` : ''}
-            </div>
-            <div class="insight-items">`;
-        items.forEach(a => {
-            const detail = extractInsightDetail(a);
-            html += `<div class="insight-item">
-                    <a class="insight-col" onclick="navigateToVariable('${a.column}')">${a.column}</a>
-                    <span class="insight-detail">${detail}</span>
-                </div>`;
-        });
-        html += '</div></div>';
-    });
-    document.getElementById('sectionAlerts').innerHTML = html;
-}
-
-function renderMissing(data) {
-    const cols = (data.columns || []).filter(c => c.completeness_pct !== undefined);
-    if (cols.length === 0) return;
-
-    const canvas = document.getElementById('missingChart');
-    if (!canvas) return;
-
-    const sorted = [...cols].sort((a, b) => (a.completeness_pct || 0) - (b.completeness_pct || 0));
-
-    const chart = new Chart(canvas, {
-        type: 'bar',
-        data: {
-            labels: sorted.map(c => c.name),
-            datasets: [{
-                label: 'Completeness %',
-                data: sorted.map(c => c.completeness_pct || 0),
-                backgroundColor: sorted.map(c => {
-                    const pct = c.completeness_pct || 0;
-                    return pct >= 95 ? 'rgba(16, 183, 127, 0.6)' :
-                           pct >= 80 ? 'rgba(245, 159, 10, 0.6)' :
-                           'rgba(220, 38, 38, 0.6)';
-                }),
-                borderRadius: 2,
-            }]
-        },
-        options: {
-            indexAxis: 'y',
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-                x: { min: 0, max: 100, ticks: { callback: v => v + '%' } },
-                y: { ticks: { font: { size: 10, family: "'Inter', sans-serif" } } }
-            }
-        }
-    });
-    currentCharts.push(chart);
-
-    // Adjust canvas container height based on column count
-    canvas.parentElement.style.height = Math.max(200, cols.length * 22 + 40) + 'px';
-}
-
-function sanitizeMermaidId(name) {
-    return 'n_' + name.replace(/[^a-zA-Z0-9_]/g, '_');
-}
-
-function truncateLabel(text, max) {
-    return text.length > max ? text.substring(0, max) + '...' : text;
-}
-
-function buildMermaidDiagram(tableName, relations, metrics) {
-    const MAX_NODES = 15;
-    const parents = relations.filter(r => r.direction === 'belongs_to');
-    const children = relations.filter(r => r.direction === 'has_many');
-    const metricsList = metrics || [];
-
-    const currentId = sanitizeMermaidId(tableName);
-    const nodeMap = {};  // sanitizedId -> {type, name, file?}
-    let lines = ['flowchart LR'];
-
-    // Current table node (bold box)
-    lines.push(`    ${currentId}["<b>${tableName}</b>"]`);
-    nodeMap[currentId] = { type: 'current', name: tableName };
-
-    let nodeCount = 1;
-    let overflowParents = 0;
-    let overflowChildren = 0;
-    const renderedParentIds = [];
-    const renderedChildIds = [];
-
-    // Parent nodes (belongs_to) - current --> parent
-    parents.forEach(r => {
-        if (nodeCount >= MAX_NODES) { overflowParents++; return; }
-        const pid = sanitizeMermaidId(r.table);
-        const label = truncateLabel(r.join_column, 20);
-        lines.push(`    ${currentId} -->|"${label}"| ${pid}["${r.table}"]`);
-        renderedParentIds.push(pid);
-        nodeMap[pid] = { type: 'table', name: r.table };
-        nodeCount++;
-    });
-
-    // Child nodes (has_many) - child --> current
-    children.forEach(r => {
-        if (nodeCount >= MAX_NODES) { overflowChildren++; return; }
-        const cid = sanitizeMermaidId(r.table);
-        const label = truncateLabel(r.foreign_column || r.join_column, 20);
-        lines.push(`    ${cid}["${r.table}"] -->|"${label}"| ${currentId}`);
-        renderedChildIds.push(cid);
-        nodeMap[cid] = { type: 'table', name: r.table };
-        nodeCount++;
-    });
-
-    // Metric nodes - current table -.-> metric (dashed)
-    const renderedMetricIds = [];
-    let overflowMetrics = 0;
-    metricsList.forEach(m => {
-        if (nodeCount >= MAX_NODES) { overflowMetrics++; return; }
-        const mid = sanitizeMermaidId('metric_' + m.name);
-        lines.push(`    ${currentId} -.->|"metric"| ${mid}("${truncateLabel(m.name, 20)}")`);
-        renderedMetricIds.push(mid);
-        nodeMap[mid] = { type: 'metric', name: m.name, file: m.file };
-        nodeCount++;
-    });
-
-    // Overflow nodes
-    if (overflowParents > 0) {
-        lines.push(`    ${currentId} -.->|" "| n_more_parents("+${overflowParents} more")`);
-        lines.push(`    style n_more_parents stroke-dasharray: 5 5,fill:#f8fafc,color:#94a3b8`);
-    }
-    if (overflowChildren > 0) {
-        lines.push(`    n_more_children("+${overflowChildren} more") -.->|" "| ${currentId}`);
-        lines.push(`    style n_more_children stroke-dasharray: 5 5,fill:#f8fafc,color:#94a3b8`);
-    }
-    if (overflowMetrics > 0) {
-        lines.push(`    ${currentId} -.->|" "| n_more_metrics("+${overflowMetrics} more")`);
-        lines.push(`    style n_more_metrics stroke-dasharray: 5 5,fill:#f8fafc,color:#94a3b8`);
-    }
-
-    // Styling - only for actually rendered nodes
-    lines.push(`    style ${currentId} fill:#2563eb,stroke:#1d4ed8,color:#fff,font-weight:bold`);
-    renderedParentIds.forEach(pid => {
-        lines.push(`    style ${pid} fill:#dbeafe,stroke:#93c5fd,color:#1e40af`);
-    });
-    renderedChildIds.forEach(cid => {
-        lines.push(`    style ${cid} fill:#d1fae5,stroke:#6ee7b7,color:#065f46`);
-    });
-    renderedMetricIds.forEach(mid => {
-        lines.push(`    style ${mid} fill:#fef3c7,stroke:#fcd34d,color:#92400e`);
-    });
-
-    return { diagram: lines.join('\n'), nodeMap };
-}
-
-function attachDiagramClickHandlers() {
-    const wrap = document.querySelector('.relationship-diagram-wrap');
-    if (!wrap) return;
-
-    const svg = wrap.querySelector('svg');
-    if (!svg) return;
-
-    svg.querySelectorAll('.node').forEach(node => {
-        // Mermaid node IDs: "flowchart-n_contract_line-0"
-        const match = node.id.match(/^flowchart-(.+?)-\d+$/);
-        if (!match) return;
-
-        const sanitizedId = match[1];
-        const entry = currentDiagramNodeMap[sanitizedId];
-        if (!entry || entry.type === 'current') return;
-
-        node.classList.add('clickable-node');
-        if (entry.type === 'metric' && entry.file) {
-            node.addEventListener('click', () => {
-                openMetricModal(entry.file);
-            });
-        } else if (entry.type === 'table') {
-            node.addEventListener('click', () => {
-                closeProfiler();
-                setTimeout(() => openProfiler(entry.name, 'relationships'), 300);
-            });
-        }
-    });
-}
-
-function renderRelationships(data) {
-    const rels = data.related_tables || [];
-    const metrics = data.used_by_metrics || [];
-
-    if (rels.length === 0 && metrics.length === 0) {
-        document.getElementById('sectionRelationships').innerHTML = '<div class="profiler-empty"><p>No relationships or metric references found.</p></div>';
-        return;
-    }
-
-    let html = '';
-
-    // Mermaid diagram (relationships + metrics)
-    if (rels.length > 0 || metrics.length > 0) {
-        const tableName = document.getElementById('profilerTitle').textContent;
-        const result = buildMermaidDiagram(tableName, rels, metrics);
-        currentDiagramNodeMap = result.nodeMap;
-
-        let legendHtml = '<span class="relationship-legend-item"><span class="relationship-legend-dot current"></span> Current table</span>';
-        if (rels.some(r => r.direction === 'belongs_to'))
-            legendHtml += '<span class="relationship-legend-item"><span class="relationship-legend-dot parent"></span> References (belongs_to)</span>';
-        if (rels.some(r => r.direction === 'has_many'))
-            legendHtml += '<span class="relationship-legend-item"><span class="relationship-legend-dot child"></span> Referenced by (has_many)</span>';
-        if (metrics.length > 0)
-            legendHtml += '<span class="relationship-legend-item"><span class="relationship-legend-dot metric"></span> Business Metric</span>';
-
-        html += `<div class="relationship-diagram-wrap">
-            <pre class="mermaid">${result.diagram}</pre>
-            <div class="relationship-legend">${legendHtml}</div>
-        </div>`;
-
-        const outgoing = rels.filter(r => r.direction === 'belongs_to');
-        const incoming = rels.filter(r => r.direction === 'has_many');
-
-        if (outgoing.length > 0) {
-            html += '<div class="relationship-card"><div class="relationship-header">References (belongs to)</div>';
-            outgoing.forEach(r => {
-                html += `<div class="relationship-item">
-                    <span class="relationship-direction belongs_to">belongs_to</span>
-                    <a class="relationship-table-link" onclick="closeProfiler();setTimeout(()=>openProfiler('${r.table}'),300)">${r.table}</a>
-                    <span>via ${r.join_column} → ${r.foreign_column || r.join_column}</span>
-                </div>`;
-            });
-            html += '</div>';
-        }
-
-        if (incoming.length > 0) {
-            html += '<div class="relationship-card"><div class="relationship-header">Referenced by (has many)</div>';
-            incoming.forEach(r => {
-                html += `<div class="relationship-item">
-                    <span class="relationship-direction has_many">has_many</span>
-                    <a class="relationship-table-link" onclick="closeProfiler();setTimeout(()=>openProfiler('${r.table}'),300)">${r.table}</a>
-                    <span>via ${r.foreign_column || r.join_column}</span>
-                </div>`;
-            });
-            html += '</div>';
-        }
-    }
-
-    if (metrics.length > 0) {
-        html += '<div class="relationship-card"><div class="relationship-header">Used by Business Metrics</div>';
-        html += '<div>' + metrics.map(m => {
-            if (m.file) {
-                return `<a class="metric-badge" style="cursor:pointer;text-decoration:none;" onclick="openMetricModal('${m.file}')">${m.name}</a>`;
-            }
-            return `<span class="metric-badge">${m.name}</span>`;
-        }).join('') + '</div>';
-        html += '</div>';
-    }
-
-    document.getElementById('sectionRelationships').innerHTML = html;
-    mermaidDiagramRendered = false;
-}
-
-function renderSample(data) {
-    const rows = data.sample_rows || [];
-    if (rows.length === 0) {
-        document.getElementById('sectionSample').innerHTML = '<div class="profiler-empty"><p>No sample data available.</p></div>';
-        return;
-    }
-
-    const cols = Object.keys(rows[0]);
-    let html = '<div style="overflow-x:auto;"><table class="sample-table"><thead><tr>';
-    html += cols.map(c => `<th>${c}</th>`).join('');
-    html += '</tr></thead><tbody>';
-    rows.forEach(row => {
-        html += '<tr>' + cols.map(c => {
-            const v = row[c];
-            const display = v === null ? '<span style="color:#D1D5DB;">null</span>' :
-                String(v).length > 50 ? String(v).substring(0, 50) + '...' : String(v);
-            return `<td title="${String(v || '')}">${display}</td>`;
-        }).join('') + '</tr>';
-    });
-    html += '</tbody></table></div>';
-    document.getElementById('sectionSample').innerHTML = html;
-}
-
-// Close on Escape
-document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeProfiler();
-});
-
-// Floating tooltip for [data-tip] elements
+'use strict';
+
+// v53: server-injected admin flag — read by _renderRecipeCard to decide
+// whether to show inline Edit / Delete buttons on each card. Sub-second
+// branching only; the actual privilege check still happens server-side
+// on every PUT/DELETE.
+window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
+
+// Card subscribe/unsubscribe wiring + tab + filter state.
+// Vanilla, no framework — runs on /catalog and /memory (the only divergence
+// is data-resource-type which the macro doesn't care about).
 (function() {
-    const box = document.createElement('div');
-    box.className = 'tip-box';
-    document.body.appendChild(box);
-    let timer = null;
+  const root = document.getElementById('catalog-page');
+  if (!root) return;
 
-    document.addEventListener('mouseover', e => {
-        const el = e.target.closest('[data-tip]');
-        if (!el) return;
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-            box.textContent = el.getAttribute('data-tip');
-            box.classList.add('visible');
-            const r = el.getBoundingClientRect();
-            let top = r.bottom + 6;
-            let left = r.left + r.width / 2;
-            // Measure box to avoid right edge overflow
-            box.style.left = '0px';
-            box.style.top = '0px';
-            const bw = box.offsetWidth;
-            left = Math.max(8, Math.min(left - bw / 2, window.innerWidth - bw - 8));
-            // If below viewport, flip above
-            if (top + box.offsetHeight > window.innerHeight - 8) {
-                top = r.top - box.offsetHeight - 6;
-            }
-            box.style.left = left + 'px';
-            box.style.top = top + 'px';
-        }, 400);
-    });
+  const resourceType = root.dataset.resourceType;
+  const subscribeUrl = root.dataset.subscribeEndpoint;
+  // CSRF token lives in cookie or page if needed by middleware; FastAPI here
+  // gates by session JWT cookie — no body CSRF token required.
 
-    document.addEventListener('mouseout', e => {
-        const el = e.target.closest('[data-tip]');
-        if (!el) return;
-        clearTimeout(timer);
-        box.classList.remove('visible');
+  // ── Toast helper ────────────────────────────────────────────────────────
+  // FIFO queue (max 3) — the previous overwrite-on-second-call behaviour
+  // wiped the first toast as soon as the second fired, which lost
+  // useful feedback when admins added several packages in quick
+  // succession or when a network failure followed a success.
+  const toast = document.getElementById('stack-toast');
+  const _toastQueue = [];
+  let _toastShowing = false;
+  function _showNextToast() {
+    if (_toastShowing) return;
+    const next = _toastQueue.shift();
+    if (!next) return;
+    _toastShowing = true;
+    toast.textContent = next.msg;
+    toast.hidden = false;
+    toast.style.background = next.isError ? '#b91c1c' : '#10b77f';
+    const dwell = next.isError ? 4000 : 2500;
+    setTimeout(() => {
+      toast.hidden = true;
+      _toastShowing = false;
+      _showNextToast();
+    }, dwell);
+  }
+  function showToast(msg, isError) {
+    if (_toastQueue.length >= 3) _toastQueue.shift();
+    _toastQueue.push({ msg, isError });
+    _showNextToast();
+  }
+
+  // ── Drill-down navigation on card body click ────────────────────────────
+  // Buttons (data-action) handle their own click + stopPropagation below.
+  // v54 mod-click + middle-click open the drilldown in a new tab so the
+  // card-wide click handler stops fighting browser-native shortcuts
+  // (Cmd/Ctrl + click and middle-click both used to silently swallow).
+  document.querySelectorAll('.stack-card').forEach(card => {
+    const drilldown = card.querySelector('.stack-card__drilldown');
+    if (!drilldown) return;
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (e.target === drilldown) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) {
+        e.preventDefault();
+        window.open(drilldown.href, '_blank', 'noopener');
+        return;
+      }
+      window.location.href = drilldown.href;
     });
+    // ``auxclick`` fires on middle-button release; the regular click
+    // listener also sees it via e.button === 1, but Firefox routes
+    // middle-button exclusively to auxclick on some versions — wire
+    // both so the behavior is consistent.
+    card.addEventListener('auxclick', (e) => {
+      if (e.button !== 1) return;
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      window.open(drilldown.href, '_blank', 'noopener');
+    });
+  });
+
+  // ── Subscribe / Unsubscribe ─────────────────────────────────────────────
+  async function doSubscribe(id) {
+    const resp = await fetch(subscribeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ resource_type: resourceType, resource_id: id }),
+    });
+    return resp;
+  }
+
+  async function doUnsubscribe(id) {
+    const url = '/api/stack/subscription/' + encodeURIComponent(resourceType) +
+                '/' + encodeURIComponent(id);
+    const resp = await fetch(url, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+    });
+    return resp;
+  }
+
+  // Update in-place: flip the card's data-in-stack, swap the button's
+  // data-action + label, update both tab badge counts. Avoids the
+  // page-reload roundtrip that flashed the layout and lost scroll
+  // position when admins added several packages in a row.
+  function _applyStackChange(card, becameInStack) {
+    if (!card) return;
+    card.dataset.inStack = becameInStack ? '1' : '0';
+    // The card may render under both Browse and My Stack grids when the
+    // server-side render duplicates it; query by id to update all
+    // matching instances on the page.
+    const id = card.dataset.id;
+    if (!id) return;
+    document.querySelectorAll('.stack-card[data-id="' + CSS.escape(id) + '"]')
+      .forEach(c => {
+        c.dataset.inStack = becameInStack ? '1' : '0';
+        const actionBtn = c.querySelector('[data-action]');
+        if (actionBtn) {
+          actionBtn.dataset.action = becameInStack ? 'remove' : 'add';
+          actionBtn.textContent = becameInStack ? '✓ In stack' : '+ Add to stack';
+          actionBtn.disabled = false;
+        }
+      });
+
+    // Keep both grids in sync with their state. The server-side render
+    // mirrors any in-stack card into both Browse and My Stack grids; an
+    // Add from Browse needs to clone the Browse card into My Stack, a
+    // Remove needs to drop the My Stack copy. Without this the My Stack
+    // grid was stale until full page reload (regression noted in the
+    // mockup audit).
+    const myGrid = document.getElementById('catalog-grid-my');
+    const browseGrid = document.getElementById('catalog-grid-browse');
+    if (myGrid) {
+      const existingInMy = myGrid.querySelector(
+        '.stack-card[data-id="' + CSS.escape(id) + '"]'
+      );
+      if (becameInStack && !existingInMy) {
+        const sourceCard = browseGrid
+          ? browseGrid.querySelector('.stack-card[data-id="' + CSS.escape(id) + '"]')
+          : card;
+        if (sourceCard) {
+          const clone = sourceCard.cloneNode(true);
+          clone.dataset.inStack = '1';
+          const cloneBtn = clone.querySelector('[data-action]');
+          if (cloneBtn) {
+            cloneBtn.dataset.action = 'remove';
+            cloneBtn.textContent = '✓ In stack';
+            cloneBtn.disabled = false;
+          }
+          myGrid.appendChild(clone);
+        }
+        // Empty-state placeholder hides as soon as the grid has a child.
+        const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+        if (emptyEl) emptyEl.hidden = true;
+      } else if (!becameInStack && existingInMy) {
+        existingInMy.remove();
+        if (!myGrid.children.length) {
+          const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+          if (emptyEl) emptyEl.hidden = false;
+        }
+      }
+    }
+
+    // Update tab counts. My Stack ticks up on add / down on remove;
+    // Browse stays as the catalogue total — it doesn't shrink.
+    const myEl = document.querySelector('.stack-tabs .count[data-count="my"]');
+    if (myEl) {
+      const cur = parseInt(myEl.textContent, 10) || 0;
+      myEl.textContent = String(cur + (becameInStack ? 1 : -1));
+    }
+  }
+
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn || !root.contains(btn)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    const card = btn.closest('.stack-card');
+    btn.disabled = true;
+    try {
+      let resp;
+      if (action === 'add')    resp = await doSubscribe(id);
+      else if (action === 'remove') resp = await doUnsubscribe(id);
+      else return;
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => ({}));
+        showToast('Failed: ' + (detail.detail || resp.statusText), true);
+        btn.disabled = false;
+        return;
+      }
+      showToast(action === 'add' ? 'Added to stack' : 'Removed from stack');
+      _applyStackChange(card, action === 'add');
+    } catch (err) {
+      showToast('Network error: ' + err.message, true);
+      btn.disabled = false;
+    }
+  });
+
+  // ── Tab switching ──────────────────────────────────────────────────────
+  document.querySelectorAll('.stack-tabs button').forEach(b => {
+    b.addEventListener('click', () => {
+      const tab = b.dataset.tab;
+      document.querySelectorAll('.stack-tabs button').forEach(x => {
+        x.classList.toggle('is-active', x === b);
+        x.setAttribute('aria-selected', x === b ? 'true' : 'false');
+      });
+      document.querySelectorAll('[data-view]').forEach(v => {
+        v.hidden = v.dataset.view !== tab;
+      });
+      if (tab === 'recipes') loadRecipesTab();
+    });
+  });
+
+  // v53 Recipes tab — fetch on first open then cache for the page
+  // lifetime. Renders compact cards (no Add-to-stack) so users can
+  // browse query templates the same way they browse packages.
+  let _recipesLoaded = false;
+  async function loadRecipesTab(force) {
+    if (_recipesLoaded && !force) return;
+    const grid = document.getElementById('catalog-grid-recipes');
+    if (!grid) return;
+    grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span><h3>Loading recipes…</h3></div>';
+    try {
+      const r = await fetch('/api/recipes', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const body = await r.json();
+      const items = (body && body.items) || [];
+      const badge = document.querySelector('.stack-tabs .count[data-count="recipes"]');
+      if (badge) badge.textContent = String(items.length);
+      if (!items.length) {
+        grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span>'
+          + '<h3>No recipes yet</h3>'
+          + '<p>Recipes are admin-curated query templates — copy + adapt.</p></div>';
+        _recipesLoaded = true;
+        return;
+      }
+      grid.innerHTML = items.map(_renderRecipeCard).join('');
+      _recipesLoaded = true;
+    } catch (e) {
+      grid.innerHTML = '<div class="stack-empty" style="color:var(--error);">Failed to load recipes: ' + e.message + '</div>';
+    }
+  }
+  function _renderRecipeCard(r) {
+    const esc = (s) => String(s == null ? '' : s).replace(/[<>&"']/g, (c) =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+    const color = r.color || '#0073D1';
+    const title = esc(r.title);
+    const desc = esc(r.description);
+    const parts = (r.title || '?').split(/\s+/);
+    const initials = (parts.length >= 2
+      ? parts[0][0] + parts[1][0]
+      : (r.title || '?').slice(0, 2)).toUpperCase();
+    const nTables = (r.related_table_ids || []).length;
+    // Admin actions sit on a footer row inside the card. Use <div> wrapper
+    // (not <a>) when admin so the per-button onclicks don't fight the
+    // card-wide anchor for the click. Non-admin keeps the cleaner <a>
+    // because there's no overlay.
+    const cardOpen = window.IS_ADMIN
+      ? '<div class="stack-card" data-recipe-id="' + esc(r.id) + '" style="cursor:default;">'
+      : '<a class="stack-card" href="/catalog/r/' + encodeURIComponent(r.slug) + '" '
+        + 'style="text-decoration:none; color:inherit;">';
+    const cardClose = window.IS_ADMIN ? '</div>' : '</a>';
+    // For admin, the photo + body get their own anchor so the click
+    // still drills into the recipe — only the footer Edit/Delete buttons
+    // are non-navigating.
+    const adminBodyHref = window.IS_ADMIN
+      ? '<a href="/catalog/r/' + encodeURIComponent(r.slug) + '" '
+        + 'style="text-decoration:none; color:inherit; display:block;">'
+      : '';
+    const adminBodyClose = window.IS_ADMIN ? '</a>' : '';
+    const adminFooter = window.IS_ADMIN
+      ? '<div style="display:flex; gap:6px; justify-content:flex-end; '
+        + 'padding:6px 12px; border-top:1px solid var(--border-light, #f0f0f0);">'
+        + '<button class="btn btn-secondary" type="button" '
+        + 'style="font-size:11px; padding:3px 10px;" '
+        + 'onclick="event.stopPropagation(); openEditRecipeModal(&#39;' + esc(r.id) + '&#39;)">Edit</button>'
+        + '<button class="btn" type="button" '
+        + 'style="font-size:11px; padding:3px 10px; color:#b91c1c; border-color:#fca5a5;" '
+        + 'onclick="event.stopPropagation(); deleteRecipe(&#39;' + esc(r.id) + '&#39;, &#39;' + esc(r.title) + '&#39;)">Delete</button>'
+        + '</div>'
+      : '';
+    return cardOpen
+      + adminBodyHref
+      + '<div class="stack-card__photo" style="background:' + color + '; color:#fff; '
+      +   'font-weight:700; font-size:22px; letter-spacing:1px;">' + initials + '</div>'
+      + '<div class="stack-card__body">'
+      + '<h3 class="stack-card__title">' + title + '</h3>'
+      + (nTables
+          ? '<div class="stack-card__meta">' + nTables + ' table' + (nTables === 1 ? '' : 's') + '</div>'
+          : '')
+      + (desc ? '<div class="stack-card__desc">' + desc + '</div>' : '')
+      + '</div>'
+      + adminBodyClose
+      + adminFooter
+      + cardClose;
+  }
+
+  // ── Filter chips ───────────────────────────────────────────────────────
+  let activeFilter = 'all';
+  let activeSourceFilter = null;
+  // v51 — set of currently-checked status values (multi-select). Empty
+  // set means no status filter (= show all).
+  function _activeStatuses() {
+    const out = new Set();
+    document.querySelectorAll('#catalog-status-filter input[type="checkbox"]:checked')
+      .forEach((el) => out.add(el.value));
+    return out;
+  }
+  function applyFilters() {
+    // Single source of truth — the hero search input. No hidden mirror
+    // input to fall out of sync.
+    const heroEl = document.getElementById('catalog-hero-search');
+    const q = (heroEl && heroEl.value || '').toLowerCase();
+    const statuses = _activeStatuses();
+    document.querySelectorAll('.stack-card').forEach(card => {
+      const req = card.dataset.requirement;
+      const inStack = card.dataset.inStack === '1';
+      const status = card.dataset.status || 'prod';
+      const title = (card.querySelector('.stack-card__title')?.textContent || '').toLowerCase();
+      const desc  = (card.querySelector('.stack-card__desc')?.textContent || '').toLowerCase();
+      let show = true;
+      if (activeFilter === 'required' && req !== 'required') show = false;
+      if (activeFilter === 'available' && req !== 'available') show = false;
+      if (activeFilter === 'in_stack' && !inStack) show = false;
+      // Status filter — empty selection = pass-through (show all).
+      if (statuses.size && !statuses.has(status)) show = false;
+      if (activeSourceFilter) {
+        const tags = card.querySelectorAll('.stack-card__tag');
+        let hit = false;
+        tags.forEach(t => { if (t.textContent.trim() === activeSourceFilter) hit = true; });
+        if (!hit) show = false;
+      }
+      if (q && !title.includes(q) && !desc.includes(q)) show = false;
+      card.hidden = !show;
+    });
+  }
+  // Hook the v51 status checkboxes into the same applyFilters pipeline.
+  document.querySelectorAll('#catalog-status-filter input[type="checkbox"]').forEach((el) => {
+    el.addEventListener('change', applyFilters);
+  });
+  document.querySelectorAll('[data-filter]').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('[data-filter]').forEach(x => x.classList.toggle('is-active', x === b));
+      activeFilter = b.dataset.filter;
+      applyFilters();
+    });
+  });
+  document.querySelectorAll('[data-filter-source]').forEach(b => {
+    b.addEventListener('click', () => {
+      const wasActive = b.classList.contains('is-active');
+      document.querySelectorAll('[data-filter-source]').forEach(x => x.classList.remove('is-active'));
+      if (!wasActive) {
+        b.classList.add('is-active');
+        activeSourceFilter = b.dataset.filterSource;
+      } else {
+        activeSourceFilter = null;
+      }
+      applyFilters();
+    });
+  });
+  // Single hero search input drives the filter pipeline directly.
+  var heroSearch = document.getElementById('catalog-hero-search');
+  if (heroSearch) {
+    heroSearch.addEventListener('input', applyFilters);
+  }
+
+  // ── v53 Create Recipe modal (admin-only) ──────────────────────────
+  // Exposed on window so the inline button onclicks reach it (we're
+  // inside an IIFE). Close/cancel reset the form so the next open
+  // starts clean. After create: close, reload Recipes tab.
+  function _slugifyTitle(s) {
+    return (s || '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  }
+  window.openCreateRecipeModal = function () {
+    const el = document.getElementById('createRecipeModal');
+    if (!el) return;
+    ['rcp-title','rcp-slug','rcp-desc','rcp-sql','rcp-related'].forEach(id => {
+      const i = document.getElementById(id);
+      if (i) i.value = '';
+    });
+    const status = document.getElementById('rcp-status');
+    if (status) status.value = 'prod';
+    const color = document.getElementById('rcp-color');
+    if (color) color.value = '#0073D1';
+    // Collapse + reset the RBAC matrix so reopen doesn't show last
+    // recipe's group selections.
+    const det = document.getElementById('rcp-rbac-details');
+    if (det) det.open = false;
+    _rcpRbacLoaded = false;
+    const rowsEl = document.getElementById('rcp-rbac-rows');
+    if (rowsEl) rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Click to load groups…</div>';
+    el.style.display = 'block';
+  };
+  window.closeCreateRecipeModal = function () {
+    const el = document.getElementById('createRecipeModal');
+    if (el) el.style.display = 'none';
+    const det = document.getElementById('rcp-rbac-details');
+    if (det) det.open = false;
+    _rcpRbacLoaded = false;
+  };
+
+  // ── Create Recipe RBAC matrix (lazy hydrate + write-only on save) ──
+  // Mirror of admin_corporate_memory.html's _cmdHydrateRbacMatrix /
+  // _submitCmdGrantsInline. Create flow only POSTs grants — there is
+  // no original to diff against because the recipe doesn't exist yet.
+  let _rcpRbacLoaded = false;
+  async function _rcpHydrateRbacMatrix() {
+    if (_rcpRbacLoaded) return;
+    const rowsEl = document.getElementById('rcp-rbac-rows');
+    rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups…</div>';
+    try {
+      const r = await fetch('/api/admin/groups', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const body = await r.json();
+      const groups = Array.isArray(body) ? body : (body.groups || []);
+      if (!groups.length) {
+        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+        return;
+      }
+      const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      rowsEl.innerHTML = groups.map(g => {
+        const gid = String(g.id || g.name || '');
+        const gname = String(g.name || gid);
+        return (
+          '<div data-group-id="' + esc(gid) + '" '
+          + 'style="display:flex; gap:8px; align-items:center; '
+          +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
+          + '<span style="flex:1;">' + esc(gname) + '</span>'
+          + '<select class="rcp-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
+          +   '<option value="" selected>(no grant)</option>'
+          +   '<option value="available">available</option>'
+          +   '<option value="required">required</option>'
+          + '</select>'
+          + '</div>'
+        );
+      }).join('');
+      _rcpRbacLoaded = true;
+    } catch (e) {
+      rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load: '
+        + (e.message ? e.message.replace(/[<>&]/g, '') : 'unknown') + '</div>';
+    }
+  }
+  document.addEventListener('toggle', (e) => {
+    if (e.target && e.target.id === 'rcp-rbac-details' && e.target.open) {
+      _rcpHydrateRbacMatrix();
+    }
+  }, true);
+
+  async function _rcpSubmitGrantsInline(recipeId) {
+    if (!_rcpRbacLoaded) return 0;
+    const rows = document.querySelectorAll('#rcp-rbac-rows [data-group-id]');
+    const calls = [];
+    rows.forEach(row => {
+      const gid = row.getAttribute('data-group-id');
+      const sel = row.querySelector('.rcp-rbac-req');
+      const req = sel && sel.value;
+      if (!req) return;
+      calls.push(fetch('/api/admin/grants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          group_id: gid,
+          resource_type: 'recipe',
+          resource_id: recipeId,
+          requirement: req,
+        }),
+      }));
+    });
+    if (!calls.length) return 0;
+    const results = await Promise.allSettled(calls);
+    return results.filter(
+      r => r.status === 'rejected' || (r.value && !r.value.ok)
+    ).length;
+  }
+  window.openEditRecipeModal = async function (recipeId) {
+    try {
+      const r = await fetch('/api/admin/recipes/' + encodeURIComponent(recipeId),
+                            { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const rec = await r.json();
+      document.getElementById('ercp-id').value = rec.id;
+      document.getElementById('ercp-title').value = rec.title || '';
+      document.getElementById('ercp-slug').value = rec.slug || '';
+      document.getElementById('ercp-desc').value = rec.description || '';
+      document.getElementById('ercp-sql').value = rec.sql_template || '';
+      document.getElementById('ercp-related').value =
+        (rec.related_table_ids || []).join(',');
+      document.getElementById('ercp-color').value = rec.color || '#0073D1';
+      document.getElementById('ercp-status').value = rec.status || 'prod';
+      // Reset the RBAC matrix; lazy-rehydrates next time the admin
+      // expands the <details>, so the panel always reflects the recipe
+      // the modal is currently editing.
+      const det = document.getElementById('ercp-rbac-details');
+      if (det) det.open = false;
+      _ercpRbacLoaded = false;
+      _ercpRbacOriginal = {};
+      document.getElementById('editRecipeModal').style.display = 'block';
+    } catch (e) {
+      alert('Failed to load recipe: ' + e.message);
+    }
+  };
+  window.closeEditRecipeModal = function () {
+    const el = document.getElementById('editRecipeModal');
+    if (el) el.style.display = 'none';
+    const det = document.getElementById('ercp-rbac-details');
+    if (det) det.open = false;
+    _ercpRbacLoaded = false;
+    _ercpRbacOriginal = {};
+  };
+
+  // ── Edit Recipe RBAC matrix (lazy hydrate + diff on save) ──
+  // Mirror of admin_corporate_memory.html's _emdHydrateRbacMatrix /
+  // _emdDiffApplyGrants. resource_type is 'recipe' — wire shape is
+  // identical (groups + grants list, requirement enum, POST/DELETE
+  // delta against /api/admin/grants).
+  let _ercpRbacLoaded = false;
+  let _ercpRbacOriginal = {};
+  async function _ercpHydrateRbacMatrix() {
+    if (_ercpRbacLoaded) return;
+    const recipeId = document.getElementById('ercp-id').value;
+    const rowsEl = document.getElementById('ercp-rbac-rows');
+    rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups + grants…</div>';
+    try {
+      const [gResp, grResp] = await Promise.all([
+        fetch('/api/admin/groups', { credentials: 'same-origin' }),
+        fetch('/api/admin/grants?resource_type=recipe',
+              { credentials: 'same-origin' }),
+      ]);
+      if (!gResp.ok) throw new Error('groups HTTP ' + gResp.status);
+      if (!grResp.ok) throw new Error('grants HTTP ' + grResp.status);
+      const gBody = await gResp.json();
+      const groups = Array.isArray(gBody) ? gBody : (gBody.groups || []);
+      const grants = await grResp.json();
+      const current = {};
+      (grants || []).forEach(g => {
+        if (g.resource_id !== recipeId) return;
+        current[g.group_id] = g.requirement;
+      });
+      _ercpRbacOriginal = Object.assign({}, current);
+
+      if (!groups.length) {
+        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+        return;
+      }
+      const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      rowsEl.innerHTML = groups.map(g => {
+        const gid = String(g.id || g.name || '');
+        const gname = String(g.name || gid);
+        const cur = current[gid] || '';
+        const opt = (v, label) =>
+          '<option value="' + esc(v) + '"' + (cur === v ? ' selected' : '') + '>' + esc(label) + '</option>';
+        return (
+          '<div data-group-id="' + esc(gid) + '" '
+          + 'style="display:flex; gap:8px; align-items:center; '
+          +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
+          + '<span style="flex:1;">' + esc(gname) + '</span>'
+          + '<select class="ercp-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
+          +   opt('', '(no grant)')
+          +   opt('available', 'available')
+          +   opt('required', 'required')
+          + '</select>'
+          + '</div>'
+        );
+      }).join('');
+      _ercpRbacLoaded = true;
+    } catch (e) {
+      rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load: '
+        + (e.message ? e.message.replace(/[<>&]/g, '') : 'unknown') + '</div>';
+    }
+  }
+  document.addEventListener('toggle', (e) => {
+    if (e.target && e.target.id === 'ercp-rbac-details' && e.target.open) {
+      _ercpHydrateRbacMatrix();
+    }
+  }, true);
+
+  async function _ercpDiffApplyGrants(recipeId) {
+    if (!_ercpRbacLoaded) return 0;
+    const rows = document.querySelectorAll('#ercp-rbac-rows [data-group-id]');
+    const wantDelete = [];
+    const wantWrite = [];
+    rows.forEach(row => {
+      const gid = row.getAttribute('data-group-id');
+      const sel = row.querySelector('.ercp-rbac-req');
+      const cur = (sel && sel.value) || '';
+      const orig = _ercpRbacOriginal[gid] || '';
+      if (cur === orig) return;
+      if (!cur) wantDelete.push(gid);
+      else {
+        if (orig) wantDelete.push(gid);
+        wantWrite.push({ group_id: gid, requirement: cur });
+      }
+    });
+    if (!wantDelete.length && !wantWrite.length) return 0;
+
+    let grantIdByGroup = {};
+    if (wantDelete.length) {
+      const lr = await fetch('/api/admin/grants?resource_type=recipe',
+                             { credentials: 'same-origin' });
+      if (lr.ok) {
+        const arr = await lr.json();
+        arr.forEach(g => {
+          if (g.resource_id !== recipeId) return;
+          grantIdByGroup[g.group_id] = g.id;
+        });
+      }
+    }
+    const calls = [];
+    wantDelete.forEach(gid => {
+      const grantId = grantIdByGroup[gid];
+      if (!grantId) return;
+      calls.push(fetch('/api/admin/grants/' + encodeURIComponent(grantId),
+                       { method: 'DELETE', credentials: 'same-origin' }));
+    });
+    wantWrite.forEach(w => {
+      calls.push(fetch('/api/admin/grants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          group_id: w.group_id,
+          resource_type: 'recipe',
+          resource_id: recipeId,
+          requirement: w.requirement,
+        }),
+      }));
+    });
+    const results = await Promise.allSettled(calls);
+    return results.filter(
+      r => r.status === 'rejected' || (r.value && !r.value.ok)
+    ).length;
+  }
+  window.submitEditRecipe = async function () {
+    const btn = document.getElementById('ercp-submit-btn');
+    const id = document.getElementById('ercp-id').value;
+    const title = document.getElementById('ercp-title').value.trim();
+    if (!id || !title) { alert('Title is required.'); return; }
+    const related = document.getElementById('ercp-related').value
+      .split(',').map(s => s.trim()).filter(Boolean);
+    const body = {
+      title: title,
+      description: document.getElementById('ercp-desc').value.trim() || null,
+      sql_template: document.getElementById('ercp-sql').value || null,
+      related_table_ids: related,
+      color: document.getElementById('ercp-color').value || null,
+      status: document.getElementById('ercp-status').value || 'prod',
+    };
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/admin/recipes/' + encodeURIComponent(id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        let msg = d.detail || r.statusText;
+        if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
+        alert('Save failed: ' + msg);
+        return;
+      }
+      // Apply any RBAC matrix deltas after the metadata PUT — the
+      // grants endpoint is independent of the recipes PUT, so a partial
+      // failure here gets surfaced as a toast without blocking the save.
+      const rbacFails = await _ercpDiffApplyGrants(id);
+      if (rbacFails > 0 && typeof showToast === 'function') {
+        showToast(rbacFails + ' group access change(s) failed', 'error');
+      }
+      window.closeEditRecipeModal();
+      if (typeof showToast === 'function') {
+        showToast('Recipe "' + title + '" saved');
+      }
+      _recipesLoaded = false;
+      loadRecipesTab(true);
+    } catch (e) {
+      alert('Network error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  window.deleteRecipe = async function (recipeId, title) {
+    // v54: soft delete + undo toast. No confirm() — the Undo button on
+    // the toast is the recovery affordance; a confirm + undo together
+    // is friction without payoff.
+    try {
+      const r = await fetch('/api/admin/recipes/' + encodeURIComponent(recipeId),
+                            { method: 'DELETE', credentials: 'same-origin' });
+      if (!r.ok && r.status !== 204) {
+        const d = await r.json().catch(() => ({}));
+        alert('Delete failed: ' + (d.detail || r.statusText));
+        return;
+      }
+      _recipesLoaded = false;
+      loadRecipesTab(true);
+      if (typeof window.showUndoToast === 'function') {
+        window.showUndoToast(
+          'Recipe "' + title + '" deleted.',
+          '/api/admin/recipes/' + encodeURIComponent(recipeId) + '/restore',
+          () => { _recipesLoaded = false; loadRecipesTab(true); },
+        );
+      }
+    } catch (e) {
+      alert('Network error: ' + e.message);
+    }
+  };
+
+  window.submitCreateRecipe = async function () {
+    const btn = document.getElementById('rcp-submit-btn');
+    const title = document.getElementById('rcp-title').value.trim();
+    if (!title) { alert('Title is required.'); return; }
+    let slug = document.getElementById('rcp-slug').value.trim();
+    if (!slug) slug = _slugifyTitle(title);
+    const related = document.getElementById('rcp-related').value
+      .split(',').map(s => s.trim()).filter(Boolean);
+    const body = {
+      slug: slug,
+      title: title,
+      description: document.getElementById('rcp-desc').value.trim() || null,
+      sql_template: document.getElementById('rcp-sql').value || null,
+      related_table_ids: related,
+      color: document.getElementById('rcp-color').value || null,
+      status: document.getElementById('rcp-status').value || 'prod',
+    };
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/admin/recipes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        let msg = d.detail || r.statusText;
+        if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
+        alert('Create failed: ' + msg);
+        return;
+      }
+      const respBody = await r.json().catch(() => ({}));
+      const newRecipeId = respBody.id;
+      // Apply optional inline RBAC matrix on success — same write-only
+      // pattern as Create Memory Domain. Failures bubble up as a toast
+      // without rolling back the recipe.
+      let grantFails = 0;
+      if (newRecipeId) {
+        grantFails = await _rcpSubmitGrantsInline(newRecipeId);
+      }
+      window.closeCreateRecipeModal();
+      if (typeof showToast === 'function') {
+        const base = 'Recipe "' + title + '" created';
+        if (grantFails > 0) {
+          showToast(base + ' — ' + grantFails + ' grant(s) failed', 'error');
+        } else {
+          showToast(base);
+        }
+      }
+      // Force-refresh the Recipes tab so the new row shows.
+      _recipesLoaded = false;
+      loadRecipesTab(true);
+    } catch (e) {
+      alert('Network error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
 })();
-</script>
-<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-sql.min.js"></script>
-<script src="{{ url_for('static', filename='js/metric_modal.js', v=git_version) }}"></script>
-<script type="module">
-    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-    mermaid.initialize({
-        startOnLoad: false,
-        theme: 'base',
-        themeVariables: {
-            fontFamily: 'Inter, system-ui, sans-serif',
-            fontSize: '13px',
-            primaryColor: '#dbeafe',
-            primaryBorderColor: '#2563eb',
-            primaryTextColor: '#1e40af',
-            lineColor: '#94a3b8',
-            secondaryColor: '#f1f5f9',
-            tertiaryColor: '#f5f7fa',
-            edgeLabelBackground: '#f1f5f9',
-        },
-        flowchart: {
-            curve: 'basis',
-            padding: 12,
-            htmlLabels: true,
-            useMaxWidth: true,
-        },
-    });
-    // Expose mermaid globally for lazy rendering
-    window.mermaid = mermaid;
 </script>
 {% endblock %}

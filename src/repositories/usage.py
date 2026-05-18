@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
 import duckdb
 
 
@@ -90,6 +95,54 @@ class UsageRepository:
         events_deleted = r.rowcount if r.rowcount else 0
         self.conn.execute("DELETE FROM usage_session_summary WHERE session_file = ?", [session_file])
         return events_deleted
+
+    def emit_server_event(
+        self,
+        *,
+        event_type: str,
+        user_id: Optional[str],
+        username: str = "",
+        props: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Insert one synthetic usage_events row for a server-side product event.
+
+        v49 unified-stack telemetry — Section 9.2 of the design spec. Reuses
+        the existing usage_events table for ``stack.subscribe``,
+        ``memory.dismiss``, ``data_package.view`` etc. so /admin/telemetry can
+        slice them through the existing summary tools.
+
+        Conventions:
+          - ``event_type``   → goes in the column of the same name (e.g.
+            ``stack.subscribe``); dotted namespacing is intentional so admins
+            can prefix-filter.
+          - ``source='server'`` distinguishes these from CC-session events.
+          - ``session_id`` / ``session_file`` are server-synthetic UUIDs so
+            the NOT NULL constraints stay satisfied. Telemetry consumers
+            should key on ``user_id`` + ``event_type``, not session.
+          - ``props`` is serialized into ``friction_tags`` (JSON column we
+            piggyback for arbitrary event payload — the rename is tracked in
+            spec Section 9 as a follow-up).
+        """
+        event_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        self.conn.execute(
+            """INSERT INTO usage_events
+               (id, session_id, session_file, username, event_type,
+                is_error, source, occurred_at, processor_version,
+                friction_tags, user_id)
+               VALUES (?, ?, ?, ?, ?, FALSE, 'server', ?, 1, ?, ?)""",
+            [
+                event_id,
+                f"server-{event_id[:8]}",
+                f"server/{event_type}.jsonl",
+                username or (user_id or "anonymous"),
+                event_type,
+                now,
+                json.dumps(props) if props else None,
+                user_id,
+            ],
+        )
+        return event_id
 
     def delete_older_than(self, days: int) -> int:
         """Retention prune — DELETE events older than now - days."""

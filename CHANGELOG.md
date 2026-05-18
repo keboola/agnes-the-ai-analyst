@@ -10,6 +10,323 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`+ New Memory Item`** button on `/admin/corporate-memory` for
+  admin-seeded items (rules, playbooks, decisions). Modal chains POST
+  `/api/memory` → optional PATCH `domain_ids` → POST
+  `/admin/batch?action=approve|mandate`, so admin-created items land
+  directly as Approved (or Mandatory if the Required checkbox is
+  ticked) without going through Pending review.
+- **`domains: list[str]`** field on every memory-item API response.
+  The bulk + single-item hydration paths now emit the full slug list,
+  in addition to the legacy `domain` single-slug surface kept for
+  back-compat. The admin queue renders all chips with a `+N` overflow
+  past three.
+- **GET `/api/memory/admin/{id}`** — single-item fetch for admin. Powers
+  the `#item-<id>` deep link from `/memory/d/<slug>`'s Edit affordance:
+  the page now fetches the row directly (no pagination racing) and
+  injects it into `_itemsById` so the edit modal opens reliably even
+  when the item is beyond page 1 of All Items.
+- **PATCH /api/memory/admin/{id}** accepts a new `domain_ids: list[str]`
+  field that atomically replaces the item's full memory-domain membership
+  via `knowledge_item_domains`. The admin item-edit modal now sends this
+  on save so chip-input domain selections actually persist — previously
+  the chip-input was decorative (legacy single-domain `<select>` was the
+  only thing saved).
+- **Edit affordance** for memory domains on the `/admin/corporate-memory`
+  Domains tab — opens a modal pre-populated from
+  `GET /api/admin/memory-domains/{id}` and saves via PUT. Slug stays
+  read-only (it's referenced by `/memory/d/<slug>`, junction rows, and
+  resource grants).
+- **Memory Domains tab** on `/admin/corporate-memory` — first-class admin
+  CRUD UI for memory domains. Renders a list of all domains with
+  Open/Edit/Delete affordances, hosts the "+ New Memory Domain" entry
+  point in the tab strip header (single button — duplicate removed), and
+  refreshes after create. The user-facing
+  `/corporate-memory` "Manage domains →" link now deep-links to this tab
+  (`#domains`). Closes the "I can't see/edit the domains anywhere in admin"
+  feedback.
+- **Domain badge** on `/admin/corporate-memory` item cards — every queue row
+  now shows which memory domain (if any) the item belongs to as a blue
+  📂 chip alongside the existing category/source/status badges.
+- **Filter by domain** dropdown on the All Items tab — admins can narrow
+  the queue to a single domain (or "(no domain)" for unassigned items),
+  hydrated from `/api/admin/memory-domains`.
+- **Data Packages chip-input** on the legacy table edit modal — parity
+  with the BigQuery modal. Edits compute the minimal add/remove delta
+  against `/api/admin/data-packages/{id}/tables` so admins can manage
+  package membership without leaving the edit dialog.
+- **Resource type filter** on Activity Center — new dropdown in the
+  filter bar narrows the timeline to a single resource namespace
+  (Tables, Knowledge items, Marketplaces, Store submissions/entities/
+  uploads, Users, Tokens, Scheduled jobs). Wired via
+  `GET /api/admin/activity?resource_prefix=table:` (LIKE-anchored on
+  `audit_log.resource`); URL/state round-trips and reset both honor
+  the new field. The event detail panel grew a `Filter to this
+  resource type` button that pivots on the selected row's resource
+  when it has a recognized prefix.
+- **Recipes RBAC** — new `ResourceType.RECIPE` registered in the
+  RBAC registry, plus a `_recipe_blocks()` projection so the admin
+  /access page surfaces recipes alongside tables, data packages, and
+  memory domains. `GET /api/recipes` and `/api/recipes/{slug}` now
+  filter the analyst view to only recipes the caller's groups have a
+  `resource_grants` row for — default-closed, matching the data-
+  package gate (admin short-circuits). Non-admin access to a
+  forbidden recipe returns 404 (not 403) so probing for existence
+  isn't possible. The Create + Edit Recipe modals on /catalog grew
+  an inline Group access matrix (lazy-hydrated on toggle, diff-on-
+  save) mirroring the Memory Domain pattern.
+
+### Changed
+- **BigQuery + Keboola edit modals** now carry the Data Packages
+  chip-input that the legacy modal already had. Hydrated on open with
+  the table's current memberships; save diffs vs the original set and
+  emits the minimal POST/DELETE delta to the junction endpoint. Shared
+  helpers (`_hydrateEditPackagesChips`, `_diffApplyPackageMembership`)
+  used by all three modals — legacy / BQ / Keboola.
+- **Group-by-bucket** replaced the all-or-nothing `confirm()` with a
+  preview modal listing every distinct bucket: table count, resulting
+  slug, slug-collision warning, per-bucket checkbox (defaults on,
+  disabled for slugs that already exist). Admins can opt out per
+  bucket before clicking Create checked.
+- **Per-row Mode badge** now carries a `title=` tooltip explaining
+  each value (`local` / `remote` / `materialized` / `internal`).
+  Previously only the Register modal had the explanation; admins had
+  to remember which mode does what when scanning a long table list.
+- **Admin nav sections collapsible + persisted** — Activity Center /
+  Users & Access / Data Packages / Agent Experience / Server are now
+  native `<details data-section=...>` wrappers. Per-section
+  open/closed state lives in `localStorage` so the dropdown reopens
+  with the same view the admin last had.
+- **"Manage domains" / "+ New Data Package" buttons** carry an
+  explicit `(admin)` suffix on `/corporate-memory` and `/catalog`.
+  Already gated behind `user.is_admin`; the hint makes the
+  audience obvious instead of "this links somewhere I can't go".
+- **`/catalog` + `/corporate-memory` apply Add/Remove in place** —
+  cards now flip their button + count badges live via JS instead of
+  triggering a full page reload, so scroll position and focus survive
+  rapid Add/Remove sequences. The "My Stack" tab badge ticks up/down
+  on each action.
+- **Toast queue** — both `/catalog` and `/corporate-memory` queue up
+  to 3 toasts FIFO with per-message dwell (4 s for errors, 2.5 s for
+  success). Previously a second toast wiped the first instantly,
+  losing useful feedback during chained operations.
+- **Global Escape closes the topmost modal** — base template carries
+  a single `keydown` handler that walks visible `.modal-overlay` /
+  `[id$="Modal"]` / `.modal.is-open` elements, picks the highest
+  z-index, and closes it (preferred via a `data-close-handler`
+  hook). Inputs/textareas blur on Escape instead. Opt-out per
+  element via `data-no-esc-close="1"`.
+- **Item-edit modal: legacy single-domain `<select>` removed.** The
+  chip-input is now the canonical domain control on
+  `/admin/corporate-memory`; PATCH writes `domain_ids` (list) to the
+  junction. The hidden `<select>` was dead weight that confused
+  readers ("two domain inputs?").
+- **Create-resource flow no longer pops a second modal.** Both Create
+  Data Package (`/admin/tables`) and Create Memory Domain
+  (`/admin/corporate-memory`) had a step-2 RBAC modal that opened on
+  top of the create modal after success — confusing per user feedback
+  ("modal-on-modal"). The per-group Available|Required matrix is now
+  an inline collapsible "Group access (optional)" section inside the
+  create modal itself, lazy-loaded on first open. The step-2 modals
+  + their `*Rbac*` handlers were removed; the dead-stub functions are
+  kept for one release for any external callers that still reference
+  them.
+- **Admin sidebar** — the "Data" section heading was renamed to "Data
+  Packages" so the parent matches the noun used everywhere else
+  (`/catalog`, `/admin/tables` package-centric layout, `agnes catalog`).
+- **`/corporate-memory` hides empty memory domains.** A memory domain
+  with zero items has nothing for an analyst to opt-into; admins manage
+  empty placeholders from `/admin/corporate-memory#domains`. Required
+  domains stay visible even when empty so a mandate is honored after the
+  last item gets deleted.
+- **`/admin/tables`** — page-centric rewrite. Data Packages are now the
+  primary organising structure: every registered table appears under
+  either a Data Package (collapsible `<details>` section with member
+  table list) or in an "Unpackaged tables (N — needs packaging)" yellow
+  callout. The per-connector tabs (BigQuery / Keboola / Jira / Agnes
+  internal) that used to drive the layout were folded into a single
+  `+ Register new table ▾` dropdown in the action bar — picking a
+  connector opens its register modal but no longer steers the page
+  layout. Cache freshness collapsed into a one-line summary in the
+  action bar. Addresses the "data packages handled on the side / weird
+  / everything must live within a group" UX feedback.
+- **Color inputs** on Create/Edit Data Package + Create Memory Domain
+  modals switched from free-text `<input type="text">` to native
+  `<input type="color">` swatch picker. Server now validates the hex
+  format too (`^#[0-9a-fA-F]{6}$`) — admins can no longer save malformed
+  values like `#ff5733#e0f2fe` that broke the card layout downstream.
+
+### Fixed
+- **Unguarded `/admin/*` links from user-facing pages**. Two surfaces
+  relied on implicit gating: the `corporate_memory.html` pending-review
+  banner depended on the backend zeroing the count for non-admin, and
+  the `news.html` empty-state copy linked
+  `<a href="/admin/news">/admin/news</a>` to every viewer. Both are now
+  wrapped in explicit `{% if user.is_admin %}` blocks so the links
+  can't leak into a non-admin DOM, even if a future router change
+  surfaces the count to everyone.
+- **chip-input dropdown was empty for memory domains.** `loadCandidates`
+  expected `[]` or `{items}`, but `/api/memory/domains` wraps in
+  `{domains}` → fell through to the empty-array default. Existing
+  domains never showed up in the picker, so admins could only ever
+  "+ Create new". Now the loader unwraps any of `items` / `domains` /
+  `data_packages` / `results`, and normalizes `{id, name|slug}` rows so
+  domain entries actually render their name.
+- **`#item-<id>` deep link from `/memory/d/<slug>` Edit didn't open
+  the edit modal** — the admin page's hash handler only recognized tab
+  names, so `#item-XXX` silently fell through to the Review queue. Now
+  the page parses `item-<id>`, switches to All Items, polls for the
+  matching row, and opens the edit modal once it's in `_itemsById`.
+- **Unpackaged-table Edit icon overflowed into the Mode column.** The
+  "+ Add to package" text button overran the fixed 120px col-actions
+  width; with `justify-end` the Edit icon got pushed left into the
+  neighbouring cell. Replaced the wide text button with an icon button
+  (folder-with-plus) matching the visual rhythm of the other row icons.
+- **chip-input "+ Create new" was silently dead** —
+  `app/web/static/js/components/chip-input.js` dispatched the
+  `chip-create` CustomEvent without `bubbles: true`, so the
+  document-level listeners in `/admin/tables` and
+  `/admin/corporate-memory` never fired. Adding `bubbles: true` restores
+  the inline create flow.
+- **"Data Package created but didn't appear"** — the Create Data Package
+  flow now fires a fire-and-forget refresh of the packages section
+  immediately after step 1 succeeds (instead of waiting for the optional
+  step-2 RBAC modal to close), shows a success toast on step-1 close, and
+  re-titles the step-2 modal with an explicit "✓ created — assign access?
+  (optional)" header so the modal transition isn't silent.
+
+### Removed
+
+### Internal
+- **Keboola legacy tests** use `pytest.importorskip("kbcstorage")` at
+  module top so 11 tests skip cleanly on installs without the optional
+  `kbcstorage` dep (default CI image, contributor laptops). CI now
+  reports 1 failure (a flaky perf smoke) instead of 12.
+
+## [0.55.0] — 2026-05-16
+
+### Added
+- **Data Packages** — admin-curated bundles of tables surface as a first-class
+  stack type under `/catalog` with the same card pattern + tab strip
+  (Browse / My Stack) + Required badge + Add to stack interaction as
+  Marketplace. New `/catalog/p/<slug>` drill-down lists the tables in a
+  package with their query_mode badge and last sync. Inline create flow
+  from the `/admin/tables` register/edit modal (chip-input typeahead with
+  `+ Create new` mini-modal + optional RBAC follow-up step).
+- **Memory** — promoted to a first-class user-facing nav slot (no longer
+  admin-only). Top-level `/corporate-memory` switches to a domain Browse
+  view with Browse / My Stack tabs + the shared card pattern. New
+  `/memory/d/<slug>` drill-down preserves every per-item affordance
+  (votes / contributors / tags / confidence / source-badge / status-badge
+  / admin Edit / Mark Personal / Dismiss), with Required items
+  visually pinned and non-dismissable.
+- **Required vs Available** — `resource_grants.requirement` enum
+  (`available` / `required`) replaces ad-hoc `is_system`-style flags for
+  DATA_PACKAGE + MEMORY_DOMAIN + MEMORY_ITEM grants. Per-grant Required
+  means "auto in stack, cannot remove"; per-grant Available means
+  "user opts in via Add to stack". OR precedence across grants — any
+  required grant wins. Memory item-level Required has its own
+  precedence (per-group MEMORY_ITEM grant override > `is_required` flag).
+- **Soft downgrade** — when admin flips a grant from `required → available`
+  on `PUT /api/admin/grants/{id}`, every user already-in-stack via that
+  required grant gets an explicit `user_stack_subscriptions` row
+  materialized in the same transaction, so they don't silently lose the
+  resource on the next `agnes pull`.
+- **`StackResolver` service** (`app/services/stack_resolver.py`) — single
+  source of truth for browse + stack + Required computation across
+  Data Packages and Memory Domains. Used by all `/api/stack/*`
+  endpoints + the manifest builder.
+- **`agnes stack` CLI** — `list [--type]`, `add <type> <id>`,
+  `remove <type> <id>` for Data Packages and Memory Domains. Plus
+  `agnes admin data-package {create,edit,delete,list,add-table,
+  remove-table}` and `agnes admin memory-domain
+  {create,edit,delete,list,add-item,remove-item}` with consistent
+  `--yes` confirmation on destructive ops. `agnes admin grant`
+  picks up `--requirement available|required`.
+- **`/api/sync/manifest` extended** with `data_packages[]`,
+  `memory_domains[]`, and `direct_tables[]` arrays. Legacy `tables[]`
+  shape preserved for older CLI clients.
+- **Reference-counted shared parquet store** — `agnes pull` keeps each
+  table parquet exactly once at `<workspace>/.claude/data/_shared/`
+  with symlinks from each stacked package directory. Removing a
+  package only deletes the package's symlink + the shared parquet
+  if no other stacked package still references it. Windows fallback:
+  hardlink, then file copy on further error.
+- **`GET /api/memory/bundle?domain=<slug>`** — per-domain rendered
+  markdown bundle for `agnes pull` to materialize at
+  `<workspace>/.claude/memory/<slug>/bundle.md`. Deterministic
+  ordering (id-sorted, required-then-approved); md5 published in the
+  manifest.
+- **Telemetry + audit** — every admin write to data_packages /
+  memory_domains / grants / mark-mandatory / mark-unmandatory writes
+  an `audit_log` row. Every user-side `stack.subscribe`,
+  `stack.unsubscribe`, `memory.dismiss`, `memory.undismiss`,
+  `data_package.view`, `memory_domain.view`, `sync.pull_started`,
+  `sync.pull_completed` emits to `usage_events`.
+- **chip-input** vanilla JS component (`app/web/static/js/components/
+  chip-input.js`) — multi-select typeahead with `+ Create new` hook.
+  Used on `/admin/tables` (Data Packages field) and
+  `/admin/corporate-memory` (Domains field). Fires `chip-create` so
+  in-page modals can intercept.
+
+### Changed
+- **BREAKING** — `knowledge_items.status='mandatory'` semantics moved
+  to new `knowledge_items.is_required BOOLEAN`. Existing mandatory
+  items auto-migrated to `is_required=TRUE, status='approved'`. The
+  `POST /api/memory/items/{id}/mark-mandatory` endpoint now writes
+  `is_required=TRUE` and returns `{is_required: true}` in the
+  response (legacy `status: "mandatory"` removed). New paired
+  endpoint `POST /api/memory/items/{id}/mark-unmandatory` for the
+  inverse path.
+- **BREAKING** — scalar `knowledge_items.domain` column dropped;
+  relations now live in `knowledge_item_domains` junction. Domains
+  themselves are first-class rows in the new `memory_domains` table
+  (CRUD via `/api/admin/memory-domains`). The `VALID_DOMAINS`
+  hardcoded enum at `app/api/memory.py:27` is gone; the canonical six
+  (finance / engineering / product / data / operations /
+  infrastructure) are seeded into `memory_domains` by the migration.
+  Item-on-write/read goes through the junction; the API surface and
+  the `_TREE_AXES = ("domain", ...)` axis are preserved.
+- **BREAKING** — `MEMORY_DOMAIN` grants in `resource_grants` switched
+  from slug string to `memory_domains.id` reference. Migration
+  re-points existing grants; orphan grants (pointing at non-existent
+  domain) preserved for admin cleanup.
+- `agnes pull` rewritten to a per-type loop
+  (`marketplace_plugins / direct_tables / data_packages /
+  memory_domains`). Reuses `cli/lib/pull.py` for marketplace +
+  legacy `tables[]` flow; new `cli/lib/pull_sync.py` handles the v49
+  manifest sections. Post-pull status block shows per-type
+  added / updated / removed counts.
+- Memory primary nav link is now visible to non-admin users. Admin
+  dropdown gets a separate "Curated memory reviews" link pointing
+  at the moderation queue.
+
+### Internal
+- Schema migration **v48 → v49** introduces `data_packages`,
+  `data_package_tables`, `memory_domains`, `knowledge_item_domains`,
+  `user_stack_subscriptions`; adds `resource_grants.requirement`
+  + `knowledge_items.is_required`; drops `knowledge_items.domain`.
+  End-to-end fidelity test seeded with realistic v48 fixture
+  including mandatory items + slug-keyed memory_domain grants +
+  marketplace telemetry tables.
+- `ResourceType` enum gains `DATA_PACKAGE` and `MEMORY_ITEM` with
+  matching `ResourceTypeSpec` entries in `RESOURCE_TYPES`.
+- `KnowledgeRepository` now routes `domain` through
+  `knowledge_item_domains` while preserving the public kwarg
+  signature; reads synthesize `item["domain"]` via
+  `_hydrate_domain` (alphabetic-first junction slug) for the
+  provenance/contradiction/duplicates/template callers that still
+  index on the scalar key.
+- Admin moderation queue (`admin_corporate_memory.html`) cards now
+  use the same `.memory-item__*` shape as the user-facing
+  `/memory/d/<slug>` drill-down, with admin-only action buttons
+  layered on top. Legacy `.knowledge-item` class kept on the same
+  DOM nodes so in-file JS (keyboard nav, bulk-edit selection)
+  keeps working without a rewrite.
+- Single PR cutover (no two-phase rollout). Legacy
+  `marketplace_plugins.is_system` + `user_plugin_optouts` retained
+  per spec D1 — Marketplace was deliberately not touched.
 ## [0.54.24] — 2026-05-16
 
 ### Fixed

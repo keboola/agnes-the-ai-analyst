@@ -119,6 +119,24 @@ def test_query_filter_by_resource(conn):
     assert len(rows) == 1
 
 
+def test_query_filter_by_resource_prefix(conn):
+    # Activity Center "Resource" dropdown sends the prefix
+    # (`table:`, `user:`, …) — the repo translates it to `LIKE prefix%`
+    # so rows with any id under that namespace match.
+    repo = AuditRepository(conn)
+    _seed(conn, [
+        {"action": "x", "resource": "table:a"},
+        {"action": "x", "resource": "table:b"},
+        {"action": "x", "resource": "user:u1"},
+        {"action": "x", "resource": "manifest"},
+    ])
+    rows, _ = repo.query(resource_prefix="table:")
+    assert {r["resource"] for r in rows} == {"table:a", "table:b"}
+
+    rows, _ = repo.query(resource_prefix="user:")
+    assert {r["resource"] for r in rows} == {"user:u1"}
+
+
 def test_query_filter_by_result_pattern(conn):
     repo = AuditRepository(conn)
     _seed(conn, [

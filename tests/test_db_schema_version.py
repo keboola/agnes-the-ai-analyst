@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_48():
+def test_schema_version_is_54():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -125,7 +125,48 @@ def test_schema_version_is_48():
     #            New attribution logic = prefix split on `<plugin>:<local>`
     #            identifier + live lookup against marketplace_plugins /
     #            store_entities — no mapping tables needed.
-    assert SCHEMA_VERSION == 48
+    # v48 → v49: unified stack — Data Packages + Memory Domains. Adds
+    #            resource_grants.requirement enum, knowledge_items.is_required
+    #            (splitting the status='mandatory' overload), data_packages
+    #            + data_package_tables, memory_domains +
+    #            knowledge_item_domains junction, and
+    #            user_stack_subscriptions for per-user opt-in. Drops the
+    #            scalar knowledge_items.domain column. See spec at
+    #            docs/brainstorms/2026-05-15-unified-stack-design.md.
+    # v49 → v50: cover_image_url on data_packages + memory_domains. Closes
+    #            the visual gap with /marketplace cards (which have always
+    #            rendered uploaded JPGs/PNGs) — /catalog + /memory cards
+    #            now render <img> when set, fall back to letter initials.
+    #            Upload endpoint at POST /api/admin/uploads/cover-image
+    #            persists files under ${DATA_DIR}/uploads/covers/<sha>.<ext>.
+    # v50 → v51: lifecycle status + classification category for the
+    #            /catalog cards. data_packages adds `status` (enum:
+    #            prod/poc/coming-soon/draft, default prod) + `category`
+    #            (free text for the eyebrow above the card title);
+    #            memory_domains adds `status` only (the domain IS the
+    #            classification). Hero status checkboxes filter the
+    #            card grid; cover-corner pill renders non-prod values.
+    # v51 → v52: per-table docs columns on table_registry — feeds the
+    #            /catalog/t/<id> detail page. sample_questions (JSON
+    #            array of strings), things_to_know (markdown-ish text),
+    #            pairs_well_with (JSON array of related table_registry
+    #            ids). Admin-editable via PATCH /api/admin/registry/{id}/docs.
+    # v52 → v53: recipes table — admin-curated multi-table query
+    #            templates surfaced as a third "Recipes" tab on
+    #            /catalog. Not stack-subscribable (analysts use a
+    #            recipe, they don't opt in). related_table_ids is a
+    #            JSON array of table_registry ids drawing the
+    #            drilldown's "Touches tables" links.
+    # v53 → v54: soft-delete columns (``deleted_at TIMESTAMP``) on
+    #            data_packages, memory_domains, recipes. Powers the
+    #            "Deleted. Undo (10s)" toast on admin pages — DELETE
+    #            sets deleted_at instead of removing the row, so the
+    #            junction (data_package_tables / knowledge_item_domains)
+    #            + resource_grants survive intact for the restore flow.
+    #            list/get filter ``deleted_at IS NULL`` so soft-deleted
+    #            rows are invisible to every caller except the explicit
+    #            POST /{id}/restore path.
+    assert SCHEMA_VERSION == 54
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

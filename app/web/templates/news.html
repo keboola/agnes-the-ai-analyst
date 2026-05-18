@@ -75,7 +75,11 @@ document.addEventListener('DOMContentLoaded', function () {
     {% else %}
     <div class="news-empty">
         <h2>No news yet</h2>
-        <p>An admin hasn't published a news update on this instance yet. Check back soon — or, if you're an admin, head to <a href="/admin/news">/admin/news</a> to write the first one.</p>
+        {% if user.is_admin %}
+        <p>An admin hasn't published a news update on this instance yet. Head to <a href="/admin/news">/admin/news</a> to write the first one.</p>
+        {% else %}
+        <p>An admin hasn't published a news update on this instance yet. Check back soon.</p>
+        {% endif %}
     </div>
     {% endif %}
 </div>

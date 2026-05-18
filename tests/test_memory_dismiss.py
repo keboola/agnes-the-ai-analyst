@@ -22,19 +22,36 @@ def _auth(token):
 
 
 def _seed_item(conn, item_id: str, title: str, status: str, *, confidence: float | None = None):
-    """Insert a knowledge item directly through the repo + force its status."""
+    """Insert a knowledge item directly through the repo + force its status.
+
+    v49: Required tier is no longer encoded in ``status`` — passing
+    ``status="mandatory"`` here is read as "this item should be marked
+    required" and routed to ``is_required=TRUE`` while the actual lifecycle
+    status is set to ``"approved"``. Other status values pass through.
+    """
     repo = KnowledgeRepository(conn)
-    repo.create(
-        id=item_id,
-        title=title,
-        content=f"Content for {title}",
-        category="engineering",
-        status=status,
-        confidence=confidence,
-    )
-    # ``create`` honors the passed status, but for mandatory items we also
-    # need updated_at refreshed — keep parity with TestBundle's helper.
-    repo.update_status(item_id, status)
+    if status == "mandatory":
+        repo.create(
+            id=item_id,
+            title=title,
+            content=f"Content for {title}",
+            category="engineering",
+            status="approved",
+            confidence=confidence,
+            is_required=True,
+        )
+    else:
+        repo.create(
+            id=item_id,
+            title=title,
+            content=f"Content for {title}",
+            category="engineering",
+            status=status,
+            confidence=confidence,
+        )
+        # ``create`` honors the passed status, but bumping it again keeps
+        # updated_at fresh — matches the pre-v49 helper behavior.
+        repo.update_status(item_id, status)
 
 
 class TestDismissPost:

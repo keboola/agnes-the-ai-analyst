@@ -6,6 +6,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+# Optional kbcstorage dep — skip cleanly on installs that don't ship it.
+# See tests/test_keboola_extractor_typed.py for the same pattern.
+pytest.importorskip("kbcstorage")
+
 
 def test_first_sync_chunked_writes_per_partition_files(tmp_path, monkeypatch):
     """Two-chunk history: latest chunk has rows, previous has rows, then 2 empty

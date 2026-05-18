@@ -724,6 +724,183 @@ sys.exit(compute_exit_code(result, len(configs)))
 
 # ---- Manifest ----
 
+def _table_manifest_entry(state: dict, reg: dict) -> dict:
+    """Shape one ``sync_state`` row + registry metadata into the per-table
+    manifest object used in ``data_packages[].tables`` and ``direct_tables``.
+
+    Tolerant to empty ``state`` (table is registered but never synced) and
+    empty ``reg`` (sync_state row outlives the registry — race on unregister).
+    Both happen in real installs; the manifest is the read path so we must
+    not blow up on a partially-consistent snapshot.
+    """
+    name = state.get("table_id") or reg.get("name") or reg.get("id") or ""
+    return {
+        "id": reg.get("id") or name,
+        "name": name,
+        "hash": state.get("hash", ""),
+        "md5": state.get("hash", ""),
+        "size_bytes": state.get("file_size_bytes", 0),
+        "rows": state.get("rows", 0),
+        "query_mode": reg.get("query_mode") or "local",
+        "source_type": reg.get("source_type") or "",
+        "updated": (
+            state.get("last_sync").isoformat() if state.get("last_sync") else None
+        ),
+    }
+
+
+def _build_data_packages_section(
+    conn, user: dict, registry_by_name: dict, states_by_table_id: dict
+) -> tuple[list, set]:
+    """Build the ``data_packages`` array per Section 5.1 of the design.
+
+    Returns the list plus a set of ``table_registry.id`` values that were
+    surfaced via at least one package — used to subtract from
+    ``direct_tables`` so a table belonging to a package doesn't double-render.
+    """
+    from app.resource_types import ResourceType
+    from app.services.stack_resolver import StackResolver
+    from src.repositories.data_packages import DataPackagesRepository
+
+    resolver = StackResolver(conn)
+    pkg_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
+    if not pkg_entries:
+        return [], set()
+    repo = DataPackagesRepository(conn)
+    packaged_table_ids: set = set()
+    out: list = []
+    for entry in pkg_entries:
+        pkg = repo.get(entry.id)
+        if not pkg:
+            continue
+        table_rows = repo.list_tables(entry.id)
+        tables_payload: list = []
+        total_size_bytes = 0
+        for t in table_rows:
+            packaged_table_ids.add(t["id"])
+            # registry_by_name keys on name; sync_state.table_id mirrors
+            # registry.name today. Cover the id↔name asymmetry.
+            reg = registry_by_name.get(t["name"]) or {}
+            state = (
+                states_by_table_id.get(t["name"])
+                or states_by_table_id.get(t["id"])
+                or {}
+            )
+            entry_obj = _table_manifest_entry(state, reg or {"id": t["id"]})
+            tables_payload.append(entry_obj)
+            total_size_bytes += int(entry_obj.get("size_bytes") or 0)
+        out.append({
+            "id": pkg["id"],
+            "slug": pkg["slug"],
+            "name": pkg["name"],
+            "icon": pkg.get("icon"),
+            "color": pkg.get("color"),
+            "description": pkg.get("description"),
+            "requirement": entry.requirement,
+            "tables": tables_payload,
+            "total_size_bytes": total_size_bytes,
+        })
+    return out, packaged_table_ids
+
+
+def _build_memory_domains_section(conn, user: dict) -> list:
+    """Build the ``memory_domains`` array per Section 5.1.
+
+    Each entry carries a per-domain ``md5`` derived from the concatenated
+    item content/titles inside the domain — when the bundle changes the
+    md5 flips so the CLI knows to re-fetch.
+
+    TODO(phase-7): ``bundle_url`` points at a yet-to-implement per-domain
+    bundle endpoint (``/api/memory/bundle?domain=<slug>``). The CLI in
+    Phase 7 will need it; for now we emit the URL the future endpoint
+    will live at so older clients keep parsing the manifest cleanly.
+    """
+    from app.resource_types import ResourceType
+    from app.services.stack_resolver import StackResolver
+    from src.repositories.memory_domains import MemoryDomainsRepository
+
+    resolver = StackResolver(conn)
+    dom_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
+    if not dom_entries:
+        return []
+    repo = MemoryDomainsRepository(conn)
+    out: list = []
+    for entry in dom_entries:
+        dom = repo.get(entry.id)
+        if not dom:
+            continue
+        items = repo.list_items_of_domain(entry.id, limit=10000)
+        # Per-domain md5 — concatenate sorted (id, title, status) tuples so
+        # the hash is stable under list ordering and flips on any content
+        # mutation (title or membership change).
+        h = hashlib.md5()
+        for it in sorted(items, key=lambda r: r["id"]):
+            h.update(
+                f"{it['id']}|{it.get('title','')}|{it.get('status','')}|".encode()
+            )
+        required_count = sum(
+            1 for it in items
+            if (it.get("status") == "approved" and it.get("is_required"))
+        )
+        out.append({
+            "id": dom["id"],
+            "slug": dom["slug"],
+            "name": dom["name"],
+            "icon": dom.get("icon"),
+            "color": dom.get("color"),
+            "description": dom.get("description"),
+            "requirement": entry.requirement,
+            "bundle_url": f"/api/memory/bundle?domain={dom['slug']}",
+            "md5": h.hexdigest(),
+            "items_count": len(items),
+            "required_count": required_count,
+        })
+    return out
+
+
+def _build_direct_tables_section(
+    conn, user: dict, registry_by_name: dict, states_by_table_id: dict,
+    packaged_table_ids: set,
+) -> list:
+    """Tables granted via ``TABLE`` resource_type (not DATA_PACKAGE).
+
+    A table granted both directly AND via a package only shows up under the
+    package — Section 5.1's BC story is that ``tables[]`` (legacy) still
+    lists everything, while ``direct_tables[]`` is the de-duplicated
+    forward-compatible projection.
+    """
+    group_ids = [
+        r[0] for r in conn.execute(
+            "SELECT group_id FROM user_group_members WHERE user_id = ?",
+            [user["id"]],
+        ).fetchall()
+    ]
+    if not group_ids:
+        return []
+    placeholders = ",".join(["?"] * len(group_ids))
+    rows = conn.execute(
+        f"""SELECT DISTINCT resource_id FROM resource_grants
+            WHERE group_id IN ({placeholders})
+              AND resource_type = 'table'""",
+        group_ids,
+    ).fetchall()
+    direct_ids = {r[0] for r in rows} - packaged_table_ids
+    out: list = []
+    for tid in direct_ids:
+        # resource_grants.resource_id for ``TABLE`` is canonically the
+        # registry id; fall back to name lookup if migration left a name.
+        reg = None
+        for r in registry_by_name.values():
+            if r.get("id") == tid:
+                reg = r
+                break
+        if reg is None:
+            reg = registry_by_name.get(tid) or {}
+        state = states_by_table_id.get(reg.get("name") or tid) or {}
+        out.append(_table_manifest_entry(state, reg))
+    return out
+
+
 def _build_manifest_for_user(conn, user: dict) -> dict:
     """Build manifest dict filtered by user's accessible tables.
 
@@ -734,6 +911,11 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     Defensive defaults: if a sync_state row has no matching registry entry
     (race / manual deletion), fall back to ``query_mode='local'`` and
     ``source_type=''`` so the manifest still serializes cleanly.
+
+    v49: extended with ``data_packages`` / ``memory_domains`` /
+    ``direct_tables`` arrays per Section 5.1 of the unified-stack design.
+    Legacy ``tables`` dict stays in parallel for one release — older CLIs
+    still parse it; newer clients prefer the typed sections.
     """
     sync_repo = SyncStateRepository(conn)
     table_repo = TableRegistryRepository(conn)
@@ -786,10 +968,38 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
                 )
                 assets[asset_name] = {"hash": str(int(newest))}
 
+    # v49 unified-stack manifest extensions (Section 5.1).
+    # DEPRECATED v49: ``tables`` dict above is kept paralel for one release —
+    # older CLIs depend on it; new clients prefer ``direct_tables`` +
+    # ``data_packages[].tables``.
+    states_by_table_id = {s["table_id"]: s for s in all_states}
+    try:
+        data_packages, packaged_ids = _build_data_packages_section(
+            conn, user, registry_by_name, states_by_table_id,
+        )
+    except Exception:
+        logger.exception("manifest data_packages section build failed")
+        data_packages, packaged_ids = [], set()
+    try:
+        memory_domains = _build_memory_domains_section(conn, user)
+    except Exception:
+        logger.exception("manifest memory_domains section build failed")
+        memory_domains = []
+    try:
+        direct_tables = _build_direct_tables_section(
+            conn, user, registry_by_name, states_by_table_id, packaged_ids,
+        )
+    except Exception:
+        logger.exception("manifest direct_tables section build failed")
+        direct_tables = []
+
     return {
         "tables": tables,
         "assets": assets,
         "server_time": datetime.now(timezone.utc).isoformat(),
+        "data_packages": data_packages,
+        "memory_domains": memory_domains,
+        "direct_tables": direct_tables,
     }
 
 
@@ -829,7 +1039,82 @@ async def sync_manifest(
         # transient issue (locked WAL, partial migration window). The
         # manifest itself is the load-bearing payload.
         pass
+    # v49 Section 9.2 — emit a server-side ``sync.pull_started`` event so
+    # /admin/telemetry can count distinct pulls per user per day. Best-effort.
+    try:
+        from src.repositories.usage import UsageRepository
+        UsageRepository(conn).emit_server_event(
+            event_type="sync.pull_started",
+            user_id=user["id"],
+            username=user.get("email") or user["id"],
+            props={"client_kind": client_kind_from_user(user)},
+        )
+    except Exception:
+        pass
     return _build_manifest_for_user(conn, user)
+
+
+# ---- Pull confirm (Phase 7, Task 7.6) ----
+
+
+class PullConfirmTypeReport(BaseModel):
+    added: int = 0
+    updated: int = 0
+    removed: int = 0
+
+
+class PullConfirmRequest(BaseModel):
+    """Per-type aggregate the CLI submits after every pull finishes.
+
+    Pairs with the ``sync.pull_started`` event emitted by GET /manifest
+    so admin telemetry can compute pull-success rates + duration
+    distributions. Optional fields fall back to zero counts — older CLI
+    versions that don't track a section emit nothing for it.
+    """
+
+    duration_ms: Optional[int] = None
+    direct_tables: Optional[PullConfirmTypeReport] = None
+    data_packages: Optional[PullConfirmTypeReport] = None
+    memory_domains: Optional[PullConfirmTypeReport] = None
+    errors: int = 0
+
+
+@router.post("/pull-confirm")
+async def pull_confirm(
+    payload: PullConfirmRequest,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Telemetry hook the CLI fires at the end of every ``agnes pull``.
+
+    Best-effort: a telemetry insert failure must NOT bubble up to the
+    CLI (the user already has their parquets, the pull succeeded). The
+    response is a fixed shape ``{"recorded": True}`` so older clients
+    that ignore the body keep working when the field set evolves.
+    """
+    props: dict = {
+        "duration_ms": payload.duration_ms,
+        "errors": payload.errors,
+        "client_kind": client_kind_from_user(user),
+    }
+    for section in ("direct_tables", "data_packages", "memory_domains"):
+        section_payload = getattr(payload, section)
+        if section_payload is not None:
+            props[f"{section}_added"] = section_payload.added
+            props[f"{section}_updated"] = section_payload.updated
+            props[f"{section}_removed"] = section_payload.removed
+
+    try:
+        from src.repositories.usage import UsageRepository
+        UsageRepository(conn).emit_server_event(
+            event_type="sync.pull_completed",
+            user_id=user["id"],
+            username=user.get("email") or user["id"],
+            props=props,
+        )
+    except Exception:
+        logger.warning("usage_events emit failed for sync.pull_completed")
+    return {"recorded": True}
 
 
 # ---- Status ----

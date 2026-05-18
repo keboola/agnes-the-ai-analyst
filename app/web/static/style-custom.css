@@ -3398,6 +3398,40 @@ a.app-header-logo:focus-visible {
 }
 .app-nav-menu-section + .app-nav-menu-item { margin-top: 4px; }
 
+/* <details data-section=...> group wrapper — visually identical to the
+   pre-collapse render, but each section can fold up. <summary> reuses
+   the .app-nav-menu-section style and gets a chevron via :before that
+   rotates 90deg when [open] (no JS for the visual). */
+.app-nav-menu-group { margin: 0; }
+.app-nav-menu-group > summary.app-nav-menu-section {
+    cursor: pointer;
+    user-select: none;
+    list-style: none;       /* hide native disclosure triangle (most browsers) */
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.app-nav-menu-group > summary.app-nav-menu-section::-webkit-details-marker {
+    display: none;          /* WebKit fallback */
+}
+.app-nav-menu-group > summary.app-nav-menu-section::before {
+    content: "›";
+    font-size: 12px;
+    line-height: 1;
+    color: var(--text-secondary, #6b7280);
+    transition: transform 0.12s ease;
+}
+.app-nav-menu-group[open] > summary.app-nav-menu-section::before {
+    transform: rotate(90deg);
+}
+/* First-section rounded corners stayed on the original first-child rule,
+   but the wrapper <details> is now the first child — re-apply on the
+   nested <summary>. */
+.app-nav-menu-group:first-of-type > summary.app-nav-menu-section {
+    margin-top: -6px;
+    border-radius: 10px 10px 0 0;
+}
+
 @media (max-width: 720px) {
     .app-header { padding: 0 16px; gap: 8px; }
     .app-header-email { display: none; }
