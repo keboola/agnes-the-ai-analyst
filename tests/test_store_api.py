@@ -1375,7 +1375,14 @@ class TestWebPages:
 
     def test_marketplace_flea_detail_page_renders(self, web_client):
         """v32+: /store/{id} was deleted; /marketplace/flea/{id} is the
-        canonical detail surface."""
+        canonical detail surface.
+
+        v49 phase-2: SSR pre-render uses ``entity.title`` (humanized)
+        rather than the kebab-case entity ``name`` for the page heading.
+        Both the friendly + technical forms should be present in the
+        page (title in the hero / breadcrumbs, slug in JS data / detail
+        URL parameter passed to fetch).
+        """
         _, cookies = _create_user(web_client, "page4@x.com")
         r = web_client.post(
             "/api/store/entities",
@@ -1386,7 +1393,10 @@ class TestWebPages:
         eid = r.json()["id"]
         det = web_client.get(f"/marketplace/flea/{eid}", cookies=cookies)
         assert det.status_code == 200
-        assert "page-skill" in det.text
+        # Humanized title sits in the hero h1 + browser title.
+        assert "Page Skill" in det.text
+        # Entity id (slug-equivalent for routing) survives in detail URL.
+        assert eid in det.text
         # Confirm the legacy URL is gone (404, not 200).
         legacy = web_client.get(f"/store/{eid}", cookies=cookies)
         assert legacy.status_code == 404

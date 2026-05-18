@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ item_name or inner_name or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block title %}{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
 <style>
@@ -809,12 +809,12 @@
           <span class="hwdot red"></span>
           <span class="hwdot yellow"></span>
           <span class="hwdot green"></span>
-          <span class="hero-window-label" id="hero-window-label">{{ inner_name or item_name or plugin_name }}</span>
+          <span class="hero-window-label" id="hero-window-label">{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }}</span>
         </div>
         <div class="hero-window-body" id="hero-window-body">{{ 'SK' if kind == 'skill' else 'AG' }}</div>
       </div>
       <div class="meta">
-        <h1 id="hero-name">{{ inner_name or item_name or plugin_name }}</h1>
+        <h1 id="hero-name">{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }}</h1>
         <div class="hero-tagline" id="hero-tagline" hidden></div>
         <div class="meta-row" id="hero-meta-row"></div>
         <div class="pills" id="hero-pills">
@@ -1048,12 +1048,17 @@
        <span class="sep">›</span>
        <span class="current">${esc(heroTitle)}</span>`;
   } else {
+    // v49 phase-2: drop `d.manifest_name` fallback. manifest_name is the
+    // suffixed slug (e.g. `xlsx-by-c-marustamyan`) and users explicitly
+    // didn't want to see it in breadcrumbs. heroTitle (resolved from
+    // `display_name` which now mirrors `entity.title`) is the
+    // user-friendly label.
     crumbs.innerHTML =
       `<a href="/marketplace?tab=flea">Marketplace</a>
        <span class="sep">›</span>
        <a href="/marketplace?tab=flea">Flea Market</a>
        <span class="sep">›</span>
-       <span class="current">${esc(d.manifest_name || heroTitle)}</span>`;
+       <span class="current">${esc(heroTitle)}</span>`;
   }
 
   // ── Hero name ──────────────────────────────────────────────────────
@@ -1147,8 +1152,12 @@
   //   * Curated inner (always nested under a parent plugin) → "part of …"
   //   * Flea inner (skill/agent nested in a flea plugin)    → same layout,
   //     parent link points at the flea plugin detail.
-  //   * Flea standalone (entity is itself the skill/agent)  → "by author ·
-  //     N installed · size".
+  //   * Flea standalone (entity is itself the skill/agent)  → hidden.
+  //     v49 phase-3: the prior "by <author> · N installed · size" line
+  //     duplicated three values that already live on dedicated surfaces
+  //     — install count in the hero telemetry chip below, owner +
+  //     bundle size in the Details sidebar. Empty meta-row would still
+  //     consume vertical rhythm via .meta-row's margin, so we hide it.
   const metaRow = document.getElementById('hero-meta-row');
   if (source === 'curated' || innerName) {
     const author = (d.parent_author_name && d.parent_author_name !== 'owner_todo')
@@ -1162,13 +1171,10 @@
       `<span>part of <a href="${parentHref}"><strong>${esc(parentLabel)}</strong></a></span>
        <span class="dot">·</span>
        <span>by ${author}</span>`;
+    metaRow.hidden = false;
   } else {
-    const author = d.owner_display || d.author_name || '';
-    metaRow.innerHTML =
-      `<span>by <strong>${esc(author)}</strong></span>
-       <span class="dot">·</span>
-       <span>${d.install_count || 0} installed</span>
-       ${d.bundle_size != null ? `<span class="dot">·</span><span>${esc(fmtBytes(d.bundle_size))}</span>` : ''}`;
+    metaRow.innerHTML = '';
+    metaRow.hidden = true;
   }
 
   // Hero action — Curated nested redirects to parent plugin (no install at

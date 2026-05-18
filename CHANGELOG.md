@@ -10,6 +10,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- Flea marketplace cards and detail pages now render the user-friendly
+  **title** instead of the kebab-case `<name>-by-<owner>` slug, the
+  owner's full name from `users.name` (with email → `owner_username`
+  fallback) instead of the bare username, and the optional **tagline**
+  as the hero subtitle (description still shows below the hero on
+  detail pages). Phase 2 of the Flea refactor — phase 1 (commit
+  `7f4cfcbb`) seeded the columns; phase 2 wires them through
+  `_flea_to_item`, `flea_detail`, and the two detail templates.
+  Breadcrumb last segment on `/marketplace/flea/{id}` drops the
+  suffixed slug fallback in favour of the title.
+- Flea inner skill/agent detail pages
+  (`/marketplace/flea/{id}/skill/{name}`, `/agent/{name}`) now show
+  the parent plugin's **title** in the breadcrumb 3rd segment, the
+  hero "part of …" meta-row, the helper "This skill is part of …"
+  panel, and the Details sidebar's "Parent plugin" row. Sourced
+  from `store_entities.title` via
+  `_flea_inner_parent_fields.parent_display_name`; falls back to
+  `strip_archive_suffix(name)` for any legacy rows that somehow
+  lack a title.
+- Flea standalone skill/agent detail (`/marketplace/flea/{id}` where
+  `type IN ('skill','agent')`) drops the hero meta-row that read
+  "by &lt;author&gt; · N installed · &lt;size&gt;". Install count is already
+  rendered in the hero telemetry chip below; owner + bundle size
+  live in the Details sidebar. The row was duplicating those three
+  values in a less-prominent position.
+
 ### Added
 - Flea-market upload + edit forms now collect a user-friendly **Title**
   (humanized from the kebab-case `name`, acronym-aware: `mcp-builder` →
