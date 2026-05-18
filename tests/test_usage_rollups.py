@@ -152,17 +152,20 @@ class TestMarketplaceItemDaily:
         assert row[0] == 3
 
     def test_flea_skill_attributed_with_empty_parent(self, tmp_path, monkeypatch):
+        """v49 phase-5: rollup `name` carries the entity's synthetic_name
+        (`<name>-by-<owner>`), matching what Claude Code writes after the
+        bundle plugin's `flea:` prefix."""
         conn = _fresh_db(tmp_path, monkeypatch)
         _seed_flea_entity(conn, "ent-1", "flea-skill", type_="skill")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
         _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="flea:flea-skill", event_id="ef-1")
+                    skill_name="flea:flea-skill-by-alice", event_id="ef-1")
         rebuild_rollups(conn, since_day=today.date())
         row = conn.execute(
             "SELECT source, type, parent_plugin, name "
             "FROM usage_marketplace_item_daily WHERE source='flea'"
         ).fetchone()
-        assert row == ("flea", "skill", "", "flea-skill")
+        assert row == ("flea", "skill", "", "flea-skill-by-alice")
 
     def test_unknown_plugin_excluded(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)

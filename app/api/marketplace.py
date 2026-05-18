@@ -823,10 +823,11 @@ def _flea_to_item(
     # rather than masking with a recompute.
     invocation = entity["synthetic_name"]
     is_viewer_owner = bool(viewer_id and entity.get("owner_user_id") == viewer_id)
-    # v46: flea stats keyed by store_entities.name (rollup `name` column).
-    # The display name is post-archive-strip; use the raw row name to match
-    # what the lookup preload sees.
-    stat = (stats or {}).get(entity["name"], {})
+    # v49 phase-5: rollup `name` column carries the synthetic_name (the
+    # post-rename keyspace used by `MarketplaceItemLookup`). Stats dict
+    # built by `_load_invocation_stats` is keyed by that same value, so
+    # the lookup uses `entity["synthetic_name"]`.
+    stat = (stats or {}).get(entity["synthetic_name"], {})
     # v49 phase-2: front the card with the user-friendly `title` (humanized,
     # acronym-aware) via the existing `display_name` field — JS already
     # has the chain `it.display_name || it.name` on cards. `tagline`
@@ -1730,9 +1731,11 @@ async def flea_detail(
             a.detail_url = f"/marketplace/flea/{entity_id}/agent/{a.name}"
         # Per-item telemetry — same shape as curated_detail. Adoption
         # inherits from the parent flea plugin's install_count (no
-        # standalone install on inner items).
+        # standalone install on inner items). v49 phase-5: rollup
+        # `parent_plugin` for flea-plugin children carries the parent's
+        # synthetic_name (= what Claude Code writes in the JSONL prefix).
         inner_stats = _load_inner_items_stats_by_parent(
-            conn, "flea", entity["name"],
+            conn, "flea", entity["synthetic_name"],
         )
         flea_parent_stack = int(entity.get("install_count") or 0)
         for s in skills:
@@ -1852,9 +1855,10 @@ async def flea_detail(
         docs=docs,
         visibility_status=entity.get("visibility_status") or "approved",
         submission_status=submission_status,
-        # v46: flea telemetry keyed by entity.name (rollup `name` column),
-        # not entity_id — JSONL identifiers carry the entity name, not its UUID.
-        telemetry=_build_telemetry(conn, "flea", entity["name"]),
+        # v49 phase-5: flea telemetry keyed by entity.synthetic_name
+        # (rollup `name` column carries the post-rename keyspace, which
+        # is the same string Claude Code writes in the JSONL local-part).
+        telemetry=_build_telemetry(conn, "flea", entity["synthetic_name"]),
     )
 
 
@@ -2564,8 +2568,9 @@ async def flea_skill_detail(
     text, relpath = res
     fm = _parse_frontmatter(text)
     parent = _flea_inner_parent_fields(conn, entity)
+    # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = _load_inner_item_stats(
-        conn, "flea", parent_plugin=entity["name"], name=skill_name, item_type="skill",
+        conn, "flea", parent_plugin=entity["synthetic_name"], name=skill_name, item_type="skill",
     )
     return InnerDetailResponse(
         marketplace_id="",
@@ -2616,8 +2621,9 @@ async def flea_agent_detail(
     except OSError:
         agent_size = 0
     parent = _flea_inner_parent_fields(conn, entity)
+    # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = _load_inner_item_stats(
-        conn, "flea", parent_plugin=entity["name"], name=agent_name, item_type="agent",
+        conn, "flea", parent_plugin=entity["synthetic_name"], name=agent_name, item_type="agent",
     )
     return InnerDetailResponse(
         marketplace_id="",
