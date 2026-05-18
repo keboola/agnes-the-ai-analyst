@@ -73,14 +73,22 @@
         </svg>
         My Stack <span class="count" data-count="my">{{ stack_entries|length }}</span>
       </button>
+      {# v53 Recipes tab — query templates analysts copy + adapt.
+         Sibling concept to Data Packages but not stack-subscribable.
+         Count hydrates on first visit; starts empty (--) until then. #}
+      <button data-tab="recipes" role="tab" aria-selected="false">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 7h12M3 12h12M3 17h7"/><circle cx="18" cy="17" r="3"/>
+        </svg>
+        Recipes <span class="count" data-count="recipes">—</span>
+      </button>
     </div>
-    {# Admin-only right-of-tabs action — matches marketplace's "Submit
-       a skill or plugin" affordance on the right edge of .mp-tabs-row.
-       Routes admins straight into the Create Data Package modal on
-       /admin/tables; the query param is read on page-load by the
-       admin page (?new_package=1). #}
     {% if user.is_admin %}
-    <div class="stack-tabs-row__actions">
+    <div class="stack-tabs-row__actions" style="display:flex; gap:8px;">
+      <button class="btn btn-secondary" onclick="openCreateRecipeModal()" type="button">
+        + New Recipe <span style="opacity:.6; font-weight:normal;">(admin)</span>
+      </button>
       <a class="btn btn-secondary" href="/admin/tables?new_package=1">+ New Data Package <span style="opacity:.6; font-weight:normal;">(admin)</span></a>
     </div>
     {% endif %}
@@ -171,6 +179,101 @@
     </div>
     {% endif %}
   </div>
+
+  {# v53 Recipes view — populated client-side on first tab open from
+     /api/recipes so the page render isn't blocked by a second DB query
+     when most users land on Browse. Card-grid uses the same .stack-grid
+     class for visual parity, but recipe cards are simpler (no
+     Add-to-stack, no Required/in-stack badges — recipes aren't
+     subscribable). #}
+  <div data-view="recipes" hidden>
+    <div class="stack-grid" id="catalog-grid-recipes">
+      <div class="stack-empty" id="catalog-recipes-loading">
+        <span class="icon">📑</span>
+        <h3>Loading recipes…</h3>
+      </div>
+    </div>
+  </div>
+
+  {% if user.is_admin %}
+  {# v53 Create Recipe modal — opened from the "+ New Recipe" admin
+     button in the tab strip. Single-step (no inline RBAC matrix yet —
+     recipes are visible to any authenticated user). #}
+  <div id="createRecipeModal"
+       style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+    <div style="background:var(--surface); max-width:560px; margin:60px auto;
+                padding:20px 24px; border-radius:12px; border:1px solid var(--border);
+                max-height:85vh; overflow-y:auto;">
+      <h3 style="margin:0 0 12px;">New Recipe</h3>
+      <p style="margin:0 0 16px; color:var(--text-secondary); font-size:13px;">
+        Recipes are query templates analysts copy + adapt. Link the
+        tables they touch so analysts can drill into each.
+      </p>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Title</span>
+          <input id="rcp-title" type="text" placeholder="Top revenue by region (last 30 days)"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+          <input id="rcp-slug" type="text" placeholder="top-revenue-by-region"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+          <span style="font-size:11px; color:var(--text-secondary);">
+            URL-safe; auto-derived from title if left blank.
+          </span>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Description</span>
+          <textarea id="rcp-desc" rows="2"
+                    placeholder="What question this recipe answers; key caveats."
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">SQL template</span>
+          <textarea id="rcp-sql" rows="7"
+                    placeholder="SELECT region, SUM(revenue) AS rev&#10;FROM orders&#10;WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)&#10;GROUP BY 1 ORDER BY 2 DESC"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:var(--font-mono); font-size:12px; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Related table ids</span>
+          <input id="rcp-related" type="text"
+                 placeholder="Comma-separated table_registry ids — e.g. tbl_orders,tbl_users"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+          <span style="font-size:11px; color:var(--text-secondary);">
+            Drives the "Touches tables" links on the drilldown.
+          </span>
+        </label>
+        <div style="display:flex; gap:12px;">
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Color</span>
+            <div class="cf-palette-row" data-target="rcp-color"></div>
+            <input id="rcp-color" type="color" value="#0073D1"
+                   style="padding:2px; border:1px solid var(--border); border-radius:6px;
+                          height:32px; cursor:pointer;">
+          </label>
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="rcp-status"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
+              <option value="prod" selected>Prod</option>
+              <option value="poc">POC</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft (admin-only)</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+        <button class="btn" type="button" onclick="closeCreateRecipeModal()">Cancel</button>
+        <button class="btn btn-primary" type="button" id="rcp-submit-btn"
+                onclick="submitCreateRecipe()">Create</button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   {# Toast for ephemeral feedback (Add/Remove success/failure). #}
   <div id="stack-toast" role="status" aria-live="polite" hidden
@@ -366,8 +469,62 @@
       document.querySelectorAll('[data-view]').forEach(v => {
         v.hidden = v.dataset.view !== tab;
       });
+      if (tab === 'recipes') loadRecipesTab();
     });
   });
+
+  // v53 Recipes tab — fetch on first open then cache for the page
+  // lifetime. Renders compact cards (no Add-to-stack) so users can
+  // browse query templates the same way they browse packages.
+  let _recipesLoaded = false;
+  async function loadRecipesTab(force) {
+    if (_recipesLoaded && !force) return;
+    const grid = document.getElementById('catalog-grid-recipes');
+    if (!grid) return;
+    grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span><h3>Loading recipes…</h3></div>';
+    try {
+      const r = await fetch('/api/recipes', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const body = await r.json();
+      const items = (body && body.items) || [];
+      const badge = document.querySelector('.stack-tabs .count[data-count="recipes"]');
+      if (badge) badge.textContent = String(items.length);
+      if (!items.length) {
+        grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span>'
+          + '<h3>No recipes yet</h3>'
+          + '<p>Recipes are admin-curated query templates — copy + adapt.</p></div>';
+        _recipesLoaded = true;
+        return;
+      }
+      grid.innerHTML = items.map(_renderRecipeCard).join('');
+      _recipesLoaded = true;
+    } catch (e) {
+      grid.innerHTML = '<div class="stack-empty" style="color:var(--error);">Failed to load recipes: ' + e.message + '</div>';
+    }
+  }
+  function _renderRecipeCard(r) {
+    const color = r.color || '#0073D1';
+    const title = String(r.title || '').replace(/[<>&]/g, (c) =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+    const desc = String(r.description || '').replace(/[<>&]/g, (c) =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+    const parts = (r.title || '?').split(/\s+/);
+    const initials = (parts.length >= 2
+      ? parts[0][0] + parts[1][0]
+      : (r.title || '?').slice(0, 2)).toUpperCase();
+    const nTables = (r.related_table_ids || []).length;
+    return '<a class="stack-card" href="/catalog/r/' + encodeURIComponent(r.slug) + '" '
+      + 'style="text-decoration:none; color:inherit;">'
+      + '<div class="stack-card__photo" style="background:' + color + '; color:#fff; '
+      +   'font-weight:700; font-size:22px; letter-spacing:1px;">' + initials + '</div>'
+      + '<div class="stack-card__body">'
+      + '<h3 class="stack-card__title">' + title + '</h3>'
+      + (nTables
+          ? '<div class="stack-card__meta">' + nTables + ' table' + (nTables === 1 ? '' : 's') + '</div>'
+          : '')
+      + (desc ? '<div class="stack-card__desc">' + desc + '</div>' : '')
+      + '</div></a>';
+  }
 
   // ── Filter chips ───────────────────────────────────────────────────────
   let activeFilter = 'all';
@@ -437,6 +594,77 @@
   if (heroSearch) {
     heroSearch.addEventListener('input', applyFilters);
   }
+
+  // ── v53 Create Recipe modal (admin-only) ──────────────────────────
+  // Exposed on window so the inline button onclicks reach it (we're
+  // inside an IIFE). Close/cancel reset the form so the next open
+  // starts clean. After create: close, reload Recipes tab.
+  function _slugifyTitle(s) {
+    return (s || '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  }
+  window.openCreateRecipeModal = function () {
+    const el = document.getElementById('createRecipeModal');
+    if (!el) return;
+    ['rcp-title','rcp-slug','rcp-desc','rcp-sql','rcp-related'].forEach(id => {
+      const i = document.getElementById(id);
+      if (i) i.value = '';
+    });
+    const status = document.getElementById('rcp-status');
+    if (status) status.value = 'prod';
+    const color = document.getElementById('rcp-color');
+    if (color) color.value = '#0073D1';
+    el.style.display = 'block';
+  };
+  window.closeCreateRecipeModal = function () {
+    const el = document.getElementById('createRecipeModal');
+    if (el) el.style.display = 'none';
+  };
+  window.submitCreateRecipe = async function () {
+    const btn = document.getElementById('rcp-submit-btn');
+    const title = document.getElementById('rcp-title').value.trim();
+    if (!title) { alert('Title is required.'); return; }
+    let slug = document.getElementById('rcp-slug').value.trim();
+    if (!slug) slug = _slugifyTitle(title);
+    const related = document.getElementById('rcp-related').value
+      .split(',').map(s => s.trim()).filter(Boolean);
+    const body = {
+      slug: slug,
+      title: title,
+      description: document.getElementById('rcp-desc').value.trim() || null,
+      sql_template: document.getElementById('rcp-sql').value || null,
+      related_table_ids: related,
+      color: document.getElementById('rcp-color').value || null,
+      status: document.getElementById('rcp-status').value || 'prod',
+    };
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/admin/recipes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        let msg = d.detail || r.statusText;
+        if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
+        alert('Create failed: ' + msg);
+        return;
+      }
+      window.closeCreateRecipeModal();
+      if (typeof showToast === 'function') {
+        showToast('Recipe "' + title + '" created');
+      }
+      // Force-refresh the Recipes tab so the new row shows.
+      _recipesLoaded = false;
+      loadRecipesTab(true);
+    } catch (e) {
+      alert('Network error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
 })();
 </script>
 {% endblock %}

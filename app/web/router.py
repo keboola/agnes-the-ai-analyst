@@ -1193,6 +1193,41 @@ async def catalog_table_detail(
     return templates.TemplateResponse(request, "catalog_table_detail.html", ctx)
 
 
+@router.get("/catalog/r/{slug}", response_class=HTMLResponse)
+async def catalog_recipe_detail(
+    slug: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-recipe drill-down — title, description, SQL template, related
+    tables. Recipes are accessible to any authenticated user; admins
+    additionally see draft recipes (filtered out for non-admin viewers).
+    """
+    from src.repositories.recipes import RecipesRepository
+    from src.repositories.table_registry import TableRegistryRepository
+
+    recipe = RecipesRepository(conn).get_by_slug(slug)
+    if not recipe:
+        raise HTTPException(status_code=404, detail="recipe_not_found")
+    if (recipe.get("status") or "prod") != "prod" and not is_user_admin(user["id"], conn):
+        raise HTTPException(status_code=404, detail="recipe_not_found")
+
+    table_repo = TableRegistryRepository(conn)
+    related_tables = []
+    for tid in (recipe.get("related_table_ids") or []):
+        full = table_repo.get(tid)
+        if full:
+            related_tables.append({"id": full["id"], "name": full["name"]})
+
+    ctx = _build_context(
+        request, user=user,
+        recipe=recipe,
+        related_tables=related_tables,
+    )
+    return templates.TemplateResponse(request, "catalog_recipe_detail.html", ctx)
+
+
 def _human_size(n: int) -> str:
     """Format bytes as a short human string. Mirrors the format used on
     the marketplace card meta line."""

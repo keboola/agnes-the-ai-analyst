@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 52
+SCHEMA_VERSION = 53
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -572,6 +572,27 @@ CREATE TABLE IF NOT EXISTS knowledge_item_domains (
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain
     ON knowledge_item_domains(domain_id);
+
+-- v53: Recipes are admin-curated, multi-table query templates analysts
+-- copy + adapt. Sibling concept to Data Packages on /catalog (separate
+-- "Recipes" tab). Not stack subscribable — analysts use a recipe, they
+-- don't opt in to it. ``related_table_ids`` is a JSON array of
+-- ``table_registry.id`` values so the recipe drilldown can render
+-- per-table links without us cascading another junction table.
+CREATE TABLE IF NOT EXISTS recipes (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    title           VARCHAR NOT NULL,
+    description     TEXT,
+    icon            VARCHAR,
+    color           VARCHAR,
+    sql_template    TEXT,
+    related_table_ids JSON,
+    status          VARCHAR DEFAULT 'prod',
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
 
 -- v49: generic per-user opt-in for resource_grants flagged
 -- ``requirement='available'``. Currently scoped to ``data_package`` /
@@ -3710,6 +3731,33 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
+    """v53: ``recipes`` table — admin-curated query templates surfaced as
+    a second tab on /catalog.
+
+    Idempotent CREATE TABLE IF NOT EXISTS. Fresh installs already get
+    the table from ``_SYSTEM_SCHEMA``; this migration covers the
+    sequential-upgrade path from a v52 instance.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipes (
+            id                VARCHAR PRIMARY KEY,
+            slug              VARCHAR UNIQUE NOT NULL,
+            title             VARCHAR NOT NULL,
+            description       TEXT,
+            icon              VARCHAR,
+            color             VARCHAR,
+            sql_template      TEXT,
+            related_table_ids JSON,
+            status            VARCHAR DEFAULT 'prod',
+            created_by        VARCHAR,
+            created_at        TIMESTAMP DEFAULT current_timestamp,
+            updated_at        TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 53")
+
+
 def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
     """v52: per-table docs columns on table_registry.
 
@@ -3903,6 +3951,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v50_to_v51(conn)
             # v52 per-table docs columns on table_registry.
             _v51_to_v52(conn)
+            # v53 recipes table.
+            _v52_to_v53(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4061,6 +4111,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v50_to_v51(conn)
             if current < 52:
                 _v51_to_v52(conn)
+            if current < 53:
+                _v52_to_v53(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
