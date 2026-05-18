@@ -48,7 +48,6 @@ from src.repositories.user_curated_subscriptions import (
     UserCuratedSubscriptionsRepository,
 )
 from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.store_naming import suffixed_name
 
 
 def _resolve_raw(raw: Any) -> dict:
@@ -307,7 +306,13 @@ def resolve_user_marketplace(
         entity_id = row["id"]
         owner_username = row["owner_username"]
         original_name = row["name"]
-        manifest_name = suffixed_name(original_name, owner_username)
+        # v49 phase-3: stored synthetic_name from store_entities is the
+        # canonical value baked into the on-disk plugin tree
+        # (frontmatter name, plugin.json `name`). Reading it from DB
+        # keeps the served manifest in lockstep with whatever the upload
+        # / edit / archive paths last wrote. The column is NOT NULL +
+        # explicitly selected by ``list_for_user``.
+        manifest_name = row["synthetic_name"]
         plugin_dir = store_root / entity_id / "plugin"
         store_plugin_entries.append(
             {

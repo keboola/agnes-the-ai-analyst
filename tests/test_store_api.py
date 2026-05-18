@@ -528,6 +528,38 @@ class TestStoreV49Metadata:
         assert e2.status_code == 200, e2.text
         assert e2.json()["synthetic_name"] == "renamed-thing-by-v49put"
 
+    def test_invocation_name_reads_from_synthetic_column(self, web_client):
+        """v49 phase-3: ``invocation_name`` in StoreEntityResponse sources
+        from the stored ``synthetic_name`` column, not a fresh recompute.
+        Manually override the column with a non-canonical value and verify
+        the API returns it verbatim — proves read paths consume the column
+        rather than recomputing ``<name>-by-<owner_username>`` on the fly."""
+        from src.db import get_system_db
+        _, cookies = _create_user(web_client, "synthread@x.com")
+        up = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("orig-name"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        eid = up.json()["id"]
+        # Manual divergence — pretend an admin fix-up landed a non-canonical
+        # synthetic. A pure recompute path would not see this; a column-read
+        # path will.
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE store_entities SET synthetic_name = ? WHERE id = ?",
+                ["manual-override-xyz", eid],
+            )
+        finally:
+            conn.close()
+        r = web_client.get(f"/api/store/entities/{eid}", cookies=cookies)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["synthetic_name"] == "manual-override-xyz"
+        assert body["invocation_name"] == "manual-override-xyz"
+
 
 class TestStoreSecurityFixes:
     """Regression tests for the three security blockers and one correctness
