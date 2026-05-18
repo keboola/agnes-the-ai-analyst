@@ -32,13 +32,15 @@ SAMPLE_JIRA_EVENT = {
 @pytest.mark.journey
 class TestJiraWebhookJourney:
     def test_webhook_health_check(self, seeded_app):
-        """Jira webhook health endpoint is always accessible."""
+        """Jira webhook health endpoint is accessible to admins."""
         c = seeded_app["client"]
-        resp = c.get("/webhooks/jira/health")
+        headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+        resp = c.get("/webhooks/jira/health", headers=headers)
         assert resp.status_code == 200
         body = resp.json()
         assert "status" in body
         assert body["status"] == "ok"
+        assert "jira_domain" not in body
 
     def test_webhook_with_no_secret_configured_refused(self, seeded_app):
         """Issue #83: when JIRA_WEBHOOK_SECRET is not set, webhook is REFUSED
