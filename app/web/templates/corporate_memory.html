@@ -71,7 +71,10 @@
        moderation page where domains are created + managed. #}
     {% if user.is_admin %}
     <div class="stack-tabs-row__actions">
-      <a class="btn btn-secondary" href="/admin/corporate-memory#domains">Manage domains →</a>
+      {# Admin-only — explicit "(admin)" suffix so the destination is
+         obvious even though the link is already gated. Non-admin
+         viewers never see this button at all. #}
+      <a class="btn btn-secondary" href="/admin/corporate-memory#domains">Manage domains <span style="opacity:.6; font-weight:normal;">(admin)</span> →</a>
     </div>
     {% endif %}
   </div>

@@ -58,6 +58,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   package membership without leaving the edit dialog.
 
 ### Changed
+- **BigQuery + Keboola edit modals** now carry the Data Packages
+  chip-input that the legacy modal already had. Hydrated on open with
+  the table's current memberships; save diffs vs the original set and
+  emits the minimal POST/DELETE delta to the junction endpoint. Shared
+  helpers (`_hydrateEditPackagesChips`, `_diffApplyPackageMembership`)
+  used by all three modals — legacy / BQ / Keboola.
+- **Group-by-bucket** replaced the all-or-nothing `confirm()` with a
+  preview modal listing every distinct bucket: table count, resulting
+  slug, slug-collision warning, per-bucket checkbox (defaults on,
+  disabled for slugs that already exist). Admins can opt out per
+  bucket before clicking Create checked.
+- **Per-row Mode badge** now carries a `title=` tooltip explaining
+  each value (`local` / `remote` / `materialized` / `internal`).
+  Previously only the Register modal had the explanation; admins had
+  to remember which mode does what when scanning a long table list.
+- **Admin nav sections collapsible + persisted** — Activity Center /
+  Users & Access / Data Packages / Agent Experience / Server are now
+  native `<details data-section=...>` wrappers. Per-section
+  open/closed state lives in `localStorage` so the dropdown reopens
+  with the same view the admin last had.
+- **"Manage domains" / "+ New Data Package" buttons** carry an
+  explicit `(admin)` suffix on `/corporate-memory` and `/catalog`.
+  Already gated behind `user.is_admin`; the hint makes the
+  audience obvious instead of "this links somewhere I can't go".
 - **`/catalog` + `/corporate-memory` apply Add/Remove in place** —
   cards now flip their button + count badges live via JS instead of
   triggering a full page reload, so scroll position and focus survive
@@ -155,6 +179,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- **Keboola legacy tests** use `pytest.importorskip("kbcstorage")` at
+  module top so 11 tests skip cleanly on installs without the optional
+  `kbcstorage` dep (default CI image, contributor laptops). CI now
+  reports 1 failure (a flaky perf smoke) instead of 12.
 
 ## [0.55.0] — 2026-05-16
 

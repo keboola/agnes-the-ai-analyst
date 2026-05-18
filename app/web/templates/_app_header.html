@@ -57,36 +57,48 @@
                (small caps, muted). Items keep the existing
                `.app-nav-menu-item` look + active state. #}
             <div class="app-nav-menu-panel" id="adminNavPanel" role="menu" hidden>
-                <div class="app-nav-menu-section">Activity Center</div>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" role="menuitem" href="/admin/activity">Audit log</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') %}is-active{% endif %}" role="menuitem" href="/admin/telemetry">Telemetry</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/sessions') %}is-active{% endif %}" role="menuitem" href="/admin/sessions">Sessions</a>
+                {# Each section is a native <details data-section=...> so
+                   collapse state is keyboard-navigable + accessible. A
+                   small inline JS at the end of body persists/restores
+                   per-section open state in localStorage under
+                   `agnes-admin-nav-<section>-collapsed`. #}
+                <details class="app-nav-menu-group" data-section="activity-center" open>
+                    <summary class="app-nav-menu-section">Activity Center</summary>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" role="menuitem" href="/admin/activity">Audit log</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') %}is-active{% endif %}" role="menuitem" href="/admin/telemetry">Telemetry</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/sessions') %}is-active{% endif %}" role="menuitem" href="/admin/sessions">Sessions</a>
+                </details>
 
-                <div class="app-nav-menu-section">Users &amp; Access</div>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">Users</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') %}is-active{% endif %}" role="menuitem" href="/admin/groups">Groups</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/access">Resource access</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" role="menuitem" href="/admin/tokens">Tokens</a>
+                <details class="app-nav-menu-group" data-section="users-access" open>
+                    <summary class="app-nav-menu-section">Users &amp; Access</summary>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">Users</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') %}is-active{% endif %}" role="menuitem" href="/admin/groups">Groups</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/access">Resource access</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" role="menuitem" href="/admin/tokens">Tokens</a>
+                </details>
 
-                <div class="app-nav-menu-section">Data Packages</div>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
+                <details class="app-nav-menu-group" data-section="data-packages" open>
+                    <summary class="app-nav-menu-section">Data Packages</summary>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
+                </details>
 
                 {# "Agent Experience" groups everything the admin curates
-                   for what an analyst's AI agent sees / can do: which
-                   plugins (curated + flea) are available, which prompt
-                   Claude lands on at `agnes init`, and the CLAUDE.md
-                   template injected into each workspace. #}
-                <div class="app-nav-menu-section">Agent Experience</div>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Init Prompt</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Workspace Prompt</a>
+                   for what an analyst's AI agent sees / can do. #}
+                <details class="app-nav-menu-group" data-section="agent-experience" open>
+                    <summary class="app-nav-menu-section">Agent Experience</summary>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" role="menuitem" href="/admin/marketplaces">Curated Marketplaces</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Init Prompt</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Workspace Prompt</a>
+                </details>
 
-                <div class="app-nav-menu-section">Server</div>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Server config</a>
-                {# /admin/scheduler-runs collapsed into /admin/activity as
-                   a `source=scheduler` filter — old route 308-redirects. #}
+                <details class="app-nav-menu-group" data-section="server" open>
+                    <summary class="app-nav-menu-section">Server</summary>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Server config</a>
+                    {# /admin/scheduler-runs collapsed into /admin/activity as
+                       a `source=scheduler` filter — old route 308-redirects. #}
+                </details>
             </div>
         </div>
         {% endif %}

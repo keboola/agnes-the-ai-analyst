@@ -1308,6 +1308,23 @@
                             <input type="text" class="form-input" id="editBqFolder" placeholder="e.g. crm, finance, marketing">
                             <div class="form-hint">Logical grouping for catalog organization (does not affect storage).</div>
                         </div>
+
+                        {# Data Packages chip-input — parity with the legacy
+                           and Keboola edit modals. Hydrated on open with
+                           the table's current memberships; saveBqTabEdit
+                           diffs against `_editBqOriginalPackageIds` and
+                           emits the minimal POST/DELETE delta. #}
+                        <div class="form-group">
+                            <label class="form-label">Data Packages <span class="optional">(optional)</span></label>
+                            <div class="chip-input"
+                                 id="editBqPackagesChips"
+                                 data-source-url="/api/admin/data-packages"
+                                 data-allow-create="true"
+                                 data-name="bq_edit_package_ids"
+                                 data-placeholder="Type to search or create…"
+                                 data-chip-input="data_package"></div>
+                            <div class="form-hint">Bundle this table into one or more Data Packages so analysts can opt-in to it as a group.</div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button class="btn btn-secondary" onclick="closeEditBqModal()">Cancel</button>
@@ -1717,6 +1734,22 @@
                                     sync time. Not compatible with Incremental.
                                 </div>
                             </div>
+                        </div>
+
+                        {# Data Packages chip-input — parity with the BQ
+                           and legacy edit modals. Hydrated on open;
+                           saveKeboolaTabEdit diffs vs
+                           `_editKbOriginalPackageIds` on save. #}
+                        <div class="form-group">
+                            <label class="form-label">Data Packages <span class="optional">(optional)</span></label>
+                            <div class="chip-input"
+                                 id="editKbPackagesChips"
+                                 data-source-url="/api/admin/data-packages"
+                                 data-allow-create="true"
+                                 data-name="kb_edit_package_ids"
+                                 data-placeholder="Type to search or create…"
+                                 data-chip-input="data_package"></div>
+                            <div class="form-hint">Bundle this table into one or more Data Packages so analysts can opt-in to it as a group.</div>
                         </div>
                     </div>
                     <div class="modal-footer">
@@ -2485,83 +2518,139 @@
          Sequential rather than parallel because the assign-table POSTs
          depend on the package_id from the create POST. ~100ms per
          bucket which is fine for the handful most instances have. */
+      // Bucket plan (loaded once when the preview modal opens; consumed
+      // by submitGroupByBucket). { bucket, slug, tables[], slugExists }
+      var _gbbPlan = [];
+
+      function closeGroupByBucketModal() {
+        document.getElementById('groupByBucketPreviewModal').style.display = 'none';
+      }
+
+      function _gbbSlugify(s) {
+        return (s || '').toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '');
+      }
+
       async function groupTablesByBucket() {
-        if (!confirm('Create one Data Package per distinct bucket and assign its tables?\n\n'
-                   + 'Existing packages with a matching slug are skipped.\n'
-                   + 'Tables already in any package are left in place (no duplicates).'))
-          return;
+        // Build the plan + render the preview modal. Replaces the old
+        // confirm() that just said "yes/no to ALL buckets" — admins now
+        // see which buckets would become packages, the row count per
+        // bucket, the resulting slug, and which ones would be skipped
+        // because a package with that slug already exists.
+        const rowsEl = document.getElementById('gbb-rows');
+        rowsEl.innerHTML = '<div class="loading" style="padding:8px; color:var(--text-secondary); font-size:13px;">Loading buckets…</div>';
+        document.getElementById('groupByBucketPreviewModal').style.display = 'flex';
 
-        const [tableResp, pkgResp] = await Promise.all([
-          fetch('/api/admin/registry', { credentials: 'same-origin' }),
-          fetch('/api/admin/data-packages', { credentials: 'same-origin' }),
-        ]);
-        if (!tableResp.ok || !pkgResp.ok) {
-          alert('Failed to load tables or packages.');
-          return;
-        }
-        const tables = await tableResp.json();
-        const existingPackages = await pkgResp.json();
-        const tableList = Array.isArray(tables) ? tables : (tables.items || tables.tables || []);
-        const existingSlugs = new Set((existingPackages || []).map(p => p.slug));
-
-        // Group tables by bucket — skip blanks + internal `agnes_*` buckets.
-        const buckets = {};
-        for (const t of tableList) {
-          const b = (t.bucket || '').trim();
-          if (!b || b.startsWith('agnes_')) continue;
-          buckets[b] = buckets[b] || [];
-          buckets[b].push(t);
-        }
-        const bucketNames = Object.keys(buckets).sort();
-        if (!bucketNames.length) {
-          alert('No buckets to group. Register some tables first.');
-          return;
-        }
-
-        // Slugify (lowercase, alnum + dashes) so two buckets with weird
-        // chars don't collide on the server's UNIQUE(slug) constraint.
-        const slugify = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-
-        const created = [], skipped = [], failed = [];
-        for (const bucket of bucketNames) {
-          const slug = slugify(bucket);
-          if (existingSlugs.has(slug)) {
-            skipped.push(`${bucket} (slug exists)`);
-            continue;
+        try {
+          const [tableResp, pkgResp] = await Promise.all([
+            fetch('/api/admin/registry', { credentials: 'same-origin' }),
+            fetch('/api/admin/data-packages', { credentials: 'same-origin' }),
+          ]);
+          if (!tableResp.ok || !pkgResp.ok) {
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:13px;">Failed to load tables or packages.</div>';
+            return;
           }
-          // Create the package — name is the bucket, description hints at the source.
+          const tables = await tableResp.json();
+          const existingPackages = await pkgResp.json();
+          const tableList = Array.isArray(tables) ? tables : (tables.items || tables.tables || []);
+          const existingSlugs = new Set((existingPackages || []).map(p => p.slug));
+
+          const buckets = {};
+          for (const t of tableList) {
+            const b = (t.bucket || '').trim();
+            if (!b || b.startsWith('agnes_')) continue;
+            buckets[b] = buckets[b] || [];
+            buckets[b].push(t);
+          }
+          const bucketNames = Object.keys(buckets).sort();
+          if (!bucketNames.length) {
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:13px;">No buckets to group. Register some tables first.</div>';
+            return;
+          }
+
+          _gbbPlan = bucketNames.map(function (bucket) {
+            const slug = _gbbSlugify(bucket);
+            return {
+              bucket: bucket,
+              slug: slug,
+              tables: buckets[bucket],
+              slugExists: existingSlugs.has(slug),
+            };
+          });
+
+          rowsEl.innerHTML = _gbbPlan.map(function (p, i) {
+            const disabled = p.slugExists;
+            const note = disabled
+              ? '<span style="color:var(--warning); font-size:11px; margin-left:6px;">(slug exists — will skip)</span>'
+              : '';
+            return ''
+              + '<label style="display:flex; align-items:center; gap:10px; padding:6px 8px; '
+              +              'border:1px solid var(--border); border-radius:6px; '
+              +              'background:' + (disabled ? 'var(--background)' : 'var(--surface)') + ';">'
+              + '  <input type="checkbox" class="gbb-row" data-idx="' + i + '" '
+              +         (disabled ? 'disabled' : 'checked') + '>'
+              + '  <span style="flex:1; font-weight:600; font-size:13px;">'
+              +    escapeHtml(p.bucket)
+              + '    <code style="font-weight:normal; font-size:11px; color:var(--text-secondary); margin-left:6px;">' + escapeHtml(p.slug) + '</code>'
+              +      note
+              + '  </span>'
+              + '  <span style="color:var(--text-secondary); font-size:12px;">'
+              +    p.tables.length + ' table' + (p.tables.length === 1 ? '' : 's')
+              + '  </span>'
+              + '</label>';
+          }).join('');
+        } catch (e) {
+          rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:13px;">Failed: ' + escapeHtml(e.message) + '</div>';
+        }
+      }
+
+      async function submitGroupByBucket() {
+        const btn = document.getElementById('gbb-submit-btn');
+        const checks = document.querySelectorAll('#gbb-rows input.gbb-row:checked');
+        if (!checks.length) {
+          showToast('No buckets selected.', 'error');
+          return;
+        }
+        btn.disabled = true;
+        const picks = Array.from(checks).map(function (el) {
+          return _gbbPlan[parseInt(el.dataset.idx, 10)];
+        }).filter(Boolean);
+
+        const created = [], failed = [];
+        for (const p of picks) {
           const cResp = await fetch('/api/admin/data-packages', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              name: bucket,
-              slug,
-              description: `Auto-grouped from bucket \`${bucket}\` — ${buckets[bucket].length} tables.`,
+              name: p.bucket,
+              slug: p.slug,
+              description: 'Auto-grouped from bucket `' + p.bucket + '` — ' + p.tables.length + ' tables.',
               icon: null,
               color: '#e0f2fe',
             }),
           });
-          if (!cResp.ok) { failed.push(bucket); continue; }
+          if (!cResp.ok) { failed.push(p.bucket); continue; }
           const pkg = await cResp.json();
-          // Assign tables — fire in parallel within a bucket.
-          await Promise.all(buckets[bucket].map(t =>
-            fetch(`/api/admin/data-packages/${pkg.id}/tables`, {
+          await Promise.all(p.tables.map(function (t) {
+            return fetch('/api/admin/data-packages/' + encodeURIComponent(pkg.id) + '/tables', {
               method: 'POST',
               credentials: 'same-origin',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ table_id: t.id }),
-            }).catch(() => {})
-          ));
-          created.push(`${bucket} (${buckets[bucket].length} tables)`);
+            }).catch(function () { /* swallowed; count via created total */ });
+          }));
+          created.push(p.bucket);
         }
 
-        const msg = [
-          created.length ? `✓ Created: ${created.join(', ')}` : null,
-          skipped.length ? `↷ Skipped: ${skipped.join(', ')}` : null,
-          failed.length ? `✗ Failed: ${failed.join(', ')}` : null,
-        ].filter(Boolean).join('\n');
-        alert(msg || 'Nothing to do.');
+        btn.disabled = false;
+        closeGroupByBucketModal();
+        if (failed.length) {
+          showToast('Created ' + created.length + ', failed ' + failed.length + ': ' + failed.join(', '), 'error');
+        } else {
+          showToast('Created ' + created.length + ' package' + (created.length === 1 ? '' : 's'), 'success');
+        }
         if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
       }
 
@@ -2943,6 +3032,38 @@
             <button class="btn btn-secondary" onclick="closeEditDataPackageModal()">Cancel</button>
             <button class="btn btn-primary" id="edp-save-btn" onclick="submitEditDataPackage()">Save changes</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    {# Group-by-bucket preview modal — replaces the old confirm(). Lets
+       the admin see each distinct bucket, its table count, the resulting
+       slug, and whether it would be skipped because a package with that
+       slug already exists. Uncheck rows to opt out individually. #}
+    <div class="modal-overlay" id="groupByBucketPreviewModal" style="display:none;">
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-header">
+          <h2>Create a Data Package per bucket</h2>
+          <button class="modal-close" onclick="closeGroupByBucketModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="form-hint" style="margin-bottom:12px;">
+            One package will be created per checked bucket below.
+            Existing tables in any package are left in place (the junction
+            INSERT is idempotent).
+          </p>
+          <div id="gbb-rows"
+               style="display:flex; flex-direction:column; gap:6px; max-height:50vh; overflow-y:auto;
+                      border:1px solid var(--border); border-radius:8px; padding:8px;">
+            <div class="loading" style="padding:8px; color:var(--text-secondary); font-size:13px;">
+              Loading buckets…
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeGroupByBucketModal()">Cancel</button>
+          <button class="btn btn-primary" id="gbb-submit-btn"
+                  onclick="submitGroupByBucket()">Create checked</button>
         </div>
       </div>
     </div>
@@ -3579,6 +3700,16 @@
         var btn = document.getElementById('editKeboolaSubmitBtn');
         btn.disabled = false;
         btn.textContent = 'Save Changes';
+
+        // Reset + hydrate the Data Packages chip-input (parity with the
+        // legacy + BQ edit modals).
+        _editKbOriginalPackageIds = new Set();
+        var kbChipHost = document.getElementById('editKbPackagesChips');
+        if (kbChipHost) {
+            if (typeof kbChipHost.clearChips === 'function') kbChipHost.clearChips();
+            _hydrateEditPackagesChips(table.id, kbChipHost, _editKbOriginalPackageIds);
+        }
+
         document.getElementById('editKeboolaModal').classList.add('active');
     }
 
@@ -3685,29 +3816,37 @@
             btn.textContent = 'Save Changes';
             return;
         }
-        fetch('/api/admin/registry/' + encodeURIComponent(tableId), {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        })
-            .then(function(r) {
-                if (!r.ok) return r.json().then(function(d) {
-                    throw new Error(d.detail || d.error || 'Update failed');
+        (async function () {
+            try {
+                var r = await fetch('/api/admin/registry/' + encodeURIComponent(tableId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
                 });
-                return r.json();
-            })
-            .then(function() {
+                if (!r.ok) {
+                    var d = await r.json().catch(function() { return {}; });
+                    throw new Error(d.detail || d.error || 'Update failed');
+                }
+                // Diff Data Package chip selection vs original.
+                var kbFails = await _diffApplyPackageMembership(
+                    tableId,
+                    document.getElementById('editKbPackagesChips'),
+                    _editKbOriginalPackageIds
+                );
+                if (kbFails > 0) {
+                    showToast(kbFails + ' package membership change(s) failed', 'error');
+                }
                 closeEditKeboolaModal();
                 showToast('Table updated', 'success');
                 loadRegistry();
-            })
-            .catch(function(err) {
+                if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
+            } catch (err) {
                 showToast('' + err.message, 'error');
-            })
-            .finally(function() {
+            } finally {
                 btn.disabled = false;
                 btn.textContent = 'Save Changes';
-            });
+            }
+        })();
     }
 
     {% if data_source_type == 'keboola' %}
@@ -4176,6 +4315,16 @@
         var btn = document.getElementById('editBqSubmitBtn');
         btn.disabled = false;
         btn.textContent = 'Save Changes';
+
+        // Reset + hydrate the Data Packages chip-input (parity with the
+        // legacy edit modal — see _openEditLegacyModal for full notes).
+        _editBqOriginalPackageIds = new Set();
+        var bqChipHost = document.getElementById('editBqPackagesChips');
+        if (bqChipHost) {
+            if (typeof bqChipHost.clearChips === 'function') bqChipHost.clearChips();
+            _hydrateEditPackagesChips(table.id, bqChipHost, _editBqOriginalPackageIds);
+        }
+
         document.getElementById('editBqModal').classList.add('active');
     }
 
@@ -4185,11 +4334,14 @@
         _editOriginalQueryMode = null;
     }
 
-    // Tracks the set of Data Package ids the legacy-edit modal was opened
-    // with, so saveTableEdit() can emit the minimal add/remove deltas
+    // Tracks the set of Data Package ids each edit modal was opened
+    // with, so each save handler can emit the minimal add/remove deltas
     // against /api/admin/data-packages/{id}/tables instead of replaying
-    // every chip.
+    // every chip. One Set per modal because the BQ + Keboola + legacy
+    // modals can coexist in the DOM and need independent origin state.
     var _editLegacyOriginalPackageIds = new Set();
+    var _editBqOriginalPackageIds = new Set();
+    var _editKbOriginalPackageIds = new Set();
 
     function _openEditLegacyModal(table) {
         // Legacy fallback for source_types that aren't bigquery or keboola
@@ -4232,13 +4384,20 @@
     }
 
     async function _hydrateLegacyEditPackagesChips(tableId, chipHost) {
+        return _hydrateEditPackagesChips(tableId, chipHost, _editLegacyOriginalPackageIds);
+    }
+
+    // Shared chip-input hydration for any edit modal. Pulls the package
+    // list, fetches members in parallel, and pre-fills `chipHost` with
+    // every package containing `tableId`. The matched ids are stashed
+    // in `originalIdsSet` so the save handler can diff against the
+    // current chip selection and emit minimal POST/DELETE calls.
+    // ~N small fetches; fine for instances with <50 packages.
+    async function _hydrateEditPackagesChips(tableId, chipHost, originalIdsSet) {
         try {
             var r = await fetch('/api/admin/data-packages', { credentials: 'same-origin' });
             if (!r.ok) return;
             var pkgs = await r.json();
-            // For each package, fetch members in parallel and keep ones
-            // containing this table. ~N small calls; admins rarely have
-            // >50 packages on a single instance.
             var members = await Promise.all(pkgs.map(function(p) {
                 return fetch('/api/admin/data-packages/' + encodeURIComponent(p.id),
                              { credentials: 'same-origin' })
@@ -4249,7 +4408,7 @@
                 if (!det) return;
                 var ids = (det.tables || []).map(function(t) { return t.id; });
                 if (ids.indexOf(tableId) === -1) return;
-                _editLegacyOriginalPackageIds.add(pkgs[i].id);
+                originalIdsSet.add(pkgs[i].id);
                 if (chipHost.addChip) {
                     chipHost.addChip({ id: pkgs[i].id, name: pkgs[i].name });
                 }
@@ -4257,6 +4416,38 @@
         } catch (_) {
             // Non-fatal: the field stays empty and admin can re-pick.
         }
+    }
+
+    // Shared delta sync — diffs the chip-input's current selection vs
+    // the originally-loaded set, emits minimal POST/DELETE against the
+    // junction endpoint, and returns the failure count so the calling
+    // save handler can surface it in the toast.
+    async function _diffApplyPackageMembership(tableId, chipHost, originalIdsSet) {
+        if (!chipHost || !chipHost.getSelectedIds) return 0;
+        var nowIds = new Set(chipHost.getSelectedIds());
+        var calls = [];
+        nowIds.forEach(function(id) {
+            if (!originalIdsSet.has(id)) {
+                calls.push(fetch('/api/admin/data-packages/' + encodeURIComponent(id) + '/tables', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ table_id: tableId }),
+                }));
+            }
+        });
+        originalIdsSet.forEach(function(id) {
+            if (!nowIds.has(id)) {
+                calls.push(fetch('/api/admin/data-packages/' + encodeURIComponent(id)
+                                  + '/tables/' + encodeURIComponent(tableId),
+                                  { method: 'DELETE', credentials: 'same-origin' }));
+            }
+        });
+        if (!calls.length) return 0;
+        var results = await Promise.allSettled(calls);
+        return results.filter(function(x) {
+            return x.status === 'rejected' || (x.value && !x.value.ok);
+        }).length;
     }
 
     function onEditBqAccessModeChange() {
@@ -4344,42 +4535,16 @@
                 throw new Error(d.detail || d.error || 'Update failed');
             }
 
-            // Diff Data Package chip selection vs original — emit minimal
-            // add/remove calls to keep the junction table in sync. Errors
-            // here are surfaced via toast but don't roll back the table
-            // PUT (admins can retry membership from the package side).
-            var chipHost = document.getElementById('editLegacyPackagesChips');
-            if (chipHost && chipHost.getSelectedIds) {
-                var nowIds = new Set(chipHost.getSelectedIds());
-                var origIds = _editLegacyOriginalPackageIds;
-                var tableId = currentEditTableId;
-                var calls = [];
-                nowIds.forEach(function(id) {
-                    if (!origIds.has(id)) {
-                        calls.push(fetch('/api/admin/data-packages/' + encodeURIComponent(id) + '/tables', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            credentials: 'same-origin',
-                            body: JSON.stringify({ table_id: tableId }),
-                        }));
-                    }
-                });
-                origIds.forEach(function(id) {
-                    if (!nowIds.has(id)) {
-                        calls.push(fetch('/api/admin/data-packages/' + encodeURIComponent(id)
-                                          + '/tables/' + encodeURIComponent(tableId),
-                                          { method: 'DELETE', credentials: 'same-origin' }));
-                    }
-                });
-                if (calls.length) {
-                    var results = await Promise.allSettled(calls);
-                    var fails = results.filter(function(x) {
-                        return x.status === 'rejected' || (x.value && !x.value.ok);
-                    });
-                    if (fails.length) {
-                        showToast(fails.length + ' package membership change(s) failed', 'error');
-                    }
-                }
+            // Diff chip selection vs original — emit minimal POST/DELETE
+            // against the junction. Errors surface via toast but don't
+            // roll back the table PUT.
+            var legacyFails = await _diffApplyPackageMembership(
+                currentEditTableId,
+                document.getElementById('editLegacyPackagesChips'),
+                _editLegacyOriginalPackageIds
+            );
+            if (legacyFails > 0) {
+                showToast(legacyFails + ' package membership change(s) failed', 'error');
             }
 
             closeEditModal();
@@ -4455,27 +4620,37 @@
             payload.source_query = null;
         }
 
-        fetch('/api/admin/registry/' + encodeURIComponent(currentEditTableId), {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        })
-        .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || d.error || 'Update failed'); });
-            return r.json();
-        })
-        .then(function() {
-            closeEditBqModal();
-            showToast('Table updated successfully', 'success');
-            loadRegistry();
-        })
-        .catch(function(err) {
-            showToast('Update failed: ' + err.message, 'error');
-        })
-        .finally(function() {
-            btn.disabled = false;
-            btn.textContent = 'Save Changes';
-        });
+        (async function () {
+            try {
+                var r = await fetch('/api/admin/registry/' + encodeURIComponent(currentEditTableId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!r.ok) {
+                    var d = await r.json().catch(function() { return {}; });
+                    throw new Error(d.detail || d.error || 'Update failed');
+                }
+                // Diff Data Package chip selection vs original.
+                var bqFails = await _diffApplyPackageMembership(
+                    currentEditTableId,
+                    document.getElementById('editBqPackagesChips'),
+                    _editBqOriginalPackageIds
+                );
+                if (bqFails > 0) {
+                    showToast(bqFails + ' package membership change(s) failed', 'error');
+                }
+                closeEditBqModal();
+                showToast('Table updated successfully', 'success');
+                loadRegistry();
+                if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
+            } catch (err) {
+                showToast('Update failed: ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Save Changes';
+            }
+        })();
     }
 
     // ── Registry (legacy shim) ──────────────────────────────────
@@ -4491,14 +4666,20 @@
         }
     }
 
+    // Per-row Mode badge — tooltip mirrors the explanation in the
+    // Register modal so admins can hover instead of opening
+    // docs/admin/query-modes.md to remember which mode does what.
+    var _MODE_TOOLTIPS = {
+        local:        'Synced locally — DuckDB downloads to parquet on a schedule; analysts query the local copy via agnes pull.',
+        remote:       'Live from BigQuery — no download; queries go through the DuckDB BQ extension with the 5 GiB scan cap.',
+        materialized: 'Materialised SQL — scheduler runs admin SQL through DuckDB and writes the result to a parquet, distributed like a local table.',
+        internal:     'Internal agnes_* table backed by system.duckdb; read-only, seeded on app boot.',
+    };
     function renderModeBadge(mode) {
         var m = (mode || 'local').toLowerCase();
-        // `internal` is the v?? addition (agnes_* tables backed by
-        // system.duckdb). Allowlist it so the mode-badge picks up the
-        // dedicated CSS class instead of falling back to mode-local
-        // styling and lying about how the data is served.
         var cls = 'mode-badge mode-' + (['local','remote','materialized','internal'].indexOf(m) >= 0 ? m : 'local');
-        return '<span class="' + cls + '">' + escapeHtml(m) + '</span>';
+        var tip = _MODE_TOOLTIPS[m] || '';
+        return '<span class="' + cls + '" title="' + escapeHtmlAttr(tip) + '">' + escapeHtml(m) + '</span>';
     }
 
     function renderRegistryListing(target, tables) {

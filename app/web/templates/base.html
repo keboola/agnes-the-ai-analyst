@@ -105,6 +105,35 @@
           if (_closeTopmost()) e.preventDefault();
         });
       })();
+
+      // Persist each admin-nav <details data-section=...> open/closed
+      // state in localStorage so reopening the dropdown restores the
+      // sections the admin last had collapsed. Sections default open
+      // when no entry exists (matches Jinja's `open` attribute).
+      (function () {
+        const KEY = 'agnes-admin-nav-collapsed-sections';
+        let collapsed = new Set();
+        try {
+          const raw = localStorage.getItem(KEY);
+          if (raw) collapsed = new Set(JSON.parse(raw));
+        } catch (_) { /* corrupt JSON or storage disabled — fall back to defaults */ }
+
+        function _persist() {
+          try { localStorage.setItem(KEY, JSON.stringify(Array.from(collapsed))); }
+          catch (_) { /* storage full / private mode — silently no-op */ }
+        }
+
+        document.querySelectorAll('details.app-nav-menu-group[data-section]')
+          .forEach((det) => {
+            const name = det.dataset.section;
+            if (collapsed.has(name)) det.open = false;
+            det.addEventListener('toggle', () => {
+              if (det.open) collapsed.delete(name);
+              else collapsed.add(name);
+              _persist();
+            });
+          });
+      })();
     </script>
     {% block scripts %}{% endblock %}
 </body>
