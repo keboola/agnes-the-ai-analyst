@@ -165,7 +165,7 @@ class TestContentSections:
 
     def test_renders_use_it_when_list(self, seeded_app):
         pid, slug = _seed_pkg(
-            when_to_use=["You need monetary metrics", "You're computing margin"],
+            when_to_use=["You need monetary metrics", "You are computing margin"],
         )
         _grant_everyone(pid)
         r = seeded_app["client"].get(
@@ -175,7 +175,10 @@ class TestContentSections:
         body = r.text
         assert "Use it when" in body
         assert "You need monetary metrics" in body
-        assert "You're computing margin" in body
+        # Apostrophes get HTML-escaped by Jinja's autoescape; use plain
+        # ASCII text in the assertion fixture to keep this test stable
+        # regardless of the renderer's escape policy.
+        assert "You are computing margin" in body
 
     def test_renders_skip_it_when_list(self, seeded_app):
         pid, slug = _seed_pkg(

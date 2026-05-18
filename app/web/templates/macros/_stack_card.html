@@ -75,6 +75,27 @@
     <div class="stack-card__req-badge stack-card__req-badge--instack" title="In your stack">In stack</div>
   {% endif %}
 
+  {# v56 derived badges (curated / new). Render top-left of the card
+     when present; multiple stack horizontally. Class hooks
+     ``data-badge="<name>"`` let the visual audit test pin them. #}
+  {% if entry.badges %}
+  <div class="stack-card__badges" style="position:absolute; top:8px; left:8px;
+       display:flex; gap:4px; z-index:2;">
+    {% for b in entry.badges %}
+    <span class="stack-card__derived-badge stack-card__derived-badge--{{ b }}"
+          data-badge="{{ b }}"
+          style="display:inline-block; padding:2px 7px; border-radius:999px;
+                 font-size:9px; font-weight:700; text-transform:uppercase;
+                 letter-spacing:0.4px;
+                 {% if b == 'curated' %}background:#fef3c7; color:#92400e;
+                 {% elif b == 'new' %}background:#dcfce7; color:#166534;
+                 {% else %}background:#e5e7eb; color:#374151;{% endif %}">
+      {{ b|capitalize }}
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {# Photo banner — 120px tall.
      - If `entry.cover_image_url` is set (v50 admin-uploaded cover), render
        it as an <img> filling the banner. Mirrors marketplace.html's
@@ -133,6 +154,16 @@
       </div>
     {% endif %}
   </div>
+
+  {# v56 owner chip — small attribution line below tags. Only rendered
+     when the package has an owner; class hook `data-card-owner`
+     pins the contract for the visual-audit test. #}
+  {% if entry.owner_name %}
+  <div class="stack-card__owner" data-card-owner
+       style="padding: 4px 14px 8px; font-size: 11px; color: var(--text-secondary, #5f6368);">
+    Owned by <strong style="color:var(--text-primary);">{{ entry.owner_name }}</strong>{% if entry.owner_team %} · {{ entry.owner_team }}{% endif %}
+  </div>
+  {% endif %}
 
   <div class="stack-card__footer">
     {% if entry.drilldown_url %}
