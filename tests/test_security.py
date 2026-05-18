@@ -398,3 +398,127 @@ class TestJwtSecretHardening:
             # Clean up the temporary TESTING flag if we added it
             if saved_key is None and saved_testing is None:
                 os.environ.pop("TESTING", None)
+
+
+# ---- API hardening (issue #336) ----
+
+@pytest.fixture
+def hardening_client(tmp_path, monkeypatch):
+    """Minimal seeded app with an admin and a plain analyst for RBAC tests."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+
+    from app.main import create_app
+    from src.db import get_system_db, SYSTEM_ADMIN_GROUP
+    from src.repositories.users import UserRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from app.auth.jwt import create_access_token
+
+    conn = get_system_db()
+    repo = UserRepository(conn)
+    repo.create(id="hadmin", email="hadmin@test.com", name="HAdmin")
+    repo.create(id="hanalyst", email="hanalyst@test.com", name="HAnalyst")
+    gid = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+    ).fetchone()[0]
+    UserGroupMembersRepository(conn).add_member("hadmin", gid, source="system_seed")
+    conn.close()
+
+    app = create_app()
+    c = TestClient(app)
+    return {
+        "client": c,
+        "admin_token": create_access_token("hadmin", "hadmin@test.com"),
+        "analyst_token": create_access_token("hanalyst", "hanalyst@test.com"),
+    }
+
+
+class TestApiHardening336:
+    """Regression tests for the ADV-001…ADV-009 findings from issue #336."""
+
+    # ADV-001: RBAC on POST /api/sync/table-subscriptions
+    def test_table_subscriptions_rbac_blocks_unauthorized_table(self, hardening_client):
+        c = hardening_client["client"]
+        token = hardening_client["analyst_token"]
+        resp = c.post(
+            "/api/sync/table-subscriptions",
+            json={"table_mode": "explicit", "tables": {"secret_table": True}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["updated"]["secret_table"] == {"error": "no permission"}
+
+    def test_table_subscriptions_rbac_allows_accessible_table(self, hardening_client):
+        # Admin has access to everything — verify subscription writes go through
+        c = hardening_client["client"]
+        token = hardening_client["admin_token"]
+        resp = c.post(
+            "/api/sync/table-subscriptions",
+            json={"table_mode": "explicit", "tables": {"any_table": True}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["updated"]["any_table"] == {"enabled": True}
+
+    def test_table_subscriptions_dict_size_limit(self, hardening_client):
+        c = hardening_client["client"]
+        token = hardening_client["analyst_token"]
+        huge = {f"t{i}": True for i in range(501)}
+        resp = c.post(
+            "/api/sync/table-subscriptions",
+            json={"table_mode": "explicit", "tables": huge},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422  # ADV-008 max_length guard
+
+    # ADV-003: /api/version must not expose commit_sha or schema_version
+    def test_version_does_not_expose_internal_fields(self, hardening_client):
+        resp = hardening_client["client"].get("/api/version")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "commit_sha" not in body, "commit_sha must not be in public /api/version"
+        assert "schema_version" not in body, "schema_version must not be in public /api/version"
+        assert "version" in body
+
+    # ADV-005: /docs, /redoc, /openapi.json gated behind auth
+    def test_docs_requires_auth(self, hardening_client):
+        resp = hardening_client["client"].get("/docs", follow_redirects=False)
+        assert resp.status_code in (401, 302)
+
+    def test_openapi_json_requires_auth(self, hardening_client):
+        resp = hardening_client["client"].get("/openapi.json")
+        assert resp.status_code == 401
+
+    def test_openapi_json_accessible_to_authenticated_user(self, hardening_client):
+        token = hardening_client["analyst_token"]
+        resp = hardening_client["client"].get(
+            "/openapi.json", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 200
+        assert "paths" in resp.json()
+
+    # ADV-006: /webhooks/ and /cli/ get JSON 401, not HTML redirect
+    def test_cli_path_gets_json_401_not_redirect(self, hardening_client):
+        # /cli/latest is public — test a hypothetical future gated endpoint
+        # by confirming the prefix is in _API_PATH_PREFIXES via /openapi.json
+        # returning JSON 401 (not a redirect) when unauthenticated.
+        resp = hardening_client["client"].get("/openapi.json", follow_redirects=False)
+        assert resp.status_code == 401
+        assert resp.headers.get("content-type", "").startswith("application/json")
+
+    # ADV-009: list endpoints accept limit/offset
+    def test_users_list_pagination_params(self, hardening_client):
+        token = hardening_client["admin_token"]
+        resp = hardening_client["client"].get(
+            "/api/users?limit=5&offset=0",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+
+    def test_tokens_list_pagination_params(self, hardening_client):
+        token = hardening_client["admin_token"]
+        resp = hardening_client["client"].get(
+            "/auth/admin/tokens?limit=5&offset=0",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200

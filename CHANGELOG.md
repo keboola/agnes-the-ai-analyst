@@ -10,6 +10,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- `POST /api/sync/table-subscriptions` now enforces the same RBAC gate as
+  `POST /api/sync/settings` — authenticated users can no longer subscribe to
+  tables they have no `resource_grants` row for (ADV-001, issue #336).
+- `GET /webhooks/jira/health` is now admin-only; `jira_domain` removed from
+  the response to prevent anonymous information disclosure (ADV-002).
+- `GET /api/version` no longer exposes `commit_sha` or `schema_version` to
+  unauthenticated callers (ADV-003).
+- `/docs`, `/redoc`, and `/openapi.json` now require a valid session — the
+  full admin API surface is no longer visible to unauthenticated requests
+  (ADV-005).
+
+### Changed
+- `/cli/` and `/webhooks/` prefixes added to `_API_PATH_PREFIXES` so any
+  future auth-gated endpoint under those paths returns JSON `401` rather than
+  an HTML redirect (ADV-006).
+- `GET /api/users` and `GET /auth/admin/tokens` accept `limit` (default 1000,
+  max 10 000) and `offset` query parameters; `POST /api/sync/table-subscriptions`
+  now rejects `tables` dicts with more than 500 entries (ADV-008, ADV-009).
+- `GET /api/catalog/tables` now has a typed `response_model` (`CatalogTablesResponse`)
+  so Swagger generates an accurate schema for that endpoint (ADV-007).
+
 ### Internal
 - Added `TestFullLifecycleFromInstaller` integration test class
   (`tests/test_store_entity_versions.py`) covering the full

@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
@@ -207,10 +207,12 @@ async def revoke_token(
 
 @admin_router.get("", response_model=List[AdminTokenItem])
 async def admin_list_tokens(
+    limit: int = Query(default=1000, ge=1, le=10000),
+    offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return [_row_to_admin_item(r) for r in AccessTokenRepository(conn).list_all_with_user()]
+    return [_row_to_admin_item(r) for r in AccessTokenRepository(conn).list_all_with_user(limit=limit, offset=offset)]
 
 
 @admin_router.delete("/{token_id}", status_code=204)

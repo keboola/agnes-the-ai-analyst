@@ -18,12 +18,15 @@ def _sign(payload: bytes, secret: str) -> str:
 
 @pytest.fixture()
 def webhook_client(tmp_path, monkeypatch):
-    """Create a TestClient with required env vars and dirs."""
+    """Create a TestClient with required env vars, dirs, and a seeded admin user."""
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     (data_dir / "issues").mkdir()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
 
     monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("STATE_DIR", str(state_dir))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret")
     monkeypatch.setenv("JIRA_WEBHOOK_SECRET", "test-webhook-secret")
     monkeypatch.setenv("JIRA_DATA_DIR", str(data_dir))
@@ -36,32 +39,53 @@ def webhook_client(tmp_path, monkeypatch):
     # Reset singleton so it picks up fresh Config values
     svc._jira_service = None
 
-    # Reimport app to pick up router
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
     from app.main import create_app
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="wh_admin", email="whadmin@test.com", name="WH Admin")
+    admin_gid = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+    ).fetchone()[0]
+    UserGroupMembersRepository(conn).add_member("wh_admin", admin_gid, source="system_seed")
+    conn.close()
+
     app = create_app()
-    return TestClient(app)
+    admin_token = create_access_token("wh_admin", "whadmin@test.com")
+    return {"client": TestClient(app), "admin_token": admin_token}
+
+
+def test_health_requires_auth(webhook_client):
+    """GET /webhooks/jira/health returns 401 without credentials (ADV-002)."""
+    resp = webhook_client["client"].get("/webhooks/jira/health")
+    assert resp.status_code == 401
 
 
 def test_health(webhook_client):
-    """GET /webhooks/jira/health returns 200."""
-    resp = webhook_client.get("/webhooks/jira/health")
+    """GET /webhooks/jira/health returns 200 for admin; jira_domain not exposed."""
+    headers = {"Authorization": f"Bearer {webhook_client['admin_token']}"}
+    resp = webhook_client["client"].get("/webhooks/jira/health", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
     assert "webhook_secret_set" in body
+    assert "jira_domain" not in body
 
 
 def test_missing_signature_401(webhook_client):
     """POST without signature header returns 401."""
     payload = json.dumps({"webhookEvent": "jira:issue_updated", "issue": {"key": "TEST-1"}}).encode()
-    resp = webhook_client.post("/webhooks/jira", content=payload, headers={"Content-Type": "application/json"})
+    resp = webhook_client["client"].post("/webhooks/jira", content=payload, headers={"Content-Type": "application/json"})
     assert resp.status_code == 401
 
 
 def test_invalid_signature_401(webhook_client):
     """POST with wrong signature returns 401."""
     payload = json.dumps({"webhookEvent": "jira:issue_updated", "issue": {"key": "TEST-1"}}).encode()
-    resp = webhook_client.post(
+    resp = webhook_client["client"].post(
         "/webhooks/jira",
         content=payload,
         headers={
@@ -85,7 +109,7 @@ def test_valid_signature_accepted(webhook_client):
         mock_svc.return_value.is_configured.return_value = True
         mock_svc.return_value.process_webhook_event.return_value = True
 
-        resp = webhook_client.post(
+        resp = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={
@@ -100,7 +124,7 @@ def test_empty_payload_400(webhook_client):
     """POST with empty body and valid signature returns 400."""
     payload = b""
     sig = _sign(payload, "test-webhook-secret")
-    resp = webhook_client.post(
+    resp = webhook_client["client"].post(
         "/webhooks/jira",
         content=payload,
         headers={
@@ -166,7 +190,7 @@ def test_path_traversal_in_issue_key_rejected(webhook_client, bad_key):
     }).encode()
     sig = _sign(payload, "test-webhook-secret")
 
-    resp = webhook_client.post(
+    resp = webhook_client["client"].post(
         "/webhooks/jira",
         content=payload,
         headers={
@@ -188,7 +212,7 @@ def test_null_issue_field_does_not_crash(webhook_client):
     }).encode()
     sig = _sign(payload, "test-webhook-secret")
 
-    resp = webhook_client.post(
+    resp = webhook_client["client"].post(
         "/webhooks/jira",
         content=payload,
         headers={
@@ -214,7 +238,7 @@ def test_valid_issue_key_accepted(webhook_client):
         mock_svc.return_value.is_configured.return_value = True
         mock_svc.return_value.process_webhook_event.return_value = True
 
-        resp = webhook_client.post(
+        resp = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={
@@ -247,7 +271,7 @@ def test_webhook_event_path_traversal_sanitized(webhook_client, tmp_path, monkey
         mock_svc.return_value.is_configured.return_value = True
         mock_svc.return_value.process_webhook_event.return_value = True
 
-        resp = webhook_client.post(
+        resp = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={
@@ -287,7 +311,7 @@ def test_valid_hmac_signature_accepted(webhook_client):
         mock_svc.return_value.is_configured.return_value = True
         mock_svc.return_value.process_webhook_event.return_value = True
 
-        resp = webhook_client.post(
+        resp = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={
@@ -307,7 +331,7 @@ def test_invalid_hmac_signature_rejected_401(webhook_client):
     # Sign with the wrong secret
     sig = _sign(payload, "wrong-secret")
 
-    resp = webhook_client.post(
+    resp = webhook_client["client"].post(
         "/webhooks/jira",
         content=payload,
         headers={
@@ -325,7 +349,7 @@ def test_missing_signature_header_rejected(webhook_client):
         "issue": {"key": "PROJ-1"},
     }).encode()
 
-    resp = webhook_client.post(
+    resp = webhook_client["client"].post(
         "/webhooks/jira",
         content=payload,
         headers={"Content-Type": "application/json"},
@@ -346,7 +370,7 @@ def test_x_hub_signature_legacy_header_accepted(webhook_client):
     # Since the handler uses hmac.new with sha256, a sha1= prefix will still
     # be checked against sha256 HMAC. This test verifies the fallback header
     # is read at all (the signature won't match sha256, so expect 401).
-    resp = webhook_client.post(
+    resp = webhook_client["client"].post(
         "/webhooks/jira",
         content=payload,
         headers={
@@ -363,7 +387,7 @@ def test_malformed_json_payload_handled_gracefully(webhook_client):
     payload = b'this is not json {!><'
     sig = _sign(payload, "test-webhook-secret")
 
-    resp = webhook_client.post(
+    resp = webhook_client["client"].post(
         "/webhooks/jira",
         content=payload,
         headers={
@@ -390,7 +414,7 @@ def test_duplicate_event_processed_twice(webhook_client):
         mock_svc.return_value.is_configured.return_value = True
         mock_svc.return_value.process_webhook_event.return_value = True
 
-        resp1 = webhook_client.post(
+        resp1 = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={
@@ -398,7 +422,7 @@ def test_duplicate_event_processed_twice(webhook_client):
                 "X-Hub-Signature-256": sig,
             },
         )
-        resp2 = webhook_client.post(
+        resp2 = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={
@@ -429,7 +453,7 @@ def test_signature_without_sha256_prefix(webhook_client):
         mock_svc.return_value.is_configured.return_value = True
         mock_svc.return_value.process_webhook_event.return_value = True
 
-        resp = webhook_client.post(
+        resp = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={
@@ -453,7 +477,7 @@ def test_jira_service_not_configured_returns_503(webhook_client):
     with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
         mock_svc.return_value.is_configured.return_value = False
 
-        resp = webhook_client.post(
+        resp = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={
@@ -478,7 +502,7 @@ def test_process_webhook_event_failure_returns_500(webhook_client):
         mock_svc.return_value.is_configured.return_value = True
         mock_svc.return_value.process_webhook_event.return_value = False
 
-        resp = webhook_client.post(
+        resp = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={
@@ -504,7 +528,7 @@ def test_issue_key_at_top_level_accepted(webhook_client):
         mock_svc.return_value.is_configured.return_value = True
         mock_svc.return_value.process_webhook_event.return_value = True
 
-        resp = webhook_client.post(
+        resp = webhook_client["client"].post(
             "/webhooks/jira",
             content=payload,
             headers={

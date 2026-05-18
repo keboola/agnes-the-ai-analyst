@@ -1,8 +1,10 @@
 """Catalog endpoints — table profiles, metrics."""
 
 import json
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
@@ -11,6 +13,20 @@ from src.repositories.profiles import ProfileRepository
 from src.rbac import can_access_table
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
+
+
+class CatalogTableItem(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    source_type: Optional[str] = None
+    sync_strategy: Optional[str] = None
+    query_mode: str = "local"
+
+
+class CatalogTablesResponse(BaseModel):
+    tables: List[CatalogTableItem]
+    count: int
 
 
 @router.get("/profile/{table_name}")
@@ -40,7 +56,7 @@ async def get_table_profile(
     return profile
 
 
-@router.get("/tables")
+@router.get("/tables", response_model=CatalogTablesResponse)
 async def list_catalog_tables(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
