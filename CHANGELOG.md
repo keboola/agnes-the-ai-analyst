@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.26] — 2026-05-18
+
 ### Fixed
 - Eight `DELETE` endpoints that previously returned `200` with a body now correctly
   return `204 No Content`: `DELETE /api/admin/metrics/{id}`,
