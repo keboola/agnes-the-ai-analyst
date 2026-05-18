@@ -40,23 +40,24 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterator
 
-# v8: phase-5 attribution keyspace fix + phase-4 bundle rename. Lookup
-# tables (`_flea_entities`, `_flea_plugins`) now key by
-# `store_entities.synthetic_name` instead of `name` — Claude Code writes
-# invocations as `flea:<synthetic_name>` (e.g. `flea:xlsx-by-c-marustamyan`)
-# and the pre-v8 dict was keyed by the un-suffixed `name`, so every flea
-# invocation silently fell through to source='builtin'. Also extends
-# `_attribute_event` with the flea-plugin-nested branch the v6 refactor
-# added to `MarketplaceItemLookup.resolve()` but missed for the rollup
-# builder, so nested skills inside flea plugins now flow into daily/window
-# fact tables too. Bump forces re-attribution of historic usage_events on
-# the next reprocess tick.
+# v9: phase-6 plugin-level rollup parity for flea. `_aggregate_events`
+# now produces synthetic (source='flea', type='plugin', parent_plugin='',
+# name=<plugin_synth>) rows aggregating nested skill/agent invocations,
+# mirroring the curated path. Without this, flea plugin entity cards +
+# detail telemetry chips read 0 from `_load_invocation_stats` (which
+# filters `parent_plugin = ''` for flea) even though nested children
+# had correct rollup rows. Bump forces a re-aggregation pass so historic
+# nested-invocation data fills the new plugin-level rows.
+# (v8: phase-5 attribution keyspace fix + phase-4 bundle rename. Lookup
+# tables key by `store_entities.synthetic_name` instead of `name`;
+# `_attribute_event` gained the flea-plugin-nested branch so nested
+# skills inside flea plugins flow into rollup tables.)
 # (v5: v46 marketplace-telemetry refactor swapped AttributionLookup for
 # MarketplaceItemLookup. Identifier prefix (`<plugin>:<local>`) now drives
 # attribution and usage_events.source / ref_id are populated per-event from
 # the live marketplace_plugins + store_entities tables.)
 # (v4: #293 user_id column; v3: #303 <command-name> slash extraction.)
-USAGE_PROCESSOR_VERSION = 8
+USAGE_PROCESSOR_VERSION = 9
 
 # Claude Code wraps user-typed slash invocations as
 # <command-name>/<name></command-name> inside the user message content
@@ -561,9 +562,14 @@ def _aggregate_events(events_rows, curated_plugins, flea_entities,
         if is_err:
             b["errors"] += 1
 
-    # Plugin-level rollup: curated invocations get a parent row, summing the
-    # children. distinct_users at plugin level recomputed across child users
-    # so a user counted in two skills of the same plugin doesn't double-count.
+    # Plugin-level rollup: curated AND flea invocations get a parent row,
+    # summing the children. distinct_users at plugin level recomputed across
+    # child users so a user counted in two skills of the same plugin doesn't
+    # double-count. v49 phase-6: extended to flea (was curated-only); without
+    # this, flea plugin entities never got an aggregated row, so the
+    # parent_plugin='' filter in `_load_invocation_stats` returned no rows
+    # for plugin cards / detail telemetry chips even though nested children
+    # were attributed correctly.
     plugin_bucket: dict[tuple, dict] = {}
     for key, vals in leaf.items():
         if group_by_day:
@@ -571,12 +577,12 @@ def _aggregate_events(events_rows, curated_plugins, flea_entities,
         else:
             day = None
             source, type_, parent, name = key
-        if source != "curated" or not parent:
+        if source not in ("curated", "flea") or not parent:
             continue
         if group_by_day:
-            pkey = (day, "curated", "plugin", "", parent)
+            pkey = (day, source, "plugin", "", parent)
         else:
-            pkey = ("curated", "plugin", "", parent)
+            pkey = (source, "plugin", "", parent)
         pb = plugin_bucket.setdefault(pkey, {"count": 0, "users": set(), "errors": 0})
         pb["count"] += vals["count"]
         pb["users"] |= vals["users"]

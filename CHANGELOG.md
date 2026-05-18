@@ -11,6 +11,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Fixed
+- Flea **plugin entity** cards (`/marketplace?tab=flea`) and detail
+  pages (`/marketplace/flea/{id}` for `type='plugin'`) now show the
+  sum of nested skill/agent invocations. Pre-fix the plugin-level
+  rollup pass in `services/session_processors/usage_lib.py:_aggregate_events`
+  was hardcoded to `source='curated'` only, so flea plugin entities
+  never got a `(source='flea', type='plugin', parent_plugin='',
+  name=<plugin_synth>)` aggregated row. The API path's
+  `_load_invocation_stats('flea')` filters `parent_plugin=''` and
+  returned nothing for plugin cards even though nested children had
+  correct rollup rows. Triggered by empirical observation on dev VM
+  (`codex-second-opinion-by-c-marustamyan` plugin showed 0 calls
+  while its three inner skills had 1+1+3 invocations). Fix extends
+  the aggregation pass to `source in ('curated', 'flea')` and
+  preserves the original source tag in the synthetic plugin row.
+  `USAGE_PROCESSOR_VERSION` bumped 8→9 so the reprocess pass fills
+  the new aggregated rows for historic data.
 - Flea-market attribution layer now keys its lookup tables by
   `store_entities.synthetic_name` instead of `name`, matching what
   Claude Code writes in the JSONL invocation local-part
