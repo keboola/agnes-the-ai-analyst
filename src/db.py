@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 48
+SCHEMA_VERSION = 49
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -576,6 +576,19 @@ CREATE TABLE IF NOT EXISTS store_entities (
     -- StoreEntitiesRepository.append_version + restore endpoint.
     version_no        INTEGER NOT NULL DEFAULT 1,
     version_history   JSON DEFAULT '[]',
+    -- v49: phase-1 Flea refactor adds three user-facing metadata columns.
+    -- `title` is a humanized display name (acronym-aware), shown on web
+    -- surfaces instead of the kebab-case `name`. `tagline` is an optional
+    -- 200-char short description for card UI (long-form lives in
+    -- `description`). `synthetic_name` is the deterministic
+    -- `<name>-by-<owner_username>` value baked into served bundles —
+    -- stored as a column so attribution + uniqueness checks can target a
+    -- single source of truth instead of recomputing the concat on every
+    -- query. Phase 1 only populates these; downstream surfaces (cards,
+    -- detail pages, Claude Code propagation) consume them in later phases.
+    title             VARCHAR NOT NULL,
+    tagline           VARCHAR,
+    synthetic_name    VARCHAR NOT NULL,
     created_at        TIMESTAMP DEFAULT current_timestamp,
     updated_at        TIMESTAMP DEFAULT current_timestamp,
     UNIQUE (owner_user_id, name)
@@ -3074,6 +3087,48 @@ def _v47_to_v48(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type)")
 
 
+def _v48_to_v49_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """v49: phase-1 Flea refactor — add ``title``, ``tagline``, ``synthetic_name``.
+
+    Python function (not a SQL list) because the backfill needs Python-side
+    humanize logic (acronym dict + Title Case) which has no clean SQL
+    equivalent. Pattern mirrors ``_v34_to_v35_migrate``.
+
+    Steps:
+      1. Add columns nullable + default NULL so the ALTER works on a populated
+         table.
+      2. Iterate rows: compute ``title = humanize_name(strip_archive_suffix(name))``
+         and ``synthetic_name = f"{name}-by-{owner_username}"``. ``tagline``
+         stays NULL.
+      3. SET NOT NULL on ``title`` and ``synthetic_name``. ``tagline`` stays
+         nullable by design (optional short description).
+
+    Idempotent: re-runs are safe — ADD COLUMN IF NOT EXISTS is a no-op;
+    UPDATEs overwrite with the same values; ALTER ... SET NOT NULL is a
+    no-op when already NOT NULL.
+    """
+    from src.store_naming import humanize_name, strip_archive_suffix
+
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS title VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS tagline VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS synthetic_name VARCHAR")
+
+    rows = conn.execute(
+        "SELECT id, name, owner_username FROM store_entities"
+    ).fetchall()
+    for row_id, name, owner_username in rows:
+        display_base = strip_archive_suffix(name or "")
+        title = humanize_name(display_base) or display_base or "Untitled"
+        synthetic = f"{name}-by-{owner_username}"
+        conn.execute(
+            "UPDATE store_entities SET title = ?, synthetic_name = ? WHERE id = ?",
+            [title, synthetic, row_id],
+        )
+
+    conn.execute("ALTER TABLE store_entities ALTER COLUMN title SET NOT NULL")
+    conn.execute("ALTER TABLE store_entities ALTER COLUMN synthetic_name SET NOT NULL")
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -3368,6 +3423,11 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # there because the legacy tables aren't in _SYSTEM_SCHEMA
             # anymore. Kept here for ladder readability.
             _v47_to_v48(conn)
+            # v49 phase-1 Flea refactor — title, tagline, synthetic_name
+            # columns. _SYSTEM_SCHEMA already declares them on fresh
+            # installs; this call is a no-op (table empty, ALTER IF NOT
+            # EXISTS, no rows to backfill, SET NOT NULL idempotent).
+            _v48_to_v49_migrate(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3518,6 +3578,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v46_to_v47(conn)
             if current < 48:
                 _v47_to_v48(conn)
+            if current < 49:
+                _v48_to_v49_migrate(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

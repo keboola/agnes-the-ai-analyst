@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- Flea-market upload + edit forms now collect a user-friendly **Title**
+  (humanized from the kebab-case `name`, acronym-aware: `mcp-builder` →
+  `MCP Builder`, `oauth-server-v2` → `OAuth Server V2`), an optional
+  **Short description** (`tagline`, ≤200 chars), and show a read-only
+  live preview of the final synthetic invocation slug
+  (`/<name>-by-<owner_username>`) next to the Name field. Phase 1 of a
+  larger Flea refactor — fields are persisted on `store_entities` but
+  not yet rendered on marketplace cards / detail pages (Phase 2). Schema
+  v49 adds `title NOT NULL`, `tagline`, and `synthetic_name NOT NULL`
+  columns; backfill humanizes existing names (archive-suffix stripped
+  first) and composes synthetic from the deterministic formula.
+
 ### Internal
 - Added `TestFullLifecycleFromInstaller` integration test class
   (`tests/test_store_entity_versions.py`) covering the full

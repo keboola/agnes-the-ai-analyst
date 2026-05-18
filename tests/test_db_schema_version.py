@@ -125,7 +125,15 @@ def test_schema_version_is_48():
     #            New attribution logic = prefix split on `<plugin>:<local>`
     #            identifier + live lookup against marketplace_plugins /
     #            store_entities — no mapping tables needed.
-    assert SCHEMA_VERSION == 48
+    # v49 (#TBD): phase-1 Flea refactor — adds title, tagline,
+    #            synthetic_name columns to store_entities. title is
+    #            user-friendly display name (acronym-aware), tagline is
+    #            an optional 200-char short description, synthetic_name is
+    #            the deterministic <name>-by-<owner_username> string baked
+    #            into served bundles. Migration backfills existing rows
+    #            via humanize_name(strip_archive_suffix(name)) for title
+    #            and the concat formula for synthetic_name.
+    assert SCHEMA_VERSION == 49
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

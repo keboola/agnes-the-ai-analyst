@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from src.store_naming import (
+    TITLE_ACRONYMS,
     compute_entity_version,
+    humanize_name,
     sanitize_username,
     suffixed_name,
 )
@@ -43,6 +45,39 @@ class TestSuffixedName:
 
     def test_preserves_original_chars(self):
         assert suffixed_name("a-b-c", "u-v") == "a-b-c-by-u-v"
+
+
+class TestHumanizeName:
+    @pytest.mark.parametrize("name,expected", [
+        ("code-review", "Code Review"),
+        ("mcp-builder", "MCP Builder"),
+        ("oauth-server", "OAuth Server"),
+        ("oauth-server-v2", "OAuth Server V2"),
+        ("s3-uploader", "S3 Uploader"),
+        ("api", "API"),
+        ("single", "Single"),
+        ("json-to-xml", "JSON To XML"),
+        ("html-deck-creator", "HTML Deck Creator"),
+        ("rbac-audit", "RBAC Audit"),
+        ("", ""),
+        ("a", "A"),
+        # double-dashes / leading-trailing dashes collapse via empty-token drop
+        ("foo--bar", "Foo Bar"),
+        ("-foo-bar-", "Foo Bar"),
+    ])
+    def test_known_inputs(self, name, expected):
+        assert humanize_name(name) == expected
+
+    def test_acronyms_dict_has_canonical_case(self):
+        # Sanity — every value is its canonical capitalization, every key is lowercase.
+        for key, value in TITLE_ACRONYMS.items():
+            assert key == key.lower(), f"key {key!r} not lowercase"
+            assert value, f"value for {key!r} is empty"
+
+    def test_case_insensitive_match(self):
+        # Input always arrives lowercase from kebab-case names, but the
+        # lookup must be defensive in case future callers pass mixed case.
+        assert humanize_name("MCP-Builder".lower()) == "MCP Builder"
 
 
 class TestComputeEntityVersion:
