@@ -106,6 +106,74 @@
         });
       })();
 
+      // v51 palette swatches — hydrate every `.cf-palette-row` element
+      // with 8 design-system color buttons; clicking a swatch sets the
+      // adjacent native `<input type="color">` (id = .data-target) and
+      // marks the swatch active. Free-form picker still works as before.
+      (function () {
+        const PALETTE = [
+          '#0EA5B5', // teal
+          '#2563EB', // blue
+          '#7C3AED', // violet
+          '#DB2777', // pink
+          '#DC2626', // red
+          '#D97706', // amber
+          '#059669', // emerald
+          '#475569', // slate
+        ];
+        function _hydrate(row) {
+          if (row.dataset.hydrated === '1') return;
+          row.dataset.hydrated = '1';
+          const targetId = row.dataset.target;
+          if (!targetId) return;
+          PALETTE.forEach((hex) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'cf-swatch';
+            btn.style.background = hex;
+            btn.dataset.hex = hex;
+            btn.title = hex;
+            btn.addEventListener('click', () => {
+              const input = document.getElementById(targetId);
+              if (input) {
+                input.value = hex;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+              row.querySelectorAll('.cf-swatch').forEach((s) =>
+                s.classList.toggle('is-active', s === btn)
+              );
+            });
+            row.appendChild(btn);
+          });
+          // Reflect any pre-set color value on the input back onto the
+          // swatch row so the user sees which palette entry matches.
+          const input = document.getElementById(targetId);
+          if (input) {
+            const sync = () => {
+              const cur = (input.value || '').toLowerCase();
+              row.querySelectorAll('.cf-swatch').forEach((s) =>
+                s.classList.toggle('is-active', s.dataset.hex.toLowerCase() === cur)
+              );
+            };
+            input.addEventListener('change', sync);
+            sync();
+          }
+        }
+        function _hydrateAll() {
+          document.querySelectorAll('.cf-palette-row').forEach(_hydrate);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', _hydrateAll);
+        } else {
+          _hydrateAll();
+        }
+        // Re-hydrate on demand — modal templates already exist at page
+        // load (display:none), so this catches any future dynamically
+        // injected modal too.
+        const obs = new MutationObserver(_hydrateAll);
+        obs.observe(document.body, { childList: true, subtree: true });
+      })();
+
       // Persist each admin-nav <details data-section=...> open/closed
       // state in localStorage so reopening the dropdown restores the
       // sections the admin last had collapsed. Sections default open

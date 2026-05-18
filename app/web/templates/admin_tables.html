@@ -1886,6 +1886,27 @@
             <label class="form-label">Description <span class="optional">(optional)</span></label>
             <textarea id="cdp-desc" class="form-input" rows="2"></textarea>
           </div>
+          {# v51 lifecycle + classification — drive the hero filter
+             checkboxes on /catalog and the eyebrow line above the
+             card title. Both fields are admin-facing only and have
+             safe defaults (status=prod, category=null). #}
+          <div class="form-group" style="display:flex; gap:12px;">
+            <div style="flex:1;">
+              <label class="form-label">Status</label>
+              <select id="cdp-status" class="form-input" style="height:38px;">
+                <option value="prod" selected>Prod — ready for analyst use</option>
+                <option value="poc">POC — try-before-you-buy</option>
+                <option value="coming-soon">Coming soon — visible but not usable yet</option>
+                <option value="draft">Draft — admin-only, hidden from analysts</option>
+              </select>
+            </div>
+            <div style="flex:1;">
+              <label class="form-label">Category <span class="optional">(optional)</span></label>
+              <input id="cdp-category" type="text" class="form-input"
+                     placeholder="e.g. Sessions &amp; Traffic">
+              <div class="form-hint">Eyebrow line above the card title. Keep it short and consistent.</div>
+            </div>
+          </div>
           <div class="form-group" style="display:flex; gap:12px;">
             <div style="flex:1;">
               <label class="form-label">Icon</label>
@@ -1893,12 +1914,15 @@
             </div>
             <div style="flex:1;">
               <label class="form-label">Color</label>
+              {# v51 palette row — admin clicks a swatch to set #cdp-color.
+                 Free-form picker stays below as the escape hatch. Palette
+                 is a vendor-neutral design-system set (teal/blue/violet/
+                 pink/red/amber/emerald/slate) — no brand colors. #}
+              <div class="cf-palette-row" data-target="cdp-color"></div>
               {# type=color forces the native swatch picker so admins can't
-                 type/append a malformed hex into the field (E2E found a
-                 text input letting "#ff5733#e0f2fe" reach the DB). Server
-                 also validates with a regex now — belt + suspenders. #}
+                 type/append a malformed hex into the field. #}
               <input id="cdp-color" type="color" class="form-input" value="#e0f2fe"
-                     style="height:38px; padding:2px; cursor:pointer;">
+                     style="height:32px; padding:2px; cursor:pointer;">
             </div>
           </div>
           {# Cover image upload (v50). When set, the /catalog card renders
@@ -2084,6 +2108,9 @@
           document.getElementById('edp-desc').value = pkg.description || '';
           document.getElementById('edp-icon').value = pkg.icon || '';
           document.getElementById('edp-color').value = pkg.color || '#e0f2fe';
+          // v51: pre-fill status + category from the loaded package.
+          document.getElementById('edp-status').value = pkg.status || 'prod';
+          document.getElementById('edp-category').value = pkg.category || '';
           // v50: hydrate cover image (URL + preview); clear the file
           // input so a previous typed-and-cancelled file doesn't leak.
           var coverUrl = document.getElementById('edp-cover-url');
@@ -2159,6 +2186,11 @@
             icon: document.getElementById('edp-icon').value.trim() || null,
             color: document.getElementById('edp-color').value.trim() || null,
             cover_image_url: coverField,
+            // v51: pass status + category through. Empty-string category
+            // hits the clear_category branch server-side; status uses the
+            // dropdown's current value (never blank).
+            status: document.getElementById('edp-status').value || 'prod',
+            category: document.getElementById('edp-category').value.trim(),
           };
           const r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId), {
             method: 'PUT',
@@ -2348,6 +2380,9 @@
             icon: document.getElementById('cdp-icon').value.trim() || null,
             color: document.getElementById('cdp-color').value.trim() || null,
             cover_image_url: cdpCoverUrl || null,
+            // v51: lifecycle status + classification category.
+            status: document.getElementById('cdp-status').value || 'prod',
+            category: document.getElementById('cdp-category').value.trim() || null,
           };
           if (!payload.name || !payload.slug) {
             alert('Name is required (slug auto-derives from it).');
@@ -2947,13 +2982,30 @@
           </div>
           <div class="form-group" style="display:flex; gap:12px;">
             <div style="flex:1;">
+              <label class="form-label">Status</label>
+              <select id="edp-status" class="form-input" style="height:38px;">
+                <option value="prod">Prod — ready for analyst use</option>
+                <option value="poc">POC — try-before-you-buy</option>
+                <option value="coming-soon">Coming soon — visible but not usable yet</option>
+                <option value="draft">Draft — admin-only, hidden from analysts</option>
+              </select>
+            </div>
+            <div style="flex:1;">
+              <label class="form-label">Category <span class="optional">(optional)</span></label>
+              <input id="edp-category" type="text" class="form-input"
+                     placeholder="e.g. Sessions &amp; Traffic">
+            </div>
+          </div>
+          <div class="form-group" style="display:flex; gap:12px;">
+            <div style="flex:1;">
               <label class="form-label">Icon</label>
               <input id="edp-icon" type="text" class="form-input" maxlength="4">
             </div>
             <div style="flex:1;">
               <label class="form-label">Color</label>
+              <div class="cf-palette-row" data-target="edp-color"></div>
               <input id="edp-color" type="color" class="form-input"
-                     style="height:38px; padding:2px; cursor:pointer;">
+                     style="height:32px; padding:2px; cursor:pointer;">
             </div>
           </div>
           {# Cover image upload (v50). Preview shows the current cover when

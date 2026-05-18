@@ -24,6 +24,20 @@
              placeholder="Search Data Packages by name or description…">
     </div>
   </div>
+
+  {# v51 lifecycle status filter — show / hide cards by per-package
+     ``data-status``. Default opt-in: Prod + POC checked (the analyst-
+     ready buckets). Coming-soon stays unchecked so the catalog isn't
+     polluted with placeholders. Empty selection = no filter (show all). #}
+  <div class="stack-hero__status-row" id="catalog-status-filter">
+    <span class="stack-hero__status-label">Show:</span>
+    <label><input type="checkbox" value="prod" checked> Prod-ready</label>
+    <label><input type="checkbox" value="poc" checked> POC</label>
+    <label><input type="checkbox" value="coming-soon"> Coming soon</label>
+    {% if user.is_admin %}
+    <label title="Admin-only — hidden from analysts"><input type="checkbox" value="draft"> Draft <span style="opacity:.6;">(admin)</span></label>
+    {% endif %}
+  </div>
 </div>
 
 <div class="stack-page" id="catalog-page"
@@ -358,20 +372,32 @@
   // ── Filter chips ───────────────────────────────────────────────────────
   let activeFilter = 'all';
   let activeSourceFilter = null;
+  // v51 — set of currently-checked status values (multi-select). Empty
+  // set means no status filter (= show all).
+  function _activeStatuses() {
+    const out = new Set();
+    document.querySelectorAll('#catalog-status-filter input[type="checkbox"]:checked')
+      .forEach((el) => out.add(el.value));
+    return out;
+  }
   function applyFilters() {
     // Single source of truth — the hero search input. No hidden mirror
     // input to fall out of sync.
     const heroEl = document.getElementById('catalog-hero-search');
     const q = (heroEl && heroEl.value || '').toLowerCase();
+    const statuses = _activeStatuses();
     document.querySelectorAll('.stack-card').forEach(card => {
       const req = card.dataset.requirement;
       const inStack = card.dataset.inStack === '1';
+      const status = card.dataset.status || 'prod';
       const title = (card.querySelector('.stack-card__title')?.textContent || '').toLowerCase();
       const desc  = (card.querySelector('.stack-card__desc')?.textContent || '').toLowerCase();
       let show = true;
       if (activeFilter === 'required' && req !== 'required') show = false;
       if (activeFilter === 'available' && req !== 'available') show = false;
       if (activeFilter === 'in_stack' && !inStack) show = false;
+      // Status filter — empty selection = pass-through (show all).
+      if (statuses.size && !statuses.has(status)) show = false;
       if (activeSourceFilter) {
         const tags = card.querySelectorAll('.stack-card__tag');
         let hit = false;
@@ -382,6 +408,10 @@
       card.hidden = !show;
     });
   }
+  // Hook the v51 status checkboxes into the same applyFilters pipeline.
+  document.querySelectorAll('#catalog-status-filter input[type="checkbox"]').forEach((el) => {
+    el.addEventListener('change', applyFilters);
+  });
   document.querySelectorAll('[data-filter]').forEach(b => {
     b.addEventListener('click', () => {
       document.querySelectorAll('[data-filter]').forEach(x => x.classList.toggle('is-active', x === b));

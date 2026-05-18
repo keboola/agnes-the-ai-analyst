@@ -78,6 +78,36 @@
   color: var(--text-secondary, #5f6368);
   opacity: 0.75;
 }
+/* v51 lifecycle status filter row — sits in the hero below the search.
+ * White checkbox set on the gradient background; click any combination
+ * to filter the card grid by `data-status`. Empty selection = show all. */
+.stack-hero__status-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.92);
+  flex-wrap: wrap;
+}
+.stack-hero__status-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.stack-hero__status-row input[type="checkbox"] {
+  accent-color: #0EA5B5;
+  cursor: pointer;
+}
+.stack-hero__status-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 600;
+}
 .stack-hero__search-icon {
   position: absolute;
   left: 14px;
@@ -389,6 +419,35 @@
  * Matches marketplace's amber "In stack" pill on .mp-card.is-installed. */
 .stack-card__req-badge--instack {
   background: #f59e0b;
+}
+
+/* v51 — palette swatch row for the Create/Edit modals (Data Package +
+ * Memory Domain). 8 vendor-neutral design-system colors; click sets the
+ * adjacent native <input type="color"> so the palette is the obvious
+ * choice while the free-form picker stays as the escape hatch. */
+.cf-palette-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.cf-palette-row .cf-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(15, 23, 42, 0.15);
+  cursor: pointer;
+  padding: 0;
+  background: var(--bg, #fff);
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.cf-palette-row .cf-swatch:hover {
+  transform: scale(1.08);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+}
+.cf-palette-row .cf-swatch.is-active {
+  outline: 2px solid #0073D1;
+  outline-offset: 2px;
 }
 
 /* v51 cover-corner lifecycle status pill. Sits top-left of the cover

@@ -21,6 +21,18 @@
              placeholder="Search Memory by name or description…">
     </div>
   </div>
+
+  {# v51 lifecycle filter — same pattern as /catalog. Default opt-in to
+     Prod + POC. #}
+  <div class="stack-hero__status-row" id="memory-status-filter">
+    <span class="stack-hero__status-label">Show:</span>
+    <label><input type="checkbox" value="prod" checked> Prod-ready</label>
+    <label><input type="checkbox" value="poc" checked> POC</label>
+    <label><input type="checkbox" value="coming-soon"> Coming soon</label>
+    {% if user.is_admin %}
+    <label title="Admin-only"><input type="checkbox" value="draft"> Draft <span style="opacity:.6;">(admin)</span></label>
+    {% endif %}
+  </div>
 </div>
 
 {# Pending-review banner is admin-only. The backend (router.py) already
@@ -304,19 +316,29 @@
   });
 
   let activeFilter = 'all';
+  // v51 — set of currently-checked status values.
+  function _activeStatuses() {
+    const out = new Set();
+    document.querySelectorAll('#memory-status-filter input[type="checkbox"]:checked')
+      .forEach((el) => out.add(el.value));
+    return out;
+  }
   function applyFilters() {
     // Single source of truth — the hero search input.
     const heroEl = document.getElementById('memory-hero-search');
     const q = (heroEl && heroEl.value || '').toLowerCase();
+    const statuses = _activeStatuses();
     document.querySelectorAll('.stack-card').forEach(card => {
       const req = card.dataset.requirement;
       const inStack = card.dataset.inStack === '1';
+      const status = card.dataset.status || 'prod';
       const title = (card.querySelector('.stack-card__title')?.textContent || '').toLowerCase();
       const desc  = (card.querySelector('.stack-card__desc')?.textContent || '').toLowerCase();
       let show = true;
       if (activeFilter === 'required' && req !== 'required') show = false;
       if (activeFilter === 'available' && req !== 'available') show = false;
       if (activeFilter === 'in_stack' && !inStack) show = false;
+      if (statuses.size && !statuses.has(status)) show = false;
       if (q && !title.includes(q) && !desc.includes(q)) show = false;
       card.hidden = !show;
     });
@@ -327,6 +349,9 @@
       activeFilter = b.dataset.filter;
       applyFilters();
     });
+  });
+  document.querySelectorAll('#memory-status-filter input[type="checkbox"]').forEach((el) => {
+    el.addEventListener('change', applyFilters);
   });
   // Single hero search input drives the filter pipeline directly.
   var heroSearch = document.getElementById('memory-hero-search');

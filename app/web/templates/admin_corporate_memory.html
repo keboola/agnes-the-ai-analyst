@@ -1456,12 +1456,27 @@
             </label>
             <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
               <span style="font-size:12px; color:var(--text-muted);">Color</span>
+              <div class="cf-palette-row" data-target="emd-color"></div>
               <input id="emd-color" type="color"
                      style="padding:2px; border:1px solid var(--border);
                             border-radius:var(--radius-sm);
-                            background:var(--bg); height:38px; cursor:pointer;">
+                            background:var(--bg); height:32px; cursor:pointer;">
             </label>
           </div>
+          {# v51 — lifecycle status (no per-domain category; the domain
+             itself IS the classification). #}
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="emd-status"
+                    style="padding:6px; border:1px solid var(--border);
+                           border-radius:var(--radius-sm);
+                           background:var(--bg); color:var(--text); height:38px;">
+              <option value="prod">Prod — ready for analyst use</option>
+              <option value="poc">POC — try-before-you-buy</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft — admin-only</option>
+            </select>
+          </label>
         </div>
         <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
                     margin-top:var(--space-4);">
@@ -1529,14 +1544,30 @@
             </label>
             <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
               <span style="font-size:12px; color:var(--text-muted);">Color</span>
-              {# type=color — same rationale as the Data Package create
-                 modal (admin_tables.html). Server validates hex too. #}
+              {# v51 palette swatches + free-form picker fallback. Same
+                 vendor-neutral palette as the Data Package modals. #}
+              <div class="cf-palette-row" data-target="cmd-color"></div>
               <input id="cmd-color" type="color" value="#e0f2fe"
                      style="padding:2px; border:1px solid var(--border);
                             border-radius:var(--radius-sm);
-                            background:var(--bg); height:38px; cursor:pointer;">
+                            background:var(--bg); height:32px; cursor:pointer;">
             </label>
           </div>
+          {# v51 — lifecycle status for memory domains. Same enum as
+             data_packages (prod/poc/coming-soon/draft). No category here:
+             the domain itself classifies its items. #}
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="cmd-status"
+                    style="padding:6px; border:1px solid var(--border);
+                           border-radius:var(--radius-sm);
+                           background:var(--bg); color:var(--text); height:38px;">
+              <option value="prod" selected>Prod — ready for analyst use</option>
+              <option value="poc">POC — try-before-you-buy</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft — admin-only</option>
+            </select>
+          </label>
           {# Cover image upload (v50) — mirrors the Data Package modal.
              When set, the /memory card renders <img> instead of letter
              initials. PNG/JPEG/GIF/WebP, 5 MiB cap server-side. #}
@@ -1885,6 +1916,8 @@
             icon: document.getElementById('cmd-icon').value.trim() || null,
             color: document.getElementById('cmd-color').value.trim() || null,
             cover_image_url: cmdCoverUrl || null,
+            // v51 — lifecycle status (no category for memory domains).
+            status: document.getElementById('cmd-status').value || 'prod',
           };
           if (!payload.name || !payload.slug) {
             alert('Name and slug are required.');
@@ -2169,6 +2202,8 @@
             document.getElementById('emd-desc').value = d.description || '';
             document.getElementById('emd-icon').value = d.icon || '🎯';
             document.getElementById('emd-color').value = d.color || '#e0f2fe';
+            // v51 — pre-fill status from loaded domain.
+            document.getElementById('emd-status').value = d.status || 'prod';
             document.getElementById('editMemoryDomainModal').style.display = 'block';
         } catch (e) {
             alert('Failed to load domain: ' + e.message);
@@ -2189,6 +2224,7 @@
                 description: document.getElementById('emd-desc').value.trim() || null,
                 icon: document.getElementById('emd-icon').value.trim() || null,
                 color: document.getElementById('emd-color').value.trim() || null,
+                status: document.getElementById('emd-status').value || 'prod',
             };
             const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id), {
                 method: 'PUT',
