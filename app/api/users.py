@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional, List
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from argon2 import PasswordHasher
 
@@ -228,10 +228,12 @@ def _set_admin_membership(
 
 @router.get("", response_model=List[UserResponse])
 async def list_users(
+    limit: int = Query(default=1000, ge=1, le=10000),
+    offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return [_to_response(u, conn) for u in UserRepository(conn).list_all()]
+    return [_to_response(u, conn) for u in UserRepository(conn).list_paginated(limit=limit, offset=offset)]
 
 
 @router.get("/{user_id}", response_model=UserResponse)

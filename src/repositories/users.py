@@ -25,11 +25,42 @@ class UserRepository:
         return self._row_to_dict(result)
 
     def list_all(self) -> List[Dict[str, Any]]:
-        results = self.conn.execute("SELECT * FROM users ORDER BY email").fetchall()
+        """Return EVERY user row. Used by bootstrap-lock + startup
+        warning paths that need to inspect the whole table (see
+        ``app/auth/router.py::bootstrap`` and ``app/main.py``'s
+        no-password-set warning). Do NOT add a LIMIT here — the
+        bootstrap check ``[u for u in list_all() if u.get('password_hash')]``
+        re-opens the endpoint if any password-holder gets paginated
+        out, which would let an unauthenticated caller claim admin
+        on instances with >LIMIT users. API-surface pagination uses
+        ``list_paginated()`` below.
+        """
+        results = self.conn.execute(
+            "SELECT * FROM users ORDER BY email"
+        ).fetchall()
         if not results:
             return []
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, row)) for row in results]
+
+    def list_paginated(self, limit: int = 1000, offset: int = 0) -> List[Dict[str, Any]]:
+        """Paginated user listing for the admin API surface (#336
+        ADV-009). Safe to bound — callers explicitly opt into the
+        windowed shape and the API enforces ``limit <= 10000`` at
+        the Query()-validation layer. Do not call from bootstrap /
+        startup paths that need exhaustive enumeration; use
+        ``list_all()`` for those.
+        """
+        results = self.conn.execute(
+            "SELECT * FROM users ORDER BY email LIMIT ? OFFSET ?", [limit, offset]
+        ).fetchall()
+        if not results:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, row)) for row in results]
+
+    def count_all(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 
     def create(
         self,

@@ -36,7 +36,7 @@ setup_logging("app")
 
 from app.version import APP_VERSION, MIN_COMPAT_CLI_VERSION
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -354,6 +354,12 @@ def create_app() -> FastAPI:
         description="Data distribution platform for AI analytical systems",
         version=APP_VERSION,
         lifespan=lifespan,
+        # Swagger UI / OpenAPI JSON gated behind authentication — custom
+        # routes added below before the web_router catch-all. Setting these
+        # to None disables FastAPI's default unauthenticated endpoints.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
         # Intentionally NOT debug=DEBUG: FastAPI's debug=True installs
         # Starlette's ServerErrorMiddleware which intercepts unhandled
         # Exceptions and renders a plain-HTML traceback BEFORE our
@@ -691,6 +697,27 @@ def create_app() -> FastAPI:
     from a2wsgi import WSGIMiddleware
     app.mount("/marketplace.git", WSGIMiddleware(make_git_wsgi_app()))
 
+    # Authenticated Swagger / ReDoc / OpenAPI JSON — requires a valid session
+    # so the full admin API surface is not visible to unauthenticated callers.
+    # Must be registered before web_router (catch-all). /openapi.json is also
+    # added to _API_PATH_PREFIXES below so auth failures return JSON 401
+    # rather than an HTML redirect.
+    from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+    from fastapi.responses import HTMLResponse as _HTMLResponse
+    from app.auth.dependencies import get_current_user as _get_current_user
+
+    @app.get("/docs", include_in_schema=False, response_class=_HTMLResponse)
+    async def swagger_ui(user: dict = Depends(_get_current_user)):
+        return get_swagger_ui_html(openapi_url="/openapi.json", title="Agnes API")
+
+    @app.get("/redoc", include_in_schema=False, response_class=_HTMLResponse)
+    async def redoc_ui(user: dict = Depends(_get_current_user)):
+        return get_redoc_html(openapi_url="/openapi.json", title="Agnes API — ReDoc")
+
+    @app.get("/openapi.json", include_in_schema=False)
+    async def openapi_spec(user: dict = Depends(_get_current_user)):
+        return app.openapi()
+
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)
 
@@ -699,6 +726,9 @@ def create_app() -> FastAPI:
     _API_PATH_PREFIXES: tuple[str, ...] = (
         "/api/",
         "/auth/",
+        "/cli/",
+        "/openapi.json",
+        "/webhooks/",
         "/marketplace.zip",
         "/marketplace.git",
         "/marketplace/",

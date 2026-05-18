@@ -491,7 +491,5 @@ async def version_info():
         "version": os.environ.get("AGNES_VERSION", "dev"),
         "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
         "image_tag": os.environ.get("AGNES_TAG", "unknown"),
-        "commit_sha": os.environ.get("AGNES_COMMIT_SHA", "unknown"),
-        "schema_version": SCHEMA_VERSION,
         "deployed_at": _DEPLOYED_AT,
     }
