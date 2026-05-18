@@ -1096,6 +1096,103 @@ async def catalog_package_detail(
     return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
 
 
+@router.get("/catalog/t/{table_id}", response_class=HTMLResponse)
+async def catalog_table_detail(
+    table_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-table drill-down — sample questions, columns, things to know,
+    pairs-well-with. Closes the "/catalog detail bounces into /admin"
+    UX gap: this is the user-facing surface for table docs, and admins
+    edit those docs inline on the same page instead of round-tripping
+    through /admin/tables.
+
+    RBAC: admin god-mode or grant on ANY data package containing this
+    table. Falls back to 403 otherwise — analysts only see tables that
+    belong to packages they're granted on.
+    """
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+    from src.repositories.data_packages import DataPackagesRepository
+    from src.repositories.sync_state import SyncStateRepository
+    from src.repositories.table_registry import TableRegistryRepository
+
+    table_repo = TableRegistryRepository(conn)
+    table = table_repo.get(table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="table_not_found")
+
+    # Find every package that includes this table; gate access on
+    # admin god-mode OR a grant on ANY of those packages.
+    pkg_repo = DataPackagesRepository(conn)
+    parent_packages = []
+    is_admin = is_user_admin(user["id"], conn)
+    has_grant = False
+    try:
+        # Walk packages (instances are small enough that this is fine).
+        for p in pkg_repo.list(limit=10000):
+            mem_ids = {t["id"] for t in pkg_repo.list_tables(p["id"])}
+            if table_id not in mem_ids:
+                continue
+            parent_packages.append({"slug": p["slug"], "name": p["name"]})
+            if not has_grant and not is_admin:
+                if can_access(user["id"], ResourceType.DATA_PACKAGE.value,
+                              p["id"], conn):
+                    has_grant = True
+    except Exception:
+        logger.warning("could not enumerate parent packages for %s", table_id)
+    if not (is_admin or has_grant):
+        raise HTTPException(status_code=403, detail="access_denied")
+
+    # Resolve any pairs_well_with ids to (id, name) pairs the template
+    # can render as links. Unknown ids (deleted tables) silently dropped.
+    pairs = []
+    for related_id in (table.get("pairs_well_with") or []):
+        related = table_repo.get(related_id)
+        if related:
+            pairs.append({"id": related["id"], "name": related["name"]})
+
+    # Columns from /api/admin/tables/{id}/profile if it exists in
+    # table_profiles, else empty. Cheap read; non-admin doesn't need
+    # the full profile, just the column list.
+    columns = []
+    try:
+        prof_row = conn.execute(
+            "SELECT profile FROM table_profiles WHERE table_id = ?",
+            [table_id],
+        ).fetchone()
+        if prof_row and prof_row[0]:
+            import json as _json
+            prof = _json.loads(prof_row[0]) if isinstance(prof_row[0], str) else prof_row[0]
+            for col in (prof.get("columns") or []):
+                columns.append({
+                    "name": col.get("name"),
+                    "type": col.get("type"),
+                    "nullable": col.get("nullable", True),
+                })
+    except Exception:
+        logger.warning("could not load profile for %s", table_id)
+
+    last_sync_state = SyncStateRepository(conn).get_table_state(table_id) or {}
+
+    ctx = _build_context(
+        request, user=user,
+        table=table,
+        parent_packages=parent_packages,
+        pairs_well_with=pairs,
+        columns=columns,
+        last_sync_display=(
+            str(last_sync_state.get("last_sync"))[:19]
+            if last_sync_state.get("last_sync") else None
+        ),
+        sample_questions=(table.get("sample_questions") or []),
+        things_to_know=table.get("things_to_know") or "",
+    )
+    return templates.TemplateResponse(request, "catalog_table_detail.html", ctx)
+
+
 def _human_size(n: int) -> str:
     """Format bytes as a short human string. Mirrors the format used on
     the marketplace card meta line."""

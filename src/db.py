@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 51
+SCHEMA_VERSION = 52
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -320,7 +320,15 @@ CREATE TABLE IF NOT EXISTS table_registry (
     where_filters VARCHAR,
     partition_by VARCHAR,
     partition_granularity VARCHAR,
-    initial_load_chunk_days INTEGER
+    initial_load_chunk_days INTEGER,
+    -- v52: per-table docs surface used by /catalog/t/<id>. All
+    -- admin-authored, optional. sample_questions + pairs_well_with are
+    -- JSON arrays so admins can edit lists without us cascading a new
+    -- junction table; things_to_know is freeform notes (markdown-ish
+    -- treated as plain text on render).
+    sample_questions JSON,
+    things_to_know   TEXT,
+    pairs_well_with  JSON
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -3702,6 +3710,28 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
+    """v52: per-table docs columns on table_registry.
+
+    Adds three admin-authored fields read by the new /catalog/t/<id>
+    detail page: sample_questions (JSON array of strings),
+    things_to_know (freeform text), pairs_well_with (JSON array of
+    table_registry ids). All optional / NULL on legacy rows.
+
+    Idempotent ADD COLUMN IF NOT EXISTS; safe to re-run.
+    """
+    conn.execute(
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS sample_questions JSON"
+    )
+    conn.execute(
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS things_to_know TEXT"
+    )
+    conn.execute(
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS pairs_well_with JSON"
+    )
+    conn.execute("UPDATE schema_version SET version = 52")
+
+
 def _v50_to_v51(conn: duckdb.DuckDBPyConnection) -> None:
     """v51: lifecycle ``status`` + per-package ``category`` columns.
 
@@ -3871,6 +3901,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v51 status + category on data_packages, status on
             # memory_domains. Same fresh-install no-op pattern.
             _v50_to_v51(conn)
+            # v52 per-table docs columns on table_registry.
+            _v51_to_v52(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4027,6 +4059,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v49_to_v50(conn)
             if current < 51:
                 _v50_to_v51(conn)
+            if current < 52:
+                _v51_to_v52(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
