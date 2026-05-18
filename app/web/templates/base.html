@@ -51,6 +51,75 @@
        [data-chip-input] that lack a `data-chip-ready` flag. #}
     <script src="{{ static_url('js/components/chip-input.js') }}" defer></script>
     <script>
+      // v54 global undo-toast — surfaced by admin delete handlers. The
+      // toast carries an Undo button that POSTs to a restore URL, so
+      // soft-deleted resources can be brought back inside the dwell
+      // window (default 10s). Click Undo → POST + onSuccess() (typically
+      // a list refresh) — then the toast closes.
+      window.showUndoToast = function (message, restoreUrl, onSuccess, dwellMs) {
+        const dwell = dwellMs || 10000;
+        let el = document.getElementById('agnes-undo-toast');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'agnes-undo-toast';
+          el.style.cssText =
+            'position:fixed; bottom:24px; right:24px; padding:12px 16px; ' +
+            'background:#202124; color:#fff; border-radius:8px; ' +
+            'box-shadow:0 6px 20px rgba(0,0,0,.25); font-size:13px; ' +
+            'z-index:3000; display:flex; align-items:center; gap:12px;';
+          document.body.appendChild(el);
+        }
+        el.innerHTML = '';
+        const msg = document.createElement('span');
+        msg.textContent = message;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = 'Undo';
+        btn.style.cssText =
+          'background:transparent; color:#7dd3fc; border:1px solid #38bdf8; ' +
+          'border-radius:6px; padding:4px 10px; cursor:pointer; ' +
+          'font-weight:600; font-size:12px;';
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.textContent = '×';
+        close.setAttribute('aria-label', 'Dismiss');
+        close.style.cssText =
+          'background:transparent; color:#9ca3af; border:none; cursor:pointer; ' +
+          'font-size:16px; padding:0 4px;';
+        el.appendChild(msg);
+        el.appendChild(btn);
+        el.appendChild(close);
+        el.style.display = 'flex';
+        const dismiss = () => { el.style.display = 'none'; };
+        const timer = setTimeout(dismiss, dwell);
+        close.addEventListener('click', () => { clearTimeout(timer); dismiss(); });
+        btn.addEventListener('click', async () => {
+          clearTimeout(timer);
+          btn.disabled = true;
+          btn.textContent = 'Restoring…';
+          try {
+            const r = await fetch(restoreUrl, {
+              method: 'POST', credentials: 'same-origin',
+            });
+            if (!r.ok) {
+              const d = await r.json().catch(() => ({}));
+              msg.textContent = 'Undo failed: ' + (d.detail || r.statusText);
+              btn.textContent = 'Undo';
+              btn.disabled = false;
+              return;
+            }
+            dismiss();
+            if (typeof onSuccess === 'function') {
+              try { onSuccess(); } catch (_) { /* swallow */ }
+            }
+          } catch (e) {
+            msg.textContent = 'Network error: ' + e.message;
+            btn.textContent = 'Undo';
+            btn.disabled = false;
+          }
+        });
+      };
+
       // Global Escape → close topmost visible modal. Inspects three
       // common modal patterns used across the app:
       //   * `.modal-overlay`         (admin_tables)

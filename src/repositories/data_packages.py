@@ -63,9 +63,12 @@ class DataPackagesRepository:
         )
         return pkg_id
 
-    def get(self, pkg_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, pkg_id: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+        # v54: soft-deleted rows are hidden by default. include_deleted=True
+        # is the escape hatch the /restore endpoint uses to find them.
+        guard = "" if include_deleted else " AND deleted_at IS NULL"
         row = self.conn.execute(
-            f"SELECT {self._SELECT} FROM data_packages WHERE id = ?",
+            f"SELECT {self._SELECT} FROM data_packages WHERE id = ?{guard}",
             [pkg_id],
         ).fetchone()
         if not row:
@@ -84,10 +87,11 @@ class DataPackagesRepository:
         search: Optional[str] = None,
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
-        query = f"SELECT {self._SELECT} FROM data_packages"
+        # v54: filter soft-deleted rows; combined with optional search.
+        query = f"SELECT {self._SELECT} FROM data_packages WHERE deleted_at IS NULL"
         params: List[Any] = []
         if search:
-            query += " WHERE name ILIKE ?"
+            query += " AND name ILIKE ?"
             params.append(f"%{search}%")
         query += " ORDER BY name LIMIT ?"
         params.append(limit)
@@ -149,13 +153,33 @@ class DataPackagesRepository:
         )
 
     def delete(self, pkg_id: str) -> None:
-        """Drop the package and its junction rows.
+        """v54: soft delete — sets ``deleted_at`` to now. The junction
+        (``data_package_tables``) and any ``resource_grants`` referencing
+        this package are intentionally preserved so the undo flow can
+        restore the package whole. ``list()`` / ``get()`` filter
+        ``deleted_at IS NULL`` so soft-deleted rows are invisible to
+        every caller except the explicit ``restore`` path.
 
-        DuckDB doesn't honor ``ON DELETE CASCADE`` on every FK declaration;
-        we clear ``data_package_tables`` first to keep the invariant that
-        no orphan junction rows survive (other repos / API callers may
-        join through it).
+        Hard-delete (with junction cascade) is available via
+        ``hard_delete`` — keep it for future admin cleanup workflows.
         """
+        self.conn.execute(
+            "UPDATE data_packages SET deleted_at = current_timestamp WHERE id = ?",
+            [pkg_id],
+        )
+
+    def restore(self, pkg_id: str) -> None:
+        """Reverse a soft delete. No-op if the row isn't currently
+        soft-deleted (idempotent — guards against double-undo)."""
+        self.conn.execute(
+            "UPDATE data_packages SET deleted_at = NULL WHERE id = ?",
+            [pkg_id],
+        )
+
+    def hard_delete(self, pkg_id: str) -> None:
+        """Permanent delete — wipes the row + junction. Use when an admin
+        wants the resource gone for good. Not currently wired into any
+        endpoint; kept for completeness."""
         self.conn.execute(
             "DELETE FROM data_package_tables WHERE package_id = ?", [pkg_id]
         )

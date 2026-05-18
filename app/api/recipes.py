@@ -258,6 +258,7 @@ async def delete_recipe(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """v54: soft delete (sets ``deleted_at``). Undo via POST /restore."""
     repo = RecipesRepository(conn)
     existing = repo.get(recipe_id)
     if not existing:
@@ -265,3 +266,20 @@ async def delete_recipe(
     repo.delete(recipe_id)
     _audit(conn, user["id"], "recipe.delete", f"recipe:{recipe_id}",
            {"slug": existing.get("slug")})
+
+
+@admin_router.post("/{recipe_id}/restore", status_code=200)
+async def restore_recipe(
+    recipe_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """v54 undo: reverse a soft delete. Idempotent."""
+    repo = RecipesRepository(conn)
+    existing = repo.get(recipe_id, include_deleted=True)
+    if not existing:
+        raise HTTPException(status_code=404, detail="recipe_not_found")
+    repo.restore(recipe_id)
+    _audit(conn, user["id"], "recipe.restore", f"recipe:{recipe_id}",
+           {"slug": existing.get("slug")})
+    return {"id": recipe_id, "restored": True}

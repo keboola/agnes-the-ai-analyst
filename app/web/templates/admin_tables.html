@@ -2503,12 +2503,25 @@
       async function deleteEditDataPackage() {
         const pkgId = document.getElementById('edp-id').value;
         const name = document.getElementById('edp-name').value.trim();
-        if (!confirm('Delete the package "' + name + '"?\n\nTables are NOT deleted — they just leave this package.')) return;
+        // v54: soft delete with Undo toast. confirm() removed — the
+        // 10s Undo on the toast is the recovery affordance; double
+        // safety (confirm + undo) is friction without payoff. Junction
+        // rows (data_package_tables) + resource_grants survive intact
+        // so restore brings the package back whole.
         const r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId),
                               { method: 'DELETE', credentials: 'same-origin' });
         if (!r.ok) { alert('Delete failed: HTTP ' + r.status); return; }
         closeEditDataPackageModal();
         if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
+        if (typeof window.showUndoToast === 'function') {
+          window.showUndoToast(
+            'Data Package "' + name + '" deleted.',
+            '/api/admin/data-packages/' + encodeURIComponent(pkgId) + '/restore',
+            () => {
+              if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
+            },
+          );
+        }
       }
       // Auto-derive a url-safe slug from a Name string. Mirrors the
       // server-side normalisation used by the seed step in _v48_to_v49.

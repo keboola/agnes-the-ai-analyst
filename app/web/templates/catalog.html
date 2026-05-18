@@ -797,7 +797,9 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
     }
   };
   window.deleteRecipe = async function (recipeId, title) {
-    if (!confirm('Delete recipe "' + title + '"? This cannot be undone.')) return;
+    // v54: soft delete + undo toast. No confirm() — the Undo button on
+    // the toast is the recovery affordance; a confirm + undo together
+    // is friction without payoff.
     try {
       const r = await fetch('/api/admin/recipes/' + encodeURIComponent(recipeId),
                             { method: 'DELETE', credentials: 'same-origin' });
@@ -806,9 +808,15 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
         alert('Delete failed: ' + (d.detail || r.statusText));
         return;
       }
-      if (typeof showToast === 'function') showToast('Recipe deleted');
       _recipesLoaded = false;
       loadRecipesTab(true);
+      if (typeof window.showUndoToast === 'function') {
+        window.showUndoToast(
+          'Recipe "' + title + '" deleted.',
+          '/api/admin/recipes/' + encodeURIComponent(recipeId) + '/restore',
+          () => { _recipesLoaded = false; loadRecipesTab(true); },
+        );
+      }
     } catch (e) {
       alert('Network error: ' + e.message);
     }

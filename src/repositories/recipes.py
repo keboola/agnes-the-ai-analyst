@@ -73,23 +73,28 @@ class RecipesRepository:
         )
         return recipe_id
 
-    def get(self, recipe_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, recipe_id: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+        # v54: hide soft-deleted rows by default.
+        guard = "" if include_deleted else " AND deleted_at IS NULL"
         row = self.conn.execute(
-            f"SELECT {self._SELECT} FROM recipes WHERE id = ?", [recipe_id]
+            f"SELECT {self._SELECT} FROM recipes WHERE id = ?{guard}",
+            [recipe_id],
         ).fetchone()
         return self._decode_row(row) if row else None
 
     def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
-            f"SELECT {self._SELECT} FROM recipes WHERE slug = ?", [slug]
+            f"SELECT {self._SELECT} FROM recipes WHERE slug = ? AND deleted_at IS NULL",
+            [slug],
         ).fetchone()
         return self._decode_row(row) if row else None
 
     def list(self, *, search: Optional[str] = None, limit: int = 200) -> List[Dict[str, Any]]:
-        query = f"SELECT {self._SELECT} FROM recipes"
+        # v54: filter soft-deleted rows.
+        query = f"SELECT {self._SELECT} FROM recipes WHERE deleted_at IS NULL"
         params: List[Any] = []
         if search:
-            query += " WHERE title ILIKE ?"
+            query += " AND title ILIKE ?"
             params.append(f"%{search}%")
         query += " ORDER BY title LIMIT ?"
         params.append(limit)
@@ -138,4 +143,19 @@ class RecipesRepository:
         )
 
     def delete(self, recipe_id: str) -> None:
+        """v54 soft delete — sets ``deleted_at``. Undo via ``restore``."""
+        self.conn.execute(
+            "UPDATE recipes SET deleted_at = current_timestamp WHERE id = ?",
+            [recipe_id],
+        )
+
+    def restore(self, recipe_id: str) -> None:
+        """Reverse a soft delete. Idempotent."""
+        self.conn.execute(
+            "UPDATE recipes SET deleted_at = NULL WHERE id = ?",
+            [recipe_id],
+        )
+
+    def hard_delete(self, recipe_id: str) -> None:
+        """Permanent delete. Not currently exposed via the API."""
         self.conn.execute("DELETE FROM recipes WHERE id = ?", [recipe_id])

@@ -60,9 +60,12 @@ class MemoryDomainsRepository:
         )
         return domain_id
 
-    def get(self, domain_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, domain_id: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+        # v54: hide soft-deleted rows by default; include_deleted=True is
+        # the escape hatch the /restore endpoint uses.
+        guard = "" if include_deleted else " AND deleted_at IS NULL"
         row = self.conn.execute(
-            f"SELECT {self._SELECT} FROM memory_domains WHERE id = ?",
+            f"SELECT {self._SELECT} FROM memory_domains WHERE id = ?{guard}",
             [domain_id],
         ).fetchone()
         if not row:
@@ -70,8 +73,11 @@ class MemoryDomainsRepository:
         return dict(zip(self._COLS, row))
 
     def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        # v54: filter soft-deleted rows so a recreate with the same slug
+        # doesn't confuse the lookup.
         row = self.conn.execute(
-            "SELECT id FROM memory_domains WHERE slug = ?", [slug]
+            "SELECT id FROM memory_domains WHERE slug = ? AND deleted_at IS NULL",
+            [slug],
         ).fetchone()
         return self.get(row[0]) if row else None
 
@@ -82,7 +88,8 @@ class MemoryDomainsRepository:
         list check in ``app/api/memory.py``.
         """
         row = self.conn.execute(
-            "SELECT 1 FROM memory_domains WHERE slug = ?", [slug]
+            "SELECT 1 FROM memory_domains WHERE slug = ? AND deleted_at IS NULL",
+            [slug],
         ).fetchone()
         return row is not None
 
@@ -92,10 +99,11 @@ class MemoryDomainsRepository:
         search: Optional[str] = None,
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
-        query = f"SELECT {self._SELECT} FROM memory_domains"
+        # v54: filter soft-deleted rows.
+        query = f"SELECT {self._SELECT} FROM memory_domains WHERE deleted_at IS NULL"
         params: List[Any] = []
         if search:
-            query += " WHERE name ILIKE ?"
+            query += " AND name ILIKE ?"
             params.append(f"%{search}%")
         query += " ORDER BY name LIMIT ?"
         params.append(limit)
@@ -149,11 +157,25 @@ class MemoryDomainsRepository:
         )
 
     def delete(self, domain_id: str) -> None:
-        """Drop the domain and its junction rows.
+        """v54 soft delete — sets ``deleted_at`` to now; junction rows
+        + resource_grants survive untouched so the undo flow can restore
+        the domain whole. ``hard_delete`` does the destructive cascade."""
+        self.conn.execute(
+            "UPDATE memory_domains SET deleted_at = current_timestamp WHERE id = ?",
+            [domain_id],
+        )
 
-        DuckDB doesn't honor ON DELETE CASCADE on this FK declaration;
-        clear the junction first so the order doesn't matter for callers.
-        """
+    def restore(self, domain_id: str) -> None:
+        """Reverse a soft delete. Idempotent."""
+        self.conn.execute(
+            "UPDATE memory_domains SET deleted_at = NULL WHERE id = ?",
+            [domain_id],
+        )
+
+    def hard_delete(self, domain_id: str) -> None:
+        """Permanent delete — wipes the row + knowledge_item_domains
+        junction. Not currently wired into the API; kept for future
+        admin cleanup workflows."""
         self.conn.execute(
             "DELETE FROM knowledge_item_domains WHERE domain_id = ?", [domain_id]
         )

@@ -315,9 +315,10 @@ async def delete_data_package(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Delete a package. The junction (``data_package_tables``) is cleared by
-    the repo since DuckDB doesn't honor ON DELETE CASCADE on every FK
-    declaration. Tables themselves stay registered."""
+    """v54: soft delete — sets ``deleted_at`` instead of hard-removing the
+    row, so the junction (``data_package_tables``) + any resource_grants
+    survive intact for the undo flow (POST /restore). Hard delete is
+    available via ``repo.hard_delete`` but not currently exposed."""
     repo = DataPackagesRepository(conn)
     existing = repo.get(pkg_id)
     if not existing:
@@ -331,6 +332,30 @@ async def delete_data_package(
         f"data_package:{pkg_id}",
         {"slug": existing.get("slug"), "tables_count": tables_count},
     )
+
+
+@router.post("/{pkg_id}/restore", status_code=200)
+async def restore_data_package(
+    pkg_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """v54 undo: reverse a soft delete. Idempotent — restoring an already-
+    live package is a no-op. 404 only when the row is truly gone (e.g.
+    after a hard_delete)."""
+    repo = DataPackagesRepository(conn)
+    existing = repo.get(pkg_id, include_deleted=True)
+    if not existing:
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    repo.restore(pkg_id)
+    _audit(
+        conn,
+        user["id"],
+        "data_package.restore",
+        f"data_package:{pkg_id}",
+        {"slug": existing.get("slug")},
+    )
+    return {"id": pkg_id, "restored": True}
 
 
 # ---------------------------------------------------------------------------

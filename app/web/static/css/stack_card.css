@@ -421,6 +421,13 @@
   background: #f59e0b;
 }
 
+/* My Stack tab — every visible card is in-stack by definition (and
+ * Required cards are also in-stack), so both badge variants are
+ * redundant info-wise. Suppressing them here keeps the My Stack grid
+ * visually cleaner without losing the affordance on Browse where it
+ * matters. */
+[data-view="my"] .stack-card__req-badge { display: none; }
+
 /* v51 — palette swatch row for the Create/Edit modals (Data Package +
  * Memory Domain). 8 vendor-neutral design-system colors; click sets the
  * adjacent native <input type="color"> so the palette is the obvious

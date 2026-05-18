@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 53
+SCHEMA_VERSION = 54
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -524,6 +524,10 @@ CREATE TABLE IF NOT EXISTS data_packages (
     -- (e.g. "Sessions & Traffic", "Customer Insights").
     status          VARCHAR DEFAULT 'prod',
     category        VARCHAR,
+    -- v54: soft-delete column. DELETE handlers set this instead of
+    -- removing the row, so junction tables + resource_grants survive
+    -- for the undo flow. list/get filter ``deleted_at IS NULL``.
+    deleted_at      TIMESTAMP,
     created_by      VARCHAR,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
@@ -558,6 +562,8 @@ CREATE TABLE IF NOT EXISTS memory_domains (
     -- domain itself IS the classification — adding a second-level
     -- category would be redundant.
     status          VARCHAR DEFAULT 'prod',
+    -- v54: soft-delete (see data_packages.deleted_at).
+    deleted_at      TIMESTAMP,
     created_by      VARCHAR,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
@@ -589,6 +595,8 @@ CREATE TABLE IF NOT EXISTS recipes (
     sql_template    TEXT,
     related_table_ids JSON,
     status          VARCHAR DEFAULT 'prod',
+    -- v54: soft-delete (see data_packages.deleted_at).
+    deleted_at      TIMESTAMP,
     created_by      VARCHAR,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
@@ -3731,6 +3739,24 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
+    """v54: soft-delete columns on data_packages / memory_domains / recipes.
+
+    Powers the "Deleted. Undo (10s)" toast on admin pages — DELETE sets
+    ``deleted_at`` instead of nuking the row, so the junction rows
+    (data_package_tables, knowledge_item_domains) + any resource_grants
+    referencing the resource id survive intact. The list/get endpoints
+    filter ``deleted_at IS NULL`` so users never see soft-deleted rows.
+
+    Idempotent ADD COLUMN IF NOT EXISTS.
+    """
+    for table in ("data_packages", "memory_domains", "recipes"):
+        conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP"
+        )
+    conn.execute("UPDATE schema_version SET version = 54")
+
+
 def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
     """v53: ``recipes`` table — admin-curated query templates surfaced as
     a second tab on /catalog.
@@ -3953,6 +3979,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v51_to_v52(conn)
             # v53 recipes table.
             _v52_to_v53(conn)
+            # v54 deleted_at columns on data_packages, memory_domains, recipes.
+            _v53_to_v54(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4113,6 +4141,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v51_to_v52(conn)
             if current < 53:
                 _v52_to_v53(conn)
+            if current < 54:
+                _v53_to_v54(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

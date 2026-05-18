@@ -267,6 +267,28 @@ async def delete_memory_domain(
     )
 
 
+@router.post("/{domain_id}/restore", status_code=200)
+async def restore_memory_domain(
+    domain_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """v54 undo: reverse a soft delete. Idempotent."""
+    repo = MemoryDomainsRepository(conn)
+    existing = repo.get(domain_id, include_deleted=True)
+    if not existing:
+        raise HTTPException(status_code=404, detail="memory_domain_not_found")
+    repo.restore(domain_id)
+    _audit(
+        conn,
+        user["id"],
+        "memory_domain.restore",
+        f"memory_domain:{domain_id}",
+        {"slug": existing.get("slug")},
+    )
+    return {"id": domain_id, "restored": True}
+
+
 # ---------------------------------------------------------------------------
 # Junction endpoints — add/remove items
 # ---------------------------------------------------------------------------

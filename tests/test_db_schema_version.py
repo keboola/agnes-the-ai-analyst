@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_53():
+def test_schema_version_is_54():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -157,7 +157,16 @@ def test_schema_version_is_53():
     #            recipe, they don't opt in). related_table_ids is a
     #            JSON array of table_registry ids drawing the
     #            drilldown's "Touches tables" links.
-    assert SCHEMA_VERSION == 53
+    # v53 → v54: soft-delete columns (``deleted_at TIMESTAMP``) on
+    #            data_packages, memory_domains, recipes. Powers the
+    #            "Deleted. Undo (10s)" toast on admin pages — DELETE
+    #            sets deleted_at instead of removing the row, so the
+    #            junction (data_package_tables / knowledge_item_domains)
+    #            + resource_grants survive intact for the restore flow.
+    #            list/get filter ``deleted_at IS NULL`` so soft-deleted
+    #            rows are invisible to every caller except the explicit
+    #            POST /{id}/restore path.
+    assert SCHEMA_VERSION == 54
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

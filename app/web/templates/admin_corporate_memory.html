@@ -2198,7 +2198,8 @@
     }
 
     async function deleteMemoryDomain(id, name) {
-        if (!confirm('Delete memory domain "' + name + '"? Items remain but get unassigned.')) return;
+        // v54: soft delete + Undo toast. confirm() removed — the toast's
+        // 10s Undo button is the recovery affordance.
         try {
             const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id),
                 { method: 'DELETE', credentials: 'same-origin' });
@@ -2208,6 +2209,13 @@
                 return;
             }
             loadDomainsTab();
+            if (typeof window.showUndoToast === 'function') {
+                window.showUndoToast(
+                    'Memory domain "' + name + '" deleted.',
+                    '/api/admin/memory-domains/' + encodeURIComponent(id) + '/restore',
+                    () => loadDomainsTab(),
+                );
+            }
         } catch (e) {
             alert('Network error: ' + e.message);
         }
