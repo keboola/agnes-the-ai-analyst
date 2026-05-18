@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.25] — 2026-05-18
+
 ### Fixed
 - `POST /api/sync/table-subscriptions` now enforces the same RBAC gate as
   `POST /api/sync/settings` — authenticated users can no longer subscribe to
