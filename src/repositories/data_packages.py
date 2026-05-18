@@ -29,9 +29,18 @@ class DataPackagesRepository:
     _COLS = [
         "id", "slug", "name", "description", "icon", "color",
         "cover_image_url", "status", "category",
+        # v56: extended content surface for /catalog/p/<slug> rewrite.
+        # JSON columns ("tags", "when_to_use", "when_not_to_use",
+        # "example_questions") are stored as VARCHAR and decoded on read
+        # by ``_decode_row`` below; long_description stays as TEXT.
+        "owner_name", "owner_team",
+        "tags", "long_description",
+        "when_to_use", "when_not_to_use", "example_questions",
         "created_by", "created_at", "updated_at",
     ]
     _SELECT = ", ".join(_COLS)
+    # Subset of _COLS that carry a JSON list. Decoded on read; NULL → [].
+    _JSON_LIST_COLS = ("tags", "when_to_use", "when_not_to_use", "example_questions")
 
     def create(
         self,
@@ -45,6 +54,14 @@ class DataPackagesRepository:
         cover_image_url: Optional[str] = None,
         status: str = "prod",
         category: Optional[str] = None,
+        # v56 extended content — all optional, all NULL when unset.
+        owner_name: Optional[str] = None,
+        owner_team: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        long_description: Optional[str] = None,
+        when_to_use: Optional[List[str]] = None,
+        when_not_to_use: Optional[List[str]] = None,
+        example_questions: Optional[List[str]] = None,
     ) -> str:
         """Insert a new package; returns the generated id.
 
@@ -52,16 +69,44 @@ class DataPackagesRepository:
         UNIQUE constraint on ``data_packages.slug`` is the source of truth
         (no pre-check race window).
         """
+        import json as _json
         pkg_id = "pkg_" + uuid4().hex[:12]
         self.conn.execute(
             "INSERT INTO data_packages"
             "(id, slug, name, description, icon, color, cover_image_url, "
-            " status, category, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " status, category, owner_name, owner_team, tags, "
+            " long_description, when_to_use, when_not_to_use, "
+            " example_questions, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [pkg_id, slug, name, description, icon, color, cover_image_url,
-             status or "prod", category, created_by],
+             status or "prod", category,
+             owner_name, owner_team,
+             _json.dumps(tags) if tags is not None else None,
+             long_description,
+             _json.dumps(when_to_use) if when_to_use is not None else None,
+             _json.dumps(when_not_to_use) if when_not_to_use is not None else None,
+             _json.dumps(example_questions) if example_questions is not None else None,
+             created_by],
         )
         return pkg_id
+
+    @classmethod
+    def _decode_row(cls, row_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """v56: decode JSON-list columns to Python lists. NULL → []."""
+        import json as _json
+        for k in cls._JSON_LIST_COLS:
+            v = row_dict.get(k)
+            if v is None or v == "":
+                row_dict[k] = []
+                continue
+            if isinstance(v, list):
+                continue
+            try:
+                parsed = _json.loads(v) if isinstance(v, str) else v
+                row_dict[k] = parsed if isinstance(parsed, list) else []
+            except Exception:
+                row_dict[k] = []
+        return row_dict
 
     def get(self, pkg_id: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
         # v54: soft-deleted rows are hidden by default. include_deleted=True
@@ -73,7 +118,7 @@ class DataPackagesRepository:
         ).fetchone()
         if not row:
             return None
-        return dict(zip(self._COLS, row))
+        return self._decode_row(dict(zip(self._COLS, row)))
 
     def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
@@ -96,7 +141,7 @@ class DataPackagesRepository:
         query += " ORDER BY name LIMIT ?"
         params.append(limit)
         rows = self.conn.execute(query, params).fetchall()
-        return [dict(zip(self._COLS, r)) for r in rows]
+        return [self._decode_row(dict(zip(self._COLS, r))) for r in rows]
 
     def update(
         self,
@@ -111,11 +156,27 @@ class DataPackagesRepository:
         status: Optional[str] = None,
         category: Optional[str] = None,
         clear_category: bool = False,
+        # v56 extended content. Optional-is-no-op; pass an empty list
+        # explicitly to clear a JSON-list column (json.dumps([]) writes
+        # "[]" which decodes back to []).
+        owner_name: Optional[str] = None,
+        owner_team: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        long_description: Optional[str] = None,
+        when_to_use: Optional[List[str]] = None,
+        when_not_to_use: Optional[List[str]] = None,
+        example_questions: Optional[List[str]] = None,
     ) -> None:
         """Partial update. ``cover_image_url`` follows the same Optional-is-no-op
         contract as the rest; pass ``clear_cover_image=True`` to actively NULL
         the column (admin removed the uploaded image). ``clear_category`` is
-        the same NULL-clearing escape hatch for the v51 category field."""
+        the same NULL-clearing escape hatch for the v51 category field.
+
+        v56 extended fields use the same Optional-is-no-op contract.
+        JSON-list fields accept an empty list to explicitly clear (writes
+        ``"[]"``, decodes back to ``[]``). Pass ``None`` to skip.
+        """
+        import json as _json
         fields: List[str] = []
         params: List[Any] = []
         if name is not None:
@@ -143,6 +204,29 @@ class DataPackagesRepository:
         elif category is not None:
             fields.append("category = ?")
             params.append(category)
+        # v56 — additive surface; preserves the existing Optional-is-no-op
+        # contract for every existing caller.
+        if owner_name is not None:
+            fields.append("owner_name = ?")
+            params.append(owner_name)
+        if owner_team is not None:
+            fields.append("owner_team = ?")
+            params.append(owner_team)
+        if tags is not None:
+            fields.append("tags = ?")
+            params.append(_json.dumps(tags))
+        if long_description is not None:
+            fields.append("long_description = ?")
+            params.append(long_description)
+        if when_to_use is not None:
+            fields.append("when_to_use = ?")
+            params.append(_json.dumps(when_to_use))
+        if when_not_to_use is not None:
+            fields.append("when_not_to_use = ?")
+            params.append(_json.dumps(when_not_to_use))
+        if example_questions is not None:
+            fields.append("example_questions = ?")
+            params.append(_json.dumps(example_questions))
         if not fields:
             return
         fields.append("updated_at = current_timestamp")

@@ -175,10 +175,13 @@ class TableRegistryRepository:
             row_dict["primary_key"] = _decode_primary_key(row_dict["primary_key"])
         if "where_filters" in row_dict:
             row_dict["where_filters"] = _decode_where_filters(row_dict["where_filters"])
-        # v52: per-table docs surface for /catalog/t/<id>. DuckDB's JSON
-        # column round-trips as a Python str on read; decode to list for
-        # callers. Empty / NULL → [].
-        for k in ("sample_questions", "pairs_well_with"):
+        # v52 + v56: per-table docs surface for /catalog/t/<id> + the
+        # package-detail-page extended sections. DuckDB's JSON column
+        # round-trips as a Python str on read; decode to list/dict.
+        # ``platforms`` + ``gotchas`` are v56 additions stored as VARCHAR
+        # (not JSON column) so they go through the same str→list path.
+        # NULL / empty → [].
+        for k in ("sample_questions", "pairs_well_with", "platforms", "gotchas"):
             if k not in row_dict:
                 continue
             v = row_dict[k]
@@ -198,18 +201,30 @@ class TableRegistryRepository:
         self,
         table_id: str,
         *,
+        # v52 docs surface
         sample_questions: Optional[List[str]] = None,
         things_to_know: Optional[str] = None,
         pairs_well_with: Optional[List[str]] = None,
         clear_sample_questions: bool = False,
         clear_things_to_know: bool = False,
         clear_pairs_well_with: bool = False,
+        # v56 structured docs for the package-detail rewrite. Same
+        # Optional-is-no-op contract as the v52 fields.
+        grain: Optional[str] = None,
+        platforms: Optional[List[str]] = None,
+        partition_col: Optional[str] = None,
+        history: Optional[str] = None,
+        gotchas: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """v52: write the per-table docs fields shown on /catalog/t/<id>.
+        """v52 + v56: write the per-table docs fields shown on
+        /catalog/t/<id> + the per-table extended section on
+        /catalog/p/<slug>.
 
         Optional-is-no-op contract; pass an explicit ``clear_*`` flag to
-        actively NULL a field instead of leaving it untouched (mirrors the
-        cover_image_url pattern in data_packages.update)."""
+        actively NULL a v52 field instead of leaving it untouched (mirrors
+        the cover_image_url pattern in data_packages.update). v56 fields
+        don't have ``clear_*`` flags yet — pass an empty list/empty string
+        if you want to actively clear them (rare in practice)."""
         fields: List[str] = []
         params: List[Any] = []
         if clear_sample_questions:
@@ -227,6 +242,22 @@ class TableRegistryRepository:
         elif pairs_well_with is not None:
             fields.append("pairs_well_with = ?")
             params.append(json.dumps(pairs_well_with))
+        # v56 fields
+        if grain is not None:
+            fields.append("grain = ?")
+            params.append(grain)
+        if platforms is not None:
+            fields.append("platforms = ?")
+            params.append(json.dumps(platforms))
+        if partition_col is not None:
+            fields.append("partition_col = ?")
+            params.append(partition_col)
+        if history is not None:
+            fields.append("history = ?")
+            params.append(history)
+        if gotchas is not None:
+            fields.append("gotchas = ?")
+            params.append(json.dumps(gotchas))
         if not fields:
             return
         params.append(table_id)

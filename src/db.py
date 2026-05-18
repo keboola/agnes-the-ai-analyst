@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 55
+SCHEMA_VERSION = 56
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -328,7 +328,20 @@ CREATE TABLE IF NOT EXISTS table_registry (
     -- treated as plain text on render).
     sample_questions JSON,
     things_to_know   TEXT,
-    pairs_well_with  JSON
+    pairs_well_with  JSON,
+    -- v56: structured per-table documentation for the package-detail
+    -- rewrite. ``grain`` (e.g. "1 row per session × event_date"),
+    -- ``platforms`` (JSON list of platform names), ``partition_col``
+    -- (single column name — distinct from the v33-era ``partition_by``
+    -- which carries BigQuery partition-key SQL), ``history`` ("Full",
+    -- "Rolling 15 months", "Nov 2025+"), ``gotchas`` (JSON list of
+    -- ``{key: bool, body: str}`` — first ``key=true`` is rendered
+    -- distinctly as the "Key gotcha"). All additive + NULLABLE.
+    grain         VARCHAR,
+    platforms     VARCHAR,
+    partition_col VARCHAR,
+    history       VARCHAR,
+    gotchas       VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -528,6 +541,26 @@ CREATE TABLE IF NOT EXISTS data_packages (
     -- removing the row, so junction tables + resource_grants survive
     -- for the undo flow. list/get filter ``deleted_at IS NULL``.
     deleted_at      TIMESTAMP,
+    -- v56: extended content for the /catalog/p/<slug> detail-page
+    -- rewrite (Foundry Data team spec). All additive + NULLABLE.
+    --   owner_name / owner_team — render "Owned by X · Team" line
+    --   tags                    — JSON list of category strings
+    --   long_description        — markdown body for "What it is"
+    --   when_to_use / when_not_to_use
+    --                           — JSON bullet lists
+    --   example_questions       — JSON list of analyst questions
+    --                             surfaced as a package-level prompt
+    --                             panel.
+    -- Badges (`curated` / `new`) are NOT persisted columns — they're
+    -- derived at render time from creator group + created_at age, so
+    -- backdating or admin-status changes pick up automatically.
+    owner_name      VARCHAR,
+    owner_team      VARCHAR,
+    tags            VARCHAR,
+    long_description TEXT,
+    when_to_use     VARCHAR,
+    when_not_to_use VARCHAR,
+    example_questions VARCHAR,
     created_by      VARCHAR,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
@@ -3764,6 +3797,37 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v55_to_v56(conn: duckdb.DuckDBPyConnection) -> None:
+    """v56: extended-content columns on ``data_packages`` + structured
+    per-table doc columns on ``table_registry``.
+
+    Backs the ``/catalog/p/<slug>`` rewrite per the Foundry Data team
+    extended-descriptions spec — owner attribution, curated tags,
+    long-form description, use/skip arrays, package-level example
+    questions on the package side; grain / platforms / partition /
+    history / gotchas on the per-table side.
+
+    All ALTERs are ADD COLUMN IF NOT EXISTS — idempotent + safe to
+    re-run.
+    """
+    for col_sql in (
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS owner_name VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS owner_team VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS tags VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS long_description TEXT",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS when_to_use VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS when_not_to_use VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS example_questions VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS grain VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS platforms VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS partition_col VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS history VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS gotchas VARCHAR",
+    ):
+        conn.execute(col_sql)
+    conn.execute("UPDATE schema_version SET version = 56")
+
+
 def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -4038,6 +4102,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v53_to_v54(conn)
             # v55 memory_domain_suggestions table.
             _v54_to_v55(conn)
+            # v56 extended content columns on data_packages + structured
+            # per-table doc columns on table_registry.
+            _v55_to_v56(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4202,6 +4269,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v53_to_v54(conn)
             if current < 55:
                 _v54_to_v55(conn)
+            if current < 56:
+                _v55_to_v56(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
