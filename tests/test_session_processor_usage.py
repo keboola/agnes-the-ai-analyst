@@ -57,11 +57,14 @@ def _seed_attribution(conn: duckdb.DuckDBPyConnection) -> None:
     )
     # Flea entity — visibility_status='approved' is required (lookup filters
     # on it). type='skill' so the resolver places the invocation under
-    # type='skill' in the rollup.
+    # type='skill' in the rollup. v49 phase-1 added NOT NULL `title` +
+    # `synthetic_name`; mirror what the repo's create() fallback would write.
     conn.execute(
         "INSERT OR IGNORE INTO store_entities "
-        "(id, owner_user_id, owner_username, type, name, version, visibility_status) "
-        "VALUES ('entity-1', 'u1', 'alice', 'skill', 'flea-skill', '1.0', 'approved')"
+        "(id, owner_user_id, owner_username, type, name, version, "
+        " visibility_status, title, synthetic_name) "
+        "VALUES ('entity-1', 'u1', 'alice', 'skill', 'flea-skill', '1.0', "
+        " 'approved', 'flea-skill', 'flea-skill-by-alice')"
     )
 
 
@@ -200,9 +203,27 @@ class TestFleaSkill:
         # normalised to NULL by UsageProcessor.
         row = conn.execute(
             "SELECT source, ref_id FROM usage_events "
-            "WHERE skill_name = 'agnes-store-bundle:flea-skill'"
+            "WHERE skill_name = 'flea:flea-skill'"
         ).fetchone()
         assert row is not None
+        assert row[0] == "flea"
+        assert row[1] is None
+
+    def test_legacy_agnes_store_bundle_prefix_resolves(self, tmp_path, monkeypatch):
+        """v49 phase-4: the bundle plugin was renamed `agnes-store-bundle` →
+        `flea`. Historic session JSONL (~90d retention) still carries the
+        old prefix, so the resolver must accept both. This test replays a
+        fixture with the legacy identifier and asserts attribution still
+        lands as `source='flea'` (would fall through to 'builtin'
+        without the `_LEGACY_FLEA_BUNDLE_PREFIXES` branch)."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        _seed_attribution(conn)
+        _process("skill_flea_legacy.jsonl", conn)
+        row = conn.execute(
+            "SELECT source, ref_id FROM usage_events "
+            "WHERE skill_name = 'agnes-store-bundle:flea-skill'"
+        ).fetchone()
+        assert row is not None, "legacy-prefix event was not stored"
         assert row[0] == "flea"
         assert row[1] is None
 

@@ -40,17 +40,21 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterator
 
-# v6: MarketplaceItemLookup now resolves <flea_plugin>:<inner> prefixes so
+# v7: phase-4 flea-bundle rename. FLEA_BUNDLE_PREFIX flipped from
+# "agnes-store-bundle" to "flea"; resolver accepts both so historic
+# events (~90d retention) still attribute correctly. Bump forces a
+# reprocess pass so the legacy-prefix branch runs once per event.
+# (v6: MarketplaceItemLookup now resolves <flea_plugin>:<inner> prefixes so
 # skills/agents nested inside a flea plugin bundle attribute to source='flea'
 # with parent_plugin=<plugin name> (same shape as curated nested attribution).
 # Pre-v6 these landed as ('builtin', '', None) and never flowed into the
-# rollup tables. Bump forces re-attribution on the next reprocess tick.
+# rollup tables.)
 # (v5: v46 marketplace-telemetry refactor swapped AttributionLookup for
 # MarketplaceItemLookup. Identifier prefix (`<plugin>:<local>`) now drives
 # attribution and usage_events.source / ref_id are populated per-event from
 # the live marketplace_plugins + store_entities tables.)
 # (v4: #293 user_id column; v3: #303 <command-name> slash extraction.)
-USAGE_PROCESSOR_VERSION = 6
+USAGE_PROCESSOR_VERSION = 7
 
 # Claude Code wraps user-typed slash invocations as
 # <command-name>/<name></command-name> inside the user message content
@@ -243,8 +247,15 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
 
 # Synthetic plugin name Agnes uses to bundle flea-market store entities into
 # a single Claude Code marketplace surface. Skill/agent/command identifiers
-# from flea entities arrive as `agnes-store-bundle:<entity-name>` in the JSONL.
-FLEA_BUNDLE_PREFIX = "agnes-store-bundle"
+# from flea entities arrive as `flea:<entity-name>` in the JSONL. The plugin
+# was originally named `agnes-store-bundle`; the rename landed in v49 phase-4.
+FLEA_BUNDLE_PREFIX = "flea"
+
+# Pre-v49-phase-4 prefix kept here so historic session JSONL events stored
+# under the old name still attribute to source='flea'. usage_events retention
+# is ~90 days, so this tuple becomes a no-op once the rename has been live
+# for that long — at which point a follow-up commit can drop it entirely.
+_LEGACY_FLEA_BUNDLE_PREFIXES = ("agnes-store-bundle",)
 
 
 class MarketplaceItemLookup:
@@ -308,7 +319,7 @@ class MarketplaceItemLookup:
             if not ident or ":" not in ident:
                 continue
             prefix, local = ident.split(":", 1)
-            if prefix == FLEA_BUNDLE_PREFIX:
+            if prefix == FLEA_BUNDLE_PREFIX or prefix in _LEGACY_FLEA_BUNDLE_PREFIXES:
                 ent_type = self._flea_entities.get(local)
                 if ent_type:
                     # For a flea entity bundle, the local-part *is* the
@@ -492,7 +503,7 @@ def _attribute_event(curated_plugins: set[str], flea_entities: dict[str, str],
     prefix, local, default_type = _identifier_split(skill_name, subagent_type, command_name, event_type)
     if prefix is None:
         return None
-    if prefix == FLEA_BUNDLE_PREFIX:
+    if prefix == FLEA_BUNDLE_PREFIX or prefix in _LEGACY_FLEA_BUNDLE_PREFIXES:
         ent_type = flea_entities.get(local)
         if ent_type is None:
             return None

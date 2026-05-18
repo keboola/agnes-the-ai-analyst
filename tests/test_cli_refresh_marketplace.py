@@ -307,13 +307,13 @@ def test_reconcile_updates_when_manifest_version_differs(
     monkeypatch.chdir(workspace)
     _set_marketplace_manifest(with_clone, [
         {"name": "grpn-eng", "version": "1.1.0"},  # admin pushed new version
-        {"name": "agnes-store-bundle", "version": "deadbeefcafef00d"},  # bundle bumped
+        {"name": "flea", "version": "deadbeefcafef00d"},  # bundle bumped
     ])
     recorder.script(
         ("claude", "plugin", "list", "--json"),
         stdout=_plugin_list_json([
             {"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)},
-            {"id": "agnes-store-bundle@agnes", "version": "0123456789abcdef",
+            {"id": "flea@agnes", "version": "0123456789abcdef",
              "projectPath": str(workspace)},
         ]),
     )
@@ -325,7 +325,7 @@ def test_reconcile_updates_when_manifest_version_differs(
         if c.cmd[:3] == ["claude", "plugin", "update"]
     )
     assert update_targets == [
-        f"agnes-store-bundle@{rm_module.MARKETPLACE_NAME}",
+        f"flea@{rm_module.MARKETPLACE_NAME}",
         f"grpn-eng@{rm_module.MARKETPLACE_NAME}",
     ]
     # No installs (both already present).

@@ -36,11 +36,16 @@ def _seed_curated_plugin(conn, plugin_name: str, marketplace_id: str = "mp") -> 
 
 
 def _seed_flea_entity(conn, entity_id: str, name: str, type_: str = "skill") -> None:
+    # v49 phase-1 added NOT NULL `title` + `synthetic_name` columns. Direct
+    # INSERTs (bypassing repo.create's fallback) must supply both. Mirror
+    # the formula the repo uses so per-test asserts still see the canonical
+    # `<name>-by-<owner>` value.
     conn.execute(
         "INSERT OR IGNORE INTO store_entities "
-        "(id, owner_user_id, owner_username, type, name, version, visibility_status) "
-        "VALUES (?, ?, 'alice', ?, ?, '1.0', 'approved')",
-        [entity_id, "uid-" + entity_id, type_, name],
+        "(id, owner_user_id, owner_username, type, name, version, "
+        " visibility_status, title, synthetic_name) "
+        "VALUES (?, ?, 'alice', ?, ?, '1.0', 'approved', ?, ?)",
+        [entity_id, "uid-" + entity_id, type_, name, name, f"{name}-by-alice"],
     )
 
 
@@ -151,7 +156,7 @@ class TestMarketplaceItemDaily:
         _seed_flea_entity(conn, "ent-1", "flea-skill", type_="skill")
         today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
         _seed_event(conn, occurred_at=today, tool_name="Skill",
-                    skill_name="agnes-store-bundle:flea-skill", event_id="ef-1")
+                    skill_name="flea:flea-skill", event_id="ef-1")
         rebuild_rollups(conn, since_day=today.date())
         row = conn.execute(
             "SELECT source, type, parent_plugin, name "
