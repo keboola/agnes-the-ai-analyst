@@ -12,10 +12,13 @@
  */
 
 /* ── Hero (gradient, mirrors marketplace.html .mp-hero) ──────────────── */
+/* Blue → teal diagonal — replaces the prior monochrome cobalt that read
+ * as a flat banner. The teal stop introduces a hue shift so the hero
+ * feels like a deliberate visual unit instead of an oversized header. */
 .stack-hero {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+  background: linear-gradient(135deg, #0073D1 0%, #0EA5B5 100%);
   border-radius: 12px;
   padding: 28px 32px;
   margin-bottom: 24px;

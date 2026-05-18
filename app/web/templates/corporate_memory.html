@@ -8,8 +8,8 @@
    and /marketplace read as one product. #}
 <div class="stack-hero">
   <div class="eyebrow">Knowledge</div>
-  <h1>Memory</h1>
-  <p class="sub">Browse curated knowledge domains. Add the ones your team relies on to your stack — required domains are added automatically.</p>
+  <h1>What does your team already know?</h1>
+  <p class="sub">Browse curated knowledge domains your admin has approved. Add the ones your team relies on to your stack — required domains are added automatically.</p>
 
   <div class="stack-hero__search-row">
     <div class="stack-hero__search-wrap">
@@ -222,6 +222,42 @@
           actionBtn.disabled = false;
         }
       });
+
+    // Sync the My Stack grid (clone on add, remove on un-add). Same
+    // pattern as catalog.html — without this the grid was stale until
+    // full reload.
+    const myGrid = document.getElementById('memory-grid-my');
+    const browseGrid = document.getElementById('memory-grid-browse');
+    if (myGrid) {
+      const existingInMy = myGrid.querySelector(
+        '.stack-card[data-id="' + CSS.escape(id) + '"]'
+      );
+      if (becameInStack && !existingInMy) {
+        const sourceCard = browseGrid
+          ? browseGrid.querySelector('.stack-card[data-id="' + CSS.escape(id) + '"]')
+          : card;
+        if (sourceCard) {
+          const clone = sourceCard.cloneNode(true);
+          clone.dataset.inStack = '1';
+          const cloneBtn = clone.querySelector('[data-action]');
+          if (cloneBtn) {
+            cloneBtn.dataset.action = 'remove';
+            cloneBtn.textContent = '✓ In stack';
+            cloneBtn.disabled = false;
+          }
+          myGrid.appendChild(clone);
+        }
+        const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+        if (emptyEl) emptyEl.hidden = true;
+      } else if (!becameInStack && existingInMy) {
+        existingInMy.remove();
+        if (!myGrid.children.length) {
+          const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+          if (emptyEl) emptyEl.hidden = false;
+        }
+      }
+    }
+
     const myEl = document.querySelector('.stack-tabs .count[data-count="my"]');
     if (myEl) {
       const cur = parseInt(myEl.textContent, 10) || 0;

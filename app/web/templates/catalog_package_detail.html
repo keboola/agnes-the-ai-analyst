@@ -89,9 +89,19 @@
 
 <a class="back-link" href="/catalog">← All data packages</a>
 
+{# Initials match the card macro's "always initials, no emoji/Lucide name
+   text" treatment — pkg.icon may hold a Lucide string like `chart-line`
+   that would otherwise leak as literal text on the header. Same 2-letter
+   fallback as _stack_card.html. #}
+{% set _name_parts = (pkg.name or '?').split() %}
+{% if _name_parts|length >= 2 %}
+  {% set _initials = (_name_parts[0][0] ~ _name_parts[1][0])|upper %}
+{% else %}
+  {% set _initials = (pkg.name or '?')[:2]|upper %}
+{% endif %}
 <div class="pkg-detail-header">
   <div class="pkg-detail-icon" style="background: {{ pkg.color or '#e0f2fe' }}">
-    {{ pkg.icon or '📦' }}
+    {{ _initials }}
   </div>
   <div class="pkg-detail-heading">
     <h1>{{ pkg.name }}</h1>

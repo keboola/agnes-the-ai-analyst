@@ -11,8 +11,8 @@
    drives the per-card filter below, so typing here also narrows the grid. #}
 <div class="stack-hero">
   <div class="eyebrow">Data</div>
-  <h1>Data Packages</h1>
-  <p class="sub">Browse curated data bundles. Add the ones you need to your stack — required bundles are added automatically.</p>
+  <h1>What data are you looking for?</h1>
+  <p class="sub">Browse curated data packages your team has approved. Add the ones you need to your stack — required packages are added automatically.</p>
 
   <div class="stack-hero__search-row">
     <div class="stack-hero__search-wrap">
@@ -264,6 +264,46 @@
           actionBtn.disabled = false;
         }
       });
+
+    // Keep both grids in sync with their state. The server-side render
+    // mirrors any in-stack card into both Browse and My Stack grids; an
+    // Add from Browse needs to clone the Browse card into My Stack, a
+    // Remove needs to drop the My Stack copy. Without this the My Stack
+    // grid was stale until full page reload (regression noted in the
+    // mockup audit).
+    const myGrid = document.getElementById('catalog-grid-my');
+    const browseGrid = document.getElementById('catalog-grid-browse');
+    if (myGrid) {
+      const existingInMy = myGrid.querySelector(
+        '.stack-card[data-id="' + CSS.escape(id) + '"]'
+      );
+      if (becameInStack && !existingInMy) {
+        const sourceCard = browseGrid
+          ? browseGrid.querySelector('.stack-card[data-id="' + CSS.escape(id) + '"]')
+          : card;
+        if (sourceCard) {
+          const clone = sourceCard.cloneNode(true);
+          clone.dataset.inStack = '1';
+          const cloneBtn = clone.querySelector('[data-action]');
+          if (cloneBtn) {
+            cloneBtn.dataset.action = 'remove';
+            cloneBtn.textContent = '✓ In stack';
+            cloneBtn.disabled = false;
+          }
+          myGrid.appendChild(clone);
+        }
+        // Empty-state placeholder hides as soon as the grid has a child.
+        const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+        if (emptyEl) emptyEl.hidden = true;
+      } else if (!becameInStack && existingInMy) {
+        existingInMy.remove();
+        if (!myGrid.children.length) {
+          const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+          if (emptyEl) emptyEl.hidden = false;
+        }
+      }
+    }
+
     // Update tab counts. My Stack ticks up on add / down on remove;
     // Browse stays as the catalogue total — it doesn't shrink.
     const myEl = document.querySelector('.stack-tabs .count[data-count="my"]');
