@@ -167,6 +167,49 @@ class TestMarketplaceItemDaily:
         ).fetchone()
         assert row == ("flea", "skill", "", "flea-skill-by-alice")
 
+    def test_flea_plugin_row_aggregates_children(self, tmp_path, monkeypatch):
+        """v49 phase-6: nested skill/agent invocations under a flea plugin
+        entity get rolled up into a synthetic plugin-level row mirroring
+        the curated path. Without this, `_load_invocation_stats('flea')`
+        (filters `parent_plugin = ''`) returned no row for plugin entity
+        cards / detail telemetry chips even though nested children were
+        attributed correctly. `distinct_users` is the union across
+        children (one user invoking two skills counts once)."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        # Plugin entity with synthetic_name="my-plug-by-alice" — the
+        # frontmatter-baked name Claude Code writes as the JSONL prefix
+        # when invoking nested skills inside this flea plugin.
+        _seed_flea_entity(conn, "ent-plug", "my-plug", type_="plugin")
+        today = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+        # Two nested skills, one of them invoked by two distinct users —
+        # plugin-level distinct_users should be 2 (union of children),
+        # not 3 (sum of per-child counts).
+        _seed_event(conn, occurred_at=today, tool_name="Skill",
+                    skill_name="my-plug-by-alice:setup",
+                    user_id="uid-alice", username="alice", event_id="p1")
+        _seed_event(conn, occurred_at=today, tool_name="Skill",
+                    skill_name="my-plug-by-alice:setup",
+                    user_id="uid-bob", username="bob", event_id="p2")
+        _seed_event(conn, occurred_at=today, tool_name="Skill",
+                    skill_name="my-plug-by-alice:review",
+                    user_id="uid-alice", username="alice", event_id="p3")
+        rebuild_rollups(conn, since_day=today.date())
+        # Plugin-level aggregated row.
+        row = conn.execute(
+            "SELECT source, type, parent_plugin, name, count, distinct_users "
+            "FROM usage_marketplace_item_daily "
+            "WHERE source='flea' AND type='plugin'"
+        ).fetchone()
+        assert row is not None, "flea plugin-level aggregated row missing"
+        assert row == ("flea", "plugin", "", "my-plug-by-alice", 3, 2)
+        # Child rows still present alongside the aggregate.
+        children = conn.execute(
+            "SELECT name, count FROM usage_marketplace_item_daily "
+            "WHERE source='flea' AND type='skill' "
+            "AND parent_plugin='my-plug-by-alice' ORDER BY name"
+        ).fetchall()
+        assert children == [("review", 1), ("setup", 2)]
+
     def test_unknown_plugin_excluded(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         # No marketplace plugin seeded — prefix `ghost` is unknown.
