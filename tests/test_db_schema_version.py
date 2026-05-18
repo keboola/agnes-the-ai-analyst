@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_54():
+def test_schema_version_is_55():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -166,7 +166,12 @@ def test_schema_version_is_54():
     #            list/get filter ``deleted_at IS NULL`` so soft-deleted
     #            rows are invisible to every caller except the explicit
     #            POST /{id}/restore path.
-    assert SCHEMA_VERSION == 54
+    # v54 → v55: ``memory_domain_suggestions`` table backs the non-admin
+    #            "Suggest a domain" affordance on /corporate-memory's
+    #            empty state. Admin queue surfaces them with approve/
+    #            reject; approve also creates the real memory_domains
+    #            row and stamps suggestion.created_domain_id.
+    assert SCHEMA_VERSION == 55
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

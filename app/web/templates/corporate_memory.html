@@ -130,8 +130,15 @@
         <a href="/admin/corporate-memory">Open /admin/corporate-memory →</a>
       </div>
       {% else %}
-      <p>Ask your admin to create a Memory Domain or grant your group
-         access to an existing one, then refresh this page.</p>
+      <p>Your domains will appear here once your admin adds memory items
+         and grants your group access. Refresh when you've been told a
+         new domain is ready — or suggest one yourself if there's a body
+         of knowledge you'd like to see bundled.</p>
+      <div class="cta">
+        <button class="btn btn-primary" type="button" onclick="openSuggestDomainModal()">
+          Suggest a domain
+        </button>
+      </div>
       {% endif %}
     </div>
     {% endif %}
@@ -148,8 +155,15 @@
     <div class="stack-empty">
       <span class="icon">🗂️</span>
       <h3>Your stack is empty</h3>
-      <p>Browse available domains and click <strong>+ Add to stack</strong>.
-         Required domains will appear here automatically.</p>
+      {% if entries %}
+      <p>Browse the {{ entries|length }} available domain{{ '' if entries|length == 1 else 's' }}
+         and click <strong>+ Add to stack</strong>. Required domains will
+         appear here automatically.</p>
+      {% else %}
+      <p>You don't have access to any domains yet. They'll show up here
+         once your admin grants your group access — refresh when you've
+         been told something new is ready.</p>
+      {% endif %}
     </div>
     {% endif %}
   </div>
@@ -158,6 +172,51 @@
        style="position:fixed; bottom:24px; right:24px; padding:12px 18px;
               background:#202124; color:#fff; border-radius:8px;
               box-shadow:0 6px 20px rgba(0,0,0,.2); font-size:13px; z-index:1000;"></div>
+
+  {# v55 Suggest-a-domain modal — non-admin affordance from the
+     empty-state CTA. Posts to /api/memory-domain-suggestions; admin
+     queue surfaces it for approve/reject. #}
+  <div id="suggestDomainModal"
+       style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:2050;">
+    <div style="background:var(--surface); max-width:520px; margin:60px auto;
+                padding:20px 24px; border-radius:12px; border:1px solid var(--border);
+                max-height:85vh; overflow-y:auto;">
+      <h3 style="margin:0 0 8px;">Suggest a memory domain</h3>
+      <p style="margin:0 0 16px; color:var(--text-secondary); font-size:13px;">
+        Tell your admin what knowledge area you'd find useful. They'll see
+        your suggestion in their moderation queue and can approve it
+        directly (creating the real domain) or reply with a reason.
+      </p>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Proposed name</span>
+          <input id="sg-domain-name" type="text"
+                 placeholder="e.g. Sales coaching, Incident playbooks…"
+                 maxlength="100"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">What kinds of items would live there? (optional)</span>
+          <textarea id="sg-domain-desc" rows="2"
+                    placeholder="Playbooks, runbooks, shared context, decisions…"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Why it matters (optional)</span>
+          <textarea id="sg-domain-rationale" rows="2"
+                    placeholder="What problem would this domain unblock?"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+        <button class="btn" type="button" onclick="closeSuggestDomainModal()">Cancel</button>
+        <button class="btn btn-primary" type="button" id="sg-domain-submit-btn"
+                onclick="submitSuggestDomain()">Send suggestion</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -373,5 +432,60 @@
     heroSearch.addEventListener('input', applyFilters);
   }
 })();
+
+// v55 Suggest-a-domain — exposed on window so the empty-state CTA
+// reaches it. Single POST to /api/memory-domain-suggestions; admin
+// queue picks it up. Outside the IIFE because the CTA renders only
+// when the IIFE's #memory-page root is empty and the page may not
+// have hydrated when the user clicks.
+window.openSuggestDomainModal = function () {
+  const el = document.getElementById('suggestDomainModal');
+  if (!el) return;
+  ['sg-domain-name','sg-domain-desc','sg-domain-rationale'].forEach((id) => {
+    const i = document.getElementById(id);
+    if (i) i.value = '';
+  });
+  el.style.display = 'block';
+  const nameInput = document.getElementById('sg-domain-name');
+  if (nameInput) nameInput.focus();
+};
+window.closeSuggestDomainModal = function () {
+  const el = document.getElementById('suggestDomainModal');
+  if (el) el.style.display = 'none';
+};
+window.submitSuggestDomain = async function () {
+  const btn = document.getElementById('sg-domain-submit-btn');
+  const name = (document.getElementById('sg-domain-name').value || '').trim();
+  if (!name) { alert('Please enter a name for the domain.'); return; }
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/memory-domain-suggestions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        name: name,
+        description: (document.getElementById('sg-domain-desc').value || '').trim() || null,
+        rationale: (document.getElementById('sg-domain-rationale').value || '').trim() || null,
+      }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert('Failed to send: ' + (d.detail || r.statusText));
+      return;
+    }
+    window.closeSuggestDomainModal();
+    const toast = document.getElementById('memory-toast');
+    if (toast) {
+      toast.textContent = 'Suggestion sent — your admin will review it.';
+      toast.hidden = false;
+      setTimeout(() => { toast.hidden = true; }, 4000);
+    }
+  } catch (e) {
+    alert('Network error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+};
 </script>
 {% endblock %}

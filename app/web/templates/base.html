@@ -45,11 +45,12 @@
     </div>
     {% endblock %}
     {% include "_version_badge.html" %}
-    {# Shared chip-input component (Task 8.7) — loaded globally so /admin/tables
-       and /admin/corporate-memory can mount it without their own <script> tag.
-       Idempotent: the component only initialises elements with .chip-input or
-       [data-chip-input] that lack a `data-chip-ready` flag. #}
-    <script src="{{ static_url('js/components/chip-input.js') }}" defer></script>
+    {# Pages that mount a chip-input opt in via the {% raw %}{{ super() }}{% endraw %} +
+       {% raw %}{% block extra_scripts %}<script type="module" src="..."></script>{% endblock %}{% endraw %}
+       pattern. Was previously loaded globally here even though only
+       /admin/corporate-memory actually used it — pure waste on every
+       other admin/user page (#L85). #}
+    {% block extra_scripts %}{% endblock %}
     <script>
       // v54 global undo-toast — surfaced by admin delete handlers. The
       // toast carries an Undo button that POSTs to a restore URL, so
@@ -341,6 +342,255 @@
               window.location.href = target;
             }
           }
+        });
+      })();
+
+      // v55 admin command palette — Cmd/Ctrl-K opens a fuzzy-search
+      // overlay over the same set of routes the admin nav exposes,
+      // plus a few common actions. Admin-only (gated on adminNavMenu
+      // presence). Esc to close; arrows + Enter to navigate; the same
+      // typing-into-input safeguards as the g+letter handler.
+      (function () {
+        if (!document.getElementById('adminNavMenu')) return;
+        const ITEMS = [
+          { label: 'Tables / Data packages',      hint: 'admin · g t',  href: '/admin/tables' },
+          { label: 'Resource access',             hint: 'admin · g a',  href: '/admin/access' },
+          { label: 'Corporate Memory',            hint: 'admin · g m',  href: '/admin/corporate-memory' },
+          { label: 'Memory · Review queue',       hint: 'admin',        href: '/admin/corporate-memory#review' },
+          { label: 'Memory · All items',          hint: 'admin',        href: '/admin/corporate-memory#all' },
+          { label: 'Memory · Domains',            hint: 'admin',        href: '/admin/corporate-memory#domains' },
+          { label: 'Memory · Audit log',          hint: 'admin',        href: '/admin/corporate-memory#audit' },
+          { label: 'Users',                       hint: 'admin · g u',  href: '/admin/users' },
+          { label: 'Groups',                      hint: 'admin · g g',  href: '/admin/groups' },
+          { label: 'Server config',               hint: 'admin · g s',  href: '/admin/server-config' },
+          { label: 'Activity / Audit log',        hint: 'admin · g l',  href: '/admin/activity' },
+          { label: 'Telemetry',                   hint: 'admin',        href: '/admin/telemetry' },
+          { label: 'Sessions',                    hint: 'admin',        href: '/admin/sessions' },
+          { label: 'Curated Marketplaces',        hint: 'admin · g c',  href: '/admin/marketplaces' },
+          { label: 'Tokens',                      hint: 'admin · g k',  href: '/admin/tokens' },
+          { label: 'Flea Submissions',            hint: 'admin · g r',  href: '/admin/store/submissions' },
+          { label: 'Init prompt',                 hint: 'admin',        href: '/admin/agent-prompt' },
+          { label: 'Workspace prompt',            hint: 'admin',        href: '/admin/workspace-prompt' },
+          { label: '— User-facing —',             hint: 'separator',    href: null },
+          { label: 'Catalog',                     hint: 'user',         href: '/catalog' },
+          { label: 'Catalog · Browse',            hint: 'user',         href: '/catalog#browse' },
+          { label: 'Catalog · My Stack',          hint: 'user',         href: '/catalog#my' },
+          { label: 'Catalog · Recipes',           hint: 'user',         href: '/catalog#recipes' },
+          { label: 'Corporate memory',            hint: 'user',         href: '/corporate-memory' },
+          { label: 'Marketplace',                 hint: 'user',         href: '/marketplace' },
+          { label: 'Activity (mine)',             hint: 'user',         href: '/me/activity' },
+        ];
+
+        let overlay = null;
+        let input = null;
+        let list = null;
+        let activeIdx = 0;
+        let filtered = ITEMS.filter((it) => it.href);  // skip separators initially
+
+        function _build() {
+          overlay = document.createElement('div');
+          overlay.id = 'adminCmdkOverlay';
+          overlay.setAttribute('role', 'dialog');
+          overlay.setAttribute('aria-label', 'Admin command palette');
+          overlay.style.cssText = (
+            'position:fixed; inset:0; background:rgba(0,0,0,.4); ' +
+            'z-index:5000; display:none; align-items:flex-start; ' +
+            'justify-content:center; padding-top:14vh;'
+          );
+          overlay.innerHTML = (
+            '<div style="background:var(--surface,#fff); width:min(640px,90vw); ' +
+            '            border-radius:12px; border:1px solid var(--border,#e5e7eb); ' +
+            '            box-shadow:0 24px 48px rgba(0,0,0,.18); overflow:hidden;">' +
+            '  <input type="search" id="adminCmdkInput" ' +
+            '         placeholder="Search admin pages and actions…" ' +
+            '         autocomplete="off" spellcheck="false" ' +
+            '         style="width:100%; padding:14px 16px; border:0; ' +
+            '                border-bottom:1px solid var(--border,#e5e7eb); ' +
+            '                font: 14px ui-sans-serif, system-ui; outline:none;">' +
+            '  <ul id="adminCmdkList" role="listbox" ' +
+            '      style="margin:0; padding:6px 0; max-height:50vh; overflow-y:auto; ' +
+            '             list-style:none; font:13px ui-sans-serif, system-ui;"></ul>' +
+            '  <div style="padding:8px 14px; border-top:1px solid var(--border,#e5e7eb); ' +
+            '              color:var(--text-secondary,#6b7280); font:11px ui-monospace, monospace; ' +
+            '              display:flex; justify-content:space-between;">' +
+            '    <span>↑↓ navigate · Enter open · Esc close</span>' +
+            '    <span>Cmd/Ctrl-K to toggle</span>' +
+            '  </div>' +
+            '</div>'
+          );
+          document.body.appendChild(overlay);
+          input = overlay.querySelector('#adminCmdkInput');
+          list = overlay.querySelector('#adminCmdkList');
+
+          input.addEventListener('input', () => { _render(input.value); });
+          input.addEventListener('keydown', _onKey);
+          // Click on backdrop closes; clicks inside the panel don't bubble up here.
+          overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) _close();
+          });
+        }
+
+        function _matchScore(q, label) {
+          // Tiny scoring: every query char must appear in order. Earlier
+          // matches score higher; consecutive-match streaks score higher.
+          // No fancy library — keeps this dependency-free.
+          if (!q) return 1;
+          const ql = q.toLowerCase();
+          const ll = label.toLowerCase();
+          let qi = 0, score = 0, streak = 0;
+          for (let li = 0; li < ll.length && qi < ql.length; li++) {
+            if (ll[li] === ql[qi]) {
+              qi++;
+              streak++;
+              score += 1 + streak;
+            } else {
+              streak = 0;
+            }
+          }
+          return qi === ql.length ? score / (1 + ll.length / 20) : 0;
+        }
+
+        function _render(query) {
+          const q = (query || '').trim();
+          const scored = ITEMS
+            .filter((it) => it.href)
+            .map((it) => ({ it, s: _matchScore(q, it.label + ' ' + (it.hint || '')) }))
+            .filter((x) => x.s > 0)
+            .sort((a, b) => b.s - a.s)
+            .slice(0, 30);
+          filtered = scored.map((x) => x.it);
+          activeIdx = 0;
+          if (!filtered.length) {
+            list.innerHTML = (
+              '<li style="padding:14px 16px; color:var(--text-secondary,#6b7280);">' +
+              'No matches.</li>'
+            );
+            return;
+          }
+          list.innerHTML = filtered.map((it, i) => (
+            '<li role="option" data-idx="' + i + '" ' +
+            '    style="padding:8px 16px; cursor:pointer; display:flex; ' +
+            '           justify-content:space-between; align-items:baseline; ' +
+            '           gap:12px;' +
+            (i === activeIdx ? ' background:var(--primary-light,#e0f2fe);' : '') +
+            '">' +
+            '  <span>' + _esc(it.label) + '</span>' +
+            '  <span style="color:var(--text-secondary,#6b7280); font:11px ui-monospace, monospace;">' +
+            _esc(it.hint || '') + '</span>' +
+            '</li>'
+          )).join('');
+          list.querySelectorAll('li[data-idx]').forEach((li) => {
+            li.addEventListener('mousemove', () => {
+              const i = parseInt(li.dataset.idx, 10);
+              if (i !== activeIdx) { activeIdx = i; _highlight(); }
+            });
+            li.addEventListener('click', () => {
+              const i = parseInt(li.dataset.idx, 10);
+              _goto(filtered[i]);
+            });
+          });
+        }
+
+        function _highlight() {
+          list.querySelectorAll('li[data-idx]').forEach((li, i) => {
+            li.style.background = (i === activeIdx)
+              ? 'var(--primary-light,#e0f2fe)' : '';
+          });
+          const active = list.querySelector('li[data-idx="' + activeIdx + '"]');
+          if (active && active.scrollIntoView) {
+            active.scrollIntoView({ block: 'nearest' });
+          }
+        }
+
+        function _onKey(e) {
+          if (e.key === 'Escape') { e.preventDefault(); _close(); return; }
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (!filtered.length) return;
+            activeIdx = (activeIdx + 1) % filtered.length;
+            _highlight();
+            return;
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (!filtered.length) return;
+            activeIdx = (activeIdx - 1 + filtered.length) % filtered.length;
+            _highlight();
+            return;
+          }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (!filtered.length) return;
+            _goto(filtered[activeIdx]);
+          }
+        }
+
+        function _goto(item) {
+          if (!item || !item.href) return;
+          _close();
+          window.location.href = item.href;
+        }
+
+        function _open() {
+          if (!overlay) _build();
+          overlay.style.display = 'flex';
+          input.value = '';
+          _render('');
+          // Focus on next frame so Cmd/Ctrl-K's own keyup doesn't blur it.
+          requestAnimationFrame(() => input.focus());
+        }
+
+        function _close() {
+          if (overlay) overlay.style.display = 'none';
+        }
+
+        function _esc(s) {
+          return String(s == null ? '' : s).replace(/[&<>"']/g,
+            (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        document.addEventListener('keydown', (e) => {
+          if (!(e.metaKey || e.ctrlKey)) return;
+          if (e.key !== 'k' && e.key !== 'K') return;
+          // Don't fight typing in an input *unless* the palette is the
+          // input — then Cmd-K acts as toggle-off.
+          const t = e.target;
+          const insidePalette = overlay && overlay.contains(t);
+          if (!insidePalette && t && (
+                t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                t.isContentEditable)) return;
+          e.preventDefault();
+          if (overlay && overlay.style.display === 'flex') _close();
+          else _open();
+        });
+      })();
+
+      // v55 stack-tabs digit shortcuts — `1` = first tab, `2` = second,
+      // etc. Hot-wired on any page that renders a `.stack-tabs` strip
+      // (currently /catalog + /corporate-memory). No-op when typing in
+      // inputs, when modifiers are held, or when a modal is open.
+      (function () {
+        const tabs = document.querySelectorAll('.stack-tabs button[data-tab]');
+        if (!tabs.length) return;
+        document.addEventListener('keydown', (e) => {
+          if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                    t.isContentEditable)) return;
+          const anyModalOpen = Array.from(document.querySelectorAll(
+            '.modal-overlay, [id$="Modal"], .modal.is-open'
+          )).some((el) => {
+            const cs = window.getComputedStyle(el);
+            return cs.display !== 'none' && cs.visibility !== 'hidden';
+          });
+          if (anyModalOpen) return;
+          const k = e.key;
+          if (!/^[1-9]$/.test(k)) return;
+          const idx = parseInt(k, 10) - 1;
+          if (idx >= tabs.length) return;
+          e.preventDefault();
+          tabs[idx].click();
+          tabs[idx].focus();
         });
       })();
 
