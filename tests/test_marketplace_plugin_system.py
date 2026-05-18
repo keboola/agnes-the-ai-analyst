@@ -220,8 +220,7 @@ class TestMarkUnmark:
         r = web_client.delete(
             "/api/marketplaces/mkt-x/plugins/alpha/system", cookies=cookies,
         )
-        assert r.status_code == 200
-        assert r.json()["is_system"] is False
+        assert r.status_code == 204
 
         from src.db import get_system_db
         conn = get_system_db()

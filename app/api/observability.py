@@ -236,7 +236,7 @@ def save_view(
     return ObservabilityViewsRepository(conn).create(user_id, name, query)
 
 
-@router.delete("/views/{view_id}")
+@router.delete("/views/{view_id}", status_code=204)
 def delete_view(
     view_id: str,
     user: dict = Depends(require_admin),
@@ -246,4 +246,3 @@ def delete_view(
     ok = ObservabilityViewsRepository(conn).delete(user_id, view_id)
     if not ok:
         raise HTTPException(status_code=404, detail="view not found")
-    return {"deleted": view_id}

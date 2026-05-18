@@ -699,8 +699,8 @@ async function performToggleSystem(btn, marketplaceId, marketplaceName, isSystem
       btn.innerHTML = prevHtml;
       return;
     }
-    const result = await r.json();
     if (!isSystem) {
+      const result = await r.json();
       toast(`Marked ${pluginName} as system (${result.affected_groups} groups, ${result.affected_users} users)`, "success");
     } else {
       toast(`Unmarked ${pluginName} from system`, "success");

@@ -1047,7 +1047,7 @@ class TestInstallCycle:
 
         # Owner soft-archives (default DELETE semantics in v35).
         d = web_client.delete(f"/api/store/entities/{eid}", cookies=owner_cookies)
-        assert d.status_code == 200
+        assert d.status_code == 204
 
         # Detail still reachable for owner — visibility flipped, not deleted.
         det = web_client.get(f"/api/store/entities/{eid}", cookies=owner_cookies).json()
