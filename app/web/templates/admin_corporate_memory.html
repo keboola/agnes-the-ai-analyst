@@ -1031,10 +1031,17 @@
             </div>
         </div>
 
-        <!-- Tab Navigation — Domains tab + "+ New Memory Domain" button
-             on the right edge (E2E found admins had no UI to create a
-             domain even though the API existed). -->
+        <!-- Tab Navigation — v55 grouped under Moderation / Catalog labels
+             so the 7-tab strip reads as two intent buckets instead of a
+             flat scroll. switchTab() still drives by data-tab; the
+             groupings are cosmetic. Domains + "+ New" actions stay on the
+             right edge (E2E found admins had no UI to create a domain
+             even though the API existed). -->
         <div class="tab-nav" style="display:flex; align-items:center; gap:0;">
+            <span class="tab-group-label" style="padding:0 8px; font-size:11px; font-weight:600;
+                  text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">
+                Moderation
+            </span>
             <button class="tab-btn active" data-tab="review" onclick="switchTab('review')">
                 Review Queue
                 <span class="tab-badge" id="pendingBadge" style="{% if not stats.pending_count %}display:none{% endif %}">{{ stats.pending_count|default(0) }}</span>
@@ -1050,15 +1057,21 @@
                 Duplicate Candidates
                 <span class="tab-badge" id="duplicatesBadge" style="{% if not stats.duplicates %}display:none{% endif %}">{{ stats.duplicates|default(0) }}</span>
             </button>
+            <button class="tab-btn" data-tab="audit" onclick="switchTab('audit')">
+                Audit Log
+            </button>
+            <span class="tab-group-sep" aria-hidden="true" style="width:1px; height:18px;
+                  background:var(--border); margin:0 12px;"></span>
+            <span class="tab-group-label" style="padding:0 8px; font-size:11px; font-weight:600;
+                  text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">
+                Catalog
+            </span>
             <button class="tab-btn" data-tab="browse" onclick="switchTab('browse')">
                 Browse
             </button>
             <button class="tab-btn" data-tab="domains" onclick="switchTab('domains')">
                 Domains
                 <span class="tab-badge" id="domainsBadge" style="display:none;"></span>
-            </button>
-            <button class="tab-btn" data-tab="audit" onclick="switchTab('audit')">
-                Audit Log
             </button>
             <div style="flex:1;"></div>
             <button class="btn"
@@ -1132,7 +1145,7 @@
                     <option value="">All</option>
                     <option value="pending">Pending</option>
                     <option value="approved">Approved</option>
-                    <option value="mandatory">Mandatory</option>
+                    <option value="__required__">Required</option>
                     <option value="rejected">Rejected</option>
                     <option value="revoked">Revoked</option>
                 </select>
@@ -1236,7 +1249,7 @@
                     <option value="">Any</option>
                     <option value="pending">Pending</option>
                     <option value="approved">Approved</option>
-                    <option value="mandatory">Mandatory</option>
+                    <option value="__required__">Required</option>
                     <option value="rejected">Rejected</option>
                     <option value="revoked">Revoked</option>
                 </select>
@@ -2534,7 +2547,15 @@
         const hasDup = document.getElementById('treeHasDuplicate').checked;
         const q = (document.getElementById('treeQuery').value || '').trim();
         const params = new URLSearchParams({ axis, _t: Date.now() });
-        if (status) params.append('status_filter', status);
+        // v55 design pass: the "Required" status option is a sentinel —
+        // status is lifecycle-only post-v49, so the dropdown filter
+        // routes the sentinel onto the orthogonal is_required boolean
+        // instead of the status column (which never holds 'mandatory').
+        if (status === '__required__') {
+            params.append('is_required', 'true');
+        } else if (status) {
+            params.append('status_filter', status);
+        }
         if (sourceType) params.append('source_type', sourceType);
         if (hasDup) params.append('has_duplicate', 'true');
         if (q) params.append('q', q);
@@ -3042,7 +3063,12 @@
 
         try {
             const params = new URLSearchParams({page, _t: Date.now()});
-            if (status) {
+            // v55 design pass: "Required" is a sentinel routed to the
+            // orthogonal is_required boolean — see loadBrowseTree for
+            // the same translation.
+            if (status === '__required__') {
+                params.append('is_required', 'true');
+            } else if (status) {
                 params.append('status_filter', status);
             }
             if (sourceType) {
@@ -3888,4 +3914,11 @@
         }
     })();
     </script>
+{% endblock %}
+
+{# Chip-input component (v55 — was globally loaded in base.html, now
+   opt-in per template via this extra_scripts block; only this page
+   actually mounts a chip-input today). #}
+{% block extra_scripts %}
+<script type="module" src="{{ static_url('js/components/chip-input.js') }}"></script>
 {% endblock %}

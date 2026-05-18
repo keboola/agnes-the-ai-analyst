@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 54
+SCHEMA_VERSION = 55
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -578,6 +578,31 @@ CREATE TABLE IF NOT EXISTS knowledge_item_domains (
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain
     ON knowledge_item_domains(domain_id);
+
+-- v55: ``memory_domain_suggestions`` — non-admin users can suggest a new
+-- domain from /corporate-memory empty state. Admin queue surfaces them
+-- with one-click approve (creates the real ``memory_domains`` row +
+-- marks the suggestion ``status='approved'``) or reject. Open suggestions
+-- have ``status='pending'``; resolved ones keep the row for audit so the
+-- requester sees the disposition. No FK on ``created_by`` so a deleted
+-- user doesn't cascade-nuke their suggestion history.
+CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    rationale       TEXT,
+    status          VARCHAR DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    resolved_at     TIMESTAMP,
+    resolved_by     VARCHAR,
+    resolution_note TEXT,
+    -- When approved, the resulting memory_domains.id so the admin queue
+    -- can deep-link to the created domain.
+    created_domain_id VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status
+    ON memory_domain_suggestions(status);
 
 -- v53: Recipes are admin-curated, multi-table query templates analysts
 -- copy + adapt. Sibling concept to Data Packages on /catalog (separate
@@ -3739,6 +3764,36 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
+    """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
+    domain" affordance + admin moderation queue.
+
+    Idempotent CREATE TABLE IF NOT EXISTS. Fresh installs already get
+    the table from ``_SYSTEM_SCHEMA``; this migration covers the
+    sequential-upgrade path from a v54 instance.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
+            id                VARCHAR PRIMARY KEY,
+            name              VARCHAR NOT NULL,
+            description       TEXT,
+            rationale         TEXT,
+            status            VARCHAR DEFAULT 'pending',
+            created_by        VARCHAR,
+            created_at        TIMESTAMP DEFAULT current_timestamp,
+            resolved_at       TIMESTAMP,
+            resolved_by       VARCHAR,
+            resolution_note   TEXT,
+            created_domain_id VARCHAR
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status "
+        "ON memory_domain_suggestions(status)"
+    )
+    conn.execute("UPDATE schema_version SET version = 55")
+
+
 def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
     """v54: soft-delete columns on data_packages / memory_domains / recipes.
 
@@ -3981,6 +4036,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v52_to_v53(conn)
             # v54 deleted_at columns on data_packages, memory_domains, recipes.
             _v53_to_v54(conn)
+            # v55 memory_domain_suggestions table.
+            _v54_to_v55(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4143,6 +4200,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v52_to_v53(conn)
             if current < 54:
                 _v53_to_v54(conn)
+            if current < 55:
+                _v54_to_v55(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

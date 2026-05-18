@@ -424,6 +424,7 @@ class KnowledgeRepository:
         category: Optional[str] = None,
         domain: Optional[str] = None,
         source_type: Optional[str] = None,
+        is_required: Optional[bool] = None,
         dismissed_by_user: Optional[str] = None,
         hide_dismissed: bool = False,
         limit: int = 100,
@@ -479,6 +480,9 @@ class KnowledgeRepository:
             if source_type:
                 sql += " AND source_type = ?"
                 params.append(source_type)
+            if is_required is not None:
+                sql += " AND is_required = ?"
+                params.append(bool(is_required))
             if exclude_personal:
                 sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
             if user_groups is not None:
@@ -554,6 +558,7 @@ class KnowledgeRepository:
         category: Optional[str] = None,
         domain: Optional[str] = None,
         source_type: Optional[str] = None,
+        is_required: Optional[bool] = None,
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
         granted_domains: Optional[List[str]] = None,
@@ -590,6 +595,9 @@ class KnowledgeRepository:
             if source_type:
                 sql += " AND source_type = ?"
                 params.append(source_type)
+            if is_required is not None:
+                sql += " AND is_required = ?"
+                params.append(bool(is_required))
             if exclude_personal:
                 sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
             if user_groups is not None:

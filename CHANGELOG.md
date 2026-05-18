@@ -65,6 +65,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the new field. The event detail panel grew a `Filter to this
   resource type` button that pivots on the selected row's resource
   when it has a recognized prefix.
+- **Admin command palette** (`Cmd-K` / `Ctrl-K`) — fuzzy-search overlay
+  over admin routes + a handful of user-facing pages. Arrows + Enter to
+  navigate, Esc to close. Admin-only (gated on `adminNavMenu` presence).
+- **"Suggest a domain"** affordance — non-admin users on
+  `/corporate-memory`'s empty state can file a domain request that
+  surfaces on the admin moderation queue. Backed by a new
+  `memory_domain_suggestions` table (v55) plus
+  `POST /api/memory-domain-suggestions` (any auth user),
+  `GET /api/memory-domain-suggestions/mine` (own history), and an
+  `admin/memory-domain-suggestions` queue with one-click approve
+  (creates the real `memory_domains` row + stamps
+  `created_domain_id`) or reject (with note).
+- **`is_required` filter** on `GET /api/memory` and `/api/memory/tree` —
+  orthogonal to `status_filter` (status is lifecycle-only post-v49).
+  Admin moderation dropdowns now route their "Required" option onto
+  this filter via an internal `__required__` sentinel instead of the
+  dead `status='mandatory'` value.
+- **Stack-tabs digit shortcuts** — pressing `1` / `2` / `3` on
+  `/catalog` or `/corporate-memory` switches between Browse / My Stack
+  / Recipes. Same input/modal guards as the admin `g+letter` shortcuts.
+- **E2E nightly CI** — `.github/workflows/e2e-nightly.yml` runs
+  `scripts/e2e/smoke_*.sh` (agent-browser scripts) against a
+  docker-compose stack on a 04:30 UTC cron; per-script matrix isolates
+  failures, screenshots upload as artifacts, and a tracking issue
+  labeled `agent-browser-nightly` opens on schedule-driven failures.
 - **Recipes RBAC** — new `ResourceType.RECIPE` registered in the
   RBAC registry, plus a `_recipe_blocks()` projection so the admin
   /access page surfaces recipes alongside tables, data packages, and
@@ -78,6 +103,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   save) mirroring the Memory Domain pattern.
 
 ### Changed
+- **Bulk-assign tables → package** modal — package dropdown options
+  now carry a `(N of M tables already in)` suffix so admins see the
+  existing distribution before picking a target. Counts surface
+  per-package overlap with the visible table set, no extra round-trip.
+- **`/admin/corporate-memory` 7-tab strip** grouped under
+  `Moderation` (Review Queue, All Items, Contradictions, Duplicate
+  Candidates, Audit Log) and `Catalog` (Browse, Domains) labels with
+  a thin separator. Tab `data-tab` values untouched; `switchTab()`
+  behaviour unchanged.
+- **Edit-modal close handlers** consolidated onto a single
+  `_closeEditModalById(modalId)` helper in `admin_tables.html`. Removes
+  three near-duplicate close functions; documents the per-source-type
+  modal architecture (BQ / Keboola / Generic stay separate because
+  their inner field sets genuinely differ; folding into one modal with
+  conditional sections would multiply state-hydration bugs).
+- **`chip-input.js`** no longer loaded globally from `base.html`. Pages
+  that mount a chip-input opt in via a new `{% block extra_scripts %}`
+  in their template — currently `admin_corporate_memory.html` and
+  `admin_tables.html`. Pure waste savings on every other admin/user
+  page that doesn't render a chip-input.
 - **BigQuery + Keboola edit modals** now carry the Data Packages
   chip-input that the legacy modal already had. Hydrated on open with
   the table's current memberships; save diffs vs the original set and

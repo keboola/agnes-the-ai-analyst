@@ -2915,11 +2915,26 @@
         // handler below intercepts __create__ and runs a tiny prompt-based
         // flow (name → POST → re-list → re-select) so the user can spawn
         // a target without leaving the bulk-assign workflow.
+        //
+        // v55 — also annotate each option with "(N of M tables already in)"
+        // so the admin sees the existing distribution before picking a
+        // target. M = number of visible/grantable tables in this modal;
+        // N = how many of those are already in that package. Surfaces the
+        // implicit "this package is half-full of what I'm about to assign"
+        // signal the admin previously had to derive by clicking through.
+        const totalVisible = _bulkAssignTables.length;
         sel.innerHTML = '<option value="">— Choose a package —</option>'
           + '<option value="__create__" style="font-weight:600;">+ Create new package…</option>'
           + _bulkAssignPackages.map(function(p) {
+              let overlap = 0;
+              _bulkAssignTables.forEach(function(t) {
+                if (p.member_table_ids.has(String(t.id))) overlap++;
+              });
+              const distHint = overlap > 0
+                ? ' (' + overlap + ' of ' + totalVisible + ' already in)'
+                : '';
               return '<option value="' + escapeHtmlAttr(p.id) + '">'
-                + escapeHtml(p.name) + '</option>';
+                + escapeHtml(p.name) + escapeHtml(distHint) + '</option>';
             }).join('');
         sel.onchange = async function() {
           if (sel.value !== '__create__') { refreshBulkAssignAvailability(); return; }
@@ -3970,7 +3985,7 @@
     }
 
     function closeEditKeboolaModal() {
-        document.getElementById('editKeboolaModal').classList.remove('active');
+        _closeEditModalById('editKeboolaModal');
     }
 
     function _editIntOrNull(id) {
@@ -4502,13 +4517,31 @@
         if (el) el.checked = true;
     }
 
+    // ── Edit-modal architecture (v55 review of #L61) ──────────────────
+    // We dispatch by ``table.source_type`` to one of three per-source
+    // modals because their inner forms genuinely differ:
+    //
+    //   * BQ:      access-mode radios (live / synced), sync-mode radios
+    //              (whole / custom SQL), dataset + source_table inputs.
+    //   * Keboola: storage-API bucket + table inputs, sync_strategy enum,
+    //              primary_key chip list, sync_schedule cron.
+    //   * Generic: description, folder, strategy, primary_key (catch-all
+    //              fallback for jira / future connectors).
+    //
+    // What's *already* shared lives in helpers:
+    //   * ``_hydrateEditPackagesChips`` — Data Packages chip-input
+    //     fill-in (all three modals).
+    //   * ``_diffApplyPackageMembership`` — minimal POST/DELETE delta
+    //     against /api/admin/data-packages/{id}/tables (all three save
+    //     handlers).
+    //   * ``_closeEditModalById`` — uniform close/reset (added v55).
+    //
+    // A fourth "one modal with conditional sections" design would shave
+    // ~40% of the form HTML but multiply state-hydration bugs (stale
+    // field state when source_type-switches re-show different inputs).
+    // The per-source modals + shared helpers pattern is the explicit
+    // architecture; see ``openEditModal`` for the dispatcher.
     function openEditModal(table) {
-        // C2: dispatch by source_type. BigQuery rows go to the relocated
-        // #editBqModal inside the BQ tab; Keboola rows go to the existing
-        // #editKeboolaModal inside the Keboola tab; anything else (jira,
-        // future sources) falls through to the legacy #editModal which now
-        // only carries Description/Folder + a Keboola-style Strategy/PK
-        // fallback.
         var sourceType = (table.source_type || '').toLowerCase();
         if (sourceType === 'bigquery') {
             return _openEditBqModal(table);
@@ -4517,6 +4550,17 @@
             return openEditKeboolaModal(table);
         }
         return _openEditGenericModal(table);
+    }
+
+    // Single close/reset helper used by all three per-source modal
+    // wrappers. Resets currentEditTableId + _editOriginalQueryMode so a
+    // subsequent open() doesn't inherit stale state from the previous
+    // modal-source.
+    function _closeEditModalById(modalId) {
+        var el = document.getElementById(modalId);
+        if (el) el.classList.remove('active');
+        currentEditTableId = null;
+        _editOriginalQueryMode = null;
     }
 
     function _openEditBqModal(table) {
@@ -4585,9 +4629,7 @@
     }
 
     function closeEditBqModal() {
-        document.getElementById('editBqModal').classList.remove('active');
-        currentEditTableId = null;
-        _editOriginalQueryMode = null;
+        _closeEditModalById('editBqModal');
     }
 
     // Tracks the set of Data Package ids each edit modal was opened
@@ -4756,9 +4798,7 @@
     }
 
     function closeEditModal() {
-        document.getElementById('editModal').classList.remove('active');
-        currentEditTableId = null;
-        _editOriginalQueryMode = null;
+        _closeEditModalById('editModal');
     }
 
     async function saveTableEdit() {
@@ -5723,4 +5763,11 @@
     });
 
     </script>
+{% endblock %}
+
+{# Chip-input component (v55 — was globally loaded in base.html, now
+   opt-in per template via this extra_scripts block; admin_tables mounts
+   it via the BQ Register modal's `data-name="bq_package_ids"` host). #}
+{% block extra_scripts %}
+<script type="module" src="{{ static_url('js/components/chip-input.js') }}"></script>
 {% endblock %}

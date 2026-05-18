@@ -188,10 +188,13 @@ class TestEmptyMemoryBrowseBanner:
         assert r.status_code == 200, r.text
         body = r.text
         # Empty state was redesigned for visual parity with /marketplace
-        # in the unified-stack hardening pass: friendlier copy + CTA, but
-        # the non-admin branch still routes to "ask your admin".
+        # in the unified-stack hardening pass: friendlier copy + CTA. v55
+        # (L51/L52) rephrased the non-admin branch to "your admin" + a
+        # "Suggest a domain" affordance, replacing the older "Ask your
+        # admin" copy.
         assert "No Memory Domains yet" in body, body[:1000]
-        assert "Ask your admin" in body
+        assert "your admin" in body
+        assert "Suggest a domain" in body
 
 
 # ---------------------------------------------------------------------------
