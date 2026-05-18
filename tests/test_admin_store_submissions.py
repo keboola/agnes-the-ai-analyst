@@ -634,7 +634,7 @@ class TestAdminDelete:
             f"/api/admin/store/submissions/{sid}",
             cookies=admin_cookies,
         )
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
 
         conn = get_system_db()
         assert StoreEntitiesRepository(conn).get("e2") is None
@@ -1980,7 +1980,7 @@ class TestArchiveSoftDelete:
         r = web_client.delete(
             f"/api/store/entities/{eid_v1}", cookies=owner_cookies,
         )
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
 
         # Re-upload under the original name — must succeed.
         eid_v2 = self._upload_clean(web_client, owner_cookies, name="myskill")
@@ -2120,7 +2120,7 @@ class TestArchiveSoftDelete:
         conn.close()
 
         r = web_client.delete(f"/api/store/entities/{eid}", cookies=owner_cookies)
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
 
         conn = get_system_db()
         ent = StoreEntitiesRepository(conn).get(eid)
@@ -2151,7 +2151,7 @@ class TestArchiveSoftDelete:
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.delete(f"/api/store/entities/{eid}?hard=true", cookies=admin_cookies)
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
 
         conn = get_system_db()
         assert StoreEntitiesRepository(conn).get(eid) is None
@@ -2226,7 +2226,7 @@ class TestArchiveSoftDelete:
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.delete(f"/api/store/entities/{eid}", cookies=admin_cookies)
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
 
         conn = get_system_db()
         ent = StoreEntitiesRepository(conn).get(eid)
@@ -2363,7 +2363,7 @@ class TestSubmissionLifecycleMarking:
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.delete(f"/api/store/entities/{eid}?hard=true", cookies=admin_cookies)
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
 
         conn = get_system_db()
         sub = StoreSubmissionsRepository(conn).get(sub_id)
@@ -2425,7 +2425,7 @@ class TestSubmissionLifecycleMarking:
 
         _, admin_cookies = _create_admin(web_client)
         r = web_client.delete(f"/api/store/entities/{eid}?hard=true", cookies=admin_cookies)
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
 
         # Detail page must render and include at least one audit row
         # (creation events scoped to store_entity:{eid} would otherwise

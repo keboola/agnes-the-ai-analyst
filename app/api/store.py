@@ -2333,7 +2333,7 @@ async def _restore_version_locked(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/entities/{entity_id}", response_model=OkResponse)
+@router.delete("/entities/{entity_id}", status_code=204)
 async def delete_entity(
     entity_id: str,
     hard: bool = False,
@@ -2412,7 +2412,7 @@ async def delete_entity(
              "owner_user_id": entity.get("owner_user_id")},
         )
         _invalidate_etag()
-        return OkResponse()
+        return
 
     # Soft archive — preserves disk + installs + audit chain.
     # v36+: archive renames the entity row's `name` (appends
@@ -2473,7 +2473,6 @@ async def delete_entity(
          "by_admin": is_admin_caller and entity["owner_user_id"] != user["id"]},
     )
     _invalidate_etag()
-    return OkResponse()
 
 
 # ---------------------------------------------------------------------------
@@ -2508,7 +2507,7 @@ async def install_entity(
     return InstallResponse(entity_id=entity_id, installed=True)
 
 
-@router.delete("/entities/{entity_id}/install", response_model=InstallResponse)
+@router.delete("/entities/{entity_id}/install", status_code=204)
 async def uninstall_entity(
     entity_id: str,
     user: dict = Depends(get_current_user),
@@ -2520,7 +2519,6 @@ async def uninstall_entity(
         StoreEntitiesRepository(conn).bump_install_count(entity_id, -1)
         _audit(conn, user["id"], "store.entity.uninstall", entity_id)
         _invalidate_etag()
-    return InstallResponse(entity_id=entity_id, installed=False)
 
 
 # ---------------------------------------------------------------------------

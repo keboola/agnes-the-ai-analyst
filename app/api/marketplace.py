@@ -1870,7 +1870,7 @@ async def curated_install(
 
 @router.delete(
     "/curated/{marketplace_id}/{plugin_name}/install",
-    response_model=InstallActionResponse,
+    status_code=204,
 )
 async def curated_uninstall(
     marketplace_id: str,
@@ -1902,7 +1902,6 @@ async def curated_uninstall(
             f"plugin:{marketplace_id}/{plugin_name}",
         )
         _invalidate_etag()
-    return InstallActionResponse(installed=False)
 
 
 # ---------------------------------------------------------------------------

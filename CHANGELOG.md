@@ -11,9 +11,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Fixed
-- `DELETE /api/admin/metrics/{metric_id}` and `DELETE /api/memory/{item_id}/dismiss`
-  now return `204 No Content` instead of `200` with a redundant body — correct HTTP
-  semantics for idempotent removal operations.
+- Eight `DELETE` endpoints that previously returned `200` with a body now correctly
+  return `204 No Content`: `DELETE /api/admin/metrics/{id}`,
+  `DELETE /api/memory/{id}/dismiss`, `DELETE /api/store/entities/{id}`,
+  `DELETE /api/store/entities/{id}/install`,
+  `DELETE /api/marketplace/curated/{marketplace}/{plugin}/install`,
+  `DELETE /api/marketplaces/{marketplace}/plugins/{plugin}/system`,
+  `DELETE /api/admin/store/submissions/{id}`, and
+  `DELETE /api/admin/observability/views/{id}`.
 
 ### Internal
 - Added `tests/test_api_design_rules.py` — four forward-only design guardrails that

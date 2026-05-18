@@ -82,6 +82,14 @@ _VERB_PATH_ALLOWLIST = frozenset({
     "/api/admin/metrics/import",
     # Profile refresh — triggers async re-profiling of table metadata
     "/api/catalog/profile/{table_name}/refresh",
+    # BQ metadata cache refresh — on-demand operator trigger for a single registry row
+    "/api/v2/metadata-cache/refresh",
+    # Cache warmup — manual trigger (idempotent fire-and-forget)
+    "/api/admin/cache-warmup/run",
+    # Store submission rescan — re-runs guardrail scan on an existing submission
+    "/api/admin/store/submissions/{submission_id}/rescan",
+    # Telemetry export — GET because it streams a report, not a resource collection
+    "/api/admin/telemetry/export",
     # Auth flows — /auth/* uses verb-style paths by convention across the industry
     "/auth/email/send-link",
     "/auth/password/reset",
@@ -165,6 +173,10 @@ _CREATOR_POST_ALLOWLIST = frozenset({
     "/auth/email/verify",
     "/auth/password/reset",
     "/auth/password/setup",
+    # Register/update upsert — saves config, not a pure create
+    "/api/admin/initial-workspace",
+    # Saved-view upsert — ON CONFLICT updates existing name rather than creating
+    "/api/admin/observability/views",
 })
 
 
