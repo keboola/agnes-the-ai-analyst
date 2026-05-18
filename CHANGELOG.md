@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.27] — 2026-05-18
+
+### Fixed
+- `/admin/tables` edit modal no longer throws `ReferenceError` on
+  non-Keboola instances (BigQuery, CSV). Two JS helpers
+  (`_getEditKbSyncMode`, `onEditKbSyncModeChange`) were wrapped in
+  the `{% if data_source_type == 'keboola' %}` template guard but
+  called unconditionally from sync-mode radio buttons rendered for
+  all instance types. The guard now scopes only the discover /
+  prefill helpers that actually talk to the Keboola Storage API;
+  the shared sync-mode helpers ship to every instance.
+
 ## [0.54.26] — 2026-05-18
 
 ### Changed
