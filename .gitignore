@@ -163,3 +163,4 @@ docs/brainstorms/agnes-home-mock-*.html
 # docs/operator/ or docs/decisions/ when ready to ship.
 docs/brainstorms/
 docs/plans/
+.worktrees/
