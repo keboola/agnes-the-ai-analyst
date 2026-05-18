@@ -40,21 +40,23 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterator
 
-# v7: phase-4 flea-bundle rename. FLEA_BUNDLE_PREFIX flipped from
-# "agnes-store-bundle" to "flea"; resolver accepts both so historic
-# events (~90d retention) still attribute correctly. Bump forces a
-# reprocess pass so the legacy-prefix branch runs once per event.
-# (v6: MarketplaceItemLookup now resolves <flea_plugin>:<inner> prefixes so
-# skills/agents nested inside a flea plugin bundle attribute to source='flea'
-# with parent_plugin=<plugin name> (same shape as curated nested attribution).
-# Pre-v6 these landed as ('builtin', '', None) and never flowed into the
-# rollup tables.)
+# v8: phase-5 attribution keyspace fix + phase-4 bundle rename. Lookup
+# tables (`_flea_entities`, `_flea_plugins`) now key by
+# `store_entities.synthetic_name` instead of `name` — Claude Code writes
+# invocations as `flea:<synthetic_name>` (e.g. `flea:xlsx-by-c-marustamyan`)
+# and the pre-v8 dict was keyed by the un-suffixed `name`, so every flea
+# invocation silently fell through to source='builtin'. Also extends
+# `_attribute_event` with the flea-plugin-nested branch the v6 refactor
+# added to `MarketplaceItemLookup.resolve()` but missed for the rollup
+# builder, so nested skills inside flea plugins now flow into daily/window
+# fact tables too. Bump forces re-attribution of historic usage_events on
+# the next reprocess tick.
 # (v5: v46 marketplace-telemetry refactor swapped AttributionLookup for
 # MarketplaceItemLookup. Identifier prefix (`<plugin>:<local>`) now drives
 # attribution and usage_events.source / ref_id are populated per-event from
 # the live marketplace_plugins + store_entities tables.)
 # (v4: #293 user_id column; v3: #303 <command-name> slash extraction.)
-USAGE_PROCESSOR_VERSION = 7
+USAGE_PROCESSOR_VERSION = 8
 
 # Claude Code wraps user-typed slash invocations as
 # <command-name>/<name></command-name> inside the user message content
@@ -247,15 +249,8 @@ def iter_events(turns: list[dict]) -> Iterator[ParsedEvent]:
 
 # Synthetic plugin name Agnes uses to bundle flea-market store entities into
 # a single Claude Code marketplace surface. Skill/agent/command identifiers
-# from flea entities arrive as `flea:<entity-name>` in the JSONL. The plugin
-# was originally named `agnes-store-bundle`; the rename landed in v49 phase-4.
+# from flea entities arrive as `flea:<synthetic_name>` in the JSONL.
 FLEA_BUNDLE_PREFIX = "flea"
-
-# Pre-v49-phase-4 prefix kept here so historic session JSONL events stored
-# under the old name still attribute to source='flea'. usage_events retention
-# is ~90 days, so this tuple becomes a no-op once the rename has been live
-# for that long — at which point a follow-up commit can drop it entirely.
-_LEGACY_FLEA_BUNDLE_PREFIXES = ("agnes-store-bundle",)
 
 
 class MarketplaceItemLookup:
@@ -265,7 +260,7 @@ class MarketplaceItemLookup:
     Claude Code writes plugin-defined skill/agent/command identifiers in the
     JSONL as ``<plugin_name>:<local_name>`` (e.g. ``grpn:design``). The prefix
     is the *plugin* name (curated plugin name, or the synthetic
-    ``agnes-store-bundle`` for flea entities); the local part is the
+    ``flea`` for flea entities); the local part is the
     skill/agent/command name relative to that plugin. Identifiers without
     a ``:`` are either built-in tools (``Bash``, ``Read``, …) or flat slash
     commands (``/exit``) — neither participates in marketplace telemetry.
@@ -285,20 +280,26 @@ class MarketplaceItemLookup:
                 "SELECT DISTINCT name FROM marketplace_plugins"
             ).fetchall()
         }
-        # Flea entities are looked up by name; we also need their type to
-        # determine whether the invocation should land as skill, agent or
-        # plugin in the rollup tables.
+        # v49 phase-5: lookup table keyed by `synthetic_name` (the
+        # `<name>-by-<owner>` slug baked into the served plugin tree). Claude
+        # Code writes the local part of a flea invocation as that synthetic
+        # name (`flea:xlsx-by-c-marustamyan`), so matching against `name`
+        # (un-suffixed) never landed. Type comes along so the rollup writer
+        # knows whether to record the invocation as skill / agent / plugin.
         self._flea_entities: dict[str, str] = {
             row[0]: row[1] for row in conn.execute(
-                "SELECT name, type FROM store_entities WHERE visibility_status='approved'"
+                "SELECT synthetic_name, type FROM store_entities WHERE visibility_status='approved'"
             ).fetchall()
         }
         # Flea PLUGIN entities can be matched as a prefix too — `<plugin>:<inner>`
         # invocations of a skill / agent that lives inside a flea plugin bundle
         # land here, mirroring the curated nested attribution path. Standalone
         # flea entities still flow through the FLEA_BUNDLE_PREFIX branch.
+        # Set carries synthetic_names because that's the plugin slug Claude
+        # Code resolves at install time (v49 phase-4: `data["name"] = suffixed`
+        # in `_bake_plugin_tree` for type='plugin' entities).
         self._flea_plugins: set[str] = {
-            name for name, ent_type in self._flea_entities.items()
+            synthetic for synthetic, ent_type in self._flea_entities.items()
             if ent_type == "plugin"
         }
 
@@ -319,7 +320,7 @@ class MarketplaceItemLookup:
             if not ident or ":" not in ident:
                 continue
             prefix, local = ident.split(":", 1)
-            if prefix == FLEA_BUNDLE_PREFIX or prefix in _LEGACY_FLEA_BUNDLE_PREFIXES:
+            if prefix == FLEA_BUNDLE_PREFIX:
                 ent_type = self._flea_entities.get(local)
                 if ent_type:
                     # For a flea entity bundle, the local-part *is* the
@@ -491,29 +492,45 @@ def _identifier_split(skill_name, subagent_type, command_name, event_type):
 
 
 def _attribute_event(curated_plugins: set[str], flea_entities: dict[str, str],
+                     flea_plugins: set[str],
                      skill_name, subagent_type, command_name, event_type):
     """Resolve one event to (source, type, parent_plugin, name).
 
     Returns None when the event doesn't belong in marketplace rollups
     (built-in tool, flat slash command, unknown plugin prefix).
 
-    Lookup tables (curated_plugins, flea_entities) are passed in so the
-    caller can preload once and reuse across thousands of events.
+    Lookup tables (curated_plugins, flea_entities, flea_plugins) are passed
+    in so the caller can preload once and reuse across thousands of events.
+    Mirrors the four branches `MarketplaceItemLookup.resolve()` walks:
+
+      1. ``flea:<synthetic>``        — standalone flea skill/agent/plugin
+      2. ``<curated_plugin>:<inner>`` — nested skill/agent of a curated plugin
+      3. ``<flea_plugin>:<inner>``    — nested skill/agent of a flea plugin
+      4. anything else                — None (filtered out of rollups)
     """
     prefix, local, default_type = _identifier_split(skill_name, subagent_type, command_name, event_type)
     if prefix is None:
         return None
-    if prefix == FLEA_BUNDLE_PREFIX or prefix in _LEGACY_FLEA_BUNDLE_PREFIXES:
+    if prefix == FLEA_BUNDLE_PREFIX:
         ent_type = flea_entities.get(local)
         if ent_type is None:
             return None
         return ("flea", ent_type, "", local)
     if prefix in curated_plugins:
         return ("curated", default_type, prefix, local)
+    if prefix in flea_plugins:
+        # v49 phase-5: nested skill/agent inside a flea plugin bundle.
+        # Same shape as curated nested attribution (source='flea',
+        # parent_plugin=<synthetic plugin name>, name=<inner frontmatter
+        # name>). Without this branch the rollup builder silently dropped
+        # inner-item invocations even though MarketplaceItemLookup.resolve()
+        # — used by the live writer — handled them since v6.
+        return ("flea", default_type, prefix, local)
     return None
 
 
-def _aggregate_events(events_rows, curated_plugins, flea_entities, *, group_by_day: bool):
+def _aggregate_events(events_rows, curated_plugins, flea_entities,
+                      flea_plugins, *, group_by_day: bool):
     """Walk raw event rows and produce aggregated buckets.
 
     ``events_rows`` shape: (day, user_id, is_error, skill_name, subagent_type,
@@ -528,7 +545,8 @@ def _aggregate_events(events_rows, curated_plugins, flea_entities, *, group_by_d
     leaf: dict[tuple, dict] = {}
     for row in events_rows:
         day, uid, is_err, sk, sa, cm, etype = row
-        attributed = _attribute_event(curated_plugins, flea_entities, sk, sa, cm, etype)
+        attributed = _attribute_event(curated_plugins, flea_entities, flea_plugins,
+                                      sk, sa, cm, etype)
         if attributed is None:
             continue
         source, type_, parent, name = attributed
@@ -624,13 +642,20 @@ def rebuild_rollups(conn, *, since_day=None, force_30d: bool = False) -> None:
         since_day = (datetime.now(timezone.utc) - timedelta(days=7)).date()
 
     # Preload lookup tables once — reused across daily + 7d + 30d rebuilds.
+    # v49 phase-5: dict keyed by `synthetic_name` (matches the JSONL invocation
+    # local-part) instead of `name`. `flea_plugins` set drives the
+    # `<plugin>:<inner>` nested-attribution branch in `_attribute_event`.
     curated_plugins = {
         r[0] for r in conn.execute("SELECT DISTINCT name FROM marketplace_plugins").fetchall()
     }
     flea_entities = {
         r[0]: r[1] for r in conn.execute(
-            "SELECT name, type FROM store_entities WHERE visibility_status='approved'"
+            "SELECT synthetic_name, type FROM store_entities WHERE visibility_status='approved'"
         ).fetchall()
+    }
+    flea_plugins = {
+        synthetic for synthetic, ent_type in flea_entities.items()
+        if ent_type == "plugin"
     }
 
     do_30d = force_30d or _last_30d_due(conn)
@@ -677,7 +702,8 @@ def rebuild_rollups(conn, *, since_day=None, force_30d: bool = False) -> None:
             [since_day],
         ).fetchall()
         daily_buckets = _aggregate_events(
-            daily_events, curated_plugins, flea_entities, group_by_day=True
+            daily_events, curated_plugins, flea_entities, flea_plugins,
+            group_by_day=True,
         )
         conn.execute("DELETE FROM usage_marketplace_item_daily WHERE day >= ?", [since_day])
         if daily_buckets:
@@ -696,14 +722,14 @@ def rebuild_rollups(conn, *, since_day=None, force_30d: bool = False) -> None:
         # ---- New: usage_marketplace_item_window period_label='last_7d' (full) ----
         cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).date()
         _rebuild_window(
-            conn, "last_7d", cutoff_7d, curated_plugins, flea_entities,
+            conn, "last_7d", cutoff_7d, curated_plugins, flea_entities, flea_plugins,
         )
 
         # ---- New: usage_marketplace_item_window period_label='last_30d' (hourly) ----
         if do_30d:
             cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).date()
             _rebuild_window(
-                conn, "last_30d", cutoff_30d, curated_plugins, flea_entities,
+                conn, "last_30d", cutoff_30d, curated_plugins, flea_entities, flea_plugins,
             )
             _mark_last_30d_refreshed(conn)
 
@@ -716,7 +742,8 @@ def rebuild_rollups(conn, *, since_day=None, force_30d: bool = False) -> None:
         raise
 
 
-def _rebuild_window(conn, period_label: str, cutoff_day, curated_plugins, flea_entities) -> None:
+def _rebuild_window(conn, period_label: str, cutoff_day, curated_plugins,
+                    flea_entities, flea_plugins) -> None:
     """Full DELETE+INSERT of one period_label in usage_marketplace_item_window.
 
     Caller wraps the call in a BEGIN/COMMIT transaction along with the
@@ -738,7 +765,8 @@ def _rebuild_window(conn, period_label: str, cutoff_day, curated_plugins, flea_e
         [cutoff_day],
     ).fetchall()
     buckets = _aggregate_events(
-        events, curated_plugins, flea_entities, group_by_day=False
+        events, curated_plugins, flea_entities, flea_plugins,
+        group_by_day=False,
     )
     conn.execute(
         "DELETE FROM usage_marketplace_item_window WHERE period_label = ?",

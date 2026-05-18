@@ -10,19 +10,39 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Flea-market attribution layer now keys its lookup tables by
+  `store_entities.synthetic_name` instead of `name`, matching what
+  Claude Code writes in the JSONL invocation local-part
+  (`flea:<synthetic_name>` e.g. `flea:xlsx-by-c-marustamyan`).
+  Pre-fix every flea skill/agent invocation silently fell through to
+  `usage_events.source = 'builtin'` because the dict was keyed by
+  the un-suffixed `name`. Result: marketplace cards, detail
+  telemetry chips, and admin group-by-source had 0 flea invocations
+  even though raw events were arriving correctly. Both
+  `MarketplaceItemLookup` (live writer) and `_attribute_event`
+  (rollup rebuilder) updated; rollup `name`/`parent_plugin`
+  columns now carry the synthetic_name keyspace. API stats lookups
+  in `app/api/marketplace.py` switched from `entity["name"]` to
+  `entity["synthetic_name"]` (4 callsites: `_flea_to_item`,
+  `flea_detail`, two flea inner-detail endpoints). `_attribute_event`
+  also gains the flea-plugin-nested branch it was missing since
+  v6 — nested skills/agents inside flea plugins now flow into
+  rollup tables too. `USAGE_PROCESSOR_VERSION` bumped 7→8 so the
+  session-pipeline reprocess loop re-attributes existing events
+  with the corrected lookup. Closes issue #335.
+
 ### Changed
 - **BREAKING (marketplace identifier)**: synthetic plugin bundling flea
   skills + agents renamed from `agnes-store-bundle` to `flea`. The
   served `marketplace.json` now lists `flea` (previously
   `agnes-store-bundle`); on-disk ZIP / git tree path is
   `plugins/flea/` (previously `plugins/store-bundle/`). Claude Code
-  JSONL invocation prefix becomes `flea:<skill>` going forward. The
-  attribution layer (`services/session_processors/usage_lib.py`)
-  accepts BOTH new and legacy prefixes via
-  `_LEGACY_FLEA_BUNDLE_PREFIXES` so historic session events
-  (~90-day `usage_events` retention) continue attributing to
-  `source='flea'`. `USAGE_PROCESSOR_VERSION` bumped 6→7 to force a
-  reprocess pass.
+  JSONL invocation prefix becomes `flea:<synthetic_name>` going
+  forward. **Clean cut — no legacy-prefix backward compat.** Historic
+  `usage_events` rows whose JSONL was written before the rename will
+  stay attributed as `source='builtin'` (acceptable in dev phase per
+  user direction; nothing to migrate).
 
   **Client rollover**: `agnes refresh-marketplace` will install the
   new `flea@agnes` plugin and reset the local marketplace clone (the
@@ -30,8 +50,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   via `git reset --hard`). Whether Claude Code itself auto-prunes
   the orphan `agnes-store-bundle@agnes` registry entry is
   undocumented in our codebase — to be verified empirically on the
-  dev VM. If the orphan entry lingers, a follow-up will add targeted
-  cleanup; until then users can manually run
+  dev VM. If the orphan entry lingers, users can manually run
   `claude plugin uninstall agnes-store-bundle@agnes`.
 
 - Flea marketplace cards and detail pages now render the user-friendly

@@ -130,7 +130,7 @@ class TestResolveUserMarketplace:
     def test_skill_install_yields_bundle_entry(self, db_conn):
         """A single skill install becomes a bundle entry, not a standalone
         store-<id> plugin. Skills/agents are merged into one synth plugin
-        named ``agnes-store-bundle`` regardless of how many are installed."""
+        named ``flea`` regardless of how many are installed."""
         from src.marketplace_filter import resolve_user_marketplace
         _seed_user_with_grant(db_conn, marketplace="mkt", plugin="p1")
         _subscribe(db_conn, user_id="u1", marketplace="mkt", plugin="p1")

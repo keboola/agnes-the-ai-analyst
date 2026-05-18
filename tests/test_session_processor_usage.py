@@ -38,7 +38,7 @@ def _seed_attribution(conn: duckdb.DuckDBPyConnection) -> None:
       `myplug:my-agent`, slash commands `myplug:compound` — note slash
       commands count as skills under the new rules, and `compound:debug`
       uses `compound` as the plugin prefix).
-    - flea bundle prefix `agnes-store-bundle` + entity name `flea-skill`.
+    - flea bundle prefix `flea` + entity name `flea-skill`.
     """
     # Curated plugin — only `name` matters for the lookup; the rest is
     # filler to satisfy NOT NULL constraints / referential expectations.
@@ -200,30 +200,13 @@ class TestFleaSkill:
         _seed_attribution(conn)
         _process("skill_flea.jsonl", conn)
         # Flea entity bundle prefix → ref_id is '' (no parent plugin),
-        # normalised to NULL by UsageProcessor.
+        # normalised to NULL by UsageProcessor. v49 phase-5: JSONL local
+        # part is the entity's synthetic_name (= `<name>-by-<owner>`).
         row = conn.execute(
             "SELECT source, ref_id FROM usage_events "
-            "WHERE skill_name = 'flea:flea-skill'"
+            "WHERE skill_name = 'flea:flea-skill-by-alice'"
         ).fetchone()
         assert row is not None
-        assert row[0] == "flea"
-        assert row[1] is None
-
-    def test_legacy_agnes_store_bundle_prefix_resolves(self, tmp_path, monkeypatch):
-        """v49 phase-4: the bundle plugin was renamed `agnes-store-bundle` →
-        `flea`. Historic session JSONL (~90d retention) still carries the
-        old prefix, so the resolver must accept both. This test replays a
-        fixture with the legacy identifier and asserts attribution still
-        lands as `source='flea'` (would fall through to 'builtin'
-        without the `_LEGACY_FLEA_BUNDLE_PREFIXES` branch)."""
-        conn = _fresh_db(tmp_path, monkeypatch)
-        _seed_attribution(conn)
-        _process("skill_flea_legacy.jsonl", conn)
-        row = conn.execute(
-            "SELECT source, ref_id FROM usage_events "
-            "WHERE skill_name = 'agnes-store-bundle:flea-skill'"
-        ).fetchone()
-        assert row is not None, "legacy-prefix event was not stored"
         assert row[0] == "flea"
         assert row[1] is None
 
