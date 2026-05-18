@@ -65,6 +65,14 @@ class ResourceEntry:
     # Packages only; Memory Domains pass None).
     status: Optional[str] = "prod"
     category: Optional[str] = None
+    # v56: extended content surfaced on the Browse-grid card. Owner
+    # renders as a small chip; tags as inline pills; badges (curated /
+    # new) derived in :meth:`_fetch_entries` from the creator's group
+    # membership + ``created_at`` age.
+    owner_name: Optional[str] = None
+    owner_team: Optional[str] = None
+    tags: List[str] = field(default_factory=list)
+    badges: List[str] = field(default_factory=list)
     requirement: Literal["available", "required"] = "available"
     in_stack: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -281,10 +289,20 @@ class StackResolver:
         # v51: pull status + category. Memory Domains have status but no
         # category; we SELECT NULL for category in that branch so the
         # downstream ResourceEntry constructor sees the same 8-tuple shape.
+        # v56: data_packages carry extended-content fields surfaced on
+        # the Browse-grid card (owner_name, tags) plus the badge inputs
+        # (created_by + created_at). Memory domains stay v51-shaped —
+        # the spec only added content to data packages — so we SELECT
+        # NULLs for the v56 columns to keep the result tuple shape
+        # stable. Resolver-level badge derivation matches the API's
+        # _badges_for() heuristic: 'curated' iff creator is in Admin,
+        # 'new' iff created_at < 30 days ago.
         if resource_type == ResourceType.DATA_PACKAGE:
             rows = self.conn.execute(
                 f"""SELECT id, name, description, icon, color, cover_image_url,
-                           status, category
+                           status, category,
+                           owner_name, owner_team, tags,
+                           created_by, created_at
                        FROM data_packages WHERE id IN ({placeholders})
                        ORDER BY name""",
                 list(ids),
@@ -292,7 +310,9 @@ class StackResolver:
         elif resource_type == ResourceType.MEMORY_DOMAIN:
             rows = self.conn.execute(
                 f"""SELECT id, name, description, icon, color, cover_image_url,
-                           status, NULL AS category
+                           status, NULL AS category,
+                           NULL AS owner_name, NULL AS owner_team, NULL AS tags,
+                           created_by, created_at
                        FROM memory_domains WHERE id IN ({placeholders})
                        ORDER BY name""",
                 list(ids),
@@ -301,15 +321,63 @@ class StackResolver:
             raise ValueError(
                 f"StackResolver does not support resource_type={resource_type!r}"
             )
-        return [
-            ResourceEntry(
+
+        from datetime import datetime, timedelta, timezone as _tz
+        import json as _json
+
+        # Pre-load Admin group's member emails + ids so badge derivation
+        # is one SELECT per fetch, not one per row.
+        admin_keys: set[str] = set()
+        try:
+            for row in self.conn.execute(
+                "SELECT u.email, u.id FROM user_group_members ugm "
+                "JOIN user_groups ug ON ug.id = ugm.group_id "
+                "JOIN users u ON u.id = ugm.user_id "
+                "WHERE ug.name = 'Admin'"
+            ).fetchall():
+                if row[0]:
+                    admin_keys.add(row[0])
+                if row[1]:
+                    admin_keys.add(row[1])
+        except Exception:
+            pass  # badge derivation is best-effort; empty set → no curated badges
+
+        now = datetime.now(_tz.utc)
+        entries: List[ResourceEntry] = []
+        for r in rows:
+            tags_raw = r[10]
+            if isinstance(tags_raw, str) and tags_raw:
+                try:
+                    tags_list = _json.loads(tags_raw)
+                    if not isinstance(tags_list, list):
+                        tags_list = []
+                except Exception:
+                    tags_list = []
+            elif isinstance(tags_raw, list):
+                tags_list = tags_raw
+            else:
+                tags_list = []
+
+            badges: List[str] = []
+            if r[11] and r[11] in admin_keys:
+                badges.append("curated")
+            created_at = r[12]
+            if isinstance(created_at, datetime):
+                ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=_tz.utc)
+                if (now - ts) < timedelta(days=30):
+                    badges.append("new")
+
+            entries.append(ResourceEntry(
                 id=r[0], name=r[1], description=r[2], icon=r[3], color=r[4],
                 cover_image_url=r[5],
                 status=r[6] or "prod",
                 category=r[7],
+                owner_name=r[8],
+                owner_team=r[9],
+                tags=tags_list,
+                badges=badges,
                 requirement=(
                     "required" if r[0] in required_ids else "available"
                 ),
-            )
-            for r in rows
-        ]
+            ))
+        return entries

@@ -879,7 +879,18 @@ def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
         "requirement": entry.requirement,
         "in_stack": entry.in_stack,
         "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
-        "tags": source_types or [],
+        # v56: source-type pills (auto-derived) come first per the spec
+        # convention; admin-authored category tags follow. Concatenated
+        # into the single ``tags`` field the macro renders. Duplicates
+        # collapsed via dict-order-preserving filter.
+        "tags": list(dict.fromkeys(
+            list(source_types or []) + list(getattr(entry, "tags", None) or [])
+        )),
+        # v56: extended attribution + derived badges. Macro reads these
+        # via class hooks (data-card-owner, data-badge="...").
+        "owner_name": getattr(entry, "owner_name", None),
+        "owner_team": getattr(entry, "owner_team", None),
+        "badges": getattr(entry, "badges", None) or [],
         "drilldown_url": drilldown_url,
         "footer_left": (
             f"View {table_count} table{'s' if table_count != 1 else ''} →"
@@ -1065,7 +1076,10 @@ async def catalog_package_detail(
         [user["id"], pkg["id"]],
     ).fetchone())
 
-    # Hydrate tables with query_mode + last_sync from registry + sync_state.
+    # Hydrate tables with query_mode + last_sync + v56 extended docs.
+    # The extended fields (grain, platforms, partition_col, history,
+    # gotchas) feed the collapsible per-table extended-detail section
+    # on the package page; description carries the ≤200 char card-line.
     table_rows = pkg_repo.list_tables(pkg["id"])
     table_repo = TableRegistryRepository(conn)
     sync_states = {s["table_id"]: s for s in SyncStateRepository(conn).get_all_states()}
@@ -1077,11 +1091,42 @@ async def catalog_package_detail(
         tables.append({
             "id": tr["id"],
             "name": tr["name"],
+            "description": full.get("description"),
             "query_mode": full.get("query_mode") or "local",
+            "source_type": full.get("source_type"),
             "last_sync_display": (str(st.get("last_sync"))[:19] if st.get("last_sync") else None),
             "size_display": _human_size(size) if size else None,
             "size_bytes": size,
+            # v56 extended per-table docs for the package-detail expand.
+            "grain": full.get("grain"),
+            "platforms": full.get("platforms") or [],
+            "partition_col": full.get("partition_col"),
+            "history": full.get("history"),
+            "gotchas": full.get("gotchas") or [],
+            "sample_questions": full.get("sample_questions") or [],
         })
+
+    # v56 virtual badges. Derived in-template-aware here so the router
+    # owns the policy (creator-in-admin + 30-day window) and the
+    # template stays presentational.
+    from datetime import datetime, timedelta, timezone as _tz
+    badges: list[str] = []
+    created_by = pkg.get("created_by")
+    if created_by:
+        admin_match = conn.execute(
+            "SELECT 1 FROM user_group_members ugm "
+            "JOIN user_groups ug ON ug.id = ugm.group_id "
+            "JOIN users u ON u.id = ugm.user_id "
+            "WHERE ug.name = 'Admin' AND (u.email = ? OR u.id = ?) LIMIT 1",
+            [created_by, created_by],
+        ).fetchone()
+        if admin_match:
+            badges.append("curated")
+    created_at = pkg.get("created_at")
+    if isinstance(created_at, datetime):
+        ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=_tz.utc)
+        if (datetime.now(_tz.utc) - ts) < timedelta(days=30):
+            badges.append("new")
 
     total_size = sum(t["size_bytes"] for t in tables)
     ctx = _build_context(
@@ -1092,6 +1137,7 @@ async def catalog_package_detail(
         in_stack=in_stack,
         total_size_bytes=total_size,
         total_size_display=_human_size(total_size) if total_size else None,
+        badges=badges,
     )
     return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
 

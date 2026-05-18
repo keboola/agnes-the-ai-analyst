@@ -11,6 +11,34 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Extended Data Packages content (v56 schema)** backing the rewritten
+  `/catalog/p/<slug>` package detail page per the Foundry Data team
+  extended-descriptions spec. Eight new schema fields, validated API,
+  per-section template rendering, Browse-grid card augmentation:
+  * **`data_packages`** gains owner_name + owner_team (rendered as
+    "Owned by X · Team" line on hero + Browse card), tags (JSON list
+    of category strings), long_description (markdown body for the
+    "What it is" section), when_to_use + when_not_to_use (paired
+    "Use it when / Skip it when" panels), example_questions (package-
+    level flagship list as a one-click prompt panel).
+  * **`table_registry`** gains grain, platforms, partition_col, history,
+    gotchas — structured per-table documentation surfaced in the
+    collapsible per-table row on the package detail page. First
+    `gotcha` with `key=true` renders as a distinct "Key gotcha" block.
+  * **Virtual badges** (`curated` / `new`) derived render-time from
+    creator Admin-group membership + 30-day created_at window — no
+    extra DB column needed. Surfaced on Browse-grid cards
+    (`data-badge="…"` hooks) + the detail-page hero.
+- **`PUT/POST /api/admin/data-packages`** and **`PATCH
+  /api/admin/registry/{id}/docs`** accept the new fields with per-field
+  validation matching the Foundry spec checklist (tags ≤8 × ≤30 chars,
+  long_description ≤4000, bullets ≤8 × ≤200, example_questions ≤12,
+  gotchas ≤8). PATCH echoes the fresh state for round-trip rendering.
+- **CI guard `test_data_packages_no_vendor_content.py`** scans `app/` +
+  `src/` + `cli/` + `config/` + `scripts/` for vendor-specific tokens
+  from the colleague's spec MD; fails CI if any leak into OSS
+  surfaces. Vendor content stays in the private infra repo's admin-
+  import flow.
 - **`+ New Memory Item`** button on `/admin/corporate-memory` for
   admin-seeded items (rules, playbooks, decisions). Modal chains POST
   `/api/memory` → optional PATCH `domain_ids` → POST
