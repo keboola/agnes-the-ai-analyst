@@ -181,14 +181,32 @@
   // gates by session JWT cookie — no body CSRF token required.
 
   // ── Toast helper ────────────────────────────────────────────────────────
+  // FIFO queue (max 3) — the previous overwrite-on-second-call behaviour
+  // wiped the first toast as soon as the second fired, which lost
+  // useful feedback when admins added several packages in quick
+  // succession or when a network failure followed a success.
   const toast = document.getElementById('stack-toast');
-  let toastTimer;
-  function showToast(msg, isError) {
-    toast.textContent = msg;
+  const _toastQueue = [];
+  let _toastShowing = false;
+  function _showNextToast() {
+    if (_toastShowing) return;
+    const next = _toastQueue.shift();
+    if (!next) return;
+    _toastShowing = true;
+    toast.textContent = next.msg;
     toast.hidden = false;
-    toast.style.background = isError ? '#b91c1c' : '#10b77f';
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toast.hidden = true; }, 2500);
+    toast.style.background = next.isError ? '#b91c1c' : '#10b77f';
+    const dwell = next.isError ? 4000 : 2500;
+    setTimeout(() => {
+      toast.hidden = true;
+      _toastShowing = false;
+      _showNextToast();
+    }, dwell);
+  }
+  function showToast(msg, isError) {
+    if (_toastQueue.length >= 3) _toastQueue.shift();
+    _toastQueue.push({ msg, isError });
+    _showNextToast();
   }
 
   // ── Drill-down navigation on card body click ────────────────────────────
@@ -224,6 +242,37 @@
     return resp;
   }
 
+  // Update in-place: flip the card's data-in-stack, swap the button's
+  // data-action + label, update both tab badge counts. Avoids the
+  // page-reload roundtrip that flashed the layout and lost scroll
+  // position when admins added several packages in a row.
+  function _applyStackChange(card, becameInStack) {
+    if (!card) return;
+    card.dataset.inStack = becameInStack ? '1' : '0';
+    // The card may render under both Browse and My Stack grids when the
+    // server-side render duplicates it; query by id to update all
+    // matching instances on the page.
+    const id = card.dataset.id;
+    if (!id) return;
+    document.querySelectorAll('.stack-card[data-id="' + CSS.escape(id) + '"]')
+      .forEach(c => {
+        c.dataset.inStack = becameInStack ? '1' : '0';
+        const actionBtn = c.querySelector('[data-action]');
+        if (actionBtn) {
+          actionBtn.dataset.action = becameInStack ? 'remove' : 'add';
+          actionBtn.textContent = becameInStack ? '✓ In stack' : '+ Add to stack';
+          actionBtn.disabled = false;
+        }
+      });
+    // Update tab counts. My Stack ticks up on add / down on remove;
+    // Browse stays as the catalogue total — it doesn't shrink.
+    const myEl = document.querySelector('.stack-tabs .count[data-count="my"]');
+    if (myEl) {
+      const cur = parseInt(myEl.textContent, 10) || 0;
+      myEl.textContent = String(cur + (becameInStack ? 1 : -1));
+    }
+  }
+
   document.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-action]');
     if (!btn || !root.contains(btn)) return;
@@ -231,6 +280,7 @@
     e.stopPropagation();
     const action = btn.dataset.action;
     const id = btn.dataset.id;
+    const card = btn.closest('.stack-card');
     btn.disabled = true;
     try {
       let resp;
@@ -244,9 +294,7 @@
         return;
       }
       showToast(action === 'add' ? 'Added to stack' : 'Removed from stack');
-      // Reload to reflect new state (cheap + correct; the server-side render
-      // is authoritative for required + subscription state).
-      setTimeout(() => window.location.reload(), 600);
+      _applyStackChange(card, action === 'add');
     } catch (err) {
       showToast('Network error: ' + err.message, true);
       btn.disabled = false;

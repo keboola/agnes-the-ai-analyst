@@ -65,33 +65,42 @@ class KnowledgeRepository:
     # -- Domain hydration (v49 back-compat) --------------------------------
 
     def _hydrate_domain(self, item: Dict[str, Any]) -> None:
-        """Inject ``domain`` slug into a single item dict via the junction.
+        """Inject ``domain`` slug + ``domains`` list into a single item.
 
-        v49 dropped the scalar ``knowledge_items.domain`` column; callers
+        v49 dropped the scalar ``knowledge_items.domain`` column. Callers
         (templates, /api/memory/{id}/provenance, services.contradiction)
-        still expect ``item["domain"]`` to resolve. We join the junction +
-        ``memory_domains`` and surface the first slug (alphabetic) — items
-        with multiple domains get the first one as a stable summary.
+        still expect ``item["domain"]`` to resolve to a single slug; the
+        admin queue UI also reads ``item["domains"]`` to render all of
+        them. Both surfaces are populated here from the junction.
         """
         item_id = item.get("id")
         if not item_id:
             item["domain"] = None
+            item["domains"] = []
             return
-        row = self.conn.execute(
+        rows = self.conn.execute(
             "SELECT md.slug FROM knowledge_item_domains kid "
             "JOIN memory_domains md ON md.id = kid.domain_id "
             "WHERE kid.item_id = ? "
-            "ORDER BY md.slug LIMIT 1",
+            "ORDER BY md.slug",
             [item_id],
-        ).fetchone()
-        item["domain"] = row[0] if row else None
+        ).fetchall()
+        slugs = [r[0] for r in rows]
+        item["domain"] = slugs[0] if slugs else None
+        item["domains"] = slugs
 
     def _hydrate_domains_bulk(self, items: List[Dict[str, Any]]) -> None:
         """Single-query domain hydration across a result set (N+1 avoidance).
 
-        Picks the alphabetically-first slug per item; items with multiple
-        domains get a stable single-slug surface. ``items`` is mutated in
-        place — None is set for items with no junction row.
+        Mutates each item in place with two fields:
+          * ``domain``  — alphabetically-first slug (legacy single-slug
+            surface kept for back-compat — templates / contradiction
+            services / older clients still read this).
+          * ``domains`` — full list of slugs (sorted) so multi-domain
+            items render all their chips in the admin queue without a
+            second roundtrip.
+
+        None / [] are set for items with no junction rows.
         """
         if not items:
             return
@@ -99,20 +108,24 @@ class KnowledgeRepository:
         if not ids:
             for it in items:
                 it["domain"] = None
+                it["domains"] = []
             return
         placeholders = ",".join(["?"] * len(ids))
-        # MIN(slug) per item — alphabetically-first as the canonical projection.
         rows = self.conn.execute(
-            f"SELECT kid.item_id, MIN(md.slug) "
+            f"SELECT kid.item_id, md.slug "
             f"FROM knowledge_item_domains kid "
             f"JOIN memory_domains md ON md.id = kid.domain_id "
             f"WHERE kid.item_id IN ({placeholders}) "
-            f"GROUP BY kid.item_id",
+            f"ORDER BY md.slug",
             ids,
         ).fetchall()
-        mapping = {r[0]: r[1] for r in rows}
+        mapping: Dict[str, List[str]] = {}
+        for item_id, slug in rows:
+            mapping.setdefault(item_id, []).append(slug)
         for it in items:
-            it["domain"] = mapping.get(it.get("id"))
+            slugs = mapping.get(it.get("id"), [])
+            it["domain"] = slugs[0] if slugs else None
+            it["domains"] = slugs
 
     def get_by_id(self, item_id: str) -> Optional[Dict[str, Any]]:
         result = self.conn.execute("SELECT * FROM knowledge_items WHERE id = ?", [item_id]).fetchone()

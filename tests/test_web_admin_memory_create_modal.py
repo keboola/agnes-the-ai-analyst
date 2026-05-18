@@ -46,40 +46,48 @@ def test_admin_memory_renders_create_domain_modal(seeded_app):
 
 
 def test_admin_memory_renders_create_domain_rbac_step(seeded_app):
-    """RBAC step 2 modal (spec 7.4): per-group requirement matrix."""
+    """RBAC matrix now lives INLINE inside the Create modal as a
+    collapsible section — the standalone step-2 modal was removed for
+    the modal-on-modal UX complaint. This test asserts the inline
+    plumbing still exists: groups fetch, grants POST with the right
+    resource_type, the Available|Required enum, and the lazy-load
+    hook into the <details> toggle."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     resp = c.get("/admin/corporate-memory", headers=_auth(token))
     assert resp.status_code == 200
     body = resp.text
 
-    # Step 2 modal element + Skip / Save buttons wired up.
-    assert 'id="createMemoryDomainRbacModal"' in body
-    assert "skipCreateMemoryDomainRbac" in body
-    assert "submitCreateMemoryDomainRbac" in body
-    # Loads groups from /api/admin/groups and POSTs grants to /api/admin/grants.
+    # Inline matrix container + lazy-load helper.
+    assert 'id="cmd-rbac-details"' in body
+    assert "_cmdHydrateRbacMatrix" in body
+    assert "_submitCmdGrantsInline" in body
+    # The removed step-2 modal should NOT be present.
+    assert 'id="createMemoryDomainRbacModal"' not in body
+    # Backend wiring unchanged: groups + grants endpoints + resource_type.
     assert "/api/admin/groups" in body
     assert "/api/admin/grants" in body
-    # Resource-type constant in payload.
     assert "memory_domain" in body
-    # Available | Required tiers — the requirement enum from the v49 spec.
     assert "available" in body
     assert "required" in body
 
 
 def test_admin_tables_renders_create_data_package_rbac_step(seeded_app):
-    """Mirror coverage: /admin/tables Create-Data-Package RBAC step 2."""
+    """Mirror coverage for /admin/tables — same inline-matrix migration
+    as the Memory Domain modal."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     resp = c.get("/admin/tables", headers=_auth(token))
     assert resp.status_code == 200
     body = resp.text
 
-    # Step 2 modal element + Skip / Save buttons wired up.
-    assert 'id="createDataPackageRbacModal"' in body
-    assert "skipCreateDataPackageRbac" in body
-    assert "submitCreateDataPackageRbac" in body
-    # Loads groups + POSTs grants with resource_type=data_package.
+    # Inline matrix container + lazy-load helper.
+    assert 'id="cdp-rbac-details"' in body
+    assert "_cdpHydrateRbacMatrix" in body
+    assert "_submitCdpGrantsInline" in body
+    # Removed step-2 modal should NOT be present.
+    assert 'id="createDataPackageRbacModal"' not in body
+    # Backend wiring unchanged.
     assert "/api/admin/groups" in body
     assert "/api/admin/grants" in body
     assert "data_package" in body

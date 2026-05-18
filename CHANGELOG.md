@@ -11,6 +11,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **`+ New Memory Item`** button on `/admin/corporate-memory` for
+  admin-seeded items (rules, playbooks, decisions). Modal chains POST
+  `/api/memory` → optional PATCH `domain_ids` → POST
+  `/admin/batch?action=approve|mandate`, so admin-created items land
+  directly as Approved (or Mandatory if the Required checkbox is
+  ticked) without going through Pending review.
+- **`domains: list[str]`** field on every memory-item API response.
+  The bulk + single-item hydration paths now emit the full slug list,
+  in addition to the legacy `domain` single-slug surface kept for
+  back-compat. The admin queue renders all chips with a `+N` overflow
+  past three.
 - **GET `/api/memory/admin/{id}`** — single-item fetch for admin. Powers
   the `#item-<id>` deep link from `/memory/d/<slug>`'s Edit affordance:
   the page now fetches the row directly (no pagination racing) and
@@ -47,6 +58,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   package membership without leaving the edit dialog.
 
 ### Changed
+- **`/catalog` + `/corporate-memory` apply Add/Remove in place** —
+  cards now flip their button + count badges live via JS instead of
+  triggering a full page reload, so scroll position and focus survive
+  rapid Add/Remove sequences. The "My Stack" tab badge ticks up/down
+  on each action.
+- **Toast queue** — both `/catalog` and `/corporate-memory` queue up
+  to 3 toasts FIFO with per-message dwell (4 s for errors, 2.5 s for
+  success). Previously a second toast wiped the first instantly,
+  losing useful feedback during chained operations.
+- **Global Escape closes the topmost modal** — base template carries
+  a single `keydown` handler that walks visible `.modal-overlay` /
+  `[id$="Modal"]` / `.modal.is-open` elements, picks the highest
+  z-index, and closes it (preferred via a `data-close-handler`
+  hook). Inputs/textareas blur on Escape instead. Opt-out per
+  element via `data-no-esc-close="1"`.
+- **Item-edit modal: legacy single-domain `<select>` removed.** The
+  chip-input is now the canonical domain control on
+  `/admin/corporate-memory`; PATCH writes `domain_ids` (list) to the
+  junction. The hidden `<select>` was dead weight that confused
+  readers ("two domain inputs?").
 - **Create-resource flow no longer pops a second modal.** Both Create
   Data Package (`/admin/tables`) and Create Memory Domain
   (`/admin/corporate-memory`) had a step-2 RBAC modal that opened on
@@ -83,6 +114,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   values like `#ff5733#e0f2fe` that broke the card layout downstream.
 
 ### Fixed
+- **Unguarded `/admin/*` links from user-facing pages**. Two surfaces
+  relied on implicit gating: the `corporate_memory.html` pending-review
+  banner depended on the backend zeroing the count for non-admin, and
+  the `news.html` empty-state copy linked
+  `<a href="/admin/news">/admin/news</a>` to every viewer. Both are now
+  wrapped in explicit `{% if user.is_admin %}` blocks so the links
+  can't leak into a non-admin DOM, even if a future router change
+  surfaces the count to everyone.
 - **chip-input dropdown was empty for memory domains.** `loadCandidates`
   expected `[]` or `{items}`, but `/api/memory/domains` wraps in
   `{domains}` → fell through to the empty-array default. Existing

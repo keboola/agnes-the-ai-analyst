@@ -50,6 +50,62 @@
        Idempotent: the component only initialises elements with .chip-input or
        [data-chip-input] that lack a `data-chip-ready` flag. #}
     <script src="{{ static_url('js/components/chip-input.js') }}" defer></script>
+    <script>
+      // Global Escape → close topmost visible modal. Inspects three
+      // common modal patterns used across the app:
+      //   * `.modal-overlay`         (admin_tables)
+      //   * `#xyzModal` flex/block   (admin_corporate_memory inline divs)
+      //   * `.modal` open via class  (catalog, marketplace)
+      // Picks the one with the highest computed z-index so nested
+      // modal-on-modal flows close the inner one first. opt-out per
+      // element via `data-no-esc-close="1"`.
+      (function () {
+        function _visibleModals() {
+          const out = [];
+          document.querySelectorAll(
+            '.modal-overlay, [id$="Modal"], .modal.is-open'
+          ).forEach((el) => {
+            if (el.dataset.noEscClose === '1') return;
+            const cs = window.getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') return;
+            // Ignore elements that don't actually paint (no width/height).
+            const r = el.getBoundingClientRect();
+            if (!r.width || !r.height) return;
+            out.push({ el, z: parseInt(cs.zIndex, 10) || 0 });
+          });
+          return out;
+        }
+        function _closeTopmost() {
+          const modals = _visibleModals();
+          if (!modals.length) return false;
+          modals.sort((a, b) => b.z - a.z);
+          const target = modals[0].el;
+          // Preferred path: a `data-close-handler` attribute names the
+          // page-specific close function (e.g. data-close-handler=
+          // "closeEditDataPackageModal"). Falls back to flipping the
+          // inline display style — works for both flex+block conventions.
+          const fn = target.dataset.closeHandler;
+          if (fn && typeof window[fn] === 'function') {
+            try { window[fn](); return true; } catch (_) { /* fall through */ }
+          }
+          target.style.display = 'none';
+          target.classList.remove('is-open', 'active');
+          return true;
+        }
+        document.addEventListener('keydown', (e) => {
+          if (e.key !== 'Escape') return;
+          // Skip when typing in an input/textarea/contenteditable so Escape
+          // can blur native inputs without closing the surrounding modal.
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                    t.isContentEditable)) {
+            t.blur();
+            return;
+          }
+          if (_closeTopmost()) e.preventDefault();
+        });
+      })();
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

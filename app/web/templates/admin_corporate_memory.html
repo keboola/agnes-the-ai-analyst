@@ -1061,9 +1061,12 @@
                 Audit Log
             </button>
             <div style="flex:1;"></div>
+            <button class="btn"
+                    onclick="openCreateMemoryItemModal()"
+                    style="margin-left:auto;">+ New Item</button>
             <button class="btn btn-mandate"
                     onclick="openCreateMemoryDomainModal('', null)"
-                    style="margin-left:auto;">+ New Memory Domain</button>
+                    style="margin-left:8px;">+ New Memory Domain</button>
         </div>
 
         <!-- Review Queue Tab -->
@@ -1304,22 +1307,18 @@
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Domains</span>
-                            {# v49 (Task 8.9): chip-input multi-select replaces
-                               the legacy single-domain <select>. Junction-keyed
-                               (knowledge_item_domains) — an item can sit in N
-                               domains. The single <select> below remains
-                               hidden for back-compat with any old JS that
-                               sets it directly; the chip-input is the visible
-                               control. #}
+                            {# Multi-select chip-input — items can sit in N
+                               memory domains via the knowledge_item_domains
+                               junction. The legacy hidden single-domain
+                               <select> was removed: chip-input is now the
+                               only write path, and the PATCH endpoint
+                               accepts ``domain_ids`` (list). #}
                             <div class="chip-input"
                                  data-source-url="/api/memory/domains"
                                  data-allow-create="true"
                                  data-name="domain_ids"
                                  data-placeholder="Type to search or create…"
                                  data-chip-input="memory_domain"></div>
-                            <select id="editItemDomain" hidden>
-                                <option value="">(unset)</option>
-                            </select>
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Audience</span>
@@ -1600,6 +1599,86 @@
     {# (removed) Memory Domain RBAC step-2 modal — merged inline into
        #createMemoryDomainModal as a collapsible Group Access section. #}
 
+    <!-- ═══════════════ Create Memory Item modal (admin-seed) ═══════════════
+         Admins land here from the tab-strip "+ New Item" button.
+         POSTs to /api/memory (status='pending'), optionally PATCHes
+         multi-domain, then POSTs /admin/approve so the item lands
+         directly in Approved without a separate review pass. -->
+    <div id="createMemoryItemModal"
+         style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+      <div style="background: var(--surface); max-width: 600px; margin: 60px auto;
+                  padding: var(--space-5); border-radius: var(--radius-lg);
+                  border: 1px solid var(--border); max-height: 85vh; overflow-y: auto;">
+        <h3 style="margin-bottom: var(--space-3);">New Memory Item</h3>
+        <p style="margin-bottom: var(--space-3); color: var(--text-secondary); font-size: 13px;">
+          Seeded by admin — bypasses the Pending review queue and lands as Approved.
+        </p>
+        <div style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Title</span>
+            <input id="cmi-title" type="text" placeholder="Always quote table names in DuckDB"
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm);
+                          background:var(--bg); color:var(--text);">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Content</span>
+            <textarea id="cmi-content" rows="5" placeholder="Body of the rule / playbook / decision…"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);
+                             font-family:inherit; resize:vertical;"></textarea>
+          </label>
+          <div style="display:flex; gap:var(--space-3);">
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Category</span>
+              <select id="cmi-category"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);">
+                {% for c in edit_categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+              </select>
+            </label>
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Audience</span>
+              <select id="cmi-audience"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);">
+                <option value="">(unset)</option>
+                <option value="all">all</option>
+                {% for g in groups %}<option value="group:{{ g.name }}">group:{{ g.name }}</option>{% endfor %}
+              </select>
+            </label>
+          </div>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Domains</span>
+            <div class="chip-input"
+                 id="cmi-domains-chips"
+                 data-source-url="/api/memory/domains"
+                 data-allow-create="true"
+                 data-name="cmi_domain_ids"
+                 data-placeholder="Type to search or create…"
+                 data-chip-input="memory_domain"></div>
+            <span style="font-size:11px; color:var(--text-secondary);">
+              Items can sit in multiple domains. Leave empty to file as
+              uncategorised; you can re-assign later.
+            </span>
+          </label>
+          <label style="display:flex; align-items:center; gap:6px;">
+            <input id="cmi-required" type="checkbox">
+            <span style="font-size:12px;">Mark as Required (auto-installed for granted groups)</span>
+          </label>
+        </div>
+        <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
+                    margin-top:var(--space-4);">
+          <button class="btn" onclick="closeCreateMemoryItemModal()">Cancel</button>
+          <button class="btn btn-mandate" id="cmi-submit-btn"
+                  onclick="submitCreateMemoryItem()">Create</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       // Track which chip-input host triggered the create flow so we can
       // append the new chip back into it on success.
@@ -1646,6 +1725,121 @@
           alert('Network error: ' + e.message);
           preview.textContent = 'No image';
           input.value = '';
+        }
+      }
+
+      // ── Create Memory Item (admin-seed) ────────────────────────────
+      // Three-step chain on submit: POST /api/memory creates pending →
+      // optional PATCH writes domain_ids junction → POST /admin/approve
+      // promotes to Approved. Failures at any step surface in toast +
+      // leave whatever already landed (admin can retry / clean up via
+      // the review queue).
+      function openCreateMemoryItemModal() {
+        document.getElementById('cmi-title').value = '';
+        document.getElementById('cmi-content').value = '';
+        document.getElementById('cmi-audience').value = '';
+        document.getElementById('cmi-required').checked = false;
+        // Reset chip-input domain selection between opens.
+        const chipHost = document.getElementById('cmi-domains-chips');
+        if (chipHost && chipHost.clearChips) chipHost.clearChips();
+        document.getElementById('createMemoryItemModal').style.display = 'block';
+      }
+      function closeCreateMemoryItemModal() {
+        document.getElementById('createMemoryItemModal').style.display = 'none';
+      }
+      async function submitCreateMemoryItem() {
+        const btn = document.getElementById('cmi-submit-btn');
+        const title = document.getElementById('cmi-title').value.trim();
+        const content = document.getElementById('cmi-content').value.trim();
+        if (!title || !content) {
+          alert('Title and Content are required.');
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const category = document.getElementById('cmi-category').value;
+          const audience = document.getElementById('cmi-audience').value || null;
+          const isRequired = document.getElementById('cmi-required').checked;
+
+          // Read selected domain ids from the chip-input hidden field.
+          let domainIds = [];
+          const domainHidden = document.querySelector('input[name="cmi_domain_ids"]');
+          if (domainHidden) {
+            try { domainIds = JSON.parse(domainHidden.value || '[]'); }
+            catch (_) { domainIds = []; }
+          }
+
+          // Step 1 — create item. Pass the first domain slug via the
+          // legacy `domain` kwarg so the item lands with at least one
+          // junction row even if Step 2 (multi-domain PATCH) is a no-op.
+          let firstSlug = null;
+          if (domainIds.length) {
+            // Resolve id → slug from /api/memory/domains to send `domain`
+            // on create. Single round-trip is fine — the dropdown's
+            // already in cache from the chip-input.
+            const dr = await fetch('/api/memory/domains', { credentials: 'same-origin' });
+            if (dr.ok) {
+              const ddata = await dr.json();
+              const domList = (ddata && ddata.domains) || [];
+              const match = domList.find(d => d.id === domainIds[0]);
+              if (match) firstSlug = match.slug;
+            }
+          }
+          const createBody = { title, content, category };
+          if (firstSlug) createBody.domain_slug = firstSlug;
+          const cr = await fetch('/api/memory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(createBody),
+          });
+          if (!cr.ok) {
+            const detail = await cr.json().catch(() => ({}));
+            alert('Create failed: ' + (detail.detail || cr.statusText));
+            return;
+          }
+          const created = await cr.json();
+          const itemId = created.id;
+
+          // Step 2 — if multi-domain or audience set, PATCH.
+          const patchBody = {};
+          if (domainIds.length > 1) patchBody.domain_ids = domainIds;
+          if (audience) patchBody.audience = audience;
+          if (Object.keys(patchBody).length) {
+            const pr = await fetch('/api/memory/admin/' + encodeURIComponent(itemId), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify(patchBody),
+            });
+            if (!pr.ok) {
+              const detail = await pr.json().catch(() => ({}));
+              showToast('Item created but metadata patch failed: ' + (detail.detail || pr.statusText), 'error');
+            }
+          }
+
+          // Step 3 — auto-approve (or mandate if Required checked).
+          const finalAction = isRequired ? 'mandate' : 'approve';
+          const actionBody = { item_ids: [itemId], action: finalAction };
+          const ar = await fetch('/api/memory/admin/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(actionBody),
+          });
+          if (!ar.ok) {
+            const detail = await ar.json().catch(() => ({}));
+            showToast('Item created but ' + finalAction + ' failed: ' + (detail.detail || ar.statusText), 'error');
+          } else {
+            showToast('Item "' + title.substring(0, 40) + '" created + ' + finalAction + 'd', 'success');
+          }
+
+          closeCreateMemoryItemModal();
+          refreshCurrentTab();
+        } catch (e) {
+          alert('Network error: ' + e.message);
+        } finally {
+          btn.disabled = false;
         }
       }
 
@@ -2360,7 +2554,8 @@
         catSel.value = curCat;
         catNewIn.style.display = 'none';
         catNewIn.value = '';
-        document.getElementById('editItemDomain').value = item.domain || '';
+        // (legacy editItemDomain <select> removed — chip-input is the only
+        //  domain control now; PATCH accepts domain_ids list.)
         document.getElementById('editItemAudience').value = item.audience || '';
         const tagsArr = parseJsonField(item.tags);
         tagWidgetInit(tagsArr);
@@ -2562,7 +2757,8 @@
             categoryRaw = document.getElementById('editItemCategoryNew').value;
         }
         const category = orNull(categoryRaw);
-        const domain = orNull(document.getElementById('editItemDomain').value);
+        // (legacy single `domain` field removed — chip-input drives
+        //  domain_ids exclusively now; PATCH performs the junction replace.)
         const audience = orNull(document.getElementById('editItemAudience').value);
         // Tags read directly from the pill widget DOM. Any uncommitted text
         // still in the input (user typed but didn't press Enter) is salvaged
@@ -2585,7 +2781,7 @@
             }
         }
 
-        const body = { title, content, category, domain, audience, tags };
+        const body = { title, content, category, audience, tags };
         if (domainIds !== null) {
             body.domain_ids = domainIds;
         }
@@ -2908,7 +3104,7 @@
                     <h3 class="memory-item__title knowledge-title">${escapeHtml(item.title || 'Untitled')}</h3>
                     <div class="memory-item__badges">
                         ${isRequired ? '<span class="badge badge--required">Required</span>' : ''}
-                        ${item.domain ? `<span class="badge" style="background:#e8f0fe; color:#1a73e8; border:1px solid #c7d8f5;" title="Memory domain">📂 ${escapeHtml(item.domain)}</span>` : ''}
+                        ${renderDomainBadges(item)}
                         ${item.category ? `<span class="badge badge--category">${escapeHtml(categoryDisplay)}</span>` : ''}
                         ${item.source_type ? `<span class="badge badge--source">${escapeHtml(item.source_type)}</span>` : ''}
                         ${(status && status !== 'approved') ? `<span class="badge badge--status status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
@@ -3382,6 +3578,30 @@
     function esc(text) {
         // Escape for use in HTML attributes (single quotes in onclick handlers etc.)
         return escapeHtml(String(text || '')).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    }
+
+    // Render every memory domain the item belongs to as a chip, with a
+    // +N overflow chip past 3. Items can sit in multiple domains via the
+    // knowledge_item_domains junction; the single-slug item.domain
+    // surface stays as a back-compat fallback when item.domains is
+    // missing (e.g. older API responses pre-hydration patch).
+    function renderDomainBadges(item) {
+        let slugs = Array.isArray(item.domains) ? item.domains.slice() : [];
+        if (!slugs.length && item.domain) slugs = [item.domain];
+        if (!slugs.length) return '';
+        const max = 3;
+        const visible = slugs.slice(0, max);
+        const overflow = slugs.length - visible.length;
+        const chip = (slug, title) =>
+            `<span class="badge" `
+          + `style="background:#e8f0fe; color:#1a73e8; border:1px solid #c7d8f5;" `
+          + `title="${escapeHtml(title || slug)}">📂 ${escapeHtml(slug)}</span>`;
+        let out = visible.map(s => chip(s)).join('');
+        if (overflow > 0) {
+            const rest = slugs.slice(max).join(', ');
+            out += chip('+' + overflow, '+' + overflow + ' more: ' + rest);
+        }
+        return out;
     }
 
     let toastTimeout = null;
