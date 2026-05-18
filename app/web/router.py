@@ -1175,6 +1175,27 @@ async def catalog_table_detail(
     except Exception:
         logger.warning("could not load profile for %s", table_id)
 
+    # Fallback: when table_profiles has no row (table never synced, or
+    # profile was wiped), introspect schema via the same code path the
+    # /api/v2/schema endpoint uses. Handles every source type — internal
+    # via connectors.internal, BigQuery remote via the BQ extension,
+    # local + materialized via DESCRIBE on the parquet. Best-effort —
+    # any failure (parquet missing, BQ creds absent, etc.) leaves the
+    # columns section in its "run a sync" empty state.
+    if not columns:
+        try:
+            from app.api.v2_schema import build_schema_uncached
+            from connectors.bigquery.access import BqAccess
+            sch = build_schema_uncached(conn, table_id, bq=BqAccess(), row=table)
+            for col in (sch.get("columns") or []):
+                columns.append({
+                    "name": col.get("name"),
+                    "type": col.get("type"),
+                    "nullable": col.get("nullable", True),
+                })
+        except Exception:
+            logger.warning("schema introspection fallback failed for %s", table_id)
+
     last_sync_state = SyncStateRepository(conn).get_table_state(table_id) or {}
 
     ctx = _build_context(

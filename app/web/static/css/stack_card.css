@@ -472,6 +472,21 @@
 .stack-card__status-pill--draft  { color: #475569; }   /* slate */
 .stack-card__photo { position: relative; }             /* anchor for pill */
 
+/* v53 cover-corner emoji glyph — when entry.icon is a single emoji,
+ * render it absolute-positioned in the lower-right of the cover at
+ * low opacity. Keeps initials as the prominent foreground; the glyph
+ * gives the "data product" feel without shipping a Lucide bundle. */
+.stack-card__cover-glyph {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  font-size: 32px;
+  line-height: 1;
+  opacity: 0.35;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.25));
+}
+
 /* v51 card eyebrow — small uppercase classifier above the title.
  * Tracks marketplace eyebrows visually so /catalog + /marketplace cards
  * read as one product family. */

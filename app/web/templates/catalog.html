@@ -273,6 +273,79 @@
       </div>
     </div>
   </div>
+
+  {# v53 Edit Recipe modal — pre-fills from GET /api/admin/recipes/{id}.
+     Slug is locked (it's the stable URL identifier referenced by
+     /catalog/r/<slug> + any pinned links). Delete lives on the card
+     footer, not in the modal, so admins can drop a recipe without
+     opening the editor. #}
+  <div id="editRecipeModal"
+       style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+    <div style="background:var(--surface); max-width:560px; margin:60px auto;
+                padding:20px 24px; border-radius:12px; border:1px solid var(--border);
+                max-height:85vh; overflow-y:auto;">
+      <h3 style="margin:0 0 12px;">Edit Recipe</h3>
+      <input type="hidden" id="ercp-id">
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Title</span>
+          <input id="ercp-title" type="text"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+          <input id="ercp-slug" type="text" disabled
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                        opacity:0.6;">
+          <span style="font-size:11px; color:var(--text-secondary);">
+            Slug is permanent — used in /catalog/r/&lt;slug&gt; URLs.
+          </span>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Description</span>
+          <textarea id="ercp-desc" rows="2"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">SQL template</span>
+          <textarea id="ercp-sql" rows="7"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:var(--font-mono); font-size:12px; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Related table ids</span>
+          <input id="ercp-related" type="text"
+                 placeholder="Comma-separated table_registry ids"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <div style="display:flex; gap:12px;">
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Color</span>
+            <div class="cf-palette-row" data-target="ercp-color"></div>
+            <input id="ercp-color" type="color"
+                   style="padding:2px; border:1px solid var(--border); border-radius:6px;
+                          height:32px; cursor:pointer;">
+          </label>
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="ercp-status"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
+              <option value="prod">Prod</option>
+              <option value="poc">POC</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft (admin-only)</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+        <button class="btn" type="button" onclick="closeEditRecipeModal()">Cancel</button>
+        <button class="btn btn-primary" type="button" id="ercp-submit-btn"
+                onclick="submitEditRecipe()">Save</button>
+      </div>
+    </div>
+  </div>
   {% endif %}
 
   {# Toast for ephemeral feedback (Add/Remove success/failure). #}
@@ -284,6 +357,12 @@
 
 <script>
 'use strict';
+
+// v53: server-injected admin flag — read by _renderRecipeCard to decide
+// whether to show inline Edit / Delete buttons on each card. Sub-second
+// branching only; the actual privilege check still happens server-side
+// on every PUT/DELETE.
+window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
 
 // Card subscribe/unsubscribe wiring + tab + filter state.
 // Vanilla, no framework — runs on /catalog and /memory (the only divergence
@@ -503,18 +582,46 @@
     }
   }
   function _renderRecipeCard(r) {
+    const esc = (s) => String(s == null ? '' : s).replace(/[<>&"']/g, (c) =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
     const color = r.color || '#0073D1';
-    const title = String(r.title || '').replace(/[<>&]/g, (c) =>
-      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
-    const desc = String(r.description || '').replace(/[<>&]/g, (c) =>
-      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+    const title = esc(r.title);
+    const desc = esc(r.description);
     const parts = (r.title || '?').split(/\s+/);
     const initials = (parts.length >= 2
       ? parts[0][0] + parts[1][0]
       : (r.title || '?').slice(0, 2)).toUpperCase();
     const nTables = (r.related_table_ids || []).length;
-    return '<a class="stack-card" href="/catalog/r/' + encodeURIComponent(r.slug) + '" '
-      + 'style="text-decoration:none; color:inherit;">'
+    // Admin actions sit on a footer row inside the card. Use <div> wrapper
+    // (not <a>) when admin so the per-button onclicks don't fight the
+    // card-wide anchor for the click. Non-admin keeps the cleaner <a>
+    // because there's no overlay.
+    const cardOpen = window.IS_ADMIN
+      ? '<div class="stack-card" data-recipe-id="' + esc(r.id) + '" style="cursor:default;">'
+      : '<a class="stack-card" href="/catalog/r/' + encodeURIComponent(r.slug) + '" '
+        + 'style="text-decoration:none; color:inherit;">';
+    const cardClose = window.IS_ADMIN ? '</div>' : '</a>';
+    // For admin, the photo + body get their own anchor so the click
+    // still drills into the recipe — only the footer Edit/Delete buttons
+    // are non-navigating.
+    const adminBodyHref = window.IS_ADMIN
+      ? '<a href="/catalog/r/' + encodeURIComponent(r.slug) + '" '
+        + 'style="text-decoration:none; color:inherit; display:block;">'
+      : '';
+    const adminBodyClose = window.IS_ADMIN ? '</a>' : '';
+    const adminFooter = window.IS_ADMIN
+      ? '<div style="display:flex; gap:6px; justify-content:flex-end; '
+        + 'padding:6px 12px; border-top:1px solid var(--border-light, #f0f0f0);">'
+        + '<button class="btn btn-secondary" type="button" '
+        + 'style="font-size:11px; padding:3px 10px;" '
+        + 'onclick="event.stopPropagation(); openEditRecipeModal(&#39;' + esc(r.id) + '&#39;)">Edit</button>'
+        + '<button class="btn" type="button" '
+        + 'style="font-size:11px; padding:3px 10px; color:#b91c1c; border-color:#fca5a5;" '
+        + 'onclick="event.stopPropagation(); deleteRecipe(&#39;' + esc(r.id) + '&#39;, &#39;' + esc(r.title) + '&#39;)">Delete</button>'
+        + '</div>'
+      : '';
+    return cardOpen
+      + adminBodyHref
       + '<div class="stack-card__photo" style="background:' + color + '; color:#fff; '
       +   'font-weight:700; font-size:22px; letter-spacing:1px;">' + initials + '</div>'
       + '<div class="stack-card__body">'
@@ -523,7 +630,10 @@
           ? '<div class="stack-card__meta">' + nTables + ' table' + (nTables === 1 ? '' : 's') + '</div>'
           : '')
       + (desc ? '<div class="stack-card__desc">' + desc + '</div>' : '')
-      + '</div></a>';
+      + '</div>'
+      + adminBodyClose
+      + adminFooter
+      + cardClose;
   }
 
   // ── Filter chips ───────────────────────────────────────────────────────
@@ -620,6 +730,90 @@
     const el = document.getElementById('createRecipeModal');
     if (el) el.style.display = 'none';
   };
+  window.openEditRecipeModal = async function (recipeId) {
+    try {
+      const r = await fetch('/api/admin/recipes/' + encodeURIComponent(recipeId),
+                            { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const rec = await r.json();
+      document.getElementById('ercp-id').value = rec.id;
+      document.getElementById('ercp-title').value = rec.title || '';
+      document.getElementById('ercp-slug').value = rec.slug || '';
+      document.getElementById('ercp-desc').value = rec.description || '';
+      document.getElementById('ercp-sql').value = rec.sql_template || '';
+      document.getElementById('ercp-related').value =
+        (rec.related_table_ids || []).join(',');
+      document.getElementById('ercp-color').value = rec.color || '#0073D1';
+      document.getElementById('ercp-status').value = rec.status || 'prod';
+      document.getElementById('editRecipeModal').style.display = 'block';
+    } catch (e) {
+      alert('Failed to load recipe: ' + e.message);
+    }
+  };
+  window.closeEditRecipeModal = function () {
+    const el = document.getElementById('editRecipeModal');
+    if (el) el.style.display = 'none';
+  };
+  window.submitEditRecipe = async function () {
+    const btn = document.getElementById('ercp-submit-btn');
+    const id = document.getElementById('ercp-id').value;
+    const title = document.getElementById('ercp-title').value.trim();
+    if (!id || !title) { alert('Title is required.'); return; }
+    const related = document.getElementById('ercp-related').value
+      .split(',').map(s => s.trim()).filter(Boolean);
+    const body = {
+      title: title,
+      description: document.getElementById('ercp-desc').value.trim() || null,
+      sql_template: document.getElementById('ercp-sql').value || null,
+      related_table_ids: related,
+      color: document.getElementById('ercp-color').value || null,
+      status: document.getElementById('ercp-status').value || 'prod',
+    };
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/admin/recipes/' + encodeURIComponent(id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        let msg = d.detail || r.statusText;
+        if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
+        alert('Save failed: ' + msg);
+        return;
+      }
+      window.closeEditRecipeModal();
+      if (typeof showToast === 'function') {
+        showToast('Recipe "' + title + '" saved');
+      }
+      _recipesLoaded = false;
+      loadRecipesTab(true);
+    } catch (e) {
+      alert('Network error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  window.deleteRecipe = async function (recipeId, title) {
+    if (!confirm('Delete recipe "' + title + '"? This cannot be undone.')) return;
+    try {
+      const r = await fetch('/api/admin/recipes/' + encodeURIComponent(recipeId),
+                            { method: 'DELETE', credentials: 'same-origin' });
+      if (!r.ok && r.status !== 204) {
+        const d = await r.json().catch(() => ({}));
+        alert('Delete failed: ' + (d.detail || r.statusText));
+        return;
+      }
+      if (typeof showToast === 'function') showToast('Recipe deleted');
+      _recipesLoaded = false;
+      loadRecipesTab(true);
+    } catch (e) {
+      alert('Network error: ' + e.message);
+    }
+  };
+
   window.submitCreateRecipe = async function () {
     const btn = document.getElementById('rcp-submit-btn');
     const title = document.getElementById('rcp-title').value.trim();

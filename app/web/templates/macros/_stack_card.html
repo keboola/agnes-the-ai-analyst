@@ -85,6 +85,18 @@
        FLAT-color + initials fallback used when no cover is set at all.
      - No cover → flat solid color from `entry.color` (was: pastel→pink
        gradient, user feedback "vošklivé, divné") + 2-letter initials. #}
+  {# v53 cover-corner emoji glyph — when entry.icon is a single emoji
+     (not a Lucide name like "chart-line"), render it semi-transparent in
+     the lower-right of the cover for the "abstract glyph" feel the
+     mockup uses, without shipping a Lucide bundle. Heuristic: short
+     string + first char not an ASCII identifier char ⇒ treat as glyph.
+     Lucide-name strings are silently suppressed (no CDN dep). #}
+  {% set _icon_str = (entry.icon or '')|string %}
+  {% set _icon_first = _icon_str[:1] %}
+  {% set _cover_glyph = _icon_str if (
+       _icon_str and _icon_str|length <= 4 and
+       _icon_first not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'
+     ) else '' %}
   <div class="stack-card__photo{% if _has_glyph %} stack-card__photo--glyph{% endif %}"
        style="background: {{ entry.color|default('#f1f5f9') }};">
     {% if _status_meta %}
@@ -97,6 +109,9 @@
                     this.parentElement.textContent=this.dataset.fallback;"
            data-fallback="{{ _initials }}">
     {% elif _has_glyph %}{{ entry.icon }}{% else %}{{ _initials }}{% endif %}
+    {% if _cover_glyph and not entry.cover_image_url %}
+      <span class="stack-card__cover-glyph" aria-hidden="true">{{ _cover_glyph }}</span>
+    {% endif %}
   </div>
 
   <div class="stack-card__body">
