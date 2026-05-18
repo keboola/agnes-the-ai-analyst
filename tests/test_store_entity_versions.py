@@ -2710,7 +2710,7 @@ class TestFullLifecycleFromInstaller:
         r = web_client.delete(
             f"/api/store/entities/{eid}", cookies=owner_cookies,
         )
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
 
         conn = get_system_db()
         ent_after = StoreEntitiesRepository(conn).get(eid)

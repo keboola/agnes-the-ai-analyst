@@ -10,6 +10,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.26] — 2026-05-18
+
+### Changed
+- **BREAKING:** eight `DELETE` endpoints that previously returned `200` with
+  a JSON body now correctly return `204 No Content` (HTTP semantics for
+  idempotent removal). External clients that parsed the response body
+  (e.g. `r.json()["status"]`) will hit JSON-decode errors against the now-
+  empty payload and must drop the body read:
+  `DELETE /api/admin/metrics/{id}`, `DELETE /api/memory/{id}/dismiss`,
+  `DELETE /api/store/entities/{id}`,
+  `DELETE /api/store/entities/{id}/install`,
+  `DELETE /api/marketplace/curated/{marketplace}/{plugin}/install`,
+  `DELETE /api/marketplaces/{marketplace}/plugins/{plugin}/system`,
+  `DELETE /api/admin/store/submissions/{id}`, and
+  `DELETE /api/admin/observability/views/{id}`.
+- **BREAKING:** `POST /api/memory/admin/contradictions` now returns `201
+  Created` instead of `200 OK` on success (creator-POST contract).
+
+### Internal
+- Added `tests/test_api_design_rules.py` — four forward-only design guardrails that
+  prevent new endpoints from adding to existing REST debt: no new verbs in URL paths,
+  `DELETE` must declare 204, creator `POST`s must declare 201, and all protected
+  `/api/*` routes must declare 401 and 403.
+- `_add_auth_error_responses()` injected into `app.openapi()` at startup to
+  declare 401/403 on all protected `/api/*` operations centrally — 220 ops
+  now carry the auth-error responses in the spec.
+
 ## [0.54.25] — 2026-05-18
 
 ### Fixed

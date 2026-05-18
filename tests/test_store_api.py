@@ -1047,7 +1047,7 @@ class TestInstallCycle:
 
         # Owner soft-archives (default DELETE semantics in v35).
         d = web_client.delete(f"/api/store/entities/{eid}", cookies=owner_cookies)
-        assert d.status_code == 200
+        assert d.status_code == 204
 
         # Detail still reachable for owner — visibility flipped, not deleted.
         det = web_client.get(f"/api/store/entities/{eid}", cookies=owner_cookies).json()
@@ -1094,7 +1094,9 @@ class TestInstallCycle:
             f"/api/store/entities/{eid}?hard=true",
             cookies={"access_token": admin_token},
         )
-        assert d.status_code == 200, d.text
+        # DELETE returns 204 No Content per the API design rule landed in
+        # this PR (tests/test_api_design_rules.py rule 2).
+        assert d.status_code == 204, d.text
 
         # GET 404 + install row gone.
         assert web_client.get(

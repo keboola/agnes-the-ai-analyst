@@ -457,7 +457,7 @@ class TestCuratedDetail:
         r = web_client.delete(
             "/api/marketplace/curated/mkt-x/alpha/install", cookies=cookies,
         )
-        assert r.status_code == 200
+        assert r.status_code == 204
         conn = get_system_db()
         try:
             assert not UserCuratedSubscriptionsRepository(conn).is_subscribed(

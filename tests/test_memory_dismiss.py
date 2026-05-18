@@ -127,7 +127,7 @@ class TestDismissPost:
 
 class TestUndismissDelete:
     def test_delete_undismisses(self, seeded_app):
-        """DELETE removes the dismissal row; subsequent DELETE is still 200."""
+        """DELETE removes the dismissal row; subsequent DELETE is still 204."""
         from src.db import get_system_db
 
         conn = get_system_db()
@@ -139,14 +139,12 @@ class TestUndismissDelete:
         c.post("/api/memory/dm_u1/dismiss", headers=_auth(token))
 
         r = c.delete("/api/memory/dm_u1/dismiss", headers=_auth(token))
-        assert r.status_code == 200
-        assert r.json() == {"id": "dm_u1", "dismissed": False}
+        assert r.status_code == 204
 
-        # Idempotent: a second DELETE still succeeds with the same body —
-        # absence of the row is the success state.
+        # Idempotent: a second DELETE still succeeds — absence of the row
+        # is the success state.
         r2 = c.delete("/api/memory/dm_u1/dismiss", headers=_auth(token))
-        assert r2.status_code == 200
-        assert r2.json() == {"id": "dm_u1", "dismissed": False}
+        assert r2.status_code == 204
 
         conn = get_system_db()
         cnt = conn.execute(

@@ -643,7 +643,7 @@ def mark_plugin_system(
 
 @router.delete(
     "/{marketplace_id}/plugins/{plugin_name}/system",
-    response_model=SystemFlagResponse,
+    status_code=204,
 )
 def unmark_plugin_system(
     marketplace_id: str,
@@ -676,9 +676,3 @@ def unmark_plugin_system(
         None,
     )
     _invalidate_marketplace_etag()
-
-    return SystemFlagResponse(
-        marketplace_id=marketplace_id,
-        plugin_name=plugin_name,
-        is_system=False,
-    )

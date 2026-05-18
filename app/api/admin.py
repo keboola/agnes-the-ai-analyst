@@ -4042,7 +4042,7 @@ async def admin_retry_store_submission(
     return {"ok": True, "submission_id": submission_id, "status": "pending_llm"}
 
 
-@router.delete("/store/submissions/{submission_id}")
+@router.delete("/store/submissions/{submission_id}", status_code=204)
 async def admin_delete_store_submission(
     submission_id: str,
     user: dict = Depends(require_admin),
@@ -4082,7 +4082,6 @@ async def admin_delete_store_submission(
             "status": sub.get("status"),
         },
     )
-    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
