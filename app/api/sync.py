@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional, List
 
 from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import duckdb
 
 from app.auth.access import require_admin
@@ -1025,7 +1025,7 @@ async def update_sync_settings(
 
 class TableSubscriptionUpdate(BaseModel):
     table_mode: str = "all"  # "all" or "explicit"
-    tables: dict = {}  # {table_name: bool}
+    tables: dict = Field(default_factory=dict, max_length=500)  # {table_name: bool}
 
 
 @router.get("/table-subscriptions")
@@ -1045,8 +1045,21 @@ async def update_table_subscriptions(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Update per-table subscription preferences."""
+    """Update per-table subscription preferences.
+
+    Mirrors the RBAC gate in POST /settings: a table can only be subscribed
+    to when the user holds a resource_grants row for it (or is Admin). This
+    prevents an authenticated user from subscribing to tables they cannot read.
+    """
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+
     repo = SyncSettingsRepository(conn)
+    results = {}
     for table_name, enabled in request.tables.items():
+        if not can_access(user["id"], ResourceType.TABLE.value, table_name, conn):
+            results[table_name] = {"error": "no permission"}
+            continue
         repo.set_dataset_enabled(user["id"], table_name, enabled)
-    return {"table_mode": request.table_mode, "updated": len(request.tables)}
+        results[table_name] = {"enabled": enabled}
+    return {"table_mode": request.table_mode, "updated": results}

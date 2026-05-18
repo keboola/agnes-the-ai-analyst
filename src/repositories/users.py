@@ -24,12 +24,17 @@ class UserRepository:
         result = self.conn.execute("SELECT * FROM users WHERE email = ?", [email]).fetchone()
         return self._row_to_dict(result)
 
-    def list_all(self) -> List[Dict[str, Any]]:
-        results = self.conn.execute("SELECT * FROM users ORDER BY email").fetchall()
+    def list_all(self, limit: int = 1000, offset: int = 0) -> List[Dict[str, Any]]:
+        results = self.conn.execute(
+            "SELECT * FROM users ORDER BY email LIMIT ? OFFSET ?", [limit, offset]
+        ).fetchall()
         if not results:
             return []
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, row)) for row in results]
+
+    def count_all(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 
     def create(
         self,

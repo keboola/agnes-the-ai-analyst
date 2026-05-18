@@ -11,11 +11,12 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
 import re
 
+from app.auth.access import require_admin as _require_admin
 from connectors.jira.service import Config, get_jira_service
 from connectors.jira.validation import is_valid_issue_key, safe_join_under
 
@@ -182,13 +183,12 @@ async def receive_jira_webhook(request: Request) -> Response:
 
 
 @router.get("/jira/health")
-async def jira_webhook_health() -> dict:
-    """Health check for Jira webhook endpoint."""
+async def jira_webhook_health(user: dict = Depends(_require_admin)) -> dict:
+    """Health check for Jira webhook endpoint. Admin-only: exposes secret presence."""
     jira_service = get_jira_service()
 
     return {
         "status": "ok",
         "configured": jira_service.is_configured(),
         "webhook_secret_set": bool(Config.JIRA_WEBHOOK_SECRET),
-        "jira_domain": Config.JIRA_DOMAIN or "(not set)",
     }
