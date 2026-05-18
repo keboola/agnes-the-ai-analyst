@@ -203,6 +203,41 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   values like `#ff5733#e0f2fe` that broke the card layout downstream.
 
 ### Fixed
+- **Memory admin modals were dead — duplicate `let _cmdNewDomainId`**
+  in `admin_corporate_memory.html`. The deprecated step-2 RBAC modal
+  left stub `let` declarations that collided with the live state vars
+  declared earlier in the same `<script>` block → SyntaxError on parse
+  → entire second script block silently failed to evaluate →
+  `openCreateMemoryDomainModal`, `openEditMemoryDomainModal`,
+  `openEditItemModal`, etc. never landed in global scope → all inline
+  `onclick=` admin handlers defined in that block were silent no-ops.
+  Removed the duplicate stub declarations.
+- **`/catalog/t/<table_id>` + `/catalog/r/<slug>` detail pages were
+  unstyled wireframes** — both templates used `{% block head %}` to
+  inject their CSS, but `base.html` exposes `{% block head_extra %}`.
+  Wrong block name meant the `<style>` rules never reached the
+  rendered HTML → page sections collapsed to flush-left, no cards, no
+  max-width, default 20ch textareas. Renamed both to
+  `head_extra` — hero cards, section cards, dark SQL code block,
+  proper full-width form inputs all now render as designed.
+- **L49 leak — "MANDATORY" KPI + "Make Mandatory" buttons** on
+  `/admin/corporate-memory`. The v49 schema split moved Required tier
+  off `status` onto the orthogonal `is_required` boolean; the SQL
+  filters + UI dropdowns consolidated in the L49 pass, but the KPI
+  counter label still said "Mandatory" and the row-action buttons
+  still rendered "Make Mandatory". Renamed both to "Required" / "Mark
+  as Required" so the UI vocabulary matches the data model.
+- **Activity Center Resource dropdown missed the v55
+  `memory_domain_suggestion:` namespace** — added it as a 10th option
+  so admin can filter the timeline to suggestion lifecycle events.
+- **Tab strip wrapping on narrow viewports** on
+  `/admin/corporate-memory`. The L50 group labels (MODERATION /
+  CATALOG) + separator pushed total tab-strip width past most
+  viewports → buttons wrapped text 2× per line. Switched the strip to
+  `flex-wrap: nowrap; overflow-x: auto;` with `white-space: nowrap;
+  flex-shrink: 0;` on every direct child (tabs, labels, separator,
+  spacer, action buttons). Strip stays one row and overflows
+  horizontally with a thin scrollbar at the bottom edge.
 - **Unguarded `/admin/*` links from user-facing pages**. Two surfaces
   relied on implicit gating: the `corporate_memory.html` pending-review
   banner depended on the backend zeroing the count for non-admin, and

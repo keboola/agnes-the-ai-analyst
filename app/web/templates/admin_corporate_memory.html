@@ -120,6 +120,15 @@
             gap: var(--space-1);
             margin-bottom: var(--space-5);
             border-bottom: 2px solid var(--border);
+            /* v55 L50: MODERATION + CATALOG group labels + separator
+               pushed total width past most viewports → buttons wrapped
+               text 2× per line. Allow horizontal scroll instead of
+               wrapping; tabs stay one line, whole strip slides on
+               overflow with a thin scrollbar at the bottom edge. */
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            overflow-y: hidden;
+            scrollbar-width: thin;
         }
 
         .tab-btn {
@@ -136,7 +145,15 @@
             display: flex;
             align-items: center;
             gap: var(--space-2);
+            white-space: nowrap;   /* keep "Review Queue" / "Duplicate Candidates" on one line */
+            flex-shrink: 0;        /* don't shrink under flex pressure when nowrap is on */
         }
+        /* Every direct child of the tab strip (group labels, separators,
+           the spacer, action buttons) must also refuse to shrink — without
+           this the spacer collapses tabs back onto two lines on narrow
+           viewports. Same companion as the .tab-btn rule above. */
+        .tab-nav > * { flex-shrink: 0; }
+        .tab-group-label, .tab-group-sep { white-space: nowrap; }
 
         .tab-btn:hover {
             color: var(--text-primary);
@@ -1022,7 +1039,7 @@
             <div class="stat-divider"></div>
             <div class="stat-item highlight-blue">
                 <div class="value" id="statMandatory">{{ stats.mandatory_count|default(0) }}</div>
-                <div class="label">Mandatory</div>
+                <div class="label">Required</div>
             </div>
             <div class="stat-divider"></div>
             <div class="stat-item">
@@ -2073,8 +2090,13 @@
       }
 
       // ── (removed) step-2 RBAC modal — stubs kept for callers ──
-      let _cmdNewDomainId = null;
-      let _cmdNewDomainName = null;
+      // NOTE: `_cmdNewDomainId` / `_cmdNewDomainName` are declared earlier
+      // in this file (the live state for the inlined step-1 flow). Re-
+      // declaring here with `let` raised SyntaxError on parse → the whole
+      // script block failed → `openCreateMemoryDomainModal` etc. never
+      // landed in global scope → the "+ New Memory Domain" button + every
+      // other inline `onclick=` admin handler defined in this block were
+      // silently dead. Removed the duplicate declarations.
       function openCreateMemoryDomainRbacModal() { /* deprecated — inlined */ }
       function skipCreateMemoryDomainRbac() {
         if (typeof loadDomainsTab === 'function') {
@@ -3302,7 +3324,7 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                     </svg>
-                    Make Mandatory <span class="shortcut-hint">M</span>
+                    Mark as Required <span class="shortcut-hint">M</span>
                 </button>
                 <button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -3321,7 +3343,7 @@
 
         const mandateFormHtml = `
             <div class="mandate-form" id="mandate-form-${esc(item.id)}">
-                <label>Why is this mandatory?</label>
+                <label>Why is this required?</label>
                 <textarea id="mandate-reason-${esc(item.id)}" placeholder="Explain why all analysts need this rule..."></textarea>
                 <label style="margin-top: var(--space-3);">Target Audience</label>
                 <select id="mandate-audience-${esc(item.id)}">
@@ -3414,10 +3436,10 @@
         // Actions depend on the valid transitions from current status
         if (status === 'pending') {
             buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Approve</button>`);
-            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Make Mandatory</button>`);
+            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Mark as Required</button>`);
             buttons.push(`<button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
         } else if (status === 'approved') {
-            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Make Mandatory</button>`);
+            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Mark as Required</button>`);
             buttons.push(`<button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
         } else if (status === 'mandatory') {
             buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Demote to Approved</button>`);
@@ -3426,7 +3448,7 @@
             buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
         } else if (status === 'revoked') {
             buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
-            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Make Mandatory</button>`);
+            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Mark as Required</button>`);
         }
 
         // Edit is always available regardless of status — admins fix
