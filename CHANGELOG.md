@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- `DELETE /api/admin/metrics/{metric_id}` and `DELETE /api/memory/{item_id}/dismiss`
+  now return `204 No Content` instead of `200` with a redundant body — correct HTTP
+  semantics for idempotent removal operations.
+
+### Internal
+- Added `tests/test_api_design_rules.py` — four forward-only design guardrails that
+  prevent new endpoints from adding to existing REST debt: no new verbs in URL paths,
+  `DELETE` must declare 204, creator `POST`s must declare 201, and all protected
+  `/api/*` routes must declare 401 and 403.
+- `_add_auth_error_responses()` injected into `app.openapi()` at startup to
+  declare 401/403 on all protected `/api/*` operations centrally — fixes the 120
+  operations that previously omitted these response codes from the spec.
+
 ## [0.54.25] — 2026-05-18
 
 ### Fixed

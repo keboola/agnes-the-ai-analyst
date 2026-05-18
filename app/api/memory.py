@@ -578,13 +578,13 @@ async def dismiss_item(
     return {"id": item_id, "dismissed": True}
 
 
-@router.delete("/{item_id}/dismiss")
+@router.delete("/{item_id}/dismiss", status_code=204)
 async def undismiss_item(
     item_id: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Idempotent un-dismiss — a second DELETE still returns 200.
+    """Idempotent un-dismiss — a second DELETE still returns 204.
 
     Returns 404 if the item itself doesn't exist (consistent with the rest
     of the per-item endpoints); the dismissal row's existence is not
@@ -595,7 +595,6 @@ async def undismiss_item(
     if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     repo.undismiss(user["id"], item_id)
-    return {"id": item_id, "dismissed": False}
 
 
 @router.get("/{item_id}/provenance")
@@ -861,7 +860,7 @@ async def admin_contradictions(
     return {"contradictions": contradictions, "count": len(contradictions)}
 
 
-@router.post("/admin/contradictions")
+@router.post("/admin/contradictions", status_code=201)
 async def admin_create_contradiction(
     request: CreateContradictionRequest,
     user: dict = Depends(require_admin),
