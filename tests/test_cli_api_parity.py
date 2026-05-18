@@ -575,9 +575,18 @@ class TestDataPackageDeleteParity:
             headers=_auth(parity_env["admin_token"]),
         )
         assert r.status_code == 204
+        # v54: delete() is a soft delete — the row still exists but
+        # carries ``deleted_at IS NOT NULL``. Parity asserts both
+        # paths leave the row in the same "live=0, soft-deleted=1"
+        # shape.
         conn = get_system_db()
-        api_remaining = conn.execute(
-            "SELECT COUNT(*) FROM data_packages WHERE id = ?", [pkg_id]
+        api_live = conn.execute(
+            "SELECT COUNT(*) FROM data_packages "
+            "WHERE id = ? AND deleted_at IS NULL", [pkg_id]
+        ).fetchone()[0]
+        api_soft = conn.execute(
+            "SELECT COUNT(*) FROM data_packages "
+            "WHERE id = ? AND deleted_at IS NOT NULL", [pkg_id]
         ).fetchone()[0]
         api_audit = _snapshot_audit_actions(conn, prefix="data_package.delete")
         conn.close()
@@ -587,13 +596,19 @@ class TestDataPackageDeleteParity:
             ["admin", "data-package", "delete", pkg_id_2, "--yes"]
         )
         conn = get_system_db()
-        cli_remaining = conn.execute(
-            "SELECT COUNT(*) FROM data_packages WHERE id = ?", [pkg_id_2]
+        cli_live = conn.execute(
+            "SELECT COUNT(*) FROM data_packages "
+            "WHERE id = ? AND deleted_at IS NULL", [pkg_id_2]
+        ).fetchone()[0]
+        cli_soft = conn.execute(
+            "SELECT COUNT(*) FROM data_packages "
+            "WHERE id = ? AND deleted_at IS NOT NULL", [pkg_id_2]
         ).fetchone()[0]
         cli_audit = _snapshot_audit_actions(conn, prefix="data_package.delete")
         conn.close()
 
-        assert api_remaining == cli_remaining == 0
+        assert api_live == cli_live == 0
+        assert api_soft == cli_soft == 1
         # Both paths emit exactly one delete audit row
         assert len(api_audit) == len(cli_audit) == 1
 
@@ -801,9 +816,15 @@ class TestMemoryDomainDeleteParity:
             headers=_auth(parity_env["admin_token"]),
         )
         assert r.status_code == 204
+        # v54: soft delete (see TestDataPackageDeleteParity above).
         conn = get_system_db()
-        api_count = conn.execute(
-            "SELECT COUNT(*) FROM memory_domains WHERE id = ?", [dom_id]
+        api_live = conn.execute(
+            "SELECT COUNT(*) FROM memory_domains "
+            "WHERE id = ? AND deleted_at IS NULL", [dom_id]
+        ).fetchone()[0]
+        api_soft = conn.execute(
+            "SELECT COUNT(*) FROM memory_domains "
+            "WHERE id = ? AND deleted_at IS NOT NULL", [dom_id]
         ).fetchone()[0]
         api_audit = _snapshot_audit_actions(conn, prefix="memory_domain.delete")
         conn.close()
@@ -813,13 +834,19 @@ class TestMemoryDomainDeleteParity:
             ["admin", "memory-domain", "delete", dom_id_2, "--yes"]
         )
         conn = get_system_db()
-        cli_count = conn.execute(
-            "SELECT COUNT(*) FROM memory_domains WHERE id = ?", [dom_id_2]
+        cli_live = conn.execute(
+            "SELECT COUNT(*) FROM memory_domains "
+            "WHERE id = ? AND deleted_at IS NULL", [dom_id_2]
+        ).fetchone()[0]
+        cli_soft = conn.execute(
+            "SELECT COUNT(*) FROM memory_domains "
+            "WHERE id = ? AND deleted_at IS NOT NULL", [dom_id_2]
         ).fetchone()[0]
         cli_audit = _snapshot_audit_actions(conn, prefix="memory_domain.delete")
         conn.close()
 
-        assert api_count == cli_count == 0
+        assert api_live == cli_live == 0
+        assert api_soft == cli_soft == 1
         assert len(api_audit) == len(cli_audit) == 1
 
 

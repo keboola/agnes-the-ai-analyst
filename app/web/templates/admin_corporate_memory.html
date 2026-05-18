@@ -3051,14 +3051,38 @@
             if (domain) {
                 params.append('domain', domain);
             }
-            const resp = await fetch(`/api/memory?${params}`);
-            const data = await resp.json();
+            const url = `/api/memory?${params}`;
+            const data = await _apiMemoryCached(url);
             renderAllItems(data, list, pagination);
         } catch (e) {
             console.error('Failed to load all items:', e);
             list.innerHTML = '<div class="empty-state"><p>Error loading items.</p></div>';
         }
     }
+
+    // v54 page-level cache for /api/memory list responses. Tabs in
+    // /admin/corporate-memory re-trigger loadAllItems() on every switch;
+    // without this, flicking between Review / All / Browse forced a
+    // server round-trip each time even when the underlying data hadn't
+    // changed. 30 s window — short enough that admin edits land fast
+    // (most mutations call refreshCurrentTab via the explicit
+    // _apiMemoryInvalidate() hook below).
+    const _apiMemoryCache = new Map();   // url → { data, expiresAt }
+    const _API_MEMORY_TTL_MS = 30000;
+    async function _apiMemoryCached(url) {
+        const now = Date.now();
+        const hit = _apiMemoryCache.get(url);
+        if (hit && hit.expiresAt > now) return hit.data;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        _apiMemoryCache.set(url, { data, expiresAt: now + _API_MEMORY_TTL_MS });
+        return data;
+    }
+    // Called by edit / approve / reject / bulk-update handlers after
+    // they mutate items, so the next list-fetch picks up the change
+    // instead of serving stale cache.
+    function _apiMemoryInvalidate() { _apiMemoryCache.clear(); }
+    window._apiMemoryInvalidate = _apiMemoryInvalidate;
 
     async function hydrateDomainFilterOptions() {
         const sel = document.getElementById('domainFilter');

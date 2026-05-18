@@ -407,13 +407,31 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
 
   // ── Drill-down navigation on card body click ────────────────────────────
   // Buttons (data-action) handle their own click + stopPropagation below.
+  // v54 mod-click + middle-click open the drilldown in a new tab so the
+  // card-wide click handler stops fighting browser-native shortcuts
+  // (Cmd/Ctrl + click and middle-click both used to silently swallow).
   document.querySelectorAll('.stack-card').forEach(card => {
     const drilldown = card.querySelector('.stack-card__drilldown');
     if (!drilldown) return;
     card.addEventListener('click', (e) => {
       if (e.target.closest('button')) return;
       if (e.target === drilldown) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) {
+        e.preventDefault();
+        window.open(drilldown.href, '_blank', 'noopener');
+        return;
+      }
       window.location.href = drilldown.href;
+    });
+    // ``auxclick`` fires on middle-button release; the regular click
+    // listener also sees it via e.button === 1, but Firefox routes
+    // middle-button exclusively to auxclick on some versions — wire
+    // both so the behavior is consistent.
+    card.addEventListener('auxclick', (e) => {
+      if (e.button !== 1) return;
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      window.open(drilldown.href, '_blank', 'noopener');
     });
   });
 

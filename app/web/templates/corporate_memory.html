@@ -197,10 +197,24 @@
   document.querySelectorAll('.stack-card').forEach(card => {
     const drilldown = card.querySelector('.stack-card__drilldown');
     if (!drilldown) return;
+    // v54: same mod-click / middle-click handling as catalog.html so
+    // Cmd-click and middle-click open drilldown in a new tab instead
+    // of getting swallowed by the card-wide click intercept.
     card.addEventListener('click', (e) => {
       if (e.target.closest('button')) return;
       if (e.target === drilldown) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) {
+        e.preventDefault();
+        window.open(drilldown.href, '_blank', 'noopener');
+        return;
+      }
       window.location.href = drilldown.href;
+    });
+    card.addEventListener('auxclick', (e) => {
+      if (e.button !== 1) return;
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      window.open(drilldown.href, '_blank', 'noopener');
     });
   });
 

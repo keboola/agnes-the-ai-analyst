@@ -227,6 +227,26 @@ class DataPackagesRepository:
         ).fetchall()
         return [{"id": r[0], "name": r[1]} for r in rows]
 
+    def list_member_ids_bulk(self) -> Dict[str, List[str]]:
+        """v54: single-query bulk fetch of the {package_id → [table_id, …]}
+        mapping for every live (non-soft-deleted) package. Used by the
+        /admin/tables page hydrator to collapse the prior N+1 fan-out
+        (one ``list_tables(pkg_id)`` call per package after the list)
+        into a single round-trip. Empty packages are omitted from the
+        mapping — callers must default to ``[]`` on lookup misses.
+        """
+        rows = self.conn.execute(
+            "SELECT dpt.package_id, dpt.table_id "
+            "FROM data_package_tables dpt "
+            "JOIN data_packages dp ON dp.id = dpt.package_id "
+            "WHERE dp.deleted_at IS NULL "
+            "ORDER BY dpt.package_id"
+        ).fetchall()
+        out: Dict[str, List[str]] = {}
+        for pkg_id, table_id in rows:
+            out.setdefault(pkg_id, []).append(table_id)
+        return out
+
     def list_packages_of_table(self, table_id: str) -> List[Dict[str, Any]]:
         """Packages a given table belongs to (name-ordered)."""
         rows = self.conn.execute(

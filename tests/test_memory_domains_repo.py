@@ -100,20 +100,23 @@ class TestUpdate:
 
 
 class TestDelete:
-    def test_delete_removes_row(self, clean_repo):
+    def test_delete_hides_row_from_get(self, clean_repo):
+        # v54: delete() is now a soft delete (sets deleted_at).
         did = clean_repo.create(
             name="Finance", slug="finance", description=None,
             icon=None, color=None, created_by="admin",
         )
         clean_repo.delete(did)
         assert clean_repo.get(did) is None
+        assert clean_repo.get(did, include_deleted=True) is not None
 
-    def test_delete_cascades_junction(self, clean_repo):
+    def test_delete_preserves_junction(self, clean_repo):
+        # v54: junction rows survive soft-delete so restore brings the
+        # domain back whole (knowledge_item_domains untouched).
         did = clean_repo.create(
             name="Finance", slug="finance", description=None,
             icon=None, color=None, created_by="admin",
         )
-        # Seed an item + junction row
         clean_repo.conn.execute(
             "INSERT INTO knowledge_items(id, title, status) VALUES ('k1', 't', 'approved')"
         )
@@ -123,7 +126,34 @@ class TestDelete:
             "SELECT COUNT(*) FROM knowledge_item_domains WHERE domain_id = ?",
             [did],
         ).fetchone()[0]
+        assert n == 1
+
+    def test_restore_brings_row_back(self, clean_repo):
+        did = clean_repo.create(
+            name="Finance", slug="finance", description=None,
+            icon=None, color=None, created_by="admin",
+        )
+        clean_repo.delete(did)
+        assert clean_repo.get(did) is None
+        clean_repo.restore(did)
+        assert clean_repo.get(did) is not None
+
+    def test_hard_delete_cascades_junction(self, clean_repo):
+        did = clean_repo.create(
+            name="Finance", slug="finance", description=None,
+            icon=None, color=None, created_by="admin",
+        )
+        clean_repo.conn.execute(
+            "INSERT INTO knowledge_items(id, title, status) VALUES ('k1', 't', 'approved')"
+        )
+        clean_repo.add_item(did, "k1", added_by="admin")
+        clean_repo.hard_delete(did)
+        n = clean_repo.conn.execute(
+            "SELECT COUNT(*) FROM knowledge_item_domains WHERE domain_id = ?",
+            [did],
+        ).fetchone()[0]
         assert n == 0
+        assert clean_repo.get(did, include_deleted=True) is None
 
 
 class TestSlugUniqueness:

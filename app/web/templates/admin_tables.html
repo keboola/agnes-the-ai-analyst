@@ -1832,7 +1832,7 @@
                 <div class="form-group">
                     <label class="form-label">Data Packages <span class="optional">(optional)</span></label>
                     <div class="chip-input"
-                         id="editLegacyPackagesChips"
+                         id="editGenericPackagesChips"
                          data-source-url="/api/admin/data-packages"
                          data-allow-create="true"
                          data-name="legacy_package_ids"
@@ -4472,9 +4472,9 @@
         });
     }
 
-    // Legacy entry point — kept for backward-compat with any external
-    // wiring that may still call openBigQueryRegisterModal(). Phase E:
-    // routes through the new BQ-tab modal.
+    // Back-compat entry point — kept for any external wiring that may
+    // still call openBigQueryRegisterModal(). Phase E: routes through
+    // the new BQ-tab modal.
     function openBigQueryRegisterModal() {
         openRegisterModal('bigquery');
     }
@@ -4516,7 +4516,7 @@
         if (sourceType === 'keboola') {
             return openEditKeboolaModal(table);
         }
-        return _openEditLegacyModal(table);
+        return _openEditGenericModal(table);
     }
 
     function _openEditBqModal(table) {
@@ -4573,7 +4573,7 @@
         btn.textContent = 'Save Changes';
 
         // Reset + hydrate the Data Packages chip-input (parity with the
-        // legacy edit modal — see _openEditLegacyModal for full notes).
+        // legacy edit modal — see _openEditGenericModal for full notes).
         _editBqOriginalPackageIds = new Set();
         var bqChipHost = document.getElementById('editBqPackagesChips');
         if (bqChipHost) {
@@ -4595,14 +4595,17 @@
     // against /api/admin/data-packages/{id}/tables instead of replaying
     // every chip. One Set per modal because the BQ + Keboola + legacy
     // modals can coexist in the DOM and need independent origin state.
-    var _editLegacyOriginalPackageIds = new Set();
+    var _editGenericOriginalPackageIds = new Set();
     var _editBqOriginalPackageIds = new Set();
     var _editKbOriginalPackageIds = new Set();
 
-    function _openEditLegacyModal(table) {
-        // Legacy fallback for source_types that aren't bigquery or keboola
-        // (e.g. jira). Carries the Strategy + Primary Key + Description +
-        // Folder fields and a Data Packages chip-input (parity with BQ).
+    function _openEditGenericModal(table) {
+        // Catch-all fallback for source_types that aren't bigquery or keboola
+        // (e.g. jira, internal, future connectors). Carries the Strategy +
+        // Primary Key + Description + Folder fields and a Data Packages
+        // chip-input (parity with BQ). Renamed from _openEditLegacyModal
+        // — "Legacy" was misleading; this is the default, not a deprecated
+        // path.
         currentEditTableId = table.id;
         document.getElementById('editTableId').value = table.id || '';
         var sourceType = (table.source_type || '').toLowerCase();
@@ -4618,8 +4621,8 @@
         // chip-input.js inits idempotently at DOMContentLoaded; we add
         // chips via the public `.addChip()` API after a fresh memberships
         // fetch, after clearing whatever was left from a prior edit.
-        _editLegacyOriginalPackageIds = new Set();
-        var chipHost = document.getElementById('editLegacyPackagesChips');
+        _editGenericOriginalPackageIds = new Set();
+        var chipHost = document.getElementById('editGenericPackagesChips');
         if (chipHost) {
             // Reset chips between edits — clear hidden + visible state.
             var hidden = chipHost.querySelector('input[type="hidden"]');
@@ -4633,14 +4636,14 @@
             if (typeof chipHost.clearChips === 'function') {
                 chipHost.clearChips();
             }
-            _hydrateLegacyEditPackagesChips(table.id, chipHost);
+            _hydrateGenericEditPackagesChips(table.id, chipHost);
         }
 
         document.getElementById('editModal').classList.add('active');
     }
 
-    async function _hydrateLegacyEditPackagesChips(tableId, chipHost) {
-        return _hydrateEditPackagesChips(tableId, chipHost, _editLegacyOriginalPackageIds);
+    async function _hydrateGenericEditPackagesChips(tableId, chipHost) {
+        return _hydrateEditPackagesChips(tableId, chipHost, _editGenericOriginalPackageIds);
     }
 
     // Shared chip-input hydration for any edit modal. Pulls the package
@@ -4759,9 +4762,9 @@
     }
 
     async function saveTableEdit() {
-        // Legacy save handler — runs only for source_types that aren't
-        // bigquery (handled by saveBqTabEdit) or keboola (handled by
-        // saveKeboolaTabEdit). Currently the catch-all for jira-style rows.
+        // Generic / catch-all save handler — runs for source_types that
+        // aren't bigquery (handled by saveBqTabEdit) or keboola (handled
+        // by saveKeboolaTabEdit). Currently covers jira-style rows.
         if (!currentEditTableId) return;
 
         var btn = document.getElementById('editSubmitBtn');
@@ -4796,8 +4799,8 @@
             // roll back the table PUT.
             var legacyFails = await _diffApplyPackageMembership(
                 currentEditTableId,
-                document.getElementById('editLegacyPackagesChips'),
-                _editLegacyOriginalPackageIds
+                document.getElementById('editGenericPackagesChips'),
+                _editGenericOriginalPackageIds
             );
             if (legacyFails > 0) {
                 showToast(legacyFails + ' package membership change(s) failed', 'error');
@@ -5328,8 +5331,13 @@
         var unpkEl = document.getElementById('adminTablesLayoutUnpackaged');
         if (!pkgsEl || !unpkEl) return;
         try {
+            // v54: single round-trip for packages + their member ids via
+            // ``?include_table_ids=true``. Was N+1 (one GET per package
+            // after the list); on instances with 50+ packages the page
+            // took multiple seconds before this collapsed fetch.
             var [pkgResp, tableResp] = await Promise.all([
-                fetch('/api/admin/data-packages', { credentials: 'same-origin' }),
+                fetch('/api/admin/data-packages?include_table_ids=true',
+                      { credentials: 'same-origin' }),
                 fetch('/api/admin/registry', { credentials: 'same-origin' }),
             ]);
             if (!pkgResp.ok) {
@@ -5350,24 +5358,13 @@
                 ? registryBody
                 : (registryBody.tables || []);
 
-            // Fetch each package's member table-id list so we can place
-            // each table under a package + compute the Unpackaged set.
-            var detailFetches = pkgs.map(function(p) {
-                return fetch('/api/admin/data-packages/' + encodeURIComponent(p.id),
-                             { credentials: 'same-origin' })
-                    .then(function(rr) { return rr.ok ? rr.json() : null; })
-                    .catch(function() { return null; });
-            });
-            var details = await Promise.all(detailFetches);
-
-            // Build a map: table_id → [pkg names], so each row shows which
-            // packages it belongs to (a table can live in multiple).
             var tableById = {};
             allTables.forEach(function(t) { tableById[t.id] = t; });
             var packagedIds = new Set();
-            var pkgsWithTables = pkgs.map(function(p, i) {
-                var det = details[i] || {};
-                var memberIds = (det.tables || []).map(function(t) { return t.id; });
+            var pkgsWithTables = pkgs.map(function(p) {
+                // table_ids comes from the new ?include_table_ids=true
+                // server-side join. Empty packages omit the field — default to [].
+                var memberIds = p.table_ids || [];
                 memberIds.forEach(function(id) { packagedIds.add(id); });
                 var memberRows = memberIds
                     .map(function(id) { return tableById[id]; })

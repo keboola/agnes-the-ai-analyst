@@ -218,13 +218,34 @@
           // swatch row so the user sees which palette entry matches.
           const input = document.getElementById(targetId);
           if (input) {
+            // v54: visible hex chip beside the picker — Safari + Firefox
+            // hide the value entirely inside the native swatch; this
+            // gives admins a copy-able read of what's actually stored.
+            // Sits in-flow after the input so it doesn't fight the
+            // modal layout.
+            let hexChip = input.parentElement
+              ? input.parentElement.querySelector('.cf-hex-chip[data-for="' + targetId + '"]')
+              : null;
+            if (!hexChip && input.parentElement) {
+              hexChip = document.createElement('code');
+              hexChip.className = 'cf-hex-chip';
+              hexChip.dataset.for = targetId;
+              hexChip.style.cssText =
+                'display:inline-block; margin-top:4px; padding:1px 8px; ' +
+                'font-size:11px; font-family:ui-monospace, Menlo, monospace; ' +
+                'color:var(--text-secondary, #5f6368); background:rgba(0,0,0,0.04); ' +
+                'border-radius:4px;';
+              input.insertAdjacentElement('afterend', hexChip);
+            }
             const sync = () => {
               const cur = (input.value || '').toLowerCase();
               row.querySelectorAll('.cf-swatch').forEach((s) =>
                 s.classList.toggle('is-active', s.dataset.hex.toLowerCase() === cur)
               );
+              if (hexChip) hexChip.textContent = cur;
             };
             input.addEventListener('change', sync);
+            input.addEventListener('input', sync);
             sync();
           }
         }
@@ -241,6 +262,86 @@
         // injected modal too.
         const obs = new MutationObserver(_hydrateAll);
         obs.observe(document.body, { childList: true, subtree: true });
+      })();
+
+      // v54 admin-nav keyboard shortcuts — Vim-style two-key ``g <x>``
+      // sequences for the admin landing pages. Only fires when:
+      //   * caller is admin (the gated nav is rendered)
+      //   * user isn't typing into an input/textarea/contenteditable
+      //   * no modal is currently visible (Esc handler would conflict)
+      // First ``g`` starts a 1s window for the second key; outside the
+      // window the prefix resets. Hint chip surfaces briefly on the
+      // first key to teach the shortcut on the fly.
+      (function () {
+        // Admin-only — short-circuit if the nav isn't there.
+        if (!document.getElementById('adminNavMenu')) return;
+        const MAP = {
+          't': '/admin/tables',          // (data packages)
+          'a': '/admin/access',           // resource access
+          'm': '/admin/corporate-memory', // (memory)
+          'u': '/admin/users',
+          'g': '/admin/groups',
+          's': '/admin/server-config',
+          'l': '/admin/activity',         // (log)
+          'c': '/admin/marketplaces',     // (curated)
+          'k': '/admin/tokens',           // (keys/tokens)
+          'r': '/admin/store/submissions', // (review queue)
+        };
+        let pending = false;
+        let pendingTimer = null;
+        let hintEl = null;
+        function _showHint() {
+          if (!hintEl) {
+            hintEl = document.createElement('div');
+            hintEl.style.cssText =
+              'position:fixed; bottom:24px; left:24px; padding:6px 12px; ' +
+              'background:#202124; color:#fff; border-radius:6px; ' +
+              'font-family:ui-monospace, Menlo, monospace; font-size:12px; ' +
+              'box-shadow:0 4px 12px rgba(0,0,0,.2); z-index:3000;';
+            document.body.appendChild(hintEl);
+          }
+          hintEl.textContent = 'g … (t a m u g s l c k r)';
+          hintEl.style.display = 'block';
+        }
+        function _hideHint() {
+          if (hintEl) hintEl.style.display = 'none';
+        }
+        function _resetPending() {
+          pending = false;
+          if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+          _hideHint();
+        }
+        document.addEventListener('keydown', (e) => {
+          // Ignore modifier-key shortcuts (Cmd-T, Ctrl-T etc.) so we don't
+          // hijack browser-native bindings.
+          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                    t.isContentEditable)) return;
+          // Skip when any modal is visible — the Esc handler should win there.
+          const anyModalOpen = Array.from(document.querySelectorAll(
+            '.modal-overlay, [id$="Modal"], .modal.is-open'
+          )).some((el) => {
+            const cs = window.getComputedStyle(el);
+            return cs.display !== 'none' && cs.visibility !== 'hidden';
+          });
+          if (anyModalOpen) return;
+          const k = e.key.toLowerCase();
+          if (!pending && k === 'g') {
+            pending = true;
+            _showHint();
+            pendingTimer = setTimeout(_resetPending, 1000);
+            return;
+          }
+          if (pending) {
+            const target = MAP[k];
+            _resetPending();
+            if (target) {
+              e.preventDefault();
+              window.location.href = target;
+            }
+          }
+        });
       })();
 
       // Persist each admin-nav <details data-section=...> open/closed

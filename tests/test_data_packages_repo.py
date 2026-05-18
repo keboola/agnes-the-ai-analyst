@@ -103,13 +103,20 @@ class TestUpdate:
 
 
 class TestDelete:
-    def test_delete_removes_row(self, repo):
+    def test_delete_hides_row_from_get(self, repo):
+        # v54: delete() is now a soft delete. get() filters
+        # ``deleted_at IS NULL`` so the row vanishes from the default
+        # read path even though it's still on disk.
         pkg_id = repo.create(name="Sales", slug="sales", description=None,
                              icon=None, color=None, created_by="admin")
         repo.delete(pkg_id)
         assert repo.get(pkg_id) is None
+        # include_deleted=True is the escape hatch /restore uses.
+        assert repo.get(pkg_id, include_deleted=True) is not None
 
-    def test_delete_cascades_junction(self, repo):
+    def test_delete_preserves_junction(self, repo):
+        # v54: junction rows survive soft-delete so restore brings the
+        # package back whole. (Hard-delete still cascades — covered below.)
         pkg_id = repo.create(name="Sales", slug="sales", description=None,
                              icon=None, color=None, created_by="admin")
         repo.add_table(pkg_id, "t1", added_by="admin")
@@ -118,7 +125,28 @@ class TestDelete:
             "SELECT COUNT(*) FROM data_package_tables WHERE package_id = ?",
             [pkg_id],
         ).fetchone()[0]
+        assert n == 1
+
+    def test_restore_brings_row_back(self, repo):
+        pkg_id = repo.create(name="Sales", slug="sales", description=None,
+                             icon=None, color=None, created_by="admin")
+        repo.delete(pkg_id)
+        assert repo.get(pkg_id) is None
+        repo.restore(pkg_id)
+        assert repo.get(pkg_id) is not None
+
+    def test_hard_delete_cascades_junction(self, repo):
+        pkg_id = repo.create(name="Sales", slug="sales", description=None,
+                             icon=None, color=None, created_by="admin")
+        repo.add_table(pkg_id, "t1", added_by="admin")
+        repo.hard_delete(pkg_id)
+        n = repo.conn.execute(
+            "SELECT COUNT(*) FROM data_package_tables WHERE package_id = ?",
+            [pkg_id],
+        ).fetchone()[0]
         assert n == 0
+        # Row is gone even from include_deleted view.
+        assert repo.get(pkg_id, include_deleted=True) is None
 
 
 class TestSlugUniqueness:

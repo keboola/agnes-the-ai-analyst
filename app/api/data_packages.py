@@ -184,13 +184,27 @@ def _serialize(pkg: Dict[str, Any]) -> Dict[str, Any]:
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_data_packages(
     search: Optional[str] = None,
+    include_table_ids: bool = False,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all packages, optionally name-prefix filtered for the chip-input
-    typeahead on ``/admin/tables``."""
-    rows = DataPackagesRepository(conn).list(search=search)
-    return [_serialize(r) for r in rows]
+    typeahead on ``/admin/tables``.
+
+    ``include_table_ids=true`` (v54): each row carries a
+    ``table_ids: [...]`` array. The /admin/tables hydrator uses this to
+    collapse the prior N+1 fan-out (one ``GET /api/admin/data-packages/
+    {id}`` per package) into a single round-trip — see
+    ``DataPackagesRepository.list_member_ids_bulk``.
+    """
+    repo = DataPackagesRepository(conn)
+    rows = repo.list(search=search)
+    serialized = [_serialize(r) for r in rows]
+    if include_table_ids:
+        members_by_pkg = repo.list_member_ids_bulk()
+        for row in serialized:
+            row["table_ids"] = members_by_pkg.get(row["id"], [])
+    return serialized
 
 
 @router.post("", status_code=201)
