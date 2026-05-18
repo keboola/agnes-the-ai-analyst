@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_49():
+def test_schema_version_is_53():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -139,7 +139,25 @@ def test_schema_version_is_49():
     #            now render <img> when set, fall back to letter initials.
     #            Upload endpoint at POST /api/admin/uploads/cover-image
     #            persists files under ${DATA_DIR}/uploads/covers/<sha>.<ext>.
-    assert SCHEMA_VERSION == 50
+    # v50 → v51: lifecycle status + classification category for the
+    #            /catalog cards. data_packages adds `status` (enum:
+    #            prod/poc/coming-soon/draft, default prod) + `category`
+    #            (free text for the eyebrow above the card title);
+    #            memory_domains adds `status` only (the domain IS the
+    #            classification). Hero status checkboxes filter the
+    #            card grid; cover-corner pill renders non-prod values.
+    # v51 → v52: per-table docs columns on table_registry — feeds the
+    #            /catalog/t/<id> detail page. sample_questions (JSON
+    #            array of strings), things_to_know (markdown-ish text),
+    #            pairs_well_with (JSON array of related table_registry
+    #            ids). Admin-editable via PATCH /api/admin/registry/{id}/docs.
+    # v52 → v53: recipes table — admin-curated multi-table query
+    #            templates surfaced as a third "Recipes" tab on
+    #            /catalog. Not stack-subscribable (analysts use a
+    #            recipe, they don't opt in). related_table_ids is a
+    #            JSON array of table_registry ids drawing the
+    #            drilldown's "Touches tables" links.
+    assert SCHEMA_VERSION == 53
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

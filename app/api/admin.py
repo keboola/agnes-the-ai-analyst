@@ -2764,6 +2764,16 @@ async def update_table(
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
 
+        # v52: per-table docs fields (sample_questions / things_to_know /
+        # pairs_well_with) live on table_registry but have their own
+        # PATCH /registry/{id}/docs endpoint. ``repo.register()`` doesn't
+        # know them; stripping here keeps the read-modify-write loop the
+        # PUT handler relies on (existing → merged → register) from
+        # blowing up with TypeError when the docs columns are populated.
+        for _docs_key in ("sample_questions", "things_to_know",
+                          "pairs_well_with"):
+            merged.pop(_docs_key, None)
+
         # When switching the merged record away from materialized mode, drop
         # the stale source_query — the request validator can't clear it via
         # the `if v is not None` filter above. Without this, a remote/local
