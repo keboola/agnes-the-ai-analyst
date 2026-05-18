@@ -1094,7 +1094,7 @@ class TestInstallCycle:
             f"/api/store/entities/{eid}?hard=true",
             cookies={"access_token": admin_token},
         )
-        assert d.status_code == 200, d.text
+        assert d.status_code == 204, d.text
 
         # GET 404 + install row gone.
         assert web_client.get(

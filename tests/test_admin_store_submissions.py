@@ -1737,7 +1737,7 @@ class TestQuarantineGates:
         r = web_client.delete(
             f"/api/store/entities/{entity_id}", cookies=admin_cookies,
         )
-        assert r.status_code == 200, r.text
+        assert r.status_code == 204, r.text
 
     def test_non_owner_non_admin_cannot_view_quarantined(self, web_client):
         """Random user navigating to ANY per-entity asset endpoint gets
