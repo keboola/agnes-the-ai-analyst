@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_55():
+def test_schema_version_is_56():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -171,7 +171,15 @@ def test_schema_version_is_55():
     #            empty state. Admin queue surfaces them with approve/
     #            reject; approve also creates the real memory_domains
     #            row and stamps suggestion.created_domain_id.
-    assert SCHEMA_VERSION == 55
+    # v55 → v56: extended-content columns on ``data_packages``
+    #            (owner_name, owner_team, tags, long_description,
+    #            when_to_use, when_not_to_use, example_questions) +
+    #            structured per-table doc columns on ``table_registry``
+    #            (grain, platforms, partition_col, history, gotchas).
+    #            Backs the /catalog/p/<slug> rewrite per the Foundry
+    #            Data team extended-descriptions spec. All additive +
+    #            NULLABLE so existing instances upgrade cleanly.
+    assert SCHEMA_VERSION == 56
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
