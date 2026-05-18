@@ -11,6 +11,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **GET `/api/memory/admin/{id}`** — single-item fetch for admin. Powers
+  the `#item-<id>` deep link from `/memory/d/<slug>`'s Edit affordance:
+  the page now fetches the row directly (no pagination racing) and
+  injects it into `_itemsById` so the edit modal opens reliably even
+  when the item is beyond page 1 of All Items.
 - **PATCH /api/memory/admin/{id}** accepts a new `domain_ids: list[str]`
   field that atomically replaces the item's full memory-domain membership
   via `knowledge_item_domains`. The admin item-edit modal now sends this
@@ -42,6 +47,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   package membership without leaving the edit dialog.
 
 ### Changed
+- **Create-resource flow no longer pops a second modal.** Both Create
+  Data Package (`/admin/tables`) and Create Memory Domain
+  (`/admin/corporate-memory`) had a step-2 RBAC modal that opened on
+  top of the create modal after success — confusing per user feedback
+  ("modal-on-modal"). The per-group Available|Required matrix is now
+  an inline collapsible "Group access (optional)" section inside the
+  create modal itself, lazy-loaded on first open. The step-2 modals
+  + their `*Rbac*` handlers were removed; the dead-stub functions are
+  kept for one release for any external callers that still reference
+  them.
 - **Admin sidebar** — the "Data" section heading was renamed to "Data
   Packages" so the parent matches the noun used everywhere else
   (`/catalog`, `/admin/tables` package-centric layout, `agnes catalog`).

@@ -1195,6 +1195,30 @@ async def admin_resolve_duplicate_candidate(
 # ---- Admin PATCH + bulk-update + tree endpoints (issue #62) ----
 
 
+@router.get("/admin/{item_id}")
+async def admin_get_item(
+    item_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Single-item GET — powers the ``#item-<id>`` deep link from
+    `/memory/d/<slug>`'s Edit affordance. The admin page uses this to
+    fetch the row directly (bypassing pagination of the All-Items list)
+    so the edit modal opens reliably regardless of which page the item
+    happens to fall on. Returns the same dict shape as the list rows.
+
+    Route placement note: declared AFTER all named ``/admin/<word>`` GET
+    routes (pending, audit, contradictions, duplicate-candidates) so the
+    catch-all ``{item_id}`` doesn't shadow them — FastAPI matches in
+    declaration order.
+    """
+    repo = KnowledgeRepository(conn)
+    item = repo.get_by_id(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="item_not_found")
+    return item
+
+
 @router.patch("/admin/{item_id}")
 async def admin_patch_item(
     item_id: str,

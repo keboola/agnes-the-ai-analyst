@@ -1891,6 +1891,33 @@
               </div>
             </div>
           </div>
+
+          {# Inline RBAC matrix — replaces the modal-on-modal step-2 that
+             popped up after Create succeeded. <details> is collapsed by
+             default so the modal stays compact for admins who'll set
+             access later via the Resource Access page; opening it loads
+             the group list lazily. submitCreateDataPackage() reads any
+             chosen requirements and POSTs grants in parallel. #}
+          <details class="form-group" id="cdp-rbac-details"
+                   style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+            <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
+              Group access
+              <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">(optional)</span>
+            </summary>
+            <p class="form-hint" style="margin:8px 0;">
+              Grant per-group access tiers — <em>available</em> shows the
+              package in the group's Browse; <em>required</em>
+              auto-installs it into the group's stack on next pull. Leave
+              everything blank to manage access later from
+              <a href="/admin/access">Resource access</a>.
+            </p>
+            <div id="cdp-rbac-rows"
+                 style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
+              <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
+                Click to load groups…
+              </div>
+            </div>
+          </details>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" onclick="closeCreateDataPackageModal()">Cancel</button>
@@ -1997,6 +2024,11 @@
       }
       function closeCreateDataPackageModal() {
         _cdpHost = null;
+        // Re-collapse + invalidate the lazy-loaded RBAC matrix so the
+        // next "+ New Data Package" starts with a clean, unloaded state.
+        const det = document.getElementById('cdp-rbac-details');
+        if (det) det.open = false;
+        _cdpRbacLoaded = false;
         document.getElementById('createDataPackageModal').style.display = 'none';
       }
 
@@ -2302,30 +2334,31 @@
             return;
           }
           const body = await r.json();
+          const newPkgId = body.id;
           if (_cdpHost && _cdpHost.addChip) {
-            _cdpHost.addChip({ id: body.id, name: payload.name });
+            _cdpHost.addChip({ id: newPkgId, name: payload.name });
           }
-          // Carry host across the step-1 close so step 2's "Skip" returns
-          // focus to the chip-input. _cdpHost is reset by close(); we
-          // re-stash and re-attach AFTER hiding step 1.
-          const carriedHost = _cdpHost;
-          _cdpNewId = body.id;
-          _cdpNewName = payload.name;
-          document.getElementById('createDataPackageModal').style.display = 'none';
-          _cdpHost = carriedHost;
-          // Fire-and-forget refresh: even if the admin lingers on the
-          // step-2 RBAC modal (or closes it via the backdrop), the
-          // package card appears in the list underneath. Was the
-          // "I created it but it didn't appear" E2E bug.
+
+          // Inline grants — read any per-group requirement the admin set
+          // in the collapsible "Group access" section and POST in parallel.
+          // Per-grant failures surface in the success toast; they don't
+          // roll back the package creation (admin can retry from
+          // /admin/access).
+          const grantFailures = await _submitCdpGrantsInline(newPkgId);
+
+          closeCreateDataPackageModal();
+
           if (typeof loadDataPackagesSection === 'function') {
             try { loadDataPackagesSection(); } catch (_) {}
           }
-          // Visible success feedback before the silent step-1 → step-2
-          // modal transition (another E2E complaint).
           if (typeof showToast === 'function') {
-            showToast('Data Package "' + payload.name + '" created', 'success');
+            const baseMsg = 'Data Package "' + payload.name + '" created';
+            if (grantFailures > 0) {
+              showToast(baseMsg + ' — ' + grantFailures + ' grant(s) failed', 'error');
+            } else {
+              showToast(baseMsg, 'success');
+            }
           }
-          openCreateDataPackageRbacModal();
         } catch (e) {
           alert('Network error: ' + e.message);
           btn.disabled = false;
@@ -2334,92 +2367,95 @@
         }
       }
 
-      // ── Step 2: per-group RBAC assign (Task 8.10b — spec 7.4) ───
-      // Renders a Group × Requirement matrix; rows POST /api/admin/grants
-      // individually with the chosen `available|required` tier. Skip
-      // short-circuits without grants — the package was already created
-      // in step 1 and the chip is in the chip-input.
-      let _cdpNewId = null;
-      let _cdpNewName = null;
-
-      async function openCreateDataPackageRbacModal() {
-        document.getElementById('cdp-rbac-name').textContent = _cdpNewName || '';
+      // Lazy-load groups into the inline RBAC matrix the first time the
+      // <details> is opened. Subsequent opens are no-ops. Groups are
+      // small + admin-only data — cache for the lifetime of the modal.
+      let _cdpRbacLoaded = false;
+      async function _cdpHydrateRbacMatrix() {
+        if (_cdpRbacLoaded) return;
         const rowsEl = document.getElementById('cdp-rbac-rows');
-        rowsEl.innerHTML = '<div class="loading" style="padding:12px; color:#5f6368;">Loading groups…</div>';
-        document.getElementById('createDataPackageRbacModal').style.display = 'flex';
+        rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups…</div>';
         try {
           const r = await fetch('/api/admin/groups', { credentials: 'same-origin' });
-          if (!r.ok) throw new Error('groups fetch ' + r.status);
+          if (!r.ok) throw new Error('HTTP ' + r.status);
           const body = await r.json();
           const groups = Array.isArray(body) ? body : (body.groups || []);
+          if (!groups.length) {
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+            return;
+          }
           rowsEl.innerHTML = groups.map(g => {
             const gid = String(g.id || g.name || '');
             const gname = String(g.name || gid);
             return (
               '<div data-group-id="' + gid + '" '
               + 'style="display:flex; gap:8px; align-items:center; '
-              + 'padding:6px; border:1px solid #eceff1; border-radius:6px;">'
+              +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
               + '<span style="flex:1;">' + gname + '</span>'
-              + '<select class="cdp-rbac-req" style="padding:4px; border:1px solid #eceff1; border-radius:4px;">'
+              + '<select class="cdp-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
               + '<option value="">(no grant)</option>'
               + '<option value="available">available</option>'
               + '<option value="required">required</option>'
               + '</select>'
               + '</div>'
             );
-          }).join('') || '<div style="padding:12px; color:#5f6368;">No groups defined yet.</div>';
+          }).join('');
+          _cdpRbacLoaded = true;
         } catch (e) {
-          rowsEl.innerHTML = '<div style="padding:12px; color:#5f6368;">Failed to load groups: ' + e.message + '</div>';
+          rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load groups: ' + e.message + '</div>';
         }
       }
+      // Wire the lazy load on first <details> open. Re-fetched if the
+      // admin re-opens a fresh modal (closeCreateDataPackageModal resets
+      // the flag).
+      document.addEventListener('toggle', (e) => {
+        if (e.target && e.target.id === 'cdp-rbac-details' && e.target.open) {
+          _cdpHydrateRbacMatrix();
+        }
+      }, true);
+
+      async function _submitCdpGrantsInline(pkgId) {
+        const rows = document.querySelectorAll('#cdp-rbac-rows [data-group-id]');
+        const calls = [];
+        rows.forEach(row => {
+          const gid = row.getAttribute('data-group-id');
+          const sel = row.querySelector('.cdp-rbac-req');
+          const req = sel && sel.value;
+          if (!req) return;
+          calls.push(fetch('/api/admin/grants', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              group_id: gid,
+              resource_type: 'data_package',
+              resource_id: pkgId,
+              requirement: req,
+            }),
+          }));
+        });
+        if (!calls.length) return 0;
+        const results = await Promise.allSettled(calls);
+        return results.filter(
+          r => r.status === 'rejected' || (r.value && !r.value.ok)
+        ).length;
+      }
+
+      // ── (removed) Step-2 RBAC modal-on-modal — folded into the
+      // create modal's collapsible "Group access" section. Stubs kept
+      // for callers that may still reference these names; they're no-ops
+      // now. Safe to delete in a follow-up once the audit confirms no
+      // other call sites. ──
+      let _cdpNewId = null;
+      let _cdpNewName = null;
+
+      function openCreateDataPackageRbacModal() { /* deprecated — inlined */ }
       function skipCreateDataPackageRbac() {
-        _cdpNewId = null;
-        _cdpNewName = null;
-        document.getElementById('createDataPackageRbacModal').style.display = 'none';
-        // Refresh the top-level Data Packages grid so the newly-created
-        // package shows up without a full page reload. No-op when the
-        // hydrator isn't loaded yet (e.g. very first render).
         if (typeof loadDataPackagesSection === 'function') {
           loadDataPackagesSection();
         }
       }
-      async function submitCreateDataPackageRbac() {
-        const btn = document.getElementById('cdp-rbac-save-btn');
-        btn.disabled = true;
-        try {
-          const rows = document.querySelectorAll('#cdp-rbac-rows [data-group-id]');
-          const calls = [];
-          rows.forEach(row => {
-            const gid = row.getAttribute('data-group-id');
-            const sel = row.querySelector('.cdp-rbac-req');
-            const req = sel && sel.value;
-            if (!req) return;
-            calls.push(fetch('/api/admin/grants', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              credentials: 'same-origin',
-              body: JSON.stringify({
-                group_id: gid,
-                resource_type: 'data_package',
-                resource_id: _cdpNewId,
-                requirement: req,
-              }),
-            }));
-          });
-          if (calls.length) {
-            const results = await Promise.allSettled(calls);
-            const fails = results.filter(r => r.status === 'rejected' || (r.value && !r.value.ok));
-            if (fails.length) {
-              alert(fails.length + ' grant(s) failed; rest succeeded.');
-            }
-          }
-          skipCreateDataPackageRbac();
-        } catch (e) {
-          alert('Network error: ' + e.message);
-        } finally {
-          btn.disabled = false;
-        }
-      }
+      function submitCreateDataPackageRbac() { /* deprecated — inlined */ }
 
       // Hook: chip-input on this page fires `chip-create` when the user
       // selects the "+ Create new" tail row in the dropdown.
@@ -2782,38 +2818,10 @@
       document.addEventListener('DOMContentLoaded', initBulkAssignFromQuery);
     </script>
 
-    <!-- ═══════════════ Create Data Package RBAC assign (Task 8.10b — step 2) ═══════════════
-         Optional second step rendered after the package is created.
-         Per-group Available | Required matrix; Skip short-circuits.
-         Mirrors the Memory Domain RBAC step in /admin/corporate-memory. -->
-    <div class="modal-overlay" id="createDataPackageRbacModal" style="display:none;">
-      <div class="modal" style="max-width:560px;">
-        <div class="modal-header">
-          <h2 style="display:flex; align-items:center; gap:8px;">
-            <span style="display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:#dcfce7; color:#15803d;">✓</span>
-            <span><span id="cdp-rbac-name"></span> created — assign access? <span style="color:#5f6368; font-weight:normal; font-size:14px;">(optional)</span></span>
-          </h2>
-          <button class="modal-close" onclick="skipCreateDataPackageRbac()">×</button>
-        </div>
-        <div class="modal-body">
-          <p class="form-hint" style="margin-bottom:12px;">
-            Grant per-group access tiers — <em>available</em> shows
-            the package in the group's Browse; <em>required</em> auto-installs
-            it into the group's stack on next pull. You can skip this and
-            grant access later from <a href="/admin/access">Access control</a>.
-          </p>
-          <div id="cdp-rbac-rows" style="display:flex; flex-direction:column; gap:6px; max-height:50vh; overflow-y:auto;">
-            <div class="loading" style="padding:12px; color:#5f6368;">Loading groups…</div>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="skipCreateDataPackageRbac()">Skip</button>
-          <button class="btn btn-primary" id="cdp-rbac-save-btn" onclick="submitCreateDataPackageRbac()">
-            Save grants
-          </button>
-        </div>
-      </div>
-    </div>
+    {# (removed) Create Data Package RBAC step-2 modal — the per-group
+       Available|Required matrix is now an inline collapsible section
+       inside #createDataPackageModal (#cdp-rbac-details). The modal-on-
+       modal pattern was confusing per user feedback. #}
 
     <!-- ═══════════════ Bulk-assign tables → package ═══════════════
          Replaces the 50-clicks workflow ("edit each table individually
