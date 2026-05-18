@@ -104,7 +104,7 @@ def _suffixed_already_taken(
     The Store namespace is **flat** in Claude Code — two plugins/skills/agents
     that share a ``name`` collide in the served marketplace catalog (the
     ``manifest_name`` is unique-key for ``/plugin`` lookup) and on-disk inside
-    the ``agnes-store-bundle`` (skills/<suffixed>/SKILL.md is the dir name).
+    the ``flea`` bundle (skills/<suffixed>/SKILL.md is the dir name).
 
     ``sanitize_username`` is many-to-one (``alice.smith`` and ``alice_smith``
     both → ``alice-smith``), so the per-owner UNIQUE on
@@ -2619,7 +2619,7 @@ async def uninstall_entity(
 # `agnes admin store {pull,push}` CLI commands which back up the Store to a
 # git repo (or restore from one). Bundle format:
 #
-#     agnes-store-bundle.zip
+#     flea.zip
 #     ├── manifest.json                 ← {"format":1,"generated_at":..., "entries":[...]}
 #     └── entities/<entity_id>/
 #         ├── plugin/...                ← canonical Claude Code plugin tree
@@ -2846,7 +2846,7 @@ async def export_bundle(
         content=payload,
         media_type="application/zip",
         headers={
-            "Content-Disposition": 'attachment; filename="agnes-store-bundle.zip"',
+            "Content-Disposition": 'attachment; filename="flea.zip"',
             "X-Bundle-Entry-Count": str(len(items)),
         },
     )

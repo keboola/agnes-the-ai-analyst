@@ -180,15 +180,20 @@ marketplace. ``is_valid_slug`` in ``src/marketplace.py`` rejects any admin
 marketplace registering ``store`` as its slug, so collisions with admin
 content are impossible."""
 
-BUNDLE_PLUGIN_NAME = "agnes-store-bundle"
+BUNDLE_PLUGIN_NAME = "flea"
 """Synth plugin that wraps every Store-installed skill and agent for a user
 into a single Claude Code plugin. Skill / agent uploads share this single
 plugin in the served marketplace; only ``type='plugin'`` Store entities
-materialize as their own plugin entry. See ``resolve_user_marketplace``."""
+materialize as their own plugin entry. See ``resolve_user_marketplace``.
 
-BUNDLE_PREFIXED_NAME = "store-bundle"
+v49 phase-4: renamed from ``agnes-store-bundle`` to ``flea``. Historic
+session JSONL events still carry the old prefix — attribution layer in
+``services/session_processors/usage_lib.py`` accepts both."""
+
+BUNDLE_PREFIXED_NAME = "flea"
 """On-disk directory name in the served ZIP / git tree for the bundle plugin.
-Lives under ``plugins/store-bundle/...``."""
+Lives under ``plugins/flea/...``. v49 phase-4: renamed from ``store-bundle``
+for parity with the manifest plugin name."""
 
 BUNDLE_DESCRIPTION = "Skills and agents you've installed from the Agnes Store"
 

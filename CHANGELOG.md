@@ -11,6 +11,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Changed
+- **BREAKING (marketplace identifier)**: synthetic plugin bundling flea
+  skills + agents renamed from `agnes-store-bundle` to `flea`. The
+  served `marketplace.json` now lists `flea` (previously
+  `agnes-store-bundle`); on-disk ZIP / git tree path is
+  `plugins/flea/` (previously `plugins/store-bundle/`). Claude Code
+  JSONL invocation prefix becomes `flea:<skill>` going forward. The
+  attribution layer (`services/session_processors/usage_lib.py`)
+  accepts BOTH new and legacy prefixes via
+  `_LEGACY_FLEA_BUNDLE_PREFIXES` so historic session events
+  (~90-day `usage_events` retention) continue attributing to
+  `source='flea'`. `USAGE_PROCESSOR_VERSION` bumped 6→7 to force a
+  reprocess pass.
+
+  **Client rollover**: `agnes refresh-marketplace` will install the
+  new `flea@agnes` plugin and reset the local marketplace clone (the
+  old `plugins/store-bundle/` source folder gets removed from disk
+  via `git reset --hard`). Whether Claude Code itself auto-prunes
+  the orphan `agnes-store-bundle@agnes` registry entry is
+  undocumented in our codebase — to be verified empirically on the
+  dev VM. If the orphan entry lingers, a follow-up will add targeted
+  cleanup; until then users can manually run
+  `claude plugin uninstall agnes-store-bundle@agnes`.
+
 - Flea marketplace cards and detail pages now render the user-friendly
   **title** instead of the kebab-case `<name>-by-<owner>` slug, the
   owner's full name from `users.name` (with email → `owner_username`

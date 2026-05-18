@@ -1276,7 +1276,7 @@ class TestInstallCycle:
 
 class TestMarketplaceBundle:
     """End-to-end: the served /marketplace.zip merges installed Store skills
-    and agents into a single ``store-bundle`` plugin, while ``type='plugin'``
+    and agents into a single ``flea`` plugin, while ``type='plugin'``
     Store entities stay standalone."""
 
     def _zip_entries(self, content: bytes) -> set[str]:
@@ -1325,10 +1325,10 @@ class TestMarketplaceBundle:
         names = self._zip_entries(r.content)
 
         # Bundle exists with synth plugin.json + every skill + agent file.
-        assert "plugins/store-bundle/.claude-plugin/plugin.json" in names
-        assert "plugins/store-bundle/skills/alpha-by-owner/SKILL.md" in names
-        assert "plugins/store-bundle/skills/beta-by-owner/SKILL.md" in names
-        assert "plugins/store-bundle/agents/gamma-by-owner.md" in names
+        assert "plugins/flea/.claude-plugin/plugin.json" in names
+        assert "plugins/flea/skills/alpha-by-owner/SKILL.md" in names
+        assert "plugins/flea/skills/beta-by-owner/SKILL.md" in names
+        assert "plugins/flea/agents/gamma-by-owner.md" in names
 
         # The plugin-typed entity is a separate dir; skills inside its tree
         # carry their original (non-suffixed) names per spec.
@@ -1339,13 +1339,13 @@ class TestMarketplaceBundle:
             r.content, ".claude-plugin/marketplace.json",
         ))
         names_in_catalog = sorted(p["name"] for p in manifest["plugins"])
-        assert names_in_catalog == ["agnes-store-bundle", "delta-by-owner"]
+        assert names_in_catalog == ["delta-by-owner", "flea"]
 
         # Bundle's own plugin.json carries the synth fields.
         bundle_pj = _json.loads(self._read_zip_file(
-            r.content, "plugins/store-bundle/.claude-plugin/plugin.json",
+            r.content, "plugins/flea/.claude-plugin/plugin.json",
         ))
-        assert bundle_pj["name"] == "agnes-store-bundle"
+        assert bundle_pj["name"] == "flea"
         assert bundle_pj["version"]  # non-empty hash
 
     def test_only_skills_yields_only_bundle(self, web_client):
@@ -1361,7 +1361,7 @@ class TestMarketplaceBundle:
         r = web_client.get("/marketplace.zip", cookies=installer_cookies)
         assert r.status_code == 200
         names = self._zip_entries(r.content)
-        assert "plugins/store-bundle/skills/solo-by-ob/SKILL.md" in names
+        assert "plugins/flea/skills/solo-by-ob/SKILL.md" in names
         # No standalone entry for the skill — bundle is the only Store-derived
         # plugin dir present.
         assert not any(n.startswith(f"plugins/store-{eid}/") for n in names)
@@ -1385,15 +1385,15 @@ class TestMarketplaceBundle:
         # Both skills present.
         r1 = web_client.get("/marketplace.zip", cookies=installer_cookies)
         names1 = self._zip_entries(r1.content)
-        assert "plugins/store-bundle/skills/keepme-by-oc/SKILL.md" in names1
-        assert "plugins/store-bundle/skills/dropme-by-oc/SKILL.md" in names1
+        assert "plugins/flea/skills/keepme-by-oc/SKILL.md" in names1
+        assert "plugins/flea/skills/dropme-by-oc/SKILL.md" in names1
 
         # Uninstall one — bundle still exists, but only the kept skill remains.
         web_client.delete(f"/api/store/entities/{b}/install", cookies=installer_cookies)
         r2 = web_client.get("/marketplace.zip", cookies=installer_cookies)
         names2 = self._zip_entries(r2.content)
-        assert "plugins/store-bundle/skills/keepme-by-oc/SKILL.md" in names2
-        assert "plugins/store-bundle/skills/dropme-by-oc/SKILL.md" not in names2
+        assert "plugins/flea/skills/keepme-by-oc/SKILL.md" in names2
+        assert "plugins/flea/skills/dropme-by-oc/SKILL.md" not in names2
 
 
 class TestWebPages:

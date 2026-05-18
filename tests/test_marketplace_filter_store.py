@@ -143,8 +143,8 @@ class TestResolveUserMarketplace:
         admin_e = next(p for p in result if p["source"] == "marketplace")
         bundle = next(p for p in result if p["source"] == "store-bundle")
         assert admin_e["prefixed_name"] == "mkt-p1"
-        assert bundle["prefixed_name"] == "store-bundle"
-        assert bundle["manifest_name"] == "agnes-store-bundle"
+        assert bundle["prefixed_name"] == "flea"
+        assert bundle["manifest_name"] == "flea"
         assert bundle["marketplace_id"] == "store"
         assert bundle["plugin_dir"] is None
         assert eid in bundle["bundle_entity_ids"]
