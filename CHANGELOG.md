@@ -14,13 +14,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `POST /api/sync/table-subscriptions` now enforces the same RBAC gate as
   `POST /api/sync/settings` — authenticated users can no longer subscribe to
   tables they have no `resource_grants` row for (ADV-001, issue #336).
-- `GET /webhooks/jira/health` is now admin-only; `jira_domain` removed from
-  the response to prevent anonymous information disclosure (ADV-002).
-- `GET /api/version` no longer exposes `commit_sha` or `schema_version` to
-  unauthenticated callers (ADV-003).
-- `/docs`, `/redoc`, and `/openapi.json` now require a valid session — the
-  full admin API surface is no longer visible to unauthenticated requests
-  (ADV-005).
+- **BREAKING:** `GET /webhooks/jira/health` is now admin-only; `jira_domain`
+  removed from the response to prevent anonymous information disclosure
+  (ADV-002). Uptime monitors that polled this endpoint anonymously must now
+  attach an admin PAT or switch to `/api/health` (which remains public).
+- **BREAKING:** `GET /api/version` no longer exposes `commit_sha` or
+  `schema_version` — only `version`, `channel`, `image_tag`, `deployed_at`
+  remain (ADV-003). Deploy scripts / dashboards scraping the removed fields
+  must either authenticate against a (separate, forthcoming) admin endpoint
+  or read them from the GHCR image labels.
+- **BREAKING:** `/docs`, `/redoc`, and `/openapi.json` now require a valid
+  session — the full admin API surface is no longer visible to
+  unauthenticated requests (ADV-005). CLI tools generating client code from
+  the schema must attach a PAT or use an authenticated browser session.
 
 ### Changed
 - `/cli/` and `/webhooks/` prefixes added to `_API_PATH_PREFIXES` so any

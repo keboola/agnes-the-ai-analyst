@@ -233,7 +233,7 @@ async def list_users(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return [_to_response(u, conn) for u in UserRepository(conn).list_all(limit=limit, offset=offset)]
+    return [_to_response(u, conn) for u in UserRepository(conn).list_paginated(limit=limit, offset=offset)]
 
 
 @router.get("/{user_id}", response_model=UserResponse)

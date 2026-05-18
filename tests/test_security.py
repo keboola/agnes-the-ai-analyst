@@ -522,3 +522,52 @@ class TestApiHardening336:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
+
+    # Regression guard for the reviewer-flagged auth-bypass on /auth/bootstrap
+    # introduced (and reverted) during ADV-009. The original ADV-009 fix
+    # repurposed UserRepository.list_all() to default to LIMIT 1000, which
+    # silently broke the bootstrap check `[u for u in list_all() if
+    # u.get('password_hash')]` on instances with >1000 users: if no
+    # password-holder landed in the email-sorted first page, bootstrap
+    # re-opened and an unauthenticated caller could claim admin.
+    #
+    # Fix shape: `list_all()` returns EVERY row (no LIMIT), API surface uses
+    # the new `list_paginated(limit, offset)` instead. The two tests below
+    # lock in both halves of the contract so a future cleanup doesn't
+    # silently re-introduce the bypass.
+    def test_users_list_all_returns_every_row_no_silent_limit(self):
+        """``UserRepository.list_all()`` must NOT apply a default LIMIT
+        — the bootstrap-lock check at ``app/auth/router.py`` and the
+        startup no-password warning at ``app/main.py`` both call this
+        no-arg and depend on exhaustive enumeration. Silent pagination
+        here is a real auth-bypass on instances with >LIMIT users."""
+        import inspect
+        from src.repositories.users import UserRepository
+        sig = inspect.signature(UserRepository.list_all)
+        # No params (other than self) means no caller can accidentally
+        # pass limit=N and end up with a windowed result.
+        non_self_params = [
+            p for p in sig.parameters.values() if p.name != "self"
+        ]
+        assert non_self_params == [], (
+            f"UserRepository.list_all() must take no arguments other than "
+            f"self (got {non_self_params}). Add limit/offset to "
+            f"list_paginated() instead — list_all() is the "
+            f"bootstrap-lock / startup-warning path and MUST enumerate "
+            f"every row."
+        )
+
+    def test_users_list_paginated_is_separate_method(self):
+        """The paginated variant must be a distinct method named
+        ``list_paginated`` (not an overload of ``list_all``) so call
+        sites are explicit about which contract they want.
+        """
+        from src.repositories.users import UserRepository
+        assert hasattr(UserRepository, "list_paginated"), (
+            "API-surface pagination must live on a separate "
+            "`list_paginated` method, not on `list_all`."
+        )
+        import inspect
+        sig = inspect.signature(UserRepository.list_paginated)
+        param_names = {p.name for p in sig.parameters.values() if p.name != "self"}
+        assert "limit" in param_names and "offset" in param_names
