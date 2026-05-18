@@ -96,7 +96,7 @@ async def create_or_update_metric(
     return metric
 
 
-@router.delete("/api/admin/metrics/{metric_id:path}")
+@router.delete("/api/admin/metrics/{metric_id:path}", status_code=204)
 async def delete_metric(
     metric_id: str,
     user: dict = Depends(require_admin),
@@ -107,7 +107,6 @@ async def delete_metric(
     deleted = repo.delete(metric_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Metric '{metric_id}' not found")
-    return {"status": "deleted", "id": metric_id}
 
 
 @router.post("/api/admin/metrics/import", status_code=200)
