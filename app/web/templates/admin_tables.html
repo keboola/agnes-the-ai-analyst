@@ -2236,7 +2236,8 @@
     }
     {% endif %}{# data_source_type == 'keboola' — discover helpers #}
 
-    // ── Keboola tab edit modal (Phase F2) ──────────────────────────
+    // ── Keboola edit-modal sync-mode helpers (always needed — radio buttons
+    //    are rendered for all instance types) ───────────────────────────────
 
     function _getEditKbSyncMode() {
         var el = document.querySelector('input[name="editKbSyncMode"]:checked');
@@ -2257,6 +2258,7 @@
         if (mode === 'direct') onEditKbStrategyChange();
     }
 
+    {% if data_source_type == 'keboola' %}{# Phase F2 edit modal + prefill — keboola-only #}
     function _getEditKbStrategy() {
         var el = document.getElementById('editKbStrategy');
         return el ? el.value : 'full_refresh';
@@ -2484,6 +2486,7 @@
         }
         ta.value = 'SELECT *\nFROM kbc."' + bucket + '"."' + sourceTable + '"\nWHERE -- your filter here';
     }
+    {% endif %}{# data_source_type == 'keboola' — Phase F2 edit modal + prefill #}
 
     // C3: removed dead helper _buildKeboolaLegacyPayload — the Phase F
     // _buildKeboolaPayload (above) replaced it.
