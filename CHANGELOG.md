@@ -36,6 +36,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   rendered in the hero telemetry chip below; owner + bundle size
   live in the Details sidebar. The row was duplicating those three
   values in a less-prominent position.
+- Read paths (marketplace card name, detail manifest_name, response
+  `invocation_name`, My-Stack invocation, served-bundle manifest in
+  `marketplace_filter`) now source the suffixed slug from
+  `store_entities.synthetic_name` directly instead of recomputing
+  `<name>-by-<owner_username>` on the fly. The column is NOT NULL +
+  the repo `create` / `update` / `archive` paths keep it in sync, so
+  reading it is safe; no fallback to a recompute — a missing value
+  would be a genuine bug worth surfacing as `KeyError`, not masked.
+  `suffixed_name()` stays as the primitive used by **write paths
+  only** (POST create insert, PUT rename collision check + new
+  suffix for `_rename_baked_tree` + new synthetic for `repo.update`,
+  archive new/old suffix for on-disk rename). `_suffixed_already_taken`
+  collision query swaps the inline `name || '-by-' || owner_username`
+  concat for `WHERE synthetic_name = ?` — indexable + single source
+  of truth.
 
 ### Added
 - Flea-market upload + edit forms now collect a user-friendly **Title**

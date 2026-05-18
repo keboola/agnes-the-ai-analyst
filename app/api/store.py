@@ -117,11 +117,15 @@ def _suffixed_already_taken(
     check so the same owner can re-upload under the original name after
     archive. The archive path renames the row to free the slug, so this
     flag is belt-and-braces.
+
+    v49 phase-3: query the stored ``synthetic_name`` column instead of
+    the inline concat ``name || '-by-' || owner_username``. Phase 1's
+    migration backfilled the column for every row and the repo write
+    paths keep it in sync, so both expressions return the same set —
+    but querying the column is indexable and avoids divergence if the
+    naming formula ever changes (single source of truth).
     """
-    sql = (
-        "SELECT id FROM store_entities "
-        "WHERE name || '-by-' || owner_username = ?"
-    )
+    sql = "SELECT id FROM store_entities WHERE synthetic_name = ?"
     params: List[Any] = [suffixed]
     if exclude_entity_id:
         sql += " AND id != ?"
@@ -565,7 +569,11 @@ def _entity_to_response(
         doc_paths=entity.get("doc_paths") or [],
         created_at=_to_iso(entity.get("created_at")),
         updated_at=_to_iso(entity.get("updated_at")),
-        invocation_name=suffixed_name(entity["name"], entity["owner_username"]),
+        # v49 phase-3: invocation_name comes from the stored
+        # synthetic_name column (single source of truth). The column is
+        # NOT NULL and the repo write paths keep it in lockstep with
+        # name + owner_username — any missing value is a real bug.
+        invocation_name=entity["synthetic_name"],
         visibility_status=entity.get("visibility_status") or "approved",
         title=entity.get("title"),
         tagline=entity.get("tagline"),
@@ -1829,7 +1837,11 @@ async def _update_entity_locked(
                 Path(tmp.name).unlink(missing_ok=True)
 
             _validate_and_extract_metadata(entity["type"], scratch)
-            suffixed = suffixed_name(entity["name"], entity["owner_username"])
+            # v49 phase-3: read the stored synthetic_name. Entity row was
+            # loaded before any rename — `synthetic_name` is the OLD value
+            # baked-tree code expects (rename, when present, is applied
+            # below via _rename_baked_tree with NEW suffix).
+            suffixed = entity["synthetic_name"]
             # Bake into the staging dir — _bake_plugin_tree creates the
             # target if missing and does its own rmtree on existing
             # children, so the staging path being fresh is fine.
@@ -1922,7 +1934,10 @@ async def _update_entity_locked(
     #    keep serving the prior bundle under the prior slug.
     if rename_to is not None:
         owner_username = entity["owner_username"]
-        old_suffix = suffixed_name(entity["name"], owner_username)
+        # v49 phase-3: old_suffix reads the stored synthetic_name (entity
+        # was loaded before any rename was applied). new_suffix MUST be
+        # freshly computed — rename_to is a proposed value not yet in DB.
+        old_suffix = entity["synthetic_name"]
         new_suffix = suffixed_name(rename_to, owner_username)
 
         if file is None:

@@ -52,7 +52,6 @@ from src.repositories.user_curated_subscriptions import (
 )
 from src.repositories.user_store_installs import UserStoreInstallsRepository
 from src.store_categories import STORE_CATEGORIES
-from src.store_naming import suffixed_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
@@ -817,7 +816,12 @@ def _flea_to_item(
     # don't strip there.
     from src.store_naming import strip_archive_suffix
     display_name_raw = strip_archive_suffix(entity["name"])
-    invocation = suffixed_name(display_name_raw, entity.get("owner_username") or "")
+    # v49 phase-3: invocation is the stored synthetic_name. The column is
+    # NOT NULL (phase 1 migration + repo create/update/archive write
+    # paths keep it in sync), so reading it directly is safe and a
+    # missing value would be a real bug worth surfacing as KeyError
+    # rather than masking with a recompute.
+    invocation = entity["synthetic_name"]
     is_viewer_owner = bool(viewer_id and entity.get("owner_user_id") == viewer_id)
     # v46: flea stats keyed by store_entities.name (rollup `name` column).
     # The display name is post-archive-strip; use the raw row name to match
@@ -1774,7 +1778,8 @@ async def flea_detail(
     # the renamed-on-archive slug since that's what Claude Code resolves.
     from src.store_naming import strip_archive_suffix
     _flea_display_name = strip_archive_suffix(entity["name"])
-    invocation = suffixed_name(_flea_display_name, entity.get("owner_username") or "")
+    # v49 phase-3: read the stored synthetic_name (NOT NULL invariant).
+    invocation = entity["synthetic_name"]
 
     # doc_paths is a JSON array of relative paths the uploader picked at upload
     # time; `app/api/store.py` serves them by basename via /api/store/.../docs/{filename}.

@@ -879,6 +879,43 @@ class TestFleaPhase2Presentation:
         assert d["manifest_name"] == "codex-second-opinion"
         assert d["parent_display_name"] == "Codex Second Opinion"
 
+    def test_flea_card_and_detail_read_synthetic_name_from_db(self, web_client):
+        """v49 phase-3: ``MarketplaceItem.name`` (card) and
+        ``PluginDetailResponse.manifest_name`` (detail) source from the
+        stored ``synthetic_name`` column. Manually override the column to
+        a non-canonical value — both surfaces must reflect the override,
+        proving they read the column instead of recomputing
+        ``<name>-by-<owner_username>``."""
+        from src.db import get_system_db
+        _, cookies = _create_user(web_client, "syntheticread@x.com")
+        up = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("orig"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        eid = up.json()["id"]
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE store_entities SET synthetic_name = ? WHERE id = ?",
+                ["manual-override-mkt", eid],
+            )
+        finally:
+            conn.close()
+        # Card
+        r = web_client.get("/api/marketplace/items?tab=flea", cookies=cookies)
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 1
+        assert items[0]["name"] == "manual-override-mkt"
+        # Detail
+        d = web_client.get(
+            f"/api/marketplace/flea/{eid}/detail", cookies=cookies,
+        )
+        assert d.status_code == 200, d.text
+        assert d.json()["manifest_name"] == "manual-override-mkt"
+
     def test_flea_inner_skill_parent_display_name_humanize_fallback(self, web_client):
         """When title is omitted on upload, the POST endpoint humanizes the
         plugin name as a fallback — phase 3 must thread that humanized form
