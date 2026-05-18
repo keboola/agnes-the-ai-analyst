@@ -2234,6 +2234,7 @@
                 showToast('' + err.message, 'error');
             });
     }
+    {% endif %}{# data_source_type == 'keboola' — discover helpers #}
 
     // ── Keboola tab edit modal (Phase F2) ──────────────────────────
 
@@ -2483,7 +2484,6 @@
         }
         ta.value = 'SELECT *\nFROM kbc."' + bucket + '"."' + sourceTable + '"\nWHERE -- your filter here';
     }
-    {% endif %}{# data_source_type == 'keboola' — discover/prefill JS #}
 
     // C3: removed dead helper _buildKeboolaLegacyPayload — the Phase F
     // _buildKeboolaPayload (above) replaced it.
