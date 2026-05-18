@@ -796,6 +796,7 @@ def _curated_to_item(
 
 
 def _flea_to_item(
+    conn: duckdb.DuckDBPyConnection,
     entity: dict,
     *,
     installed_set: set,
@@ -815,13 +816,25 @@ def _flea_to_item(
     # (Claude Code's `/plugin` resolution) uses the renamed slug — we
     # don't strip there.
     from src.store_naming import strip_archive_suffix
-    display_name = strip_archive_suffix(entity["name"])
-    invocation = suffixed_name(display_name, entity.get("owner_username") or "")
+    display_name_raw = strip_archive_suffix(entity["name"])
+    invocation = suffixed_name(display_name_raw, entity.get("owner_username") or "")
     is_viewer_owner = bool(viewer_id and entity.get("owner_user_id") == viewer_id)
     # v46: flea stats keyed by store_entities.name (rollup `name` column).
     # The display name is post-archive-strip; use the raw row name to match
     # what the lookup preload sees.
     stat = (stats or {}).get(entity["name"], {})
+    # v49 phase-2: front the card with the user-friendly `title` (humanized,
+    # acronym-aware) via the existing `display_name` field — JS already
+    # has the chain `it.display_name || it.name` on cards. `tagline`
+    # rides the same chain JS uses for curated. Owner display resolves
+    # `users.name → users.email → owner_username` so cards no longer
+    # leak the kebab-case username (e.g. `c-marustamyan`) when the user
+    # has a real name on their account.
+    owner_display = _resolve_owner_display(
+        conn,
+        entity["owner_user_id"],
+        entity.get("owner_username") or "",
+    )
     return MarketplaceItem(
         id=f"flea-{entity['id']}",
         source="flea",
@@ -829,7 +842,9 @@ def _flea_to_item(
         type=entity["type"],
         category=entity.get("category") or None,
         description=entity.get("description"),
-        owner=entity.get("owner_username"),
+        owner=owner_display,
+        display_name=entity.get("title"),
+        tagline=entity.get("tagline"),
         version=entity.get("version"),
         photo_url=photo_url,
         added=_to_iso(entity.get("created_at")),
@@ -1071,7 +1086,7 @@ async def list_items(
         flea_stats = _load_invocation_stats(conn, "flea")
         items = [
             _flea_to_item(
-                r, installed_set=installed_set,
+                conn, r, installed_set=installed_set,
                 viewer_id=user["id"],
                 stats=flea_stats,
             )
@@ -1147,7 +1162,7 @@ async def list_items(
     flea_installed_set = {row["id"] for row in flea_installs}
     for entity in flea_installs:
         items.append(_flea_to_item(
-            entity, installed_set=flea_installed_set, stats=flea_stats,
+            conn, entity, installed_set=flea_installed_set, stats=flea_stats,
         ))
 
     # Apply optional filters client-server-style for `my` tab (small N):
@@ -1799,6 +1814,13 @@ async def flea_detail(
         entity_id=entity_id,
         plugin_name=_flea_display_name,
         manifest_name=invocation,
+        # v49 phase-2: surface the user-friendly title + short description
+        # via the existing curated-side fields. JS heroTitle chain already
+        # prefers `display_name`, and the hero-tagline element already
+        # reads `d.tagline` — flea now feeds the same chain instead of
+        # falling through to plugin_name (= kebab-case entity name).
+        display_name=entity.get("title"),
+        tagline=entity.get("tagline"),
         description=entity.get("description"),
         version=entity.get("version"),
         category=entity.get("category"),
@@ -1997,6 +2019,12 @@ def _flea_inner_parent_fields(
     enrichment file convention exists for flea bundles yet, so the same
     fallbacks the flea plugin detail hero uses (strip_archive_suffix on
     entity.name, owner display, entity.updated_at) populate the response.
+
+    v49 phase-3: ``parent_display_name`` prefers the user-set ``title``
+    column over the kebab-case ``name``. The frontend chain (breadcrumb,
+    hero "part of …", sidebar "Parent plugin", helper "This skill is part
+    of …") all read ``d.parent_display_name`` first, so a single source
+    swap drives every surface to the friendly form.
     """
     from src.store_naming import strip_archive_suffix
     owner_display = _resolve_owner_display(
@@ -2008,7 +2036,7 @@ def _flea_inner_parent_fields(
         "parent_author_name": owner_display or OWNER_TODO_PLACEHOLDER,
         "parent_updated_at": _to_iso(entity.get("updated_at")),
         "manifest_name": entity["name"],
-        "parent_display_name": strip_archive_suffix(entity["name"]),
+        "parent_display_name": entity.get("title") or strip_archive_suffix(entity["name"]),
     }
 
 

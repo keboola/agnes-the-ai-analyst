@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block title %}{{ (entity.title if entity else None) or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
 <style>
@@ -855,7 +855,7 @@
       <span class="sep">›</span>
       <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}" id="crumb-mid">{{ 'Curated Marketplace' if source == 'curated' else 'Flea Market' }}</a>
       <span class="sep">›</span>
-      <span id="crumb-name">{{ plugin_name }}</span>
+      <span id="crumb-name">{{ (entity.title if entity else None) or plugin_name }}</span>
     </div>
     <div class="hero-head">
       <div class="hero-window" id="hero-photo" aria-hidden="true">
@@ -863,13 +863,16 @@
           <span class="hwdot red"></span>
           <span class="hwdot yellow"></span>
           <span class="hwdot green"></span>
-          <span class="hero-window-label" id="hero-window-label">{{ plugin_name }}</span>
+          <span class="hero-window-label" id="hero-window-label">{{ (entity.title if entity else None) or plugin_name }}</span>
         </div>
         <div class="hero-window-body" id="hero-window-body">PL</div>
       </div>
       <div class="meta">
-        <h1 id="hero-name">{{ plugin_name }}</h1>
-        <div class="tagline" id="hero-tagline">Loading…</div>
+        <h1 id="hero-name">{{ (entity.title if entity else None) or plugin_name }}</h1>
+        <!-- v49 phase-2: hidden by default; JS only un-hides when d.tagline
+             is truthy. Pre-fix this rendered "Loading…" then collapsed to
+             empty for entities without a tagline, causing a flicker. -->
+        <div class="tagline" id="hero-tagline" hidden></div>
         <div class="pills" id="hero-pills"></div>
         <!-- Telemetry funnel chip — same shape as the listing card so a
              user who clicks through from /marketplace sees identical
@@ -1042,7 +1045,19 @@
   document.title = `${heroTitle} — Marketplace`;
 
   document.getElementById('hero-name').textContent = heroTitle;
-  document.getElementById('hero-tagline').textContent = d.tagline || d.description || '';
+  // v49 phase-2: tagline appears in hero only when explicitly set. Pre-fix
+  // it fell back to `d.description` (verbose long-form text from frontmatter
+  // / marketplace.json), which read awkwardly under the h1 and pulled the
+  // hero too tall. Description still renders in the "What it does" panel
+  // below the hero.
+  const tagEl = document.getElementById('hero-tagline');
+  if (d.tagline) {
+    tagEl.textContent = d.tagline;
+    tagEl.hidden = false;
+  } else {
+    tagEl.textContent = '';
+    tagEl.hidden = true;
+  }
   // Window titlebar label mirrors the h1 — keeps the mac-window framing
   // consistent with whichever name the user actually sees as the title.
   const heroWindowLabel = document.getElementById('hero-window-label');
