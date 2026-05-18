@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block title %}{{ pkg.name }} — Data Packages — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
+
+{% block content %}
+<style>
+  .pkg-detail-header {
+    display: flex; gap: 16px; align-items: flex-start;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #eceff1);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .pkg-detail-icon {
+    width: 64px; height: 64px;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 32px;
+    flex-shrink: 0;
+  }
+  .pkg-detail-heading { flex: 1; min-width: 0; }
+  .pkg-detail-heading h1 { margin: 0; font-size: 24px; }
+  .pkg-detail-heading .desc { color: var(--text-secondary, #5f6368); margin-top: 6px; font-size: 14px; }
+  .pkg-detail-heading .meta {
+    margin-top: 8px; font-size: 13px;
+    color: var(--text-secondary, #5f6368);
+  }
+  .pkg-detail-actions { display: flex; gap: 8px; }
+  .pkg-detail-actions .btn {
+    padding: 8px 16px; border-radius: 8px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    border: 1px solid var(--border, #eceff1);
+    background: var(--surface, #fff);
+  }
+  .pkg-detail-actions .btn-primary {
+    background: var(--primary, #0073D1); color: #fff;
+    border-color: var(--primary, #0073D1);
+  }
+  .pkg-detail-actions .btn-danger {
+    color: #b91c1c; border-color: #fecaca;
+  }
+  .pkg-detail-actions .btn-required {
+    background: #fef3c7; color: #92400e; border-color: #fde68a;
+    cursor: not-allowed;
+  }
+
+  .pkg-tables {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #eceff1);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .pkg-tables h2 {
+    margin: 0; padding: 14px 18px;
+    font-size: 14px; font-weight: 600;
+    border-bottom: 1px solid var(--border, #eceff1);
+  }
+  .pkg-tables table { width: 100%; border-collapse: collapse; }
+  .pkg-tables th, .pkg-tables td {
+    text-align: left; padding: 12px 18px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border-light, #eceff1);
+  }
+  .pkg-tables th {
+    color: var(--text-secondary, #5f6368);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.6px;
+  }
+  .pkg-tables tr:last-child td { border-bottom: none; }
+  .qm-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .qm-local         { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
+  .qm-remote        { background: rgba(0, 115, 209, 0.12); color: #0056A3; }
+  .qm-materialized  { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
+
+  .back-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--text-secondary, #5f6368); text-decoration: none;
+    font-size: 13px; margin-bottom: 12px;
+  }
+  .back-link:hover { color: var(--primary, #0073D1); }
+</style>
+
+<a class="back-link" href="/catalog">← All data packages</a>
+
+{# Initials match the card macro's "always initials, no emoji/Lucide name
+   text" treatment — pkg.icon may hold a Lucide string like `chart-line`
+   that would otherwise leak as literal text on the header. Same 2-letter
+   fallback as _stack_card.html. #}
+{% set _name_parts = (pkg.name or '?').split() %}
+{% if _name_parts|length >= 2 %}
+  {% set _initials = (_name_parts[0][0] ~ _name_parts[1][0])|upper %}
+{% else %}
+  {% set _initials = (pkg.name or '?')[:2]|upper %}
+{% endif %}
+<div class="pkg-detail-header">
+  <div class="pkg-detail-icon" style="background: {{ pkg.color or '#e0f2fe' }}">
+    {{ _initials }}
+  </div>
+  <div class="pkg-detail-heading">
+    <h1>{{ pkg.name }}</h1>
+    {% if pkg.description %}<div class="desc">{{ pkg.description }}</div>{% endif %}
+    <div class="meta">
+      {{ tables|length }} table{{ 's' if tables|length != 1 else '' }}
+      {% if total_size_bytes %} · {{ total_size_display }}{% endif %}
+    </div>
+  </div>
+  <div class="pkg-detail-actions">
+    {% if effective_requirement == 'required' %}
+      <button class="btn btn-required" disabled
+              title="Required by your organization">In stack (required)</button>
+    {% elif in_stack %}
+      <button class="btn btn-danger" id="pkg-remove-btn">Remove from stack</button>
+    {% else %}
+      <button class="btn btn-primary" id="pkg-add-btn">+ Add to stack</button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="pkg-tables">
+  <h2>Tables in this package</h2>
+  {% if tables %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Query mode</th>
+        <th>Last sync</th>
+        <th>Size</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in tables %}
+      <tr>
+        <td>
+          {# v52: every authenticated user lands on /catalog/t/<id> for
+             the per-table detail (sample questions / columns / things
+             to know / pairs well with). Replaces the prior admin-only
+             bounce to /admin/tables — that was a UX leak (non-admins
+             saw plain text; admins got dumped into the registry edit
+             modal, not the user-facing detail surface). #}
+          <a href="/catalog/t/{{ t.id }}"
+             style="color: var(--primary, #0073D1); text-decoration: none;"
+             title="Open table detail">
+            <code>{{ t.name }}</code>
+          </a>
+        </td>
+        <td><span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span></td>
+        <td>{{ t.last_sync_display or '—' }}</td>
+        <td>{{ t.size_display or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div style="padding: 32px 18px; text-align: center; color: var(--text-secondary, #5f6368);">
+    No tables in this package yet.
+  </div>
+  {% endif %}
+</div>
+
+<script>
+'use strict';
+(function() {
+  const pkgId = {{ pkg.id | tojson }};
+  const addBtn = document.getElementById('pkg-add-btn');
+  const removeBtn = document.getElementById('pkg-remove-btn');
+
+  async function call(method, url, body) {
+    const opts = { method: method, credentials: 'same-origin' };
+    if (body) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(url, opts);
+  }
+
+  if (addBtn) {
+    addBtn.addEventListener('click', async () => {
+      addBtn.disabled = true;
+      const r = await call('POST', '/api/stack/subscribe',
+        { resource_type: 'data_package', resource_id: pkgId });
+      if (r.ok) location.reload();
+      else { alert('Failed to add to stack'); addBtn.disabled = false; }
+    });
+  }
+  if (removeBtn) {
+    removeBtn.addEventListener('click', async () => {
+      removeBtn.disabled = true;
+      const r = await call('DELETE',
+        '/api/stack/subscription/data_package/' + encodeURIComponent(pkgId));
+      if (r.ok) location.reload();
+      else { alert('Failed to remove from stack'); removeBtn.disabled = false; }
+    });
+  }
+})();
+</script>
+{% endblock %}

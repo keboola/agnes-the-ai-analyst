@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from cli.client import api_get, stream_download
+from cli.client import api_get, api_post, stream_download
 from cli.config import get_sync_state, save_sync_state
 
 
@@ -60,6 +60,11 @@ class PullResult:
     rules_count: int = 0
     duration_s: float = 0.0
     errors: list[dict] = field(default_factory=list)
+    # v49 (Phase 7, Task 7.5) — per-type stack-sync result. Populated when
+    # the manifest carries any of ``direct_tables`` / ``data_packages`` /
+    # ``memory_domains``. Kept off the constructor signature (None default)
+    # so older callers reading ``tables_updated`` keep compiling.
+    stack_sync: object = None
 
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
@@ -545,8 +550,95 @@ def run_pull(
         except Exception as exc:
             result.errors.append({"stage": "memory_bundle", "error": str(exc)})
 
+        # 8. v49 stack sync — per-type loop into ``~/.claude/data/`` and
+        # ``~/.claude/memory/`` with reference-counted dedup. Runs only
+        # when the manifest carries the v49 fields (older servers /
+        # backward-compat workspaces are untouched). Best-effort:
+        # failure here records under ``result.errors`` but doesn't abort
+        # the rest of the pull.
+        if any(
+            k in manifest for k in ("direct_tables", "data_packages", "memory_domains")
+        ):
+            try:
+                result.stack_sync = _run_stack_sync_from_manifest(manifest, workspace)
+            except Exception as exc:
+                result.errors.append({"stage": "stack_sync", "error": str(exc)})
+
     result.duration_s = time.monotonic() - started
+
+    # 9. Pull-confirm telemetry — fire-and-forget POST so the server can
+    # close the loop on the ``sync.pull_started`` event from Phase 6.
+    try:
+        _emit_pull_confirm(server_url, token, result)
+    except Exception:
+        pass
+
     return result
+
+
+def _run_stack_sync_from_manifest(manifest: dict, workspace: Path):
+    """Build a ``pull_sync.PullStackOptions`` from the manifest payload
+    and invoke ``run_stack_sync``. The local sync root is the
+    ``<workspace>/.claude/`` dir so the stack-sync artifacts live next
+    to the existing ``<workspace>/.claude/rules/`` / ``<workspace>/.claude/
+    settings.json`` tree (workspace-scoped, not user-home, matching
+    Section 5.3 of the spec for analyst workspaces)."""
+    from cli.lib.pull_sync import PullStackOptions, run_stack_sync
+
+    local_root = workspace / ".claude"
+
+    def _fetcher(url: str, target: Path) -> None:
+        stream_download(url, str(target))
+
+    def _bundle_fetcher(slug: str) -> bytes:
+        resp = api_get("/api/memory/bundle", params={"domain": slug})
+        resp.raise_for_status()
+        return resp.content
+
+    opts = PullStackOptions(
+        manifest=manifest,
+        local_dir=local_root,
+        fetcher=_fetcher,
+        md5_of=_file_md5,
+        bundle_fetcher=_bundle_fetcher,
+    )
+    return run_stack_sync(opts)
+
+
+def _emit_pull_confirm(server_url: str, token: str, result: "PullResult") -> None:
+    """POST /api/sync/pull-confirm with the per-type aggregate counts.
+
+    Fire-and-forget — the parent already swallows exceptions but the
+    helper has its own ``try/except`` so a 404 (older server without
+    the endpoint) is silent rather than logged as a warning."""
+    stack = result.stack_sync
+    direct = getattr(stack, "direct_tables", None) if stack else None
+    dp = getattr(stack, "data_packages", None) if stack else None
+    md = getattr(stack, "memory_domains", None) if stack else None
+    payload = {
+        "duration_ms": int(result.duration_s * 1000),
+        "direct_tables": {
+            "added": getattr(direct, "added", 0),
+            "updated": getattr(direct, "updated", 0),
+            "removed": getattr(direct, "removed", 0),
+        },
+        "data_packages": {
+            "added": getattr(dp, "added", 0),
+            "updated": getattr(dp, "updated", 0),
+            "removed": getattr(dp, "removed", 0),
+        },
+        "memory_domains": {
+            "added": getattr(md, "added", 0),
+            "updated": getattr(md, "updated", 0),
+            "removed": getattr(md, "removed", 0),
+        },
+        "errors": len(result.errors),
+    }
+    try:
+        api_post("/api/sync/pull-confirm", json=payload)
+    except Exception:
+        # Endpoint may not exist on older servers; silent skip.
+        pass
 
 
 # ---------------------------------------------------------------------------

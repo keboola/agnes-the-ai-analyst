@@ -301,6 +301,133 @@
             box-shadow: 0 0 0 2px var(--primary-light);
         }
 
+        /* ─── v49 Task 8.6 — Admin moderation visual parity with /memory/d/<slug> ───
+           Mirrors the .memory-item layout from memory_domain_detail.html so
+           an admin reviewing the queue sees items in the SAME shape an
+           analyst sees them, with an extra .memory-item__admin-actions
+           row for moderation buttons. The existing .knowledge-item / .knowledge-title
+           / .knowledge-content / .item-actions classes still apply (we
+           emit both class sets on the same node), so the legacy JS that
+           queries `.knowledge-item` for keyboard navigation, bulk-edit
+           checkbox state, etc. keeps working unchanged. */
+        .memory-item.is-required {
+            background: #fffbeb;
+            border-color: #f59e0b;
+        }
+        .memory-item__header {
+            display: flex;
+            align-items: flex-start;
+            gap: var(--space-3);
+            margin-bottom: var(--space-2);
+        }
+        .memory-item__title {
+            margin: 0;
+            font-size: var(--text-md);
+            font-weight: var(--font-semibold);
+            color: var(--text-primary);
+            flex: 1;
+            min-width: 0;
+        }
+        .memory-item__badges {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            background: rgba(0, 115, 209, 0.12);
+            color: #0056A3;
+        }
+        .badge--category { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
+        .badge--source   { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
+        .badge--required { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+        .badge--status   { background: rgba(100, 116, 139, 0.18); color: #475569; }
+
+        .memory-item__content {
+            font-size: var(--text-base);
+            color: var(--text-secondary);
+            line-height: 1.7;
+            white-space: pre-wrap;
+            margin-bottom: var(--space-3);
+        }
+        .memory-item__footer {
+            display: flex;
+            align-items: center;
+            gap: var(--space-3);
+            padding-top: var(--space-3);
+            border-top: 1px solid var(--border-light, #eceff1);
+            font-size: var(--text-xs);
+            color: var(--text-secondary);
+            flex-wrap: wrap;
+        }
+        .memory-item__votes {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            cursor: help;
+        }
+        .memory-item__votes .vote-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 9px;
+            border-radius: 999px;
+            background: var(--bg, #f8f9fa);
+            color: var(--text-secondary);
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+        .memory-item__votes .vote-icon {
+            width: 13px;
+            height: 13px;
+            flex-shrink: 0;
+        }
+        .memory-item__contributors {
+            display: inline-flex;
+            gap: 4px;
+            align-items: center;
+        }
+        .memory-item__avatar {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: rgba(0, 115, 209, 0.18);
+            color: #0056A3;
+            font-size: 10px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .memory-item__tags {
+            display: inline-flex;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+        .memory-item__tag {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--border-light, #f3f4f6);
+            color: var(--text-secondary, #5f6368);
+        }
+        .memory-item__meta { margin-left: auto; }
+        .memory-item__admin-actions {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: var(--space-3);
+            padding-top: var(--space-3);
+            border-top: 1px dashed var(--border-light, #eceff1);
+        }
+
         .item-row {
             display: flex;
             gap: var(--space-4);
@@ -904,8 +1031,10 @@
             </div>
         </div>
 
-        <!-- Tab Navigation -->
-        <div class="tab-nav">
+        <!-- Tab Navigation — Domains tab + "+ New Memory Domain" button
+             on the right edge (E2E found admins had no UI to create a
+             domain even though the API existed). -->
+        <div class="tab-nav" style="display:flex; align-items:center; gap:0;">
             <button class="tab-btn active" data-tab="review" onclick="switchTab('review')">
                 Review Queue
                 <span class="tab-badge" id="pendingBadge" style="{% if not stats.pending_count %}display:none{% endif %}">{{ stats.pending_count|default(0) }}</span>
@@ -924,9 +1053,20 @@
             <button class="tab-btn" data-tab="browse" onclick="switchTab('browse')">
                 Browse
             </button>
+            <button class="tab-btn" data-tab="domains" onclick="switchTab('domains')">
+                Domains
+                <span class="tab-badge" id="domainsBadge" style="display:none;"></span>
+            </button>
             <button class="tab-btn" data-tab="audit" onclick="switchTab('audit')">
                 Audit Log
             </button>
+            <div style="flex:1;"></div>
+            <button class="btn"
+                    onclick="openCreateMemoryItemModal()"
+                    style="margin-left:auto;">+ New Item</button>
+            <button class="btn btn-mandate"
+                    onclick="openCreateMemoryDomainModal('', null)"
+                    style="margin-left:8px;">+ New Memory Domain</button>
         </div>
 
         <!-- Review Queue Tab -->
@@ -1001,6 +1141,12 @@
                     <option value="">All sources</option>
                     <option value="user_verification">Verified facts (from sessions)</option>
                     <option value="claude_local_md">CLAUDE.local.md</option>
+                </select>
+                {# Domain filter — closes the "domains never visible in admin
+                   queue" E2E gap. Options are hydrated by loadDomainsFilterOptions(). #}
+                <label for="domainFilter" style="margin-left: var(--space-4);">Domain:</label>
+                <select class="filter-select" id="domainFilter" onchange="loadAllItems(1)">
+                    <option value="">All domains</option>
                 </select>
             </div>
             <div id="allList" class="knowledge-list">
@@ -1160,16 +1306,19 @@
                             <input id="editItemCategoryNew" type="text" placeholder="new category slug" style="display: none; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
-                            <span style="font-size: 12px; color: var(--text-muted);">Domain</span>
-                            <select id="editItemDomain" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
-                                <option value="">(unset)</option>
-                                <option value="finance">finance</option>
-                                <option value="engineering">engineering</option>
-                                <option value="product">product</option>
-                                <option value="data">data</option>
-                                <option value="operations">operations</option>
-                                <option value="infrastructure">infrastructure</option>
-                            </select>
+                            <span style="font-size: 12px; color: var(--text-muted);">Domains</span>
+                            {# Multi-select chip-input — items can sit in N
+                               memory domains via the knowledge_item_domains
+                               junction. The legacy hidden single-domain
+                               <select> was removed: chip-input is now the
+                               only write path, and the PATCH endpoint
+                               accepts ``domain_ids`` (list). #}
+                            <div class="chip-input"
+                                 data-source-url="/api/memory/domains"
+                                 data-allow-create="true"
+                                 data-name="domain_ids"
+                                 data-placeholder="Type to search or create…"
+                                 data-chip-input="memory_domain"></div>
                         </label>
                         <label style="display: flex; flex-direction: column; gap: 4px;">
                             <span style="font-size: 12px; color: var(--text-muted);">Audience</span>
@@ -1218,6 +1367,19 @@
             </div>
         </div>
 
+        <!-- Domains Tab — admin-side CRUD of memory_domains. The user-facing
+             /corporate-memory page consumes the same rows; this is where
+             they're created/edited/deleted. The "+ New Memory Domain" CTA
+             lives in the tab strip header (top right) — not duplicated here. -->
+        <div id="tab-domains" class="tab-content">
+            <p style="margin:0 0 12px; color:var(--text-secondary); font-size:13px;">
+                Memory domains bundle related items (playbooks, runbooks, shared context) so analysts can opt-in to a coherent body of knowledge.
+            </p>
+            <div id="domainsList">
+                <div class="loading">Loading domains…</div>
+            </div>
+        </div>
+
         <!-- Audit Log Tab -->
         <div id="tab-audit" class="tab-content">
             <div class="filter-bar">
@@ -1243,6 +1405,683 @@
 
     <!-- Toast notification -->
     <div id="toast" class="toast"></div>
+
+    <!-- ═══════════════ Edit Memory Domain modal ═══════════════
+         Mirrors the Create modal but PUTs to /api/admin/memory-domains/{id}.
+         Slug is shown read-only (it's the stable identifier referenced by
+         /memory/d/<slug>, knowledge_item_domains rows, and resource_grants —
+         renaming would orphan all of those). -->
+    <div id="editMemoryDomainModal"
+         style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+      <div style="background: var(--surface); max-width: 520px; margin: 80px auto;
+                  padding: var(--space-5); border-radius: var(--radius-lg);
+                  border: 1px solid var(--border);">
+        <h3 style="margin-bottom: var(--space-3);">Edit Memory Domain</h3>
+        <input type="hidden" id="emd-id">
+        <div style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Name</span>
+            <input id="emd-name" type="text"
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm);
+                          background:var(--bg); color:var(--text);">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+            <input id="emd-slug" type="text" disabled
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm); opacity:0.6;
+                          background:var(--bg); color:var(--text);">
+            <span style="font-size:11px; color:var(--text-secondary);">
+              Slug is permanent — used in URLs, grants, and item junctions.
+            </span>
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">
+              Description <span style="color:var(--text-secondary);">(optional)</span>
+            </span>
+            <textarea id="emd-desc" rows="2"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);
+                             font-family:inherit; resize:vertical;"></textarea>
+          </label>
+          <div style="display:flex; gap:var(--space-3);">
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Icon</span>
+              <input id="emd-icon" type="text" maxlength="4"
+                     style="padding:6px; border:1px solid var(--border);
+                            border-radius:var(--radius-sm);
+                            background:var(--bg); color:var(--text);">
+            </label>
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Color</span>
+              <div class="cf-palette-row" data-target="emd-color"></div>
+              <input id="emd-color" type="color"
+                     style="padding:2px; border:1px solid var(--border);
+                            border-radius:var(--radius-sm);
+                            background:var(--bg); height:32px; cursor:pointer;">
+            </label>
+          </div>
+          {# v51 — lifecycle status (no per-domain category; the domain
+             itself IS the classification). #}
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="emd-status"
+                    style="padding:6px; border:1px solid var(--border);
+                           border-radius:var(--radius-sm);
+                           background:var(--bg); color:var(--text); height:38px;">
+              <option value="prod">Prod — ready for analyst use</option>
+              <option value="poc">POC — try-before-you-buy</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft — admin-only</option>
+            </select>
+          </label>
+
+          {# Inline Group Access matrix — mirror of the Data Package
+             Edit modal. Lazy-load on first <details> open; pre-filled
+             from existing resource_grants for this domain. Diff on
+             save (POST + DELETE /api/admin/grants). #}
+          <details id="emd-rbac-details"
+                   style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+            <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
+              Group access
+              <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">— mark required / available per group</span>
+            </summary>
+            <p style="margin:8px 0; color:var(--text-secondary); font-size:12px;">
+              <em>required</em> auto-installs the domain into the group's
+              stack; <em>available</em> shows it in their Browse;
+              <em>(no grant)</em> hides it. Changes apply when you click
+              <strong>Save</strong>.
+            </p>
+            <div id="emd-rbac-rows"
+                 style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
+              <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
+                Click to load groups…
+              </div>
+            </div>
+          </details>
+        </div>
+        <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
+                    margin-top:var(--space-4);">
+          <button class="btn" onclick="closeEditMemoryDomainModal()">Cancel</button>
+          <button class="btn btn-mandate" id="emd-submit-btn"
+                  onclick="submitEditMemoryDomain()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════ Create Memory Domain modal (Task 8.10b) ═══════════════
+         Fired from the chip-input's `chip-create` event in the item-edit
+         modal (the Domains field is a chip-input with
+         `data-chip-input="memory_domain"`). The handler below opens this
+         modal pre-filled with the typed name, POSTs to
+         /api/admin/memory-domains, and adds the freshly-created chip back
+         into the chip-input host via `.addChip()`.
+
+         Two-step flow per spec Section 7.4: after the entity is created,
+         a second mini-modal (Create-Memory-Domain RBAC step) renders a
+         per-group requirement matrix so the admin can grant
+         available|required tiers without leaving the page. The Skip
+         link short-circuits back to the chip-input. -->
+    <div id="createMemoryDomainModal"
+         style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+      <div style="background: var(--surface); max-width: 520px; margin: 80px auto;
+                  padding: var(--space-5); border-radius: var(--radius-lg);
+                  border: 1px solid var(--border);">
+        <h3 style="margin-bottom: var(--space-3);">Create Memory Domain</h3>
+        <div style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Name</span>
+            <input id="cmd-name" type="text" placeholder="Engineering"
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm);
+                          background:var(--bg); color:var(--text);">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+            <input id="cmd-slug" type="text" placeholder="engineering"
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm);
+                          background:var(--bg); color:var(--text);">
+            <span style="font-size:11px; color:var(--text-secondary);">
+              URL-safe identifier; auto-derived from Name.
+            </span>
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">
+              Description <span style="color:var(--text-secondary);">(optional)</span>
+            </span>
+            <textarea id="cmd-desc" rows="2"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);
+                             font-family:inherit; resize:vertical;"></textarea>
+          </label>
+          <div style="display:flex; gap:var(--space-3);">
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Icon</span>
+              <input id="cmd-icon" type="text" value="🎯" maxlength="4"
+                     style="padding:6px; border:1px solid var(--border);
+                            border-radius:var(--radius-sm);
+                            background:var(--bg); color:var(--text);">
+            </label>
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Color</span>
+              {# v51 palette swatches + free-form picker fallback. Same
+                 vendor-neutral palette as the Data Package modals. #}
+              <div class="cf-palette-row" data-target="cmd-color"></div>
+              <input id="cmd-color" type="color" value="#e0f2fe"
+                     style="padding:2px; border:1px solid var(--border);
+                            border-radius:var(--radius-sm);
+                            background:var(--bg); height:32px; cursor:pointer;">
+            </label>
+          </div>
+          {# v51 — lifecycle status for memory domains. Same enum as
+             data_packages (prod/poc/coming-soon/draft). No category here:
+             the domain itself classifies its items. #}
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="cmd-status"
+                    style="padding:6px; border:1px solid var(--border);
+                           border-radius:var(--radius-sm);
+                           background:var(--bg); color:var(--text); height:38px;">
+              <option value="prod" selected>Prod — ready for analyst use</option>
+              <option value="poc">POC — try-before-you-buy</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft — admin-only</option>
+            </select>
+          </label>
+          {# Cover image upload (v50) — mirrors the Data Package modal.
+             When set, the /memory card renders <img> instead of letter
+             initials. PNG/JPEG/GIF/WebP, 5 MiB cap server-side. #}
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">
+              Cover image <span style="color:var(--text-secondary);">(optional)</span>
+            </span>
+            <div style="display:flex; gap:12px; align-items:center;">
+              <div id="cmd-cover-preview"
+                   style="width:120px; height:72px; border-radius:8px;
+                          border:1px solid var(--border); background:#f1f5f9;
+                          display:flex; align-items:center; justify-content:center;
+                          font-size:12px; color:var(--text-secondary); overflow:hidden;">
+                No image
+              </div>
+              <div style="flex:1;">
+                <input id="cmd-cover-file" type="file"
+                       accept="image/png,image/jpeg,image/gif,image/webp"
+                       onchange="onCoverFilePickedCmd(this)">
+                <input id="cmd-cover-url" type="hidden" value="">
+                <div style="font-size:11px; color:var(--text-secondary); margin-top:4px;">
+                  PNG / JPEG / GIF / WebP, max 5 MiB. Uploads on Save.
+                </div>
+              </div>
+            </div>
+          </label>
+
+          {# Inline RBAC matrix — replaces the modal-on-modal step-2 that
+             popped up after Create succeeded. Mirrors the inline Group
+             Access section in admin_tables.html's Data Package modal. #}
+          <details id="cmd-rbac-details"
+                   style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+            <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
+              Group access
+              <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">(optional)</span>
+            </summary>
+            <p style="margin:8px 0; color:var(--text-secondary); font-size:12px;">
+              Grant per-group access tiers — <em>available</em> shows the
+              domain in the group's Browse; <em>required</em> auto-installs
+              it into the group's stack on next pull. Leave blank to manage
+              later from <a href="/admin/access">Resource access</a>.
+            </p>
+            <div id="cmd-rbac-rows"
+                 style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
+              <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
+                Click to load groups…
+              </div>
+            </div>
+          </details>
+        </div>
+        <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
+                    margin-top:var(--space-4);">
+          <button class="btn" onclick="closeCreateMemoryDomainModal()">Cancel</button>
+          <button class="btn btn-mandate" id="cmd-submit-btn"
+                  onclick="submitCreateMemoryDomain()">Create &amp; assign</button>
+        </div>
+      </div>
+    </div>
+
+    {# (removed) Memory Domain RBAC step-2 modal — merged inline into
+       #createMemoryDomainModal as a collapsible Group Access section. #}
+
+    <!-- ═══════════════ Create Memory Item modal (admin-seed) ═══════════════
+         Admins land here from the tab-strip "+ New Item" button.
+         POSTs to /api/memory (status='pending'), optionally PATCHes
+         multi-domain, then POSTs /admin/approve so the item lands
+         directly in Approved without a separate review pass. -->
+    <div id="createMemoryItemModal"
+         style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+      <div style="background: var(--surface); max-width: 600px; margin: 60px auto;
+                  padding: var(--space-5); border-radius: var(--radius-lg);
+                  border: 1px solid var(--border); max-height: 85vh; overflow-y: auto;">
+        <h3 style="margin-bottom: var(--space-3);">New Memory Item</h3>
+        <p style="margin-bottom: var(--space-3); color: var(--text-secondary); font-size: 13px;">
+          Seeded by admin — bypasses the Pending review queue and lands as Approved.
+        </p>
+        <div style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Title</span>
+            <input id="cmi-title" type="text" placeholder="Always quote table names in DuckDB"
+                   style="padding:6px; border:1px solid var(--border);
+                          border-radius:var(--radius-sm);
+                          background:var(--bg); color:var(--text);">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Content</span>
+            <textarea id="cmi-content" rows="5" placeholder="Body of the rule / playbook / decision…"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);
+                             font-family:inherit; resize:vertical;"></textarea>
+          </label>
+          <div style="display:flex; gap:var(--space-3);">
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Category</span>
+              <select id="cmi-category"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);">
+                {% for c in edit_categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+              </select>
+            </label>
+            <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:12px; color:var(--text-muted);">Audience</span>
+              <select id="cmi-audience"
+                      style="padding:6px; border:1px solid var(--border);
+                             border-radius:var(--radius-sm);
+                             background:var(--bg); color:var(--text);">
+                <option value="">(unset)</option>
+                <option value="all">all</option>
+                {% for g in groups %}<option value="group:{{ g.name }}">group:{{ g.name }}</option>{% endfor %}
+              </select>
+            </label>
+          </div>
+          <label style="display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Domains</span>
+            <div class="chip-input"
+                 id="cmi-domains-chips"
+                 data-source-url="/api/memory/domains"
+                 data-allow-create="true"
+                 data-name="cmi_domain_ids"
+                 data-placeholder="Type to search or create…"
+                 data-chip-input="memory_domain"></div>
+            <span style="font-size:11px; color:var(--text-secondary);">
+              Items can sit in multiple domains. Leave empty to file as
+              uncategorised; you can re-assign later.
+            </span>
+          </label>
+          <label style="display:flex; align-items:center; gap:6px;">
+            <input id="cmi-required" type="checkbox">
+            <span style="font-size:12px;">Mark as Required (auto-installed for granted groups)</span>
+          </label>
+        </div>
+        <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
+                    margin-top:var(--space-4);">
+          <button class="btn" onclick="closeCreateMemoryItemModal()">Cancel</button>
+          <button class="btn btn-mandate" id="cmi-submit-btn"
+                  onclick="submitCreateMemoryItem()">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Track which chip-input host triggered the create flow so we can
+      // append the new chip back into it on success.
+      let _cmdHost = null;
+      // Domain id from step 1, carried into step 2 for /api/admin/grants.
+      let _cmdNewDomainId = null;
+      let _cmdNewDomainName = null;
+
+      // v50: cover image upload. Streamlined single-modal-scoped variant
+      // of the helper in admin_tables.html — this template doesn't host
+      // an Edit modal yet, so we don't need the prefix-based generic.
+      async function onCoverFilePickedCmd(input) {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const preview = document.getElementById('cmd-cover-preview');
+        const urlEl = document.getElementById('cmd-cover-url');
+        if (file.size > 5 * 1024 * 1024) {
+          alert('Image is too large (max 5 MiB).');
+          input.value = '';
+          return;
+        }
+        preview.innerHTML = '<span style="font-size:11px;">Uploading…</span>';
+        try {
+          const fd = new FormData();
+          fd.append('file', file);
+          const r = await fetch('/api/admin/uploads/cover-image', {
+            method: 'POST', credentials: 'same-origin', body: fd,
+          });
+          if (!r.ok) {
+            const detail = await r.json().catch(function() { return {}; });
+            alert('Upload failed: ' + (detail.detail || r.statusText));
+            preview.textContent = 'No image';
+            input.value = '';
+            return;
+          }
+          const body = await r.json();
+          urlEl.value = body.url;
+          preview.innerHTML = '';
+          var img = document.createElement('img');
+          img.src = body.url; img.alt = '';
+          img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+          preview.appendChild(img);
+        } catch (e) {
+          alert('Network error: ' + e.message);
+          preview.textContent = 'No image';
+          input.value = '';
+        }
+      }
+
+      // ── Create Memory Item (admin-seed) ────────────────────────────
+      // Three-step chain on submit: POST /api/memory creates pending →
+      // optional PATCH writes domain_ids junction → POST /admin/approve
+      // promotes to Approved. Failures at any step surface in toast +
+      // leave whatever already landed (admin can retry / clean up via
+      // the review queue).
+      function openCreateMemoryItemModal() {
+        document.getElementById('cmi-title').value = '';
+        document.getElementById('cmi-content').value = '';
+        document.getElementById('cmi-audience').value = '';
+        document.getElementById('cmi-required').checked = false;
+        // Reset chip-input domain selection between opens.
+        const chipHost = document.getElementById('cmi-domains-chips');
+        if (chipHost && chipHost.clearChips) chipHost.clearChips();
+        document.getElementById('createMemoryItemModal').style.display = 'block';
+      }
+      function closeCreateMemoryItemModal() {
+        document.getElementById('createMemoryItemModal').style.display = 'none';
+      }
+      async function submitCreateMemoryItem() {
+        const btn = document.getElementById('cmi-submit-btn');
+        const title = document.getElementById('cmi-title').value.trim();
+        const content = document.getElementById('cmi-content').value.trim();
+        if (!title || !content) {
+          alert('Title and Content are required.');
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const category = document.getElementById('cmi-category').value;
+          const audience = document.getElementById('cmi-audience').value || null;
+          const isRequired = document.getElementById('cmi-required').checked;
+
+          // Read selected domain ids from the chip-input hidden field.
+          let domainIds = [];
+          const domainHidden = document.querySelector('input[name="cmi_domain_ids"]');
+          if (domainHidden) {
+            try { domainIds = JSON.parse(domainHidden.value || '[]'); }
+            catch (_) { domainIds = []; }
+          }
+
+          // Step 1 — create item. Pass the first domain slug via the
+          // legacy `domain` kwarg so the item lands with at least one
+          // junction row even if Step 2 (multi-domain PATCH) is a no-op.
+          let firstSlug = null;
+          if (domainIds.length) {
+            // Resolve id → slug from /api/memory/domains to send `domain`
+            // on create. Single round-trip is fine — the dropdown's
+            // already in cache from the chip-input.
+            const dr = await fetch('/api/memory/domains', { credentials: 'same-origin' });
+            if (dr.ok) {
+              const ddata = await dr.json();
+              const domList = (ddata && ddata.domains) || [];
+              const match = domList.find(d => d.id === domainIds[0]);
+              if (match) firstSlug = match.slug;
+            }
+          }
+          const createBody = { title, content, category };
+          if (firstSlug) createBody.domain_slug = firstSlug;
+          const cr = await fetch('/api/memory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(createBody),
+          });
+          if (!cr.ok) {
+            const detail = await cr.json().catch(() => ({}));
+            alert('Create failed: ' + (detail.detail || cr.statusText));
+            return;
+          }
+          const created = await cr.json();
+          const itemId = created.id;
+
+          // Step 2 — if multi-domain or audience set, PATCH.
+          const patchBody = {};
+          if (domainIds.length > 1) patchBody.domain_ids = domainIds;
+          if (audience) patchBody.audience = audience;
+          if (Object.keys(patchBody).length) {
+            const pr = await fetch('/api/memory/admin/' + encodeURIComponent(itemId), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify(patchBody),
+            });
+            if (!pr.ok) {
+              const detail = await pr.json().catch(() => ({}));
+              showToast('Item created but metadata patch failed: ' + (detail.detail || pr.statusText), 'error');
+            }
+          }
+
+          // Step 3 — auto-approve (or mandate if Required checked).
+          const finalAction = isRequired ? 'mandate' : 'approve';
+          const actionBody = { item_ids: [itemId], action: finalAction };
+          const ar = await fetch('/api/memory/admin/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(actionBody),
+          });
+          if (!ar.ok) {
+            const detail = await ar.json().catch(() => ({}));
+            showToast('Item created but ' + finalAction + ' failed: ' + (detail.detail || ar.statusText), 'error');
+          } else {
+            showToast('Item "' + title.substring(0, 40) + '" created + ' + finalAction + 'd', 'success');
+          }
+
+          closeCreateMemoryItemModal();
+          refreshCurrentTab();
+        } catch (e) {
+          alert('Network error: ' + e.message);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      function openCreateMemoryDomainModal(typed, host) {
+        _cmdHost = host;
+        document.getElementById('cmd-name').value = typed || '';
+        document.getElementById('cmd-slug').value =
+          (typed || '').toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        document.getElementById('cmd-desc').value = '';
+        document.getElementById('cmd-icon').value = '🎯';
+        document.getElementById('cmd-color').value = '#e0f2fe';
+        // Reset cover image state on every open.
+        var coverUrl = document.getElementById('cmd-cover-url');
+        var coverFile = document.getElementById('cmd-cover-file');
+        var preview = document.getElementById('cmd-cover-preview');
+        if (coverUrl) coverUrl.value = '';
+        if (coverFile) coverFile.value = '';
+        if (preview) preview.innerHTML = 'No image';
+        document.getElementById('createMemoryDomainModal').style.display = 'block';
+      }
+      function closeCreateMemoryDomainModal() {
+        _cmdHost = null;
+        // Re-collapse + invalidate the lazy-loaded RBAC matrix so the
+        // next "+ New Memory Domain" starts clean (mirrors the Data
+        // Package modal pattern).
+        const det = document.getElementById('cmd-rbac-details');
+        if (det) det.open = false;
+        _cmdRbacLoaded = false;
+        document.getElementById('createMemoryDomainModal').style.display = 'none';
+      }
+      async function submitCreateMemoryDomain() {
+        const btn = document.getElementById('cmd-submit-btn');
+        btn.disabled = true;
+        try {
+          // v50: cover_image_url is populated by onCoverFilePickedCmd when
+          // the admin selects + uploads a file; send null if unset.
+          var cmdCoverUrl = document.getElementById('cmd-cover-url').value;
+          const payload = {
+            name: document.getElementById('cmd-name').value.trim(),
+            slug: document.getElementById('cmd-slug').value.trim(),
+            description: document.getElementById('cmd-desc').value.trim() || null,
+            icon: document.getElementById('cmd-icon').value.trim() || null,
+            color: document.getElementById('cmd-color').value.trim() || null,
+            cover_image_url: cmdCoverUrl || null,
+            // v51 — lifecycle status (no category for memory domains).
+            status: document.getElementById('cmd-status').value || 'prod',
+          };
+          if (!payload.name || !payload.slug) {
+            alert('Name and slug are required.');
+            btn.disabled = false;
+            return;
+          }
+          const r = await fetch('/api/admin/memory-domains', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const detail = await r.json().catch(() => ({}));
+            alert('Failed: ' + (detail.detail || r.statusText));
+            btn.disabled = false;
+            return;
+          }
+          const body = await r.json();
+          const newDomainId = body.id;
+          if (_cmdHost && _cmdHost.addChip) {
+            _cmdHost.addChip({ id: newDomainId, name: payload.name });
+          }
+
+          // Inline grants — same pattern as the Data Package modal.
+          const grantFailures = await _submitCmdGrantsInline(newDomainId);
+
+          closeCreateMemoryDomainModal();
+          if (typeof loadDomainsTab === 'function') {
+            try { loadDomainsTab(); } catch (_) {}
+          }
+          if (typeof showToast === 'function') {
+            const baseMsg = 'Memory Domain "' + payload.name + '" created';
+            if (grantFailures > 0) {
+              showToast(baseMsg + ' — ' + grantFailures + ' grant(s) failed', 'error');
+            } else {
+              showToast(baseMsg, 'success');
+            }
+          }
+        } catch (e) {
+          alert('Network error: ' + e.message);
+          btn.disabled = false;
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      // Lazy-load groups into the inline RBAC matrix the first time the
+      // <details> opens. Mirrors _cdpHydrateRbacMatrix in admin_tables.html.
+      let _cmdRbacLoaded = false;
+      async function _cmdHydrateRbacMatrix() {
+        if (_cmdRbacLoaded) return;
+        const rowsEl = document.getElementById('cmd-rbac-rows');
+        rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups…</div>';
+        try {
+          const r = await fetch('/api/admin/groups', { credentials: 'same-origin' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const body = await r.json();
+          const groups = Array.isArray(body) ? body : (body.groups || []);
+          if (!groups.length) {
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+            return;
+          }
+          rowsEl.innerHTML = groups.map(g => {
+            const gid = String(g.id || g.name || '');
+            const gname = String(g.name || gid);
+            return (
+              '<div data-group-id="' + gid + '" '
+              + 'style="display:flex; gap:8px; align-items:center; '
+              +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
+              + '<span style="flex:1;">' + gname + '</span>'
+              + '<select class="cmd-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
+              + '<option value="">(no grant)</option>'
+              + '<option value="available">available</option>'
+              + '<option value="required">required</option>'
+              + '</select>'
+              + '</div>'
+            );
+          }).join('');
+          _cmdRbacLoaded = true;
+        } catch (e) {
+          rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load groups: ' + e.message + '</div>';
+        }
+      }
+      document.addEventListener('toggle', (e) => {
+        if (e.target && e.target.id === 'cmd-rbac-details' && e.target.open) {
+          _cmdHydrateRbacMatrix();
+        }
+      }, true);
+
+      async function _submitCmdGrantsInline(domainId) {
+        const rows = document.querySelectorAll('#cmd-rbac-rows [data-group-id]');
+        const calls = [];
+        rows.forEach(row => {
+          const gid = row.getAttribute('data-group-id');
+          const sel = row.querySelector('.cmd-rbac-req');
+          const req = sel && sel.value;
+          if (!req) return;
+          calls.push(fetch('/api/admin/grants', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              group_id: gid,
+              resource_type: 'memory_domain',
+              resource_id: domainId,
+              requirement: req,
+            }),
+          }));
+        });
+        if (!calls.length) return 0;
+        const results = await Promise.allSettled(calls);
+        return results.filter(
+          r => r.status === 'rejected' || (r.value && !r.value.ok)
+        ).length;
+      }
+
+      // ── (removed) step-2 RBAC modal — stubs kept for callers ──
+      let _cmdNewDomainId = null;
+      let _cmdNewDomainName = null;
+      function openCreateMemoryDomainRbacModal() { /* deprecated — inlined */ }
+      function skipCreateMemoryDomainRbac() {
+        if (typeof loadDomainsTab === 'function') {
+          try { loadDomainsTab(); } catch (_) {}
+        }
+      }
+      function submitCreateMemoryDomainRbac() { /* deprecated — inlined */ }
+
+      // Hook: chip-input fires `chip-create` when the user clicks the
+      // "+ Create new" tail row in the dropdown. We only react when the
+      // host is the Memory Domain chip-input (data-chip-input="memory_domain")
+      // so the same listener can coexist with the Data Package one on
+      // pages that mount both.
+      document.addEventListener('chip-create', (e) => {
+        const host = e.detail && e.detail.host;
+        if (host && host.dataset.chipInput === 'memory_domain') {
+          openCreateMemoryDomainModal(e.detail.typed, host);
+        }
+      });
+    </script>
 {% endblock %}
 
 {% block scripts %}
@@ -1295,6 +2134,283 @@
         else if (tab === 'audit') loadAuditLog(auditPage);
         else if (tab === 'duplicates') loadDuplicateCandidates();
         else if (tab === 'browse') loadBrowseTree();
+        else if (tab === 'domains') loadDomainsTab();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Domains tab — admin CRUD on memory_domains. The user-facing
+    // /corporate-memory page reads from the same /api/admin/memory-domains
+    // endpoint; this tab is where admins create, edit, or delete the
+    // domain rows. Was the missing piece behind "Manage domains →" link
+    // and the "I can't see/edit the domains anywhere" E2E feedback.
+    // ─────────────────────────────────────────────────────────────
+
+    async function loadDomainsTab() {
+        const wrap = document.getElementById('domainsList');
+        if (!wrap) return;
+        wrap.innerHTML = '<div class="loading">Loading domains…</div>';
+        try {
+            const r = await fetch('/api/admin/memory-domains', { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const rows = await r.json();
+            const badge = document.getElementById('domainsBadge');
+            if (badge) {
+                badge.textContent = String(rows.length);
+                badge.style.display = rows.length ? '' : 'none';
+            }
+            if (!rows.length) {
+                wrap.innerHTML = '<div class="empty-state" style="padding:24px; text-align:center;">'
+                    + '<p><strong>No memory domains yet.</strong></p>'
+                    + '<p style="font-size:13px; color:var(--text-secondary);">Domains bundle related memory items so analysts can opt-in as a group.</p>'
+                    + '<button class="btn btn-mandate" onclick="openCreateMemoryDomainModal(\'\', null)">+ New Memory Domain</button>'
+                    + '</div>';
+                return;
+            }
+            wrap.innerHTML = rows.map(d => {
+                const color = d.color || '#e0f2fe';
+                const icon = d.icon || '🎯';
+                const name = escapeHtml(d.name || d.slug || '');
+                const slug = escapeHtml(d.slug || '');
+                const desc = escapeHtml(d.description || '');
+                return ''
+                    + '<div data-domain-id="' + escapeHtml(d.id) + '" '
+                    +      'style="display:flex; gap:12px; align-items:center; padding:12px 16px; '
+                    +             'background:var(--surface); border:1px solid var(--border); '
+                    +             'border-radius:10px; margin-bottom:8px;">'
+                    + '  <span style="display:inline-flex; align-items:center; justify-content:center; '
+                    +                'width:36px; height:36px; border-radius:8px; flex-shrink:0; '
+                    +                'background:' + escapeHtml(color) + ';">' + escapeHtml(icon) + '</span>'
+                    + '  <div style="flex:1; min-width:0;">'
+                    + '    <div style="font-weight:600; font-size:14px;">' + name
+                    +      ' <code style="font-size:11px; color:var(--text-secondary); margin-left:6px;">' + slug + '</code></div>'
+                    + (desc
+                        ? '    <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">' + desc + '</div>'
+                        : '')
+                    + '  </div>'
+                    + '  <a class="btn" href="/memory/d/' + slug + '" target="_blank" style="font-size:12px;">Open →</a>'
+                    + '  <button class="btn" onclick="openEditMemoryDomainModal(\'' + esc(d.id) + '\')" style="font-size:12px;">Edit</button>'
+                    + '  <button class="btn btn-reject" onclick="deleteMemoryDomain(\'' + esc(d.id) + '\', \'' + name.replace(/\'/g, "\\'") + '\')" style="font-size:12px;">Delete</button>'
+                    + '</div>';
+            }).join('');
+        } catch (e) {
+            wrap.innerHTML = '<div class="empty-state" style="color:var(--error);">Failed to load domains: ' + e.message + '</div>';
+        }
+    }
+
+    async function deleteMemoryDomain(id, name) {
+        // v54: soft delete + Undo toast. confirm() removed — the toast's
+        // 10s Undo button is the recovery affordance.
+        try {
+            const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id),
+                { method: 'DELETE', credentials: 'same-origin' });
+            if (!r.ok && r.status !== 204) {
+                const detail = await r.json().catch(() => ({}));
+                alert('Failed: ' + (detail.detail || r.statusText));
+                return;
+            }
+            loadDomainsTab();
+            if (typeof window.showUndoToast === 'function') {
+                window.showUndoToast(
+                    'Memory domain "' + name + '" deleted.',
+                    '/api/admin/memory-domains/' + encodeURIComponent(id) + '/restore',
+                    () => loadDomainsTab(),
+                );
+            }
+        } catch (e) {
+            alert('Network error: ' + e.message);
+        }
+    }
+
+    async function openEditMemoryDomainModal(id) {
+        // Fetch fresh so concurrent edits don't stomp each other.
+        try {
+            const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id),
+                { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const d = await r.json();
+            document.getElementById('emd-id').value = d.id;
+            document.getElementById('emd-name').value = d.name || '';
+            document.getElementById('emd-slug').value = d.slug || '';
+            document.getElementById('emd-desc').value = d.description || '';
+            document.getElementById('emd-icon').value = d.icon || '🎯';
+            document.getElementById('emd-color').value = d.color || '#e0f2fe';
+            // v51 — pre-fill status from loaded domain.
+            document.getElementById('emd-status').value = d.status || 'prod';
+            document.getElementById('editMemoryDomainModal').style.display = 'block';
+        } catch (e) {
+            alert('Failed to load domain: ' + e.message);
+        }
+    }
+
+    function closeEditMemoryDomainModal() {
+        // Reset RBAC matrix state alongside the modal close — mirror
+        // of admin_tables.html's Edit DP close behavior.
+        const det = document.getElementById('emd-rbac-details');
+        if (det) det.open = false;
+        _emdRbacLoaded = false;
+        _emdRbacOriginal = {};
+        document.getElementById('editMemoryDomainModal').style.display = 'none';
+    }
+
+    // ── Edit Memory Domain RBAC matrix (lazy hydrate + diff on save) ──
+    // Mirror of admin_tables.html _edpHydrateRbacMatrix / _edpDiffApplyGrants.
+    // resource_type is 'memory_domain' instead of 'data_package'; otherwise
+    // the wire shape is identical.
+    let _emdRbacLoaded = false;
+    let _emdRbacOriginal = {};
+    async function _emdHydrateRbacMatrix() {
+        if (_emdRbacLoaded) return;
+        const domainId = document.getElementById('emd-id').value;
+        const rowsEl = document.getElementById('emd-rbac-rows');
+        rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups + grants…</div>';
+        try {
+            const [gResp, grResp] = await Promise.all([
+                fetch('/api/admin/groups', { credentials: 'same-origin' }),
+                fetch('/api/admin/grants?resource_type=memory_domain',
+                      { credentials: 'same-origin' }),
+            ]);
+            if (!gResp.ok) throw new Error('groups HTTP ' + gResp.status);
+            if (!grResp.ok) throw new Error('grants HTTP ' + grResp.status);
+            const gBody = await gResp.json();
+            const groups = Array.isArray(gBody) ? gBody : (gBody.groups || []);
+            const grants = await grResp.json();
+            const current = {};
+            (grants || []).forEach(g => {
+                if (g.resource_id !== domainId) return;
+                current[g.group_id] = g.requirement;
+            });
+            _emdRbacOriginal = Object.assign({}, current);
+
+            if (!groups.length) {
+                rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+                return;
+            }
+            rowsEl.innerHTML = groups.map(g => {
+                const gid = String(g.id || g.name || '');
+                const gname = String(g.name || gid);
+                const cur = current[gid] || '';
+                const opt = (v, label) =>
+                    '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + label + '</option>';
+                return (
+                    '<div data-group-id="' + gid + '" '
+                    + 'style="display:flex; gap:8px; align-items:center; '
+                    +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
+                    + '<span style="flex:1;">' + gname + '</span>'
+                    + '<select class="emd-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
+                    +   opt('', '(no grant)')
+                    +   opt('available', 'available')
+                    +   opt('required', 'required')
+                    + '</select>'
+                    + '</div>'
+                );
+            }).join('');
+            _emdRbacLoaded = true;
+        } catch (e) {
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load: ' + e.message + '</div>';
+        }
+    }
+    document.addEventListener('toggle', (e) => {
+        if (e.target && e.target.id === 'emd-rbac-details' && e.target.open) {
+            _emdHydrateRbacMatrix();
+        }
+    }, true);
+
+    async function _emdDiffApplyGrants(domainId) {
+        if (!_emdRbacLoaded) return 0;
+        const rows = document.querySelectorAll('#emd-rbac-rows [data-group-id]');
+        const wantDelete = [];
+        const wantWrite = [];
+        rows.forEach(row => {
+            const gid = row.getAttribute('data-group-id');
+            const sel = row.querySelector('.emd-rbac-req');
+            const cur = (sel && sel.value) || '';
+            const orig = _emdRbacOriginal[gid] || '';
+            if (cur === orig) return;
+            if (!cur) wantDelete.push(gid);
+            else {
+                if (orig) wantDelete.push(gid);
+                wantWrite.push({ group_id: gid, requirement: cur });
+            }
+        });
+        if (!wantDelete.length && !wantWrite.length) return 0;
+
+        let grantIdByGroup = {};
+        if (wantDelete.length) {
+            const lr = await fetch('/api/admin/grants?resource_type=memory_domain',
+                                   { credentials: 'same-origin' });
+            if (lr.ok) {
+                const arr = await lr.json();
+                arr.forEach(g => {
+                    if (g.resource_id !== domainId) return;
+                    grantIdByGroup[g.group_id] = g.id;
+                });
+            }
+        }
+        const calls = [];
+        wantDelete.forEach(gid => {
+            const grantId = grantIdByGroup[gid];
+            if (!grantId) return;
+            calls.push(fetch('/api/admin/grants/' + encodeURIComponent(grantId),
+                             { method: 'DELETE', credentials: 'same-origin' }));
+        });
+        wantWrite.forEach(w => {
+            calls.push(fetch('/api/admin/grants', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    group_id: w.group_id,
+                    resource_type: 'memory_domain',
+                    resource_id: domainId,
+                    requirement: w.requirement,
+                }),
+            }));
+        });
+        const results = await Promise.allSettled(calls);
+        return results.filter(
+            r => r.status === 'rejected' || (r.value && !r.value.ok)
+        ).length;
+    }
+
+    async function submitEditMemoryDomain() {
+        const btn = document.getElementById('emd-submit-btn');
+        btn.disabled = true;
+        try {
+            const id = document.getElementById('emd-id').value;
+            const payload = {
+                name: document.getElementById('emd-name').value.trim() || null,
+                description: document.getElementById('emd-desc').value.trim() || null,
+                icon: document.getElementById('emd-icon').value.trim() || null,
+                color: document.getElementById('emd-color').value.trim() || null,
+                status: document.getElementById('emd-status').value || 'prod',
+            };
+            const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify(payload),
+            });
+            if (!r.ok) {
+                const detail = await r.json().catch(() => ({}));
+                let msg = detail.detail || r.statusText;
+                // Pydantic validation errors come back as a list of {loc, msg}.
+                if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
+                alert('Failed: ' + msg);
+                return;
+            }
+            // Apply any RBAC matrix changes after the metadata PUT.
+            const rbacFails = await _emdDiffApplyGrants(id);
+            if (rbacFails > 0) {
+                showToast(rbacFails + ' group access change(s) failed', 'error');
+            }
+            closeEditMemoryDomainModal();
+            showToast('Domain updated', 'success');
+            loadDomainsTab();
+        } catch (e) {
+            alert('Network error: ' + e.message);
+        } finally {
+            btn.disabled = false;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1637,7 +2753,8 @@
         catSel.value = curCat;
         catNewIn.style.display = 'none';
         catNewIn.value = '';
-        document.getElementById('editItemDomain').value = item.domain || '';
+        // (legacy editItemDomain <select> removed — chip-input is the only
+        //  domain control now; PATCH accepts domain_ids list.)
         document.getElementById('editItemAudience').value = item.audience || '';
         const tagsArr = parseJsonField(item.tags);
         tagWidgetInit(tagsArr);
@@ -1839,7 +2956,8 @@
             categoryRaw = document.getElementById('editItemCategoryNew').value;
         }
         const category = orNull(categoryRaw);
-        const domain = orNull(document.getElementById('editItemDomain').value);
+        // (legacy single `domain` field removed — chip-input drives
+        //  domain_ids exclusively now; PATCH performs the junction replace.)
         const audience = orNull(document.getElementById('editItemAudience').value);
         // Tags read directly from the pill widget DOM. Any uncommitted text
         // still in the input (user typed but didn't press Enter) is salvaged
@@ -1848,7 +2966,24 @@
         const pending = (document.getElementById('editItemTagsInput').value || '').trim();
         if (pending && !tags.includes(pending)) tags.push(pending);
 
-        const body = { title, content, category, domain, audience, tags };
+        // M:N domain membership lives in the chip-input — read its hidden
+        // JSON input rather than re-querying the chip-input host. Falls
+        // back to `null` (don't touch the junction) when the chip-input
+        // isn't on the page.
+        let domainIds = null;
+        const domainHidden = document.querySelector('input[name="domain_ids"]');
+        if (domainHidden) {
+            try {
+                domainIds = JSON.parse(domainHidden.value || '[]');
+            } catch (_) {
+                domainIds = [];
+            }
+        }
+
+        const body = { title, content, category, audience, tags };
+        if (domainIds !== null) {
+            body.domain_ids = domainIds;
+        }
         try {
             const resp = await fetch(`/api/memory/admin/${encodeURIComponent(_editingItemId)}`, {
                 method: 'PATCH',
@@ -1896,6 +3031,14 @@
         const pagination = document.getElementById('allPagination');
         const status = document.getElementById('statusFilter').value;
         const sourceType = document.getElementById('sourceTypeFilter').value;
+        const domainEl = document.getElementById('domainFilter');
+        const domain = domainEl ? domainEl.value : '';
+
+        // Hydrate domain dropdown on first call.
+        if (domainEl && !domainEl.dataset.hydrated) {
+            domainEl.dataset.hydrated = '1';
+            hydrateDomainFilterOptions();
+        }
 
         try {
             const params = new URLSearchParams({page, _t: Date.now()});
@@ -1905,12 +3048,58 @@
             if (sourceType) {
                 params.append('source_type', sourceType);
             }
-            const resp = await fetch(`/api/memory?${params}`);
-            const data = await resp.json();
+            if (domain) {
+                params.append('domain', domain);
+            }
+            const url = `/api/memory?${params}`;
+            const data = await _apiMemoryCached(url);
             renderAllItems(data, list, pagination);
         } catch (e) {
             console.error('Failed to load all items:', e);
             list.innerHTML = '<div class="empty-state"><p>Error loading items.</p></div>';
+        }
+    }
+
+    // v54 page-level cache for /api/memory list responses. Tabs in
+    // /admin/corporate-memory re-trigger loadAllItems() on every switch;
+    // without this, flicking between Review / All / Browse forced a
+    // server round-trip each time even when the underlying data hadn't
+    // changed. 30 s window — short enough that admin edits land fast
+    // (most mutations call refreshCurrentTab via the explicit
+    // _apiMemoryInvalidate() hook below).
+    const _apiMemoryCache = new Map();   // url → { data, expiresAt }
+    const _API_MEMORY_TTL_MS = 30000;
+    async function _apiMemoryCached(url) {
+        const now = Date.now();
+        const hit = _apiMemoryCache.get(url);
+        if (hit && hit.expiresAt > now) return hit.data;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        _apiMemoryCache.set(url, { data, expiresAt: now + _API_MEMORY_TTL_MS });
+        return data;
+    }
+    // Called by edit / approve / reject / bulk-update handlers after
+    // they mutate items, so the next list-fetch picks up the change
+    // instead of serving stale cache.
+    function _apiMemoryInvalidate() { _apiMemoryCache.clear(); }
+    window._apiMemoryInvalidate = _apiMemoryInvalidate;
+
+    async function hydrateDomainFilterOptions() {
+        const sel = document.getElementById('domainFilter');
+        if (!sel) return;
+        try {
+            const r = await fetch('/api/admin/memory-domains', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            const rows = await r.json();
+            const current = sel.value;
+            sel.innerHTML = '<option value="">All domains</option>'
+                + '<option value="(none)">(no domain)</option>'
+                + rows.map(d =>
+                    `<option value="${escapeHtml(d.slug)}">${escapeHtml(d.name || d.slug)}</option>`
+                  ).join('');
+            sel.value = current;
+        } catch (_) {
+            // Non-fatal — filter just stays with "All domains" only.
         }
     }
 
@@ -2044,13 +3233,23 @@
     const _itemsById = new Map();
 
     // mode: 'review' | 'all' | 'browse'
-    //   - 'review' renders the Approve / Reject action buttons; row checkbox
-    //     drives the Review-tab bulk-edit bar (updateSelectionCount('review')).
-    //   - 'all' renders the per-row Edit/Delete/Mandate buttons; row checkbox
-    //     drives the All-Items-tab bulk-edit bar (updateSelectionCount('all')).
+    //   - 'review' renders the Approve / Reject / Make-Mandatory action row;
+    //     row checkbox drives the Review-tab bulk-edit bar
+    //     (updateSelectionCount('review')).
+    //   - 'all' renders status-dependent actions (Approve/Reject/Demote/etc.);
+    //     row checkbox drives the All-Items-tab bulk-edit bar
+    //     (updateSelectionCount('all')).
     //   - 'browse' omits the row checkbox entirely — Browse tab has no batch
-    //     bar; rendering a checkbox there would leave it orphaned and
-    //     dispatch updateSelectionCount() against an invisible tab.
+    //     bar; rendering a checkbox there would leave it orphaned.
+    //
+    // v49 (Task 8.6): redesigned to match the user-facing /memory/d/<slug>
+    // drill-down card layout (`.memory-item` class set). Visual parity
+    // means an admin reviewing the queue sees items in the same shape
+    // analysts see them, with Required badge / votes / contributors /
+    // tags / status-badge / confidence chips preserved. Admin actions
+    // (Approve / Reject / Make-Mandatory / Edit) sit in a dedicated
+    // `.memory-item__admin-actions` row so the analyst-side affordances
+    // (Dismiss etc.) stay isolated from moderation actions.
     function renderItemCard(item, idx, mode) {
         _itemsById.set(item.id, item);
         const status = item.status || 'pending';
@@ -2060,34 +3259,38 @@
         const initials = sourceUser.split('@')[0].substring(0, 2).toUpperCase();
         const contributors = [{name: sourceUser, initials: initials}];
 
-        // Determine available actions based on current status
-        let actionsHtml = '';
+        // Determine available admin actions. Review tab keeps explicit
+        // Approve / Make-Mandatory / Reject for the moderation flow;
+        // All / Browse fall back to the status-aware action set so
+        // admins can still demote / re-approve / revoke / etc.
+        let adminActionsHtml = '';
         if (mode === 'review') {
-            actionsHtml = `
-                <div class="item-actions">
-                    <button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="20 6 9 17 4 12"/>
-                        </svg>
-                        Approve <span class="shortcut-hint">A</span>
-                    </button>
-                    <button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                        </svg>
-                        Make Mandatory <span class="shortcut-hint">M</span>
-                    </button>
-                    <button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"/>
-                            <line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                        Reject <span class="shortcut-hint">R</span>
-                    </button>
-                    <button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>
-                </div>`;
+            adminActionsHtml = `
+                <button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    Approve <span class="shortcut-hint">A</span>
+                </button>
+                <button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    Make Mandatory <span class="shortcut-hint">M</span>
+                </button>
+                <button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                    Reject <span class="shortcut-hint">R</span>
+                </button>
+                <button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`;
         } else {
-            actionsHtml = buildStatusActions(item);
+            // Reuse the status-aware button set; strip the wrapping
+            // .item-actions div — admin-actions row provides its own
+            // flex container now.
+            adminActionsHtml = buildStatusActions(item, /* wrapped= */false);
         }
 
         const mandateFormHtml = `
@@ -2105,47 +3308,80 @@
                 </div>
             </div>`;
 
+        const isRequired = !!item.is_required || status === 'mandatory';
+        const tags = parseJsonField(item.tags);
+        const upvotes = item.upvotes || 0;
+        const downvotes = item.downvotes || 0;
+
+        // Row checkbox emitted inline so the regression guard in
+        // tests/test_admin_memory_page_all_items_batch_bar.py keeps
+        // matching the documented `mode === 'browse' ? ''` branch.
+        // Browse-tab cards have no batch bar so the checkbox is
+        // suppressed there — the rest of the JS infrastructure
+        // (`getSelectedIds`, `updateSelectionCount`) is shared with
+        // Review + All tabs.
         return `
-            <div class="knowledge-item" data-id="${esc(item.id)}" data-idx="${idx}">
-                <div class="item-row">
+            <div class="memory-item ${isRequired ? 'is-required' : ''} knowledge-item" data-id="${esc(item.id)}" data-idx="${idx}">
+                <div class="memory-item__header">
                     ${mode === 'browse' ? '' : `<input type="checkbox" class="item-checkbox" data-id="${esc(item.id)}" onchange="updateSelectionCount('${mode}')">`}
-                    <div class="item-body">
-                        <div class="knowledge-header">
-                            <div>
-                                <div class="knowledge-title">${escapeHtml(item.title || 'Untitled')}</div>
-                                <div class="knowledge-meta">
-                                    <span class="category-badge ${esc(item.category || 'general')}">${escapeHtml(categoryDisplay)}</span>
-                                    ${item.domain ? `<span style="display:inline-block;padding:2px 8px;background:#e8f0fe;color:#1a73e8;border-radius:999px;font-size:11px;">${escapeHtml(item.domain)}</span>` : ''}
-                                    ${item.confidence ? `<span style="display:inline-block;padding:2px 8px;background:#f0fdf4;color:#16a34a;border-radius:999px;font-size:11px;">${Math.round(item.confidence*100)}%</span>` : ''}
-                                    ${item.source_type === 'user_verification' ? '<span style="display:inline-block;padding:2px 8px;background:#dbeafe;color:#1d4ed8;border-radius:999px;font-size:11px;">Verified</span>' : ''}
-                                    ${mode !== 'review' ? `<span class="status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
-                                    <span>Added ${escapeHtml(dateStr)}</span>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="knowledge-content">${escapeHtml(item.content || '')}</div>
-                        <div class="knowledge-footer">
-                            <div class="knowledge-tags">
-                                ${parseJsonField(item.tags).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
-                            </div>
-                            <div class="contributors">
-                                <div class="contributor-avatars">
-                                    ${contributors.slice(0, 3).map(u =>
-                                        `<span class="contributor-avatar" title="${escapeHtml(u.name)}">${escapeHtml(u.initials)}</span>`
-                                    ).join('')}
-                                    ${contributors.length > 3 ? `<span class="contributor-avatar">+${contributors.length - 3}</span>` : ''}
-                                </div>
-                                <span>${contributors.length} contributor${contributors.length !== 1 ? 's' : ''}</span>
-                            </div>
-                        </div>
-                        ${actionsHtml}
-                        ${mandateFormHtml}
+                    <h3 class="memory-item__title knowledge-title">${escapeHtml(item.title || 'Untitled')}</h3>
+                    <div class="memory-item__badges">
+                        ${isRequired ? '<span class="badge badge--required">Required</span>' : ''}
+                        ${renderDomainBadges(item)}
+                        ${item.category ? `<span class="badge badge--category">${escapeHtml(categoryDisplay)}</span>` : ''}
+                        ${item.source_type ? `<span class="badge badge--source">${escapeHtml(item.source_type)}</span>` : ''}
+                        ${(status && status !== 'approved') ? `<span class="badge badge--status status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
+                        ${item.confidence ? `<span class="badge">${Math.round(item.confidence*100)}% conf</span>` : ''}
                     </div>
                 </div>
+                <div class="memory-item__content knowledge-content">${escapeHtml(item.content || '')}</div>
+                <div class="memory-item__footer">
+                    <span class="memory-item__votes"
+                          title="Analyst votes — useful items trend up, outdated ones get flagged.">
+                        <span class="vote-pill" title="Upvotes">
+                            <svg class="vote-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M7 10v12"/>
+                                <path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>
+                            </svg>
+                            <span class="vote-count">${upvotes}</span>
+                        </span>
+                        <span class="vote-pill" title="Downvotes">
+                            <svg class="vote-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M17 14V2"/>
+                                <path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>
+                            </svg>
+                            <span class="vote-count">${downvotes}</span>
+                        </span>
+                    </span>
+                    ${contributors.length ? `
+                        <span class="memory-item__contributors">
+                            ${contributors.slice(0, 3).map(u =>
+                                `<span class="memory-item__avatar" title="${escapeHtml(u.name)}">${escapeHtml(u.initials)}</span>`
+                            ).join('')}
+                        </span>` : ''}
+                    ${tags.length ? `
+                        <span class="memory-item__tags">
+                            ${tags.map(t => `<span class="memory-item__tag tag">${escapeHtml(t)}</span>`).join('')}
+                        </span>` : ''}
+                    <span class="memory-item__meta">Added ${escapeHtml(dateStr)}</span>
+                </div>
+                <div class="memory-item__admin-actions item-actions">
+                    ${adminActionsHtml}
+                </div>
+                ${mandateFormHtml}
             </div>`;
     }
 
-    function buildStatusActions(item) {
+    function buildStatusActions(item, wrapped) {
+        // ``wrapped`` defaults to true for legacy callers (e.g. anywhere
+        // else in the codebase that still consumes the wrapped form).
+        // The v49 admin redesign in ``renderItemCard`` passes
+        // ``wrapped=false`` because the new layout supplies its own
+        // ``.memory-item__admin-actions`` flex container so wrapping
+        // again would double up the row.
+        if (wrapped === undefined) wrapped = true;
         const status = item.status || 'pending';
         let buttons = [];
 
@@ -2172,7 +3408,7 @@
         buttons.push(`<button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`);
 
         if (buttons.length === 0) return '';
-        return `<div class="item-actions">${buttons.join('')}</div>`;
+        return wrapped ? `<div class="item-actions">${buttons.join('')}</div>` : buttons.join('');
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2567,6 +3803,30 @@
         return escapeHtml(String(text || '')).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
     }
 
+    // Render every memory domain the item belongs to as a chip, with a
+    // +N overflow chip past 3. Items can sit in multiple domains via the
+    // knowledge_item_domains junction; the single-slug item.domain
+    // surface stays as a back-compat fallback when item.domains is
+    // missing (e.g. older API responses pre-hydration patch).
+    function renderDomainBadges(item) {
+        let slugs = Array.isArray(item.domains) ? item.domains.slice() : [];
+        if (!slugs.length && item.domain) slugs = [item.domain];
+        if (!slugs.length) return '';
+        const max = 3;
+        const visible = slugs.slice(0, max);
+        const overflow = slugs.length - visible.length;
+        const chip = (slug, title) =>
+            `<span class="badge" `
+          + `style="background:#e8f0fe; color:#1a73e8; border:1px solid #c7d8f5;" `
+          + `title="${escapeHtml(title || slug)}">📂 ${escapeHtml(slug)}</span>`;
+        let out = visible.map(s => chip(s)).join('');
+        if (overflow > 0) {
+            const rest = slugs.slice(max).join(', ');
+            out += chip('+' + overflow, '+' + overflow + ' more: ' + rest);
+        }
+        return out;
+    }
+
     let toastTimeout = null;
     function showToast(message, type) {
         const toast = document.getElementById('toast');
@@ -2579,9 +3839,53 @@
     }
 
     // ─────────────────────────────────────────────────────────────
-    // Initial load
+    // Initial load — honor #tab in the URL hash so deep links from
+    // /corporate-memory "Manage domains →" land on the right tab,
+    // and #item-XXX from /memory/d/<slug>'s Edit link to open the
+    // item edit modal directly.
     // ─────────────────────────────────────────────────────────────
 
-    loadReviewQueue(1);
+    async function _openItemEditByHashId(itemId) {
+        // GET /api/memory/admin/{id} bypasses pagination — the previous
+        // implementation polled the All-Items render and failed for items
+        // beyond page 1. Inject the fetched row into _itemsById so the
+        // existing openEditItemModal(id) flow (which reads from that map)
+        // just works.
+        try {
+            const r = await fetch('/api/memory/admin/' + encodeURIComponent(itemId),
+                { credentials: 'same-origin' });
+            if (r.status === 404) {
+                showToast('Item not found — it may have been deleted.', 'error');
+                return;
+            }
+            if (!r.ok) {
+                showToast('Could not load item (HTTP ' + r.status + ').', 'error');
+                return;
+            }
+            const item = await r.json();
+            _itemsById.set(item.id, item);
+            openEditItemModal(item.id);
+        } catch (e) {
+            showToast('Network error loading item: ' + e.message, 'error');
+        }
+    }
+
+    (function() {
+        const hash = (window.location.hash || '').replace(/^#/, '');
+        const validTabs = ['review','all','contradictions','duplicates','browse','domains','audit'];
+        const itemMatch = hash.match(/^item-(.+)$/);
+        if (itemMatch) {
+            // Deep link from /memory/d/<slug> Edit button. Switch to All
+            // Items so the user has a sensible tab to land back on after
+            // closing the modal, then fetch the row directly via the
+            // single-item GET (works regardless of pagination).
+            switchTab('all');
+            _openItemEditByHashId(itemMatch[1]);
+        } else if (hash && validTabs.indexOf(hash) !== -1) {
+            switchTab(hash);
+        } else {
+            loadReviewQueue(1);
+        }
+    })();
     </script>
 {% endblock %}

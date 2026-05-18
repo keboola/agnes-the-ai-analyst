@@ -127,6 +127,77 @@ def pull(
 
     typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
     typer.echo(f"Rules: {result.rules_count}.")
+
+    # v49 (Task 8.12): per-type status block surfaced from `SyncReport`.
+    # The new per-type sync loop in ``cli/lib/pull_sync.py`` reports
+    # added/updated/removed counts for direct_tables, data_packages, and
+    # memory_domains; rendering them here lets the operator see at a
+    # glance what changed without trawling debug logs. Skipped when the
+    # manifest predates v49 (no `stack_sync` on PullResult) so older
+    # servers still produce the legacy two-line output.
+    stack = getattr(result, "stack_sync", None)
+    if stack is not None:
+        _emit_stack_sync_block(stack)
+
     if result.errors:
         for e in result.errors:
             typer.echo(f"warn: {e}", err=True)
+
+
+def _emit_stack_sync_block(stack) -> None:
+    """Print the v49 per-type ``SyncReport`` summary.
+
+    Format mirrors the rest of `agnes pull`'s output: plain text, one
+    line per type. Lines are emitted only when something changed for
+    that type — a clean idempotent pull stays as quiet as before
+    (just the legacy "Updated 0 tables …" header).
+
+    Layout::
+
+        Stack sync:
+          marketplace_plugins: ✓ 0 changes
+          data_packages:       2 added, 1 updated, 0 removed
+          memory_domains:      ✓ 0 changes
+          direct_tables:       ✓ 0 changes
+
+    Invariant violations (if any) surface as a trailing warning so a
+    drifted disk state isn't silently swept under the rug.
+    """
+    # Tolerate either dataclass shape (real ``SyncReport``) or test
+    # doubles supplying a duck-typed object with .direct_tables etc.
+    def _line(label: str, rep) -> str:
+        added = getattr(rep, "added", 0)
+        updated = getattr(rep, "updated", 0)
+        removed = getattr(rep, "removed", 0)
+        if not (added or updated or removed):
+            return f"  {label:<22} ✓ 0 changes"
+        parts = []
+        if added:
+            parts.append(f"{added} added")
+        if updated:
+            parts.append(f"{updated} updated")
+        if removed:
+            parts.append(f"{removed} removed")
+        return f"  {label:<22} {', '.join(parts)}"
+
+    direct = getattr(stack, "direct_tables", None)
+    pkgs = getattr(stack, "data_packages", None)
+    mem = getattr(stack, "memory_domains", None)
+    if direct is None and pkgs is None and mem is None:
+        return
+
+    typer.echo("Stack sync:")
+    if direct is not None:
+        typer.echo(_line("direct_tables:", direct))
+    if pkgs is not None:
+        typer.echo(_line("data_packages:", pkgs))
+    if mem is not None:
+        typer.echo(_line("memory_domains:", mem))
+
+    violations = getattr(stack, "invariant_violations", []) or []
+    if violations:
+        typer.echo(
+            f"warn: {len(violations)} stack invariant violation"
+            f"{'s' if len(violations) != 1 else ''} — see logs.",
+            err=True,
+        )

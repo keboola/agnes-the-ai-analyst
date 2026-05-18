@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
+    {# Shared stack card styles — drives /catalog + /memory Browse/My Stack
+       cards (matches marketplace.html .mp-card visual language). #}
+    <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">
     {# app.js loaded by _app_header.html itself so pages that include
        the header directly without extending base.html (e.g. admin_tables)
        still get the nav-dropdown wiring. #}
@@ -42,6 +45,334 @@
     </div>
     {% endblock %}
     {% include "_version_badge.html" %}
+    {# Shared chip-input component (Task 8.7) — loaded globally so /admin/tables
+       and /admin/corporate-memory can mount it without their own <script> tag.
+       Idempotent: the component only initialises elements with .chip-input or
+       [data-chip-input] that lack a `data-chip-ready` flag. #}
+    <script src="{{ static_url('js/components/chip-input.js') }}" defer></script>
+    <script>
+      // v54 global undo-toast — surfaced by admin delete handlers. The
+      // toast carries an Undo button that POSTs to a restore URL, so
+      // soft-deleted resources can be brought back inside the dwell
+      // window (default 10s). Click Undo → POST + onSuccess() (typically
+      // a list refresh) — then the toast closes.
+      window.showUndoToast = function (message, restoreUrl, onSuccess, dwellMs) {
+        const dwell = dwellMs || 10000;
+        let el = document.getElementById('agnes-undo-toast');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'agnes-undo-toast';
+          el.style.cssText =
+            'position:fixed; bottom:24px; right:24px; padding:12px 16px; ' +
+            'background:#202124; color:#fff; border-radius:8px; ' +
+            'box-shadow:0 6px 20px rgba(0,0,0,.25); font-size:13px; ' +
+            'z-index:3000; display:flex; align-items:center; gap:12px;';
+          document.body.appendChild(el);
+        }
+        el.innerHTML = '';
+        const msg = document.createElement('span');
+        msg.textContent = message;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = 'Undo';
+        btn.style.cssText =
+          'background:transparent; color:#7dd3fc; border:1px solid #38bdf8; ' +
+          'border-radius:6px; padding:4px 10px; cursor:pointer; ' +
+          'font-weight:600; font-size:12px;';
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.textContent = '×';
+        close.setAttribute('aria-label', 'Dismiss');
+        close.style.cssText =
+          'background:transparent; color:#9ca3af; border:none; cursor:pointer; ' +
+          'font-size:16px; padding:0 4px;';
+        el.appendChild(msg);
+        el.appendChild(btn);
+        el.appendChild(close);
+        el.style.display = 'flex';
+        const dismiss = () => { el.style.display = 'none'; };
+        const timer = setTimeout(dismiss, dwell);
+        close.addEventListener('click', () => { clearTimeout(timer); dismiss(); });
+        btn.addEventListener('click', async () => {
+          clearTimeout(timer);
+          btn.disabled = true;
+          btn.textContent = 'Restoring…';
+          try {
+            const r = await fetch(restoreUrl, {
+              method: 'POST', credentials: 'same-origin',
+            });
+            if (!r.ok) {
+              const d = await r.json().catch(() => ({}));
+              msg.textContent = 'Undo failed: ' + (d.detail || r.statusText);
+              btn.textContent = 'Undo';
+              btn.disabled = false;
+              return;
+            }
+            dismiss();
+            if (typeof onSuccess === 'function') {
+              try { onSuccess(); } catch (_) { /* swallow */ }
+            }
+          } catch (e) {
+            msg.textContent = 'Network error: ' + e.message;
+            btn.textContent = 'Undo';
+            btn.disabled = false;
+          }
+        });
+      };
+
+      // Global Escape → close topmost visible modal. Inspects three
+      // common modal patterns used across the app:
+      //   * `.modal-overlay`         (admin_tables)
+      //   * `#xyzModal` flex/block   (admin_corporate_memory inline divs)
+      //   * `.modal` open via class  (catalog, marketplace)
+      // Picks the one with the highest computed z-index so nested
+      // modal-on-modal flows close the inner one first. opt-out per
+      // element via `data-no-esc-close="1"`.
+      (function () {
+        function _visibleModals() {
+          const out = [];
+          document.querySelectorAll(
+            '.modal-overlay, [id$="Modal"], .modal.is-open'
+          ).forEach((el) => {
+            if (el.dataset.noEscClose === '1') return;
+            const cs = window.getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') return;
+            // Ignore elements that don't actually paint (no width/height).
+            const r = el.getBoundingClientRect();
+            if (!r.width || !r.height) return;
+            out.push({ el, z: parseInt(cs.zIndex, 10) || 0 });
+          });
+          return out;
+        }
+        function _closeTopmost() {
+          const modals = _visibleModals();
+          if (!modals.length) return false;
+          modals.sort((a, b) => b.z - a.z);
+          const target = modals[0].el;
+          // Preferred path: a `data-close-handler` attribute names the
+          // page-specific close function (e.g. data-close-handler=
+          // "closeEditDataPackageModal"). Falls back to flipping the
+          // inline display style — works for both flex+block conventions.
+          const fn = target.dataset.closeHandler;
+          if (fn && typeof window[fn] === 'function') {
+            try { window[fn](); return true; } catch (_) { /* fall through */ }
+          }
+          target.style.display = 'none';
+          target.classList.remove('is-open', 'active');
+          return true;
+        }
+        document.addEventListener('keydown', (e) => {
+          if (e.key !== 'Escape') return;
+          // Skip when typing in an input/textarea/contenteditable so Escape
+          // can blur native inputs without closing the surrounding modal.
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                    t.isContentEditable)) {
+            t.blur();
+            return;
+          }
+          if (_closeTopmost()) e.preventDefault();
+        });
+      })();
+
+      // v51 palette swatches — hydrate every `.cf-palette-row` element
+      // with 8 design-system color buttons; clicking a swatch sets the
+      // adjacent native `<input type="color">` (id = .data-target) and
+      // marks the swatch active. Free-form picker still works as before.
+      (function () {
+        const PALETTE = [
+          '#0EA5B5', // teal
+          '#2563EB', // blue
+          '#7C3AED', // violet
+          '#DB2777', // pink
+          '#DC2626', // red
+          '#D97706', // amber
+          '#059669', // emerald
+          '#475569', // slate
+        ];
+        function _hydrate(row) {
+          if (row.dataset.hydrated === '1') return;
+          row.dataset.hydrated = '1';
+          const targetId = row.dataset.target;
+          if (!targetId) return;
+          PALETTE.forEach((hex) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'cf-swatch';
+            btn.style.background = hex;
+            btn.dataset.hex = hex;
+            btn.title = hex;
+            btn.addEventListener('click', () => {
+              const input = document.getElementById(targetId);
+              if (input) {
+                input.value = hex;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+              row.querySelectorAll('.cf-swatch').forEach((s) =>
+                s.classList.toggle('is-active', s === btn)
+              );
+            });
+            row.appendChild(btn);
+          });
+          // Reflect any pre-set color value on the input back onto the
+          // swatch row so the user sees which palette entry matches.
+          const input = document.getElementById(targetId);
+          if (input) {
+            // v54: visible hex chip beside the picker — Safari + Firefox
+            // hide the value entirely inside the native swatch; this
+            // gives admins a copy-able read of what's actually stored.
+            // Sits in-flow after the input so it doesn't fight the
+            // modal layout.
+            let hexChip = input.parentElement
+              ? input.parentElement.querySelector('.cf-hex-chip[data-for="' + targetId + '"]')
+              : null;
+            if (!hexChip && input.parentElement) {
+              hexChip = document.createElement('code');
+              hexChip.className = 'cf-hex-chip';
+              hexChip.dataset.for = targetId;
+              hexChip.style.cssText =
+                'display:inline-block; margin-top:4px; padding:1px 8px; ' +
+                'font-size:11px; font-family:ui-monospace, Menlo, monospace; ' +
+                'color:var(--text-secondary, #5f6368); background:rgba(0,0,0,0.04); ' +
+                'border-radius:4px;';
+              input.insertAdjacentElement('afterend', hexChip);
+            }
+            const sync = () => {
+              const cur = (input.value || '').toLowerCase();
+              row.querySelectorAll('.cf-swatch').forEach((s) =>
+                s.classList.toggle('is-active', s.dataset.hex.toLowerCase() === cur)
+              );
+              if (hexChip) hexChip.textContent = cur;
+            };
+            input.addEventListener('change', sync);
+            input.addEventListener('input', sync);
+            sync();
+          }
+        }
+        function _hydrateAll() {
+          document.querySelectorAll('.cf-palette-row').forEach(_hydrate);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', _hydrateAll);
+        } else {
+          _hydrateAll();
+        }
+        // Re-hydrate on demand — modal templates already exist at page
+        // load (display:none), so this catches any future dynamically
+        // injected modal too.
+        const obs = new MutationObserver(_hydrateAll);
+        obs.observe(document.body, { childList: true, subtree: true });
+      })();
+
+      // v54 admin-nav keyboard shortcuts — Vim-style two-key ``g <x>``
+      // sequences for the admin landing pages. Only fires when:
+      //   * caller is admin (the gated nav is rendered)
+      //   * user isn't typing into an input/textarea/contenteditable
+      //   * no modal is currently visible (Esc handler would conflict)
+      // First ``g`` starts a 1s window for the second key; outside the
+      // window the prefix resets. Hint chip surfaces briefly on the
+      // first key to teach the shortcut on the fly.
+      (function () {
+        // Admin-only — short-circuit if the nav isn't there.
+        if (!document.getElementById('adminNavMenu')) return;
+        const MAP = {
+          't': '/admin/tables',          // (data packages)
+          'a': '/admin/access',           // resource access
+          'm': '/admin/corporate-memory', // (memory)
+          'u': '/admin/users',
+          'g': '/admin/groups',
+          's': '/admin/server-config',
+          'l': '/admin/activity',         // (log)
+          'c': '/admin/marketplaces',     // (curated)
+          'k': '/admin/tokens',           // (keys/tokens)
+          'r': '/admin/store/submissions', // (review queue)
+        };
+        let pending = false;
+        let pendingTimer = null;
+        let hintEl = null;
+        function _showHint() {
+          if (!hintEl) {
+            hintEl = document.createElement('div');
+            hintEl.style.cssText =
+              'position:fixed; bottom:24px; left:24px; padding:6px 12px; ' +
+              'background:#202124; color:#fff; border-radius:6px; ' +
+              'font-family:ui-monospace, Menlo, monospace; font-size:12px; ' +
+              'box-shadow:0 4px 12px rgba(0,0,0,.2); z-index:3000;';
+            document.body.appendChild(hintEl);
+          }
+          hintEl.textContent = 'g … (t a m u g s l c k r)';
+          hintEl.style.display = 'block';
+        }
+        function _hideHint() {
+          if (hintEl) hintEl.style.display = 'none';
+        }
+        function _resetPending() {
+          pending = false;
+          if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+          _hideHint();
+        }
+        document.addEventListener('keydown', (e) => {
+          // Ignore modifier-key shortcuts (Cmd-T, Ctrl-T etc.) so we don't
+          // hijack browser-native bindings.
+          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                    t.isContentEditable)) return;
+          // Skip when any modal is visible — the Esc handler should win there.
+          const anyModalOpen = Array.from(document.querySelectorAll(
+            '.modal-overlay, [id$="Modal"], .modal.is-open'
+          )).some((el) => {
+            const cs = window.getComputedStyle(el);
+            return cs.display !== 'none' && cs.visibility !== 'hidden';
+          });
+          if (anyModalOpen) return;
+          const k = e.key.toLowerCase();
+          if (!pending && k === 'g') {
+            pending = true;
+            _showHint();
+            pendingTimer = setTimeout(_resetPending, 1000);
+            return;
+          }
+          if (pending) {
+            const target = MAP[k];
+            _resetPending();
+            if (target) {
+              e.preventDefault();
+              window.location.href = target;
+            }
+          }
+        });
+      })();
+
+      // Persist each admin-nav <details data-section=...> open/closed
+      // state in localStorage so reopening the dropdown restores the
+      // sections the admin last had collapsed. Sections default open
+      // when no entry exists (matches Jinja's `open` attribute).
+      (function () {
+        const KEY = 'agnes-admin-nav-collapsed-sections';
+        let collapsed = new Set();
+        try {
+          const raw = localStorage.getItem(KEY);
+          if (raw) collapsed = new Set(JSON.parse(raw));
+        } catch (_) { /* corrupt JSON or storage disabled — fall back to defaults */ }
+
+        function _persist() {
+          try { localStorage.setItem(KEY, JSON.stringify(Array.from(collapsed))); }
+          catch (_) { /* storage full / private mode — silently no-op */ }
+        }
+
+        document.querySelectorAll('details.app-nav-menu-group[data-section]')
+          .forEach((det) => {
+            const name = det.dataset.section;
+            if (collapsed.has(name)) det.open = false;
+            det.addEventListener('toggle', () => {
+              if (det.open) collapsed.delete(name);
+              else collapsed.add(name);
+              _persist();
+            });
+          });
+      })();
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

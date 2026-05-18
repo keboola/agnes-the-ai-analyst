@@ -110,6 +110,15 @@ from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
 from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
+from app.api.data_packages import router as data_packages_router
+from app.api.memory_domains import router as memory_domains_router
+from app.api.recipes import (
+    public_router as recipes_public_router,
+    admin_router as recipes_admin_router,
+)
+from app.api.uploads import router as admin_uploads_router
+from app.api.stack import router as stack_router
+from app.api.stack_views import router as stack_views_router
 from app.api.initial_workspace import router as initial_workspace_router
 from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
@@ -636,6 +645,21 @@ def create_app() -> FastAPI:
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    # v50 admin-uploaded cover images. Lives under ${DATA_DIR}/uploads so
+    # it survives across deploys (the app/web/static dir gets bundled into
+    # the container image and is treated as read-only). The directory is
+    # lazily created by app/api/uploads.py — we mkdir here too so the
+    # StaticFiles mount has a real directory on boot even before the first
+    # upload (avoids the "directory does not exist" 500 on cold systems).
+    from src.db import _get_data_dir as _ddir_uploads
+    uploads_dir = _ddir_uploads() / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/uploads",
+        StaticFiles(directory=str(uploads_dir)),
+        name="uploads",
+    )
+
     # Auth providers (conditional registration)
     from app.auth.providers.google import router as google_auth_router, is_available as google_available
     from app.auth.providers.password import router as password_auth_router
@@ -675,6 +699,13 @@ def create_app() -> FastAPI:
     app.include_router(v2_sample_router)
     app.include_router(v2_scan_router)
     app.include_router(marketplaces_router)
+    app.include_router(data_packages_router)
+    app.include_router(memory_domains_router)
+    app.include_router(recipes_public_router)
+    app.include_router(recipes_admin_router)
+    app.include_router(admin_uploads_router)
+    app.include_router(stack_router)
+    app.include_router(stack_views_router)
     app.include_router(initial_workspace_router)
     app.include_router(store_router)
     app.include_router(my_stack_router)

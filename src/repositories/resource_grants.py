@@ -23,7 +23,7 @@ class ResourceGrantsRepository:
 
     _SELECT_COLS = (
         "id, group_id, resource_type, resource_id, "
-        "assigned_at, assigned_by"
+        "assigned_at, assigned_by, requirement"
     )
 
     def list_all(
@@ -44,7 +44,7 @@ class ResourceGrantsRepository:
         rows = self.conn.execute(
             f"""SELECT g.id, g.group_id, ug.name AS group_name,
                        g.resource_type, g.resource_id,
-                       g.assigned_at, g.assigned_by
+                       g.assigned_at, g.assigned_by, g.requirement
                 FROM resource_grants g
                 JOIN user_groups ug ON ug.id = g.group_id
                 {where_sql}
@@ -136,6 +136,35 @@ class ResourceGrantsRepository:
             [grant_id, group_id, resource_type, resource_id, assigned_by],
         )
         return grant_id
+
+    def update_requirement(
+        self,
+        grant_id: str,
+        requirement: str,
+    ) -> Optional[str]:
+        """Update the ``requirement`` enum on a grant. Returns the prior
+        value (None if grant missing) so callers can detect transitions.
+
+        v49: ``requirement`` is one of ``'available'`` / ``'required'``.
+        Callers handle the soft-downgrade subscription fan-out at the
+        service layer (see app/api/access.py update_grant_requirement).
+        """
+        if requirement not in ("available", "required"):
+            raise ValueError(
+                f"requirement must be 'available' or 'required', got {requirement!r}"
+            )
+        before = self.conn.execute(
+            "SELECT requirement FROM resource_grants WHERE id = ?",
+            [grant_id],
+        ).fetchone()
+        if before is None:
+            return None
+        prior = before[0]
+        self.conn.execute(
+            "UPDATE resource_grants SET requirement = ? WHERE id = ?",
+            [requirement, grant_id],
+        )
+        return prior
 
     def delete(self, grant_id: str) -> bool:
         """Remove a grant by id. Returns True iff a row was removed."""
