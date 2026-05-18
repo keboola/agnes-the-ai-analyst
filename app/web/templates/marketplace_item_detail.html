@@ -1428,14 +1428,17 @@
   // ── Details sidebar — skip rows whose value is missing. The
   // `owner_todo` placeholder for the Curator row stays as a deliberate
   // reminder to wire up curator metadata.
+  //
+  // v49 phase-7: unified scan order with plugin detail surface.
+  // Priority: identity (who) → life-stage (when) → telemetry (how used)
+  // → debug-tier (version, size). Inner skills/agents pivot on parent
+  // plugin, so Parent plugin slots immediately after authorship.
   const dl = document.getElementById('details-list');
-  // Activity rows for the sidebar — Invocations + Users live in the
-  // hero chip now, no need to duplicate. Two derived signals only the
-  // daily series can give us:
-  //   * Active days — engagement consistency over the 30d window.
-  //   * Last used   — recency (answers "is this still being used?").
+
+  // Telemetry helper — Last used first (recency, primary decision
+  // driver), Active days second (engagement consistency over 30d).
   // Both rendered only when the item has at least one active day so a
-  // brand-new skill doesn't show "0 of 30" + "Last used —".
+  // brand-new skill doesn't show "Last used —" + "0 of 30".
   const telemetryRows = (() => {
     if (!d.telemetry || !Array.isArray(d.telemetry.daily_series)) return '';
     const series = d.telemetry.daily_series;
@@ -1445,38 +1448,45 @@
     for (let i = series.length - 1; i >= 0; i--) {
       if ((series[i].invocations || 0) > 0) { lastIso = series[i].day; break; }
     }
-    return `<div class="row"><dt>Active days</dt><dd>${activeDays} of ${series.length}</dd></div>`
-         + (lastIso
-            ? `<div class="row"><dt>Last used</dt><dd>${esc(fmtRelative(lastIso))}</dd></div>`
-            : '');
+    return (lastIso
+              ? `<div class="row"><dt>Last used</dt><dd>${esc(fmtRelative(lastIso))}</dd></div>`
+              : '')
+         + `<div class="row"><dt>Active days</dt><dd>${activeDays} of ${series.length}</dd></div>`;
   })();
+
   if (source === 'curated' || innerName) {
-    // Nested skill/agent (curated OR flea-inner): the Details sidebar
-    // is parent-centric — Parent plugin / Bundle size / activity rows /
-    // authorship label. The authorship row label tracks the source
-    // (curated bundles have a Curator, flea bundles have an Owner) so
-    // the label vocabulary stays consistent with the plugin detail page.
+    // Nested skill/agent (curated OR flea-inner). Sidebar render order:
+    //   1. Curator / Owner    — first scan signal (trust)
+    //   2. Parent plugin      — where this lives
+    //   3. Last used          — recency
+    //   4. Active days        — engagement
+    //   5. Bundle size        — debug-tier
     const author = (d.parent_author_name && d.parent_author_name !== 'owner_todo')
       ? esc(d.parent_author_name)
       : '<span class="todo">owner_todo</span>';
     const authorLabel = source === 'curated' ? 'Curator' : 'Owner';
-    // Type already shown as a badge in the hero — skip the row here.
     dl.innerHTML = `
+      <div class="row"><dt>${authorLabel}</dt><dd>${author}</dd></div>
       <div class="row"><dt>Parent plugin</dt><dd>${esc(d.parent_display_name || d.manifest_name || pluginName)}</dd></div>
-      ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}
       ${telemetryRows}
-      <div class="row"><dt>${authorLabel}</dt><dd>${author}</dd></div>`;
+      ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}`;
   } else {
+    // Flea standalone skill/agent. Sidebar render order:
+    //   1. Owner              — first scan signal (trust)
+    //   2. Released           — life-stage
+    //   3. Last used          — recency
+    //   4. Active days        — engagement
+    //   5. Version            — debug-tier
+    //   6. Bundle size        — debug-tier
+    // Drops the previous Category + Installs rows (duplicated hero
+    // badge + telemetry chip — see v49 phase-7 notes).
     const ownerLabel = d.owner_display || d.author_name || '';
-    // Type already shown as a badge in the hero — skip the row here.
     dl.innerHTML = `
       ${ownerLabel ? `<div class="row"><dt>Owner</dt><dd>${esc(ownerLabel)}</dd></div>` : ''}
-      ${d.version ? `<div class="row"><dt>Version</dt><dd class="mono">v${esc(d.version)}</dd></div>` : ''}
-      ${d.category ? `<div class="row"><dt>Category</dt><dd>${esc(d.category)}</dd></div>` : ''}
-      ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}
-      <div class="row"><dt>Installs</dt><dd>${d.install_count || 0}</dd></div>
+      ${d.released_at ? `<div class="row"><dt>Released</dt><dd>${esc(fmtRelative(d.released_at))}</dd></div>` : ''}
       ${telemetryRows}
-      ${d.released_at ? `<div class="row"><dt>Released</dt><dd>${esc(fmtRelative(d.released_at))}</dd></div>` : ''}`;
+      ${d.version ? `<div class="row"><dt>Version</dt><dd class="mono">v${esc(d.version)}</dd></div>` : ''}
+      ${d.bundle_size != null ? `<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>` : ''}`;
   }
 
   // ── Docs section ────────────────────────────────────────────────

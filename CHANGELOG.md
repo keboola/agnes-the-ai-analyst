@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- Marketplace detail page **Details sidebar** unified across all five
+  surfaces (curated plugin / flea plugin / curated inner skill+agent /
+  flea inner skill+agent / flea standalone skill+agent). Render order
+  now scans **identity → life-stage → telemetry → debug-tier**:
+  Curator / Owner → (Parent plugin for inner / Released for top-level)
+  → Last used → Active days → Version (flea standalone only) →
+  Bundle size. Drops the previous Slug row (debug-tier, never user-
+  relevant) from plugin detail and the Category + Installs rows
+  (duplicated hero badge + telemetry chip) from flea standalone
+  detail. Flea plugin Owner row now reads `d.owner_display` — the
+  fullname resolved via `users.name → users.email → owner_username`
+  — instead of the kebab-case `owner_username` slug.
+
 ### Fixed
 - Flea **plugin entity** cards (`/marketplace?tab=flea`) and detail
   pages (`/marketplace/flea/{id}` for `type='plugin'`) now show the
