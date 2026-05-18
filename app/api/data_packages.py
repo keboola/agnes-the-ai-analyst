@@ -79,6 +79,71 @@ def _validate_status(value: Optional[str]) -> Optional[str]:
     return v
 
 
+# v56 validation caps. Names match the Foundry spec checklist
+# (≤300 chars card desc, ≤8 use/skip bullets, etc.) — strict enough
+# to keep the rendered detail page from overflowing without being
+# annoying to fill in.
+_TAGS_MAX_COUNT = 8
+_TAG_MAX_CHARS = 30
+_LONG_DESCRIPTION_MAX = 4000
+_BULLETS_MAX_COUNT = 8
+_BULLET_MAX_CHARS = 200
+_EXAMPLE_QUESTIONS_MAX_COUNT = 12
+_EXAMPLE_QUESTION_MAX_CHARS = 200
+
+
+def _validate_tags(v: Optional[List[str]]) -> Optional[List[str]]:
+    if v is None:
+        return None
+    if len(v) > _TAGS_MAX_COUNT:
+        raise ValueError(f"tags: max {_TAGS_MAX_COUNT} entries")
+    for t in v:
+        if not isinstance(t, str):
+            raise ValueError("tags: each entry must be a string")
+        if len(t) > _TAG_MAX_CHARS:
+            raise ValueError(f"tags: each entry max {_TAG_MAX_CHARS} chars")
+    return v
+
+
+def _validate_long_description(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    if len(v) > _LONG_DESCRIPTION_MAX:
+        raise ValueError(f"long_description: max {_LONG_DESCRIPTION_MAX} chars")
+    return v
+
+
+def _validate_bullet_list(v: Optional[List[str]], *, field: str) -> Optional[List[str]]:
+    if v is None:
+        return None
+    if len(v) > _BULLETS_MAX_COUNT:
+        raise ValueError(f"{field}: max {_BULLETS_MAX_COUNT} bullets")
+    for b in v:
+        if not isinstance(b, str):
+            raise ValueError(f"{field}: each entry must be a string")
+        if len(b) > _BULLET_MAX_CHARS:
+            raise ValueError(f"{field}: each bullet max {_BULLET_MAX_CHARS} chars")
+    return v
+
+
+def _validate_example_questions(v: Optional[List[str]]) -> Optional[List[str]]:
+    if v is None:
+        return None
+    if len(v) > _EXAMPLE_QUESTIONS_MAX_COUNT:
+        raise ValueError(
+            f"example_questions: max {_EXAMPLE_QUESTIONS_MAX_COUNT} entries"
+        )
+    for q in v:
+        if not isinstance(q, str):
+            raise ValueError("example_questions: each entry must be a string")
+        if len(q) > _EXAMPLE_QUESTION_MAX_CHARS:
+            raise ValueError(
+                f"example_questions: each entry max "
+                f"{_EXAMPLE_QUESTION_MAX_CHARS} chars"
+            )
+    return v
+
+
 class CreateDataPackageRequest(BaseModel):
     name: str
     slug: str
@@ -89,6 +154,14 @@ class CreateDataPackageRequest(BaseModel):
     # v51: lifecycle + classification surface for /catalog cards.
     status: Optional[str] = None
     category: Optional[str] = None
+    # v56: extended-content fields for the /catalog/p/<slug> rewrite.
+    owner_name: Optional[str] = None
+    owner_team: Optional[str] = None
+    tags: Optional[List[str]] = None
+    long_description: Optional[str] = None
+    when_to_use: Optional[List[str]] = None
+    when_not_to_use: Optional[List[str]] = None
+    example_questions: Optional[List[str]] = None
 
     @field_validator("color")
     @classmethod
@@ -99,6 +172,28 @@ class CreateDataPackageRequest(BaseModel):
     @classmethod
     def _check_status(cls, v: Optional[str]) -> Optional[str]:
         return _validate_status(v)
+
+    @field_validator("tags")
+    @classmethod
+    def _check_tags(cls, v): return _validate_tags(v)
+
+    @field_validator("long_description")
+    @classmethod
+    def _check_long_desc(cls, v): return _validate_long_description(v)
+
+    @field_validator("when_to_use")
+    @classmethod
+    def _check_when_to_use(cls, v):
+        return _validate_bullet_list(v, field="when_to_use")
+
+    @field_validator("when_not_to_use")
+    @classmethod
+    def _check_when_not_to_use(cls, v):
+        return _validate_bullet_list(v, field="when_not_to_use")
+
+    @field_validator("example_questions")
+    @classmethod
+    def _check_example_questions(cls, v): return _validate_example_questions(v)
 
 
 class UpdateDataPackageRequest(BaseModel):
@@ -114,6 +209,15 @@ class UpdateDataPackageRequest(BaseModel):
     # text. Sending `""` for category clears it; omitting leaves it.
     status: Optional[str] = None
     category: Optional[str] = None
+    # v56: same fields as Create. JSON-list fields use Optional-is-no-op;
+    # pass an empty list to actively clear (writes "[]" → decodes back to []).
+    owner_name: Optional[str] = None
+    owner_team: Optional[str] = None
+    tags: Optional[List[str]] = None
+    long_description: Optional[str] = None
+    when_to_use: Optional[List[str]] = None
+    when_not_to_use: Optional[List[str]] = None
+    example_questions: Optional[List[str]] = None
 
     @field_validator("color")
     @classmethod
@@ -124,6 +228,28 @@ class UpdateDataPackageRequest(BaseModel):
     @classmethod
     def _check_status(cls, v: Optional[str]) -> Optional[str]:
         return _validate_status(v)
+
+    @field_validator("tags")
+    @classmethod
+    def _check_tags(cls, v): return _validate_tags(v)
+
+    @field_validator("long_description")
+    @classmethod
+    def _check_long_desc(cls, v): return _validate_long_description(v)
+
+    @field_validator("when_to_use")
+    @classmethod
+    def _check_when_to_use(cls, v):
+        return _validate_bullet_list(v, field="when_to_use")
+
+    @field_validator("when_not_to_use")
+    @classmethod
+    def _check_when_not_to_use(cls, v):
+        return _validate_bullet_list(v, field="when_not_to_use")
+
+    @field_validator("example_questions")
+    @classmethod
+    def _check_example_questions(cls, v): return _validate_example_questions(v)
 
 
 class AddTableRequest(BaseModel):
@@ -156,8 +282,64 @@ def _audit(
         logger.warning("audit log failed for %s/%s", action, resource)
 
 
-def _serialize(pkg: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+# v56: how long a package is considered "new" — 30 days from creation.
+_NEW_BADGE_DAYS = 30
+
+
+def _badges_for(pkg: Dict[str, Any], conn: duckdb.DuckDBPyConnection) -> List[str]:
+    """Derive the virtual badge list shown on /catalog cards + the
+    package-detail hero. Two badges today; both render-time-computed so
+    backdating ``created_at`` or admin-status changes pick up automatically.
+
+      * ``curated`` — creator (``created_by``) maps to a current Admin
+        group member. Reads `users.email` → `user_groups`. Cheap (two
+        small SELECTs); package list has few hundred rows max.
+      * ``new`` — ``created_at`` within :data:`_NEW_BADGE_DAYS`.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    badges: List[str] = []
+
+    created_by = pkg.get("created_by")
+    if created_by:
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM user_group_members ugm "
+                "JOIN user_groups ug ON ug.id = ugm.group_id "
+                "JOIN users u ON u.id = ugm.user_id "
+                "WHERE ug.name = 'Admin' "
+                "  AND (u.email = ? OR u.id = ?) LIMIT 1",
+                [created_by, created_by],
+            ).fetchone()
+            if row:
+                badges.append("curated")
+        except Exception:
+            logger.warning("badge curated lookup failed for %s", created_by)
+
+    created_at = pkg.get("created_at")
+    if created_at:
+        try:
+            ts = created_at if isinstance(created_at, datetime) else None
+            if ts and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            if ts and (now - ts) < timedelta(days=_NEW_BADGE_DAYS):
+                badges.append("new")
+        except Exception:
+            logger.warning("badge new lookup failed for %s", pkg.get("id"))
+
+    return badges
+
+
+def _serialize(pkg: Dict[str, Any],
+               conn: Optional[duckdb.DuckDBPyConnection] = None) -> Dict[str, Any]:
+    """Project a repo row onto the API response shape.
+
+    ``conn`` is optional only so legacy callers that don't need the
+    v56 ``badges`` field can call ``_serialize(pkg)``; pass the conn
+    in to opt into badge derivation.
+    """
+    out = {
         "id": pkg["id"],
         "slug": pkg["slug"],
         "name": pkg["name"],
@@ -170,10 +352,22 @@ def _serialize(pkg: Dict[str, Any]) -> Dict[str, Any]:
         # apply DEFAULT to existing rows on ADD COLUMN).
         "status": pkg.get("status") or "prod",
         "category": pkg.get("category"),
+        # v56: extended content. JSON-list fields decode to [] for NULL
+        # via the repo's _decode_row; safe to pass through unchanged.
+        "owner_name": pkg.get("owner_name"),
+        "owner_team": pkg.get("owner_team"),
+        "tags": pkg.get("tags") or [],
+        "long_description": pkg.get("long_description"),
+        "when_to_use": pkg.get("when_to_use") or [],
+        "when_not_to_use": pkg.get("when_not_to_use") or [],
+        "example_questions": pkg.get("example_questions") or [],
         "created_by": pkg.get("created_by"),
         "created_at": pkg["created_at"].isoformat() if pkg.get("created_at") else None,
         "updated_at": pkg["updated_at"].isoformat() if pkg.get("updated_at") else None,
     }
+    if conn is not None:
+        out["badges"] = _badges_for(pkg, conn)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +393,7 @@ async def list_data_packages(
     """
     repo = DataPackagesRepository(conn)
     rows = repo.list(search=search)
-    serialized = [_serialize(r) for r in rows]
+    serialized = [_serialize(r, conn) for r in rows]
     if include_table_ids:
         members_by_pkg = repo.list_member_ids_bulk()
         for row in serialized:
@@ -229,6 +423,13 @@ async def create_data_package(
             cover_image_url=payload.cover_image_url,
             status=payload.status or "prod",
             category=(payload.category or "").strip() or None,
+            owner_name=payload.owner_name,
+            owner_team=payload.owner_team,
+            tags=payload.tags,
+            long_description=payload.long_description,
+            when_to_use=payload.when_to_use,
+            when_not_to_use=payload.when_not_to_use,
+            example_questions=payload.example_questions,
             created_by=user.get("email") or user["id"],
         )
     except duckdb.ConstraintException:
@@ -255,7 +456,7 @@ async def get_data_package(
     if not pkg:
         raise HTTPException(status_code=404, detail="data_package_not_found")
     tables = repo.list_tables(pkg_id)
-    out = _serialize(pkg)
+    out = _serialize(pkg, conn)
     out["tables"] = tables
     return out
 
@@ -301,6 +502,13 @@ async def update_data_package(
         status=payload.status,
         category=None if clear_category else payload.category,
         clear_category=clear_category,
+        owner_name=payload.owner_name,
+        owner_team=payload.owner_team,
+        tags=payload.tags,
+        long_description=payload.long_description,
+        when_to_use=payload.when_to_use,
+        when_not_to_use=payload.when_not_to_use,
+        example_questions=payload.example_questions,
     )
     fresh = repo.get(pkg_id)
     after = {
@@ -320,7 +528,7 @@ async def update_data_package(
         {"after": after},
         params_before={"before": before},
     )
-    return _serialize(fresh) if fresh else {"id": pkg_id}
+    return _serialize(fresh, conn) if fresh else {"id": pkg_id}
 
 
 @router.delete("/{pkg_id}", status_code=204)
