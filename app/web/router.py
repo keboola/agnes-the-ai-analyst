@@ -1198,6 +1198,21 @@ async def catalog_table_detail(
 
     last_sync_state = SyncStateRepository(conn).get_table_state(table_id) or {}
 
+    def _fmt_bytes(n):
+        if n is None or n <= 0:
+            return None
+        for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+            if n < 1024:
+                return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} {unit}"
+            n /= 1024
+        return f"{n:.1f} PiB"
+
+    rows_count = last_sync_state.get("rows")
+    size_bytes = (
+        last_sync_state.get("file_size_bytes")
+        or last_sync_state.get("uncompressed_size_bytes")
+    )
+
     ctx = _build_context(
         request, user=user,
         table=table,
@@ -1208,6 +1223,8 @@ async def catalog_table_detail(
             str(last_sync_state.get("last_sync"))[:19]
             if last_sync_state.get("last_sync") else None
         ),
+        rows_display=(f"{rows_count:,}" if rows_count else None),
+        size_display=_fmt_bytes(size_bytes),
         sample_questions=(table.get("sample_questions") or []),
         things_to_know=table.get("things_to_know") or "",
     )
