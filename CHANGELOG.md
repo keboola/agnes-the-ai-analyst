@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- `AGNES_MARKETPLACE_URL` env var override for `agnes refresh-marketplace
+  --bootstrap`. Deployments that serve the marketplace from a different
+  host than the API (reverse-proxy split, CDN-fronted marketplace) can
+  now bootstrap cleanly. Default behaviour unchanged — falls back to
+  `{server_host}/marketplace.git/` derived from the workspace's
+  bootstrapped server URL. Invalid env values (missing scheme/host)
+  fail-fast with a clear error rather than silently falling back, so
+  operator misconfigurations surface immediately. Closes #345 A.
+
 ## [0.55.1] — 2026-05-19
 
 ### Added
