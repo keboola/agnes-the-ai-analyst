@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.1] — 2026-05-19
+
+### Changed
+- `/home` onboarding install-hero reworked so the YOLO permission-skip
+  command lives on the same affordance as the other shell commands:
+  Steps 2 ↔ 3 swapped (folder creation is now Step 2; starting Claude is
+  now Step 3 and renders `claude --dangerously-skip-permissions` as a
+  copy-button command instead of inline-prose `<code>` blob). The
+  strict-review fallback prose is merged onto the same paragraph as the
+  safety caveat to cut vertical space, and the YOLO allowlist link
+  (`/setup-advanced#yolo`) opens in a new tab so users don't lose their
+  install context mid-setup. Setup script's `pwd`-check warning copy
+  refreshed to reference the new Step 2 number.
+
+### Added
+- "What leaves your machine" privacy callout on `/home` — a short
+  inline note on the onboarding install-hero clarifying that the
+  analyst-side install only ships parquet snapshots and CLAUDE.local.md
+  to the operator-controlled server (no Claude Code session JSONL, no
+  arbitrary file uploads). Plain HTML, no JS.
+
 ## [0.55.0] — 2026-05-19
 
 ### Added
