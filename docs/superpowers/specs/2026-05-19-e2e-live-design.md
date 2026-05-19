@@ -33,29 +33,59 @@ it cheap to do it again on every PR / nightly / pre-release.
 
 ## Approach
 
-Four layered runners, sharing one bootstrap module. Each layer pushes the
-sub-Claude one step closer to "real analyst." Layer 1 is non-negotiable
-(no install → nothing works). Layers 0, 2, and 3 are optional add-ons —
-operator runs whichever fits the change.
+A custom Claude Code subagent (`agnes-e2e-tester`) is the single entry
+point. The main agent invokes it with a list of paste-prompt names; the
+subagent orchestrates the four layers internally, calls a small set of
+bash primitives for the mechanical work (workspace, asciinema, claude
+subprocess, transcript parsing), and returns a markdown report.
 
 ```
-scripts/e2e-live/
-├── run.sh                  ENTRY POINT — flags select layers
-├── _common.sh              shared: workspace creation, session-id, asciinema
-├── _parse-transcript.py    JSONL transcript → PASS/FAIL report markdown
-├── layer-0-mint-analyst.sh OPTIONAL pre-step (no sub-Claude): admin → create user →
-│                           set-password → group → grants → form-login → mint analyst
-│                           PAT → write synthesised paste-prompt to `<target>-analyst.md`
-├── layer-1-install.sh      paste-prompt → fresh sub-Claude session
-├── layer-2-query.sh        resume → structured query matrix
-├── layer-3-analyst.sh      resume → "pick a business question, answer it"
-├── cleanup-analyst.sh      revoke PAT + remove from group + delete group + deactivate
-│                           the user that layer-0 created (run after analyst layers)
-├── _config/
-│   ├── dev.env             SERVER_URL, MAX_BUDGET, EXPECTED_TABLES_MIN, ...
-│   └── prod.env            (more conservative: lower budget, read-only)
-└── README.md               how to run, how to interpret report
+.claude/agents/agnes-e2e-tester.md   THE AGENT — single interface
+  frontmatter: tools: Read, Write, Bash; model: opus
+  body: system prompt that orchestrates layers 0-3 against the
+        paste-prompts the caller named
+
+scripts/e2e-live/                    INTERNAL PRIMITIVES (no per-layer scripts)
+├── _common.sh                       workspace creation + asciinema rec wrapper
+├── _claude-run.sh                   `claude --print --session-id ...` invocation
+│                                    with consistent flags + budget caps
+├── _parse-transcript.py             JSONL transcript → per-layer PASS/FAIL +
+│                                    bash-call inventory + "Friction" extraction
+├── _mint-analyst.sh                 Layer 0 server calls: create user → set-password
+│                                    → group → grants → form-login → mint PAT →
+│                                    write `<target>-analyst.md` to the prompt library
+├── _cleanup-analyst.sh              revoke PAT + remove from group + delete group +
+│                                    deactivate user (called by the agent on teardown)
+└── README.md                        how the agent calls these primitives
 ```
+
+The agent is the orchestrator; the bash primitives do the I/O.
+
+### Paste-prompt naming convention
+
+Two MD files per target, by convention:
+
+```
+~/.config/agnes-e2e/prompts/
+├── <target>.md              admin paste-prompt (e.g. foundryai-dev.md)
+└── <target>-analyst.md      non-admin analyst paste-prompt
+                             (Layer 0 creates this from <target>.md)
+```
+
+The `-analyst` suffix is how the agent identifies the persona without
+parsing the MD body. When the caller says "test foundryai-dev":
+
+1. Agent looks up `~/.config/agnes-e2e/prompts/foundryai-dev.md`.
+2. If `~/.config/agnes-e2e/prompts/foundryai-dev-analyst.md` exists,
+   agent runs both walkthroughs (admin + analyst) and reports the diff.
+3. If only the admin MD exists, agent **auto-runs Layer 0** (admin
+   creates a fresh analyst user, mints a PAT, writes the `-analyst.md`)
+   before the analyst-persona walkthrough.
+4. After both walkthroughs, agent calls `_cleanup-analyst.sh` to revoke
+   the Layer-0 user (keeps the prompt library tidy, leaves the audit log).
+
+Cross-target sweeps just take multiple names: "test foundryai-dev,
+foundryai-prod" runs the same flow for each target in sequence.
 
 ### Four layers — what each tests
 
@@ -371,26 +401,46 @@ $ cat > ~/.config/agnes-e2e/prompts/foundryai-dev.md <<'EOF'
 EOF
 $ chmod 600 ~/.config/agnes-e2e/prompts/foundryai-dev.md
 
-# every-run
-$ scripts/e2e-live/run.sh --prompt foundryai-dev
-# or layered:
-$ scripts/e2e-live/run.sh --prompt foundryai-dev --layers install,query
-$ scripts/e2e-live/run.sh --prompt foundryai-dev --layers analyst   # resume + ad-hoc
-
-# cross-target sweep — runs each prompt back-to-back, aggregates one report
-$ scripts/e2e-live/run.sh --prompt foundryai-dev,agnes-dev,agnes-prod
+# every-run — invoke the agent from the main Claude Code session
 ```
 
-`--prompt <name>` selects which `~/.config/agnes-e2e/prompts/<name>.md` is
-loaded; comma-separated runs sweep. `--layers` selects which of the three
-runners fire (default: all three). Other flags:
+In Claude Code (main session):
 
-- `--keep-workspace` — do not `rm -rf /tmp/agnes-e2e/run-<ts>` on success
-  (it's already preserved on FAIL).
-- `--reuse <ts>` — resume into an existing run dir's session. Useful for
-  developer iteration on the prompt files without paying the layer-1 cost
-  again.
-- `--no-video` — skip the agg+ffmpeg render (cast only).
+```
+Agent(subagent_type: "agnes-e2e-tester",
+      prompt: "test foundryai-dev")
+```
+
+That's it. The agent does the rest:
+
+- finds `~/.config/agnes-e2e/prompts/foundryai-dev.md` (admin)
+- checks for `foundryai-dev-analyst.md`; if missing, runs Layer 0 to mint
+  a fresh analyst PAT and writes the file
+- runs layers 1+2+3 against the admin paste-prompt
+- runs layer 1 against the analyst paste-prompt (RBAC-filtered persona)
+- calls `_cleanup-analyst.sh` to tear down the Layer-0 user
+- returns a markdown report to the main Claude session
+
+The caller can scope what runs:
+
+```
+Agent(prompt: "test foundryai-dev — layers 1 only")          # quick smoke
+Agent(prompt: "test foundryai-dev — admin only, layers 1+2") # skip analyst
+Agent(prompt: "sweep foundryai-dev and foundryai-prod")      # cross-target
+Agent(prompt: "test foundryai-dev — keep workspace")         # don't rm /tmp/...
+```
+
+Other intents the agent recognises from natural language in the prompt:
+
+- "keep workspace" / "don't clean up" → preserve `/tmp/agnes-e2e/run-<ts>`
+  on success (it's already preserved on FAIL anyway).
+- "reuse <ts>" / "resume <ts>" → skip layer 1 and resume into an existing
+  run dir's session. Useful for developer iteration on layer-2/3 prompts
+  without paying layer 1 again.
+- "skip video" / "no video" → skip the agg+ffmpeg render (cast only).
+- "no cleanup" → skip the Layer-0 user teardown after the analyst run.
+- "just layer 0" → mint a fresh analyst paste-prompt, then stop (useful
+  when refreshing `<target>-analyst.md` ahead of a manual walkthrough).
 
 ## Cost & guardrails
 
