@@ -285,22 +285,65 @@ def _mint_pat(server_url: str, email: str, password: str, *, name: str) -> str:
 
 
 def _grant_table_access(web_session: httpx.Client, group_id: str, table_id: str) -> None:
-    """POST /api/admin/grants for `(group, "table", table_id)`.
+    """Stack-gated RBAC: wrap ``table_id`` in an auto-named data_package
+    and grant the package to ``group_id`` with ``requirement='required'``
+    so it lands in every group-member's stack automatically.
 
-    Idempotent: a 409 from the unique constraint is swallowed so the
-    fixture can be reused with a pre-existing grant.
+    Per-table grants on ``resource_grants(group, 'table', …)`` are no
+    longer consulted for analyst visibility — the unified-stack design
+    routes all analyst access through data_packages. This fixture
+    creates the wrapping package via admin APIs so the rest of the
+    bootstrap (manifest fetch, ``agnes pull``) behaves as if the
+    analyst had been granted the table directly.
+
+    Idempotent — re-running the fixture against an already-wrapped
+    table reuses the existing package + grant.
     """
-    resp = web_session.post(
+    pkg_slug = f"_test-pkg-{table_id.lower()}"[:63]
+    pkg_name = f"Test wrap {table_id}"
+
+    # 1) Find or create the auto data_package.
+    list_resp = web_session.get("/api/admin/data-packages")
+    pkg_id: str | None = None
+    if list_resp.status_code == 200:
+        for p in list_resp.json():
+            if p.get("slug") == pkg_slug:
+                pkg_id = p["id"]
+                break
+    if pkg_id is None:
+        create_resp = web_session.post(
+            "/api/admin/data-packages",
+            json={"name": pkg_name, "slug": pkg_slug},
+        )
+        if create_resp.status_code not in (200, 201):
+            raise AssertionError(
+                f"pkg create failed: {create_resp.status_code} {create_resp.text[:300]}"
+            )
+        pkg_id = create_resp.json()["id"]
+
+    # 2) Attach the table (idempotent — 409 means already attached).
+    attach_resp = web_session.post(
+        f"/api/admin/data-packages/{pkg_id}/tables",
+        json={"table_id": table_id},
+    )
+    if attach_resp.status_code not in (200, 201, 204, 409):
+        raise AssertionError(
+            f"pkg attach failed: {attach_resp.status_code} {attach_resp.text[:300]}"
+        )
+
+    # 3) Grant the package to the group as required.
+    grant_resp = web_session.post(
         "/api/admin/grants",
         json={
             "group_id": group_id,
-            "resource_type": "table",
-            "resource_id": table_id,
+            "resource_type": "data_package",
+            "resource_id": pkg_id,
+            "requirement": "required",
         },
     )
-    if resp.status_code not in (201, 409):
+    if grant_resp.status_code not in (201, 409):
         raise AssertionError(
-            f"grant create failed: {resp.status_code} {resp.text[:300]}"
+            f"grant create failed: {grant_resp.status_code} {grant_resp.text[:300]}"
         )
 
 

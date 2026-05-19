@@ -881,43 +881,24 @@ def _build_direct_tables_section(
     conn, user: dict, registry_by_name: dict, states_by_table_id: dict,
     packaged_table_ids: set,
 ) -> list:
-    """Tables granted via ``TABLE`` resource_type (not DATA_PACKAGE).
+    """Always returns ``[]`` — per-table grants no longer manifest for
+    analysts.
 
-    A table granted both directly AND via a package only shows up under the
-    package — Section 5.1's BC story is that ``tables[]`` (legacy) still
-    lists everything, while ``direct_tables[]`` is the de-duplicated
-    forward-compatible projection.
+    The unified-stack design routes all analyst access through data
+    packages: admins manage RBAC by adding tables to a package and
+    granting the package. Ad-hoc ``resource_grants(group, 'table', …)``
+    rows that aren't wrapped in a package used to ship as
+    ``direct_tables[]`` here (for backwards-compat with pre-unified
+    CLIs); that BC is now dropped because it silently leaked
+    individually-granted tables into ``agnes catalog`` and the
+    user-facing manifest, contradicting the "stack is the unit of
+    access" promise of the new design.
+
+    The empty array is kept in the manifest payload (instead of
+    omitting the key) so older CLIs that destructure
+    ``manifest["direct_tables"]`` don't KeyError.
     """
-    group_ids = [
-        r[0] for r in conn.execute(
-            "SELECT group_id FROM user_group_members WHERE user_id = ?",
-            [user["id"]],
-        ).fetchall()
-    ]
-    if not group_ids:
-        return []
-    placeholders = ",".join(["?"] * len(group_ids))
-    rows = conn.execute(
-        f"""SELECT DISTINCT resource_id FROM resource_grants
-            WHERE group_id IN ({placeholders})
-              AND resource_type = 'table'""",
-        group_ids,
-    ).fetchall()
-    direct_ids = {r[0] for r in rows} - packaged_table_ids
-    out: list = []
-    for tid in direct_ids:
-        # resource_grants.resource_id for ``TABLE`` is canonically the
-        # registry id; fall back to name lookup if migration left a name.
-        reg = None
-        for r in registry_by_name.values():
-            if r.get("id") == tid:
-                reg = r
-                break
-        if reg is None:
-            reg = registry_by_name.get(tid) or {}
-        state = states_by_table_id.get(reg.get("name") or tid) or {}
-        out.append(_table_manifest_entry(state, reg))
-    return out
+    return []
 
 
 def _build_manifest_for_user(conn, user: dict) -> dict:
