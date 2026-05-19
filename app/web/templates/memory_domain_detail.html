@@ -228,7 +228,8 @@
       {% endif %}
       <span class="memory-item__actions">
         {% if user.is_admin %}
-          <a href="/admin/corporate-memory#item-{{ it.id }}" title="Edit (admin)">Edit</a>
+          <a href="/admin/corporate-memory#item-{{ it.id }}"
+             title="Visible only to admins — analysts won't see this link.">Edit <span class="admin-only-hint">admin-only</span></a>
         {% endif %}
         {% if it.is_required %}
           {# Required items can't be dismissed — single source of truth. #}
