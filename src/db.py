@@ -542,7 +542,7 @@ CREATE TABLE IF NOT EXISTS data_packages (
     -- for the undo flow. list/get filter ``deleted_at IS NULL``.
     deleted_at      TIMESTAMP,
     -- v56: extended content for the /catalog/p/<slug> detail-page
-    -- rewrite (Foundry Data team spec). All additive + NULLABLE.
+    -- rewrite (extended-descriptions admin spec). All additive + NULLABLE.
     --   owner_name / owner_team — render "Owned by X · Team" line
     --   tags                    — JSON list of category strings
     --   long_description        — markdown body for "What it is"
@@ -3974,8 +3974,8 @@ def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v56: extended-content columns on ``data_packages`` + structured
     per-table doc columns on ``table_registry``.
 
-    Backs the ``/catalog/p/<slug>`` rewrite per the Foundry Data team
-    extended-descriptions spec — owner attribution, curated tags,
+    Backs the ``/catalog/p/<slug>`` rewrite per the extended-descriptions
+    admin spec — owner attribution, curated tags,
     long-form description, use/skip arrays, package-level example
     questions on the package side; grain / platforms / partition /
     history / gotchas on the per-table side.

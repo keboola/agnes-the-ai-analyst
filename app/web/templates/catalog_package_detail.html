@@ -217,7 +217,7 @@
       <button class="btn btn-primary" id="pkg-add-btn">+ Add to stack</button>
     {% endif %}
     {% if user.is_admin %}
-    <a class="btn" href="/admin/tables#{{ pkg.id }}" data-section-edit="package"
+    <a class="btn" href="/admin/tables?edit_package={{ pkg.id }}" data-section-edit="package"
        title="Edit package metadata in admin">Edit</a>
     {% endif %}
   </div>

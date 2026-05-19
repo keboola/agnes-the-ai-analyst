@@ -2260,14 +2260,22 @@
             });
           }
         }
-        wantDelete.forEach(gid => {
-          const grantId = grantIdByGroup[gid];
-          if (!grantId) return;
-          calls.push(fetch('/api/admin/grants/' + encodeURIComponent(grantId),
-                           { method: 'DELETE', credentials: 'same-origin' }));
-        });
-        wantWrite.forEach(w => {
-          calls.push(fetch('/api/admin/grants', {
+        // Sequential DELETE → POST. ``resource_grants`` has a UNIQUE
+        // constraint on (group_id, resource_type, resource_id); running
+        // both in parallel via ``Promise.allSettled`` raced — if the
+        // POST landed first, the unique check rejected it and the old
+        // ``available`` row stayed. Awaiting all DELETEs before any
+        // POST fires keeps the (group, resource) slot empty for the
+        // re-insert.
+        const deleteResults = await Promise.allSettled(
+          wantDelete
+            .map(gid => grantIdByGroup[gid])
+            .filter(Boolean)
+            .map(gid => fetch('/api/admin/grants/' + encodeURIComponent(gid),
+                              { method: 'DELETE', credentials: 'same-origin' }))
+        );
+        const writeResults = await Promise.allSettled(
+          wantWrite.map(w => fetch('/api/admin/grants', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
@@ -2277,9 +2285,9 @@
               resource_id: pkgId,
               requirement: w.requirement,
             }),
-          }));
-        });
-        const results = await Promise.allSettled(calls);
+          }))
+        );
+        const results = deleteResults.concat(writeResults);
         return results.filter(
           r => r.status === 'rejected' || (r.value && !r.value.ok)
         ).length;
@@ -5733,6 +5741,27 @@
       }, 50);
       // Strip the query param so a manual refresh doesn't re-open the
       // modal (mirrors closeBulkAssignModal's URL hygiene).
+      history.replaceState(null, '',
+        window.location.pathname + window.location.hash);
+    });
+
+    // Auto-open the Edit Data Package modal when the page is opened
+    // with `?edit_package=<pkg_id>` — closes the /catalog/p/<slug>
+    // drill-down Edit button (which previously linked to `#<pkg.id>`
+    // and did nothing past landing on the page).
+    document.addEventListener('DOMContentLoaded', function() {
+      var qs = new URLSearchParams(window.location.search);
+      var pkgId = qs.get('edit_package');
+      if (!pkgId) return;
+      // Wait for the layout's deferred load to settle so the modal
+      // hydrators (member tables, RBAC matrix) have something to hang
+      // their fetches on.
+      setTimeout(function() {
+        if (typeof openEditDataPackageModal === 'function') {
+          openEditDataPackageModal(pkgId);
+        }
+      }, 250);
+      // Strip the query param so a manual refresh doesn't re-open.
       history.replaceState(null, '',
         window.location.pathname + window.location.hash);
     });

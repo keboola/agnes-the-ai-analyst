@@ -1014,15 +1014,18 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
         });
       }
     }
-    const calls = [];
-    wantDelete.forEach(gid => {
-      const grantId = grantIdByGroup[gid];
-      if (!grantId) return;
-      calls.push(fetch('/api/admin/grants/' + encodeURIComponent(grantId),
-                       { method: 'DELETE', credentials: 'same-origin' }));
-    });
-    wantWrite.forEach(w => {
-      calls.push(fetch('/api/admin/grants', {
+    // Sequential DELETE → POST to avoid the UNIQUE-constraint race on
+    // (group_id, resource_type, resource_id). See the matching note in
+    // admin_tables.html _edpDiffApplyGrants.
+    const deleteResults = await Promise.allSettled(
+      wantDelete
+        .map(gid => grantIdByGroup[gid])
+        .filter(Boolean)
+        .map(gid => fetch('/api/admin/grants/' + encodeURIComponent(gid),
+                          { method: 'DELETE', credentials: 'same-origin' }))
+    );
+    const writeResults = await Promise.allSettled(
+      wantWrite.map(w => fetch('/api/admin/grants', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
@@ -1032,9 +1035,9 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
           resource_id: recipeId,
           requirement: w.requirement,
         }),
-      }));
-    });
-    const results = await Promise.allSettled(calls);
+      }))
+    );
+    const results = deleteResults.concat(writeResults);
     return results.filter(
       r => r.status === 'rejected' || (r.value && !r.value.ok)
     ).length;

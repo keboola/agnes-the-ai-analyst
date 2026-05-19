@@ -618,6 +618,16 @@ class CreateGrantRequest(BaseModel):
     group_id: str
     resource_type: str
     resource_id: str
+    # v49 added the ``requirement`` enum on ``resource_grants``; the POST
+    # endpoint must accept it so clients can create a grant at the
+    # ``required`` tier in one round-trip. Without this, /admin/access
+    # + the inline RBAC matrices (Edit Data Package / Edit Memory Domain
+    # / Edit Recipe) silently fell through to the column default
+    # (``available``), and a re-open of the same modal showed the
+    # admin's "required" pick as "available" — looks like the save
+    # silently failed. Default kept at None so callers that don't
+    # explicitly pass a value still land at DB's column default.
+    requirement: Optional[str] = None
 
 
 def _grant_to_response(g: dict) -> GrantResponse:
@@ -674,12 +684,23 @@ async def create_grant(
     if not UserGroupsRepository(conn).get(payload.group_id):
         raise HTTPException(status_code=404, detail="Group not found")
     grants = ResourceGrantsRepository(conn)
+    # v49 ``requirement`` is part of the create-grant contract. Validate
+    # the enum here so the 422 message matches the endpoint contract
+    # rather than leaking a ValueError from the repo layer.
+    if payload.requirement is not None and payload.requirement not in (
+        "available", "required",
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="requirement must be 'available' or 'required'",
+        )
     try:
         grant_id = grants.create(
             group_id=payload.group_id,
             resource_type=rt.value,
             resource_id=payload.resource_id,
             assigned_by=user.get("email"),
+            requirement=payload.requirement,
         )
     except duckdb.ConstraintException:
         raise HTTPException(

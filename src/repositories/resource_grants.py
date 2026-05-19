@@ -122,19 +122,37 @@ class ResourceGrantsRepository:
         resource_type: str,
         resource_id: str,
         assigned_by: Optional[str] = None,
+        requirement: Optional[str] = None,
     ) -> str:
         """Insert a new grant. Returns the assigned id.
+
+        ``requirement`` defaults to the column default (``'available'``)
+        when ``None``. Pass ``'required'`` to create a Required-tier
+        grant in a single round-trip. Rejected by the column CHECK if
+        the string is anything other than the two enum values.
 
         Raises ``duckdb.ConstraintException`` on duplicate
         (group_id, resource_type, resource_id) — caller surfaces as 409.
         """
         grant_id = str(uuid4())
-        self.conn.execute(
-            """INSERT INTO resource_grants
-               (id, group_id, resource_type, resource_id, assigned_by)
-               VALUES (?, ?, ?, ?, ?)""",
-            [grant_id, group_id, resource_type, resource_id, assigned_by],
-        )
+        if requirement is None:
+            self.conn.execute(
+                """INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id, assigned_by)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [grant_id, group_id, resource_type, resource_id, assigned_by],
+            )
+        else:
+            if requirement not in ("available", "required"):
+                raise ValueError(
+                    f"requirement must be 'available' or 'required', got {requirement!r}"
+                )
+            self.conn.execute(
+                """INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id, assigned_by, requirement)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [grant_id, group_id, resource_type, resource_id, assigned_by, requirement],
+            )
         return grant_id
 
     def update_requirement(
