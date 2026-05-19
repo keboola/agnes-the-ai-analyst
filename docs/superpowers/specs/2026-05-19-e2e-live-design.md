@@ -152,16 +152,50 @@ e2e_sub_claude() {
 Each layer composes from these primitives + its own prompt file. No layer
 re-implements workspace creation, session-id minting, or asciinema wrapping.
 
-### Auth — PAT as input
+### Auth — paste-prompts as a per-target prompt library
 
-The first run used the paste-prompt the user pasted in chat — a real PAT
-with the URL embedded. For repeatable runs the operator mints one PAT
-through the UI once (`/setup?role=analyst` → "Generate prompt" → copy →
-extract PAT), stashes it in `~/.config/agnes-e2e/<target>.env` as
-`AGNES_E2E_PAT=...`, and re-uses it across runs until it expires (default
-TTL is days, not minutes).
+The operator maintains a small library of paste-prompts as markdown files,
+one per target instance, under `~/.config/agnes-e2e/prompts/` (mode 700,
+gitignored, outside any repo):
+
+```
+~/.config/agnes-e2e/prompts/
+├── foundryai-dev.md      ← paste-prompt from agnes-development.groupondev.com
+├── foundryai-prod.md
+├── agnes-dev.md          ← paste-prompt from the Keboola dev VM
+├── agnes-prod.md
+└── localhost.md          ← paste-prompt from a local uvicorn dev instance
+```
+
+Each `.md` is a verbatim paste-prompt that the operator copied from the
+target's `/setup?role=analyst` "Generate prompt" panel — URL, PAT, and the
+full step-by-step body. The file is the single source of truth for "this
+PAT, this server, this install instructions" against one target.
+
+The runner reads them by name:
+
+```bash
+scripts/e2e-live/run.sh --prompt foundryai-dev      # uses ~/.config/agnes-e2e/prompts/foundryai-dev.md
+scripts/e2e-live/run.sh --prompt agnes-dev
+```
+
+Why this model wins over the "one PAT in an env var":
+
+- **The paste-prompt is the contract.** Server change → paste-prompt change
+  → MD file change. The runner doesn't need its own knowledge of install
+  steps; it ships what the server says to ship. This means the same runner
+  works against agnes-prod and a freshly-deployed dev instance without
+  conditional logic.
+- **Targets are addable in one step.** Operator runs the install panel
+  against a new deployment, pastes the result into a new MD, runs
+  `run.sh --prompt <name>`. No code change, no config schema migration.
+- **Refresh has one motion.** PAT expires → mint a new one on the same
+  instance → overwrite the MD. The runner picks it up automatically.
+- **Discoverable** — `ls ~/.config/agnes-e2e/prompts/` enumerates every
+  target the operator has set up.
 
 Why not automate the mint:
+
 - `/setup?role=analyst` returns the HTML template but the PAT is injected
   by JS after a logged-in user clicks "Generate prompt" — no PAT in the
   raw HTML.
@@ -171,29 +205,56 @@ Why not automate the mint:
 - A direct `POST /api/auth/tokens` would need a long-lived admin PAT to
   bootstrap, same chicken-and-egg.
 
-The operator-mints-one-PAT path is the simplest stable contract.
+The MD-library path is the simplest stable contract that also tests the
+*paste-prompt itself* — if the install panel produces a broken prompt
+(missing step, wrong URL, malformed PAT), we surface that.
+
+### Cross-target validation (a side benefit)
+
+Running the same `run.sh --prompt <X>` against multiple targets is itself a
+test: if `--prompt foundryai-dev` and `--prompt agnes-prod` produce the same
+shape of layer-1 PASS/FAIL but `--prompt foundryai-prod` fails an assertion,
+either the prod paste-prompt has drifted or there's a real prod-only
+regression. The diff between two report.md files is a tight diff.
+
+The discovery only exercised one target (`foundryai-dev`); the spec is
+designed to allow N without code changes, with the MD library as the only
+configuration surface.
 
 ### Inputs
 
 ```
-SERVER_URL              from _config/<target>.env (dev|prod)
-AGNES_E2E_PAT           from ~/.config/agnes-e2e/<target>.env (gitignored)
-MAX_BUDGET_USD          from _config/<target>.env (default: 2 for dev, 0.5 for prod)
-LOCAL_TABLE_HINT        from _config/<target>.env (e.g. "order_economics")
-REMOTE_TABLE_HINT       from _config/<target>.env (e.g. "<some-remote-table>")
-ANALYST_QUESTION_SEED   from _config/<target>.env, OPTIONAL OVERRIDE —
-                        if unset (default), layer 3 lets sub-Claude invent
-                        from the catalog. If set, the seed is appended to
-                        the layer-3 prompt as "start from this question:
-                        <seed>". Useful only when comparing two runs side
-                        by side; the default open variant is what catches
-                        the catalog-UX class of issues.
+~/.config/agnes-e2e/prompts/<target>.md    REQUIRED. The verbatim paste-prompt;
+                                            URL + PAT + install instructions
+                                            are all inside it. No separate
+                                            SERVER_URL or PAT env var.
+~/.config/agnes-e2e/<target>.env           OPTIONAL. Per-target overrides if
+                                            the operator wants to tune:
+  MAX_BUDGET_USD          per-layer Anthropic budget cap
+                          (default: 2 for dev targets, 0.5 for prod)
+  LOCAL_TABLE_HINT        starting point for layer 2 (e.g. "order_economics")
+  REMOTE_TABLE_HINT       starting point for layer 2 (e.g. "<some-remote-table>")
+  ANALYST_QUESTION_SEED   layer-3 starting question. If unset (default),
+                          sub-Claude invents from the catalog. If set, the
+                          seed is appended to the layer-3 prompt as "start
+                          from this question: <seed>". Useful only when
+                          comparing two runs side by side; the default open
+                          variant is what catches the catalog-UX class of
+                          issues.
 ```
+
+The MD file is the only required input. `*_HINT` and budget overrides are
+nice-to-haves the runner falls back on sensible defaults for.
 
 `*_HINT` are not enforced — layer 2 / 3 use them as starting points but the
 sub-Claude is free to pick others from `agnes catalog`. The hints make the
 test deterministic enough to compare across runs while staying robust to
 catalog churn.
+
+The runner derives `SERVER_URL` (for sanity-check reachability before
+firing sub-Claude) and a sanitised target label (for artefact dir naming
+and `report.md` headers) by parsing the MD file's first paragraph for
+`Server: https://…` and the file's basename.
 
 ### Outputs (per run)
 
@@ -236,21 +297,29 @@ It emits:
 ```bash
 # one-time setup per laptop
 $ brew install asciinema agg ffmpeg
-$ mkdir -p ~/.config/agnes-e2e
-$ cat > ~/.config/agnes-e2e/dev.env <<EOF
-AGNES_E2E_PAT=<paste from /setup?role=analyst>
+$ mkdir -p ~/.config/agnes-e2e/prompts && chmod 700 ~/.config/agnes-e2e/prompts
+
+# add a target (repeat for each instance you want to test against)
+$ cat > ~/.config/agnes-e2e/prompts/foundryai-dev.md <<'EOF'
+<paste the entire prompt panel content from
+ https://agnes-development.groupondev.com/setup?role=analyst — server URL,
+ PAT, instructions, all of it>
 EOF
-$ chmod 600 ~/.config/agnes-e2e/dev.env
+$ chmod 600 ~/.config/agnes-e2e/prompts/foundryai-dev.md
 
 # every-run
-$ scripts/e2e-live/run.sh --target dev
+$ scripts/e2e-live/run.sh --prompt foundryai-dev
 # or layered:
-$ scripts/e2e-live/run.sh --target dev --layers install,query
-$ scripts/e2e-live/run.sh --target dev --layers analyst   # resume + ad-hoc
+$ scripts/e2e-live/run.sh --prompt foundryai-dev --layers install,query
+$ scripts/e2e-live/run.sh --prompt foundryai-dev --layers analyst   # resume + ad-hoc
+
+# cross-target sweep — runs each prompt back-to-back, aggregates one report
+$ scripts/e2e-live/run.sh --prompt foundryai-dev,agnes-dev,agnes-prod
 ```
 
-`--target` selects which `_config/<target>.env` is loaded. `--layers` selects
-which of the three runners fire (default: all three). Other flags:
+`--prompt <name>` selects which `~/.config/agnes-e2e/prompts/<name>.md` is
+loaded; comma-separated runs sweep. `--layers` selects which of the three
+runners fire (default: all three). Other flags:
 
 - `--keep-workspace` — do not `rm -rf /tmp/agnes-e2e/run-<ts>` on success
   (it's already preserved on FAIL).
