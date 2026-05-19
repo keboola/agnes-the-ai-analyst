@@ -10,6 +10,58 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.1] — 2026-05-19
+
+### Added
+- `/home` install-hero lead now includes a short "What leaves your
+  machine" privacy callout: explains that prompts / tool-calls /
+  tool-responses travel back to the central catalog while raw data
+  rows stay local, and points at `/agnes-private` as the per-session
+  opt-out.
+- `agnes init` now accepts `--token-file <path>` and `AGNES_TOKEN`
+  env-var fallback alongside `--token`. Precedence: `--token` >
+  `--token-file` > `AGNES_TOKEN`. The file-/env-var paths dodge
+  Claude Code's auto-classifier, which sometimes flags a long bearer
+  token in an `--token "eyJ..."` command line as a credential-exfil
+  pattern. The pasted setup script now uses `--token-file
+  ~/.agnes/token` (token written via single-quoted heredoc, umask 077)
+  for the same reason.
+
+### Changed
+- `/home` onboarding install-hero reordered: folder creation is now
+  Step 2 (was Step 3) and starting Claude with
+  `claude --dangerously-skip-permissions` is the new Step 3, rendered
+  with the same `.install-cmd` + copy-button affordance as the other
+  steps. Step 4 paste runs ~20 shell commands that auto-accept-edits
+  would not cover (Bash still prompts), so the YOLO flag is the
+  default recommendation (session-scoped, drops on next plain
+  `claude`). Shift + Tab → auto-accept-edits kept as the strict-
+  review fallback; persistent YOLO allowlist link to
+  `/setup-advanced#yolo` opens in a new tab so users don't lose
+  their `/home` install context. Setup script's "Verify cwd" warning
+  copy refreshed to reference "/home Step 2".
+- `agnes init` adds `Bash(agnes *)` to the default `permissions.allow`
+  list in the seeded `.claude/settings.json`. Without it, Claude Code
+  was blocking subsequent `agnes <verb>` invocations (`agnes catalog`,
+  `agnes pull`, …) inside the workspace it had just bootstrapped.
+- `agnes init` and `agnes refresh-marketplace --bootstrap` now
+  `chmod +x` every `.sh` they land on disk
+  (`<workspace>/.claude/hooks/*.sh` after init; every `.sh` under
+  `~/.agnes/marketplace` after a clone/pull). Git checkout doesn't
+  always preserve the file-mode bit (filemode=false repos, ZIP
+  extractions), so hooks were firing with "Permission denied" —
+  silent `SessionStart` / `PreToolUse` breakage. Best-effort: no-op
+  on Windows NTFS.
+- Setup script step 3 now uses `--token-file ~/.agnes/token` plus a
+  single-quoted heredoc for the token write, and includes an explicit
+  note about the `!` prefix fallback when Claude Code's classifier
+  blocks an `agnes <verb>` invocation (e.g. `! agnes init …`).
+- Setup script step 1 (no-CA install path) now emits a robust
+  `grep -qF + ||` snippet for the optional `~/.local/bin` PATH
+  persistence so re-runs don't append a duplicate entry to the
+  user's rc file (fixed-string match + short-circuit per the dedup
+  bug report).
+
 ## [0.55.0] — 2026-05-19
 
 ### Added
@@ -133,6 +185,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   save) mirroring the Memory Domain pattern.
 
 ### Changed
+<<<<<<< HEAD
 - **Bulk-assign tables → package** modal — package dropdown options
   now carry a `(N of M tables already in)` suffix so admins see the
   existing distribution before picking a target. Counts surface
@@ -442,6 +495,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Single PR cutover (no two-phase rollout). Legacy
   `marketplace_plugins.is_system` + `user_plugin_optouts` retained
   per spec D1 — Marketplace was deliberately not touched.
+=======
+<<<<<<< HEAD
+- /home onboarding Step 2 retitled "turn on permission-skip for setup"
+  and now leads with `claude --dangerously-skip-permissions` as the
+  recommended session flag, because the Step 4 paste runs ~20 shell
+  commands that auto-accept-edits does not cover (Bash still prompts).
+  The flag is session-scoped, drops on next plain `claude`. Auto-accept
+  via Shift + Tab kept as the strict-review fallback for users who want
+  to approve each command; persistent YOLO setup link unchanged.
+>>>>>>> 4c4e9e42 (fix(web): swap /home Steps 2↔3, claude --yolo as copy-button command)
 
 ## [0.54.29] — 2026-05-19
 
@@ -496,6 +559,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   UI shows the corrected project). The orchestrator now compares the
   two at every rebuild and, if they differ, calls
   `rebuild_from_registry()` to regenerate the extract.
+=======
+- /home onboarding reordered: folder creation is now Step 2 (was
+  Step 3) and starting Claude with `claude --dangerously-skip-permissions`
+  is the new Step 3 (was the auto-mode step), rendered with the same
+  `.install-cmd` + copy-button affordance the other steps use. Step 4
+  paste runs ~20 shell commands that auto-accept-edits would not cover
+  (Bash still prompts), so the YOLO flag is the default recommendation;
+  session-scoped, drops on next plain `claude`. Shift + Tab → auto-
+  accept-edits kept as the strict-review fallback; persistent YOLO
+  allowlist link to /setup-advanced#yolo unchanged. Setup script's
+  "Verify cwd" warning copy refreshed to reference "/home Step 2".
+>>>>>>> c195e0fa (fix(web): swap /home Steps 2↔3, claude --yolo as copy-button command)
 - Setup script no longer auto-creates the workspace folder. Step 2 of
   the pasted prompt now runs `pwd`, compares it to `$HOME/<workspace_dir>`
   (the folder the /home page's visible Step 3 told the user to create

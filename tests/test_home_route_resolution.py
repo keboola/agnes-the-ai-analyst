@@ -260,10 +260,14 @@ def test_home_automode_env_can_hide(fresh_db, monkeypatch):
 
 
 def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
-    """The auto-mode step renders by default for the not-onboarded /home
-    view. The block is now Step 2 (the install-flow reorder put auto-mode
-    BEFORE the Agnes install so users have auto-accept on for Step 3's
-    ~20 commands), so its label is "Step 2 — turn on auto-mode"."""
+    """The permission-mode step renders by default for the not-onboarded
+    /home view. The block is Step 3 (folder creation moved up to Step 2
+    so the user mkdir+cd's first, then this step launches Claude in that
+    directory with the right flag for Step 4's ~20 shell commands).
+    Label primarily recommends `claude --dangerously-skip-permissions`
+    via the standard `.install-cmd` + copy-button affordance; auto-
+    accept-edits via Shift + Tab kept as the strict fallback for users
+    who want to review each command."""
     monkeypatch.delenv("AGNES_HOME_SHOW_AUTOMODE", raising=False)
 
     from src.db import get_system_db, close_system_db
@@ -277,10 +281,10 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    assert "Step 2 — turn on auto-mode" in body
-    # The auto-mode step now lives inside the install-hero as an
-    # install-block (peer with Step 1 + Step 3), not as a separate
-    # automode-card. Look for the label + the keystroke prompt.
+    assert "Step 3 — start Claude Code with permission-skip" in body
+    # Recommended path: `claude --dangerously-skip-permissions`.
+    assert "claude --dangerously-skip-permissions" in body
+    # Strict fallback: Shift + Tab → auto-accept-edits.
     assert "Shift + Tab" in body
 
 
@@ -298,7 +302,7 @@ def test_home_hides_automode_block_when_env_off(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    assert "Step 2 — turn on auto-mode" not in body
+    assert "Step 3 — start Claude Code with permission-skip" not in body
 
 
 def test_navbar_home_link_uses_home_route(fresh_db, monkeypatch):

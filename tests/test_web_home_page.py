@@ -104,8 +104,8 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
     # All four inline install-blocks are hidden post-onboarding — the
     # labels rendered inside the install-block divs go away.
     assert "Step 1 — install Claude Code" not in body
-    assert "Step 2 — turn on auto-mode" not in body
-    assert "Step 3 — create your workspace folder" not in body
+    assert "Step 2 — create your workspace folder" not in body
+    assert "Step 3 — start Claude Code with permission-skip" not in body
     assert "Step 4 — install" not in body
 
 
@@ -139,7 +139,7 @@ def test_connectors_section_removed_from_home(fresh_db):
     # Auto-mode peer section still gone (legacy guard, not regressed).
     assert 'class="automode-card"' not in body
     assert 'data-section="step3"' not in body
-    assert "Step 2 — turn on auto-mode" not in body
+    assert "Step 3 — start Claude Code with permission-skip" not in body
     # Dedicated connectors block is gone from /home in BOTH states.
     assert 'class="connector-tiles"' not in body
     assert 'data-section="connectors"' not in body
