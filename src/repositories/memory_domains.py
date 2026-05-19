@@ -215,16 +215,33 @@ class MemoryDomainsRepository:
     def list_items_of_domain(
         self, domain_id: str, *, limit: int = 1000
     ) -> List[Dict[str, Any]]:
-        """Items tagged with a given domain (title-ordered)."""
+        """Items tagged with a given domain (title-ordered).
+
+        Projects ``is_required`` and ``content`` so the manifest builder
+        in ``app/api/sync.py`` can both count required items and include
+        them in the per-domain md5 hash. Previously the projection was
+        only (id, title, status) — ``required_count`` came back as 0 and
+        the bundle hash ignored content/required edits, so analysts kept
+        stale ``bundle.md`` after admin edits (Devin review on PR #333).
+        """
         rows = self.conn.execute(
-            "SELECT ki.id, ki.title, ki.status "
+            "SELECT ki.id, ki.title, ki.status, ki.is_required, ki.content "
             "FROM knowledge_item_domains kid "
             "JOIN knowledge_items ki ON ki.id = kid.item_id "
             "WHERE kid.domain_id = ? "
             "ORDER BY ki.title LIMIT ?",
             [domain_id, limit],
         ).fetchall()
-        return [{"id": r[0], "title": r[1], "status": r[2]} for r in rows]
+        return [
+            {
+                "id": r[0],
+                "title": r[1],
+                "status": r[2],
+                "is_required": bool(r[3]),
+                "content": r[4],
+            }
+            for r in rows
+        ]
 
     def list_domains_of_item(self, item_id: str) -> List[Dict[str, Any]]:
         """Domains an item is tagged with (name-ordered)."""

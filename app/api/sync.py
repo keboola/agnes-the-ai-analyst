@@ -830,13 +830,20 @@ def _build_memory_domains_section(conn, user: dict) -> list:
         if not dom:
             continue
         items = repo.list_items_of_domain(entry.id, limit=10000)
-        # Per-domain md5 — concatenate sorted (id, title, status) tuples so
-        # the hash is stable under list ordering and flips on any content
-        # mutation (title or membership change).
+        # Per-domain md5 — concatenate sorted item tuples so the hash is
+        # stable under list ordering and flips on any content mutation.
+        # MUST include ``is_required`` and ``content`` because the bundle
+        # rendered by ``_build_per_domain_markdown`` routes items between
+        # "## Required" and "## Approved" by ``is_required`` and embeds
+        # the full ``content`` body; without these in the hash, an admin
+        # edit of either dimension leaves the manifest md5 unchanged →
+        # ``agnes pull`` skips the re-fetch → analyst keeps a stale
+        # bundle.md (caught by Devin review on PR #333).
         h = hashlib.md5()
         for it in sorted(items, key=lambda r: r["id"]):
             h.update(
-                f"{it['id']}|{it.get('title','')}|{it.get('status','')}|".encode()
+                f"{it['id']}|{it.get('title','')}|{it.get('status','')}|"
+                f"{it.get('is_required', False)}|{it.get('content','')}|".encode()
             )
         required_count = sum(
             1 for it in items

@@ -281,25 +281,31 @@
     else { alert('Failed to remove'); removeBtn.disabled = false; }
   });
 
-  // Per-item votes (delegate to existing /api/memory/items/{id}/vote).
+  // Per-item votes. Route is POST /api/memory/{id}/vote — the extra
+  // /items/ segment a previous edit added didn't match any route and
+  // every vote silently 404'd (caught by Devin review on PR #333).
   document.querySelectorAll('[data-vote]').forEach(b => {
     b.addEventListener('click', async () => {
       const itemId = b.dataset.item;
       const value = b.dataset.vote === 'up' ? 1 : -1;
-      const r = await api('POST', '/api/memory/items/' + encodeURIComponent(itemId) + '/vote',
+      const r = await api('POST', '/api/memory/' + encodeURIComponent(itemId) + '/vote',
         { value: value });
       if (r.ok) location.reload();
     });
   });
 
-  // Per-item dismiss/undismiss.
+  // Per-item dismiss / undismiss. Routes are POST /api/memory/{id}/dismiss
+  // (dismiss) and DELETE /api/memory/{id}/dismiss (undismiss) — there is
+  // no /undismiss endpoint and the /items/ segment is wrong. Previous
+  // code sent both as POST to /api/memory/items/{id}/{dismiss,undismiss}
+  // which silently 404'd both ways (Devin review on PR #333).
   document.querySelectorAll('[data-action]').forEach(b => {
     b.addEventListener('click', async () => {
       const itemId = b.dataset.item;
       const action = b.dataset.action;
-      const url = '/api/memory/items/' + encodeURIComponent(itemId) +
-                  (action === 'dismiss' ? '/dismiss' : '/undismiss');
-      const r = await api('POST', url);
+      const url = '/api/memory/' + encodeURIComponent(itemId) + '/dismiss';
+      const method = action === 'dismiss' ? 'POST' : 'DELETE';
+      const r = await api(method, url);
       if (r.ok) location.reload();
     });
   });
