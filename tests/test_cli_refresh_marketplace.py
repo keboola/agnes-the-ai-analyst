@@ -616,6 +616,79 @@ def test_bootstrap_with_no_existing_clone_clones_and_registers(
     assert add_calls[0].cmd[4] == str(clone_target)
 
 
+def test_bootstrap_honors_marketplace_url_env_override(
+    tmp_path, monkeypatch, with_token, claude_in_path, recorder,
+):
+    """``AGNES_MARKETPLACE_URL`` overrides the derived ``server_host/marketplace.git/``
+    base for deployments that serve the marketplace from a different host
+    than the API — reverse-proxy split, CDN-fronted marketplace, etc.
+    Issue #345 A.
+    """
+    cfg_dir = tmp_path / "_cfg"
+    (cfg_dir / "config.yaml").write_text(
+        "server: https://agnes.example.com\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("AGNES_MARKETPLACE_URL", "https://plugins.example.com/marketplace.git/")
+
+    clone_target = tmp_path / "fresh_marketplace"
+    monkeypatch.setattr(rm_module, "CLONE_DIR", clone_target)
+
+    real_run = recorder.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["git", "clone"]:
+            (clone_target / ".git").mkdir(parents=True, exist_ok=True)
+            (clone_target / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+            (clone_target / ".claude-plugin" / "marketplace.json").write_text(
+                json.dumps({"name": "agnes", "plugins": []}),
+                encoding="utf-8",
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(rm_module.subprocess, "run", fake_run)
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 0, result.output
+
+    # Clone URL must point at the env-override host, NOT at the
+    # api server's hostname, and must carry the PAT.
+    clone_calls = [c for c in recorder.calls if c.cmd[:2] == ["git", "clone"]]
+    assert len(clone_calls) == 1
+    url_arg = next(a for a in clone_calls[0].cmd if a.startswith("https://"))
+    assert "plugins.example.com/marketplace.git/" in url_arg
+    assert "agnes.example.com" not in url_arg
+    assert with_token in url_arg
+
+    # PAT-stripped URL after clone is also the override host.
+    set_url_calls = [
+        c for c in recorder.calls
+        if c.cmd[:5] == ["git", "-C", str(clone_target), "remote", "set-url"]
+    ]
+    assert len(set_url_calls) == 1
+    new_url = set_url_calls[0].cmd[6]
+    assert "plugins.example.com/marketplace.git/" in new_url
+    assert with_token not in new_url
+
+
+def test_bootstrap_rejects_invalid_marketplace_url_env(
+    tmp_path, monkeypatch, with_token, claude_in_path,
+):
+    """``AGNES_MARKETPLACE_URL`` without scheme is rejected with a clear
+    error — silent fallback to the derived URL would hide an operator
+    misconfiguration. Issue #345 A.
+    """
+    cfg_dir = tmp_path / "_cfg"
+    (cfg_dir / "config.yaml").write_text(
+        "server: https://agnes.example.com\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("AGNES_MARKETPLACE_URL", "plugins.example.com/marketplace.git/")
+    monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "fresh_marketplace")
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 1
+    assert "AGNES_MARKETPLACE_URL" in result.output
+
+
 def test_bootstrap_clone_failure_exits_nonzero(
     tmp_path, monkeypatch, with_token, claude_in_path, recorder,
 ):
