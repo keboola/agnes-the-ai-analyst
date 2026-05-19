@@ -134,3 +134,43 @@ class TestCatalogUnifiedPage:
         body = resp.text
         # Available + not subscribed → Add button with data-action="add".
         assert 'data-action="add"' in body
+
+    def test_required_packages_render_before_available_ones(self, seeded_app):
+        """Browse grid groups Required cards first (first-demo feedback).
+
+        Three packages: two available + one required. The required card
+        must come BEFORE the available ones in the rendered HTML so it
+        clusters at the top of the grid instead of being interleaved by
+        creation order.
+        """
+        # Seed in deliberately-wrong order (available first) so the sort
+        # has something to undo.
+        avail_pkg = _make_pkg("a-avail", "AAA Available")
+        req_pkg = _make_pkg("z-req", "ZZZ Required")
+        avail_pkg_2 = _make_pkg("m-avail", "MMM Available")
+        _grant("Everyone", "data_package", avail_pkg,
+               requirement="available", users=["analyst1"])
+        _grant("Everyone", "data_package", req_pkg,
+               requirement="required", users=["analyst1"])
+        _grant("Everyone", "data_package", avail_pkg_2,
+               requirement="available", users=["analyst1"])
+
+        resp = seeded_app["client"].get(
+            "/catalog", headers=_auth(seeded_app["analyst_token"]),
+        )
+        body = resp.text
+        # The required-grant card must appear earlier in the document
+        # than either available card — independent of creation order or
+        # alphabetical name ordering.
+        i_req = body.find('data-id="' + req_pkg + '"')
+        i_a1 = body.find('data-id="' + avail_pkg + '"')
+        i_a2 = body.find('data-id="' + avail_pkg_2 + '"')
+        assert i_req != -1 and i_a1 != -1 and i_a2 != -1
+        assert i_req < i_a1, (
+            "Required card must render before available card 'AAA' "
+            f"(req@{i_req}, avail@{i_a1})"
+        )
+        assert i_req < i_a2, (
+            "Required card must render before available card 'MMM' "
+            f"(req@{i_req}, avail@{i_a2})"
+        )

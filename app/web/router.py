@@ -953,6 +953,16 @@ async def catalog(
         browse_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
         stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
 
+    # Group ``required`` packages first so they cluster together at the
+    # top of the Browse grid instead of being scattered by creation
+    # order — first-demo feedback (2026-05-19): "bylo by dobre ty
+    # required mit vzdy nekde seskupene spolu na jedne strane".
+    # Secondary order falls back to the resolver's name-ordered output.
+    browse_entries = sorted(
+        browse_entries,
+        key=lambda e: (0 if e.requirement == "required" else 1, e.name or ""),
+    )
+
     def _adapt(e):
         slug = None
         try:
@@ -1425,6 +1435,12 @@ async def corporate_memory(
     else:
         browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
         stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
+
+    # Required-first grouping mirrors /catalog (first-demo feedback).
+    browse_entries = sorted(
+        browse_entries,
+        key=lambda e: (0 if e.requirement == "required" else 1, e.name or ""),
+    )
 
     def _adapt(e):
         meta = dom_meta.get(e.id, {})

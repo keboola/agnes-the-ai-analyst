@@ -531,7 +531,12 @@
   color: var(--text-secondary, #5f6368);
   line-height: 1.5;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  /* Bumped 2 → 4 per first-demo feedback: 2-line clamp made every
+     description trail off in "…" before the meaningful second clause,
+     forcing analysts to click through to read the full sentence. Detail
+     page (/catalog/p/<slug>) still carries the unclamped body for
+     longer admin-authored content. */
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
