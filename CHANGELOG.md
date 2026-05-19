@@ -11,6 +11,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Changed
+- Setup script no longer auto-creates the workspace folder. Step 2 of
+  the pasted prompt now runs `pwd`, compares it to `$HOME/<workspace_dir>`
+  (the folder the /home page's visible Step 3 told the user to create
+  manually), and on mismatch warns + asks the user to either re-paste
+  from the right folder or reply `install here` to accept the current
+  cwd. Respects an intentional alternate install path instead of
+  silently switching the user back to the default. Step 9 (restart
+  Claude Code) now references the install directory confirmed in step 2
+  rather than a hardcoded `~/<workspace_dir>`.
 - **BREAKING (marketplace identifier)**: synthetic plugin bundling flea
   skills + agents renamed from `agnes-store-bundle` to `flea`. The
   served `marketplace.json` now lists `flea` (previously
