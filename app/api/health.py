@@ -422,24 +422,55 @@ async def health_check_detailed(
     except Exception as e:
         checks["session_pipeline"] = {"status": "unknown", "detail": str(e)}
 
-    # Aggregate to overall status. `info` and `unknown` surface in the
-    # response but never escalate the headline (issue #178). `warning`
-    # promotes to `degraded`; `error` (or a schema mismatch when the
-    # caller asked for it) promotes to `unhealthy`.
-    overall = "healthy"
-    for check in checks.values():
-        if check.get("status") == "error":
-            overall = "unhealthy"
-            break
-        if check.get("status") == "warning":
-            overall = "degraded"
-    # Schema mismatch only escalates when the caller asked for the check
+    # Per-check audience tagging (issue #345 B): which checks does an
+    # analyst care about vs. which are operator-only? An analyst seeing
+    # `Overall: degraded` because the scheduler is behind on session
+    # extraction has no way to act on it — the warning is real, but it's
+    # not their warning. ``audience`` lets clients compute a role-aware
+    # headline without dropping checks from the response payload.
+    _AUDIENCE = {
+        "duckdb_state": "analyst",   # query path; visible everywhere
+        "db_schema": "operator",     # schema migration sanity
+        "data": "operator",          # stale tables — admin scheduler
+        "users": "operator",         # admin-side ops only
+        "bq_config": "operator",     # cluster-level config
+        "session_pipeline": "operator",  # admin-driven cadence
+    }
+    for name, check in checks.items():
+        check.setdefault("audience", _AUDIENCE.get(name, "operator"))
+
+    def _aggregate(items) -> str:
+        out = "healthy"
+        for check in items:
+            if check.get("status") == "error":
+                return "unhealthy"
+            if check.get("status") == "warning":
+                out = "degraded"
+        return out
+
+    # Schema mismatch escalates only when the caller asked for the check
     # — otherwise the absent key is treated as "not asserted".
-    if "db_schema" in checks and checks["db_schema"].get("db_schema") != "ok":
-        overall = "unhealthy"
+    def _apply_schema_escalation(status: str) -> str:
+        if "db_schema" in checks and checks["db_schema"].get("db_schema") != "ok":
+            return "unhealthy"
+        return status
+
+    overall = _apply_schema_escalation(_aggregate(checks.values()))
+    overall_analyst = _aggregate(
+        c for c in checks.values() if c.get("audience") == "analyst"
+    )
+    # db_schema is audience=operator, so it never escalates the analyst
+    # headline — that's the intent.
+
+    # Caller role surface: clients pick the headline they should display
+    # based on their own privilege. Admins/operators see ``overall``;
+    # analysts see ``overall_analyst`` and an optional flag to opt in.
+    caller_role = "admin" if _user.get("is_admin") else "analyst"
 
     return {
         "status": overall,
+        "overall_analyst": overall_analyst,
+        "caller_role": caller_role,
         "version": os.environ.get("AGNES_VERSION", "dev"),
         "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
         "image_tag": os.environ.get("AGNES_TAG", "unknown"),
