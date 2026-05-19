@@ -197,6 +197,7 @@ def _data_package_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     rows = conn.execute(
         """SELECT id, slug, name, description, icon, color
            FROM data_packages
+           WHERE deleted_at IS NULL
            ORDER BY name"""
     ).fetchall()
     if not rows:
@@ -237,6 +238,7 @@ def _memory_domain_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     rows = conn.execute(
         """SELECT id, slug, name, description, icon, color
            FROM memory_domains
+           WHERE deleted_at IS NULL
            ORDER BY name"""
     ).fetchall()
     if not rows:

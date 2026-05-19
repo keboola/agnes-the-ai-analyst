@@ -246,6 +246,15 @@ class StackResolver:
         Raises HTTP 400 if the resource is already ``required`` — clients
         shouldn't try to subscribe to a required resource (it's in the
         stack by default).
+
+        NOTE: this method does NOT verify the user has an ``available``
+        grant for the resource. Authorization is enforced at the API
+        layer by ``app/api/stack.py``'s ``can_access`` gate. Direct
+        in-process callers (tests, admin scripts) are trusted to have
+        gated themselves; ``stack()`` further hides any resulting
+        subscription on every read by intersecting with current
+        available_ids, so a zombie row never leaks into the user-
+        facing manifest.
         """
         if self.is_required(user_id, resource_type, resource_id):
             raise HTTPException(status_code=400, detail="already_required")
