@@ -195,9 +195,25 @@ def _add_member(conn, *, user_id: str, group_id: str) -> None:
 
 
 def _grant_table(conn, *, group_id: str, table_id: str) -> None:
+    """Stack-gated RBAC: wrap ``table_id`` in an auto data_package and
+    grant the package to ``group_id`` with ``requirement='required'``
+    so every user in the group has the package in their stack."""
     from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.data_packages import DataPackagesRepository
+    pkgs = DataPackagesRepository(conn)
+    pkg_slug = f"_test-pkg-{table_id.lower()}"[:63]
+    existing = pkgs.get_by_slug(pkg_slug)
+    if existing:
+        pkg_id = existing["id"]
+    else:
+        pkg_id = pkgs.create(
+            name=f"Test wrap {table_id}", slug=pkg_slug,
+            description=None, icon=None, color=None, created_by="test",
+        )
+    pkgs.add_table(pkg_id, table_id, added_by="test")
     ResourceGrantsRepository(conn).create(
-        group_id=group_id, resource_type="table", resource_id=table_id
+        group_id=group_id, resource_type="data_package", resource_id=pkg_id,
+        requirement="required",
     )
 
 
