@@ -254,8 +254,8 @@ nav {
 
 .btn-google:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-    border-color: #c4c4c4;
-    background-color: #fafafa;
+    border-color: var(--border);
+    background-color: var(--background);
 }
 
 .btn-google:active {
@@ -386,10 +386,28 @@ nav {
 
 /* Code blocks */
 code {
-    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
-    font-size: 0.875rem;
-    padding: 2px 6px;
-    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--border-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1px var(--space-1);
+    color: var(--text-primary);
+}
+
+/* Label qualifiers — optional, default, hint text next to form labels */
+.label-qualifier,
+.optional {
+    font-size: var(--text-sm);
+    font-weight: var(--font-normal);
+    color: var(--text-secondary);
+    margin-left: var(--space-1);
+}
+
+/* Radio option cards — visual selected state */
+.sync-option-card:has(input:checked) {
+    border-color: var(--primary) !important;
+    background: var(--primary-light) !important;
 }
 
 .code-block {
@@ -2885,8 +2903,8 @@ a.slack-badge:hover {
 
 .login-page .btn-google:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-    border-color: #c4c4c4;
-    background-color: #fafafa;
+    border-color: var(--border);
+    background-color: var(--background);
 }
 
 .login-page .btn-google:active {
