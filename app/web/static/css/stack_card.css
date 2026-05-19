@@ -1,0 +1,688 @@
+/* stack_card.css — shared shell + card styles for /catalog and /memory.
+ *
+ * Visual parity with /marketplace: hero, tab strip, filter chips, card
+ * grid and empty state all share the marketplace.html .mp-* look so the
+ * three pages read as one product. Class names stay `stack-*` (not
+ * `mp-*`) because tests + JS hook on these names already; the CSS
+ * underneath mirrors marketplace.html rule-for-rule (palette, padding,
+ * border-radius, shadow, hover lift, grid breakpoints).
+ *
+ * Borders and badges are dual-encoded (color + text) per the design
+ * spec's a11y constraint — color alone never carries the semantic.
+ */
+
+/* ── Hero (gradient, mirrors marketplace.html .mp-hero) ──────────────── */
+/* Blue → teal diagonal — replaces the prior monochrome cobalt that read
+ * as a flat banner. The teal stop introduces a hue shift so the hero
+ * feels like a deliberate visual unit instead of an oversized header. */
+.stack-hero {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #0073D1 0%, #0EA5B5 100%);
+  border-radius: 12px;
+  padding: 28px 32px;
+  margin-bottom: 24px;
+  box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+  color: #fff;
+}
+.stack-hero .eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: rgba(255, 255, 255, 0.75);
+  margin-bottom: 8px;
+}
+.stack-hero h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+.stack-hero .sub {
+  margin: 6px 0 0;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* Embedded hero search — mirrors marketplace .mp-hero .search-row.
+ * Floats on top of the gradient like a card; gives the hero a real
+ * affordance to interact with instead of being purely decorative. */
+.stack-hero__search-row {
+  display: flex;
+  align-items: stretch;
+  margin-top: 18px;
+  background: #fff;
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  max-width: 760px;
+}
+.stack-hero__search-wrap {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+}
+.stack-hero__search-row input[type="search"] {
+  width: 100%;
+  padding: 11px 14px 11px 40px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  background: transparent;
+  color: var(--text-primary, #202124);
+  outline: none;
+}
+.stack-hero__search-row input[type="search"]::placeholder {
+  color: var(--text-secondary, #5f6368);
+  opacity: 0.75;
+}
+/* v51 lifecycle status filter row — sits in the hero below the search.
+ * White checkbox set on the gradient background; click any combination
+ * to filter the card grid by `data-status`. Empty selection = show all. */
+.stack-hero__status-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.92);
+  flex-wrap: wrap;
+}
+.stack-hero__status-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.stack-hero__status-row input[type="checkbox"] {
+  accent-color: #0EA5B5;
+  cursor: pointer;
+}
+.stack-hero__status-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 600;
+}
+.stack-hero__search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary, #5f6368);
+  pointer-events: none;
+}
+
+/* ── Curator info block (marketplace .mp-curator-block) ──────────────── */
+/* Light card with a primary-blue left border + bold title + body text;
+ * mirrors the trust/info pattern marketplace uses below the hero to
+ * explain the page purpose. The slot sits between hero and tab strip
+ * so it feels like part of the page chrome, not a banner. */
+.stack-curator-block {
+  background: rgba(0, 115, 209, 0.06);
+  border: 1px solid rgba(0, 115, 209, 0.18);
+  border-left: 3px solid var(--primary, #0073D1);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+}
+.stack-curator-block__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #202124);
+  margin-bottom: 2px;
+}
+.stack-curator-block__body {
+  font-size: 13px;
+  color: var(--text-secondary, #5f6368);
+  line-height: 1.5;
+}
+
+/* ── Tab strip + filter chips (marketplace .mp-tabs / .mp-tabs-row) ──── */
+.stack-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+/* Right-of-tabs action slot (marketplace .mp-actions parity). The
+ * tab strip is the left child of .stack-tabs-row; this slot sits on
+ * the right with the admin-only CTA (+ New Data Package on /catalog,
+ * Manage domains → on /memory). Hidden gracefully when no admin
+ * actions render. */
+.stack-tabs-row__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.stack-tabs-row__actions .btn {
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #eceff1);
+  background: var(--surface, #fff);
+  color: var(--text-primary, #202124);
+  text-decoration: none;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+.stack-tabs-row__actions .btn:hover {
+  border-color: var(--primary, #0073D1);
+  color: var(--primary, #0073D1);
+}
+.stack-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--border, #eceff1);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.stack-tabs button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #5f6368);
+  padding: 8px 16px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s ease;
+}
+.stack-tabs button .tab-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+/* Per-tab icon tint mirrors marketplace.html: blue = browse / curated,
+ * amber = "in your stack" (matches the amber In Stack badge). */
+.stack-tabs button[data-tab="browse"] .tab-icon { color: #0073D1; }
+.stack-tabs button[data-tab="my"] .tab-icon     { color: #F59F0A; }
+.stack-tabs button.is-active .tab-icon          { color: #fff; }
+.stack-tabs button:hover {
+  color: var(--text-primary, #202124);
+  background: var(--bg, #f8f9fa);
+}
+.stack-tabs button.is-active {
+  background: var(--primary, #0073D1);
+  color: #fff;
+}
+.stack-tabs button .count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.08);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+.stack-tabs button.is-active .count {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.stack-filter-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.stack-filter-row .pill {
+  appearance: none;
+  border: 1px solid var(--border, #eceff1);
+  background: var(--surface, #fff);
+  color: var(--text-primary, #202124);
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+.stack-filter-row .pill:hover {
+  border-color: var(--primary, #0073D1);
+  color: var(--primary, #0073D1);
+}
+.stack-filter-row .pill.is-active {
+  background: rgba(0, 115, 209, 0.12);
+  color: var(--primary, #0073D1);
+  border-color: var(--primary, #0073D1);
+}
+
+.stack-search {
+  flex: 1 1 240px;
+  max-width: 320px;
+  padding: 7px 12px;
+  border: 1px solid var(--border, #eceff1);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.stack-search:focus {
+  outline: none;
+  border-color: var(--primary, #0073D1);
+}
+
+/* ── Card grid (marketplace .mp-grid) ────────────────────────────────── */
+.stack-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 1100px) { .stack-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 820px)  { .stack-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 540px)  { .stack-grid { grid-template-columns: 1fr; } }
+
+/* ── Card (marketplace .mp-card) ─────────────────────────────────────── */
+.stack-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--border, #eceff1);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  transition: all 0.15s ease;
+  text-decoration: none;
+  color: inherit;
+}
+.stack-card:hover {
+  border-color: var(--primary, #0073D1);
+  box-shadow: 0 6px 20px rgba(0, 115, 209, 0.12);
+  transform: translateY(-2px);
+}
+
+/* Photo banner (marketplace .mp-card .photo). 120px tall full-width
+ * gradient header with centered 2-letter initials in 26px bold — the
+ * single dominant visual element of each card, replacing the previous
+ * tiny inline icon-box. Mirrors marketplace.html .mp-card .photo
+ * pixel-for-pixel so /catalog, /memory and /marketplace tiles look
+ * identical at glance distance. The gradient `background` is set
+ * inline on the element from `entry.color` so each card scopes to its
+ * package/domain palette. */
+.stack-card__photo {
+  width: 100%;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary, #0073D1);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  /* Background gradient set inline on the element via `style=` so each
+   * card can pick its own primary stop from `entry.color`. */
+}
+/* When the banner contains an admin-supplied emoji glyph instead of
+ * letter initials, drop the size + letter-spacing slightly so the
+ * glyph reads as a domain marker rather than a giant emoji. */
+.stack-card__photo--glyph {
+  font-size: 30px;
+  letter-spacing: 0;
+}
+
+/* v50: admin-uploaded cover image fills the photo banner. ``object-fit:
+ * cover`` clips overflow so any aspect ratio works without distortion;
+ * ``display: block`` removes the inline-baseline gap that would otherwise
+ * leave a 4px ghost stripe below the image. */
+.stack-card__photo img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+/* When the <img> 404s the JS swap clears the parent's child and writes
+ * the initials as plain text — we want the same centered + 26px-bold
+ * look as the no-cover initials path. The parent already has the
+ * background color set inline; this rule just keeps the text geometry
+ * stable across the failure boundary. */
+.stack-card__photo--failed {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+/* Body (marketplace .mp-card .body). Sits below the photo banner. */
+.stack-card__body {
+  padding: 14px 16px 12px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Footer (marketplace .mp-card .footer): meta on the left, action on the right. */
+.stack-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-light, #eceff1);
+  font-size: 11px;
+  color: var(--text-secondary, #5f6368);
+}
+
+/* Required + In-stack state — both use amber accent for cross-page
+ * coherence with marketplace .mp-card.is-installed (single "in your
+ * stack" amber convention across all three pages — /marketplace,
+ * /catalog, /memory). Semantic distinction stays via the badge label
+ * (Required vs In stack), not via color. 1px low-opacity to mirror
+ * marketplace's border-color: rgba(245,159,10,0.55) — keeps the box
+ * geometry stable on state change (no 2px-vs-1px hover wiggle). */
+.stack-card.is-required,
+.stack-card.is-in-stack {
+  border-color: rgba(245, 159, 10, 0.55);
+}
+
+.stack-card__req-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  z-index: 2;
+}
+/* In-stack badge: same amber as required, distinguished only by label.
+ * Matches marketplace's amber "In stack" pill on .mp-card.is-installed. */
+.stack-card__req-badge--instack {
+  background: #f59e0b;
+}
+
+/* My Stack tab — every visible card is in-stack by definition (and
+ * Required cards are also in-stack), so both badge variants are
+ * redundant info-wise. Suppressing them here keeps the My Stack grid
+ * visually cleaner without losing the affordance on Browse where it
+ * matters. */
+[data-view="my"] .stack-card__req-badge { display: none; }
+
+/* v51 — palette swatch row for the Create/Edit modals (Data Package +
+ * Memory Domain). 8 vendor-neutral design-system colors; click sets the
+ * adjacent native <input type="color"> so the palette is the obvious
+ * choice while the free-form picker stays as the escape hatch. */
+.cf-palette-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.cf-palette-row .cf-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(15, 23, 42, 0.15);
+  cursor: pointer;
+  padding: 0;
+  background: var(--bg, #fff);
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.cf-palette-row .cf-swatch:hover {
+  transform: scale(1.08);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+}
+.cf-palette-row .cf-swatch.is-active {
+  outline: 2px solid #0073D1;
+  outline-offset: 2px;
+}
+
+/* v51 cover-corner lifecycle status pill. Sits top-left of the cover
+ * banner; only the non-default values render (prod is implicit). Small
+ * tinted chip with white fill so it survives any cover color. */
+.stack-card__status-pill {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-block;
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #475569;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+}
+.stack-card__status-pill--poc    { color: #b45309; }   /* amber */
+.stack-card__status-pill--coming { color: #6d28d9; }   /* violet */
+.stack-card__status-pill--draft  { color: #475569; }   /* slate */
+.stack-card__photo { position: relative; }             /* anchor for pill */
+
+/* v53 cover-corner emoji glyph — when entry.icon is a single emoji,
+ * render it absolute-positioned in the lower-right of the cover at
+ * low opacity. Keeps initials as the prominent foreground; the glyph
+ * gives the "data product" feel without shipping a Lucide bundle. */
+.stack-card__cover-glyph {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  font-size: 32px;
+  line-height: 1;
+  opacity: 0.35;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.25));
+}
+
+/* v51 card eyebrow — small uppercase classifier above the title.
+ * Tracks marketplace eyebrows visually so /catalog + /marketplace cards
+ * read as one product family. */
+.stack-card__eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #0073D1;
+  margin-bottom: 4px;
+}
+
+/* Title — up to 2 lines (clamp), mirrors marketplace .mp-card .name.
+ * Wrap rather than nowrap so long bundle names don't get hard-truncated
+ * mid-word; line-clamp:2 keeps the card height predictable in the grid. */
+.stack-card__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary, #202124);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.stack-card__meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-secondary, #5f6368);
+}
+
+.stack-card__desc {
+  font-size: 12px;
+  color: var(--text-secondary, #5f6368);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Tag pills (marketplace .mp-card .cat-badge). */
+.stack-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.stack-card__tag {
+  font-size: 10px;
+  color: var(--text-secondary, #5f6368);
+  border: 1px solid var(--border, #eceff1);
+  border-radius: 4px;
+  padding: 2px 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-weight: 500;
+}
+
+.stack-card__drilldown,
+.stack-card__author {
+  font-size: 11px;
+  color: var(--text-secondary, #5f6368);
+  text-decoration: none;
+  font-weight: 500;
+}
+.stack-card__drilldown:hover {
+  color: var(--primary, #0073D1);
+  text-decoration: underline;
+}
+
+.stack-card__btn {
+  appearance: none;
+  border: 1px solid var(--border, #eceff1);
+  background: var(--surface, #fff);
+  color: var(--text-primary, #202124);
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+.stack-card__btn:focus-visible {
+  outline: 2px solid var(--primary, #0073D1);
+  outline-offset: 2px;
+}
+.stack-card__btn--add {
+  background: var(--primary, #0073D1);
+  color: #fff;
+  border-color: var(--primary, #0073D1);
+}
+.stack-card__btn--add:hover {
+  background: var(--primary-dark, #0056A3);
+}
+.stack-card__btn--remove {
+  background: #fff;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+.stack-card__btn--remove:hover {
+  background: #fee2e2;
+}
+.stack-card__btn--required {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+  cursor: not-allowed;
+}
+
+/* ── Empty state (marketplace .mp-empty) ─────────────────────────────── */
+.stack-empty {
+  text-align: center;
+  padding: 56px 24px;
+  color: var(--text-secondary, #5f6368);
+  font-size: 14px;
+  background: var(--surface, #fff);
+  border: 1px dashed var(--border, #eceff1);
+  border-radius: 12px;
+}
+.stack-empty .icon {
+  font-size: 40px;
+  display: block;
+  margin-bottom: 12px;
+  line-height: 1;
+}
+.stack-empty h3 {
+  margin: 0 0 8px;
+  color: var(--text-primary, #202124);
+  font-size: 16px;
+  font-weight: 600;
+}
+.stack-empty p {
+  margin: 0 auto 4px;
+  max-width: 480px;
+  line-height: 1.5;
+}
+.stack-empty .cta {
+  margin-top: 20px;
+}
+.stack-empty .cta a,
+.stack-empty .cta .btn {
+  display: inline-block;
+  margin: 0 6px;
+  padding: 8px 16px;
+  background: var(--primary, #0073D1);
+  color: #fff;
+  font-weight: 500;
+  text-decoration: none;
+  border-radius: 8px;
+  border: none;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.stack-empty .cta a:hover,
+.stack-empty .cta .btn:hover {
+  background: var(--primary-dark, #0056A3);
+}
+.stack-empty .cta a.secondary {
+  background: transparent;
+  color: var(--primary, #0073D1);
+  border: 1px solid var(--border, #eceff1);
+}
+.stack-empty .cta a.secondary:hover {
+  background: var(--bg, #f8f9fa);
+}
+
+/* Yellow chip rendered next to admin-only affordances on /catalog and
+   /memory. The previous "(admin)" parenthetical was ambiguous — admins
+   couldn't tell whether non-admins also saw the button. The pill +
+   title tooltip make the visibility hint unmistakable: yellow signals
+   "only you see this". Non-admin viewers don't see the parent affordance
+   at all (server-side {% if user.is_admin %} gate). */
+.admin-only-hint {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-radius: 999px;
+  vertical-align: middle;
+  cursor: help;
+}
+
+[hidden] { display: none !important; }

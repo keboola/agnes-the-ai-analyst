@@ -7,6 +7,8 @@ import typer
 from cli.client import api_get, api_post, api_delete, api_patch, api_put
 from cli.commands.admin_activity import activity_app
 from cli.commands.admin_ask import app as admin_ask_app
+from cli.commands.admin_data_package import admin_data_package_app
+from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.admin_news import admin_news_app
 from cli.commands.admin_sessions import sessions_app as admin_sessions_app
@@ -28,6 +30,8 @@ admin_app.add_typer(memory_admin_app, name="memory")
 # once external callers have caught up.
 admin_app.add_typer(admin_usage_app, name="telemetry", help="Telemetry export and admin queries")
 admin_app.add_typer(admin_usage_app, name="usage", help="(deprecated alias of `telemetry`)")
+admin_app.add_typer(admin_data_package_app, name="data-package", help="Data Package CRUD (v49)")
+admin_app.add_typer(admin_memory_domain_app, name="memory-domain", help="Memory Domain CRUD (v49)")
 
 
 @admin_app.command("add-user")
@@ -900,6 +904,7 @@ def grant_list(
         ("group_name", "GROUP", 20),
         ("resource_type", "RESOURCE TYPE", 22),
         ("resource_id", "RESOURCE ID", 40),
+        ("requirement", "REQUIREMENT", 12),
         ("assigned_by", "ASSIGNED BY", 24),
     ])
 
@@ -909,16 +914,90 @@ def grant_create(
     group_ref: str = typer.Argument(..., help="Group id or name"),
     resource_type: str = typer.Argument(..., help="Resource type (e.g. marketplace_plugin)"),
     resource_id: str = typer.Argument(..., help="Resource path (e.g. foundry-ai/metrics-plugin)"),
+    requirement: str = typer.Option(
+        "available", "--requirement",
+        help="'available' (user opts in via stack) or 'required' (auto-in-stack for all group members)",
+    ),
 ):
-    """Grant a group access to a specific resource."""
+    """Grant a group access to a specific resource.
+
+    v49: the optional ``--requirement`` flag controls whether the grant
+    is opt-in (``available``, default) or always-in-stack (``required``).
+    When passed on a NEW (group, resource_type, resource_id) tuple the
+    server creates an ``available`` grant and the CLI then PUTs the
+    requirement update — this two-step is needed because POST doesn't
+    accept the field directly. When the tuple already exists, the 409
+    is followed by a list+match to find the existing grant id and a
+    PUT to flip the requirement (idempotent if it's already at the
+    desired level).
+    """
+    if requirement not in ("available", "required"):
+        typer.echo(
+            f"--requirement must be 'available' or 'required', got {requirement!r}",
+            err=True,
+        )
+        raise typer.Exit(2)
     gid = _resolve_group_id(group_ref)
     resp = api_post("/api/admin/grants", json={
         "group_id": gid,
         "resource_type": resource_type,
         "resource_id": resource_id,
     })
+    if resp.status_code == 409:
+        # Existing grant — find its id so we can PUT a requirement update.
+        # Re-list with both filters to scope the lookup tightly.
+        ls = api_get(
+            "/api/admin/grants",
+            params={"group_id": gid, "resource_type": resource_type},
+        )
+        if ls.status_code != 200:
+            _fail(ls)
+        existing = next(
+            (r for r in ls.json() if r.get("resource_id") == resource_id),
+            None,
+        )
+        if not existing:
+            typer.echo(
+                f"Server reported grant exists but list lookup couldn't find it.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        grant_id = existing["id"]
+        current = existing.get("requirement") or "available"
+        if current == requirement:
+            typer.echo(
+                f"Grant {group_ref}: {resource_type}/{resource_id} "
+                f"already exists with requirement={requirement}"
+            )
+            return
+        upd = api_put(
+            f"/api/admin/grants/{grant_id}",
+            json={"requirement": requirement},
+        )
+        if upd.status_code != 200:
+            _fail(upd)
+        typer.echo(
+            f"Updated existing grant {group_ref}: {resource_type}/"
+            f"{resource_id} requirement={requirement}"
+        )
+        return
     if resp.status_code != 201:
         _fail(resp)
+    new_grant = resp.json()
+    grant_id = new_grant["id"]
+    # If the caller wanted 'required', flip with a PUT — server POST
+    # always creates 'available'.
+    if requirement == "required":
+        upd = api_put(
+            f"/api/admin/grants/{grant_id}",
+            json={"requirement": "required"},
+        )
+        if upd.status_code != 200:
+            _fail(upd)
+        typer.echo(
+            f"Granted {group_ref}: {resource_type}/{resource_id} requirement=required"
+        )
+        return
     typer.echo(f"Granted {group_ref}: {resource_type}/{resource_id}")
 
 

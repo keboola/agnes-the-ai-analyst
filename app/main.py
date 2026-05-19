@@ -110,6 +110,19 @@ from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
 from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
+from app.api.data_packages import router as data_packages_router
+from app.api.memory_domains import router as memory_domains_router
+from app.api.recipes import (
+    public_router as recipes_public_router,
+    admin_router as recipes_admin_router,
+)
+from app.api.memory_domain_suggestions import (
+    public_router as memory_domain_suggestions_public_router,
+    admin_router as memory_domain_suggestions_admin_router,
+)
+from app.api.uploads import router as admin_uploads_router
+from app.api.stack import router as stack_router
+from app.api.stack_views import router as stack_views_router
 from app.api.initial_workspace import router as initial_workspace_router
 from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
@@ -199,11 +212,12 @@ async def lifespan(app):
     except Exception:
         logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
 
-    # Surface BQ config gaps at startup so the operator sees them in the
-    # boot log instead of as cryptic "provider returned no data" /
-    # "403 serviceusage" later. Issue #343 — these are the same gaps that
-    # made every remote BQ query on foundryai-prod fail silently mid-May
-    # 2026. Non-fatal: warnings only, no startup abort.
+    # Surface BQ config gaps at startup so the operator sees them in
+    # the boot log instead of as cryptic "provider returned no data" /
+    # "403 serviceusage" later. Issue #343 — these are the same gaps
+    # that silently failed every remote BQ query on a customer prod
+    # instance for several days in mid-May 2026 before the cause was
+    # traced. Non-fatal: warnings only, no startup abort.
     try:
         from connectors.bigquery.access import validate_bigquery_startup_config
         for warning in validate_bigquery_startup_config():
@@ -253,6 +267,7 @@ async def lifespan(app):
                     logger.info("Set password on existing seed admin: %s", seed_email)
             # Make sure the seed admin is actually in the Admin group — this
             # is what gives them admin access in v12. Idempotent.
+            from src.db import SYSTEM_EVERYONE_GROUP
             admin_group = conn.execute(
                 "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
             ).fetchone()
@@ -260,6 +275,22 @@ async def lifespan(app):
                 UserGroupMembersRepository(conn).add_member(
                     user_id=user_id,
                     group_id=admin_group[0],
+                    source="system_seed",
+                    added_by="app.main:seed_admin",
+                )
+            # Also seed Everyone membership — Everyone-scoped grants are the
+            # canonical "every-user-sees-this" pattern (Required onboarding,
+            # default reference packages). The seed admin not being in
+            # Everyone meant their own Required grants didn't surface on
+            # /catalog as Required for them, which read as a bug.
+            everyone_group = conn.execute(
+                "SELECT id FROM user_groups WHERE name = ?",
+                [SYSTEM_EVERYONE_GROUP],
+            ).fetchone()
+            if everyone_group:
+                UserGroupMembersRepository(conn).add_member(
+                    user_id=user_id,
+                    group_id=everyone_group[0],
                     source="system_seed",
                     added_by="app.main:seed_admin",
                 )
@@ -648,6 +679,21 @@ def create_app() -> FastAPI:
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    # v50 admin-uploaded cover images. Lives under ${DATA_DIR}/uploads so
+    # it survives across deploys (the app/web/static dir gets bundled into
+    # the container image and is treated as read-only). The directory is
+    # lazily created by app/api/uploads.py — we mkdir here too so the
+    # StaticFiles mount has a real directory on boot even before the first
+    # upload (avoids the "directory does not exist" 500 on cold systems).
+    from src.db import _get_data_dir as _ddir_uploads
+    uploads_dir = _ddir_uploads() / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/uploads",
+        StaticFiles(directory=str(uploads_dir)),
+        name="uploads",
+    )
+
     # Auth providers (conditional registration)
     from app.auth.providers.google import router as google_auth_router, is_available as google_available
     from app.auth.providers.password import router as password_auth_router
@@ -687,6 +733,15 @@ def create_app() -> FastAPI:
     app.include_router(v2_sample_router)
     app.include_router(v2_scan_router)
     app.include_router(marketplaces_router)
+    app.include_router(data_packages_router)
+    app.include_router(memory_domains_router)
+    app.include_router(recipes_public_router)
+    app.include_router(recipes_admin_router)
+    app.include_router(memory_domain_suggestions_public_router)
+    app.include_router(memory_domain_suggestions_admin_router)
+    app.include_router(admin_uploads_router)
+    app.include_router(stack_router)
+    app.include_router(stack_views_router)
     app.include_router(initial_workspace_router)
     app.include_router(store_router)
     app.include_router(my_stack_router)

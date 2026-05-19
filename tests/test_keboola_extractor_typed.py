@@ -16,6 +16,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+# kbcstorage is an optional dependency — the Keboola legacy code path
+# import-binds it at module load. Skip the whole file cleanly on installs
+# that don't ship the connector (CI base image, contributor laptops
+# without the extras group). The real-coverage path stays intact when
+# the dep IS installed.
+pytest.importorskip("kbcstorage")
+
 
 def _stub_storage_client(monkeypatch, csv_payload):
     """Monkeypatch KeboolaStorageClient so export_table_to_csv writes a

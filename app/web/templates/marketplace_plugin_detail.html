@@ -820,8 +820,8 @@
       {% endif %}
       <button class="delete" id="owner-hard-delete-btn" type="button"
               style="border-color: rgba(185,28,28,0.45);"
-              title="Hard delete: drops the bundle from disk + removes existing user_store_installs. Use only for legal / privacy removals — existing users lose the plugin.">
-        Hard delete (admin)
+              title="Hard delete: drops the bundle from disk + removes existing user_store_installs. Use only for legal / privacy removals — existing users lose the plugin. Visible only to admins — analysts won't see this button.">
+        Hard delete <span class="admin-only-hint">admin-only</span>
       </button>
     {% elif entity.visibility_status == 'approved' %}
       <button class="delete" id="owner-archive-btn" type="button"

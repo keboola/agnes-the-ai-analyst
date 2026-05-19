@@ -69,6 +69,11 @@ _VERB_PATH_ALLOWLIST = frozenset({
     "/api/memory/admin/reject",
     "/api/memory/admin/revoke",
     "/api/memory/admin/bulk-update",
+    # Memory-domain suggestion lifecycle — pending → approved/rejected
+    # state-machine. Approve also creates the real memory_domains row as
+    # a side effect, so it's not a clean PATCH on a single field.
+    "/api/admin/memory-domain-suggestions/{sid}/approve",
+    "/api/admin/memory-domain-suggestions/{sid}/reject",
     # User lifecycle — activate/deactivate map to a boolean field (acceptable PATCH candidate)
     "/api/users/{user_id}/activate",
     "/api/users/{user_id}/deactivate",

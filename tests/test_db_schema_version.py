@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_matches_constant():
+def test_schema_version_is_59():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -125,30 +125,51 @@ def test_schema_version_matches_constant():
     #            New attribution logic = prefix split on `<plugin>:<local>`
     #            identifier + live lookup against marketplace_plugins /
     #            store_entities — no mapping tables needed.
-    # v49 (#TBD): phase-1 Flea refactor — adds title, tagline,
-    #            synthetic_name columns to store_entities. title is
-    #            user-friendly display name (acronym-aware), tagline is
-    #            an optional 200-char short description, synthetic_name is
-    #            the deterministic <name>-by-<owner_username> string baked
-    #            into served bundles. Migration backfills existing rows
-    #            via humanize_name(strip_archive_suffix(name)) for title
-    #            and the concat formula for synthetic_name.
-    # v50 (#TBD): UNIQUE INDEX on store_entities.synthetic_name. v49 made
-    #            it the canonical attribution key (rollup keyspace, JSONL
-    #            prefix, marketplace bundle naming) but uniqueness was
-    #            only app-enforced; v50 adds DB-level uniqueness via
-    #            CREATE UNIQUE INDEX. Migration pre-checks for existing
-    #            duplicates and raises RuntimeError listing them rather
-    #            than letting the index create fail mid-way.
-    # v51 (#343): nullable bq_fqn column on table_registry — fully-
-    #            qualified BigQuery path (project.dataset.table) that
-    #            decouples the UX/RBAC `bucket` label from the physical
-    #            BQ dataset name. Rows without it fall back to the
-    #            legacy bucket+source_table+remote_attach.project path
-    #            (backwards-compatible). Both _SYSTEM_SCHEMA (fresh
-    #            installs) and _V50_TO_V51_MIGRATIONS (upgrades) carry
-    #            the column so post-migration installs converge.
-    assert SCHEMA_VERSION == 51
+    # v48 → v49: phase-1 Flea refactor — title, tagline, synthetic_name on
+    #            store_entities, backfilled via humanize_name(strip_archive_suffix).
+    # v49 → v50: UNIQUE INDEX on store_entities.synthetic_name (canonical
+    #            attribution key — rollup keyspace, JSONL prefix, marketplace
+    #            bundle naming). Migration pre-checks for duplicates and
+    #            raises RuntimeError listing them rather than letting the
+    #            CREATE UNIQUE INDEX fail mid-way.
+    # v50 → v51: nullable ``table_registry.bq_fqn`` (issue #343) — fully-
+    #            qualified BigQuery path that decouples the UX/RBAC
+    #            ``bucket`` label from the physical BQ dataset name. Rows
+    #            without it fall back to the legacy
+    #            bucket+source_table+remote_attach.project path.
+    #            Released on main as 0.54.29 (PR #346).
+    # v51 → v52: unified stack — Data Packages + Memory Domains. Adds
+    #            resource_grants.requirement enum, knowledge_items.is_required
+    #            (splitting the status='mandatory' overload), data_packages
+    #            + data_package_tables, memory_domains +
+    #            knowledge_item_domains junction, and
+    #            user_stack_subscriptions for per-user opt-in. Drops the
+    #            scalar knowledge_items.domain column. (Originally v49
+    #            on the branch; renumbered to v52 on the second merge
+    #            with main to make room for main's v51 bq_fqn release.)
+    # v52 → v53: cover_image_url on data_packages + memory_domains.
+    # v53 → v54: lifecycle status + classification category for /catalog
+    #            cards (data_packages adds status + category, memory_domains
+    #            adds status only).
+    # v54 → v55: per-table docs columns on table_registry — feeds the
+    #            /catalog/t/<id> detail page (sample_questions,
+    #            things_to_know, pairs_well_with).
+    # v55 → v56: recipes table — admin-curated multi-table query templates
+    #            surfaced as a third "Recipes" tab on /catalog.
+    # v56 → v57: soft-delete columns (``deleted_at TIMESTAMP``) on
+    #            data_packages, memory_domains, recipes for the Undo
+    #            toast flow.
+    # v57 → v58: ``memory_domain_suggestions`` table backs the non-admin
+    #            "Suggest a domain" affordance on /corporate-memory's
+    #            empty state.
+    # v58 → v59: extended-content columns on ``data_packages``
+    #            (owner_name, owner_team, tags, long_description,
+    #            when_to_use, when_not_to_use, example_questions) +
+    #            structured per-table doc columns on ``table_registry``
+    #            (grain, platforms, partition_col, history, gotchas) for
+    #            the /catalog/p/<slug> rewrite per the extended-
+    #            descriptions admin spec. All additive + NULLABLE.
+    assert SCHEMA_VERSION == 59
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

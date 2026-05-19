@@ -57,7 +57,7 @@ Field meanings:
 | `<name>` | Display name; the slugged form (`lower`, spaces→`_`) becomes the table id | `User Sessions` → id `user_sessions` |
 | `--source-type` | Connector identity | `bigquery`, `keboola`, `jira` |
 | `--bucket` | BQ dataset / Keboola bucket / Jira board | `product_analytics` |
-| `--source-table` | Object name at the source (case-sensitive for BQ) | `s1_session_landings` |
+| `--source-table` | Object name at the source (case-sensitive for BQ) | `events_daily` |
 | `--query-mode` | `local` = synced parquet / `remote` = on-demand BQ | `remote` for BQ views |
 | `--description` | One sentence shown in `agnes catalog` | `"Per-session landing-page rows."` |
 

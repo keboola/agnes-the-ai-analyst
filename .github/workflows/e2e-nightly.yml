@@ -1,0 +1,116 @@
+name: E2E Nightly (agent-browser smokes)
+
+# Runs the browser-driven smoke scripts in scripts/e2e/ against a freshly
+# built agnes image. Catches regressions the pytest suite can't (rendering
+# failures, JS errors, click-through flows). Failures open a tracking
+# issue tagged `agent-browser-nightly` so the next morning's triage knows
+# something needs attention.
+
+on:
+  schedule:
+    - cron: "30 4 * * *"  # 04:30 UTC — after the regular nightly e2e in ci.yml
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Run a single script (e.g. smoke_catalog.sh); blank = all."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per smoke script — parallel + per-script failure isolation
+        # so a flake in one area doesn't blame the whole run.
+        script:
+          - smoke_catalog.sh
+          - smoke_admin_activity.sh
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Filter by manual input (skip if mismatch)
+        if: github.event_name == 'workflow_dispatch' && inputs.script != '' && inputs.script != matrix.script
+        run: |
+          echo "Skipping ${{ matrix.script }} — manual run targeted '${{ inputs.script }}'."
+          echo "SKIP_MATRIX=1" >> $GITHUB_ENV
+
+      - name: Set up Node (for agent-browser)
+        if: env.SKIP_MATRIX != '1'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install agent-browser CLI
+        if: env.SKIP_MATRIX != '1'
+        run: |
+          npm i -g agent-browser
+          agent-browser install --headless
+
+      - name: Build + start agnes stack
+        if: env.SKIP_MATRIX != '1'
+        run: |
+          docker compose up -d --build
+          # Wait for /healthz with a 90s budget — first build pulls + initialises
+          # so the first poll may take a while.
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz >/dev/null 2>&1; then
+              echo "agnes is up after ${i}s"; break
+            fi
+            sleep 3
+          done
+
+      - name: Run smoke ${{ matrix.script }}
+        if: env.SKIP_MATRIX != '1'
+        env:
+          ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts/${{ matrix.script }}
+        run: |
+          mkdir -p "$ARTIFACTS_DIR"
+          bash "scripts/e2e/${{ matrix.script }}" http://localhost:8000
+
+      - name: Upload screenshots
+        if: always() && env.SKIP_MATRIX != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts-${{ matrix.script }}
+          path: e2e-artifacts/${{ matrix.script }}/
+          if-no-files-found: ignore
+
+      - name: Tear down docker-compose
+        if: always() && env.SKIP_MATRIX != '1'
+        run: docker compose down -v || true
+
+  open-tracking-issue:
+    needs: smoke
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: File a tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = `[e2e-nightly] smoke failure — ${new Date().toISOString().slice(0, 10)}`;
+            const body = [
+              `Nightly agent-browser smoke run failed.`,
+              ``,
+              `**Run:** ${runUrl}`,
+              `**Commit:** ${context.sha}`,
+              ``,
+              `Check the per-script logs + the \`e2e-artifacts-*\` uploads`,
+              `(screenshots from the failing step) on the workflow page.`,
+              ``,
+              `_Filed automatically by .github/workflows/e2e-nightly.yml._`,
+            ].join("\n");
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["agent-browser-nightly", "bug"],
+            });

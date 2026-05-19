@@ -1,0 +1,638 @@
+"""Admin REST API for Data Packages (v49 unified stack).
+
+A Data Package is a curated bundle of tables (M:N to ``table_registry``) that
+serves as the unit of "Add to stack" on /catalog. Section 6 of the unified
+stack design specifies a CRUD surface under ``/api/admin/data-packages``:
+
+  - ``GET    /api/admin/data-packages``           — list + search
+  - ``POST   /api/admin/data-packages``           — create
+  - ``GET    /api/admin/data-packages/{id}``      — detail with embedded tables
+  - ``PUT    /api/admin/data-packages/{id}``      — update metadata
+  - ``DELETE /api/admin/data-packages/{id}``      — delete (cascades junction)
+  - ``POST   /api/admin/data-packages/{id}/tables``         — add table
+  - ``DELETE /api/admin/data-packages/{id}/tables/{table}`` — remove table
+
+Every mutation writes an ``audit_log`` row (see Section 9.1 of the design).
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any, Dict, List, Optional
+
+import duckdb
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, field_validator
+
+# Six-digit hex colors only — the /catalog cards use the value directly as
+# a CSS background, so accepting anything else lets malformed input land in
+# the DB and break the card layout (E2E found "#ff5733#e0f2fe" stored
+# verbatim after the create modal's text input concatenated values).
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _validate_color(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if not _HEX_COLOR_RE.match(value):
+        raise ValueError(
+            "color must be a 6-digit hex like '#e0f2fe'"
+        )
+    return value.lower()
+
+from app.auth.access import require_admin
+from app.auth.dependencies import _get_db
+from src.repositories.audit import AuditRepository
+from src.repositories.data_packages import DataPackagesRepository
+from src.repositories.table_registry import TableRegistryRepository
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/admin/data-packages", tags=["data-packages"])
+
+
+# ---------------------------------------------------------------------------
+# Request / response models
+# ---------------------------------------------------------------------------
+
+
+# v51: lifecycle status enum — used by the hero filter checkboxes on
+# /catalog. Kept as a frozen tuple so the validator + tests share one
+# source of truth.
+_PACKAGE_STATUSES = ("prod", "poc", "coming-soon", "draft")
+
+
+def _validate_status(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if not v:
+        return None
+    if v not in _PACKAGE_STATUSES:
+        raise ValueError(
+            f"status must be one of {sorted(_PACKAGE_STATUSES)}"
+        )
+    return v
+
+
+# v56 validation caps. Names match the Foundry spec checklist
+# (≤300 chars card desc, ≤8 use/skip bullets, etc.) — strict enough
+# to keep the rendered detail page from overflowing without being
+# annoying to fill in.
+_TAGS_MAX_COUNT = 8
+_TAG_MAX_CHARS = 30
+_LONG_DESCRIPTION_MAX = 4000
+_BULLETS_MAX_COUNT = 8
+_BULLET_MAX_CHARS = 200
+_EXAMPLE_QUESTIONS_MAX_COUNT = 12
+_EXAMPLE_QUESTION_MAX_CHARS = 200
+
+
+def _validate_tags(v: Optional[List[str]]) -> Optional[List[str]]:
+    if v is None:
+        return None
+    if len(v) > _TAGS_MAX_COUNT:
+        raise ValueError(f"tags: max {_TAGS_MAX_COUNT} entries")
+    for t in v:
+        if not isinstance(t, str):
+            raise ValueError("tags: each entry must be a string")
+        if len(t) > _TAG_MAX_CHARS:
+            raise ValueError(f"tags: each entry max {_TAG_MAX_CHARS} chars")
+    return v
+
+
+def _validate_long_description(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    if len(v) > _LONG_DESCRIPTION_MAX:
+        raise ValueError(f"long_description: max {_LONG_DESCRIPTION_MAX} chars")
+    return v
+
+
+def _validate_bullet_list(v: Optional[List[str]], *, field: str) -> Optional[List[str]]:
+    if v is None:
+        return None
+    if len(v) > _BULLETS_MAX_COUNT:
+        raise ValueError(f"{field}: max {_BULLETS_MAX_COUNT} bullets")
+    for b in v:
+        if not isinstance(b, str):
+            raise ValueError(f"{field}: each entry must be a string")
+        if len(b) > _BULLET_MAX_CHARS:
+            raise ValueError(f"{field}: each bullet max {_BULLET_MAX_CHARS} chars")
+    return v
+
+
+def _validate_example_questions(v: Optional[List[str]]) -> Optional[List[str]]:
+    if v is None:
+        return None
+    if len(v) > _EXAMPLE_QUESTIONS_MAX_COUNT:
+        raise ValueError(
+            f"example_questions: max {_EXAMPLE_QUESTIONS_MAX_COUNT} entries"
+        )
+    for q in v:
+        if not isinstance(q, str):
+            raise ValueError("example_questions: each entry must be a string")
+        if len(q) > _EXAMPLE_QUESTION_MAX_CHARS:
+            raise ValueError(
+                f"example_questions: each entry max "
+                f"{_EXAMPLE_QUESTION_MAX_CHARS} chars"
+            )
+    return v
+
+
+class CreateDataPackageRequest(BaseModel):
+    name: str
+    slug: str
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    cover_image_url: Optional[str] = None
+    # v51: lifecycle + classification surface for /catalog cards.
+    status: Optional[str] = None
+    category: Optional[str] = None
+    # v56: extended-content fields for the /catalog/p/<slug> rewrite.
+    owner_name: Optional[str] = None
+    owner_team: Optional[str] = None
+    tags: Optional[List[str]] = None
+    long_description: Optional[str] = None
+    when_to_use: Optional[List[str]] = None
+    when_not_to_use: Optional[List[str]] = None
+    example_questions: Optional[List[str]] = None
+
+    @field_validator("color")
+    @classmethod
+    def _check_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_color(v)
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_status(v)
+
+    @field_validator("tags")
+    @classmethod
+    def _check_tags(cls, v): return _validate_tags(v)
+
+    @field_validator("long_description")
+    @classmethod
+    def _check_long_desc(cls, v): return _validate_long_description(v)
+
+    @field_validator("when_to_use")
+    @classmethod
+    def _check_when_to_use(cls, v):
+        return _validate_bullet_list(v, field="when_to_use")
+
+    @field_validator("when_not_to_use")
+    @classmethod
+    def _check_when_not_to_use(cls, v):
+        return _validate_bullet_list(v, field="when_not_to_use")
+
+    @field_validator("example_questions")
+    @classmethod
+    def _check_example_questions(cls, v): return _validate_example_questions(v)
+
+
+class UpdateDataPackageRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    # v50: cover image override. Sending `""` clears the cover (admin
+    # pressed Remove); sending a non-empty string sets it; omitting the
+    # field leaves it unchanged (Optional-is-no-op contract).
+    cover_image_url: Optional[str] = None
+    # v51: status follows the same enum allowlist; category accepts free
+    # text. Sending `""` for category clears it; omitting leaves it.
+    status: Optional[str] = None
+    category: Optional[str] = None
+    # v56: same fields as Create. JSON-list fields use Optional-is-no-op;
+    # pass an empty list to actively clear (writes "[]" → decodes back to []).
+    owner_name: Optional[str] = None
+    owner_team: Optional[str] = None
+    tags: Optional[List[str]] = None
+    long_description: Optional[str] = None
+    when_to_use: Optional[List[str]] = None
+    when_not_to_use: Optional[List[str]] = None
+    example_questions: Optional[List[str]] = None
+
+    @field_validator("color")
+    @classmethod
+    def _check_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_color(v)
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_status(v)
+
+    @field_validator("tags")
+    @classmethod
+    def _check_tags(cls, v): return _validate_tags(v)
+
+    @field_validator("long_description")
+    @classmethod
+    def _check_long_desc(cls, v): return _validate_long_description(v)
+
+    @field_validator("when_to_use")
+    @classmethod
+    def _check_when_to_use(cls, v):
+        return _validate_bullet_list(v, field="when_to_use")
+
+    @field_validator("when_not_to_use")
+    @classmethod
+    def _check_when_not_to_use(cls, v):
+        return _validate_bullet_list(v, field="when_not_to_use")
+
+    @field_validator("example_questions")
+    @classmethod
+    def _check_example_questions(cls, v): return _validate_example_questions(v)
+
+
+class AddTableRequest(BaseModel):
+    table_id: str
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    resource: str,
+    params: Optional[Dict[str, Any]] = None,
+    params_before: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Best-effort audit row. Mirrors the helper in ``app/api/access.py``."""
+    try:
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=resource,
+            params=params,
+            params_before=params_before,
+        )
+    except Exception:
+        logger.warning("audit log failed for %s/%s", action, resource)
+
+
+# v56: how long a package is considered "new" — 30 days from creation.
+_NEW_BADGE_DAYS = 30
+
+
+def _badges_for(pkg: Dict[str, Any], conn: duckdb.DuckDBPyConnection) -> List[str]:
+    """Derive the virtual badge list shown on /catalog cards + the
+    package-detail hero. Two badges today; both render-time-computed so
+    backdating ``created_at`` or admin-status changes pick up automatically.
+
+      * ``curated`` — creator (``created_by``) maps to a current Admin
+        group member. Reads `users.email` → `user_groups`. Cheap (two
+        small SELECTs); package list has few hundred rows max.
+      * ``new`` — ``created_at`` within :data:`_NEW_BADGE_DAYS`.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    badges: List[str] = []
+
+    created_by = pkg.get("created_by")
+    if created_by:
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM user_group_members ugm "
+                "JOIN user_groups ug ON ug.id = ugm.group_id "
+                "JOIN users u ON u.id = ugm.user_id "
+                "WHERE ug.name = 'Admin' "
+                "  AND (u.email = ? OR u.id = ?) LIMIT 1",
+                [created_by, created_by],
+            ).fetchone()
+            if row:
+                badges.append("curated")
+        except Exception:
+            logger.warning("badge curated lookup failed for %s", created_by)
+
+    created_at = pkg.get("created_at")
+    if created_at:
+        try:
+            ts = created_at if isinstance(created_at, datetime) else None
+            if ts and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            if ts and (now - ts) < timedelta(days=_NEW_BADGE_DAYS):
+                badges.append("new")
+        except Exception:
+            logger.warning("badge new lookup failed for %s", pkg.get("id"))
+
+    return badges
+
+
+def _serialize(pkg: Dict[str, Any],
+               conn: Optional[duckdb.DuckDBPyConnection] = None) -> Dict[str, Any]:
+    """Project a repo row onto the API response shape.
+
+    ``conn`` is optional only so legacy callers that don't need the
+    v56 ``badges`` field can call ``_serialize(pkg)``; pass the conn
+    in to opt into badge derivation.
+    """
+    out = {
+        "id": pkg["id"],
+        "slug": pkg["slug"],
+        "name": pkg["name"],
+        "description": pkg.get("description"),
+        "icon": pkg.get("icon"),
+        "color": pkg.get("color"),
+        "cover_image_url": pkg.get("cover_image_url"),
+        # v51: status defaults to 'prod' for legacy rows where the
+        # ALTER's DEFAULT didn't backfill (older DuckDB versions don't
+        # apply DEFAULT to existing rows on ADD COLUMN).
+        "status": pkg.get("status") or "prod",
+        "category": pkg.get("category"),
+        # v56: extended content. JSON-list fields decode to [] for NULL
+        # via the repo's _decode_row; safe to pass through unchanged.
+        "owner_name": pkg.get("owner_name"),
+        "owner_team": pkg.get("owner_team"),
+        "tags": pkg.get("tags") or [],
+        "long_description": pkg.get("long_description"),
+        "when_to_use": pkg.get("when_to_use") or [],
+        "when_not_to_use": pkg.get("when_not_to_use") or [],
+        "example_questions": pkg.get("example_questions") or [],
+        "created_by": pkg.get("created_by"),
+        "created_at": pkg["created_at"].isoformat() if pkg.get("created_at") else None,
+        "updated_at": pkg["updated_at"].isoformat() if pkg.get("updated_at") else None,
+    }
+    if conn is not None:
+        out["badges"] = _badges_for(pkg, conn)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# CRUD endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("", response_model=List[Dict[str, Any]])
+async def list_data_packages(
+    search: Optional[str] = None,
+    include_table_ids: bool = False,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """List all packages, optionally name-prefix filtered for the chip-input
+    typeahead on ``/admin/tables``.
+
+    ``include_table_ids=true`` (v54): each row carries a
+    ``table_ids: [...]`` array. The /admin/tables hydrator uses this to
+    collapse the prior N+1 fan-out (one ``GET /api/admin/data-packages/
+    {id}`` per package) into a single round-trip — see
+    ``DataPackagesRepository.list_member_ids_bulk``.
+    """
+    repo = DataPackagesRepository(conn)
+    rows = repo.list(search=search)
+    serialized = [_serialize(r, conn) for r in rows]
+    if include_table_ids:
+        members_by_pkg = repo.list_member_ids_bulk()
+        for row in serialized:
+            row["table_ids"] = members_by_pkg.get(row["id"], [])
+    return serialized
+
+
+@router.post("", status_code=201)
+async def create_data_package(
+    payload: CreateDataPackageRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Create a new Data Package. ``slug`` is the user-visible stable id; the
+    UNIQUE constraint in DuckDB raises ``ConstraintException`` on collision and
+    we translate that to ``409 slug_exists`` per spec."""
+    repo = DataPackagesRepository(conn)
+    if not payload.name.strip() or not payload.slug.strip():
+        raise HTTPException(status_code=400, detail="name and slug are required")
+    try:
+        pkg_id = repo.create(
+            name=payload.name.strip(),
+            slug=payload.slug.strip(),
+            description=payload.description,
+            icon=payload.icon,
+            color=payload.color,
+            cover_image_url=payload.cover_image_url,
+            status=payload.status or "prod",
+            category=(payload.category or "").strip() or None,
+            owner_name=payload.owner_name,
+            owner_team=payload.owner_team,
+            tags=payload.tags,
+            long_description=payload.long_description,
+            when_to_use=payload.when_to_use,
+            when_not_to_use=payload.when_not_to_use,
+            example_questions=payload.example_questions,
+            created_by=user.get("email") or user["id"],
+        )
+    except duckdb.ConstraintException:
+        raise HTTPException(status_code=409, detail="slug_exists")
+    _audit(
+        conn,
+        user["id"],
+        "data_package.create",
+        f"data_package:{pkg_id}",
+        {"slug": payload.slug, "name": payload.name},
+    )
+    return {"id": pkg_id}
+
+
+@router.get("/{pkg_id}")
+async def get_data_package(
+    pkg_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Detail view including the list of tables in the package."""
+    repo = DataPackagesRepository(conn)
+    pkg = repo.get(pkg_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    tables = repo.list_tables(pkg_id)
+    out = _serialize(pkg, conn)
+    out["tables"] = tables
+    return out
+
+
+@router.put("/{pkg_id}")
+async def update_data_package(
+    pkg_id: str,
+    payload: UpdateDataPackageRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Patch package metadata. Audit row carries before/after diff so admins
+    can reconstruct the rename history."""
+    repo = DataPackagesRepository(conn)
+    existing = repo.get(pkg_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+
+    before = {
+        "name": existing.get("name"),
+        "description": existing.get("description"),
+        "icon": existing.get("icon"),
+        "color": existing.get("color"),
+        "cover_image_url": existing.get("cover_image_url"),
+        "status": existing.get("status"),
+        "category": existing.get("category"),
+    }
+    # v50: a literal empty string from the client means "remove the cover
+    # image" (the modal's Remove button POSTs ""); a non-empty string sets
+    # it; None / omitted leaves it unchanged. Map to the repo's explicit
+    # clear flag so the SQL stays unambiguous. v51 applies the same
+    # empty-string-clears contract to category.
+    clear_cover = payload.cover_image_url == ""
+    clear_category = payload.category == ""
+    repo.update(
+        pkg_id,
+        name=payload.name,
+        description=payload.description,
+        icon=payload.icon,
+        color=payload.color,
+        cover_image_url=None if clear_cover else payload.cover_image_url,
+        clear_cover_image=clear_cover,
+        status=payload.status,
+        category=None if clear_category else payload.category,
+        clear_category=clear_category,
+        owner_name=payload.owner_name,
+        owner_team=payload.owner_team,
+        tags=payload.tags,
+        long_description=payload.long_description,
+        when_to_use=payload.when_to_use,
+        when_not_to_use=payload.when_not_to_use,
+        example_questions=payload.example_questions,
+    )
+    fresh = repo.get(pkg_id)
+    after = {
+        "name": fresh.get("name") if fresh else None,
+        "description": fresh.get("description") if fresh else None,
+        "icon": fresh.get("icon") if fresh else None,
+        "color": fresh.get("color") if fresh else None,
+        "cover_image_url": fresh.get("cover_image_url") if fresh else None,
+        "status": fresh.get("status") if fresh else None,
+        "category": fresh.get("category") if fresh else None,
+    }
+    _audit(
+        conn,
+        user["id"],
+        "data_package.update",
+        f"data_package:{pkg_id}",
+        {"after": after},
+        params_before={"before": before},
+    )
+    return _serialize(fresh, conn) if fresh else {"id": pkg_id}
+
+
+@router.delete("/{pkg_id}", status_code=204)
+async def delete_data_package(
+    pkg_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """v54: soft delete — sets ``deleted_at`` instead of hard-removing the
+    row, so the junction (``data_package_tables``) + any resource_grants
+    survive intact for the undo flow (POST /restore). Hard delete is
+    available via ``repo.hard_delete`` but not currently exposed."""
+    repo = DataPackagesRepository(conn)
+    existing = repo.get(pkg_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    tables_count = len(repo.list_tables(pkg_id))
+    repo.delete(pkg_id)
+    _audit(
+        conn,
+        user["id"],
+        "data_package.delete",
+        f"data_package:{pkg_id}",
+        {"slug": existing.get("slug"), "tables_count": tables_count},
+    )
+
+
+@router.post("/{pkg_id}/restore", status_code=200)
+async def restore_data_package(
+    pkg_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """v54 undo: reverse a soft delete. Idempotent — restoring an already-
+    live package is a no-op. 404 only when the row is truly gone (e.g.
+    after a hard_delete)."""
+    repo = DataPackagesRepository(conn)
+    existing = repo.get(pkg_id, include_deleted=True)
+    if not existing:
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    repo.restore(pkg_id)
+    _audit(
+        conn,
+        user["id"],
+        "data_package.restore",
+        f"data_package:{pkg_id}",
+        {"slug": existing.get("slug")},
+    )
+    return {"id": pkg_id, "restored": True}
+
+
+# ---------------------------------------------------------------------------
+# Junction endpoints — add/remove tables
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{pkg_id}/tables")
+async def add_table_to_package(
+    pkg_id: str,
+    payload: AddTableRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Add a table to the package. 404 if the package or table doesn't exist.
+    200 + ``{added: True/False}`` so the chip-input UI can re-render without
+    a second roundtrip; idempotent on duplicate."""
+    repo = DataPackagesRepository(conn)
+    if not repo.get(pkg_id):
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    table_repo = TableRegistryRepository(conn)
+    table = table_repo.get(payload.table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="table_not_found")
+    added = repo.add_table(
+        pkg_id, payload.table_id, added_by=user.get("email") or user["id"]
+    )
+    if added:
+        _audit(
+            conn,
+            user["id"],
+            "data_package.add_table",
+            f"data_package:{pkg_id}",
+            {"table_id": payload.table_id, "table_name": table.get("name")},
+        )
+    return {"added": added}
+
+
+@router.delete("/{pkg_id}/tables/{table_id}", status_code=204)
+async def remove_table_from_package(
+    pkg_id: str,
+    table_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Remove a table from the package. Idempotent on missing junction row."""
+    repo = DataPackagesRepository(conn)
+    if not repo.get(pkg_id):
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    removed = repo.remove_table(pkg_id, table_id)
+    if removed:
+        _audit(
+            conn,
+            user["id"],
+            "data_package.remove_table",
+            f"data_package:{pkg_id}",
+            {"table_id": table_id},
+        )

@@ -23,7 +23,7 @@ class ResourceGrantsRepository:
 
     _SELECT_COLS = (
         "id, group_id, resource_type, resource_id, "
-        "assigned_at, assigned_by"
+        "assigned_at, assigned_by, requirement"
     )
 
     def list_all(
@@ -44,7 +44,7 @@ class ResourceGrantsRepository:
         rows = self.conn.execute(
             f"""SELECT g.id, g.group_id, ug.name AS group_name,
                        g.resource_type, g.resource_id,
-                       g.assigned_at, g.assigned_by
+                       g.assigned_at, g.assigned_by, g.requirement
                 FROM resource_grants g
                 JOIN user_groups ug ON ug.id = g.group_id
                 {where_sql}
@@ -122,20 +122,67 @@ class ResourceGrantsRepository:
         resource_type: str,
         resource_id: str,
         assigned_by: Optional[str] = None,
+        requirement: Optional[str] = None,
     ) -> str:
         """Insert a new grant. Returns the assigned id.
+
+        ``requirement`` defaults to the column default (``'available'``)
+        when ``None``. Pass ``'required'`` to create a Required-tier
+        grant in a single round-trip. Rejected by the column CHECK if
+        the string is anything other than the two enum values.
 
         Raises ``duckdb.ConstraintException`` on duplicate
         (group_id, resource_type, resource_id) — caller surfaces as 409.
         """
         grant_id = str(uuid4())
-        self.conn.execute(
-            """INSERT INTO resource_grants
-               (id, group_id, resource_type, resource_id, assigned_by)
-               VALUES (?, ?, ?, ?, ?)""",
-            [grant_id, group_id, resource_type, resource_id, assigned_by],
-        )
+        if requirement is None:
+            self.conn.execute(
+                """INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id, assigned_by)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [grant_id, group_id, resource_type, resource_id, assigned_by],
+            )
+        else:
+            if requirement not in ("available", "required"):
+                raise ValueError(
+                    f"requirement must be 'available' or 'required', got {requirement!r}"
+                )
+            self.conn.execute(
+                """INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id, assigned_by, requirement)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [grant_id, group_id, resource_type, resource_id, assigned_by, requirement],
+            )
         return grant_id
+
+    def update_requirement(
+        self,
+        grant_id: str,
+        requirement: str,
+    ) -> Optional[str]:
+        """Update the ``requirement`` enum on a grant. Returns the prior
+        value (None if grant missing) so callers can detect transitions.
+
+        v49: ``requirement`` is one of ``'available'`` / ``'required'``.
+        Callers handle the soft-downgrade subscription fan-out at the
+        service layer (see app/api/access.py update_grant_requirement).
+        """
+        if requirement not in ("available", "required"):
+            raise ValueError(
+                f"requirement must be 'available' or 'required', got {requirement!r}"
+            )
+        before = self.conn.execute(
+            "SELECT requirement FROM resource_grants WHERE id = ?",
+            [grant_id],
+        ).fetchone()
+        if before is None:
+            return None
+        prior = before[0]
+        self.conn.execute(
+            "UPDATE resource_grants SET requirement = ? WHERE id = ?",
+            [requirement, grant_id],
+        )
+        return prior
 
     def delete(self, grant_id: str) -> bool:
         """Remove a grant by id. Returns True iff a row was removed."""

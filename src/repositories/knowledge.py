@@ -10,6 +10,11 @@ import duckdb
 
 logger = logging.getLogger(__name__)
 
+# Sentinel for distinguishing "caller passed explicit None to clear domain"
+# from "caller did not pass domain at all" in update() (v49 junction-routed
+# domain writes).
+_UNSET: Any = object()
+
 
 class KnowledgeRepository:
     # Columns persisted as JSON-encoded strings (see `create` / `update` /
@@ -45,13 +50,82 @@ class KnowledgeRepository:
         if not row:
             return None
         columns = [desc[0] for desc in self.conn.description]
-        return self._normalize_row(dict(zip(columns, row)))
+        d = self._normalize_row(dict(zip(columns, row)))
+        self._hydrate_domain(d)
+        return d
 
     def _rows_to_dicts(self, rows) -> List[Dict[str, Any]]:
         if not rows:
             return []
         columns = [desc[0] for desc in self.conn.description]
-        return [self._normalize_row(dict(zip(columns, row))) for row in rows]
+        out = [self._normalize_row(dict(zip(columns, row))) for row in rows]
+        self._hydrate_domains_bulk(out)
+        return out
+
+    # -- Domain hydration (v49 back-compat) --------------------------------
+
+    def _hydrate_domain(self, item: Dict[str, Any]) -> None:
+        """Inject ``domain`` slug + ``domains`` list into a single item.
+
+        v49 dropped the scalar ``knowledge_items.domain`` column. Callers
+        (templates, /api/memory/{id}/provenance, services.contradiction)
+        still expect ``item["domain"]`` to resolve to a single slug; the
+        admin queue UI also reads ``item["domains"]`` to render all of
+        them. Both surfaces are populated here from the junction.
+        """
+        item_id = item.get("id")
+        if not item_id:
+            item["domain"] = None
+            item["domains"] = []
+            return
+        rows = self.conn.execute(
+            "SELECT md.slug FROM knowledge_item_domains kid "
+            "JOIN memory_domains md ON md.id = kid.domain_id "
+            "WHERE kid.item_id = ? "
+            "ORDER BY md.slug",
+            [item_id],
+        ).fetchall()
+        slugs = [r[0] for r in rows]
+        item["domain"] = slugs[0] if slugs else None
+        item["domains"] = slugs
+
+    def _hydrate_domains_bulk(self, items: List[Dict[str, Any]]) -> None:
+        """Single-query domain hydration across a result set (N+1 avoidance).
+
+        Mutates each item in place with two fields:
+          * ``domain``  — alphabetically-first slug (legacy single-slug
+            surface kept for back-compat — templates / contradiction
+            services / older clients still read this).
+          * ``domains`` — full list of slugs (sorted) so multi-domain
+            items render all their chips in the admin queue without a
+            second roundtrip.
+
+        None / [] are set for items with no junction rows.
+        """
+        if not items:
+            return
+        ids = [it["id"] for it in items if it.get("id")]
+        if not ids:
+            for it in items:
+                it["domain"] = None
+                it["domains"] = []
+            return
+        placeholders = ",".join(["?"] * len(ids))
+        rows = self.conn.execute(
+            f"SELECT kid.item_id, md.slug "
+            f"FROM knowledge_item_domains kid "
+            f"JOIN memory_domains md ON md.id = kid.domain_id "
+            f"WHERE kid.item_id IN ({placeholders}) "
+            f"ORDER BY md.slug",
+            ids,
+        ).fetchall()
+        mapping: Dict[str, List[str]] = {}
+        for item_id, slug in rows:
+            mapping.setdefault(item_id, []).append(slug)
+        for it in items:
+            slugs = mapping.get(it.get("id"), [])
+            it["domain"] = slugs[0] if slugs else None
+            it["domains"] = slugs
 
     def get_by_id(self, item_id: str) -> Optional[Dict[str, Any]]:
         result = self.conn.execute("SELECT * FROM knowledge_items WHERE id = ?", [item_id]).fetchone()
@@ -88,49 +162,127 @@ class KnowledgeRepository:
         supersedes: Optional[str] = None,
         sensitivity: str = "internal",
         is_personal: bool = False,
+        is_required: bool = False,
+        added_by: Optional[str] = None,
     ) -> None:
+        """Insert a new item; ``domain`` (if provided) writes a row into
+        the ``knowledge_item_domains`` junction.
+
+        v49: the scalar ``knowledge_items.domain`` column was dropped. The
+        kwarg is preserved for caller BC; values are resolved through
+        ``memory_domains`` (slug → id) and routed to the junction.
+        Unknown slug raises ``ValueError`` — admin pre-creates domains via
+        the dedicated CRUD endpoint.
+        """
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO knowledge_items (
                 id, title, content, category, source_user, tags, status,
-                confidence, domain, entities, source_type, source_ref,
+                confidence, entities, source_type, source_ref,
                 valid_from, valid_until, supersedes, sensitivity, is_personal,
-                created_at, updated_at
+                is_required, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 id, title, content, category, source_user,
                 json.dumps(tags) if tags else None, status,
-                confidence, domain,
+                confidence,
                 json.dumps(entities) if entities else None,
                 source_type, source_ref,
                 valid_from, valid_until, supersedes, sensitivity, is_personal,
-                now, now,
+                is_required, now, now,
             ],
         )
+        if domain:
+            self._set_item_domain_by_slug(id, domain, added_by=added_by or source_user or "system")
         self._refresh_fts_index()
 
+    # -- Domain junction helpers (v49) -------------------------------------
+
+    def _set_item_domain_by_slug(
+        self, item_id: str, slug: str, *, added_by: str
+    ) -> None:
+        """Resolve ``slug`` to ``memory_domains.id`` and write one junction row.
+
+        Single-domain helper used by the create/update path for back-compat
+        with the old scalar-column callers. Callers that need multi-domain
+        membership should use ``MemoryDomainsRepository.replace_domains_for_item``
+        directly.
+        """
+        row = self.conn.execute(
+            "SELECT id FROM memory_domains WHERE slug = ?", [slug]
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Unknown memory domain slug: {slug}")
+        domain_id = row[0]
+        # Replace semantics — match the pre-v49 scalar column.
+        self.conn.execute(
+            "DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id]
+        )
+        self.conn.execute(
+            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
+            "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            [item_id, domain_id, added_by],
+        )
+
     _UPDATABLE_FIELDS = {
-        "title", "content", "category", "tags", "domain", "entities",
+        "title", "content", "category", "tags", "entities",
         "source_type", "source_ref", "source_user", "audience",
         "confidence", "status", "sensitivity", "is_personal",
+        "is_required",
         "valid_from", "valid_until", "supersedes",
     }
 
     def update(self, item_id: str, **fields) -> None:
+        """Partial update. ``domain`` (if passed) routes to the junction;
+        scalar columns are SET in one UPDATE.
+
+        v49: ``knowledge_items.domain`` is gone; the kwarg is preserved
+        and routed to ``knowledge_item_domains`` via slug→id resolution.
+        Unknown slug raises ``ValueError``.
+        """
+        domain_value = fields.pop("domain", None) if "domain" in fields else _UNSET
         safe = {k: v for k, v in fields.items() if k in self._UPDATABLE_FIELDS}
-        if not safe:
-            return
+        # Scalar-column UPDATE path
+        if safe:
+            now = datetime.now(timezone.utc)
+            set_clause = ", ".join(f"{k} = ?" for k in safe)
+            values = list(safe.values()) + [now, item_id]
+            self.conn.execute(
+                f"UPDATE knowledge_items SET {set_clause}, updated_at = ? WHERE id = ?",
+                values,
+            )
+            # FTS index needs rebuilding only when the indexed text changed —
+            # status / tag / is_required flips don't affect the BM25 token stream.
+            if "title" in safe or "content" in safe:
+                self._refresh_fts_index()
+        # Domain junction path (only if caller passed domain explicitly).
+        if domain_value is not _UNSET:
+            if domain_value is None or domain_value == "":
+                # Clear all junction rows — caller asked to drop the domain.
+                self.conn.execute(
+                    "DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id]
+                )
+            else:
+                self._set_item_domain_by_slug(item_id, domain_value, added_by="system")
+            # Bump updated_at even if no scalar field changed.
+            if not safe:
+                self.conn.execute(
+                    "UPDATE knowledge_items SET updated_at = ? WHERE id = ?",
+                    [datetime.now(timezone.utc), item_id],
+                )
+
+    def set_is_required(self, item_id: str, value: bool) -> None:
+        """Toggle the global ``is_required`` flag without touching ``status``.
+
+        v49: replaces the old ``status='mandatory'`` overload. ``status``
+        is reserved for lifecycle (pending / approved / rejected / revoked
+        / expired); the Required tier rides on this boolean.
+        """
         now = datetime.now(timezone.utc)
-        set_clause = ", ".join(f"{k} = ?" for k in safe)
-        values = list(safe.values()) + [now, item_id]
         self.conn.execute(
-            f"UPDATE knowledge_items SET {set_clause}, updated_at = ? WHERE id = ?",
-            values,
+            "UPDATE knowledge_items SET is_required = ?, updated_at = ? WHERE id = ?",
+            [value, now, item_id],
         )
-        # FTS index needs rebuilding only when the indexed text changed —
-        # status / domain / tag flips don't affect the BM25 token stream.
-        if "title" in safe or "content" in safe:
-            self._refresh_fts_index()
 
     def update_status(self, item_id: str, status: str) -> None:
         now = datetime.now(timezone.utc)
@@ -164,9 +316,22 @@ class KnowledgeRepository:
         upvoted_by_user: Optional[str] = None,
         dismissed_by_user: Optional[str] = None,
         hide_dismissed: bool = False,
+        is_required: Optional[bool] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
+        """v49 contract:
+
+        * ``domain`` is a slug; we resolve through ``memory_domains`` and
+          EXISTS-join against ``knowledge_item_domains``. Unknown slug →
+          empty result (matches the "no rows match" semantic of the old
+          scalar filter).
+        * ``granted_domains`` is now a list of ``memory_domains.id`` (NOT
+          slugs) per the v49 migration's grant re-point.
+        * ``is_required`` filters on the new ``knowledge_items.is_required``
+          boolean. ``status='mandatory'`` is gone — callers wanting "mandatory
+          tier" pass ``is_required=True``.
+        """
         query = "SELECT * FROM knowledge_items WHERE 1=1"
         params: List[Any] = []
         if statuses:
@@ -176,6 +341,9 @@ class KnowledgeRepository:
         if category:
             query += " AND category = ?"
             params.append(category)
+        if is_required is not None:
+            query += " AND is_required = ?"
+            params.append(bool(is_required))
         if upvoted_by_user:
             # "My Upvotes" filter — items the caller has explicitly upvoted
             # (vote > 0). Replaces the old dead "My Rules" category sentinel
@@ -187,8 +355,15 @@ class KnowledgeRepository:
             )
             params.append(upvoted_by_user)
         if domain:
-            query += " AND domain = ?"
-            params.append(domain)
+            # v49: scalar column is gone — resolve slug → id and EXISTS-join.
+            domain_id = self._resolve_domain_slug(domain)
+            if domain_id is None:
+                return []  # unknown slug → empty, mirror old WHERE domain = ? semantics
+            query += (
+                " AND EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = ?)"
+            )
+            params.append(domain_id)
         if source_type:
             query += " AND source_type = ?"
             params.append(source_type)
@@ -196,9 +371,9 @@ class KnowledgeRepository:
             query += " AND (is_personal = FALSE OR is_personal IS NULL)"
         if user_groups is not None:
             # Visibility: audience-string match (null/all/group:X) OR
-            # caller has been granted access to the item's domain via
-            # resource_grants (MEMORY_DOMAIN). When ``granted_domains`` is
-            # falsy the OR clause collapses, preserving pre-RBAC behaviour.
+            # caller has a MEMORY_DOMAIN grant on one of the item's domains.
+            # Falsy ``granted_domains`` collapses the EXISTS sub-clause,
+            # preserving pre-RBAC behaviour (audience-only).
             visibility_clauses = ["audience IS NULL", "audience = 'all'"]
             if user_groups:
                 audience_placeholders = ", ".join("?" for _ in user_groups)
@@ -206,27 +381,38 @@ class KnowledgeRepository:
                 params.extend(user_groups)
             if granted_domains:
                 domain_placeholders = ", ".join("?" for _ in granted_domains)
-                visibility_clauses.append(f"domain IN ({domain_placeholders})")
+                visibility_clauses.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({domain_placeholders}))"
+                )
                 params.extend(granted_domains)
             query += " AND (" + " OR ".join(visibility_clauses) + ")"
         if hide_dismissed and dismissed_by_user:
             # v46: per-user opt-out. Exclude items the caller has dismissed,
-            # but never hide ``mandatory`` items — the governance hard rule
+            # but never hide Required items — the governance hard rule
             # is enforced here as well as in the API layer so a stale row
             # in knowledge_item_user_dismissed (left over from before an
-            # item was mandated) can't accidentally hide a mandatory item.
+            # item was required) can't accidentally hide a required item.
             query += (
                 " AND NOT EXISTS ("
                 " SELECT 1 FROM knowledge_item_user_dismissed d"
                 " WHERE d.item_id = knowledge_items.id"
                 "   AND d.user_id = ?"
-                "   AND knowledge_items.status != 'mandatory'"
+                "   AND knowledge_items.is_required = FALSE"
                 ")"
             )
             params.append(dismissed_by_user)
         query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         return self._rows_to_dicts(self.conn.execute(query, params).fetchall())
+
+    def _resolve_domain_slug(self, slug: str) -> Optional[str]:
+        """slug → ``memory_domains.id`` (v49). Returns None for unknown slug."""
+        row = self.conn.execute(
+            "SELECT id FROM memory_domains WHERE slug = ?", [slug]
+        ).fetchone()
+        return row[0] if row else None
 
     def search(
         self,
@@ -238,6 +424,7 @@ class KnowledgeRepository:
         category: Optional[str] = None,
         domain: Optional[str] = None,
         source_type: Optional[str] = None,
+        is_required: Optional[bool] = None,
         dismissed_by_user: Optional[str] = None,
         hide_dismissed: bool = False,
         limit: int = 100,
@@ -268,6 +455,12 @@ class KnowledgeRepository:
         # missing, or a concurrent rebuild's drop-then-create window
         # opening between the loaded check and our query, both raise here
         # and we transparently retry against ILIKE.
+        # Resolve domain slug → id once (mirror list_items semantics):
+        # unknown slug → return [] before running any SQL.
+        domain_id = self._resolve_domain_slug(domain) if domain else None
+        if domain and domain_id is None:
+            return []
+
         def _run(base_sql: str, base_params: List[Any], order_clause: str) -> List[Any]:
             sql = base_sql
             params: List[Any] = list(base_params)
@@ -278,12 +471,18 @@ class KnowledgeRepository:
             if category:
                 sql += " AND category = ?"
                 params.append(category)
-            if domain:
-                sql += " AND domain = ?"
-                params.append(domain)
+            if domain_id:
+                sql += (
+                    " AND EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = ?)"
+                )
+                params.append(domain_id)
             if source_type:
                 sql += " AND source_type = ?"
                 params.append(source_type)
+            if is_required is not None:
+                sql += " AND is_required = ?"
+                params.append(bool(is_required))
             if exclude_personal:
                 sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
             if user_groups is not None:
@@ -294,7 +493,11 @@ class KnowledgeRepository:
                     params.extend(user_groups)
                 if granted_domains:
                     domain_placeholders = ", ".join("?" for _ in granted_domains)
-                    visibility_clauses.append(f"domain IN ({domain_placeholders})")
+                    visibility_clauses.append(
+                        "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                        "WHERE kid.item_id = knowledge_items.id "
+                        f"AND kid.domain_id IN ({domain_placeholders}))"
+                    )
                     params.extend(granted_domains)
                 sql += " AND (" + " OR ".join(visibility_clauses) + ")"
             if hide_dismissed and dismissed_by_user:
@@ -303,7 +506,7 @@ class KnowledgeRepository:
                     " SELECT 1 FROM knowledge_item_user_dismissed d"
                     " WHERE d.item_id = knowledge_items.id"
                     "   AND d.user_id = ?"
-                    "   AND knowledge_items.status != 'mandatory'"
+                    "   AND knowledge_items.is_required = FALSE"
                     ")"
                 )
                 params.append(dismissed_by_user)
@@ -355,6 +558,7 @@ class KnowledgeRepository:
         category: Optional[str] = None,
         domain: Optional[str] = None,
         source_type: Optional[str] = None,
+        is_required: Optional[bool] = None,
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
         granted_domains: Optional[List[str]] = None,
@@ -367,6 +571,11 @@ class KnowledgeRepository:
         # index missing / overwrite=1 drop-then-create window). Counts
         # MUST match the paginated result set in search() — same
         # decision tree, same predicate shape, same fallback semantics.
+        # v49: domain slug → id resolution (unknown slug → count = 0).
+        domain_id = self._resolve_domain_slug(domain) if domain else None
+        if domain and domain_id is None:
+            return 0
+
         def _run(base_sql: str, base_params: List[Any]) -> int:
             sql = base_sql
             params: List[Any] = list(base_params)
@@ -377,12 +586,18 @@ class KnowledgeRepository:
             if category:
                 sql += " AND category = ?"
                 params.append(category)
-            if domain:
-                sql += " AND domain = ?"
-                params.append(domain)
+            if domain_id:
+                sql += (
+                    " AND EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = ?)"
+                )
+                params.append(domain_id)
             if source_type:
                 sql += " AND source_type = ?"
                 params.append(source_type)
+            if is_required is not None:
+                sql += " AND is_required = ?"
+                params.append(bool(is_required))
             if exclude_personal:
                 sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
             if user_groups is not None:
@@ -393,7 +608,11 @@ class KnowledgeRepository:
                     params.extend(user_groups)
                 if granted_domains:
                     domain_placeholders = ", ".join("?" for _ in granted_domains)
-                    visibility_clauses.append(f"domain IN ({domain_placeholders})")
+                    visibility_clauses.append(
+                        "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                        "WHERE kid.item_id = knowledge_items.id "
+                        f"AND kid.domain_id IN ({domain_placeholders}))"
+                    )
                     params.extend(granted_domains)
                 sql += " AND (" + " OR ".join(visibility_clauses) + ")"
             if hide_dismissed and dismissed_by_user:
@@ -402,7 +621,7 @@ class KnowledgeRepository:
                     " SELECT 1 FROM knowledge_item_user_dismissed d"
                     " WHERE d.item_id = knowledge_items.id"
                     "   AND d.user_id = ?"
-                    "   AND knowledge_items.status != 'mandatory'"
+                    "   AND knowledge_items.is_required = FALSE"
                     ")"
                 )
                 params.append(dismissed_by_user)
@@ -437,8 +656,17 @@ class KnowledgeRepository:
         statuses: Optional[List[str]] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        query = "SELECT * FROM knowledge_items WHERE domain = ?"
-        params: List[Any] = [domain]
+        """v49: resolves slug through ``memory_domains`` + EXISTS-joins the
+        junction. Unknown slug → empty (matches old WHERE domain = ? semantic)."""
+        domain_id = self._resolve_domain_slug(domain)
+        if domain_id is None:
+            return []
+        query = (
+            "SELECT * FROM knowledge_items "
+            "WHERE EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+            "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = ?)"
+        )
+        params: List[Any] = [domain_id]
         if statuses:
             placeholders = ", ".join("?" for _ in statuses)
             query += f" AND status IN ({placeholders})"
@@ -763,19 +991,26 @@ class KnowledgeRepository:
         """
         if not entities or not domain:
             return []
+        # v49: resolve slug → id and EXISTS-join via junction.
+        domain_id = self._resolve_domain_slug(domain)
+        if domain_id is None:
+            return []
         new_set = set(entities)
         sql = """
             SELECT * FROM knowledge_items
-            WHERE status IN ('approved', 'mandatory', 'pending')
+            WHERE status IN ('approved', 'pending')
               AND (is_personal = FALSE OR is_personal IS NULL)
-              AND domain = ?
+              AND EXISTS (
+                SELECT 1 FROM knowledge_item_domains kid
+                 WHERE kid.item_id = knowledge_items.id AND kid.domain_id = ?
+              )
               AND id != ?
               AND entities IS NOT NULL
             ORDER BY updated_at DESC
             LIMIT ?
         """
         rows = self._rows_to_dicts(
-            self.conn.execute(sql, [domain, new_item_id, limit]).fetchall()
+            self.conn.execute(sql, [domain_id, new_item_id, limit]).fetchall()
         )
         out: List[Dict[str, Any]] = []
         for row in rows:
@@ -821,6 +1056,12 @@ class KnowledgeRepository:
             k: v for k, v in updates.items()
             if k in self._UPDATABLE_FIELDS and k != "tags"
         }
+        # ``domain`` is routed through the v49 junction, NOT a scalar column —
+        # it's not in _UPDATABLE_FIELDS but ``update()`` accepts it. Pass it
+        # through explicitly so bulk_update preserves the same kwarg surface
+        # as the per-item update path.
+        if "domain" in updates:
+            plain_fields["domain"] = updates["domain"]
         # If the caller passed an explicit ``tags`` list, treat it as a hard
         # set (same semantics as repo.update). Add/remove are applied per item.
         explicit_tags = updates.get("tags") if "tags" in updates else None
@@ -897,7 +1138,13 @@ class KnowledgeRepository:
                 params.extend(user_groups)
             if granted_domains:
                 dph = ",".join(["?"] * len(granted_domains))
-                visibility.append(f"domain IN ({dph})")
+                # v49: granted_domains are now memory_domains.id (not slugs);
+                # EXISTS-join via the junction.
+                visibility.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({dph}))"
+                )
                 params.extend(granted_domains)
             where.append("(" + " OR ".join(visibility) + ")")
         where_sql = " WHERE " + " AND ".join(where)
@@ -943,7 +1190,13 @@ class KnowledgeRepository:
                 params.extend(user_groups)
             if granted_domains:
                 dph = ",".join(["?"] * len(granted_domains))
-                visibility.append(f"domain IN ({dph})")
+                # v49: granted_domains are now memory_domains.id (not slugs);
+                # EXISTS-join via the junction.
+                visibility.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({dph}))"
+                )
                 params.extend(granted_domains)
             where.append("(" + " OR ".join(visibility) + ")")
         where_sql = (" WHERE " + " AND ".join(where)) if where else ""
@@ -980,14 +1233,21 @@ class KnowledgeRepository:
         """
         sql = """
             SELECT * FROM knowledge_items
-            WHERE status IN ('approved', 'mandatory', 'pending')
+            WHERE status IN ('approved', 'pending')
               AND (is_personal = FALSE OR is_personal IS NULL)
               AND id != ?
         """
         params: List[Any] = [new_item_id]
         if domain:
-            sql += " AND domain = ?"
-            params.append(domain)
+            domain_id = self._resolve_domain_slug(domain)
+            if domain_id is None:
+                # Unknown slug → no candidates (matches old WHERE domain=? semantic).
+                return []
+            sql += (
+                " AND EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = ?)"
+            )
+            params.append(domain_id)
         sql += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
         return self._rows_to_dicts(self.conn.execute(sql, params).fetchall())

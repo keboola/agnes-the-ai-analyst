@@ -609,12 +609,25 @@ class GrantResponse(BaseModel):
     resource_id: str
     assigned_at: Optional[str] = None
     assigned_by: Optional[str] = None
+    # v49: 'available' | 'required' — Required tier is in-stack by default
+    # for every group member without an explicit subscription.
+    requirement: str = "available"
 
 
 class CreateGrantRequest(BaseModel):
     group_id: str
     resource_type: str
     resource_id: str
+    # v49 added the ``requirement`` enum on ``resource_grants``; the POST
+    # endpoint must accept it so clients can create a grant at the
+    # ``required`` tier in one round-trip. Without this, /admin/access
+    # + the inline RBAC matrices (Edit Data Package / Edit Memory Domain
+    # / Edit Recipe) silently fell through to the column default
+    # (``available``), and a re-open of the same modal showed the
+    # admin's "required" pick as "available" — looks like the save
+    # silently failed. Default kept at None so callers that don't
+    # explicitly pass a value still land at DB's column default.
+    requirement: Optional[str] = None
 
 
 def _grant_to_response(g: dict) -> GrantResponse:
@@ -626,6 +639,7 @@ def _grant_to_response(g: dict) -> GrantResponse:
         resource_id=g["resource_id"],
         assigned_at=str(g["assigned_at"]) if g.get("assigned_at") else None,
         assigned_by=g.get("assigned_by"),
+        requirement=g.get("requirement") or "available",
     )
 
 
@@ -670,12 +684,23 @@ async def create_grant(
     if not UserGroupsRepository(conn).get(payload.group_id):
         raise HTTPException(status_code=404, detail="Group not found")
     grants = ResourceGrantsRepository(conn)
+    # v49 ``requirement`` is part of the create-grant contract. Validate
+    # the enum here so the 422 message matches the endpoint contract
+    # rather than leaking a ValueError from the repo layer.
+    if payload.requirement is not None and payload.requirement not in (
+        "available", "required",
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="requirement must be 'available' or 'required'",
+        )
     try:
         grant_id = grants.create(
             group_id=payload.group_id,
             resource_type=rt.value,
             resource_id=payload.resource_id,
             assigned_by=user.get("email"),
+            requirement=payload.requirement,
         )
     except duckdb.ConstraintException:
         raise HTTPException(
@@ -696,6 +721,86 @@ async def create_grant(
     fresh = next((r for r in rows if r["id"] == grant_id), None)
     if not fresh:
         raise HTTPException(status_code=500, detail="Grant created but lookup failed")
+    return _grant_to_response(fresh)
+
+
+class UpdateGrantRequirementRequest(BaseModel):
+    requirement: str  # 'available' | 'required'
+
+
+@router.put("/grants/{grant_id}", response_model=GrantResponse)
+async def update_grant_requirement(
+    grant_id: str,
+    payload: UpdateGrantRequirementRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Update the ``requirement`` enum on an existing grant.
+
+    v49 — Section 4.5 of the unified-stack design (soft downgrade): when
+    transitioning ``required → available`` we eagerly materialize a
+    ``user_stack_subscriptions`` row for every user currently in the
+    granted group, so the resource stays in their stack instead of
+    silently disappearing on the next refresh. The two writes happen
+    inside a single DuckDB transaction.
+
+    Going the other direction (``available → required``) is a no-op for
+    subscriptions — required is the always-in-stack tier and the
+    StackResolver treats required ids as in_stack regardless of any
+    subscription row.
+    """
+    if payload.requirement not in ("available", "required"):
+        raise HTTPException(
+            status_code=400,
+            detail="requirement must be 'available' or 'required'",
+        )
+    grants = ResourceGrantsRepository(conn)
+    existing = grants.get(grant_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Grant not found")
+
+    # All-or-nothing transition under one transaction so a fan-out failure
+    # doesn't leave the requirement flipped without the materialized
+    # subscriptions in place.
+    conn.execute("BEGIN")
+    try:
+        prior = grants.update_requirement(grant_id, payload.requirement)
+        # Soft-downgrade: required → available eagerly subscribes every
+        # group member to preserve continuity. ON CONFLICT DO NOTHING
+        # makes this idempotent if any subscription already exists.
+        if prior == "required" and payload.requirement == "available":
+            conn.execute(
+                """INSERT INTO user_stack_subscriptions
+                   (user_id, resource_type, resource_id)
+                   SELECT m.user_id, ?, ?
+                     FROM user_group_members m
+                    WHERE m.group_id = ?
+                   ON CONFLICT DO NOTHING""",
+                [existing["resource_type"], existing["resource_id"],
+                 existing["group_id"]],
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    _audit(
+        conn, user["id"], "resource_grant.requirement_updated",
+        f"grant:{grant_id}",
+        {
+            "prior": prior,
+            "new": payload.requirement,
+            "resource_type": existing["resource_type"],
+            "resource_id": existing["resource_id"],
+            "group_id": existing["group_id"],
+        },
+    )
+
+    # Re-read with the group name joined for the response.
+    rows = grants.list_all()
+    fresh = next((r for r in rows if r["id"] == grant_id), None)
+    if not fresh:
+        raise HTTPException(status_code=500, detail="Grant updated but lookup failed")
     return _grant_to_response(fresh)
 
 

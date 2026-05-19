@@ -53,6 +53,31 @@ def test_activity_timeline_supports_filters(seeded_app, admin_user):
     assert "auth.login" not in actions
 
 
+def test_activity_timeline_supports_resource_prefix(seeded_app, admin_user):
+    # Activity Center "Resource" dropdown sends `resource_prefix=table:`
+    # (etc). The endpoint must echo the filter so the UI's narrative line
+    # can show it, and the repo must apply it as a LIKE so rows with any
+    # id under that namespace are returned.
+    from src.db import get_system_db
+    from src.repositories.audit import AuditRepository
+    conn = get_system_db()
+    repo = AuditRepository(conn)
+    repo.log(action="table.read", resource="table:web_sessions")
+    repo.log(action="table.read", resource="table:orders")
+    repo.log(action="user.update", resource="user:u1")
+    conn.close()
+
+    resp = seeded_app["client"].get(
+        "/api/admin/activity?resource_prefix=table:",
+        headers=admin_user,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["filter"]["resource_prefix"] == "table:"
+    resources = {r["resource"] for r in body["rows"]}
+    assert resources == {"table:web_sessions", "table:orders"}
+
+
 def test_activity_health_returns_pulse(seeded_app, admin_user):
     resp = seeded_app["client"].get("/api/admin/activity/health", headers=admin_user)
     assert resp.status_code == 200

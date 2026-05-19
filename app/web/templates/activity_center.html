@@ -75,6 +75,22 @@
       <label for="f-source">Source</label>
       <select id="f-source" class="obs-select"><option value="">Any</option></select>
     </div>
+    <div class="obs-filter">
+      <label for="f-resource">Resource</label>
+      <select id="f-resource" class="obs-select" aria-label="Filter by resource type">
+        <option value="">Any</option>
+        <option value="table:">Tables</option>
+        <option value="knowledge_item:">Knowledge items</option>
+        <option value="marketplace:">Marketplaces</option>
+        <option value="store_submission:">Store submissions</option>
+        <option value="store_entity:">Store entities</option>
+        <option value="store_upload:">Store uploads</option>
+        <option value="user:">Users</option>
+        <option value="token:">Tokens</option>
+        <option value="job:">Scheduled jobs</option>
+        <option value="memory_domain_suggestion:">Memory domain suggestions</option>
+      </select>
+    </div>
     <div class="obs-filter obs-filter-grow">
       <label for="f-q">Search params</label>
       <input id="f-q" type="search" placeholder="token, table id, correlation…" />
@@ -128,6 +144,7 @@
   <div class="obs-panel-actions">
     <button class="obs-btn" id="obs-panel-filter-user" type="button">Filter to this user</button>
     <button class="obs-btn" id="obs-panel-filter-action" type="button">Filter to this action</button>
+    <button class="obs-btn" id="obs-panel-filter-resource" type="button" hidden>Filter to this resource type</button>
   </div>
 </aside>
 
@@ -341,6 +358,7 @@
       action_prefix: p.get('action_prefix') || '',
       result:        p.get('result') || '',
       source:        p.get('source') || '',
+      resource_prefix: p.get('resource_prefix') || '',
       q:             p.get('q') || '',
       sort:          p.get('sort') || 'timestamp:desc',
       live:          p.get('live') === '1',
@@ -353,6 +371,7 @@
     if (state.action_prefix) p.set('action_prefix', state.action_prefix);
     if (state.result) p.set('result', state.result);
     if (state.source) p.set('source', state.source);
+    if (state.resource_prefix) p.set('resource_prefix', state.resource_prefix);
     if (state.q) p.set('q', state.q);
     if (state.sort && state.sort !== 'timestamp:desc') p.set('sort', state.sort);
     if (state.live) p.set('live', '1');
@@ -370,6 +389,7 @@
   const fAct   = $('f-action');
   const fRes   = $('f-result');
   const fSrc   = $('f-source');
+  const fResource = $('f-resource');
   const fQ     = $('f-q');
   const fReset = $('f-reset');
   const tbody  = $('obs-rows');
@@ -381,6 +401,7 @@
   winSel.value = String(state.window);
   live.checked = state.live;
   fRes.value = state.result;
+  fResource.value = state.resource_prefix;
   fQ.value = state.q;
 
   // ---------------------------------------------------------------------
@@ -401,6 +422,7 @@
       const v = state.result === 'success' ? 'success' : state.result; // server uses LIKE
       p.set('result_pattern', v);
     }
+    if (state.resource_prefix) p.set('resource_prefix', state.resource_prefix);
     if (state.q) p.set('q', state.q);
     if (cursor) { p.set('cursor_ts', cursor.ts); p.set('cursor_id', cursor.id); }
     p.set('limit', '50');
@@ -453,6 +475,7 @@
     if (state.action_prefix) filterBits.push('action: ' + escapeHtml(state.action_prefix));
     if (state.source)        filterBits.push('source: ' + escapeHtml(state.source));
     if (state.result)        filterBits.push('result: ' + escapeHtml(state.result));
+    if (state.resource_prefix) filterBits.push('resource: ' + escapeHtml(state.resource_prefix.replace(/:$/, '')));
     if (state.q)             filterBits.push('search: "' + escapeHtml(state.q) + '"');
     const filtered = filterBits.length ? ' · filters: ' + filterBits.join(', ') : '';
     if (d.events_total === 0) {
@@ -647,6 +670,28 @@
       fAct.value = state.action_prefix;
       panel.hidden = true; writeUrl(); refreshAll();
     };
+    // "Filter to this resource type": derives the prefix (everything before
+    // the first ":") and only shows when the row's resource has that shape.
+    // Singleton resources like "manifest" or "auth" don't carry a prefix,
+    // so the button stays hidden — pivoting on them isn't useful.
+    const resourceBtn = $('obs-panel-filter-resource');
+    const colonIdx = (r.resource || '').indexOf(':');
+    if (colonIdx > 0) {
+      const prefix = r.resource.slice(0, colonIdx + 1);
+      const opt = fResource.querySelector('option[value="' + prefix + '"]');
+      if (opt) {
+        resourceBtn.hidden = false;
+        resourceBtn.onclick = () => {
+          state.resource_prefix = prefix;
+          fResource.value = prefix;
+          panel.hidden = true; writeUrl(); refreshAll();
+        };
+      } else {
+        resourceBtn.hidden = true;
+      }
+    } else {
+      resourceBtn.hidden = true;
+    }
 
     document.querySelectorAll('.obs-table tbody tr.is-selected').forEach(t => t.classList.remove('is-selected'));
     event.currentTarget.classList.add('is-selected');
@@ -683,8 +728,8 @@
         state.sort = 'duration_ms:desc';
         updateSortIndicators();
       } else if (k === '') {
-        Object.assign(state, { user_id:'', action_prefix:'', result:'', source:'', q:'' });
-        fUser.value=''; fAct.value=''; fRes.value=''; fSrc.value=''; fQ.value='';
+        Object.assign(state, { user_id:'', action_prefix:'', result:'', source:'', resource_prefix:'', q:'' });
+        fUser.value=''; fAct.value=''; fRes.value=''; fSrc.value=''; fResource.value=''; fQ.value='';
       }
       writeUrl(); refreshAll();
     });
@@ -724,6 +769,7 @@
   fAct.addEventListener('change',  () => { state.action_prefix = fAct.value; writeUrl(); refreshOnFilter(); });
   fRes.addEventListener('change',  () => { state.result = fRes.value; writeUrl(); refreshOnFilter(); });
   fSrc.addEventListener('change',  () => { state.source = fSrc.value; writeUrl(); refreshOnFilter(); });
+  fResource.addEventListener('change', () => { state.resource_prefix = fResource.value; writeUrl(); refreshOnFilter(); });
   let qDebounce;
   fQ.addEventListener('input', () => {
     clearTimeout(qDebounce);

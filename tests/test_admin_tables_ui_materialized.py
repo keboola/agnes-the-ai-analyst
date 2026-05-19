@@ -85,13 +85,17 @@ def test_admin_tables_renders_two_question_radio_form(seeded_app, bq_instance):
     assert "Milestone 2" not in html
     assert "issue #108" not in html
 
-    # Phase E: form fields are inside the BQ tab content area.
-    bq_tab_content = html[html.index('id="tab-content-bigquery"'):]
-    bq_tab_end = bq_tab_content.index('</section>')
-    bq_section = bq_tab_content[:bq_tab_end]
-    assert 'name="bqAccessMode"' in bq_section
-    assert 'id="bqDataset"' in bq_section
-    assert 'id="bqSourceQuery"' in bq_section
+    # Package-centric rewrite: connector tabs were dropped. The BQ
+    # register modal stays in DOM as a top-level overlay reachable from
+    # the `+ Register new table ▾` action-bar dropdown. Anchor the
+    # field-scope check on the modal id instead of the deleted
+    # tab-content section.
+    bq_modal_start = html.index('id="registerBqModal"')
+    bq_modal_end = html.index('</div>\n            </div>', bq_modal_start)
+    bq_modal = html[bq_modal_start:bq_modal_end]
+    assert 'name="bqAccessMode"' in bq_modal
+    assert 'id="bqDataset"' in bq_modal
+    assert 'id="bqSourceQuery"' in bq_modal
 
 
 def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
@@ -172,8 +176,14 @@ def test_keboola_register_form_has_three_question_radio(seeded_app, monkeypatch)
         token = seeded_app["admin_token"]
         r = c.get("/admin/tables", headers=_auth(token))
         html = r.text
-        kb_tab = html[html.index('id="tab-content-keboola"'):]
-        kb_tab = kb_tab[:kb_tab.index('</section>')]
+        # Package-centric rewrite: anchor on the Keboola register modal id
+        # (the connector tab that used to wrap this form is gone).
+        kb_modal_start = html.index('id="registerKeboolaModal"')
+        # The modal's outer wrapper closes via "</div>\n            </div>"
+        # (modal -> modal-overlay). Use a generous slice + sanity-bound it
+        # to the next modal-overlay id so we don't bleed into editKeboolaModal.
+        next_modal_idx = html.find('id="editKeboolaModal"', kb_modal_start)
+        kb_tab = html[kb_modal_start:next_modal_idx] if next_modal_idx > 0 else html[kb_modal_start:]
 
         # All three radios present.
         assert 'name="kbSyncMode"' in kb_tab
@@ -274,20 +284,19 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
         reset_cache()
 
 
-def test_bq_edit_modal_inside_tab_content_bigquery(seeded_app, bq_instance):
-    """C2: BQ Edit modal physically lives inside <section id='tab-content-bigquery'>
-    so the modal+form share the tab's DOM scope. Mirror of Phase E's BQ Register
-    modal placement."""
+def test_bq_edit_modal_renders_as_dom_overlay(seeded_app, bq_instance):
+    """Package-centric rewrite: the connector tab that used to wrap
+    #editBqModal was dropped, but the modal itself stays in DOM as a
+    top-level overlay reachable from the per-row Edit affordance. Old
+    shared #editModal still exists but carries no BQ-specific fields."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     r = c.get("/admin/tables", headers=_auth(token))
     html = r.text
-    bq_section_start = html.index('id="tab-content-bigquery"')
-    bq_section_end = html.index('</section>', bq_section_start)
-    bq_section = html[bq_section_start:bq_section_end]
-    assert 'id="editBqModal"' in bq_section
-    assert 'id="editBqDataset"' in bq_section
-    assert 'id="editBqSourceQuery"' in bq_section
+    # BQ edit modal is in the DOM (as a top-level overlay now).
+    assert 'id="editBqModal"' in html
+    assert 'id="editBqDataset"' in html
+    assert 'id="editBqSourceQuery"' in html
     # Old shared #editModal either gone or only carries non-BQ fields.
     if 'id="editModal"' in html:
         edit_modal_start = html.index('id="editModal"')

@@ -20,6 +20,7 @@ import duckdb
 import pytest
 
 from src.db import (
+    SCHEMA_VERSION,
     _SYSTEM_SCHEMA,
     _ensure_schema,
     _v43_to_v44,
@@ -84,6 +85,16 @@ def test_v43_to_v44_upgrade_is_idempotent(tmp_path):
         "cache_read_tokens",
         "cache_creation_tokens",
     }
+
+
+def test_schema_version_constant_is_at_least_51():
+    """Belt + suspenders against schema_version regressions. v51 shipped the
+    unified-stack tables home-stats depends on (originally v49 on the
+    branch — renumbered to v51 on the merge with main's v48→v49→v50 Flea
+    track). Subsequent bumps must keep them present. The exact-current-
+    version guard lives in test_db_schema_version.py."""
+    assert SCHEMA_VERSION >= 51
+
 
 
 # ---------------------------------------------------------------------------

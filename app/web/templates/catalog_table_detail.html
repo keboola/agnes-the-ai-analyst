@@ -1,0 +1,422 @@
+{% extends "base.html" %}
+
+{% block title %}{{ table.name }} — Table detail{% endblock %}
+
+{% block head_extra %}
+<style>
+  .td-back {
+    display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text-secondary, #5f6368); text-decoration: none;
+    font-size: 13px; margin-bottom: 12px;
+  }
+  .td-back:hover { color: var(--primary, #0073D1); }
+
+  /* ── Hero ─────────────────────────────────────────────────── */
+  .td-hero {
+    display: flex; align-items: flex-start; gap: 16px;
+    padding: 20px 24px; background: var(--surface, #fff);
+    border: 1px solid var(--border); border-radius: 12px;
+    margin-bottom: 16px;
+  }
+  .td-hero__glyph {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 56px; height: 56px; border-radius: 12px; flex-shrink: 0;
+    font-size: 22px; font-weight: 700; color: #fff;
+    background: var(--td-glyph-bg, var(--primary, #0073D1));
+  }
+  .td-hero__body { flex: 1; min-width: 0; }
+  .td-hero__title {
+    margin: 0 0 6px;
+    font-size: 22px; font-weight: 700;
+    letter-spacing: -0.2px;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .td-hero__id {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-secondary);
+    padding: 2px 6px; background: var(--border-light, #f3f4f6);
+    border-radius: 4px;
+  }
+  .td-hero__desc {
+    margin: 6px 0 0;
+    color: var(--text-primary); font-size: 14px; line-height: 1.5;
+  }
+  .td-hero__meta {
+    display: flex; align-items: center; gap: 6px 14px; flex-wrap: wrap;
+    margin-top: 12px;
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .td-hero__meta strong {
+    color: var(--text-primary); font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .td-pill {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 999px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    line-height: 1.4;
+  }
+  .td-pill--mode-local       { background: #d1fae5; color: #065f46; }
+  .td-pill--mode-remote      { background: #fef3c7; color: #92400e; }
+  .td-pill--mode-materialized{ background: #e0f2fe; color: #075985; }
+  .td-pill--mode-internal    { background: #f3f4f6; color: #4b5563; }
+  .td-pill--source           { background: var(--primary-light, #e0f2fe); color: var(--primary, #0073D1); }
+
+  /* ── Sections ─────────────────────────────────────────────── */
+  .td-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px; margin-bottom: 14px;
+  }
+  .td-section__head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 10px;
+  }
+  .td-section__title {
+    margin: 0; font-size: 13px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-secondary);
+  }
+  .td-section__edit-btn {
+    border: 1px solid var(--border); background: transparent;
+    padding: 3px 10px; border-radius: 6px; font-size: 12px;
+    cursor: pointer; color: var(--text-secondary);
+  }
+  .td-section__edit-btn:hover { background: var(--border-light, #f3f4f6); color: var(--text-primary); }
+
+  .td-empty {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0;
+    color: var(--text-secondary); font-size: 13px; font-style: italic;
+  }
+  .td-empty__cta {
+    margin-left: auto; font-style: normal;
+  }
+
+  .td-list { margin: 0; padding-left: 20px; }
+  .td-list li { margin: 4px 0; line-height: 1.5; font-size: 14px; }
+
+  .td-columns { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .td-columns th, .td-columns td {
+    text-align: left; padding: 6px 10px;
+    border-bottom: 1px solid var(--border-light, #f0f0f0);
+  }
+  .td-columns th {
+    color: var(--text-secondary); font-weight: 600;
+    text-transform: uppercase; font-size: 11px;
+    letter-spacing: 0.4px; background: var(--border-light, #f9fafb);
+  }
+  .td-columns code { font-family: var(--font-mono); font-size: 12px; color: var(--primary, #0073D1); }
+  .td-columns td.td-null { color: var(--text-secondary); }
+
+  .td-pairs { display: flex; gap: 8px; flex-wrap: wrap; }
+  .td-pairs a {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 6px 12px; background: var(--border-light, #f3f4f6);
+    border-radius: 6px; text-decoration: none;
+    color: var(--text-primary); font-size: 13px;
+  }
+  .td-pairs a:hover { background: var(--primary-light, #e0f2fe); color: var(--primary, #0073D1); }
+
+  .td-note {
+    white-space: pre-wrap; line-height: 1.5; font-size: 14px;
+    color: var(--text-primary);
+  }
+
+  /* ── Admin inline edit ─────────────────────────────────────── */
+  .td-edit { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+  .td-edit.is-open { display: block; }
+  .td-edit textarea, .td-edit input[type="text"] {
+    width: 100%; padding: 8px 10px;
+    border: 1px solid var(--border); border-radius: 6px;
+    font-family: inherit; font-size: 13px; line-height: 1.5;
+    background: var(--surface); color: var(--text-primary);
+  }
+  .td-edit textarea { resize: vertical; min-height: 100px; font-family: inherit; }
+  .td-edit__hint { color: var(--text-secondary); font-size: 11px; margin-top: 4px; }
+  .td-edit__row { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+</style>
+{% endblock %}
+
+{% block content %}
+{# Back link — prefer the first parent package, fall back to /catalog. #}
+<a class="td-back"
+   href="{% if parent_packages %}/catalog/p/{{ parent_packages[0].slug }}{% else %}/catalog{% endif %}">
+  ← Back to {% if parent_packages %}{{ parent_packages[0].name }}{% else %}catalog{% endif %}
+</a>
+
+{# ── Hero card ─────────────────────────────────────────────── #}
+{% set _qmode = (table.query_mode or 'local')|lower %}
+{% set _glyph_bg = table.color or '#0073D1' %}
+{% set _initials =
+    (table.name or table.id or '?').split()|map('first')|join('')|upper
+%}
+<div class="td-hero">
+  <div class="td-hero__glyph" style="--td-glyph-bg: {{ _glyph_bg }};">
+    {% if table.icon %}{{ table.icon }}{% else %}{{ _initials[:2] }}{% endif %}
+  </div>
+  <div class="td-hero__body">
+    <h1 class="td-hero__title">
+      {{ table.name }}
+      <span class="td-hero__id">{{ table.id }}</span>
+    </h1>
+
+    {% if table.description %}
+    <p class="td-hero__desc">{{ table.description }}</p>
+    {% endif %}
+
+    <div class="td-hero__meta">
+      <span class="td-pill td-pill--mode-{{ _qmode }}" title="query mode">{{ _qmode }}</span>
+      {# Skip the source-type pill when it's redundant with the mode
+         pill — internal tables have source_type == query_mode ==
+         'internal' and rendering two identical pills is visual noise. #}
+      {% if table.source_type and table.source_type|lower != _qmode %}
+      <span class="td-pill td-pill--source" title="source type">{{ table.source_type }}</span>
+      {% endif %}
+      {# Qualified-name code chip — only useful for sources that round-trip
+         to an upstream system (Keboola bucket.table, BigQuery dataset.table).
+         Internal tables have no meaningful upstream qualified name. #}
+      {% if table.bucket and table.source_type|lower != 'internal' %}
+      · <code style="font-family:var(--font-mono); font-size:12px;">{{ table.bucket }}{% if table.source_table %}.{{ table.source_table }}{% endif %}</code>
+      {% endif %}
+      {% if rows_display %}
+      · <span><strong>{{ rows_display }}</strong> rows</span>
+      {% endif %}
+      {% if size_display %}
+      · <span><strong>{{ size_display }}</strong></span>
+      {% endif %}
+      {% if last_sync_display %}
+      · Last sync <strong>{{ last_sync_display }}</strong>
+      {% endif %}
+    </div>
+
+    {% if parent_packages %}
+    <div class="td-hero__meta">
+      In package{{ '' if parent_packages|length == 1 else 's' }}:
+      {% for p in parent_packages %}
+      <a href="/catalog/p/{{ p.slug }}"
+         style="color:var(--primary, #0073D1); text-decoration:none; font-weight:600;">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Sample questions ───────────────────────────────────────── #}
+<section class="td-section">
+  <header class="td-section__head">
+    <h2 class="td-section__title">Sample questions you can ask</h2>
+    {% if user.is_admin %}
+    <button type="button" class="td-section__edit-btn" onclick="tdToggleEdit('questions')">
+      {{ 'Edit' if sample_questions else '+ Add' }}
+    </button>
+    {% endif %}
+  </header>
+
+  {% if sample_questions %}
+  <ul class="td-list">
+    {% for q in sample_questions %}<li>{{ q }}</li>{% endfor %}
+  </ul>
+  {% else %}
+  <p class="td-empty">
+    No sample questions seeded yet.
+    {% if user.is_admin %}<span class="td-empty__cta">Click <strong>+ Add</strong> to seed some.</span>{% endif %}
+  </p>
+  {% endif %}
+
+  {% if user.is_admin %}
+  <div class="td-edit" id="td-edit-questions">
+    <textarea id="td-sample-questions"
+              placeholder="One question per line.&#10;e.g. What was revenue last month?">{{ sample_questions|join('\n') if sample_questions else '' }}</textarea>
+    <div class="td-edit__hint">One question per line. Saved as a JSON array of strings.</div>
+    <div class="td-edit__row">
+      <button type="button" class="btn" onclick="tdToggleEdit('questions')">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="saveTableDocs('sample_questions')">Save questions</button>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+{# ── Columns / What's inside ─────────────────────────────────── #}
+<section class="td-section">
+  <header class="td-section__head">
+    <h2 class="td-section__title">What's inside</h2>
+    {% if columns %}
+    <span class="td-section__edit-btn" style="cursor:default;">{{ columns|length }} columns</span>
+    {% endif %}
+  </header>
+
+  {% if columns %}
+  <table class="td-columns">
+    <thead><tr><th>Column</th><th>Type</th><th>Nullable</th></tr></thead>
+    <tbody>
+      {% for c in columns %}
+      <tr>
+        <td><code>{{ c.name }}</code></td>
+        <td>{{ c.type or '—' }}</td>
+        <td class="{% if c.nullable %}{% else %}td-null{% endif %}">{{ 'yes' if c.nullable else 'no' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="td-empty" style="display:block;">
+    {% if table.source_type|lower == 'internal' %}
+    No column profile cached yet — Agnes internal tables are populated
+    by the server itself; columns surface once the table accumulates
+    its first rows.
+    {% else %}
+    No column profile available yet. Run a sync to populate the column
+    list, types, and nullability.
+    {% endif %}
+  </p>
+  {# Trigger sync only makes sense for non-internal tables — internal
+     ones are server-managed (no upstream to pull from). #}
+  {% if user.is_admin and table.source_type|lower != 'internal' %}
+  <div class="td-edit__row" style="border:0; padding:0; margin-top:8px; justify-content:flex-start;">
+    <button type="button" class="btn btn-primary" onclick="tdTriggerSync()">
+      Trigger sync now
+    </button>
+  </div>
+  {% endif %}
+  {% endif %}
+</section>
+
+{# ── Things to know ─────────────────────────────────────────── #}
+<section class="td-section">
+  <header class="td-section__head">
+    <h2 class="td-section__title">Things to know</h2>
+    {% if user.is_admin %}
+    <button type="button" class="td-section__edit-btn" onclick="tdToggleEdit('notes')">
+      {{ 'Edit' if things_to_know else '+ Add' }}
+    </button>
+    {% endif %}
+  </header>
+
+  {% if things_to_know %}
+  <div class="td-note">{{ things_to_know }}</div>
+  {% else %}
+  <p class="td-empty">
+    No caveats or join hints recorded yet.
+    {% if user.is_admin %}<span class="td-empty__cta">Click <strong>+ Add</strong> to record some.</span>{% endif %}
+  </p>
+  {% endif %}
+
+  {% if user.is_admin %}
+  <div class="td-edit" id="td-edit-notes">
+    <textarea id="td-things-to-know"
+              placeholder="Caveats, common joins, gotchas, deprecated columns…">{{ things_to_know or '' }}</textarea>
+    <div class="td-edit__row">
+      <button type="button" class="btn" onclick="tdToggleEdit('notes')">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="saveTableDocs('things_to_know')">Save notes</button>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+{# ── Pairs well with ───────────────────────────────────────── #}
+<section class="td-section">
+  <header class="td-section__head">
+    <h2 class="td-section__title">Pairs well with</h2>
+    {% if user.is_admin %}
+    <button type="button" class="td-section__edit-btn" onclick="tdToggleEdit('pairs')">
+      {{ 'Edit' if pairs_well_with else '+ Add' }}
+    </button>
+    {% endif %}
+  </header>
+
+  {% if pairs_well_with %}
+  <div class="td-pairs">
+    {% for p in pairs_well_with %}
+      <a href="/catalog/t/{{ p.id }}">{{ p.name }}</a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="td-empty">
+    No related tables suggested yet.
+    {% if user.is_admin %}<span class="td-empty__cta">Click <strong>+ Add</strong> to link some.</span>{% endif %}
+  </p>
+  {% endif %}
+
+  {% if user.is_admin %}
+  <div class="td-edit" id="td-edit-pairs">
+    <input id="td-pairs-input" type="text"
+           value="{{ pairs_well_with|map(attribute='id')|join(',') }}"
+           placeholder="tbl_orders,tbl_customers">
+    <div class="td-edit__hint">Comma-separated <code>table_registry.id</code> values. Unknown ids are silently dropped on render.</div>
+    <div class="td-edit__row">
+      <button type="button" class="btn" onclick="tdToggleEdit('pairs')">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="saveTableDocs('pairs_well_with')">Save related tables</button>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+{% if user.is_admin %}
+<script>
+  // Toggle inline admin edit blocks. Initially every edit-row is hidden;
+  // clicking Edit/+ Add reveals the matching block, Cancel collapses it.
+  function tdToggleEdit(name) {
+    const el = document.getElementById('td-edit-' + name);
+    if (!el) return;
+    el.classList.toggle('is-open');
+  }
+
+  // Kick the sync orchestrator for this single table. Cheap fire-and-
+  // forget; reload after a beat so the columns section re-renders from
+  // the newly-populated profile.
+  async function tdTriggerSync() {
+    try {
+      const r = await fetch('/api/sync/trigger', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_id: '{{ table.id }}' }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert('Sync trigger failed: ' + (d.detail || r.statusText));
+        return;
+      }
+      alert('Sync triggered — refresh in a few seconds to see the column list.');
+    } catch (e) {
+      alert('Network error: ' + e.message);
+    }
+  }
+
+  // Single PATCH per section so the admin can iterate one field at a
+  // time without re-submitting the others.
+  async function saveTableDocs(field) {
+    const body = {};
+    if (field === 'sample_questions') {
+      body.sample_questions = document.getElementById('td-sample-questions').value
+        .split('\n').map(s => s.trim()).filter(Boolean);
+    } else if (field === 'things_to_know') {
+      body.things_to_know = document.getElementById('td-things-to-know').value;
+    } else if (field === 'pairs_well_with') {
+      body.pairs_well_with = document.getElementById('td-pairs-input').value
+        .split(',').map(s => s.trim()).filter(Boolean);
+    }
+    try {
+      const r = await fetch('/api/admin/registry/{{ table.id }}/docs', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert('Save failed: ' + (d.detail || r.statusText));
+        return;
+      }
+      // Reload to render the saved value through the server-side template
+      // path; cheap + correct, and side-steps any per-field rendering
+      // edge cases (e.g. unknown pairs_well_with ids silently dropped).
+      window.location.reload();
+    } catch (e) {
+      alert('Network error: ' + e.message);
+    }
+  }
+</script>
+{% endif %}
+{% endblock %}

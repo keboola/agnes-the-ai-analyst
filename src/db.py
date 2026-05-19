@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 51
+SCHEMA_VERSION = 59
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -140,7 +140,9 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     -- the row; is_personal scopes the row to the contributor only (excluded
     -- from /bundle, listed only when the contributor is the caller).
     confidence DOUBLE,
-    domain VARCHAR,
+    -- v49: the scalar ``domain`` column was replaced by the
+    -- ``knowledge_item_domains`` M:N junction (see ``memory_domains``
+    -- and the v49 backfill in ``_v51_to_v52``).
     entities JSON,
     source_type VARCHAR DEFAULT 'claude_local_md',
     source_ref VARCHAR,
@@ -149,6 +151,11 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     supersedes VARCHAR,
     sensitivity VARCHAR DEFAULT 'internal',
     is_personal BOOLEAN DEFAULT FALSE,
+    -- v49: governance Required tier, split out of the v15-era
+    -- status='mandatory' overload. status now tracks lifecycle only
+    -- (pending/approved/rejected); is_required is the orthogonal
+    -- "must appear in the bundle, cannot be dismissed" flag.
+    is_required BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
@@ -318,8 +325,29 @@ CREATE TABLE IF NOT EXISTS table_registry (
     -- BigQuery rows. When set, decouples the UX/RBAC `bucket` label from
     -- the physical BQ dataset name; rows without it fall back to the
     -- legacy `<remote_attach.project>.<bucket>.<source_table>` path.
-    -- Issue #343.
-    bq_fqn VARCHAR
+    -- Issue #343 (released on main as 0.54.29).
+    bq_fqn VARCHAR,
+    -- v55: per-table docs surface used by /catalog/t/<id>. All
+    -- admin-authored, optional. sample_questions + pairs_well_with are
+    -- JSON arrays so admins can edit lists without us cascading a new
+    -- junction table; things_to_know is freeform notes (markdown-ish
+    -- treated as plain text on render).
+    sample_questions JSON,
+    things_to_know   TEXT,
+    pairs_well_with  JSON,
+    -- v59: structured per-table documentation for the package-detail
+    -- rewrite. ``grain`` (e.g. "1 row per session × event_date"),
+    -- ``platforms`` (JSON list of platform names), ``partition_col``
+    -- (single column name — distinct from the v33-era ``partition_by``
+    -- which carries BigQuery partition-key SQL), ``history`` ("Full",
+    -- "Rolling 15 months", "Nov 2025+"), ``gotchas`` (JSON list of
+    -- ``{key: bool, body: str}`` — first ``key=true`` is rendered
+    -- distinctly as the "Key gotcha"). All additive + NULLABLE.
+    grain         VARCHAR,
+    platforms     VARCHAR,
+    partition_col VARCHAR,
+    history       VARCHAR,
+    gotchas       VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -473,14 +501,181 @@ CREATE TABLE IF NOT EXISTS user_group_members (
 -- registered the resource type (e.g. '<marketplace_slug>/<plugin_name>').
 --
 -- v14: group_id FK→user_groups(id), same rationale as user_group_members.
+-- v49: ``requirement`` enum splits Required-tier semantics out of the
+-- grant identity. ``available`` (default) — grantee can opt in via
+-- ``user_stack_subscriptions``. ``required`` — auto-included in the
+-- effective stack, opt-out blocked at the API. Applies to
+-- ``data_package`` / ``memory_domain`` / ``memory_item`` grants;
+-- ``marketplace_plugin`` Required-tier stays on
+-- ``marketplace_plugins.is_system`` per D1.
 CREATE TABLE IF NOT EXISTS resource_grants (
     id            VARCHAR PRIMARY KEY,
     group_id      VARCHAR NOT NULL REFERENCES user_groups(id),
     resource_type VARCHAR NOT NULL,
     resource_id   VARCHAR NOT NULL,
+    requirement   VARCHAR DEFAULT 'available',
     assigned_at   TIMESTAMP DEFAULT current_timestamp,
     assigned_by   VARCHAR,
     UNIQUE (group_id, resource_type, resource_id)
+);
+
+-- v49: Data Packages — admin-curated bundles of tables. A package is a
+-- single Browse / Add-to-stack unit; effective TABLE set for RBAC =
+-- direct TABLE grants ∪ tables in DATA_PACKAGE grants. See
+-- ``docs/brainstorms/2026-05-15-unified-stack-design.md`` section 3.3.
+CREATE TABLE IF NOT EXISTS data_packages (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    icon            VARCHAR,
+    color           VARCHAR,
+    -- v50: admin-uploaded cover image (served from /uploads/covers/<sha>.<ext>).
+    -- Closes the visual gap with /marketplace cards which render real
+    -- JPGs/PNGs; cards fall back to 2-letter initials when this is NULL.
+    cover_image_url VARCHAR,
+    -- v51: lifecycle + classification surface for /catalog cards. The
+    -- card eyebrow renders ``category``; the cover-corner status pill
+    -- renders ``status``. Hero filter checkboxes filter by status.
+    -- ``status`` is a soft enum ('prod' default; 'poc'; 'coming-soon';
+    -- 'draft' admin-only). ``category`` is free-form text for the
+    -- eyebrow line — admins should keep it short and consistent
+    -- (e.g. "Sessions & Traffic", "Customer Insights").
+    status          VARCHAR DEFAULT 'prod',
+    category        VARCHAR,
+    -- v54: soft-delete column. DELETE handlers set this instead of
+    -- removing the row, so junction tables + resource_grants survive
+    -- for the undo flow. list/get filter ``deleted_at IS NULL``.
+    deleted_at      TIMESTAMP,
+    -- v56: extended content for the /catalog/p/<slug> detail-page
+    -- rewrite (extended-descriptions admin spec). All additive + NULLABLE.
+    --   owner_name / owner_team — render "Owned by X · Team" line
+    --   tags                    — JSON list of category strings
+    --   long_description        — markdown body for "What it is"
+    --   when_to_use / when_not_to_use
+    --                           — JSON bullet lists
+    --   example_questions       — JSON list of analyst questions
+    --                             surfaced as a package-level prompt
+    --                             panel.
+    -- Badges (`curated` / `new`) are NOT persisted columns — they're
+    -- derived at render time from creator group + created_at age, so
+    -- backdating or admin-status changes pick up automatically.
+    owner_name      VARCHAR,
+    owner_team      VARCHAR,
+    tags            VARCHAR,
+    long_description TEXT,
+    when_to_use     VARCHAR,
+    when_not_to_use VARCHAR,
+    example_questions VARCHAR,
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS data_package_tables (
+    package_id  VARCHAR NOT NULL REFERENCES data_packages(id),
+    table_id    VARCHAR NOT NULL REFERENCES table_registry(id),
+    added_at    TIMESTAMP DEFAULT current_timestamp,
+    added_by    VARCHAR,
+    PRIMARY KEY (package_id, table_id)
+);
+CREATE INDEX IF NOT EXISTS idx_data_package_tables_table
+    ON data_package_tables(table_id);
+
+-- v49: Memory Domains — first-class entities replacing the v15 scalar
+-- ``knowledge_items.domain`` string. Junction allows an item to belong
+-- to multiple domains; admin can create non-canonical domains beyond the
+-- legacy ``VALID_DOMAINS`` six. See spec section 3.4.
+CREATE TABLE IF NOT EXISTS memory_domains (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    icon            VARCHAR,
+    color           VARCHAR,
+    -- v50: admin-uploaded cover image — same path / fallback contract as
+    -- data_packages.cover_image_url above.
+    cover_image_url VARCHAR,
+    -- v51: lifecycle ``status`` only ('prod' / 'poc' / 'coming-soon' /
+    -- 'draft'). Memory Domains don't carry ``category`` because the
+    -- domain itself IS the classification — adding a second-level
+    -- category would be redundant.
+    status          VARCHAR DEFAULT 'prod',
+    -- v54: soft-delete (see data_packages.deleted_at).
+    deleted_at      TIMESTAMP,
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_item_domains (
+    item_id   VARCHAR NOT NULL REFERENCES knowledge_items(id),
+    domain_id VARCHAR NOT NULL REFERENCES memory_domains(id),
+    added_at  TIMESTAMP DEFAULT current_timestamp,
+    added_by  VARCHAR,
+    PRIMARY KEY (item_id, domain_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain
+    ON knowledge_item_domains(domain_id);
+
+-- v55: ``memory_domain_suggestions`` — non-admin users can suggest a new
+-- domain from /corporate-memory empty state. Admin queue surfaces them
+-- with one-click approve (creates the real ``memory_domains`` row +
+-- marks the suggestion ``status='approved'``) or reject. Open suggestions
+-- have ``status='pending'``; resolved ones keep the row for audit so the
+-- requester sees the disposition. No FK on ``created_by`` so a deleted
+-- user doesn't cascade-nuke their suggestion history.
+CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    rationale       TEXT,
+    status          VARCHAR DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    resolved_at     TIMESTAMP,
+    resolved_by     VARCHAR,
+    resolution_note TEXT,
+    -- When approved, the resulting memory_domains.id so the admin queue
+    -- can deep-link to the created domain.
+    created_domain_id VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status
+    ON memory_domain_suggestions(status);
+
+-- v53: Recipes are admin-curated, multi-table query templates analysts
+-- copy + adapt. Sibling concept to Data Packages on /catalog (separate
+-- "Recipes" tab). Not stack subscribable — analysts use a recipe, they
+-- don't opt in to it. ``related_table_ids`` is a JSON array of
+-- ``table_registry.id`` values so the recipe drilldown can render
+-- per-table links without us cascading another junction table.
+CREATE TABLE IF NOT EXISTS recipes (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    title           VARCHAR NOT NULL,
+    description     TEXT,
+    icon            VARCHAR,
+    color           VARCHAR,
+    sql_template    TEXT,
+    related_table_ids JSON,
+    status          VARCHAR DEFAULT 'prod',
+    -- v54: soft-delete (see data_packages.deleted_at).
+    deleted_at      TIMESTAMP,
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v49: generic per-user opt-in for resource_grants flagged
+-- ``requirement='available'``. Currently scoped to ``data_package`` /
+-- ``memory_domain`` resource types — Marketplace pluginy stay on the
+-- existing ``user_plugin_optouts`` opt-out shape per D1.
+CREATE TABLE IF NOT EXISTS user_stack_subscriptions (
+    user_id       VARCHAR NOT NULL,
+    resource_type VARCHAR NOT NULL,
+    resource_id   VARCHAR NOT NULL,
+    subscribed_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (user_id, resource_type, resource_id)
 );
 
 -- v22: reserved (formerly setup_banner — feature dropped, table kept for
@@ -2010,6 +2205,29 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
 
         # 4: rebuild table_registry without `is_public` column.
         if "is_public" in _existing_cols("table_registry"):
+            # v49: _SYSTEM_SCHEMA runs before the migration ladder and
+            # creates ``data_package_tables`` with a FK pointing at
+            # table_registry(id). DuckDB blocks the RENAME until the
+            # dependent is dropped — drop it and recreate after the swap.
+            # The v49 finalize re-establishes data_package_tables, and the
+            # body of this migration's INSERT … SELECT preserves all
+            # registry rows so the recreated FK won't dangle. Saved-rows
+            # in data_package_tables also stay valid (they reference
+            # table_registry.id which is preserved verbatim).
+            data_pkg_existed = False
+            pkg_rows = []
+            try:
+                pkg_rows = conn.execute(
+                    "SELECT package_id, table_id, added_at, added_by "
+                    "FROM data_package_tables"
+                ).fetchall()
+                data_pkg_existed = True
+                conn.execute("DROP TABLE data_package_tables")
+            except duckdb.Error:
+                # Table doesn't exist (pre-v49 DB or hand-crafted fixture);
+                # the v49 migration body will create it later.
+                pass
+
             conn.execute("ALTER TABLE table_registry RENAME TO table_registry_v18_pre")
             conn.execute(
                 """CREATE TABLE table_registry (
@@ -2050,6 +2268,29 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
             col_list = ", ".join(common)
             conn.execute(f"INSERT INTO table_registry ({col_list}) SELECT {col_list} FROM table_registry_v18_pre")
             conn.execute("DROP TABLE table_registry_v18_pre")
+
+            # Recreate the v49 junction + restore any rows we captured.
+            if data_pkg_existed:
+                conn.execute(
+                    """CREATE TABLE data_package_tables (
+                        package_id  VARCHAR NOT NULL REFERENCES data_packages(id),
+                        table_id    VARCHAR NOT NULL REFERENCES table_registry(id),
+                        added_at    TIMESTAMP DEFAULT current_timestamp,
+                        added_by    VARCHAR,
+                        PRIMARY KEY (package_id, table_id)
+                    )"""
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_data_package_tables_table "
+                    "ON data_package_tables(table_id)"
+                )
+                for row in pkg_rows:
+                    conn.execute(
+                        "INSERT INTO data_package_tables"
+                        "(package_id, table_id, added_at, added_by) "
+                        "VALUES (?, ?, ?, ?)",
+                        list(row),
+                    )
 
         conn.execute("COMMIT")
     except Exception:
@@ -3253,6 +3494,291 @@ def _v49_to_v50_migrate(conn: duckdb.DuckDBPyConnection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_store_entities_synthetic_name "
         "ON store_entities(synthetic_name)"
     )
+def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
+    """v49: unified stack for Data Packages + Memory.
+
+    Single migration entry point for the v49 cutover. See
+    ``docs/brainstorms/2026-05-15-unified-stack-design.md`` section 8.1
+    for the full step list. Idempotent (``ALTER ... ADD COLUMN IF NOT
+    EXISTS``, ``CREATE TABLE IF NOT EXISTS``) so re-running is safe.
+
+    Steps 6 + 9b (junction populate + recreate) are conditional on the
+    legacy ``knowledge_items.domain`` column actually existing — fresh
+    installs come through ``_SYSTEM_SCHEMA`` which already creates the
+    post-v49 table shape (no ``domain`` column, ``knowledge_item_domains``
+    junction in place), so those steps no-op.
+    """
+    has_legacy_domain_col = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'knowledge_items' AND column_name = 'domain'"
+    ).fetchone() is not None
+
+    # 1) resource_grants.requirement — per-group 'available' | 'required'
+    # enum. Default 'available' preserves pre-v49 semantics. Required-tier
+    # applies to data_package / memory_domain / memory_item grants;
+    # marketplace_plugin Required-tier stays on
+    # marketplace_plugins.is_system per D1.
+    conn.execute(
+        "ALTER TABLE resource_grants "
+        "ADD COLUMN IF NOT EXISTS requirement VARCHAR DEFAULT 'available'"
+    )
+
+    # 2) knowledge_items.is_required — splits the v15-era status='mandatory'
+    # overload into an orthogonal boolean. Items can now be 'approved' and
+    # also Required (governance tier), or 'pending' without affecting the
+    # Required state. Existing 'mandatory' rows migrate to
+    # is_required=TRUE, status='approved'.
+    conn.execute(
+        "ALTER TABLE knowledge_items "
+        "ADD COLUMN IF NOT EXISTS is_required BOOLEAN DEFAULT FALSE"
+    )
+    # Skip the backfill UPDATE on hand-crafted v1 fixtures where
+    # ``status`` was never added — the ladder upgrade from v1 reaches v15
+    # before v49 anyway, but the migration body sees the pre-v15 shape
+    # only on those test paths. Guard so the migration stays no-op-safe.
+    has_status = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'knowledge_items' AND column_name = 'status'"
+    ).fetchone()
+    if has_status:
+        conn.execute(
+            "UPDATE knowledge_items "
+            "   SET is_required = TRUE, status = 'approved' "
+            " WHERE status = 'mandatory'"
+        )
+
+    # 3) Data Packages — admin-curated bundles of tables. A package is a
+    # browse / add-to-stack unit; the tables it contains flow into the
+    # caller's effective table set via DATA_PACKAGE grants. See spec
+    # section 3.3.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_packages (
+            id              VARCHAR PRIMARY KEY,
+            slug            VARCHAR UNIQUE NOT NULL,
+            name            VARCHAR NOT NULL,
+            description     TEXT,
+            icon            VARCHAR,
+            color           VARCHAR,
+            cover_image_url VARCHAR,
+            created_by      VARCHAR,
+            created_at      TIMESTAMP DEFAULT current_timestamp,
+            updated_at      TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_package_tables (
+            package_id  VARCHAR NOT NULL REFERENCES data_packages(id),
+            table_id    VARCHAR NOT NULL REFERENCES table_registry(id),
+            added_at    TIMESTAMP DEFAULT current_timestamp,
+            added_by    VARCHAR,
+            PRIMARY KEY (package_id, table_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_data_package_tables_table "
+        "ON data_package_tables(table_id)"
+    )
+
+    # 4) Memory Domains — first-class entities replacing the scalar
+    # ``knowledge_items.domain`` string. The ``memory_domains`` parent
+    # table is created here; ``knowledge_item_domains`` is deferred to
+    # after the legacy column is dropped (step 9) because DuckDB blocks
+    # ``ALTER TABLE knowledge_items DROP COLUMN`` while a child table
+    # holds an FK reference. See spec section 3.4.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_domains (
+            id              VARCHAR PRIMARY KEY,
+            slug            VARCHAR UNIQUE NOT NULL,
+            name            VARCHAR NOT NULL,
+            description     TEXT,
+            icon            VARCHAR,
+            color           VARCHAR,
+            cover_image_url VARCHAR,
+            created_by      VARCHAR,
+            created_at      TIMESTAMP DEFAULT current_timestamp,
+            updated_at      TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+
+    # 5) Seed canonical memory_domains from the legacy ``VALID_DOMAINS``
+    # constant in ``app/api/memory.py`` (the v15 hardcoded six). Deterministic
+    # ``md_<slug>`` ids so downstream Phase-2+ refactors can rely on the
+    # naming convention without re-querying. Icons / colors are part of the
+    # canonical seed so the Browse UI renders consistently across instances.
+    canonical_domains = [
+        ("md_finance",        "finance",        "Finance",        "💰", "#dcfce7"),
+        ("md_engineering",    "engineering",    "Engineering",    "⚙️", "#dbeafe"),
+        ("md_product",        "product",        "Product",        "📦", "#fef3c7"),
+        ("md_data",           "data",           "Data",           "📊", "#f3e8ff"),
+        ("md_operations",     "operations",     "Operations",     "🔧", "#fff7ed"),
+        ("md_infrastructure", "infrastructure", "Infrastructure", "🏗️", "#fef2f2"),
+    ]
+    for did, slug, name, icon, color in canonical_domains:
+        conn.execute(
+            "INSERT INTO memory_domains (id, slug, name, icon, color, created_at) "
+            "VALUES (?, ?, ?, ?, ?, current_timestamp) "
+            "ON CONFLICT (slug) DO NOTHING",
+            [did, slug, name, icon, color],
+        )
+
+    # Plus one row per non-canonical ``knowledge_items.domain`` value found
+    # in the existing data (defensive — instances may have hand-set domains
+    # outside the six). Slug normalization mirrors the junction populate
+    # query below so the join in task 1.6 matches deterministically. Only
+    # runs on an upgrade path where the legacy column still exists; fresh
+    # installs skip this since ``_SYSTEM_SCHEMA`` ships the post-v49 shape.
+    if has_legacy_domain_col:
+        conn.execute(
+            """
+            INSERT INTO memory_domains(id, slug, name, created_at)
+            SELECT
+                'md_' || lower(regexp_replace(domain, '[^a-z0-9]+', '_', 'g')),
+                lower(regexp_replace(domain, '[^a-z0-9]+', '-', 'g')),
+                domain,
+                current_timestamp
+              FROM (SELECT DISTINCT domain FROM knowledge_items
+                     WHERE domain IS NOT NULL AND domain <> ''
+                       AND domain NOT IN ('finance','engineering','product','data','operations','infrastructure'))
+            ON CONFLICT (slug) DO NOTHING
+            """
+        )
+
+    # 6) Stash the legacy (item_id, domain_id) pairs in a temporary table
+    # so we can recreate the relation after dropping the scalar column.
+    # DuckDB blocks the DROP COLUMN as long as a child table FK-references
+    # ``knowledge_items``, so the junction itself is created in step 9b
+    # below — after the column is gone. Skipped on fresh installs where
+    # the legacy column has never existed.
+    if has_legacy_domain_col:
+        conn.execute("DROP TABLE IF EXISTS _v49_item_domain_pairs")
+        conn.execute(
+            """
+            CREATE TEMP TABLE _v49_item_domain_pairs AS
+            SELECT ki.id AS item_id, md.id AS domain_id
+              FROM knowledge_items ki
+              JOIN memory_domains  md
+                ON md.slug = lower(regexp_replace(ki.domain, '[^a-z0-9]+', '-', 'g'))
+             WHERE ki.domain IS NOT NULL AND ki.domain <> ''
+            """
+        )
+
+    # 7) Re-point ``MEMORY_DOMAIN`` grants — pre-v49 stored the domain slug
+    # directly in ``resource_grants.resource_id``; v49+ stores
+    # ``memory_domains.id``. Orphan grants (resource_id is a slug with no
+    # matching ``memory_domains`` row) are left untouched per spec D14 so
+    # an admin can decide whether to delete or re-create the domain.
+    conn.execute(
+        """
+        UPDATE resource_grants
+           SET resource_id = (
+               SELECT id FROM memory_domains
+                WHERE memory_domains.slug = resource_grants.resource_id
+           )
+         WHERE resource_type = 'memory_domain'
+           AND EXISTS (
+               SELECT 1 FROM memory_domains
+                WHERE memory_domains.slug = resource_grants.resource_id
+           )
+        """
+    )
+
+    # 8) ``user_stack_subscriptions`` — generic per-user opt-in for
+    # ``data_package`` and ``memory_domain`` grants flagged
+    # ``requirement='available'``. Composite PK (user_id, resource_type,
+    # resource_id) makes the insert idempotent. Marketplace pluginy stay
+    # on the existing ``user_plugin_optouts`` opt-out shape per D1.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_stack_subscriptions (
+            user_id       VARCHAR NOT NULL,
+            resource_type VARCHAR NOT NULL,
+            resource_id   VARCHAR NOT NULL,
+            subscribed_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (user_id, resource_type, resource_id)
+        )
+        """
+    )
+
+    # 9a) Drop the legacy ``knowledge_items.domain`` scalar. Single-PR
+    # cutover per D14 — the temp-stashed pairs from step 6 + memory_domains
+    # seeded in step 5 are the new sources of truth.
+    #
+    # DuckDB blocks ``ALTER TABLE … DROP COLUMN`` while any FK references
+    # the same table (DependencyException). On the fresh-install +
+    # upgrade-from-v1 paths, ``_SYSTEM_SCHEMA`` runs BEFORE the migration
+    # ladder and creates ``knowledge_item_domains`` with the FK already
+    # in place. We DROP that dependent (stashing its rows), perform the
+    # column drop, and recreate the junction immediately after.
+    junction_existed = False
+    stashed_rows: list = []
+    try:
+        stashed_rows = conn.execute(
+            "SELECT item_id, domain_id, added_at, added_by "
+            "FROM knowledge_item_domains"
+        ).fetchall()
+        junction_existed = True
+        conn.execute("DROP TABLE knowledge_item_domains")
+    except duckdb.Error:
+        # Junction didn't exist (genuine v48 upgrade path); fall through.
+        pass
+
+    conn.execute("ALTER TABLE knowledge_items DROP COLUMN IF EXISTS domain")
+
+    # 9b) (Re)create the M:N junction and replay any rows we stashed.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_item_domains (
+            item_id   VARCHAR NOT NULL REFERENCES knowledge_items(id),
+            domain_id VARCHAR NOT NULL REFERENCES memory_domains(id),
+            added_at  TIMESTAMP DEFAULT current_timestamp,
+            added_by  VARCHAR,
+            PRIMARY KEY (item_id, domain_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain "
+        "ON knowledge_item_domains(domain_id)"
+    )
+    if junction_existed and stashed_rows:
+        for row in stashed_rows:
+            conn.execute(
+                "INSERT INTO knowledge_item_domains"
+                "(item_id, domain_id, added_at, added_by) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                list(row),
+            )
+    # Replay the stashed pairs. The temp table exists only when the
+    # upgrade path ran step 6 — fresh installs skip both step 6 and
+    # this replay since ``_v49_item_domain_pairs`` was never created.
+    has_pairs = conn.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_name = '_v49_item_domain_pairs'"
+    ).fetchone()
+    if has_pairs:
+        conn.execute(
+            """
+            INSERT INTO knowledge_item_domains(item_id, domain_id, added_at)
+            SELECT item_id, domain_id, current_timestamp
+              FROM _v49_item_domain_pairs
+            ON CONFLICT DO NOTHING
+            """
+        )
+        conn.execute("DROP TABLE _v49_item_domain_pairs")
+
+    # 10) bump schema_version row. Matches the pattern used by every
+    # prior in-function migration (e.g. _v30_to_v31_migrate, _v34_to_v35_migrate)
+    # — the per-step migrations declared as SQL lists rely on the
+    # outer ``UPDATE schema_version`` at the end of ``_ensure_schema``,
+    # but the ladder-internal function pattern keeps the bump local so a
+    # mid-ladder failure doesn't leave the version stale.
+    conn.execute("UPDATE schema_version SET version = 52")
 
 
 _V50_TO_V51_MIGRATIONS = [
@@ -3462,6 +3988,189 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
+    """v56: extended-content columns on ``data_packages`` + structured
+    per-table doc columns on ``table_registry``.
+
+    Backs the ``/catalog/p/<slug>`` rewrite per the extended-descriptions
+    admin spec — owner attribution, curated tags,
+    long-form description, use/skip arrays, package-level example
+    questions on the package side; grain / platforms / partition /
+    history / gotchas on the per-table side.
+
+    All ALTERs are ADD COLUMN IF NOT EXISTS — idempotent + safe to
+    re-run.
+    """
+    for col_sql in (
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS owner_name VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS owner_team VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS tags VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS long_description TEXT",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS when_to_use VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS when_not_to_use VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS example_questions VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS grain VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS platforms VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS partition_col VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS history VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS gotchas VARCHAR",
+    ):
+        conn.execute(col_sql)
+    conn.execute("UPDATE schema_version SET version = 59")
+
+
+def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
+    """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
+    domain" affordance + admin moderation queue.
+
+    Idempotent CREATE TABLE IF NOT EXISTS. Fresh installs already get
+    the table from ``_SYSTEM_SCHEMA``; this migration covers the
+    sequential-upgrade path from a v54 instance.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
+            id                VARCHAR PRIMARY KEY,
+            name              VARCHAR NOT NULL,
+            description       TEXT,
+            rationale         TEXT,
+            status            VARCHAR DEFAULT 'pending',
+            created_by        VARCHAR,
+            created_at        TIMESTAMP DEFAULT current_timestamp,
+            resolved_at       TIMESTAMP,
+            resolved_by       VARCHAR,
+            resolution_note   TEXT,
+            created_domain_id VARCHAR
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status "
+        "ON memory_domain_suggestions(status)"
+    )
+    conn.execute("UPDATE schema_version SET version = 58")
+
+
+def _v56_to_v57(conn: duckdb.DuckDBPyConnection) -> None:
+    """v54: soft-delete columns on data_packages / memory_domains / recipes.
+
+    Powers the "Deleted. Undo (10s)" toast on admin pages — DELETE sets
+    ``deleted_at`` instead of nuking the row, so the junction rows
+    (data_package_tables, knowledge_item_domains) + any resource_grants
+    referencing the resource id survive intact. The list/get endpoints
+    filter ``deleted_at IS NULL`` so users never see soft-deleted rows.
+
+    Idempotent ADD COLUMN IF NOT EXISTS.
+    """
+    for table in ("data_packages", "memory_domains", "recipes"):
+        conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP"
+        )
+    conn.execute("UPDATE schema_version SET version = 57")
+
+
+def _v55_to_v56(conn: duckdb.DuckDBPyConnection) -> None:
+    """v53: ``recipes`` table — admin-curated query templates surfaced as
+    a second tab on /catalog.
+
+    Idempotent CREATE TABLE IF NOT EXISTS. Fresh installs already get
+    the table from ``_SYSTEM_SCHEMA``; this migration covers the
+    sequential-upgrade path from a v52 instance.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipes (
+            id                VARCHAR PRIMARY KEY,
+            slug              VARCHAR UNIQUE NOT NULL,
+            title             VARCHAR NOT NULL,
+            description       TEXT,
+            icon              VARCHAR,
+            color             VARCHAR,
+            sql_template      TEXT,
+            related_table_ids JSON,
+            status            VARCHAR DEFAULT 'prod',
+            created_by        VARCHAR,
+            created_at        TIMESTAMP DEFAULT current_timestamp,
+            updated_at        TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 56")
+
+
+def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
+    """v52: per-table docs columns on table_registry.
+
+    Adds three admin-authored fields read by the new /catalog/t/<id>
+    detail page: sample_questions (JSON array of strings),
+    things_to_know (freeform text), pairs_well_with (JSON array of
+    table_registry ids). All optional / NULL on legacy rows.
+
+    Idempotent ADD COLUMN IF NOT EXISTS; safe to re-run.
+    """
+    conn.execute(
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS sample_questions JSON"
+    )
+    conn.execute(
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS things_to_know TEXT"
+    )
+    conn.execute(
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS pairs_well_with JSON"
+    )
+    conn.execute("UPDATE schema_version SET version = 55")
+
+
+def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
+    """v51: lifecycle ``status`` + per-package ``category`` columns.
+
+    Adds the surfaces the /catalog mockup audit identified as gaps:
+    a small status pill on each card (driven by hero filter checkboxes)
+    and an eyebrow line above the title (data_packages only — memory
+    domains don't need a second-level category since the domain itself
+    classifies its items).
+
+    All ADD COLUMN IF NOT EXISTS — idempotent re-run is safe. The fresh
+    install path picks the columns up from _SYSTEM_SCHEMA directly; this
+    migration covers the sequential-upgrade path off an earlier version.
+    """
+    conn.execute(
+        "ALTER TABLE data_packages "
+        "ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'prod'"
+    )
+    conn.execute(
+        "ALTER TABLE data_packages "
+        "ADD COLUMN IF NOT EXISTS category VARCHAR"
+    )
+    conn.execute(
+        "ALTER TABLE memory_domains "
+        "ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'prod'"
+    )
+    conn.execute("UPDATE schema_version SET version = 54")
+
+
+def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
+    """v50: ``cover_image_url`` on ``data_packages`` + ``memory_domains``.
+
+    Closes the visual gap with /marketplace cards: marketplace items render
+    real JPGs/PNGs from ``cover_photo_url`` while /catalog + /memory have
+    been stuck with 2-letter initials. The upload endpoint at
+    ``POST /api/admin/uploads/cover-image`` returns a relative URL that
+    callers stash here; cards render ``<img>`` when set, fall back to the
+    initials banner when NULL.
+
+    Idempotent (``ADD COLUMN IF NOT EXISTS``) — re-running is safe. Bumps
+    the version row locally so the fresh-install path (which calls every
+    migration in sequence and relies on each step to stamp its own number
+    — see _v51_to_v52 step 10) lands at 50 even if a future step in the
+    same ladder fails before the outer driver gets to its UPDATE.
+    """
+    conn.execute(
+        "ALTER TABLE data_packages "
+        "ADD COLUMN IF NOT EXISTS cover_image_url VARCHAR"
+    )
+    conn.execute(
+        "ALTER TABLE memory_domains "
+        "ADD COLUMN IF NOT EXISTS cover_image_url VARCHAR"
+    )
+    conn.execute("UPDATE schema_version SET version = 53")
+
+
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed.
 
@@ -3571,6 +4280,32 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # (table empty so no duplicates possible, CREATE UNIQUE
             # INDEX IF NOT EXISTS is idempotent).
             _v49_to_v50_migrate(conn)
+            # v49 unified stack — Data Packages + Memory Domains junction +
+            # requirement enum + is_required + user_stack_subscriptions.
+            # _SYSTEM_SCHEMA already creates the new tables on fresh
+            # installs; the migration body is idempotent (CREATE TABLE
+            # IF NOT EXISTS / ALTER ... ADD COLUMN IF NOT EXISTS), so
+            # this call no-ops apart from seeding canonical
+            # memory_domains and bumping the version row.
+            _v51_to_v52(conn)
+            # v50 cover_image_url on data_packages + memory_domains.
+            # _SYSTEM_SCHEMA already includes the column on fresh installs;
+            # the migration's IF NOT EXISTS ALTERs no-op there.
+            _v52_to_v53(conn)
+            # v51 status + category on data_packages, status on
+            # memory_domains. Same fresh-install no-op pattern.
+            _v53_to_v54(conn)
+            # v52 per-table docs columns on table_registry.
+            _v54_to_v55(conn)
+            # v53 recipes table.
+            _v55_to_v56(conn)
+            # v54 deleted_at columns on data_packages, memory_domains, recipes.
+            _v56_to_v57(conn)
+            # v55 memory_domain_suggestions table.
+            _v57_to_v58(conn)
+            # v56 extended content columns on data_packages + structured
+            # per-table doc columns on table_registry.
+            _v58_to_v59(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3726,6 +4461,22 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 51:
                 for sql in _V50_TO_V51_MIGRATIONS:
                     conn.execute(sql)
+            if current < 52:
+                _v51_to_v52(conn)
+            if current < 53:
+                _v52_to_v53(conn)
+            if current < 54:
+                _v53_to_v54(conn)
+            if current < 55:
+                _v54_to_v55(conn)
+            if current < 56:
+                _v55_to_v56(conn)
+            if current < 57:
+                _v56_to_v57(conn)
+            if current < 58:
+                _v57_to_v58(conn)
+            if current < 59:
+                _v58_to_v59(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

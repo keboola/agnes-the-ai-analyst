@@ -2801,6 +2801,20 @@ async def update_table(
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
 
+        # v52 + v56: per-table docs fields (sample_questions /
+        # things_to_know / pairs_well_with + grain / platforms /
+        # partition_col / history / gotchas) live on table_registry
+        # but have their own PATCH /registry/{id}/docs endpoint.
+        # ``repo.register()`` doesn't know them; stripping here keeps
+        # the read-modify-write loop the PUT handler relies on
+        # (existing → merged → register) from blowing up with
+        # TypeError when the docs columns are populated.
+        for _docs_key in (
+            "sample_questions", "things_to_know", "pairs_well_with",
+            "grain", "platforms", "partition_col", "history", "gotchas",
+        ):
+            merged.pop(_docs_key, None)
+
         # When switching the merged record away from materialized mode, drop
         # the stale source_query — the request validator can't clear it via
         # the `if v is not None` filter above. Without this, a remote/local
@@ -2902,6 +2916,116 @@ async def update_table(
     invalidate_for_table(table_id)
 
     return {"id": table_id, "updated": list(updates.keys())}
+
+
+class _GotchaItem(BaseModel):
+    """v56: a single gotcha entry. ``key=True`` marks the first one as
+    the "Key gotcha" rendered distinctly by the package detail page."""
+    key: bool = False
+    body: str
+
+
+class TableDocsRequest(BaseModel):
+    """Per-table docs surface — v52 (sample_questions / things_to_know /
+    pairs_well_with) extended in v56 with structured fields (grain /
+    platforms / partition_col / history / gotchas) for the
+    /catalog/p/<slug> package detail page rewrite.
+
+    All fields optional. Sending `[]` for a list clears it; sending
+    `""` for a scalar clears it; omitting leaves it untouched
+    (Optional-is-no-op contract).
+    """
+    # v52 fields.
+    sample_questions: Optional[List[str]] = None
+    things_to_know: Optional[str] = None
+    pairs_well_with: Optional[List[str]] = None
+    # v56 fields.
+    grain: Optional[str] = None
+    platforms: Optional[List[str]] = None
+    partition_col: Optional[str] = None
+    history: Optional[str] = None
+    gotchas: Optional[List[_GotchaItem]] = None
+
+    @field_validator("platforms")
+    @classmethod
+    def _check_platforms(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        if len(v) > 8:
+            raise ValueError("platforms: max 8 entries")
+        return v
+
+    @field_validator("gotchas")
+    @classmethod
+    def _check_gotchas(cls, v):
+        if v is None:
+            return None
+        if len(v) > 8:
+            raise ValueError("gotchas: max 8 entries")
+        return v
+
+
+@router.patch("/registry/{table_id}/docs")
+async def update_table_docs(
+    table_id: str,
+    payload: TableDocsRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Write the admin-authored per-table docs read by /catalog/t/<id>
+    and (for the v56 structured fields) by the per-table extended
+    section on /catalog/p/<slug>. Separated from PUT /registry/{id} so
+    admins can flip these fields without re-submitting the whole big
+    registration payload."""
+    repo = TableRegistryRepository(conn)
+    if not repo.get(table_id):
+        raise HTTPException(status_code=404, detail="table_not_found")
+    # Empty-string ``things_to_know`` clears; explicit `[]` clears lists.
+    clear_things = payload.things_to_know == ""
+    clear_questions = payload.sample_questions == []
+    clear_pairs = payload.pairs_well_with == []
+    # v56 ``gotchas`` Pydantic models → list of dicts for the repo (JSON
+    # serializer handles plain dicts; we'd lose the validator if we
+    # passed _GotchaItem instances through).
+    gotchas_payload = (
+        [g.model_dump() for g in payload.gotchas]
+        if payload.gotchas is not None
+        else None
+    )
+    repo.update_docs(
+        table_id,
+        sample_questions=(
+            None if clear_questions else payload.sample_questions
+        ),
+        things_to_know=(None if clear_things else payload.things_to_know),
+        pairs_well_with=(
+            None if clear_pairs else payload.pairs_well_with
+        ),
+        clear_sample_questions=clear_questions,
+        clear_things_to_know=clear_things,
+        clear_pairs_well_with=clear_pairs,
+        # v56 — same Optional-is-no-op contract.
+        grain=payload.grain,
+        platforms=payload.platforms,
+        partition_col=payload.partition_col,
+        history=payload.history,
+        gotchas=gotchas_payload,
+    )
+    # Echo the fresh state so the admin client can re-render without a
+    # second GET. Lets the test suite (and the eventual admin UI) inspect
+    # what landed in DB.
+    fresh = repo.get(table_id) or {}
+    return {
+        "id": table_id,
+        "sample_questions": fresh.get("sample_questions") or [],
+        "things_to_know": fresh.get("things_to_know"),
+        "pairs_well_with": fresh.get("pairs_well_with") or [],
+        "grain": fresh.get("grain"),
+        "platforms": fresh.get("platforms") or [],
+        "partition_col": fresh.get("partition_col"),
+        "history": fresh.get("history"),
+        "gotchas": fresh.get("gotchas") or [],
+    }
 
 
 @router.delete("/registry/{table_id}", status_code=204)
