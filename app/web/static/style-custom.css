@@ -4022,6 +4022,14 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
 
 .form-input::placeholder { color: var(--text-muted); }
 
+/* chip-input widget — set font on the container so the inner input's
+   `font: inherit` inline style picks up the right value */
+.chip-input {
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+}
+
 /* =====================================================
    Page-header primitive (Task 6)
    .page-header + __main / __title / __subtitle / __actions / __eyebrow

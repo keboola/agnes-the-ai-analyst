@@ -1871,7 +1871,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">Description <span class="optional">(optional)</span></label>
-            <textarea id="cdp-desc" class="form-input" rows="2"></textarea>
+            <textarea id="cdp-desc" class="form-textarea" rows="2"></textarea>
           </div>
           {# v51 lifecycle + classification — drive the hero filter
              checkboxes on /catalog and the eyebrow line above the
@@ -3163,7 +3163,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">Description</label>
-            <textarea id="edp-desc" class="form-input" rows="2"></textarea>
+            <textarea id="edp-desc" class="form-textarea" rows="2"></textarea>
           </div>
           <div class="form-group" style="display:flex; gap:12px;">
             <div style="flex:1;">
@@ -4139,7 +4139,6 @@
         }
         ta.value = 'SELECT *\nFROM kbc."' + bucket + '"."' + sourceTable + '"\nWHERE -- your filter here';
     }
-    {% endif %}{# data_source_type == 'keboola' — Phase F2 edit modal + prefill #}
 
     // C3: removed dead helper _buildKeboolaLegacyPayload — the Phase F
     // _buildKeboolaPayload (above) replaced it.
