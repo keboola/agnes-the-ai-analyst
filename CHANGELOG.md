@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- `agnes refresh-marketplace` (non-bootstrap path) now re-applies
+  `chmod +x` to every `.sh` under `~/.agnes/marketplace` after each
+  `git reset --hard FETCH_HEAD`, not just on the initial bootstrap
+  clone. `git reset --hard` rewrites the working tree from the tree
+  object — if the upstream tree stores a hook script as non-
+  executable (or on `core.filemode=false` setups), every refresh
+  silently re-strips the +x bit and the previously-fixed hooks fire
+  with "Permission denied" again on the next `SessionStart`.
+  Extracted `_chmod_clone_sh_files()` helper, called from both
+  `_bootstrap_clone` and `_git_fetch_and_reset`. Best-effort, no-op
+  on Windows NTFS. Closes the coverage gap Devin Review flagged on
+  PR #350.
+
 ## [0.55.1] — 2026-05-19
 
 ### Added
