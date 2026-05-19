@@ -32,26 +32,10 @@ from src.db import get_system_db
 # ---------------------------------------------------------------------------
 
 def _grant_table(conn, user_id: str, table_id: str) -> None:
-    """Grant user_id read access to table_id via a dedicated group."""
-    from src.repositories.user_groups import UserGroupsRepository
-    from src.repositories.user_group_members import UserGroupMembersRepository
-    from src.repositories.resource_grants import ResourceGrantsRepository
-
+    """Stack-gated RBAC: wrap table in auto data_package + grant package."""
+    from tests.conftest import grant_table_via_package
     grp_name = f"audit-e-{user_id}-{table_id}"[:60]
-    grp = UserGroupsRepository(conn).get_by_name(grp_name)
-    if not grp:
-        grp = UserGroupsRepository(conn).create(
-            name=grp_name, description="audit-e-test", created_by="test",
-        )
-    members = UserGroupMembersRepository(conn)
-    if not members.has_membership(user_id, grp["id"]):
-        members.add_member(user_id, grp["id"], source="admin", added_by="test")
-    grants = ResourceGrantsRepository(conn)
-    if not grants.has_grant([grp["id"]], "table", table_id):
-        grants.create(
-            group_id=grp["id"], resource_type="table", resource_id=table_id,
-            assigned_by="test",
-        )
+    grant_table_via_package(conn, table_id, user_id, group_name=grp_name)
 
 
 def _register_table(client, admin_hdrs, table_id, source_type="keboola", query_mode="local"):

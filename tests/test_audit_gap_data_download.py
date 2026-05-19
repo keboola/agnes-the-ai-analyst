@@ -3,27 +3,18 @@ from src.db import get_system_db
 
 
 def _grant_table(conn, user_id: str, table_id: str) -> str:
+    """Stack-gated RBAC: wrap table in auto data_package + grant package."""
+    from tests.conftest import grant_table_via_package
     from src.repositories.user_groups import UserGroupsRepository
-    from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.resource_grants import ResourceGrantsRepository
-
+    pkg_id = grant_table_via_package(
+        conn, table_id, user_id, group_name=f"dl-{user_id}",
+    )
     grp = UserGroupsRepository(conn).get_by_name(f"dl-{user_id}")
-    if not grp:
-        grp = UserGroupsRepository(conn).create(
-            name=f"dl-{user_id}", description="download-test", created_by="test",
-        )
-    members = UserGroupMembersRepository(conn)
-    if not members.has_membership(user_id, grp["id"]):
-        members.add_member(user_id, grp["id"], source="admin", added_by="test")
-    grants = ResourceGrantsRepository(conn)
-    if not grants.has_grant([grp["id"]], "table", table_id):
-        return grants.create(
-            group_id=grp["id"], resource_type="table", resource_id=table_id,
-            assigned_by="test",
-        )
     existing = next(
-        g for g in grants.list_for_groups([grp["id"]], "table")
-        if g["resource_id"] == table_id
+        g for g in ResourceGrantsRepository(conn)
+            .list_for_groups([grp["id"]], "data_package")
+        if g["resource_id"] == pkg_id
     )
     return existing["id"]
 

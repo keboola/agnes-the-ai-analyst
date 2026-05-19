@@ -144,22 +144,14 @@ class TestRBACEnforcement:
             "source_table": "orders", "query_mode": "local",
         }, headers=_auth(admin_t))
 
-        # Mint a TABLE grant for analyst1
+        # Stack-gated RBAC: wrap the table in an auto data_package + grant
+        # the package to a custom group analyst1 belongs to.
         from src.db import get_system_db
-        from src.repositories.user_groups import UserGroupsRepository
-        from src.repositories.user_group_members import UserGroupMembersRepository
-        from src.repositories.resource_grants import ResourceGrantsRepository
+        from tests.conftest import grant_table_via_package
         conn = get_system_db()
         try:
-            grp = UserGroupsRepository(conn).create(
-                name="e2e-analyst", description="t", created_by="t",
-            )
-            UserGroupMembersRepository(conn).add_member(
-                "analyst1", grp["id"], source="admin", added_by="t",
-            )
-            ResourceGrantsRepository(conn).create(
-                group_id=grp["id"], resource_type="table", resource_id="orders",
-                assigned_by="t",
+            grant_table_via_package(
+                conn, "orders", "analyst1", group_name="e2e-analyst",
             )
         finally:
             conn.close()
