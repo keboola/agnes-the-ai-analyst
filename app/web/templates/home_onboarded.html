@@ -49,6 +49,21 @@
     max-width: 680px;
     line-height: 1.6;
 }
+/* Inline `<code>` chips inside the blue welcome hero — mirror the
+   .install-hero rule on the not-onboarded view (amber-on-dark-navy,
+   ≈9:1 contrast). Previous inline `style="background: rgba(255,255,
+   255,0.12)..."` rendered as a near-invisible faint-white pill on the
+   blue gradient, with inherited white text on top — low contrast +
+   the chip silhouette merged into the hero. */
+.home-mock .hero code {
+    background: rgba(15, 23, 42, 0.75);
+    color: #FBBF24;
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+    font-size: 12.5px;
+}
 
 .home-mock .section-label {
     font-size: 11px;
@@ -104,7 +119,7 @@
         <div class="eyebrow">Welcome back, {{ display_name }}</div>
         <h1>You're all set up</h1>
         <p>
-            Open Claude Code in any project under <code style="background: rgba(255,255,255,0.12); border: none; padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 12.5px;">~/{{ workspace_dir }}/Projects/</code>
+            Open Claude Code in any project under <code>~/{{ workspace_dir }}/Projects/</code>
             and start a session — your data and plugins are already synced. Use the cards below to jump into the parts of {{ instance_brand }} you need.
         </p>
     </div>

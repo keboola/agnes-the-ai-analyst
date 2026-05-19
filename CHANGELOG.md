@@ -10,6 +10,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Inline `<code>` chips inside the blue install-hero on `/home` (both
+  not-onboarded install steps + onboarded welcome paragraph) now render
+  as amber-on-dark-navy with a subtle amber border instead of the
+  previous `rgba(255,255,255,0.12)` faint-white-on-blue pill with
+  inherited white text. The previous combination was ≈2:1 contrast
+  (fails WCAG AA) and the chip silhouette merged into the hero
+  gradient, so `claude --version`, `~/Agnes`, `/agnes-private`,
+  `~/.claude/settings.local.json`, etc. looked like a muddy blob
+  rather than a readable code chip. New rule lands at ≈9:1 contrast
+  and matches the existing `.install-cmd` copy-button-box palette.
+  Two inline `style="background: rgba(255,255,255,0.12);..."`
+  overrides in the lead paragraphs of both home templates dropped
+  so the CSS rule wins; styling now lives in one place per hero
+  scope (`.install-hero code` / `.hero code`).
+
 ## [0.55.4] — 2026-05-19
 
 ### Security

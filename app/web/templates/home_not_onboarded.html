@@ -426,9 +426,23 @@
     margin-top: 12px;
     line-height: 1.55;
 }
+/* Inline `<code>` chips inside the blue install-hero (lead paragraphs +
+   install-note prose). Previous rule was `rgba(255,255,255,0.12)` bg +
+   inherited near-white text — barely-visible faint-white film on the
+   blue gradient with low-contrast white text on top (≈2:1, fails WCAG
+   AA). The visual effect read as a muddy bluish blob — the user
+   reported the text as "dark blue/black font" because the chip blended
+   into the hero and the white text lost its edges.
+   Switched to the same amber-on-dark-navy palette as the .install-cmd
+   copy-button boxes below (≈9:1 contrast). Border tint matches the
+   amber accent so chips read as clickable affordances even with the
+   transparent navy bg. */
+.home-mock .install-hero code,
 .home-mock .install-note code,
 .home-mock .install-note > code {
-    background: rgba(255, 255, 255, 0.12);
+    background: rgba(15, 23, 42, 0.75);
+    color: #FBBF24;
+    border: 1px solid rgba(251, 191, 36, 0.30);
     padding: 1px 6px;
     border-radius: 4px;
     font-family: var(--hp-font-mono);
@@ -1055,10 +1069,10 @@
         <div class="eyebrow">Welcome, {{ display_name }} — let's get you set up</div>
         <h1>Connect Claude Code on your machine to your team's data</h1>
         <p class="lead">
-            {{ instance_brand }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, third-party tools (Asana, Google Workspace, Atlassian), and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>; the install script also connects your tools for you, so there's no extra page to visit. Everything it installs lives in your home folder (<code style="background: rgba(255,255,255,0.12); border: none; padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/{{ workspace_dir }}</code>) and can be removed in one command.
+            {{ instance_brand }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, third-party tools (Asana, Google Workspace, Atlassian), and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>; the install script also connects your tools for you, so there's no extra page to visit. Everything it installs lives in your home folder (<code>~/{{ workspace_dir }}</code>) and can be removed in one command.
         </p>
         <p class="lead lead-privacy">
-            <strong>What leaves your machine.</strong> Session telemetry — prompts, tool calls, and tool responses — flows back to the central catalog so the team can analyse failure patterns. Raw data rows you query locally stay on your machine; only the prompt/response transcript travels. Need a session off the record? Toggle Private in Claude Code (by typing <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">/agnes-private</code>) to disable telemetry for that chat — nothing from that session reaches the catalog.
+            <strong>What leaves your machine.</strong> Session telemetry — prompts, tool calls, and tool responses — flows back to the central catalog so the team can analyse failure patterns. Raw data rows you query locally stay on your machine; only the prompt/response transcript travels. Need a session off the record? Toggle Private in Claude Code (by typing <code>/agnes-private</code>) to disable telemetry for that chat — nothing from that session reaches the catalog.
         </p>
 
         <div class="install-block">
