@@ -12,7 +12,7 @@ import threading
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable, Iterator, Literal
+from typing import Callable, Iterator, List, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -738,3 +738,74 @@ def get_bq_access() -> BqAccess:
         billing = data
 
     return BqAccess(BqProjects(billing=billing, data=data))
+
+
+def validate_bigquery_startup_config() -> List[str]:
+    """Surface common config gaps that only fail at first BQ call (not at boot).
+
+    Returns a list of warning strings (empty when nothing notable). Caller
+    typically logs each at WARNING and continues — startup never blocks on
+    config quality issues, only on hard schema problems.
+
+    Checks (in order, each independent):
+
+    1. Cross-project setup (``project`` ≠ ``billing_project``) without
+       ``location`` set. The region-scoped metadata path
+       (``_fetch_via_table_storage`` in metadata.py) falls back to
+       ``client.get_dataset()`` per-table on every cache refresh when
+       ``location`` is unset, which works for some IAM shapes but silently
+       fails with ``"provider returned no data"`` for others (the
+       on-disk symptom from issue #343). Setting
+       ``data_source.bigquery.location`` to the dataset's region makes the
+       fast path deterministic.
+
+    2. ``billing_project`` defaulted to ``project`` while the two values
+       suggest a cross-project setup (project name contains "data" or
+       "dataview", billing name contains "ai" or "foundryai" — heuristic).
+       Almost-always-wrong combo: pre-fix the SA on ``project`` lacks
+       ``serviceusage.services.use`` and every query 502s. We can't be
+       sure, so we warn rather than reject.
+
+    Lives in this module (not app/main.py) so the SDK / CLI / scripts that
+    use ``BqAccess`` outside the FastAPI process can call it too.
+    """
+    warnings: List[str] = []
+    try:
+        from app.instance_config import get_value
+    except Exception:
+        return warnings  # config layer not available — likely test harness
+    project = (get_value("data_source", "bigquery", "project") or "").strip()
+    billing = (get_value("data_source", "bigquery", "billing_project") or "").strip()
+    location = (get_value("data_source", "bigquery", "location") or "").strip()
+    if not project:
+        return warnings  # BQ not configured — nothing to check
+    effective_billing = billing or project
+    if effective_billing != project and not location:
+        warnings.append(
+            f"data_source.bigquery.project={project!r} differs from "
+            f"billing_project={effective_billing!r} (cross-project setup) "
+            f"but data_source.bigquery.location is not set. The metadata "
+            f"cache will fall back to per-table REST dataset.get() and may "
+            f"silently return 'provider returned no data' for some IAM "
+            f"shapes. Set data_source.bigquery.location (e.g. 'us-central1' "
+            f"or 'EU') to the region where the dataset lives — see issue "
+            f"#343."
+        )
+    if not billing and project:
+        # Heuristic detection of the common cross-project mistake: data
+        # project named like a warehouse, project the SA actually lives in
+        # named like the app. The user typically wants billing_project to
+        # equal the SA's home project.
+        proj_low = project.lower()
+        warehouse_like = any(s in proj_low for s in ("dataview", "warehouse", "datalake", "-dw-", "-data-"))
+        if warehouse_like:
+            warnings.append(
+                f"data_source.bigquery.project={project!r} looks like a "
+                f"shared data warehouse but billing_project is unset, so "
+                f"jobs will bill to {project!r}. If the service account "
+                f"doesn't have serviceusage.services.use on {project!r}, "
+                f"every query will fail with 403. Set "
+                f"data_source.bigquery.billing_project to the SA's home "
+                f"project — see issue #343."
+            )
+    return warnings

@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 50
+SCHEMA_VERSION = 51
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -313,7 +313,13 @@ CREATE TABLE IF NOT EXISTS table_registry (
     where_filters VARCHAR,
     partition_by VARCHAR,
     partition_granularity VARCHAR,
-    initial_load_chunk_days INTEGER
+    initial_load_chunk_days INTEGER,
+    -- v51: fully-qualified BigQuery path (`project.dataset.table`) for
+    -- BigQuery rows. When set, decouples the UX/RBAC `bucket` label from
+    -- the physical BQ dataset name; rows without it fall back to the
+    -- legacy `<remote_attach.project>.<bucket>.<source_table>` path.
+    -- Issue #343.
+    bq_fqn VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -3249,6 +3255,18 @@ def _v49_to_v50_migrate(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+_V50_TO_V51_MIGRATIONS = [
+    # ``bq_fqn`` carries the fully-qualified BigQuery path
+    # (``project.dataset.table``) for a registered remote table when set,
+    # so the orchestrator's rebuild path no longer has to reconstruct it
+    # from the globally-attached ``_remote_attach`` project + the dual-
+    # purpose ``bucket`` field (which is also a UX/RBAC label).
+    # Nullable for backwards compat — rows without it keep using the
+    # legacy ``<remote_attach.project>.<bucket>.<source_table>`` fallback.
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS bq_fqn VARCHAR",
+]
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -3705,6 +3723,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v48_to_v49_migrate(conn)
             if current < 50:
                 _v49_to_v50_migrate(conn)
+            if current < 51:
+                for sql in _V50_TO_V51_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
