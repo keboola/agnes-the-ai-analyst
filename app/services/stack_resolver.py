@@ -194,18 +194,21 @@ class StackResolver:
         the admin's own subscriptions (required entries are also always
         in_stack by convention — required ⇒ in stack).
         """
+        # Soft-deleted entries (``deleted_at IS NOT NULL``) are excluded
+        # from admin Browse — they're still in the DB for the Undo
+        # window but a /catalog or /memory render mustn't surface them.
         if resource_type == ResourceType.DATA_PACKAGE:
             all_ids = {
                 r[0]
                 for r in self.conn.execute(
-                    "SELECT id FROM data_packages"
+                    "SELECT id FROM data_packages WHERE deleted_at IS NULL"
                 ).fetchall()
             }
         elif resource_type == ResourceType.MEMORY_DOMAIN:
             all_ids = {
                 r[0]
                 for r in self.conn.execute(
-                    "SELECT id FROM memory_domains"
+                    "SELECT id FROM memory_domains WHERE deleted_at IS NULL"
                 ).fetchall()
             }
         else:
@@ -337,13 +340,18 @@ class StackResolver:
         # stable. Resolver-level badge derivation matches the API's
         # _badges_for() heuristic: 'curated' iff creator is in Admin,
         # 'new' iff created_at < 30 days ago.
+        # Soft-deleted entries (``deleted_at IS NOT NULL``) are excluded
+        # — a grant whose target was deleted via /admin/* mustn't pull
+        # the row back into /catalog or /memory. The Undo flow can still
+        # restore it because the row stays in the DB.
         if resource_type == ResourceType.DATA_PACKAGE:
             rows = self.conn.execute(
                 f"""SELECT id, name, description, icon, color, cover_image_url,
                            status, category,
                            owner_name, owner_team, tags,
                            created_by, created_at
-                       FROM data_packages WHERE id IN ({placeholders})
+                       FROM data_packages
+                       WHERE id IN ({placeholders}) AND deleted_at IS NULL
                        ORDER BY name""",
                 list(ids),
             ).fetchall()
@@ -353,7 +361,8 @@ class StackResolver:
                            status, NULL AS category,
                            NULL AS owner_name, NULL AS owner_team, NULL AS tags,
                            created_by, created_at
-                       FROM memory_domains WHERE id IN ({placeholders})
+                       FROM memory_domains
+                       WHERE id IN ({placeholders}) AND deleted_at IS NULL
                        ORDER BY name""",
                 list(ids),
             ).fetchall()

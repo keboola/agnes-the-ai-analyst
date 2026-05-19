@@ -159,6 +159,26 @@ class TestBrowseAdminDataPackage:
         assert by_id["pkg_sub"].in_stack is True
         assert by_id["pkg_unsub"].in_stack is False
 
+    def test_soft_deleted_packages_excluded(self, conn):
+        """A package with ``deleted_at`` set must NOT surface in admin
+        Browse. The row stays in the DB for the Undo window, but every
+        /catalog render mustn't show it (symptom user reported:
+        "zobrazujeme i smazane data packages")."""
+        from datetime import datetime, timezone as _tz
+        _seed_pkg(conn, pkg_id="pkg_live", name="Live")
+        _seed_pkg(conn, pkg_id="pkg_gone", name="Tombstoned")
+        conn.execute(
+            "UPDATE data_packages SET deleted_at = ? WHERE id = ?",
+            [datetime.now(_tz.utc), "pkg_gone"],
+        )
+        resolver = StackResolver(conn)
+        entries = resolver.browse_admin("u_admin", ResourceType.DATA_PACKAGE)
+        ids = {e.id for e in entries}
+        assert "pkg_live" in ids
+        assert "pkg_gone" not in ids, (
+            "soft-deleted packages must not appear in admin Browse"
+        )
+
     def test_required_grant_propagates_to_requirement_field(self, conn):
         """A required grant on one of the admin's groups must surface as
         ``requirement='required'`` so the macro renders the disabled
