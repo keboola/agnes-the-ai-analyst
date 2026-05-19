@@ -830,17 +830,29 @@ def _build_memory_domains_section(conn, user: dict) -> list:
         if not dom:
             continue
         items = repo.list_items_of_domain(entry.id, limit=10000)
-        # Per-domain md5 — concatenate sorted item tuples so the hash is
-        # stable under list ordering and flips on any content mutation.
-        # MUST include ``is_required`` and ``content`` because the bundle
-        # rendered by ``_build_per_domain_markdown`` routes items between
-        # "## Required" and "## Approved" by ``is_required`` and embeds
-        # the full ``content`` body; without these in the hash, an admin
-        # edit of either dimension leaves the manifest md5 unchanged →
-        # ``agnes pull`` skips the re-fetch → analyst keeps a stale
-        # bundle.md (caught by Devin review on PR #333).
+        # Per-domain md5 — concatenate sorted item tuples so the hash
+        # is stable under list ordering and flips on any content
+        # mutation. MUST include ``is_required`` and ``content``
+        # because the bundle rendered by ``_build_per_domain_markdown``
+        # routes items between "## Required" and "## Approved" by
+        # ``is_required`` and embeds the full ``content`` body; without
+        # these in the hash, an admin edit of either dimension leaves
+        # the manifest md5 unchanged → ``agnes pull`` skips the
+        # re-fetch → analyst keeps a stale bundle.md.
+        #
+        # Filter to the SAME predicate the renderer uses (any
+        # ``is_required`` item OR ``status='approved' AND not is_required``)
+        # so edits to pending/rejected non-required items don't flip the
+        # md5 against an identical-bytes bundle — the original Devin
+        # review flagged this asymmetry (BUG-0001 fixed the hash inputs;
+        # this commit closes the matching 🚩 ANALYSIS that the SET of
+        # items hashed must also match what the renderer emits).
         h = hashlib.md5()
-        for it in sorted(items, key=lambda r: r["id"]):
+        renderable = [
+            it for it in items
+            if it.get("is_required") or it.get("status") == "approved"
+        ]
+        for it in sorted(renderable, key=lambda r: r["id"]):
             h.update(
                 f"{it['id']}|{it.get('title','')}|{it.get('status','')}|"
                 f"{it.get('is_required', False)}|{it.get('content','')}|".encode()

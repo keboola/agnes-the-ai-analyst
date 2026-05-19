@@ -67,7 +67,7 @@ class TestExtendedDocs:
         tid = _seed(repo)
         gotchas = [
             {"key": True, "body": "Joins via LOWER(bcookie); forgetting LOWER drops rows."},
-            {"key": False, "body": "Filter user_brand_affiliation = 'groupon' for P&L."},
+            {"key": False, "body": "Filter user_brand_affiliation = 'acme' for P&L."},
             {"key": False, "body": "Exclude is_excluded_from_pnl = 1 for revenue."},
         ]
         repo.update_docs(tid, gotchas=gotchas)

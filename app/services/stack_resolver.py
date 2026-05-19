@@ -243,12 +243,21 @@ class StackResolver:
     ) -> None:
         """Subscribe the user to an ``available`` resource.
 
-        Raises HTTP 400 if the resource is already ``required`` — clients
-        shouldn't try to subscribe to a required resource (it's in the
-        stack by default).
+        Raises HTTP 400 if the resource is already ``required`` —
+        clients shouldn't try to subscribe to a required resource
+        (it's in the stack by default). Raises HTTP 403 if the user
+        has no ``available`` grant for the resource — defensive
+        belt-and-suspenders: the API-layer ``can_access`` gate in
+        ``app/api/stack.py`` already covers HTTP callers, but a
+        direct in-process call here without this check would create
+        a zombie subscription that ``stack()`` then hides on every
+        read. Fail loud at write time.
         """
         if self.is_required(user_id, resource_type, resource_id):
             raise HTTPException(status_code=400, detail="already_required")
+        _, available_ids = self._grants(user_id, resource_type)
+        if resource_id not in available_ids:
+            raise HTTPException(status_code=403, detail="no_available_grant")
         self.conn.execute(
             "INSERT INTO user_stack_subscriptions"
             "(user_id, resource_type, resource_id) "
