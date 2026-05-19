@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- `agnes init` now runs `_chmod_workspace_hooks(workspace)` for OVERRIDE
+  mode too (Initial Workspace Template seed-repo flow), not just the
+  DEFAULT path. Override-mode workspaces seeded from an admin's
+  template repo were leaving hooks like
+  `.claude/hooks/skill-nudge/nudge.sh` and
+  `.claude/hooks/prompt-history/log-prompt.sh` non-executable when
+  the seed repo's git checkout didn't preserve the +x bit
+  (`core.filemode=false`, archive extractions, FUSE/NFS mounts), and
+  every SessionStart fired `Permission denied`. The chmod helper
+  already recurses (`rglob`) so subdir-scoped hook layouts were
+  covered — the bug was that the call site sat inside the
+  `if not override_active:` block. Moved out to a common step
+  before the first pull so every init path runs it.
+
 ## [0.55.4] — 2026-05-19
 
 ### Security

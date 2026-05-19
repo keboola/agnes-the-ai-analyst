@@ -493,7 +493,6 @@ def init(
             ), encoding="utf-8")
         install_claude_hooks(workspace)
         install_claude_commands(workspace)
-        _chmod_workspace_hooks(workspace)
 
         # ------------------------------------------------------------------
         # Step 6: CLAUDE.local.md stub — only when absent. `--force` does NOT
@@ -510,6 +509,22 @@ def init(
                 "# My Notes\n\nPersonal notes for this workspace. Uploaded on `agnes push`.\n",
                 encoding="utf-8",
             )
+
+    # ------------------------------------------------------------------
+    # Always chmod +x hook scripts that landed on disk, regardless of
+    # which path seeded the workspace. In DEFAULT mode the hooks come
+    # from `install_claude_hooks` above; in OVERRIDE mode they come
+    # from the admin's initial-workspace-template clone — and `git
+    # checkout` of that template doesn't reliably preserve the +x bit
+    # (filemode=false repos, archive extractions, FUSE/NFS mounts),
+    # so hooks like `.claude/hooks/skill-nudge/nudge.sh` or
+    # `.claude/hooks/prompt-history/log-prompt.sh` could land non-
+    # executable and fire `Permission denied` on the very next
+    # SessionStart. `_chmod_workspace_hooks` recurses (`rglob`) so
+    # subdir-scoped hook layouts are covered. Best-effort, no-op on
+    # Windows NTFS.
+    # ------------------------------------------------------------------
+    _chmod_workspace_hooks(workspace)
 
     # ------------------------------------------------------------------
     # Step 7: first pull. `run_pull` records per-stage failures inside
