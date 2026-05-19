@@ -168,7 +168,7 @@ class StackResolver:
     ) -> List[ResourceEntry]:
         """All resources the user could see — required + available, annotated
         with ``in_stack`` so the UI can render Add/Remove affordances.
-        Admin uses route-handler god-mode for the full list; this method
+        Admin uses :meth:`browse_admin` for the full list; this method
         stays grants-based so non-admin browse is correct."""
         groups = self._user_group_ids(user_id)
         required_ids, available_ids = self._grants(groups, resource_type)
@@ -178,6 +178,40 @@ class StackResolver:
         for e in entries:
             # required → always in stack; available → only when subscribed.
             e.in_stack = e.id in required_ids or e.id in subscribed_ids
+        return entries
+
+    def browse_admin(
+        self, user_id: str, resource_type: ResourceType
+    ) -> List[ResourceEntry]:
+        """Admin god-mode Browse: ALL entries of ``resource_type`` with
+        ``in_stack`` set from the admin's own subscriptions. Used by
+        /catalog and /memory when the viewer is admin so the browse grid
+        surfaces every package/domain regardless of group grants — but
+        still gets the same v51/v56 enrichment (status, category,
+        owner_name, tags, badges) as :meth:`browse`.
+        """
+        if resource_type == ResourceType.DATA_PACKAGE:
+            all_ids = {
+                r[0]
+                for r in self.conn.execute(
+                    "SELECT id FROM data_packages"
+                ).fetchall()
+            }
+        elif resource_type == ResourceType.MEMORY_DOMAIN:
+            all_ids = {
+                r[0]
+                for r in self.conn.execute(
+                    "SELECT id FROM memory_domains"
+                ).fetchall()
+            }
+        else:
+            raise ValueError(
+                f"browse_admin does not support resource_type={resource_type!r}"
+            )
+        subscribed_ids = self._subscribed_ids(user_id, resource_type)
+        entries = self._fetch_entries(resource_type, all_ids, set())
+        for e in entries:
+            e.in_stack = e.id in subscribed_ids
         return entries
 
     def is_required(

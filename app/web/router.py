@@ -940,27 +940,15 @@ async def catalog(
     is_admin_view = is_user_admin(user["id"], conn)
     if is_admin_view:
         # Admin god-mode for BROWSE only: surface every package regardless
-        # of group grants so admins can audit the full set. For MY STACK we
-        # still call the resolver — admins legitimately subscribe to packages
-        # (POST /api/stack/subscribe) and expect to see them in their stack
-        # tab. Hard-coding stack_entries=[] was the "I clicked Add to stack,
-        # green toast, then My Stack is empty" bug user reported.
-        from app.services.stack_resolver import ResourceEntry
-        actual_stack = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
-        stack_ids = {e.id for e in actual_stack}
-        browse_entries = [
-            ResourceEntry(
-                id=p["id"], name=p["name"], description=p.get("description"),
-                icon=p.get("icon"), color=p.get("color"),
-                cover_image_url=p.get("cover_image_url"),
-                status=p.get("status") or "prod",
-                category=p.get("category"),
-                requirement="available",
-                in_stack=(p["id"] in stack_ids),
-            )
-            for p in pkg_repo.list()
-        ]
-        stack_entries = actual_stack
+        # of group grants so admins can audit the full set. ``browse_admin``
+        # runs the same v51/v56 enrichment pass as ``browse`` (status,
+        # category, owner_name, tags, derived badges) — re-implementing
+        # it inline silently dropped those fields, leaving admin cards
+        # empty of v56 chrome. For MY STACK we still call the resolver —
+        # admins legitimately subscribe to packages and expect to see them
+        # in their stack tab.
+        browse_entries = resolver.browse_admin(user["id"], ResourceType.DATA_PACKAGE)
+        stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
     else:
         browse_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
         stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
@@ -1426,27 +1414,14 @@ async def corporate_memory(
     is_admin_view = is_user_admin(user["id"], conn)
 
     # Admin god-mode for BROWSE only: surface every domain regardless of
-    # group grants so admins can audit the full set. For MY STACK we still
-    # call the resolver — admins who POST /api/stack/subscribe expect to
-    # see those subscriptions in their stack tab. Hard-coding stack=[] was
-    # the "Add to stack works but My Stack stays empty" bug.
+    # group grants so admins can audit the full set. ``browse_admin`` runs
+    # the v51 enrichment pass (status) plus v56 derived badges so admin
+    # cards stay visually consistent with non-admin browse. For MY STACK
+    # we still call the resolver — admins who POST /api/stack/subscribe
+    # expect to see those subscriptions in their stack tab.
     if is_admin_view:
-        from app.services.stack_resolver import ResourceEntry
-        actual_stack = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
-        stack_ids = {e.id for e in actual_stack}
-        browse_entries = [
-            ResourceEntry(
-                id=d["id"], name=d["name"], description=d.get("description"),
-                icon=d.get("icon"), color=d.get("color"),
-                cover_image_url=d.get("cover_image_url"),
-                status=d.get("status") or "prod",
-                category=None,
-                requirement="available",
-                in_stack=(d["id"] in stack_ids),
-            )
-            for d in domains_repo.list(limit=10000)
-        ]
-        stack_entries = actual_stack
+        browse_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
+        stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
     else:
         browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
         stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
