@@ -327,7 +327,7 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     """Steps 2-4 — workspace folder check, then `agnes init` + smoke verify.
 
     Step 2 verifies the user is already cd'd into the workspace folder
-    that the /home onboarding page's visible "Step 3 — create your
+    that the /home onboarding page's visible "Step 2 — create your
     workspace folder" told them to create manually (`mkdir -p
     ~/{workspace_dir} && cd ~/{workspace_dir}`). The pasted script
     DOES NOT auto-create the folder — that would silently override an
@@ -363,7 +363,7 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     return [
         "",
         "2) Verify the user is already in the workspace folder.",
-        "   The /home page's visible \"Step 3 — create your workspace folder\"",
+        "   The /home page's visible \"Step 2 — create your workspace folder\"",
         "   already asked the user to run",
         "       mkdir -p ~/{workspace_dir} && cd ~/{workspace_dir}",
         "   in their terminal BEFORE pasting this script. Do NOT silently",
@@ -379,7 +379,7 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "   If `pwd` does NOT match, STOP and tell the user verbatim:",
         "",
         "       \"You are in <current-pwd>, but {instance_brand} is normally",
-        "       installed in ~/{workspace_dir} (see /home Step 3). Either run",
+        "       installed in ~/{workspace_dir} (see /home Step 2). Either run",
         "           mkdir -p ~/{workspace_dir} && cd ~/{workspace_dir}",
         "       in your terminal now and re-paste this setup script, OR reply",
         "       'install here' to install {instance_brand} in <current-pwd>",
