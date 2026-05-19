@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.54.29] — 2026-05-19
+
 ### Added
 - **`table_registry.bq_fqn` column** (schema v51, issue #343) — optional
   fully-qualified BigQuery path (`project.dataset.table`) that decouples
