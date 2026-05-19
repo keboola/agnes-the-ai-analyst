@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- `agnes diagnose` is now role-aware. A fresh analyst install no longer reports `Overall: degraded` just because the server has operator-side warnings (stale tables, session-pipeline cadence, BQ billing-project config) that the analyst can't act on. Server (`/api/health/detailed`) tags every check with `audience: "analyst" | "operator"` plus a top-level `caller_role` derived from `user.is_admin` and an `overall_analyst` aggregation. Client excludes operator checks from the headline for analyst callers, surfaces operator warning count on a secondary line so they stay visible, auto-promotes admin/operator callers to the full aggregation, and lets analysts opt in via `--include-operator-checks`. Legacy servers (no `caller_role`) keep the pre-#345-B full aggregation — no silent regression. Closes #345 B.
+
 ### Added
 - `AGNES_MARKETPLACE_URL` env override for `agnes refresh-marketplace --bootstrap`. Pre-fix the marketplace endpoint was hardcoded to `{server_host}/marketplace.git/`, which broke deployments that serve the marketplace from a different host than the API (reverse-proxy split, CDN-fronted marketplace). When set, the env var is parsed via `urlparse`; missing scheme or host fails fast with a clear error (operator misconfiguration surfaces immediately). The PAT injection / strip behavior is preserved on the override path. Default behavior unchanged when the env var is empty / unset. Closes #345 A.
 
