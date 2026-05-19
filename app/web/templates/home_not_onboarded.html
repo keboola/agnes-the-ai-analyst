@@ -1057,6 +1057,9 @@
         <p class="lead">
             {{ instance_brand }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, third-party tools (Asana, Google Workspace, Atlassian), and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>; the install script also connects your tools for you, so there's no extra page to visit. Everything it installs lives in your home folder (<code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/{{ workspace_dir }}</code>) and can be removed in one command.
         </p>
+        <p class="lead lead-privacy">
+            <strong>What leaves your machine.</strong> Session telemetry — prompts, tool calls, and tool responses — flows back to the central catalog so the team can analyse failure patterns. Raw data rows you query locally stay on your machine; only the prompt/response transcript travels. Need a session off the record? Toggle Private in Claude Code (by typing <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">/agnes-private</code>) to disable telemetry for that chat — nothing from that session reaches the catalog.
+        </p>
 
         <div class="install-block">
             <div class="label">Step 1 — install Claude Code</div>
