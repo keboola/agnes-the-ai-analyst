@@ -10,7 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.3] — 2026-05-19
+
 ### Changed
+- **BREAKING:** `src/rbac.can_access_table` + `get_accessible_tables` now route through Data Package stack membership instead of per-table `resource_grants`. Per-table grants no longer surface a table to analysts on their own — admins must wrap tables in a Data Package and grant the package (Required or in the user's stack). `manifest.direct_tables` is always `[]` (key kept for older-CLI destructuring). Internal tables (`agnes_sessions/telemetry/audit`) + admin god-mode keep their carve-outs. Standardised 403 detail across every CLI gate (`/api/data/*`, `/api/query`, `/api/v2/sample`, `/api/v2/scan`, `/api/v2/schema`): *"Table 'X' is not in your stack. Ask an admin to add it to a Data Package you have access to (Required or in your stack), then run `agnes pull` to refresh."* New shared test helper `tests.conftest.grant_table_via_package` replaces the legacy `resource_grants(table)` pattern across 8 test files. Closes #356 / #333 follow-up.
 - `agnes diagnose` is now role-aware. A fresh analyst install no longer reports `Overall: degraded` just because the server has operator-side warnings (stale tables, session-pipeline cadence, BQ billing-project config) that the analyst can't act on. Server (`/api/health/detailed`) tags every check with `audience: "analyst" | "operator"` plus a top-level `caller_role` derived from `user.is_admin` and an `overall_analyst` aggregation. Client excludes operator checks from the headline for analyst callers, surfaces operator warning count on a secondary line so they stay visible, auto-promotes admin/operator callers to the full aggregation, and lets analysts opt in via `--include-operator-checks`. Legacy servers (no `caller_role`) keep the pre-#345-B full aggregation — no silent regression. Closes #345 B.
 
 ### Added
@@ -43,6 +46,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   in any tooling that parses the changelog; the HEAD-side content
   inside each pair is what was kept (the incoming side held
   superseded intermediate-commit duplicates).
+
+### Fixed
+- **First-demo UX polish on /catalog** (2026-05-19): Browse grid now groups **Required** packages first instead of by `created_at` so the most-relevant adopt-immediately items lead. `.stack-card__desc` line clamp bumped 2 → 4 lines so card descriptions get more room. `/catalog/t/<id>` table-detail page dropped four editorial sections (Sample questions / What's inside / Things to know / Pairs well with) — hero (name + description + parent packages) only. Same Browse-order treatment applied to `/corporate-memory`.
 
 ## [0.55.2] — 2026-05-19
 
