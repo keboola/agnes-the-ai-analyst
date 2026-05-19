@@ -423,6 +423,7 @@ code {
 .code-block code,
 .code-block pre {
     background: transparent;
+    border: none;
     padding: 0;
     font-size: 0.8125rem;
     color: inherit;
