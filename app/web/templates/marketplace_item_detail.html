@@ -480,7 +480,7 @@
     overflow-x: auto; margin: 8px 0 14px;
   }
   .item-detail .lead-rendered pre code {
-    background: transparent; padding: 0; color: inherit;
+    background: transparent; border: none; border-radius: 0; padding: 0; color: inherit;
   }
   .item-detail .lead-rendered a { color: var(--primary); text-decoration: none; }
   .item-detail .lead-rendered a:hover { text-decoration: underline; }
@@ -525,6 +525,13 @@
     line-height: 1.4;
     overflow-x: auto;
     white-space: pre-wrap; word-break: break-word;
+  }
+  .item-detail .use-case-prompt code {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    color: inherit;
   }
 
   /* Sample interaction — Claude Code Catppuccin Mocha dark transcript.
@@ -575,6 +582,7 @@
   .item-detail .sample-assistant-body em { color: #f9e2af; font-style: italic; }
   .item-detail .sample-assistant-body code {
     background: rgba(255,255,255,0.06);
+    border: none;
     color: #f5c2e7;
     border-radius: 4px; padding: 1px 5px;
     font-size: 0.92em; font-family: var(--font-mono);
@@ -590,7 +598,7 @@
     margin: 8px 0;
   }
   .item-detail .sample-assistant-body pre code {
-    background: transparent; padding: 0; color: inherit;
+    background: transparent; border: none; border-radius: 0; padding: 0; color: inherit;
   }
   .item-detail .sample-assistant-body ul,
   .item-detail .sample-assistant-body ol { margin: 0 0 10px 22px; padding: 0; }

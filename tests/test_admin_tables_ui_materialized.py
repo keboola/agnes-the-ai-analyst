@@ -327,10 +327,17 @@ def test_keboola_discover_buttons_hidden_on_bigquery_instance(seeded_app, monkey
         # Inputs stay (manual entry works).
         assert 'id="kbBucket"' in html
         assert 'id="kbSourceTable"' in html
-        # Buttons hidden.
-        assert "discoverKeboolaBuckets" not in html
-        assert "discoverKeboolaTables" not in html
-        assert "prefillFromKeboolaTable" not in html
+        # Buttons hidden — match the actual CALL SITES, not the
+        # function definitions or JS comments that may reference the
+        # names verbatim. #347 moved several Keboola edit-modal
+        # helpers (incl. `prefillFromKeboolaTable`) out from under
+        # the keboola Jinja guard so they're now defined as dead code
+        # on every instance, but the `onclick="..."` call sites and
+        # the Discover buttons themselves still respect the guard,
+        # which is what actually matters for runtime behavior.
+        assert 'onclick="discoverKeboolaBuckets(' not in html
+        assert 'onclick="discoverKeboolaTables(' not in html
+        assert 'onclick="prefillFromKeboolaTable(' not in html
     finally:
         reset_cache()
 

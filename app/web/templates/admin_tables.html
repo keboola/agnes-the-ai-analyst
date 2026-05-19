@@ -727,15 +727,8 @@
             margin-bottom: 6px;
         }
 
-        .form-label .optional {
-            font-weight: 400;
-            color: var(--text-secondary);
-            font-size: 12px;
-        }
-
         .form-input,
-        .form-select,
-        .form-textarea {
+        .form-select {
             width: 100%;
             padding: 8px 12px;
             border: 1px solid var(--border);
@@ -748,8 +741,7 @@
         }
 
         .form-input:focus,
-        .form-select:focus,
-        .form-textarea:focus {
+        .form-select:focus {
             outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.1);
@@ -759,11 +751,6 @@
             background: var(--border-light);
             color: var(--text-secondary);
             cursor: not-allowed;
-        }
-
-        .form-textarea {
-            min-height: 80px;
-            resize: vertical;
         }
 
         .form-select {
@@ -1021,7 +1008,7 @@
                         <div class="form-group">
                             <label class="form-label">How should analysts access this data?</label>
                             <div class="bq-access-radio-group" style="display:flex; gap:12px; margin-top:6px;">
-                                <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="bqAccessMode" value="live" checked onchange="onBqAccessModeChange()">
                                     <strong>Live from BigQuery</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1031,7 +1018,7 @@
                                         freshness matters.
                                     </div>
                                 </label>
-                                <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="bqAccessMode" value="synced" onchange="onBqAccessModeChange()">
                                     <strong>Synced locally</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1046,7 +1033,7 @@
                         <div class="form-group bq-access-synced" style="display:none;">
                             <label class="form-label">What to sync?</label>
                             <div class="bq-sync-radio-group" style="display:flex; gap:12px; margin-top:6px;">
-                                <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="bqSyncMode" value="whole" checked onchange="onBqSyncModeChange()">
                                     <strong>Whole table</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1054,7 +1041,7 @@
                                         required. Disk + sync cost = full table size.
                                     </div>
                                 </label>
-                                <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="bqSyncMode" value="custom" onchange="onBqSyncModeChange()">
                                     <strong>Custom query</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1200,14 +1187,14 @@
                                 <a href="docs/admin/query-modes.md" target="_blank" title="When to use which mode" style="margin-left: 6px; text-decoration: none; cursor: help;">?</a>
                             </label>
                             <div style="display:flex; gap:12px; margin-top:6px;">
-                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editBqAccessMode" value="live" onchange="onEditBqAccessModeChange()">
                                     <strong>Live from BigQuery</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
                                         Each query goes to BQ. No local copy.
                                     </div>
                                 </label>
-                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editBqAccessMode" value="synced" onchange="onEditBqAccessModeChange()">
                                     <strong>Synced locally</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1225,14 +1212,14 @@
                         <div class="form-group bq-edit-access-synced" style="display:none;">
                             <label class="form-label">What to sync?</label>
                             <div style="display:flex; gap:12px; margin-top:6px;">
-                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editBqSyncMode" value="whole" onchange="onEditBqSyncModeChange()">
                                     <strong>Whole table</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
                                         <code>SELECT *</code> on a schedule.
                                     </div>
                                 </label>
-                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editBqSyncMode" value="custom" onchange="onEditBqSyncModeChange()">
                                     <strong>Custom query</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1356,7 +1343,7 @@
                         <div class="form-group">
                             <label class="form-label">What to sync?</label>
                             <div class="bq-sync-radio-group" style="display:flex; gap:12px; margin-top:6px; flex-wrap:wrap;">
-                                <label style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="kbSyncMode" value="whole" checked onchange="onKbSyncModeChange()">
                                     <strong>Whole table (extension)</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1364,7 +1351,7 @@
                                         each tick. Fastest path; full overwrite each run.
                                     </div>
                                 </label>
-                                <label style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="kbSyncMode" value="direct" onchange="onKbSyncModeChange()">
                                     <strong>Direct extract (Storage API)</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1373,7 +1360,7 @@
                                         and server-side <code>where_filters</code>.
                                     </div>
                                 </label>
-                                <label style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="kbSyncMode" value="custom" onchange="onKbSyncModeChange()">
                                     <strong>Custom SQL</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1581,7 +1568,7 @@
                         <div class="form-group">
                             <label class="form-label">What to sync?</label>
                             <div class="bq-sync-radio-group" style="display:flex; gap:12px; margin-top:6px; flex-wrap:wrap;">
-                                <label style="flex:1; min-width:200px; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editKbSyncMode" value="whole"
                                            onchange="onEditKbSyncModeChange()">
                                     <strong>Whole table (extension)</strong>
@@ -1589,7 +1576,7 @@
                                         DuckDB Keboola extension; full overwrite each tick.
                                     </div>
                                 </label>
-                                <label style="flex:1; min-width:200px; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editKbSyncMode" value="direct"
                                            onchange="onEditKbSyncModeChange()">
                                     <strong>Direct extract (Storage API)</strong>
@@ -1598,7 +1585,7 @@
                                         <code>where_filters</code>.
                                     </div>
                                 </label>
-                                <label style="flex:1; min-width:200px; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label class="sync-option-card" style="flex:1; min-width:200px; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editKbSyncMode" value="custom"
                                            onchange="onEditKbSyncModeChange()">
                                     <strong>Custom SQL</strong>
@@ -1884,7 +1871,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">Description <span class="optional">(optional)</span></label>
-            <textarea id="cdp-desc" class="form-input" rows="2"></textarea>
+            <textarea id="cdp-desc" class="form-textarea" rows="2"></textarea>
           </div>
           {# v51 lifecycle + classification — drive the hero filter
              checkboxes on /catalog and the eyebrow line above the
@@ -3176,7 +3163,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">Description</label>
-            <textarea id="edp-desc" class="form-input" rows="2"></textarea>
+            <textarea id="edp-desc" class="form-textarea" rows="2"></textarea>
           </div>
           <div class="form-group" style="display:flex; gap:12px;">
             <div style="flex:1;">
@@ -3901,7 +3888,6 @@
         if (mode === 'direct') onEditKbStrategyChange();
     }
 
-    {% if data_source_type == 'keboola' %}{# Phase F2 edit modal + prefill — keboola-only #}
     function _getEditKbStrategy() {
         var el = document.getElementById('editKbStrategy');
         return el ? el.value : 'full_refresh';
@@ -4153,7 +4139,6 @@
         }
         ta.value = 'SELECT *\nFROM kbc."' + bucket + '"."' + sourceTable + '"\nWHERE -- your filter here';
     }
-    {% endif %}{# data_source_type == 'keboola' — Phase F2 edit modal + prefill #}
 
     // C3: removed dead helper _buildKeboolaLegacyPayload — the Phase F
     // _buildKeboolaPayload (above) replaced it.

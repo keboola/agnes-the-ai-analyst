@@ -11,6 +11,7 @@
     --surface: #FFFFFF;
     --border: #E5E7EB;
     --border-light: #F3F4F6;
+    --border-dark: #C4C4C4;
     --success: #10B77F;
     --warning: #F59F0A;
     --error: #EA580C;
@@ -254,8 +255,8 @@ nav {
 
 .btn-google:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-    border-color: #c4c4c4;
-    background-color: #fafafa;
+    border-color: var(--border-dark);
+    background-color: var(--background);
 }
 
 .btn-google:active {
@@ -386,10 +387,28 @@ nav {
 
 /* Code blocks */
 code {
-    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
-    font-size: 0.875rem;
-    padding: 2px 6px;
-    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--border-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1px var(--space-1);
+    color: var(--text-primary);
+}
+
+/* Label qualifiers — optional, default, hint text next to form labels */
+.label-qualifier,
+.optional {
+    font-size: var(--text-sm);
+    font-weight: var(--font-normal);
+    color: var(--text-secondary);
+    margin-left: var(--space-1);
+}
+
+/* Radio option cards — visual selected state */
+.sync-option-card:has(input:checked) {
+    border-color: var(--primary) !important;
+    background: var(--primary-light) !important;
 }
 
 .code-block {
@@ -405,6 +424,8 @@ code {
 .code-block code,
 .code-block pre {
     background: transparent;
+    border: none;
+    border-radius: 0;
     padding: 0;
     font-size: 0.8125rem;
     color: inherit;
@@ -2885,8 +2906,8 @@ a.slack-badge:hover {
 
 .login-page .btn-google:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-    border-color: #c4c4c4;
-    background-color: #fafafa;
+    border-color: var(--border-dark);
+    background-color: var(--background);
 }
 
 .login-page .btn-google:active {
@@ -3970,6 +3991,29 @@ textarea.form-input {
     line-height: 1.5;
 }
 
+textarea.form-textarea {
+    width: 100%;
+    min-height: 80px;
+    padding: var(--space-2) var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    resize: vertical;
+    line-height: normal;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+textarea.form-textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+textarea.form-textarea::placeholder { color: var(--text-muted); }
+
 .form-input:focus {
     outline: none;
     border-color: var(--primary);
@@ -3977,6 +4021,14 @@ textarea.form-input {
 }
 
 .form-input::placeholder { color: var(--text-muted); }
+
+/* chip-input widget — set font on the container so the inner input's
+   `font: inherit` inline style picks up the right value */
+.chip-input {
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+}
 
 /* =====================================================
    Page-header primitive (Task 6)
