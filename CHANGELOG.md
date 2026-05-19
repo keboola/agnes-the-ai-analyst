@@ -41,19 +41,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (422) instead of landing in the registry and breaking the next
   rebuild silently.
 
-### Changed
-- **`SyncOrchestrator.rebuild()` self-heals BQ `_remote_attach.url`
-  drift**. When an admin edits `data_source.bigquery.project` in
-  `/admin/server-config`, the overlay is the source of truth but the
-  on-disk `extract.duckdb._remote_attach.url` would stay frozen at
-  the old project until the next BQ register/sync trigger. The
-  orchestrator now compares the two at every rebuild and, if they
-  differ, calls `rebuild_from_registry()` to regenerate the extract.
-  Closes the operational gap that made every remote BQ query on
-  `foundryai.groupondev.com` fail with `Dataset not found in <old
-  project>` errors across 2026-05-13 → 2026-05-19 even though the
-  admin UI showed the corrected project.
-
 ### Internal
 - New test suite `tests/test_bq_fqn.py` (25 cases): `parse_bq_fqn`
   unit matrix, extractor override paths (same-project VIEW + cross-
@@ -61,6 +48,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   drift sync, startup-validator heuristic, admin Pydantic models.
 
 ### Changed
+- **`SyncOrchestrator.rebuild()` self-heals BQ `_remote_attach.url`
+  drift**. When an admin edits `data_source.bigquery.project` in
+  `/admin/server-config`, the overlay is the source of truth but the
+  on-disk `extract.duckdb._remote_attach.url` would stay frozen at
+  the old project until the next BQ register/sync trigger — silently
+  routing every remote BQ query to the previous project (manifests as
+  `Dataset not found in <old project>` errors even though the admin
+  UI shows the corrected project). The orchestrator now compares the
+  two at every rebuild and, if they differ, calls
+  `rebuild_from_registry()` to regenerate the extract.
 - Setup script no longer auto-creates the workspace folder. Step 2 of
   the pasted prompt now runs `pwd`, compares it to `$HOME/<workspace_dir>`
   (the folder the /home page's visible Step 3 told the user to create
