@@ -7,7 +7,7 @@ existing instances upgrade cleanly without backfill.
 
 Asserts on the migration shape:
 
-  * fresh install lands at v58 with the new columns
+  * fresh install lands at v59 with the new columns
   * sequential upgrade from v55 adds the columns without dropping data
   * idempotent — re-running the migration is a no-op
   * SCHEMA_VERSION constant matches
@@ -45,24 +45,24 @@ def _columns(conn, table: str) -> set[str]:
     }
 
 
-def test_schema_version_is_58():
-    assert SCHEMA_VERSION == 58
+def test_schema_version_is_59():
+    assert SCHEMA_VERSION == 59
 
 
-def test_fresh_install_lands_at_v56(tmp_path):
+def test_fresh_install_lands_at_v57(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 58
+    assert get_schema_version(conn) == 59
 
 
-def test_v57_to_v58_adds_data_packages_owner_columns(tmp_path):
+def test_v58_to_v59_adds_data_packages_owner_columns(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     cols = _columns(conn, "data_packages")
     assert {"owner_name", "owner_team"}.issubset(cols)
 
 
-def test_v57_to_v58_adds_data_packages_content_columns(tmp_path):
+def test_v58_to_v59_adds_data_packages_content_columns(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     cols = _columns(conn, "data_packages")
@@ -73,7 +73,7 @@ def test_v57_to_v58_adds_data_packages_content_columns(tmp_path):
     }.issubset(cols)
 
 
-def test_v57_to_v58_adds_table_registry_extended_docs(tmp_path):
+def test_v58_to_v59_adds_table_registry_extended_docs(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     cols = _columns(conn, "table_registry")
@@ -82,19 +82,19 @@ def test_v57_to_v58_adds_table_registry_extended_docs(tmp_path):
     )
 
 
-def test_v57_to_v58_preserves_existing_data_packages_rows(tmp_path):
-    """Sequential upgrade path: seed at v55, run the v57→v58 migration
+def test_v58_to_v59_preserves_existing_data_packages_rows(tmp_path):
+    """Sequential upgrade path: seed at v56, run the v58→v58 migration
     function directly, assert the seeded row still exists with its v55
     columns intact and the new v56 columns default to NULL.
 
-    Uses ``_v57_to_v58`` in isolation rather than the full ``_ensure_schema``
+    Uses ``_v58_to_v59`` in isolation rather than the full ``_ensure_schema``
     ladder — DuckDB refuses to drop columns when FK constraints
     (``data_package_tables`` here) reference the table, so we can't
     simulate a "real" v55 instance by mutating a v56 schema. Instead we
     seed a row, drop the v56 columns on an empty-FK copy, and re-add
     them via the migration.
     """
-    from src.db import _v57_to_v58
+    from src.db import _v58_to_v59
 
     conn = duckdb.connect(":memory:")
     _ensure_schema(conn)
@@ -104,7 +104,7 @@ def test_v57_to_v58_preserves_existing_data_packages_rows(tmp_path):
     )
     # Re-run the v57→v58 migration; ALTER ADD COLUMN IF NOT EXISTS is a
     # no-op on already-present columns and must not nuke the seeded row.
-    _v57_to_v58(conn)
+    _v58_to_v59(conn)
     row = conn.execute(
         "SELECT slug, name, description, owner_name, owner_team, tags "
         "FROM data_packages WHERE id = 'pkg_legacy'"
@@ -117,21 +117,21 @@ def test_v57_to_v58_preserves_existing_data_packages_rows(tmp_path):
     assert row[5] is None
 
 
-def test_v57_to_v58_is_idempotent(tmp_path):
+def test_v58_to_v59_is_idempotent(tmp_path):
     """Running ``_ensure_schema`` twice in a row must not raise."""
     db_path = tmp_path / "system.duckdb"
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
     _ensure_schema(conn)  # second pass — no-op
-    assert get_schema_version(conn) == 58
+    assert get_schema_version(conn) == 59
 
 
-def test_v57_to_v58_preserves_table_registry_rows():
+def test_v58_to_v59_preserves_table_registry_rows():
     """Seed a row, re-run the v57→v58 migration (idempotent ADD COLUMN
     IF NOT EXISTS) and confirm the row + its v52 docs columns
     (sample_questions / things_to_know / pairs_well_with) survive intact
     alongside the new v56 ones."""
-    from src.db import _v57_to_v58
+    from src.db import _v58_to_v59
 
     conn = duckdb.connect(":memory:")
     _ensure_schema(conn)
@@ -141,7 +141,7 @@ def test_v57_to_v58_preserves_table_registry_rows():
         "VALUES ('tbl_legacy', 'orders', 'Pre-v56 table', "
         "        '[\"q1\", \"q2\"]', 'old notes')"
     )
-    _v57_to_v58(conn)
+    _v58_to_v59(conn)
     row = conn.execute(
         "SELECT name, description, sample_questions, things_to_know, "
         "       grain, platforms, partition_col, history, gotchas "

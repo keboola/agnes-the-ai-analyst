@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 58
+SCHEMA_VERSION = 59
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     confidence DOUBLE,
     -- v49: the scalar ``domain`` column was replaced by the
     -- ``knowledge_item_domains`` M:N junction (see ``memory_domains``
-    -- and the v49 backfill in ``_v50_to_v51``).
+    -- and the v49 backfill in ``_v51_to_v52``).
     entities JSON,
     source_type VARCHAR DEFAULT 'claude_local_md',
     source_ref VARCHAR,
@@ -3488,7 +3488,7 @@ def _v49_to_v50_migrate(conn: duckdb.DuckDBPyConnection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_store_entities_synthetic_name "
         "ON store_entities(synthetic_name)"
     )
-def _v50_to_v51(conn: duckdb.DuckDBPyConnection) -> None:
+def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
     """v49: unified stack for Data Packages + Memory.
 
     Single migration entry point for the v49 cutover. See
@@ -3772,7 +3772,7 @@ def _v50_to_v51(conn: duckdb.DuckDBPyConnection) -> None:
     # outer ``UPDATE schema_version`` at the end of ``_ensure_schema``,
     # but the ladder-internal function pattern keeps the bump local so a
     # mid-ladder failure doesn't leave the version stale.
-    conn.execute("UPDATE schema_version SET version = 51")
+    conn.execute("UPDATE schema_version SET version = 52")
 
 
 _V33_TO_V34_MIGRATIONS = [
@@ -3970,7 +3970,7 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
-def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
+def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
     """v56: extended-content columns on ``data_packages`` + structured
     per-table doc columns on ``table_registry``.
 
@@ -3998,10 +3998,10 @@ def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
         "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS gotchas VARCHAR",
     ):
         conn.execute(col_sql)
-    conn.execute("UPDATE schema_version SET version = 58")
+    conn.execute("UPDATE schema_version SET version = 59")
 
 
-def _v56_to_v57(conn: duckdb.DuckDBPyConnection) -> None:
+def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
 
@@ -4028,10 +4028,10 @@ def _v56_to_v57(conn: duckdb.DuckDBPyConnection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status "
         "ON memory_domain_suggestions(status)"
     )
-    conn.execute("UPDATE schema_version SET version = 57")
+    conn.execute("UPDATE schema_version SET version = 58")
 
 
-def _v55_to_v56(conn: duckdb.DuckDBPyConnection) -> None:
+def _v56_to_v57(conn: duckdb.DuckDBPyConnection) -> None:
     """v54: soft-delete columns on data_packages / memory_domains / recipes.
 
     Powers the "Deleted. Undo (10s)" toast on admin pages — DELETE sets
@@ -4046,10 +4046,10 @@ def _v55_to_v56(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(
             f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP"
         )
-    conn.execute("UPDATE schema_version SET version = 56")
+    conn.execute("UPDATE schema_version SET version = 57")
 
 
-def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
+def _v55_to_v56(conn: duckdb.DuckDBPyConnection) -> None:
     """v53: ``recipes`` table — admin-curated query templates surfaced as
     a second tab on /catalog.
 
@@ -4073,10 +4073,10 @@ def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
             updated_at        TIMESTAMP DEFAULT current_timestamp
         )
     """)
-    conn.execute("UPDATE schema_version SET version = 55")
+    conn.execute("UPDATE schema_version SET version = 56")
 
 
-def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
+def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
     """v52: per-table docs columns on table_registry.
 
     Adds three admin-authored fields read by the new /catalog/t/<id>
@@ -4095,10 +4095,10 @@ def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS pairs_well_with JSON"
     )
-    conn.execute("UPDATE schema_version SET version = 54")
+    conn.execute("UPDATE schema_version SET version = 55")
 
 
-def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
+def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
     """v51: lifecycle ``status`` + per-package ``category`` columns.
 
     Adds the surfaces the /catalog mockup audit identified as gaps:
@@ -4123,10 +4123,10 @@ def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
         "ALTER TABLE memory_domains "
         "ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'prod'"
     )
-    conn.execute("UPDATE schema_version SET version = 53")
+    conn.execute("UPDATE schema_version SET version = 54")
 
 
-def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
+def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
     """v50: ``cover_image_url`` on ``data_packages`` + ``memory_domains``.
 
     Closes the visual gap with /marketplace cards: marketplace items render
@@ -4139,7 +4139,7 @@ def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
     Idempotent (``ADD COLUMN IF NOT EXISTS``) — re-running is safe. Bumps
     the version row locally so the fresh-install path (which calls every
     migration in sequence and relies on each step to stamp its own number
-    — see _v50_to_v51 step 10) lands at 50 even if a future step in the
+    — see _v51_to_v52 step 10) lands at 50 even if a future step in the
     same ladder fails before the outer driver gets to its UPDATE.
     """
     conn.execute(
@@ -4150,7 +4150,7 @@ def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
         "ALTER TABLE memory_domains "
         "ADD COLUMN IF NOT EXISTS cover_image_url VARCHAR"
     )
-    conn.execute("UPDATE schema_version SET version = 52")
+    conn.execute("UPDATE schema_version SET version = 53")
 
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
@@ -4269,25 +4269,25 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # IF NOT EXISTS / ALTER ... ADD COLUMN IF NOT EXISTS), so
             # this call no-ops apart from seeding canonical
             # memory_domains and bumping the version row.
-            _v50_to_v51(conn)
+            _v51_to_v52(conn)
             # v50 cover_image_url on data_packages + memory_domains.
             # _SYSTEM_SCHEMA already includes the column on fresh installs;
             # the migration's IF NOT EXISTS ALTERs no-op there.
-            _v51_to_v52(conn)
+            _v52_to_v53(conn)
             # v51 status + category on data_packages, status on
             # memory_domains. Same fresh-install no-op pattern.
-            _v52_to_v53(conn)
-            # v52 per-table docs columns on table_registry.
             _v53_to_v54(conn)
-            # v53 recipes table.
+            # v52 per-table docs columns on table_registry.
             _v54_to_v55(conn)
-            # v54 deleted_at columns on data_packages, memory_domains, recipes.
+            # v53 recipes table.
             _v55_to_v56(conn)
-            # v55 memory_domain_suggestions table.
+            # v54 deleted_at columns on data_packages, memory_domains, recipes.
             _v56_to_v57(conn)
+            # v55 memory_domain_suggestions table.
+            _v57_to_v58(conn)
             # v56 extended content columns on data_packages + structured
             # per-table doc columns on table_registry.
-            _v57_to_v58(conn)
+            _v58_to_v59(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4440,8 +4440,6 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v48_to_v49_migrate(conn)
             if current < 50:
                 _v49_to_v50_migrate(conn)
-            if current < 51:
-                _v50_to_v51(conn)
             if current < 52:
                 _v51_to_v52(conn)
             if current < 53:
@@ -4456,6 +4454,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v56_to_v57(conn)
             if current < 58:
                 _v57_to_v58(conn)
+            if current < 59:
+                _v58_to_v59(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

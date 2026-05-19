@@ -13,7 +13,7 @@ seeds.
 """
 import duckdb
 
-from src.db import _v50_to_v51
+from src.db import _v51_to_v52
 
 
 def _seed_realistic_v48(conn):
@@ -88,7 +88,7 @@ def _seed_realistic_v48(conn):
 def test_full_migration_fidelity():
     conn = duckdb.connect(":memory:")
     _seed_realistic_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     # 1) is_required correctly migrated. status returns to 'approved' for
     # all 'mandatory' rows; non-mandatory rows stay untouched.
@@ -169,5 +169,6 @@ def test_full_migration_fidelity():
     # 8) Marketplace telemetry tables untouched by the v49 migration.
     assert "usage_marketplace_item_daily" in tables
 
-    # 9) Schema version row bumped.
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 51
+    # 9) Schema version row bumped (renumbered v51 → v52 on the
+    # second merge with main to make room for main's new v51).
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 52

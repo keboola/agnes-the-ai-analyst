@@ -11,7 +11,7 @@ drops the legacy scalar ``knowledge_items.domain`` column.
 import duckdb
 import pytest
 
-from src.db import _v50_to_v51
+from src.db import _v51_to_v52
 
 
 def _seed_v48(conn):
@@ -49,7 +49,7 @@ def _seed_v48(conn):
 def test_v48_to_v49_adds_requirement_column():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
     cols = [r[1] for r in conn.execute("PRAGMA table_info('resource_grants')").fetchall()]
     assert "requirement" in cols
 
@@ -62,7 +62,7 @@ def test_v48_to_v49_requirement_defaults_to_available():
         "INSERT INTO resource_grants (id, group_id, resource_type, resource_id) "
         "VALUES ('grant1', 'g1', 'data_package', 'pkg_sales')"
     )
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
     row = conn.execute(
         "SELECT requirement FROM resource_grants WHERE id='grant1'"
     ).fetchone()
@@ -75,7 +75,7 @@ def test_v48_to_v49_migrates_status_mandatory_to_is_required():
     conn.execute("INSERT INTO knowledge_items VALUES ('k1', 'Mandatory rule', 'mandatory', NULL)")
     conn.execute("INSERT INTO knowledge_items VALUES ('k2', 'Regular rule', 'approved', NULL)")
 
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     rows = conn.execute(
         "SELECT id, status, is_required FROM knowledge_items ORDER BY id"
@@ -87,7 +87,7 @@ def test_v48_to_v49_migrates_status_mandatory_to_is_required():
 def test_v48_to_v49_adds_is_required_default_false_for_new_rows():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
     conn.execute(
         "INSERT INTO knowledge_items (id, title, status) VALUES ('k3', 'New', 'approved')"
     )
@@ -98,7 +98,7 @@ def test_v48_to_v49_adds_is_required_default_false_for_new_rows():
 def test_v48_to_v49_creates_data_packages_tables():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     cols = {r[1] for r in conn.execute("PRAGMA table_info('data_packages')").fetchall()}
     assert {
@@ -120,7 +120,7 @@ def test_v48_to_v49_creates_data_packages_tables():
 def test_v48_to_v49_data_packages_slug_unique():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
     conn.execute("INSERT INTO data_packages(id, slug, name) VALUES ('p1', 'sales', 'Sales')")
     with pytest.raises(duckdb.ConstraintException):
         conn.execute("INSERT INTO data_packages(id, slug, name) VALUES ('p2', 'sales', 'Sales B')")
@@ -129,7 +129,7 @@ def test_v48_to_v49_data_packages_slug_unique():
 def test_v48_to_v49_creates_memory_domain_tables():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     md_cols = {r[1] for r in conn.execute("PRAGMA table_info('memory_domains')").fetchall()}
     assert {
@@ -151,7 +151,7 @@ def test_v48_to_v49_creates_memory_domain_tables():
 def test_v48_to_v49_memory_domains_slug_unique():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
     conn.execute(
         "INSERT INTO memory_domains(id, slug, name) VALUES ('md_x', 'custom', 'Custom')"
     )
@@ -164,7 +164,7 @@ def test_v48_to_v49_memory_domains_slug_unique():
 def test_v48_to_v49_seeds_canonical_domains():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     slugs = {r[0] for r in conn.execute("SELECT slug FROM memory_domains").fetchall()}
     expected = {"finance", "engineering", "product", "data", "operations", "infrastructure"}
@@ -185,7 +185,7 @@ def test_v48_to_v49_seeds_extra_non_canonical_domains():
     conn.execute(
         "INSERT INTO knowledge_items VALUES ('k1', 't1', 'approved', 'sales-coaching')"
     )
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     row = conn.execute(
         "SELECT id, slug, name FROM memory_domains WHERE name = 'sales-coaching'"
@@ -202,7 +202,7 @@ def test_v48_to_v49_populates_item_domains_junction():
     conn.execute("INSERT INTO knowledge_items VALUES ('k2', 't2', 'approved', 'sales-coaching')")
     conn.execute("INSERT INTO knowledge_items VALUES ('k3', 't3', 'approved', NULL)")
     conn.execute("INSERT INTO knowledge_items VALUES ('k4', 't4', 'approved', '')")
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     junction = conn.execute(
         "SELECT kid.item_id, md.slug "
@@ -226,7 +226,7 @@ def test_v48_to_v49_repoints_memory_domain_grants_to_id():
         "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
         "VALUES ('grant1', 'g1', 'memory_domain', 'finance')"
     )
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     row = conn.execute(
         "SELECT resource_id FROM resource_grants WHERE id='grant1'"
@@ -244,7 +244,7 @@ def test_v48_to_v49_leaves_orphan_grants_intact():
         "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
         "VALUES ('orphan', 'g1', 'memory_domain', 'no-such-domain')"
     )
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
     row = conn.execute("SELECT resource_id FROM resource_grants WHERE id='orphan'").fetchone()
     assert row[0] == "no-such-domain"  # unchanged
 
@@ -252,7 +252,7 @@ def test_v48_to_v49_leaves_orphan_grants_intact():
 def test_v48_to_v49_creates_user_stack_subscriptions():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     cols = {
         r[1]
@@ -264,7 +264,7 @@ def test_v48_to_v49_creates_user_stack_subscriptions():
 def test_v48_to_v49_user_stack_subscriptions_composite_pk():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
     conn.execute(
         "INSERT INTO user_stack_subscriptions(user_id, resource_type, resource_id) "
         "VALUES ('u1', 'data_package', 'pkg_sales')"
@@ -280,7 +280,7 @@ def test_v48_to_v49_drops_knowledge_items_domain_column():
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
     conn.execute("INSERT INTO knowledge_items VALUES ('k1', 't1', 'approved', 'finance')")
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
 
     cols = [r[1] for r in conn.execute("PRAGMA table_info('knowledge_items')").fetchall()]
     assert "domain" not in cols
@@ -304,13 +304,16 @@ def test_schema_version_is_at_least_49():
 
 
 def test_v48_to_v49_bumps_schema_version_row():
-    """The v49 migration body itself stamps the schema_version row to 49.
-    The v50 bump runs separately via the outer ladder driver."""
+    """The migration body stamps the schema_version row to the version
+    it claims to land at. Originally v49 (called ``_v48_to_v49``), the
+    branch's chain was renumbered to v51 on the first merge with main
+    and again to v52 on the second merge to make room for main's new
+    v51 (bq_fqn). The function name is now ``_v51_to_v52``."""
     conn = duckdb.connect(":memory:")
     _seed_v48(conn)
-    _v50_to_v51(conn)
+    _v51_to_v52(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row[0] == 51
+    assert row[0] == 52
 
 
 def test_fresh_install_lands_at_current_version():
