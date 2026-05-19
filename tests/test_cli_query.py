@@ -47,6 +47,51 @@ class TestRemoteQuery:
         assert "HTTP 400" in result.output
         assert "bad SQL" in result.output
 
+    def test_remote_query_5xx_exits_nonzero(self):
+        """5xx server errors propagate to a nonzero exit code (issue #345 C).
+
+        Without this, ``set -e`` shells, CI pipelines, and any wrapper
+        script that checks ``$?`` to detect failure would silently
+        proceed even when the server returned ``HTTP 502:`` to stdout.
+        The reporter who filed #345 hit the exact rc=0-on-502 pattern
+        on a slightly older CLI build; this guards against any future
+        regression that drops the ``raise typer.Exit(1)`` from the
+        non-200 branch of ``_query_remote``.
+        """
+        with patch("cli.client.api_post", return_value=_resp(502, text="bad gateway")):
+            result = runner.invoke(app, ["query", "SELECT 1", "--remote"])
+        assert result.exit_code != 0, (
+            f"Expected nonzero exit for HTTP 502, got rc={result.exit_code}. "
+            f"Output: {result.output}"
+        )
+        assert "HTTP 502" in result.output
+
+    def test_remote_query_json_alias_equals_format_json(self):
+        """``--json`` is a shortcut for ``--format json`` (issue #345 D).
+
+        Paste-prompts and LLM-assisted analysts routinely reach for
+        ``agnes query --json`` first; the typer "Did you mean --stdin?"
+        suggestion the absence of this flag previously produced was
+        actively misleading.
+        """
+        payload = {"columns": ["id"], "rows": [[1]], "truncated": False}
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["query", "SELECT 1", "--remote", "--json"])
+        assert result.exit_code == 0
+        # Output is parseable JSON, equivalent to --format json
+        parsed = json.loads(result.output.strip())
+        assert parsed == [{"id": 1}]
+
+    def test_json_and_explicit_csv_format_are_mutually_exclusive(self):
+        """``--json --format csv`` is contradictory; reject with rc=1.
+
+        ``--json --format json`` is allowed (redundant but consistent);
+        ``--json`` alone is the common case.
+        """
+        result = runner.invoke(app, ["query", "SELECT 1", "--json", "--format", "csv"])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
     def test_remote_query_truncated(self):
         """Truncated result shows warning."""
         payload = {"columns": ["id"], "rows": [[i] for i in range(5)], "truncated": True}

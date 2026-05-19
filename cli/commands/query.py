@@ -15,10 +15,24 @@ def query_command(
     sql_opt: Optional[str] = typer.Option(None, "--sql", help="SQL query to execute (named option)"),
     remote: bool = typer.Option(False, "--remote", help="Execute on server instead of locally"),
     fmt: str = typer.Option("table", "--format", "-f", help="Output format: table, json, csv"),
+    json_flag: bool = typer.Option(False, "--json", help="Shortcut for --format json"),
     limit: int = typer.Option(1000, "--limit", help="Max rows to return"),
     stdin: bool = typer.Option(False, "--stdin", help="Read SQL from stdin as JSON {\"sql\": \"...\"}"),
 ):
     """Execute SQL query against DuckDB."""
+    # `--json` is an alias for `--format json` (issue #345 D). Paste-prompts
+    # and LLM-assisted analysis routinely reach for `--json`; the typer
+    # "Did you mean --stdin?" suggestion that the absence of this flag
+    # produced was actively misleading.
+    if json_flag:
+        if fmt != "table" and fmt != "json":
+            typer.echo(
+                f"Error: --json and --format={fmt} are mutually exclusive.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        fmt = "json"
+
     # Resolve SQL from exactly one of: positional, --sql, or --stdin
     sources_provided = sum([
         sql is not None,
