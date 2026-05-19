@@ -10,6 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- Inline `code` elements globally restyled with design tokens (background, border, border-radius); `.code-block code` override extended with `border: none` to avoid border leak on dark backgrounds
+- `.form-textarea` promoted to global CSS with design tokens; local hardcoded override removed from `admin_tables.html`
+- `.btn-google:hover` border and background migrated from hardcoded values (`#c4c4c4`, `#fafafa`) to design tokens
+
+### Fixed
+- Register table modal: selected radio card now shows primary border + light background via `.sync-option-card:has(input:checked)`
+- Admin forms: `.label-qualifier` / `.optional` promoted to global CSS; local duplicate removed from `admin_tables.html`
+- Keboola edit-modal JS (`openEditKeboolaModal` and helpers) moved outside `{% if keboola %}` guard so it renders on all instance types
+- Data Packages: description textarea switched to `form-textarea` (Inter); chip-input widget font inherits from container token
+
 ## [0.55.2] — 2026-05-19
 
 ### Fixed
@@ -205,7 +216,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   save) mirroring the Memory Domain pattern.
 
 ### Changed
-<<<<<<< HEAD
 - **Bulk-assign tables → package** modal — package dropdown options
   now carry a `(N of M tables already in)` suffix so admins see the
   existing distribution before picking a target. Counts surface
@@ -515,82 +525,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Single PR cutover (no two-phase rollout). Legacy
   `marketplace_plugins.is_system` + `user_plugin_optouts` retained
   per spec D1 — Marketplace was deliberately not touched.
-=======
-<<<<<<< HEAD
-- /home onboarding Step 2 retitled "turn on permission-skip for setup"
-  and now leads with `claude --dangerously-skip-permissions` as the
-  recommended session flag, because the Step 4 paste runs ~20 shell
-  commands that auto-accept-edits does not cover (Bash still prompts).
-  The flag is session-scoped, drops on next plain `claude`. Auto-accept
-  via Shift + Tab kept as the strict-review fallback for users who want
-  to approve each command; persistent YOLO setup link unchanged.
->>>>>>> 4c4e9e42 (fix(web): swap /home Steps 2↔3, claude --yolo as copy-button command)
-
-## [0.54.29] — 2026-05-19
-
-### Added
-- **`table_registry.bq_fqn` column** (schema v51, issue #343) — optional
-  fully-qualified BigQuery path (`project.dataset.table`) that decouples
-  the UX/RBAC `bucket` label from the physical BQ dataset name. Pre-v51
-  the orchestrator constructed the rebuild path as
-  `{remote_attach.project}.{bucket}.{source_table}`, which coupled
-  package naming to BQ storage layout — renaming a package broke its
-  tables and ad-hoc proxy datasets were needed when the UX name
-  differed from the dataset name. With `bq_fqn` set, the extractor
-  takes the project / dataset / table directly from the field; rows
-  without it use the legacy path (backwards-compatible).
-- **`data_source.bigquery.location`** is now strongly recommended in
-  `instance.yaml` (`/admin/server-config`). When unset on a cross-
-  project setup, metadata-cache region resolution falls back to a
-  REST `dataset.get()` per metadata refresh that requires
-  `bigquery.datasets.get` IAM (often missing from data-viewer-only
-  SAs) and silently returns "provider returned no data" when it 404s.
-  Setting `location` (e.g. `us-central1` or `EU`) skips the REST hop
-  entirely. The `_resolve_bq_location` warning now points at this
-  config key explicitly.
-- **Startup config check** (`connectors.bigquery.access.validate_bigquery_startup_config`)
-  surfaces two common BQ misconfigs in the boot log: cross-project
-  setup with `location` unset, and a warehouse-like data project
-  with no `billing_project` override (which silently bills to the
-  warehouse, where the SA usually lacks `serviceusage.services.use`).
-  Non-fatal warnings only — never blocks startup.
-- **`POST /api/admin/register-table`** and **`PUT /api/admin/registry/{id}`**
-  accept `bq_fqn`. Malformed values are rejected at the API boundary
-  (422) instead of landing in the registry and breaking the next
-  rebuild silently.
-
-### Internal
-- **Schema v51** — adds nullable `table_registry.bq_fqn VARCHAR`;
-  existing rows default to `NULL` and use the legacy
-  `bucket + source_table` path (backwards-compatible, no backfill).
-- New test suite `tests/test_bq_fqn.py` (25 cases): `parse_bq_fqn`
-  unit matrix, extractor override paths (same-project VIEW + cross-
-  project VIEW success + cross-project BASE TABLE skip), orchestrator
-  drift sync, startup-validator heuristic, admin Pydantic models.
-
-### Changed
-- **`SyncOrchestrator.rebuild()` self-heals BQ `_remote_attach.url`
-  drift**. When an admin edits `data_source.bigquery.project` in
-  `/admin/server-config`, the overlay is the source of truth but the
-  on-disk `extract.duckdb._remote_attach.url` would stay frozen at
-  the old project until the next BQ register/sync trigger — silently
-  routing every remote BQ query to the previous project (manifests as
-  `Dataset not found in <old project>` errors even though the admin
-  UI shows the corrected project). The orchestrator now compares the
-  two at every rebuild and, if they differ, calls
-  `rebuild_from_registry()` to regenerate the extract.
-=======
-- /home onboarding reordered: folder creation is now Step 2 (was
-  Step 3) and starting Claude with `claude --dangerously-skip-permissions`
-  is the new Step 3 (was the auto-mode step), rendered with the same
-  `.install-cmd` + copy-button affordance the other steps use. Step 4
-  paste runs ~20 shell commands that auto-accept-edits would not cover
-  (Bash still prompts), so the YOLO flag is the default recommendation;
-  session-scoped, drops on next plain `claude`. Shift + Tab → auto-
-  accept-edits kept as the strict-review fallback; persistent YOLO
-  allowlist link to /setup-advanced#yolo unchanged. Setup script's
-  "Verify cwd" warning copy refreshed to reference "/home Step 2".
->>>>>>> c195e0fa (fix(web): swap /home Steps 2↔3, claude --yolo as copy-button command)
 - Setup script no longer auto-creates the workspace folder. Step 2 of
   the pasted prompt now runs `pwd`, compares it to `$HOME/<workspace_dir>`
   (the folder the /home page's visible Step 3 told the user to create
