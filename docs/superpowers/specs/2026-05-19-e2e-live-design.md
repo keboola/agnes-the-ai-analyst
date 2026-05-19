@@ -209,7 +209,7 @@ The MD-library path is the simplest stable contract that also tests the
 *paste-prompt itself* — if the install panel produces a broken prompt
 (missing step, wrong URL, malformed PAT), we surface that.
 
-### Cross-target validation (a side benefit)
+### Cross-target validation (a side benefit, validated empirically)
 
 Running the same `run.sh --prompt <X>` against multiple targets is itself a
 test: if `--prompt foundryai-dev` and `--prompt agnes-prod` produce the same
@@ -217,9 +217,23 @@ shape of layer-1 PASS/FAIL but `--prompt foundryai-prod` fails an assertion,
 either the prod paste-prompt has drifted or there's a real prod-only
 regression. The diff between two report.md files is a tight diff.
 
-The discovery only exercised one target (`foundryai-dev`); the spec is
-designed to allow N without code changes, with the MD library as the only
-configuration surface.
+The discovery run did exactly this swap (dev → prod, same machine, same
+runner, only the paste-prompt MD file changed) and it surfaced two
+genuine cross-target findings inside ~$0.75 of additional budget:
+
+1. **Item A (marketplace URL hardcode) is not a dev-only artefact** — both
+   targets failed at step 6 with the same DNS-unresolvable on the same
+   hardcoded host. Confirmed it's a CLI-side regression, not a deployment
+   misconfiguration on one VM.
+2. **Paste-prompt format drift surfaced** — the dev paste-prompt and the
+   prod paste-prompt differ in step 2 (silent `mkdir` vs an interactive
+   `pwd` STOP gate that headless callers can't answer). Two valid install
+   prompts in isolation, but a real inconsistency the cross-target sweep
+   makes visible.
+
+Cost-vs-signal: ~$0.75 + 3 minutes wall-clock for the second run. If we
+adopt this as a CI artifact, every N-target sweep adds ~$0.75 × (N-1) to
+the run cost. The diff between report.md's is the regression signal.
 
 ### Inputs
 
