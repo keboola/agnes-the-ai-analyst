@@ -242,6 +242,19 @@ def _bootstrap_clone(token: str) -> bool:
         except OSError:
             pass
 
+    # Add execute bit to every `.sh` under the clone — git's checkout doesn't
+    # always preserve the file-mode bit (filemode=false repos, archive
+    # extractions), and Claude Code's later `plugin install` copies the
+    # files into the workspace `.claude/hooks/` AS-IS, so hooks that lost
+    # the +x bit here would fire with Permission denied. Fixing at the
+    # source (marketplace clone) means every downstream plugin install
+    # gets executable hooks for free. Best-effort: no-op on Windows NTFS.
+    for sh in CLONE_DIR.rglob("*.sh"):
+        try:
+            sh.chmod(sh.stat().st_mode | 0o111)
+        except OSError:
+            pass
+
     if not _register_clone_with_claude(CLONE_DIR):
         return False
 

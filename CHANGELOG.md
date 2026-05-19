@@ -16,8 +16,36 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   tool-responses travel back to the central catalog while raw data
   rows stay local, and points at `/agnes-private` as the per-session
   opt-out.
+- `agnes init` now accepts `--token-file <path>` and `AGNES_TOKEN`
+  env-var fallback alongside `--token`. Precedence: `--token` >
+  `--token-file` > `AGNES_TOKEN`. The file-/env-var paths dodge
+  Claude Code's auto-classifier, which sometimes flags a long bearer
+  token in an `--token "eyJ..."` command line as a credential-exfil
+  pattern. The pasted setup script now uses `--token-file
+  ~/.agnes/token` (token written via single-quoted heredoc, umask 077)
+  for the same reason.
 
 ### Changed
+- `agnes init` adds `Bash(agnes *)` to the default `permissions.allow`
+  list in the seeded `.claude/settings.json`. Without it, Claude Code
+  was blocking subsequent `agnes <verb>` invocations (`agnes catalog`,
+  `agnes pull`, …) inside the workspace it had just bootstrapped.
+- `agnes init` and `agnes refresh-marketplace --bootstrap` now
+  `chmod +x` every `.sh` they land on disk (`<workspace>/.claude/
+  hooks/*.sh` after init; every `.sh` under `~/.agnes/marketplace`
+  after a clone/pull). Git checkout doesn't always preserve the
+  file-mode bit (filemode=false repos, ZIP extractions), so hooks
+  were firing with "Permission denied" — silent SessionStart /
+  PreToolUse breakage. Best-effort: no-op on Windows NTFS.
+- Setup script step 3 now uses `--token-file ~/.agnes/token` plus a
+  single-quoted heredoc for the token write, and includes an explicit
+  note about the `!` prefix fallback when Claude Code's classifier
+  blocks an `agnes <verb>` invocation (e.g. `! agnes init …`).
+- Setup script step 1 (no-CA install path) now emits a robust
+  `grep -qF + ||` snippet for the optional `~/.local/bin` PATH
+  persistence so re-runs don't append a duplicate entry to the
+  user's rc file. Fixed-string match (not regex) + short-circuit
+  short-circuit `||` per the dedup-bug report.
 - /home onboarding reordered: folder creation is now Step 2 (was
   Step 3) and starting Claude with `claude --dangerously-skip-permissions`
   is the new Step 3 (was the auto-mode step), rendered with the same
