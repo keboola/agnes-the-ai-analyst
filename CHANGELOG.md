@@ -10,6 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.2] — 2026-05-19
+
+### Fixed
+- **Customer-instance Terraform module pre-creates `/data/uploads`**
+  (`infra/modules/customer-instance/startup-script.sh.tpl`). v50/0.55.0
+  added a marketplace cover-image upload directory mounted under
+  `${DATA_DIR}/uploads`; `app/main.py` eagerly mkdirs it at boot for
+  the `StaticFiles` mount. On host-bind deploys where `/data` root
+  is root-owned, the container's non-root `agnes` user (UID 999)
+  can't create the directory and the app crashloops with
+  `PermissionError: '/data/uploads'`. The startup script now
+  pre-creates `uploads` alongside `state/analytics/extracts` under
+  the existing `chown -R 999:999`. Fresh VMs provisioned at
+  `infra-v1.9.0`+ get the dir at first boot; for existing instances
+  bump the module pin + `terraform apply` (which rewrites the
+  instance startup-script metadata) and reboot the VM so the
+  refreshed mkdir/chown block replays. As a one-off without
+  rebooting, run `sudo mkdir -p /data/uploads && sudo chown 999:999
+  /data/uploads` on the host.
+
 ## [0.55.1] — 2026-05-19
 
 ### Added

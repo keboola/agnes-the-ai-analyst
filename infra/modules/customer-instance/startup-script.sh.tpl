@@ -39,12 +39,19 @@ if [ -b "$DATA_DEV" ]; then
     mkdir -p "$DATA_MNT"
     mountpoint -q "$DATA_MNT" || mount -o discard,defaults "$DATA_DEV" "$DATA_MNT"
     grep -qF "$DATA_DEV" /etc/fstab || echo "$DATA_DEV $DATA_MNT ext4 discard,defaults,nofail 0 2" >> /etc/fstab
-    mkdir -p "$DATA_MNT/state" "$DATA_MNT/analytics" "$DATA_MNT/extracts"
+    mkdir -p "$DATA_MNT/state" "$DATA_MNT/analytics" "$DATA_MNT/extracts" "$DATA_MNT/uploads"
     # Match Dockerfile USER agnes (uid:gid 999:999). A freshly-attached PD is
     # root-owned by default; without this chown the non-root container cannot
     # write to /data/state/system.duckdb and every authed request 500s after
     # the first upgrade that flips USER from root to agnes (regression hit
     # agnes-development on 2026-04-29). Idempotent — safe on reboot.
+    #
+    # /data/uploads holds admin-uploaded marketplace cover images
+    # (v50/0.55.0+). app/main.py eagerly mkdirs it at boot for the
+    # StaticFiles mount; on host-bind setups where /data root is
+    # root-owned, that mkdir 403s and the container crashloops — so
+    # pre-create the dir here under the SAME chown -R that already
+    # covers state/analytics/extracts. Cheap insurance.
     chown -R 999:999 "$DATA_MNT"
 fi
 
