@@ -33,9 +33,9 @@ it cheap to do it again on every PR / nightly / pre-release.
 
 ## Approach
 
-Three layered runners, sharing one bootstrap module. Each layer pushes the
+Four layered runners, sharing one bootstrap module. Each layer pushes the
 sub-Claude one step closer to "real analyst." Layer 1 is non-negotiable
-(no install → nothing works). Layers 2 and 3 are optional add-ons —
+(no install → nothing works). Layers 0, 2, and 3 are optional add-ons —
 operator runs whichever fits the change.
 
 ```
@@ -43,16 +43,66 @@ scripts/e2e-live/
 ├── run.sh                  ENTRY POINT — flags select layers
 ├── _common.sh              shared: workspace creation, session-id, asciinema
 ├── _parse-transcript.py    JSONL transcript → PASS/FAIL report markdown
+├── layer-0-mint-analyst.sh OPTIONAL pre-step (no sub-Claude): admin → create user →
+│                           set-password → group → grants → form-login → mint analyst
+│                           PAT → write synthesised paste-prompt to `<target>-analyst.md`
 ├── layer-1-install.sh      paste-prompt → fresh sub-Claude session
 ├── layer-2-query.sh        resume → structured query matrix
 ├── layer-3-analyst.sh      resume → "pick a business question, answer it"
+├── cleanup-analyst.sh      revoke PAT + remove from group + delete group + deactivate
+│                           the user that layer-0 created (run after analyst layers)
 ├── _config/
 │   ├── dev.env             SERVER_URL, MAX_BUDGET, EXPECTED_TABLES_MIN, ...
 │   └── prod.env            (more conservative: lower budget, read-only)
 └── README.md               how to run, how to interpret report
 ```
 
-### Three layers — what each tests
+### Four layers — what each tests
+
+**Layer 0 — mint a fresh analyst PAT (OPTIONAL pre-step, programmatic only)**
+
+What it exercises (server-side, before any sub-Claude fires): the admin
+programmatic onboarding path that a real operator runs the day they
+provision a new analyst. Concretely:
+
+```
+POST /api/users                    create non-admin user
+POST /api/users/<id>/set-password  give them a known password
+POST /api/admin/groups             new group (e.g. "e2e-analysts-<ts>")
+POST /api/admin/groups/<gid>/members   add user to group
+POST /api/admin/grants             grant 1–2 tables to the group (table grants
+                                   need AGNES_ENABLE_TABLE_GRANTS=1 on server)
+POST /auth/token                   form-login as the new analyst → session JWT
+POST /auth/tokens                  mint analyst PAT (1-day TTL default)
+```
+
+The output is a new MD file in the prompt library:
+`~/.config/agnes-e2e/prompts/<target>-analyst.md` — same as the admin paste-
+prompt but with the analyst's PAT substituted in. Layers 1–3 then run against
+that prompt to exercise the **non-admin** code paths.
+
+Why this matters: every other layer of the spec runs with the operator's
+admin PAT. That hides an entire class of UX issues — `agnes catalog` is
+RBAC-filtered, some admin-only operations silently 403, the install
+paste-prompt was written assuming admin scope. The discovery run with an
+admin PAT showed 16 catalog entries; the same workspace bootstrap with an
+analyst PAT (granted 2 tables) showed 5 (3 internal + 2 granted). The
+behaviour difference is the test signal.
+
+PASS contract: every API call returns 2xx, the analyst PAT is non-empty,
+and `agnes catalog` against the new PAT returns *fewer* tables than the
+admin PAT would (RBAC actually filtered something).
+
+Why this is "Layer 0" rather than "Layer 1.5": it does not invoke a
+sub-Claude at all. Pure server-side API calls + bash. Cheap (no Anthropic
+budget), fast (~5 seconds wall-clock), and a hard prerequisite for the
+analyst-persona variant of layers 1–3.
+
+Cleanup contract: layer 0 records the created user-id / group-id / token-id
+in `<run-dir>/.layer-0-state` so a post-test cleanup step (or a separate
+`scripts/e2e-live/cleanup-analyst.sh`) can revoke the PAT, remove the
+membership, drop the grants, and deactivate the user. The audit log
+keeps the trail.
 
 **Layer 1 — install + bootstrap (paste-prompt, fresh sub-Claude session)**
 
@@ -434,3 +484,42 @@ boundaries are drawn in the design. The cost of running just layer 1
 (~$0.3) vs running all three (~$1) is enough difference that PR-level
 runs probably stick to layer 1 + 2; analyst-flow regressions get caught
 nightly with the full three.
+
+### Layer 0 (analyst persona) — what the third walkthrough surfaced
+
+After the dev (admin) and prod (admin) runs, a programmatic "Layer 0 →
+Layer 1 against the analyst PAT" walkthrough on dev added three findings
+that no admin run could have surfaced:
+
+- **Catalog 5 vs 16.** The analyst PAT (granted `order_economics` +
+  `s1_session_landings`) saw 5 catalog entries (3 internal + 2 granted)
+  vs the admin's 16. RBAC filter behaves correctly — and the "fewer
+  tables for an analyst" signal is itself the layer-0 PASS contract.
+- **RBAC filtering is silent.** No 403 / "not authorized" surfaced
+  anywhere during the analyst run. The analyst sees a smaller catalog,
+  *not* an error message. For a fresh analyst this means: "I have no
+  signal that other tables exist and I just lack grants." Worth a
+  follow-up — either a `--include-ungranted` flag with a "you can ask
+  admin for grant on these tables" view, or the analyst-facing docs
+  spell it out.
+- **`agnes diagnose` reports the raw row count, ignoring RBAC.** Output
+  showed `data: 11 tables` (= the registry row count) while `agnes
+  catalog` showed 5 (RBAC-filtered). Analysts will notice the mismatch
+  ("I see 11 in diagnose, 5 in catalog, why?") and ask why. Diagnose
+  should probably scope to the caller's role.
+
+Plus a fourth finding that's specific to the prompt library design:
+
+- **Wheel-version drift in the stored paste-prompt.** The original dev
+  paste-prompt MD pinned `agnes_the_ai_analyst-0.54.28-py3-none-any.whl`;
+  by the time the analyst walkthrough ran, the server had rolled to
+  0.54.29 and the 0.54.28 wheel URL returned 404. A fresh-machine run
+  would have failed at step 1. The MD library design therefore needs a
+  refresh discipline (or a wheel-version unpinning at the paste-prompt
+  generation side — `/cli/wheel/latest` redirect). See the issue
+  comment for the full write-up.
+
+Cost summary for the three layer-0+layer-1 admin/prod/analyst runs:
+~$2.80 of Anthropic budget, ~9 minutes wall-clock total, 11 distinct
+issues filed against issue #345 (4 CLI + 5 catalog-UX + 2 cross-target
++ wheel-version-drift, RBAC-silent, diagnose-scope).
