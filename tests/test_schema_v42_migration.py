@@ -66,7 +66,7 @@ def test_v41_to_v42_is_idempotent(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 50
+    assert v == 51
     conn.close()
 
 
@@ -87,7 +87,7 @@ def test_v41_db_upgrades_cleanly(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 50
+    assert v == 51
     # All 7 new v41 tables exist after the v40→v41 upgrade
     tables = {
         row[0]
@@ -118,7 +118,7 @@ def test_v30_db_ladders_all_the_way_up(tmp_path):
     conn = duckdb.connect(str(db_path))
     init_database(conn)
     v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert v == 50
+    assert v == 51
     cnt = conn.execute("SELECT COUNT(*) FROM audit_log WHERE id='vintage'").fetchone()[0]
     assert cnt == 1
     # New v41 table exists

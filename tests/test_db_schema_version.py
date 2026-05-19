@@ -140,7 +140,15 @@ def test_schema_version_matches_constant():
     #            CREATE UNIQUE INDEX. Migration pre-checks for existing
     #            duplicates and raises RuntimeError listing them rather
     #            than letting the index create fail mid-way.
-    assert SCHEMA_VERSION == 50
+    # v51 (#343): nullable bq_fqn column on table_registry — fully-
+    #            qualified BigQuery path (project.dataset.table) that
+    #            decouples the UX/RBAC `bucket` label from the physical
+    #            BQ dataset name. Rows without it fall back to the
+    #            legacy bucket+source_table+remote_attach.project path
+    #            (backwards-compatible). Both _SYSTEM_SCHEMA (fresh
+    #            installs) and _V50_TO_V51_MIGRATIONS (upgrades) carry
+    #            the column so post-migration installs converge.
+    assert SCHEMA_VERSION == 51
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
