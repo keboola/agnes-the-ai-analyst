@@ -11,6 +11,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Changed
+- /home onboarding Step 2 retitled "turn on permission-skip for setup"
+  and now leads with `claude --dangerously-skip-permissions` as the
+  recommended session flag, because the Step 4 paste runs ~20 shell
+  commands that auto-accept-edits does not cover (Bash still prompts).
+  The flag is session-scoped, drops on next plain `claude`. Auto-accept
+  via Shift + Tab kept as the strict-review fallback for users who want
+  to approve each command; persistent YOLO setup link unchanged.
 - Setup script no longer auto-creates the workspace folder. Step 2 of
   the pasted prompt now runs `pwd`, compares it to `$HOME/<workspace_dir>`
   (the folder the /home page's visible Step 3 told the user to create
