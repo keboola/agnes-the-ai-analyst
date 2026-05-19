@@ -96,3 +96,101 @@ class TestDiagnoseJson:
         data = json.loads(result.output)
         api_check = next(c for c in data["checks"] if c["name"] == "api")
         assert "latency_ms" in api_check
+
+
+class TestAnalystAudienceFilter:
+    """Issue #345 B — analysts shouldn't see ``Overall: degraded`` on fresh
+    install just because the server has operator-level warnings (stale
+    tables, session-pipeline behind). The role-aware headline lets the
+    server tag each check with ``audience`` and report ``caller_role``;
+    the CLI filters the overall when caller is analyst.
+    """
+
+    def test_analyst_sees_healthy_when_only_operator_checks_warn(self):
+        """Analyst role + operator-side warning → ``Overall: healthy``
+        with a secondary line surfacing the operator warning count.
+        Pre-fix behaviour was ``Overall: degraded`` even though the
+        analyst can't act on the stale-tables warning."""
+        health = {
+            "caller_role": "analyst",
+            "services": {
+                "duckdb_state": {"status": "ok", "audience": "analyst"},
+                "data": {
+                    "status": "warning",
+                    "audience": "operator",
+                    "stale_tables": ["orders"],
+                },
+                "session_pipeline": {
+                    "status": "warning",
+                    "audience": "operator",
+                    "detail": "verification-detector behind by ~8.8h",
+                },
+            },
+        }
+        with patch("cli.commands.diagnose.api_get", return_value=_resp(200, health)):
+            result = runner.invoke(app, ["diagnose"])
+        assert result.exit_code == 0
+        # Headline is analyst-side healthy with a secondary count line
+        assert "healthy (analyst-side)" in result.output
+        assert "2 operator-side warnings" in result.output
+        # Per-check rows still show the warnings — we just don't escalate
+        assert "[warning] data" in result.output
+
+    def test_admin_caller_role_aggregates_full_set(self):
+        """Admin/operator role auto-promotes to the full aggregation —
+        operator-side warnings DO escalate the headline."""
+        health = {
+            "caller_role": "admin",
+            "services": {
+                "duckdb_state": {"status": "ok", "audience": "analyst"},
+                "data": {
+                    "status": "warning",
+                    "audience": "operator",
+                    "stale_tables": ["orders"],
+                },
+            },
+        }
+        with patch("cli.commands.diagnose.api_get", return_value=_resp(200, health)):
+            result = runner.invoke(app, ["diagnose"])
+        assert result.exit_code == 0
+        assert "degraded" in result.output.lower()
+        # No analyst-side qualifier — admin sees the full headline directly
+        assert "analyst-side" not in result.output
+
+    def test_analyst_with_include_operator_checks_flag(self):
+        """``--include-operator-checks`` lets an analyst opt in to the
+        full aggregation when they actually want to see the operator
+        warnings drive the headline (e.g. when paging an operator)."""
+        health = {
+            "caller_role": "analyst",
+            "services": {
+                "duckdb_state": {"status": "ok", "audience": "analyst"},
+                "data": {
+                    "status": "warning",
+                    "audience": "operator",
+                    "stale_tables": ["orders"],
+                },
+            },
+        }
+        with patch("cli.commands.diagnose.api_get", return_value=_resp(200, health)):
+            result = runner.invoke(app, ["diagnose", "--include-operator-checks"])
+        assert result.exit_code == 0
+        assert "degraded" in result.output.lower()
+        assert "analyst-side" not in result.output
+
+    def test_legacy_server_response_keeps_full_aggregation(self):
+        """When the server doesn't ship ``caller_role`` (older deploy),
+        the CLI must NOT silently start filtering — that would regress
+        diagnoses against any pre-#345-B server. Test_diagnose_warning_service
+        above already covers the same shape; this test makes the contract
+        explicit."""
+        health = {
+            "services": {
+                "duckdb": {"status": "warning", "stale_tables": ["x"]},
+            },
+            # No caller_role → no role-aware filtering.
+        }
+        with patch("cli.commands.diagnose.api_get", return_value=_resp(200, health)):
+            result = runner.invoke(app, ["diagnose"])
+        assert result.exit_code == 0
+        assert "degraded" in result.output.lower()

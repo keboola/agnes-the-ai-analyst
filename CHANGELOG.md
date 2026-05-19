@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- `agnes diagnose` is now **role-aware** when the server reports a
+  `caller_role`. Analysts see `Overall: healthy (analyst-side); N
+  operator-side warnings` instead of the misleading `Overall: degraded`
+  on a fresh install when the server has scheduler / session-pipeline
+  warnings they can't act on. Admins / operators auto-promote to the
+  full headline; analysts can opt in via `--include-operator-checks`.
+  Legacy servers that don't ship `caller_role` keep the original
+  full-aggregation behaviour. Closes #345 B.
+- `/api/health/detailed` adds `caller_role` and `overall_analyst`
+  fields plus a per-check `audience` tag (`analyst` | `operator`) so
+  clients can filter the headline without dropping checks from the
+  payload. Default response shape preserved otherwise.
+
 ## [0.55.2] — 2026-05-19
 
 ### Fixed
