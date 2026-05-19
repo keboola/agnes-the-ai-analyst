@@ -184,11 +184,15 @@ class StackResolver:
         self, user_id: str, resource_type: ResourceType
     ) -> List[ResourceEntry]:
         """Admin god-mode Browse: ALL entries of ``resource_type`` with
-        ``in_stack`` set from the admin's own subscriptions. Used by
-        /catalog and /memory when the viewer is admin so the browse grid
-        surfaces every package/domain regardless of group grants — but
-        still gets the same v51/v56 enrichment (status, category,
-        owner_name, tags, badges) as :meth:`browse`.
+        v51/v56 enrichment (status, category, owner_name, tags, badges).
+
+        ``requirement`` reflects the admin's OWN group grants — required
+        packages are still rendered with the disabled "In stack
+        (required)" footer button so the admin sees what regular users
+        in those groups see, and the macro doesn't render an actionable
+        Remove button that the API would 400 on. ``in_stack`` reflects
+        the admin's own subscriptions (required entries are also always
+        in_stack by convention — required ⇒ in stack).
         """
         if resource_type == ResourceType.DATA_PACKAGE:
             all_ids = {
@@ -208,10 +212,12 @@ class StackResolver:
             raise ValueError(
                 f"browse_admin does not support resource_type={resource_type!r}"
             )
+        groups = self._user_group_ids(user_id)
+        required_ids, _ = self._grants(groups, resource_type)
         subscribed_ids = self._subscribed_ids(user_id, resource_type)
-        entries = self._fetch_entries(resource_type, all_ids, set())
+        entries = self._fetch_entries(resource_type, all_ids, required_ids)
         for e in entries:
-            e.in_stack = e.id in subscribed_ids
+            e.in_stack = e.id in required_ids or e.id in subscribed_ids
         return entries
 
     def is_required(

@@ -30,7 +30,7 @@
     <label><input type="checkbox" value="poc" checked> POC</label>
     <label><input type="checkbox" value="coming-soon"> Coming soon</label>
     {% if user.is_admin %}
-    <label title="Admin-only"><input type="checkbox" value="draft"> Draft <span style="opacity:.6;">(admin)</span></label>
+    <label title="Visible only to admins — analysts won't see this filter."><input type="checkbox" value="draft"> Draft <span class="admin-only-hint" title="Visible only to admins — analysts won't see this filter.">admin-only</span></label>
     {% endif %}
   </div>
 </div>
@@ -83,10 +83,12 @@
        moderation page where domains are created + managed. #}
     {% if user.is_admin %}
     <div class="stack-tabs-row__actions">
-      {# Admin-only — explicit "(admin)" suffix so the destination is
-         obvious even though the link is already gated. Non-admin
-         viewers never see this button at all. #}
-      <a class="btn btn-secondary" href="/admin/corporate-memory#domains">Manage domains <span style="opacity:.6; font-weight:normal;">(admin)</span> →</a>
+      {# Admin-only — the yellow ``admin-only`` chip is a visibility
+         hint for the admin (analysts never see this affordance, the
+         outer {% if user.is_admin %} gates it). #}
+      <a class="btn btn-secondary" href="/admin/corporate-memory#domains"
+         title="Visible only to admins — analysts won't see this button.">
+        Manage domains <span class="admin-only-hint">admin-only</span> →</a>
     </div>
     {% endif %}
   </div>
@@ -144,15 +146,16 @@
     {% endif %}
   </div>
 
+  {# Both grid and empty-state are always rendered; JS toggles
+     visibility on add/remove so the tab never goes completely blank
+     after the last card is removed (the "musím refreshnout" bug). #}
   <div data-view="my" hidden>
-    {% if stack_entries %}
-    <div class="stack-grid" id="memory-grid-my">
+    <div class="stack-grid" id="memory-grid-my"{% if not stack_entries %} hidden{% endif %}>
       {% for entry in stack_entries %}
         {{ card(entry) }}
       {% endfor %}
     </div>
-    {% else %}
-    <div class="stack-empty">
+    <div class="stack-empty"{% if stack_entries %} hidden{% endif %}>
       <span class="icon">🗂️</span>
       <h3>Your stack is empty</h3>
       {% if entries %}
@@ -165,7 +168,6 @@
          been told something new is ready.</p>
       {% endif %}
     </div>
-    {% endif %}
   </div>
 
   <div id="memory-toast" role="status" aria-live="polite" hidden
@@ -331,12 +333,18 @@
             cloneBtn.disabled = false;
           }
           myGrid.appendChild(clone);
+          myGrid.hidden = false;
         }
         const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
         if (emptyEl) emptyEl.hidden = true;
       } else if (!becameInStack && existingInMy) {
         existingInMy.remove();
         if (!myGrid.children.length) {
+          // Both grid + empty-state are server-rendered (one hidden);
+          // swap visibility instead of injecting DOM. Removing the
+          // last card without this left the My Stack tab blank — users
+          // read that as "Remove didn't work, let me refresh".
+          myGrid.hidden = true;
           const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
           if (emptyEl) emptyEl.hidden = false;
         }

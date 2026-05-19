@@ -159,6 +159,39 @@ class TestBrowseAdminDataPackage:
         assert by_id["pkg_sub"].in_stack is True
         assert by_id["pkg_unsub"].in_stack is False
 
+    def test_required_grant_propagates_to_requirement_field(self, conn):
+        """A required grant on one of the admin's groups must surface as
+        ``requirement='required'`` so the macro renders the disabled
+        ``In stack (required)`` footer instead of an actionable Remove
+        button (which would 400 from /api/stack/unsubscribe).
+
+        Regression: previously ``browse_admin`` passed an empty
+        ``required_ids`` to ``_fetch_entries`` and every package — even
+        ones the admin's own group required — came back as 'available'.
+        """
+        import uuid
+        _seed_pkg(conn, pkg_id="pkg_must", name="Must-have")
+        _seed_pkg(conn, pkg_id="pkg_opt", name="Optional")
+        # Admin is in Admin group → seed a required grant on that group.
+        admin_gid = conn.execute(
+            "SELECT id FROM user_groups WHERE name = 'Admin'"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO resource_grants"
+            "(id, group_id, resource_type, resource_id, requirement, "
+            " assigned_at, assigned_by) "
+            "VALUES (?, ?, 'data_package', 'pkg_must', 'required', "
+            "        CURRENT_TIMESTAMP, 'test')",
+            [str(uuid.uuid4()), admin_gid],
+        )
+        resolver = StackResolver(conn)
+        entries = resolver.browse_admin("u_admin", ResourceType.DATA_PACKAGE)
+        by_id = {e.id: e for e in entries}
+        assert by_id["pkg_must"].requirement == "required"
+        # Required ⇒ in_stack=True by convention (the macro relies on this).
+        assert by_id["pkg_must"].in_stack is True
+        assert by_id["pkg_opt"].requirement == "available"
+
 
 class TestBrowseAdminMemoryDomain:
     def test_returns_all_memory_domains(self, conn):

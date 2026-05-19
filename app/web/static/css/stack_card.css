@@ -664,4 +664,25 @@
   background: var(--bg, #f8f9fa);
 }
 
+/* Yellow chip rendered next to admin-only affordances on /catalog and
+   /memory. The previous "(admin)" parenthetical was ambiguous — admins
+   couldn't tell whether non-admins also saw the button. The pill +
+   title tooltip make the visibility hint unmistakable: yellow signals
+   "only you see this". Non-admin viewers don't see the parent affordance
+   at all (server-side {% if user.is_admin %} gate). */
+.admin-only-hint {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-radius: 999px;
+  vertical-align: middle;
+  cursor: help;
+}
+
 [hidden] { display: none !important; }

@@ -35,7 +35,7 @@
     <label><input type="checkbox" value="poc" checked> POC</label>
     <label><input type="checkbox" value="coming-soon"> Coming soon</label>
     {% if user.is_admin %}
-    <label title="Admin-only — hidden from analysts"><input type="checkbox" value="draft"> Draft <span style="opacity:.6;">(admin)</span></label>
+    <label title="Visible only to admins — analysts won't see this filter."><input type="checkbox" value="draft"> Draft <span class="admin-only-hint" title="Visible only to admins — analysts won't see this filter.">admin-only</span></label>
     {% endif %}
   </div>
 </div>
@@ -86,10 +86,13 @@
     </div>
     {% if user.is_admin %}
     <div class="stack-tabs-row__actions" style="display:flex; gap:8px;">
-      <button class="btn btn-secondary" onclick="openCreateRecipeModal()" type="button">
-        + New Recipe <span style="opacity:.6; font-weight:normal;">(admin)</span>
+      <button class="btn btn-secondary" onclick="openCreateRecipeModal()" type="button"
+              title="Visible only to admins — analysts won't see this button.">
+        + New Recipe <span class="admin-only-hint">admin-only</span>
       </button>
-      <a class="btn btn-secondary" href="/admin/tables?new_package=1">+ New Data Package <span style="opacity:.6; font-weight:normal;">(admin)</span></a>
+      <a class="btn btn-secondary" href="/admin/tables?new_package=1"
+         title="Visible only to admins — analysts won't see this button.">
+        + New Data Package <span class="admin-only-hint">admin-only</span></a>
     </div>
     {% endif %}
   </div>
@@ -97,15 +100,6 @@
   {# Curator-style info block — mirrors marketplace .mp-curator-block.
      Sits BELOW the tab strip per the unified section order — same
      position marketplace.html uses (marketplace.html:497). #}
-  <div class="stack-curator-block">
-    <div class="stack-curator-block__title">Each Data Package is curated by your admin.</div>
-    <div class="stack-curator-block__body">
-      Packages bundle related tables on a single topic (Sales, Finance, …) so
-      analysts can pull a coherent dataset with one click. Required packages
-      are added to your stack automatically.
-    </div>
-  </div>
-
   {# Filter chips — All / Required / Available / In stack + per-source-type chips. #}
   <div class="stack-filter-row" id="catalog-filters">
     <button class="pill is-active" data-filter="all">All</button>
@@ -122,6 +116,14 @@
 
   {# Browse view — every package the user has any grant on. #}
   <div data-view="browse">
+    <div class="stack-curator-block">
+      <div class="stack-curator-block__title">Each Data Package is curated by your admin.</div>
+      <div class="stack-curator-block__body">
+        Packages bundle related tables on a single topic (Sales, Finance, …) so
+        analysts can pull a coherent dataset with one click. Required packages
+        are added to your stack automatically.
+      </div>
+    </div>
     {% if entries %}
     <div class="stack-grid" id="catalog-grid-browse">
       {% for entry in entries %}
@@ -159,16 +161,16 @@
     {% endif %}
   </div>
 
-  {# My Stack view — required + subscribed. #}
+  {# My Stack view — required + subscribed. Grid + empty-state are
+     both rendered so the optimistic add/remove JS can swap visibility
+     without having to inject DOM that wasn't in the initial render. #}
   <div data-view="my" hidden>
-    {% if stack_entries %}
-    <div class="stack-grid" id="catalog-grid-my">
+    <div class="stack-grid" id="catalog-grid-my"{% if not stack_entries %} hidden{% endif %}>
       {% for entry in stack_entries %}
         {{ card(entry) }}
       {% endfor %}
     </div>
-    {% else %}
-    <div class="stack-empty">
+    <div class="stack-empty"{% if stack_entries %} hidden{% endif %}>
       <span class="icon">🗂️</span>
       <h3>Your stack is empty</h3>
       <p>Browse available packages and click <strong>+ Add to stack</strong>.
@@ -177,7 +179,6 @@
         <a href="/catalog">Browse all →</a>
       </div>
     </div>
-    {% endif %}
   </div>
 
   {# v53 Recipes view — populated client-side on first tab open from
@@ -187,6 +188,17 @@
      Add-to-stack, no Required/in-stack badges — recipes aren't
      subscribable). #}
   <div data-view="recipes" hidden>
+    <div class="stack-curator-block">
+      <div class="stack-curator-block__title">Recipes — admin-curated query templates.</div>
+      <div class="stack-curator-block__body">
+        A Recipe is a ready-to-run SQL query that answers a typical
+        question (e.g. "top customers by revenue last 30 days"). Open
+        one to copy the SQL, then adapt the date range / filters and
+        run it via <code>agnes query</code>. Recipes aren't subscribed
+        to like Data Packages — they're a shared library you can
+        always browse.
+      </div>
+    </div>
     <div class="stack-grid" id="catalog-grid-recipes">
       <div class="stack-empty" id="catalog-recipes-loading">
         <span class="icon">📑</span>
@@ -551,6 +563,10 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
             cloneBtn.disabled = false;
           }
           myGrid.appendChild(clone);
+          // Mirror the Remove-empties-the-tab path: if we previously
+          // hid the grid + showed the empty-state placeholder, un-hide
+          // the grid now that it has children again.
+          myGrid.hidden = false;
         }
         // Empty-state placeholder hides as soon as the grid has a child.
         const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
@@ -558,6 +574,13 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       } else if (!becameInStack && existingInMy) {
         existingInMy.remove();
         if (!myGrid.children.length) {
+          // Both the grid and the empty-state are server-rendered;
+          // swap their visibility instead of injecting DOM that wasn't
+          // in the initial render. Previously the empty-state was only
+          // emitted when stack_entries was empty at render time, so
+          // removing the last card left the tab blank — users read
+          // that as "Remove didn't work" and reached for refresh.
+          myGrid.hidden = true;
           const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
           if (emptyEl) emptyEl.hidden = false;
         }
