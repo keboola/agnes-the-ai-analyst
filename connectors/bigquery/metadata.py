@@ -156,7 +156,17 @@ def _fetch_rows_and_size(bq, req: MetadataRequest) -> dict | None:
 
 
 def _resolve_bq_location(bq, req: MetadataRequest) -> str | None:
-    """instance.yaml.location → REST get_dataset → None."""
+    """instance.yaml.location → REST get_dataset → None.
+
+    The REST fallback is best-effort: it requires the SA to have
+    ``bigquery.datasets.get`` on the data project. Most cross-project
+    setups grant ``bigquery.tables.get`` (data viewer) but NOT dataset-
+    level metadata, so this 404s silently for the exact deployments
+    that most need region detection. Configuring
+    ``data_source.bigquery.location`` skips the REST round-trip entirely
+    and makes the path deterministic — strongly recommended for any
+    non-trivial setup. Issue #343.
+    """
     cfg_location = (get_value("data_source", "bigquery", "location") or "").strip()
     if cfg_location:
         return cfg_location
@@ -167,7 +177,11 @@ def _resolve_bq_location(bq, req: MetadataRequest) -> str | None:
         return ds.location
     except Exception as e:
         logger.warning(
-            "BQ dataset.get failed for %s.%s — falling back to __TABLES__: %s",
+            "BQ dataset.get fell back for %s.%s: %s. To skip this REST "
+            "round-trip on every metadata refresh (and silence cases "
+            "where the SA lacks bigquery.datasets.get), set "
+            "data_source.bigquery.location in /admin/server-config to the "
+            "dataset's region (e.g. 'us-central1' or 'EU').",
             bq.projects.data, req.bucket, e,
         )
         return None

@@ -129,6 +129,92 @@ class SyncOrchestrator:
                 _capture_orchestrator_exception(exc, op="rebuild_source", source=source_name)
                 raise
 
+    def _sync_bq_remote_attach_with_overlay(self, extracts_dir: Path) -> None:
+        """Detect drift in BQ extract.duckdb's ``_remote_attach.url`` and
+        rewrite the extract when it disagrees with the overlay project.
+
+        Operational hazard this closes (issue #343, observed on Foundry AI
+        2026-05-19): an admin updates ``data_source.bigquery.project`` via
+        ``POST /api/admin/server-config`` (overlay write), but the BQ
+        ``extract.duckdb`` keeps the previously-baked ``project=<old>``
+        in its ``_remote_attach`` row. The next rebuild ATTACHes the OLD
+        project, queries against datasets that don't exist there, and the
+        error message points at the old project — confusing operators
+        who just changed the config.
+
+        Fix: at every rebuild, read the BQ extract's ``_remote_attach.url``,
+        compare against the overlay's ``data_source.bigquery.project``, and
+        if they differ, call ``rebuild_from_registry`` to regenerate the
+        extract. The regeneration path is the same one ``register-table``
+        uses, so its semantics are well-tested.
+
+        No-op preconditions (any one short-circuits to silent return):
+          - no BQ extract directory on disk (instance never had BQ)
+          - extract.duckdb missing (extracted-but-failed state)
+          - overlay project unset (BQ not configured yet — first-time
+            setup, not drift)
+          - no ``_remote_attach`` table in the extract (legacy / non-BQ
+            extract, e.g. a future "bigquery" name collision with a local
+            connector)
+          - existing url matches overlay (no drift)
+        """
+        bq_extract = extracts_dir / "bigquery" / "extract.duckdb"
+        if not bq_extract.exists():
+            return
+        try:
+            from app.instance_config import get_value
+        except Exception:
+            return
+        overlay_project = (get_value("data_source", "bigquery", "project") or "").strip()
+        if not overlay_project:
+            return
+        # Read-only handle, separate connection — orchestrator's rebuild
+        # connection is per-call and hasn't ATTACHed extracts yet at
+        # this pre-pass point, so this won't fight a file lock.
+        try:
+            ro = duckdb.connect(str(bq_extract), read_only=True)
+        except Exception:
+            return
+        try:
+            row = ro.execute(
+                "SELECT url FROM _remote_attach WHERE alias='bq'"
+            ).fetchone()
+        except Exception:
+            row = None
+        finally:
+            try:
+                ro.close()
+            except Exception:
+                pass
+        if not row or not row[0]:
+            return
+        current_url = row[0]
+        expected_url = f"project={overlay_project}"
+        if current_url == expected_url:
+            return
+        logger.info(
+            "BQ remote_attach drift detected: extract.duckdb has %r, "
+            "overlay has %r — regenerating extract via "
+            "rebuild_from_registry()",
+            current_url, expected_url,
+        )
+        try:
+            from connectors.bigquery.extractor import rebuild_from_registry
+            result = rebuild_from_registry()
+            logger.info(
+                "BQ remote_attach drift sync: regenerated extract — "
+                "tables_registered=%s errors=%s",
+                result.get("tables_registered"),
+                len(result.get("errors", [])),
+            )
+        except Exception as e:
+            logger.warning(
+                "BQ remote_attach drift sync: rebuild_from_registry() "
+                "failed: %s — extract.duckdb still points at %r, queries "
+                "will fail until next manual sync",
+                e, current_url,
+            )
+
     def _scan_meta_pairs(self, extracts_dir: Path) -> tuple:
         """Read every connector's `_meta` and return (pairs, clean) where:
 
@@ -184,6 +270,30 @@ class SyncOrchestrator:
         if not extracts_dir.exists():
             logger.warning("Extracts directory %s does not exist", extracts_dir)
             return {}
+
+        # Pre-pass: detect drift between extract.duckdb _remote_attach.url
+        # (where the orchestrator's ATTACH path will read the BQ project
+        # from) and the overlay's data_source.bigquery.project (the
+        # writable source of truth, edited via admin /server-config). If
+        # they differ, regenerate the BQ extract so the new project
+        # propagates into views before we run the main rebuild loop.
+        # No-op when there is no BQ extract or no overlay project. See
+        # issue #343 for the operational hazard this closes (admin
+        # changes project in the UI, extract.duckdb stays stale, all
+        # remote queries fail with "Dataset not found in <old project>").
+        try:
+            self._sync_bq_remote_attach_with_overlay(extracts_dir)
+        except Exception as e:
+            # Defensive: drift sync is a best-effort safety net. A failure
+            # here must not block the rest of the rebuild — the worst
+            # case is the same stale-extract failure mode the sync was
+            # trying to prevent, which the operator can still resolve
+            # manually via /admin/sync trigger.
+            logger.warning(
+                "BQ remote_attach drift sync failed: %s — continuing with "
+                "existing extract.duckdb (queries may fail until next "
+                "manual sync if project drifted)", e,
+            )
 
         # Issue #81 Group C — load view ownership map from system DB so we
         # can detect cross-connector view-name collisions during this
