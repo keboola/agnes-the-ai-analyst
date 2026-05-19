@@ -11,6 +11,7 @@
     --surface: #FFFFFF;
     --border: #E5E7EB;
     --border-light: #F3F4F6;
+    --border-dark: #C4C4C4;
     --success: #10B77F;
     --warning: #F59F0A;
     --error: #EA580C;
@@ -254,7 +255,7 @@ nav {
 
 .btn-google:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-    border-color: var(--border);
+    border-color: var(--border-dark);
     background-color: var(--background);
 }
 
@@ -424,6 +425,7 @@ code {
 .code-block pre {
     background: transparent;
     border: none;
+    border-radius: 0;
     padding: 0;
     font-size: 0.8125rem;
     color: inherit;
@@ -2904,7 +2906,7 @@ a.slack-badge:hover {
 
 .login-page .btn-google:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-    border-color: var(--border);
+    border-color: var(--border-dark);
     background-color: var(--background);
 }
 
