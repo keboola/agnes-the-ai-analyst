@@ -162,6 +162,60 @@ class TestSampleEndpoint:
         finally:
             conn.close()
 
+    def test_materialized_bq_table_reads_parquet_not_bq(self, reload_db, monkeypatch):
+        """Regression: build_sample routed materialized tables (source_type='bigquery',
+        query_mode='materialized') to _fetch_bq_sample, which attempted a live BQ
+        query for data that lives locally as parquet — causing HTTP 500.
+
+        After the fix, query_mode='materialized' must always fall through to the
+        local parquet read path, regardless of source_type."""
+        import duckdb as _duckdb
+        from app.api import v2_sample
+        from app.utils import get_data_dir
+
+        v2_sample._sample_cache.clear()
+
+        bq_called = []
+
+        def _fake_bq_fetch(*a, **kw):
+            bq_called.append(True)
+            return []
+
+        monkeypatch.setattr(v2_sample, "_fetch_bq_sample", _fake_bq_fetch)
+
+        parquet_dir = get_data_dir() / "extracts" / "bigquery" / "data"
+        parquet_dir.mkdir(parents=True, exist_ok=True)
+        parquet_path = parquet_dir / "order_economics.parquet"
+        c = _duckdb.connect(":memory:")
+        try:
+            c.execute(
+                "COPY (SELECT 'Los Angeles' AS customer_city, 100 AS orders "
+                "UNION ALL SELECT 'New York', 80 AS orders) "
+                f"TO '{parquet_path}' (FORMAT PARQUET)"
+            )
+        finally:
+            c.close()
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            from src.repositories.table_registry import TableRegistryRepository
+            TableRegistryRepository(conn).register(
+                id="order_economics", name="order_economics",
+                source_type="bigquery", query_mode="materialized",
+                bucket="finance_unit_economics", source_table="order_economics",
+            )
+            user = {"id": "admin1", "email": "a@x.com"}
+            data = v2_sample.build_sample(conn, user, "order_economics", n=5, bq=_bq())
+        finally:
+            conn.close()
+
+        assert not bq_called, "_fetch_bq_sample must not be called for materialized tables"
+        assert data["table_id"] == "order_economics"
+        assert len(data["rows"]) == 2
+        cities = {r["customer_city"] for r in data["rows"]}
+        assert cities == {"Los Angeles", "New York"}
+
 
 class TestBqAccessErrors:
     """Issue #134: structured 502 translation on BQ errors in sample path.

@@ -324,18 +324,28 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
 
 
 def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
-    """Steps 2-4 — workspace folder bootstrap, then `agnes init` + smoke verify.
+    """Steps 2-4 — workspace folder check, then `agnes init` + smoke verify.
 
-    Step 2 (new) explicitly creates the workspace folder and cd's into it.
-    Previously the script assumed Claude Code was already cd'd to a sensible
-    location and ran `agnes init --workspace .` against whatever that
-    happened to be. With the new explicit mkdir+cd the workspace path is
-    deterministic — `~/{workspace_dir}` — and the visible /home step block
-    + this scripted step stay in lockstep.
+    Step 2 verifies the user is already cd'd into the workspace folder
+    that the /home onboarding page's visible "Step 3 — create your
+    workspace folder" told them to create manually (`mkdir -p
+    ~/{workspace_dir} && cd ~/{workspace_dir}`). The pasted script
+    DOES NOT auto-create the folder — that would silently override an
+    intentional choice to install at a different path (e.g. the user
+    cd'd to `~/work/agnes-prod` on purpose). Instead we `pwd`, compare
+    to `$HOME/{workspace_dir}`, and on mismatch warn loudly and ask the
+    user to either re-paste from the right folder or explicitly confirm
+    "install here" in the current cwd.
 
     `{workspace_dir}` and `{instance_brand}` are placeholders pre-substituted
     by :func:`resolve_lines` from the operator-configured brand. Defaults
     keep `~/Agnes` behavior for instances that don't set the brand knob.
+
+    `agnes init --workspace .` continues to use the current cwd, so once
+    step 2 has confirmed (or the user has explicitly accepted) the
+    install dir, step 3 lands in the right place. Step 9's restart-claude
+    cue references "this same directory" so users on a custom path see
+    accurate guidance.
 
     `agnes init` is the workspace-rails delivery mechanism for everyone:
     it authenticates with the PAT, fetches CLAUDE.md (RBAC-filtered),
@@ -352,14 +362,36 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     """
     return [
         "",
-        "2) Create the workspace folder in the user's home directory and cd into it:",
-        "   # POSIX (macOS / Linux / WSL):",
-        "   mkdir -p \"$HOME/{workspace_dir}\" && cd \"$HOME/{workspace_dir}\"",
-        "   # Windows (PowerShell) — only run if the user is on Windows:",
-        "   #   New-Item -ItemType Directory -Force -Path \"$HOME\\{workspace_dir}\" | Out-Null",
-        "   #   Set-Location \"$HOME\\{workspace_dir}\"",
+        "2) Verify the user is already in the workspace folder.",
+        "   The /home page's visible \"Step 3 — create your workspace folder\"",
+        "   already asked the user to run",
+        "       mkdir -p ~/{workspace_dir} && cd ~/{workspace_dir}",
+        "   in their terminal BEFORE pasting this script. Do NOT silently",
+        "   re-create the folder here — the user may have intentionally cd'd",
+        "   to a different location to install {instance_brand} there instead.",
         "",
-        "   The remaining steps run inside this directory.",
+        "   Run:",
+        "       pwd",
+        "   Expected: $HOME/{workspace_dir}  (i.e. ~/{workspace_dir})",
+        "",
+        "   If `pwd` matches the expected path: continue silently to step 3.",
+        "",
+        "   If `pwd` does NOT match, STOP and tell the user verbatim:",
+        "",
+        "       \"You are in <current-pwd>, but {instance_brand} is normally",
+        "       installed in ~/{workspace_dir} (see /home Step 3). Either run",
+        "           mkdir -p ~/{workspace_dir} && cd ~/{workspace_dir}",
+        "       in your terminal now and re-paste this setup script, OR reply",
+        "       'install here' to install {instance_brand} in <current-pwd>",
+        "       instead. Reply 'abort' to stop.\"",
+        "",
+        "   Wait for the user's reply.",
+        "     - 'install here'  → continue to step 3 in the current cwd.",
+        "                         The cwd you saw from `pwd` is the install",
+        "                         directory; remember it for step 9.",
+        "     - 'abort' / anything else → stop without making any changes.",
+        "                         Do NOT run `mkdir`, do NOT `cd`, do NOT",
+        "                         continue to step 3.",
         "",
         "3) Bootstrap your {instance_brand} workspace in this directory:",
         f"   agnes init --server-url \"{server_url_placeholder}\" --token \"{{token}}\" --workspace .",
@@ -490,7 +522,7 @@ def _restart_claude_lines(step_num: str) -> list[str]:
     return [
         "",
         f"{step_num}) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:",
-        "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same `~/{workspace_dir}` directory.",
+        "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/{workspace_dir}` on the default path, or whatever cwd the user explicitly accepted with 'install here').",
         "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + refresh-marketplace SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
     ]
 

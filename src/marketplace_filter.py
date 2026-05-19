@@ -48,7 +48,6 @@ from src.repositories.user_curated_subscriptions import (
     UserCuratedSubscriptionsRepository,
 )
 from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.store_naming import suffixed_name
 
 
 def _resolve_raw(raw: Any) -> dict:
@@ -181,15 +180,21 @@ marketplace. ``is_valid_slug`` in ``src/marketplace.py`` rejects any admin
 marketplace registering ``store`` as its slug, so collisions with admin
 content are impossible."""
 
-BUNDLE_PLUGIN_NAME = "agnes-store-bundle"
+BUNDLE_PLUGIN_NAME = "flea"
 """Synth plugin that wraps every Store-installed skill and agent for a user
 into a single Claude Code plugin. Skill / agent uploads share this single
 plugin in the served marketplace; only ``type='plugin'`` Store entities
-materialize as their own plugin entry. See ``resolve_user_marketplace``."""
+materialize as their own plugin entry. See ``resolve_user_marketplace``.
 
-BUNDLE_PREFIXED_NAME = "store-bundle"
+v49 phase-4: renamed from ``agnes-store-bundle`` to ``flea``. Clean cut —
+``usage_events`` rows whose JSONL was written before the rename stay
+attributed as ``source='builtin'``; no legacy-prefix fallback in the
+attribution layer (``services/session_processors/usage_lib.py``)."""
+
+BUNDLE_PREFIXED_NAME = "flea"
 """On-disk directory name in the served ZIP / git tree for the bundle plugin.
-Lives under ``plugins/store-bundle/...``."""
+Lives under ``plugins/flea/...``. v49 phase-4: renamed from ``store-bundle``
+for parity with the manifest plugin name."""
 
 BUNDLE_DESCRIPTION = "Skills and agents you've installed from the Agnes Store"
 
@@ -307,7 +312,13 @@ def resolve_user_marketplace(
         entity_id = row["id"]
         owner_username = row["owner_username"]
         original_name = row["name"]
-        manifest_name = suffixed_name(original_name, owner_username)
+        # v49 phase-3: stored synthetic_name from store_entities is the
+        # canonical value baked into the on-disk plugin tree
+        # (frontmatter name, plugin.json `name`). Reading it from DB
+        # keeps the served manifest in lockstep with whatever the upload
+        # / edit / archive paths last wrote. The column is NOT NULL +
+        # explicitly selected by ``list_for_user``.
+        manifest_name = row["synthetic_name"]
         plugin_dir = store_root / entity_id / "plugin"
         store_plugin_entries.append(
             {

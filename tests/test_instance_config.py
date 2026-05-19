@@ -135,7 +135,10 @@ class TestInstanceBrand:
             workspace_dir="FoundryAI",
         ))
         assert "Set up the Foundry AI CLI on this machine." in joined
-        assert "mkdir -p \"$HOME/FoundryAI\"" in joined
+        # Step 2 is a pwd-check now (no auto-mkdir); brand + workspace_dir
+        # thread through the warning copy + expected-path string.
+        assert "$HOME/FoundryAI" in joined
+        assert "mkdir -p ~/FoundryAI && cd ~/FoundryAI" in joined
         assert "Bootstrap your Foundry AI workspace" in joined
         assert "Foundry AI workspace is ready" in joined
         # No raw placeholders survive substitution.
@@ -150,7 +153,10 @@ class TestInstanceBrand:
         from app.web.setup_instructions import resolve_lines
         joined = "\n".join(resolve_lines("agnes.whl"))
         assert "Set up the Agnes CLI on this machine." in joined
-        assert "mkdir -p \"$HOME/Agnes\"" in joined
+        # Step 2 is a pwd-check (no auto-mkdir); default path threads
+        # through as `$HOME/Agnes` + the warning's manual-mkdir example.
+        assert "$HOME/Agnes" in joined
+        assert "mkdir -p ~/Agnes && cd ~/Agnes" in joined
         assert "Bootstrap your Agnes workspace" in joined
         assert "Agnes workspace is ready" in joined
         mod._instance_config = None

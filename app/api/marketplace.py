@@ -22,7 +22,7 @@ import logging
 import re
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -52,7 +52,6 @@ from src.repositories.user_curated_subscriptions import (
 )
 from src.repositories.user_store_installs import UserStoreInstallsRepository
 from src.store_categories import STORE_CATEGORIES
-from src.store_naming import suffixed_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
@@ -799,6 +798,7 @@ def _flea_to_item(
     entity: dict,
     *,
     installed_set: set,
+    users_display: Dict[str, Tuple[Optional[str], Optional[str]]],
     viewer_id: Optional[str] = None,
     stats: Optional[Dict[str, Dict]] = None,
 ) -> MarketplaceItem:
@@ -815,13 +815,33 @@ def _flea_to_item(
     # (Claude Code's `/plugin` resolution) uses the renamed slug — we
     # don't strip there.
     from src.store_naming import strip_archive_suffix
-    display_name = strip_archive_suffix(entity["name"])
-    invocation = suffixed_name(display_name, entity.get("owner_username") or "")
+    display_name_raw = strip_archive_suffix(entity["name"])
+    # v49 phase-3: invocation is the stored synthetic_name. The column is
+    # NOT NULL (phase 1 migration + repo create/update/archive write
+    # paths keep it in sync), so reading it directly is safe and a
+    # missing value would be a real bug worth surfacing as KeyError
+    # rather than masking with a recompute.
+    invocation = entity["synthetic_name"]
     is_viewer_owner = bool(viewer_id and entity.get("owner_user_id") == viewer_id)
-    # v46: flea stats keyed by store_entities.name (rollup `name` column).
-    # The display name is post-archive-strip; use the raw row name to match
-    # what the lookup preload sees.
-    stat = (stats or {}).get(entity["name"], {})
+    # v49 phase-5: rollup `name` column carries the synthetic_name (the
+    # post-rename keyspace used by `MarketplaceItemLookup`). Stats dict
+    # built by `_load_invocation_stats` is keyed by that same value, so
+    # the lookup uses `entity["synthetic_name"]`.
+    stat = (stats or {}).get(entity["synthetic_name"], {})
+    # v49 phase-2: front the card with the user-friendly `title` (humanized,
+    # acronym-aware) via the existing `display_name` field — JS already
+    # has the chain `it.display_name || it.name` on cards. `tagline`
+    # rides the same chain JS uses for curated. Owner display resolves
+    # `users.name → users.email → owner_username` so cards no longer
+    # leak the kebab-case username (e.g. `c-marustamyan`) when the user
+    # has a real name on their account. Reads from a prefetched
+    # ``users_display`` map (one IN-query per page) — see
+    # ``_load_users_display`` callers in ``list_items``.
+    owner_display = _owner_display_from_map(
+        users_display,
+        entity["owner_user_id"],
+        entity.get("owner_username") or "",
+    )
     return MarketplaceItem(
         id=f"flea-{entity['id']}",
         source="flea",
@@ -829,7 +849,9 @@ def _flea_to_item(
         type=entity["type"],
         category=entity.get("category") or None,
         description=entity.get("description"),
-        owner=entity.get("owner_username"),
+        owner=owner_display,
+        display_name=entity.get("title"),
+        tagline=entity.get("tagline"),
         version=entity.get("version"),
         photo_url=photo_url,
         added=_to_iso(entity.get("created_at")),
@@ -1069,9 +1091,13 @@ async def list_items(
                 include_owner_id=include_owner,
             )
         flea_stats = _load_invocation_stats(conn, "flea")
+        flea_users_display = _load_users_display(
+            conn, (r["owner_user_id"] for r in all_flea_rows),
+        )
         items = [
             _flea_to_item(
                 r, installed_set=installed_set,
+                users_display=flea_users_display,
                 viewer_id=user["id"],
                 stats=flea_stats,
             )
@@ -1145,9 +1171,13 @@ async def list_items(
 
     flea_installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
     flea_installed_set = {row["id"] for row in flea_installs}
+    flea_users_display = _load_users_display(
+        conn, (row["owner_user_id"] for row in flea_installs),
+    )
     for entity in flea_installs:
         items.append(_flea_to_item(
-            entity, installed_set=flea_installed_set, stats=flea_stats,
+            entity, installed_set=flea_installed_set,
+            users_display=flea_users_display, stats=flea_stats,
         ))
 
     # Apply optional filters client-server-style for `my` tab (small N):
@@ -1497,10 +1527,48 @@ def _resolve_owner_display(
 
     Mirrors the inline lookup ``app/web/router.py::store_detail`` already does
     so the marketplace API surfaces the same string the Store page shows.
+
+    Single-row variant for detail endpoints. List endpoints must use
+    ``_load_users_display`` to avoid an N+1 against ``users``.
     """
     row = conn.execute(
         "SELECT name, email FROM users WHERE id = ?", [owner_user_id]
     ).fetchone()
+    if not row:
+        return fallback
+    return row[0] or row[1] or fallback
+
+
+def _load_users_display(
+    conn: duckdb.DuckDBPyConnection,
+    user_ids: Iterable[str],
+) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
+    """Batch-fetch ``(name, email)`` for a set of user_ids — single round-trip.
+
+    Returns a dict keyed by user_id. Use with ``_owner_display_from_map``
+    inside list comprehensions to compose the same
+    ``users.name → users.email → fallback`` resolution that
+    ``_resolve_owner_display`` does per-row.
+    """
+    ids = [u for u in {uid for uid in user_ids if uid}]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT id, name, email FROM users WHERE id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    return {r[0]: (r[1], r[2]) for r in rows}
+
+
+def _owner_display_from_map(
+    users_display: Dict[str, Tuple[Optional[str], Optional[str]]],
+    owner_user_id: str,
+    fallback: str,
+) -> str:
+    """Resolve owner display from a prefetched map, mirroring
+    ``_resolve_owner_display`` semantics."""
+    row = users_display.get(owner_user_id)
     if not row:
         return fallback
     return row[0] or row[1] or fallback
@@ -1711,9 +1779,11 @@ async def flea_detail(
             a.detail_url = f"/marketplace/flea/{entity_id}/agent/{a.name}"
         # Per-item telemetry — same shape as curated_detail. Adoption
         # inherits from the parent flea plugin's install_count (no
-        # standalone install on inner items).
+        # standalone install on inner items). v49 phase-5: rollup
+        # `parent_plugin` for flea-plugin children carries the parent's
+        # synthetic_name (= what Claude Code writes in the JSONL prefix).
         inner_stats = _load_inner_items_stats_by_parent(
-            conn, "flea", entity["name"],
+            conn, "flea", entity["synthetic_name"],
         )
         flea_parent_stack = int(entity.get("install_count") or 0)
         for s in skills:
@@ -1759,7 +1829,8 @@ async def flea_detail(
     # the renamed-on-archive slug since that's what Claude Code resolves.
     from src.store_naming import strip_archive_suffix
     _flea_display_name = strip_archive_suffix(entity["name"])
-    invocation = suffixed_name(_flea_display_name, entity.get("owner_username") or "")
+    # v49 phase-3: read the stored synthetic_name (NOT NULL invariant).
+    invocation = entity["synthetic_name"]
 
     # doc_paths is a JSON array of relative paths the uploader picked at upload
     # time; `app/api/store.py` serves them by basename via /api/store/.../docs/{filename}.
@@ -1799,6 +1870,13 @@ async def flea_detail(
         entity_id=entity_id,
         plugin_name=_flea_display_name,
         manifest_name=invocation,
+        # v49 phase-2: surface the user-friendly title + short description
+        # via the existing curated-side fields. JS heroTitle chain already
+        # prefers `display_name`, and the hero-tagline element already
+        # reads `d.tagline` — flea now feeds the same chain instead of
+        # falling through to plugin_name (= kebab-case entity name).
+        display_name=entity.get("title"),
+        tagline=entity.get("tagline"),
         description=entity.get("description"),
         version=entity.get("version"),
         category=entity.get("category"),
@@ -1825,9 +1903,10 @@ async def flea_detail(
         docs=docs,
         visibility_status=entity.get("visibility_status") or "approved",
         submission_status=submission_status,
-        # v46: flea telemetry keyed by entity.name (rollup `name` column),
-        # not entity_id — JSONL identifiers carry the entity name, not its UUID.
-        telemetry=_build_telemetry(conn, "flea", entity["name"]),
+        # v49 phase-5: flea telemetry keyed by entity.synthetic_name
+        # (rollup `name` column carries the post-rename keyspace, which
+        # is the same string Claude Code writes in the JSONL local-part).
+        telemetry=_build_telemetry(conn, "flea", entity["synthetic_name"]),
     )
 
 
@@ -1996,6 +2075,12 @@ def _flea_inner_parent_fields(
     enrichment file convention exists for flea bundles yet, so the same
     fallbacks the flea plugin detail hero uses (strip_archive_suffix on
     entity.name, owner display, entity.updated_at) populate the response.
+
+    v49 phase-3: ``parent_display_name`` prefers the user-set ``title``
+    column over the kebab-case ``name``. The frontend chain (breadcrumb,
+    hero "part of …", sidebar "Parent plugin", helper "This skill is part
+    of …") all read ``d.parent_display_name`` first, so a single source
+    swap drives every surface to the friendly form.
     """
     from src.store_naming import strip_archive_suffix
     owner_display = _resolve_owner_display(
@@ -2007,7 +2092,7 @@ def _flea_inner_parent_fields(
         "parent_author_name": owner_display or OWNER_TODO_PLACEHOLDER,
         "parent_updated_at": _to_iso(entity.get("updated_at")),
         "manifest_name": entity["name"],
-        "parent_display_name": strip_archive_suffix(entity["name"]),
+        "parent_display_name": entity.get("title") or strip_archive_suffix(entity["name"]),
     }
 
 
@@ -2531,8 +2616,9 @@ async def flea_skill_detail(
     text, relpath = res
     fm = _parse_frontmatter(text)
     parent = _flea_inner_parent_fields(conn, entity)
+    # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = _load_inner_item_stats(
-        conn, "flea", parent_plugin=entity["name"], name=skill_name, item_type="skill",
+        conn, "flea", parent_plugin=entity["synthetic_name"], name=skill_name, item_type="skill",
     )
     return InnerDetailResponse(
         marketplace_id="",
@@ -2583,8 +2669,9 @@ async def flea_agent_detail(
     except OSError:
         agent_size = 0
     parent = _flea_inner_parent_fields(conn, entity)
+    # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = _load_inner_item_stats(
-        conn, "flea", parent_plugin=entity["name"], name=agent_name, item_type="agent",
+        conn, "flea", parent_plugin=entity["synthetic_name"], name=agent_name, item_type="agent",
     )
     return InnerDetailResponse(
         marketplace_id="",

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block title %}{{ (entity.title if entity else None) or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
 <style>
@@ -855,7 +855,7 @@
       <span class="sep">›</span>
       <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}" id="crumb-mid">{{ 'Curated Marketplace' if source == 'curated' else 'Flea Market' }}</a>
       <span class="sep">›</span>
-      <span id="crumb-name">{{ plugin_name }}</span>
+      <span id="crumb-name">{{ (entity.title if entity else None) or plugin_name }}</span>
     </div>
     <div class="hero-head">
       <div class="hero-window" id="hero-photo" aria-hidden="true">
@@ -863,13 +863,16 @@
           <span class="hwdot red"></span>
           <span class="hwdot yellow"></span>
           <span class="hwdot green"></span>
-          <span class="hero-window-label" id="hero-window-label">{{ plugin_name }}</span>
+          <span class="hero-window-label" id="hero-window-label">{{ (entity.title if entity else None) or plugin_name }}</span>
         </div>
         <div class="hero-window-body" id="hero-window-body">PL</div>
       </div>
       <div class="meta">
-        <h1 id="hero-name">{{ plugin_name }}</h1>
-        <div class="tagline" id="hero-tagline">Loading…</div>
+        <h1 id="hero-name">{{ (entity.title if entity else None) or plugin_name }}</h1>
+        <!-- v49 phase-2: hidden by default; JS only un-hides when d.tagline
+             is truthy. Pre-fix this rendered "Loading…" then collapsed to
+             empty for entities without a tagline, causing a flicker. -->
+        <div class="tagline" id="hero-tagline" hidden></div>
         <div class="pills" id="hero-pills"></div>
         <!-- Telemetry funnel chip — same shape as the listing card so a
              user who clicks through from /marketplace sees identical
@@ -1042,7 +1045,19 @@
   document.title = `${heroTitle} — Marketplace`;
 
   document.getElementById('hero-name').textContent = heroTitle;
-  document.getElementById('hero-tagline').textContent = d.tagline || d.description || '';
+  // v49 phase-2: tagline appears in hero only when explicitly set. Pre-fix
+  // it fell back to `d.description` (verbose long-form text from frontmatter
+  // / marketplace.json), which read awkwardly under the h1 and pulled the
+  // hero too tall. Description still renders in the "What it does" panel
+  // below the hero.
+  const tagEl = document.getElementById('hero-tagline');
+  if (d.tagline) {
+    tagEl.textContent = d.tagline;
+    tagEl.hidden = false;
+  } else {
+    tagEl.textContent = '';
+    tagEl.hidden = true;
+  }
   // Window titlebar label mirrors the h1 — keeps the mac-window framing
   // consistent with whichever name the user actually sees as the title.
   const heroWindowLabel = document.getElementById('hero-window-label');
@@ -1347,41 +1362,49 @@
   }
 
   // ── Details ─────────────────────────────────────────────────────
-  // Render only rows that have a real value — missing/null/owner_todo
-  // entries get hidden so the panel stays compact.
+  // v49 phase-7: unified scan order across plugin + skill/agent detail
+  // surfaces. Priority: identity (who) → life-stage (when) → telemetry
+  // (how used) → debug-tier (size). Slug field dropped — debug info,
+  // not user-facing.
+  //
+  // Render order:
+  //   1. Curator / Owner   — first scan signal (trust)
+  //   2. Released          — life-stage
+  //   3. Last used         — recency (higher priority than Active days)
+  //   4. Active days       — engagement consistency over 30d
+  //   5. Bundle size       — debug-tier
+  //
+  // Each row is conditional on data presence so the panel stays compact.
   const detailRows = [];
-  const slugVal = d.source === 'curated' ? d.marketplace_id : d.entity_id;
-  if (slugVal) {
-    detailRows.push(`<div class="row"><dt>Slug</dt><dd class="mono">${esc(slugVal)}</dd></div>`);
+
+  // 1. Curator/Owner. Curated → d.author_name (with owner_todo placeholder
+  // surfaced as visible reminder). Flea → d.owner_display (fullname from
+  // users.name → users.email → owner_username chain, populated by
+  // _resolve_owner_display in app/api/marketplace.py).
+  if (d.source === 'curated') {
+    if (d.author_name && d.author_name !== 'owner_todo') {
+      detailRows.push(`<div class="row"><dt>Curator</dt><dd>${esc(d.author_name)}</dd></div>`);
+    } else {
+      detailRows.push(`<div class="row"><dt>Curator</dt><dd><span class="todo">owner_todo</span></dd></div>`);
+    }
+  } else if (d.owner_display) {
+    detailRows.push(`<div class="row"><dt>Owner</dt><dd>${esc(d.owner_display)}</dd></div>`);
   }
+
+  // 2. Released.
   if (d.released_at) {
     detailRows.push(`<div class="row"><dt>Released</dt><dd>${esc(fmtRelative(d.released_at))}</dd></div>`);
   }
-  if (d.bundle_size != null) {
-    detailRows.push(`<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>`);
-  }
-  // Activity sidebar rows — Invocations + Users were moved into the
-  // hero chip above (no need to duplicate the same figures twice on
-  // one page). The sidebar now carries two *derived* signals from the
-  // daily series that the hero doesn't expose:
-  //   * Active days — engagement consistency over the 30d window.
-  //     "Active on 18 of 30 days" reads very differently from
-  //     "Active on 2 of 30 days" even when the raw call count is
-  //     similar; helps spot bursty vs. steady usage.
-  //   * Last used — recency, answering "is it still alive?". A
-  //     plugin with 12 installed users but last call 30 days ago is
-  //     stale; the hero chip can't surface that alone.
+
+  // 3-4. Telemetry-derived rows. Invocations + Users live in the hero
+  // chip; sidebar carries two derived signals only the daily series can
+  // give us. Last used first (recency), Active days second (consistency).
   if (d.telemetry && Array.isArray(d.telemetry.daily_series)) {
     const series = d.telemetry.daily_series;
     const activeDays = series.filter(p => (p.invocations || 0) > 0).length;
     if (activeDays > 0) {
-      detailRows.push(
-        `<div class="row"><dt>Active days</dt><dd>${activeDays} of ${series.length}</dd></div>`
-      );
-      // Last day with at least one invocation. Series is day-ascending
-      // (per _load_plugin_daily_series), so the final non-zero entry is
-      // the latest active day. Render relative ("2 days ago" / "Active
-      // today") via the same fmtRelative helper used elsewhere.
+      // Last day with at least one invocation. Series is day-ascending,
+      // so the final non-zero entry is the latest active day.
       let lastIso = null;
       for (let i = series.length - 1; i >= 0; i--) {
         if ((series[i].invocations || 0) > 0) { lastIso = series[i].day; break; }
@@ -1391,19 +1414,17 @@
           `<div class="row"><dt>Last used</dt><dd>${esc(fmtRelative(lastIso))}</dd></div>`
         );
       }
+      detailRows.push(
+        `<div class="row"><dt>Active days</dt><dd>${activeDays} of ${series.length}</dd></div>`
+      );
     }
   }
-  // Authorship row label tracks the source: curated bundles have a
-  // curator (the marketplace operator), flea bundles have an owner
-  // (the analyst who uploaded). When `author_name` is the `owner_todo`
-  // placeholder the curated branch surfaces it visibly as a reminder
-  // to wire up curator metadata; flea falls through silently.
-  const authorLabel = d.source === 'curated' ? 'Curator' : 'Owner';
-  if (d.author_name && d.author_name !== 'owner_todo') {
-    detailRows.push(`<div class="row"><dt>${authorLabel}</dt><dd>${esc(d.author_name)}</dd></div>`);
-  } else if (d.source === 'curated') {
-    detailRows.push(`<div class="row"><dt>Curator</dt><dd><span class="todo">owner_todo</span></dd></div>`);
+
+  // 5. Bundle size.
+  if (d.bundle_size != null) {
+    detailRows.push(`<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>`);
   }
+
   const detailsEl = document.getElementById('details-list');
   if (detailRows.length) {
     detailsEl.innerHTML = detailRows.join('');

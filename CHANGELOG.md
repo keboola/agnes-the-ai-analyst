@@ -435,6 +435,170 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `marketplace_plugins.is_system` + `user_plugin_optouts` retained
   per spec D1 — Marketplace was deliberately not touched.
 
+### Changed
+- Setup script no longer auto-creates the workspace folder. Step 2 of
+  the pasted prompt now runs `pwd`, compares it to `$HOME/<workspace_dir>`
+  (the folder the /home page's visible Step 3 told the user to create
+  manually), and on mismatch warns + asks the user to either re-paste
+  from the right folder or reply `install here` to accept the current
+  cwd. Respects an intentional alternate install path instead of
+  silently switching the user back to the default. Step 9 (restart
+  Claude Code) now references the install directory confirmed in step 2
+  rather than a hardcoded `~/<workspace_dir>`.
+- **BREAKING (marketplace identifier)**: synthetic plugin bundling flea
+  skills + agents renamed from `agnes-store-bundle` to `flea`. The
+  served `marketplace.json` now lists `flea` (previously
+  `agnes-store-bundle`); on-disk ZIP / git tree path is
+  `plugins/flea/` (previously `plugins/store-bundle/`). Claude Code
+  JSONL invocation prefix becomes `flea:<synthetic_name>` going
+  forward. **Clean cut — no legacy-prefix backward compat.** Historic
+  `usage_events` rows whose JSONL was written before the rename will
+  stay attributed as `source='builtin'` (acceptable in dev phase per
+  user direction; nothing to migrate).
+
+  **Client rollover**: `agnes refresh-marketplace` will install the
+  new `flea@agnes` plugin and reset the local marketplace clone (the
+  old `plugins/store-bundle/` source folder gets removed from disk
+  via `git reset --hard`). Whether Claude Code itself auto-prunes
+  the orphan `agnes-store-bundle@agnes` registry entry is
+  undocumented in our codebase — to be verified empirically on the
+  dev VM. If the orphan entry lingers, users can manually run
+  `claude plugin uninstall agnes-store-bundle@agnes`.
+- Marketplace detail page **Details sidebar** unified across all five
+  surfaces (curated plugin / flea plugin / curated inner skill+agent /
+  flea inner skill+agent / flea standalone skill+agent). Render order
+  now scans **identity → life-stage → telemetry → debug-tier**:
+  Curator / Owner → (Parent plugin for inner / Released for top-level)
+  → Last used → Active days → Version (flea standalone only) →
+  Bundle size. Drops the previous Slug row (debug-tier, never user-
+  relevant) from plugin detail and the Category + Installs rows
+  (duplicated hero badge + telemetry chip) from flea standalone
+  detail. Flea plugin Owner row now reads `d.owner_display` — the
+  fullname resolved via `users.name → users.email → owner_username`
+  — instead of the kebab-case `owner_username` slug.
+- Flea marketplace cards and detail pages now render the user-friendly
+  **title** instead of the kebab-case `<name>-by-<owner>` slug, the
+  owner's full name from `users.name` (with email → `owner_username`
+  fallback) instead of the bare username, and the optional **tagline**
+  as the hero subtitle (description still shows below the hero on
+  detail pages). Phase 2 of the Flea refactor — phase 1 (commit
+  `7f4cfcbb`) seeded the columns; phase 2 wires them through
+  `_flea_to_item`, `flea_detail`, and the two detail templates.
+  Breadcrumb last segment on `/marketplace/flea/{id}` drops the
+  suffixed slug fallback in favour of the title.
+- Flea inner skill/agent detail pages
+  (`/marketplace/flea/{id}/skill/{name}`, `/agent/{name}`) now show
+  the parent plugin's **title** in the breadcrumb 3rd segment, the
+  hero "part of …" meta-row, the helper "This skill is part of …"
+  panel, and the Details sidebar's "Parent plugin" row. Sourced
+  from `store_entities.title` via
+  `_flea_inner_parent_fields.parent_display_name`; falls back to
+  `strip_archive_suffix(name)` for any legacy rows that somehow
+  lack a title.
+- Flea standalone skill/agent detail (`/marketplace/flea/{id}` where
+  `type IN ('skill','agent')`) drops the hero meta-row that read
+  "by &lt;author&gt; · N installed · &lt;size&gt;". Install count is already
+  rendered in the hero telemetry chip below; owner + bundle size
+  live in the Details sidebar. The row was duplicating those three
+  values in a less-prominent position.
+- Read paths (marketplace card name, detail manifest_name, response
+  `invocation_name`, My-Stack invocation, served-bundle manifest in
+  `marketplace_filter`) now source the suffixed slug from
+  `store_entities.synthetic_name` directly instead of recomputing
+  `<name>-by-<owner_username>` on the fly. The column is NOT NULL +
+  the repo `create` / `update` / `archive` paths keep it in sync, so
+  reading it is safe; no fallback to a recompute — a missing value
+  would be a genuine bug worth surfacing as `KeyError`, not masked.
+  `suffixed_name()` stays as the primitive used by **write paths
+  only** (POST create insert, PUT rename collision check + new
+  suffix for `_rename_baked_tree` + new synthetic for `repo.update`,
+  archive new/old suffix for on-disk rename). `_suffixed_already_taken`
+  collision query swaps the inline `name || '-by-' || owner_username`
+  concat for `WHERE synthetic_name = ?` — indexable + single source
+  of truth.
+
+### Fixed
+- Flea **plugin entity** cards (`/marketplace?tab=flea`) and detail
+  pages (`/marketplace/flea/{id}` for `type='plugin'`) now show the
+  sum of nested skill/agent invocations. Pre-fix the plugin-level
+  rollup pass in `services/session_processors/usage_lib.py:_aggregate_events`
+  was hardcoded to `source='curated'` only, so flea plugin entities
+  never got a `(source='flea', type='plugin', parent_plugin='',
+  name=<plugin_synth>)` aggregated row. The API path's
+  `_load_invocation_stats('flea')` filters `parent_plugin=''` and
+  returned nothing for plugin cards even though nested children had
+  correct rollup rows. Triggered by empirical observation on dev VM
+  (`codex-second-opinion-by-c-marustamyan` plugin showed 0 calls
+  while its three inner skills had 1+1+3 invocations). Fix extends
+  the aggregation pass to `source in ('curated', 'flea')` and
+  preserves the original source tag in the synthetic plugin row.
+  `USAGE_PROCESSOR_VERSION` bumped 8→9 so the reprocess pass fills
+  the new aggregated rows for historic data.
+- Flea-market attribution layer now keys its lookup tables by
+  `store_entities.synthetic_name` instead of `name`, matching what
+  Claude Code writes in the JSONL invocation local-part
+  (`flea:<synthetic_name>` e.g. `flea:xlsx-by-c-marustamyan`).
+  Pre-fix every flea skill/agent invocation silently fell through to
+  `usage_events.source = 'builtin'` because the dict was keyed by
+  the un-suffixed `name`. Result: marketplace cards, detail
+  telemetry chips, and admin group-by-source had 0 flea invocations
+  even though raw events were arriving correctly. Both
+  `MarketplaceItemLookup` (live writer) and `_attribute_event`
+  (rollup rebuilder) updated; rollup `name`/`parent_plugin`
+  columns now carry the synthetic_name keyspace. API stats lookups
+  in `app/api/marketplace.py` switched from `entity["name"]` to
+  `entity["synthetic_name"]` (4 callsites: `_flea_to_item`,
+  `flea_detail`, two flea inner-detail endpoints). `_attribute_event`
+  also gains the flea-plugin-nested branch it was missing since
+  v6 — nested skills/agents inside flea plugins now flow into
+  rollup tables too. `USAGE_PROCESSOR_VERSION` bumped 7→8 so the
+  session-pipeline reprocess loop re-attributes existing events
+  with the corrected lookup. Closes issue #335.
+- Flea-tab marketplace listing endpoint
+  (`GET /api/marketplace/items?tab=flea`) no longer issues an N+1
+  query against `users`. The owner-display resolution previously
+  fired one `SELECT name, email FROM users WHERE id = ?` per item
+  inside the list comprehension; now batched into a single
+  `WHERE id IN (…)` prefetch via `_load_users_display`. With 50
+  flea items per page that drops 51 queries to 2.
+
+### Added
+- Flea-market upload + edit forms now collect a user-friendly **Title**
+  (humanized from the kebab-case `name`, acronym-aware: `mcp-builder` →
+  `MCP Builder`, `oauth-server-v2` → `OAuth Server V2`), an optional
+  **Short description** (`tagline`, ≤200 chars), and show a read-only
+  live preview of the final synthetic invocation slug
+  (`/<name>-by-<owner_username>`) next to the Name field. Phase 1 of a
+  larger Flea refactor — fields are persisted on `store_entities` but
+  not yet rendered on marketplace cards / detail pages (Phase 2). Schema
+  v49 adds `title NOT NULL`, `tagline`, and `synthetic_name NOT NULL`
+  columns; backfill humanizes existing names (archive-suffix stripped
+  first) and composes synthetic from the deterministic formula.
+- Schema **v50** adds a UNIQUE INDEX on `store_entities.synthetic_name`
+  (`idx_store_entities_synthetic_name`). v49 made `synthetic_name` the
+  canonical attribution key (rollup keyspace, JSONL invocation prefix,
+  marketplace bundle naming) but uniqueness was only enforced
+  application-side at upload/rename time via `_suffixed_already_taken`.
+  v50 promotes the invariant to the DB layer so admin DB hand-fixes or
+  future write-path bugs can't silently introduce duplicates.
+  DuckDB has no `ALTER TABLE ADD CONSTRAINT UNIQUE`, but
+  `CREATE UNIQUE INDEX` is functionally equivalent. Migration pre-checks
+  for existing duplicates and raises `RuntimeError` listing them rather
+  than letting the index create fail mid-way with a raw DuckDB error.
+
+## [0.54.28] — 2026-05-18
+
+### Fixed
+- `/api/v2/sample` (and `agnes describe`) no longer returns HTTP 500
+  for materialized BigQuery tables (`source_type='bigquery'`,
+  `query_mode='materialized'`). The handler previously routed any
+  `source_type='bigquery'` row to `_fetch_bq_sample` regardless of
+  query mode, attempting a live BigQuery query for data that lives
+  locally as parquet. Fix mirrors the existing guard in
+  `app/api/v2_schema.py` from #261 — materialized tables fall through
+  to the local parquet read path. Regression-locked by
+  `test_materialized_bq_table_reads_parquet_not_bq`. Closes #341.
+
 ## [0.54.27] — 2026-05-18
 
 ### Fixed
@@ -503,20 +667,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   now rejects `tables` dicts with more than 500 entries (ADV-008, ADV-009).
 - `GET /api/catalog/tables` now has a typed `response_model` (`CatalogTablesResponse`)
   so Swagger generates an accurate schema for that endpoint (ADV-007).
-
-### Internal
-- Added `TestFullLifecycleFromInstaller` integration test class
-  (`tests/test_store_entity_versions.py`) covering the full
-  flea-market lifecycle from issuer / admin / subscribed-user
-  perspectives. Main test walks v1 upload → installer subscribes →
-  v2 promote → v3 blocked → admin force-overrides → restore v1,
-  asserting BOTH entity state AND served `marketplace.zip` bytes +
-  ETag at each transition. Plus 5 corner cases:
-  unsubscribed-user negative control, late-subscriber-during-
-  quarantine, non-owner privacy gate, second-restore reuse path
-  (PR #332 lifecycle validation), and archived-entity-keeps-
-  serving-installs (CLAUDE.md contract).
-
 ## [0.54.24] — 2026-05-16
 
 ### Fixed

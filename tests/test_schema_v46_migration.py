@@ -21,6 +21,7 @@ def test_schema_version_is_at_least_46():
     assert SCHEMA_VERSION >= 46
 
 
+
 def test_fresh_install_creates_dismissed_table(tmp_path):
     """A brand-new DB ends at v46 with the dismiss table + index in place."""
     db_path = tmp_path / "system.duckdb"

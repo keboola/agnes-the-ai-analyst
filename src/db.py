@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 56
+SCHEMA_VERSION = 58
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     confidence DOUBLE,
     -- v49: the scalar ``domain`` column was replaced by the
     -- ``knowledge_item_domains`` M:N junction (see ``memory_domains``
-    -- and the v49 backfill in ``_v48_to_v49``).
+    -- and the v49 backfill in ``_v50_to_v51``).
     entities JSON,
     source_type VARCHAR DEFAULT 'claude_local_md',
     source_ref VARCHAR,
@@ -771,6 +771,19 @@ CREATE TABLE IF NOT EXISTS store_entities (
     -- StoreEntitiesRepository.append_version + restore endpoint.
     version_no        INTEGER NOT NULL DEFAULT 1,
     version_history   JSON DEFAULT '[]',
+    -- v49: phase-1 Flea refactor adds three user-facing metadata columns.
+    -- `title` is a humanized display name (acronym-aware), shown on web
+    -- surfaces instead of the kebab-case `name`. `tagline` is an optional
+    -- 200-char short description for card UI (long-form lives in
+    -- `description`). `synthetic_name` is the deterministic
+    -- `<name>-by-<owner_username>` value baked into served bundles —
+    -- stored as a column so attribution + uniqueness checks can target a
+    -- single source of truth instead of recomputing the concat on every
+    -- query. Phase 1 only populates these; downstream surfaces (cards,
+    -- detail pages, Claude Code propagation) consume them in later phases.
+    title             VARCHAR NOT NULL,
+    tagline           VARCHAR,
+    synthetic_name    VARCHAR NOT NULL,
     created_at        TIMESTAMP DEFAULT current_timestamp,
     updated_at        TIMESTAMP DEFAULT current_timestamp,
     UNIQUE (owner_user_id, name)
@@ -854,6 +867,12 @@ CREATE TABLE IF NOT EXISTS store_submissions (
 
 CREATE INDEX IF NOT EXISTS idx_store_submissions_status ON store_submissions(status);
 CREATE INDEX IF NOT EXISTS idx_store_submissions_entity ON store_submissions(entity_id);
+-- NOTE: the v50 UNIQUE INDEX on store_entities.synthetic_name is created
+-- by ``_v49_to_v50_migrate``, not here. Reason: ``_v48_to_v49_migrate``
+-- runs ``ALTER TABLE store_entities ALTER COLUMN … SET NOT NULL`` which
+-- DuckDB blocks when an index already references the table. Fresh-install
+-- ordering is therefore: CREATE TABLE (no index) → v49 migrate (no-op
+-- ALTERs on empty table) → v50 migrate (CREATE UNIQUE INDEX).
 -- NOTE: no created_at index. DuckDB 1.x has a bug where
 -- `ORDER BY <indexed col> DESC LIMIT N` short-returns on small tables
 -- (reproduced with N=2 against 3 rows during /admin/store/submissions
@@ -2788,6 +2807,21 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP")
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR")
 
+    # If the table is already at a post-v49 shape (synthetic_name column
+    # present from phase-1 Flea refactor), the v35 visibility_status rebuild
+    # has effectively been done long ago AND the v50 UNIQUE INDEX on
+    # synthetic_name now blocks `DROP COLUMN visibility_status` (DuckDB
+    # forbids dropping a column when an index references a column after it
+    # positionally). Short-circuit so re-runs of the ladder on a fully
+    # migrated DB (e.g. a test that resets schema_version backwards) stay
+    # idempotent.
+    post_v49 = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' AND column_name = 'synthetic_name'"
+    ).fetchone()
+    if post_v49:
+        return
+
     cols = {
         r[0]
         for r in conn.execute(
@@ -2843,13 +2877,32 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
 # whose schema_version row says 36 but whose users table is missing
 # `onboarded` — the only consequence-free recovery is an idempotent
 # ADD IF NOT EXISTS at the v36 step.
-_V35_TO_V36_MIGRATIONS = [
-    "UPDATE store_entities SET visibility_status = 'pending' WHERE visibility_status IS NULL",
-    "ALTER TABLE store_entities ALTER COLUMN visibility_status SET NOT NULL",
-    "ALTER TABLE store_entities ALTER COLUMN visibility_status SET DEFAULT 'pending'",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded BOOLEAN DEFAULT FALSE",
-    "UPDATE users SET onboarded = FALSE WHERE onboarded IS NULL",
-]
+def _v35_to_v36_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotent v35→v36. Gates the ALTER COLUMN steps on current
+    nullability — once v50 creates the UNIQUE INDEX on store_entities,
+    DuckDB blocks ALTER COLUMN against the table (the index references
+    a column "after" visibility_status positionally), so a redundant
+    SET NOT NULL on an already-NOT-NULL column would explode."""
+    conn.execute(
+        "UPDATE store_entities SET visibility_status = 'pending' "
+        "WHERE visibility_status IS NULL"
+    )
+    nullable = conn.execute(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' AND column_name = 'visibility_status'"
+    ).fetchone()
+    if nullable and nullable[0] == "YES":
+        conn.execute(
+            "ALTER TABLE store_entities ALTER COLUMN visibility_status SET NOT NULL"
+        )
+        conn.execute(
+            "ALTER TABLE store_entities ALTER COLUMN visibility_status "
+            "SET DEFAULT 'pending'"
+        )
+    conn.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded BOOLEAN DEFAULT FALSE"
+    )
+    conn.execute("UPDATE users SET onboarded = FALSE WHERE onboarded IS NULL")
 
 
 # v37→v38: flea-market entity edit feature with version history.
@@ -2876,47 +2929,59 @@ _V35_TO_V36_MIGRATIONS = [
 # created_at backfilled from the entity row; submission_id is best-
 # effort (we look up the most recent submission_id for the entity_id
 # if any exists, else NULL).
-_V37_TO_V38_MIGRATIONS = [
+def _v37_to_v38_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotent v37→v38. Gates the ``version_no SET NOT NULL`` step on
+    current nullability — see ``_v35_to_v36_migrate`` for why."""
     # Defensive: minimal partial-state DBs from earlier migrations may
     # be missing columns the backfill UPDATE below references. Add
     # them idempotently first. Real post-v29 DBs already have these;
     # this is a no-op there. Keeps the recovery path through
     # `tests/test_db_schema_version.py::test_v32_db_with_partial_v35_recovers_through_full_ladder`
     # intact when walking from v32 fixture forward.
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version VARCHAR",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS file_size BIGINT",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS file_size BIGINT")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS created_at TIMESTAMP")
     # DuckDB ALTER doesn't accept "NOT NULL DEFAULT" together — split:
     # ADD nullable + DEFAULT, backfill nulls, then SET NOT NULL.
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_no INTEGER DEFAULT 1",
-    "UPDATE store_entities SET version_no = 1 WHERE version_no IS NULL",
-    "ALTER TABLE store_entities ALTER COLUMN version_no SET NOT NULL",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_history JSON DEFAULT '[]'",
-    # Backfill: synthesize a v1 entry from existing columns when the
-    # history is empty. Idempotent — re-running on a populated row
-    # is a no-op because the WHERE filters on empty/NULL history.
-    """
-    UPDATE store_entities SET version_history = json_array(
-        json_object(
-            'n',  1,
-            'hash', version,
-            'sha256', NULL,
-            'size', file_size,
-            'submission_id', (
-                SELECT id FROM store_submissions
-                 WHERE entity_id = store_entities.id
-                 ORDER BY created_at DESC
-                 LIMIT 1
-            ),
-            'created_at', CAST(created_at AS VARCHAR),
-            'created_by', owner_user_id
-        )
+    conn.execute(
+        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_no INTEGER DEFAULT 1"
     )
-    WHERE version_history IS NULL
-       OR version_history = '[]'
-       OR json_array_length(version_history) = 0
-    """,
-]
+    conn.execute("UPDATE store_entities SET version_no = 1 WHERE version_no IS NULL")
+    nullable = conn.execute(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' AND column_name = 'version_no'"
+    ).fetchone()
+    if nullable and nullable[0] == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN version_no SET NOT NULL")
+    conn.execute(
+        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_history JSON DEFAULT '[]'"
+    )
+    # Backfill: synthesize a v1 entry from existing columns when the
+    # history is empty. Idempotent — re-running on a populated row is
+    # a no-op because the WHERE filters on empty/NULL history.
+    conn.execute(
+        """
+        UPDATE store_entities SET version_history = json_array(
+            json_object(
+                'n',  1,
+                'hash', version,
+                'sha256', NULL,
+                'size', file_size,
+                'submission_id', (
+                    SELECT id FROM store_submissions
+                     WHERE entity_id = store_entities.id
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                ),
+                'created_at', CAST(created_at AS VARCHAR),
+                'created_by', owner_user_id
+            )
+        )
+        WHERE version_history IS NULL
+           OR version_history = '[]'
+           OR json_array_length(version_history) = 0
+        """
+    )
 
 
 # v39: marketplace_plugins.is_system flag backing the "system plugin"
@@ -3315,7 +3380,115 @@ def _v47_to_v48(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type)")
 
 
-def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
+def _v48_to_v49_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """v49: phase-1 Flea refactor — add ``title``, ``tagline``, ``synthetic_name``.
+
+    Python function (not a SQL list) because the backfill needs Python-side
+    humanize logic (acronym dict + Title Case) which has no clean SQL
+    equivalent. Pattern mirrors ``_v34_to_v35_migrate``.
+
+    Steps:
+      1. Add columns nullable + default NULL so the ALTER works on a populated
+         table.
+      2. Iterate rows: compute ``title = humanize_name(strip_archive_suffix(name))``
+         and ``synthetic_name = f"{name}-by-{owner_username}"``. ``tagline``
+         stays NULL.
+      3. SET NOT NULL on ``title`` and ``synthetic_name``. ``tagline`` stays
+         nullable by design (optional short description).
+
+    Idempotent: re-runs are safe — ADD COLUMN IF NOT EXISTS is a no-op;
+    UPDATEs overwrite with the same values; ALTER ... SET NOT NULL is a
+    no-op when already NOT NULL.
+    """
+    from src.store_naming import humanize_name, strip_archive_suffix
+
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS title VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS tagline VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS synthetic_name VARCHAR")
+
+    rows = conn.execute(
+        "SELECT id, name, owner_username FROM store_entities"
+    ).fetchall()
+    for row_id, name, owner_username in rows:
+        display_base = strip_archive_suffix(name or "")
+        title = humanize_name(display_base) or display_base or "Untitled"
+        synthetic = f"{name}-by-{owner_username}"
+        conn.execute(
+            "UPDATE store_entities SET title = ?, synthetic_name = ? WHERE id = ?",
+            [title, synthetic, row_id],
+        )
+
+    # Gate ALTER … SET NOT NULL on current nullability. DuckDB blocks
+    # ALTER COLUMN once an index references the table (which happens after
+    # v50 creates the UNIQUE INDEX on synthetic_name), so an unconditional
+    # re-run on a fully-migrated DB would explode. Idempotent path: skip
+    # the ALTER when the column is already NOT NULL.
+    nullable = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT column_name, is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'store_entities' "
+            "AND column_name IN ('title', 'synthetic_name')"
+        ).fetchall()
+    }
+    if nullable.get("title") == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN title SET NOT NULL")
+    if nullable.get("synthetic_name") == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN synthetic_name SET NOT NULL")
+
+
+def _v49_to_v50_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """v50: enforce DB-level uniqueness on ``store_entities.synthetic_name``.
+
+    v49 introduced the column as NOT NULL but without uniqueness. App-level
+    ``_suffixed_already_taken`` only fires at upload/rename; any other write
+    path (admin DB hand-fix, future migration drift) could silently insert a
+    duplicate, and ``WHERE synthetic_name = ?`` would then non-deterministically
+    return one of the matching rows. With ``synthetic_name`` now the canonical
+    attribution key (rollup tables, marketplace bundle naming, JSONL invocation
+    prefix), uniqueness must be enforced at the DB level.
+
+    DuckDB has no ``ALTER TABLE ADD CONSTRAINT UNIQUE`` for existing tables,
+    but ``CREATE UNIQUE INDEX`` is functionally equivalent (rejects duplicate
+    inserts). The archive rewrite path
+    (``StoreEntitiesRepository.archive``) renames synthetic_name alongside
+    name, so archived rows cannot collide with live ones — a full-table
+    UNIQUE index is correct.
+
+    Steps:
+      1. Pre-flight: scan for existing duplicates. If any are found, abort
+         with ``RuntimeError`` listing them — the index creation would fail
+         anyway, but a structured error gives the operator a clear diagnostic
+         instead of a raw DuckDB constraint-violation message.
+      2. Create the UNIQUE index (idempotent via IF NOT EXISTS).
+
+    Idempotent: a re-run finds the index already present and skips both
+    the duplicate scan (which would still pass) and the CREATE.
+    """
+    # Pre-flight duplicate detection. List the actual conflicting slugs +
+    # row counts so the operator can resolve manually (typically by
+    # archiving one of the colliding rows, which rewrites its
+    # synthetic_name to the __archived__<epoch>-suffixed form).
+    dupes = conn.execute(
+        """SELECT synthetic_name, COUNT(*) AS n
+             FROM store_entities
+            GROUP BY synthetic_name
+           HAVING COUNT(*) > 1
+            ORDER BY n DESC, synthetic_name"""
+    ).fetchall()
+    if dupes:
+        summary = ", ".join(f"{name!r} x{n}" for name, n in dupes)
+        raise RuntimeError(
+            "v49→v50 migration blocked: duplicate synthetic_name values "
+            f"present in store_entities ({summary}). Resolve manually "
+            "(archive or rename the colliding rows) and re-run."
+        )
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_store_entities_synthetic_name "
+        "ON store_entities(synthetic_name)"
+    )
+def _v50_to_v51(conn: duckdb.DuckDBPyConnection) -> None:
     """v49: unified stack for Data Packages + Memory.
 
     Single migration entry point for the v49 cutover. See
@@ -3599,7 +3772,7 @@ def _v48_to_v49(conn: duckdb.DuckDBPyConnection) -> None:
     # outer ``UPDATE schema_version`` at the end of ``_ensure_schema``,
     # but the ladder-internal function pattern keeps the bump local so a
     # mid-ladder failure doesn't leave the version stale.
-    conn.execute("UPDATE schema_version SET version = 49")
+    conn.execute("UPDATE schema_version SET version = 51")
 
 
 _V33_TO_V34_MIGRATIONS = [
@@ -3797,7 +3970,7 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
-def _v55_to_v56(conn: duckdb.DuckDBPyConnection) -> None:
+def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v56: extended-content columns on ``data_packages`` + structured
     per-table doc columns on ``table_registry``.
 
@@ -3825,10 +3998,10 @@ def _v55_to_v56(conn: duckdb.DuckDBPyConnection) -> None:
         "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS gotchas VARCHAR",
     ):
         conn.execute(col_sql)
-    conn.execute("UPDATE schema_version SET version = 56")
+    conn.execute("UPDATE schema_version SET version = 58")
 
 
-def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
+def _v56_to_v57(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
 
@@ -3855,10 +4028,10 @@ def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status "
         "ON memory_domain_suggestions(status)"
     )
-    conn.execute("UPDATE schema_version SET version = 55")
+    conn.execute("UPDATE schema_version SET version = 57")
 
 
-def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
+def _v55_to_v56(conn: duckdb.DuckDBPyConnection) -> None:
     """v54: soft-delete columns on data_packages / memory_domains / recipes.
 
     Powers the "Deleted. Undo (10s)" toast on admin pages — DELETE sets
@@ -3873,10 +4046,10 @@ def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(
             f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP"
         )
-    conn.execute("UPDATE schema_version SET version = 54")
+    conn.execute("UPDATE schema_version SET version = 56")
 
 
-def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
+def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
     """v53: ``recipes`` table — admin-curated query templates surfaced as
     a second tab on /catalog.
 
@@ -3900,10 +4073,10 @@ def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
             updated_at        TIMESTAMP DEFAULT current_timestamp
         )
     """)
-    conn.execute("UPDATE schema_version SET version = 53")
+    conn.execute("UPDATE schema_version SET version = 55")
 
 
-def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
+def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
     """v52: per-table docs columns on table_registry.
 
     Adds three admin-authored fields read by the new /catalog/t/<id>
@@ -3922,10 +4095,10 @@ def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS pairs_well_with JSON"
     )
-    conn.execute("UPDATE schema_version SET version = 52")
+    conn.execute("UPDATE schema_version SET version = 54")
 
 
-def _v50_to_v51(conn: duckdb.DuckDBPyConnection) -> None:
+def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
     """v51: lifecycle ``status`` + per-package ``category`` columns.
 
     Adds the surfaces the /catalog mockup audit identified as gaps:
@@ -3950,10 +4123,10 @@ def _v50_to_v51(conn: duckdb.DuckDBPyConnection) -> None:
         "ALTER TABLE memory_domains "
         "ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'prod'"
     )
-    conn.execute("UPDATE schema_version SET version = 51")
+    conn.execute("UPDATE schema_version SET version = 53")
 
 
-def _v49_to_v50(conn: duckdb.DuckDBPyConnection) -> None:
+def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
     """v50: ``cover_image_url`` on ``data_packages`` + ``memory_domains``.
 
     Closes the visual gap with /marketplace cards: marketplace items render
@@ -3966,7 +4139,7 @@ def _v49_to_v50(conn: duckdb.DuckDBPyConnection) -> None:
     Idempotent (``ADD COLUMN IF NOT EXISTS``) — re-running is safe. Bumps
     the version row locally so the fresh-install path (which calls every
     migration in sequence and relies on each step to stamp its own number
-    — see _v48_to_v49 step 10) lands at 50 even if a future step in the
+    — see _v50_to_v51 step 10) lands at 50 even if a future step in the
     same ladder fails before the outer driver gets to its UPDATE.
     """
     conn.execute(
@@ -3977,7 +4150,7 @@ def _v49_to_v50(conn: duckdb.DuckDBPyConnection) -> None:
         "ALTER TABLE memory_domains "
         "ADD COLUMN IF NOT EXISTS cover_image_url VARCHAR"
     )
-    conn.execute("UPDATE schema_version SET version = 50")
+    conn.execute("UPDATE schema_version SET version = 52")
 
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
@@ -4079,6 +4252,16 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # there because the legacy tables aren't in _SYSTEM_SCHEMA
             # anymore. Kept here for ladder readability.
             _v47_to_v48(conn)
+            # v49 phase-1 Flea refactor — title, tagline, synthetic_name
+            # columns. _SYSTEM_SCHEMA already declares them on fresh
+            # installs; this call is a no-op (table empty, ALTER IF NOT
+            # EXISTS, no rows to backfill, SET NOT NULL idempotent).
+            _v48_to_v49_migrate(conn)
+            # v50 UNIQUE INDEX on synthetic_name. _SYSTEM_SCHEMA already
+            # creates the index on fresh installs; this call is a no-op
+            # (table empty so no duplicates possible, CREATE UNIQUE
+            # INDEX IF NOT EXISTS is idempotent).
+            _v49_to_v50_migrate(conn)
             # v49 unified stack — Data Packages + Memory Domains junction +
             # requirement enum + is_required + user_stack_subscriptions.
             # _SYSTEM_SCHEMA already creates the new tables on fresh
@@ -4086,25 +4269,25 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # IF NOT EXISTS / ALTER ... ADD COLUMN IF NOT EXISTS), so
             # this call no-ops apart from seeding canonical
             # memory_domains and bumping the version row.
-            _v48_to_v49(conn)
+            _v50_to_v51(conn)
             # v50 cover_image_url on data_packages + memory_domains.
             # _SYSTEM_SCHEMA already includes the column on fresh installs;
             # the migration's IF NOT EXISTS ALTERs no-op there.
-            _v49_to_v50(conn)
+            _v51_to_v52(conn)
             # v51 status + category on data_packages, status on
             # memory_domains. Same fresh-install no-op pattern.
-            _v50_to_v51(conn)
-            # v52 per-table docs columns on table_registry.
-            _v51_to_v52(conn)
-            # v53 recipes table.
             _v52_to_v53(conn)
-            # v54 deleted_at columns on data_packages, memory_domains, recipes.
+            # v52 per-table docs columns on table_registry.
             _v53_to_v54(conn)
-            # v55 memory_domain_suggestions table.
+            # v53 recipes table.
             _v54_to_v55(conn)
+            # v54 deleted_at columns on data_packages, memory_domains, recipes.
+            _v55_to_v56(conn)
+            # v55 memory_domain_suggestions table.
+            _v56_to_v57(conn)
             # v56 extended content columns on data_packages + structured
             # per-table doc columns on table_registry.
-            _v55_to_v56(conn)
+            _v57_to_v58(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4225,14 +4408,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 35:
                 _v34_to_v35_migrate(conn)
             if current < 36:
-                for sql in _V35_TO_V36_MIGRATIONS:
-                    conn.execute(sql)
+                _v35_to_v36_migrate(conn)
             if current < 37:
                 for sql in _V36_TO_V37_MIGRATIONS:
                     conn.execute(sql)
             if current < 38:
-                for sql in _V37_TO_V38_MIGRATIONS:
-                    conn.execute(sql)
+                _v37_to_v38_migrate(conn)
             if current < 39:
                 for sql in _V38_TO_V39_MIGRATIONS:
                     conn.execute(sql)
@@ -4256,9 +4437,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 48:
                 _v47_to_v48(conn)
             if current < 49:
-                _v48_to_v49(conn)
+                _v48_to_v49_migrate(conn)
             if current < 50:
-                _v49_to_v50(conn)
+                _v49_to_v50_migrate(conn)
             if current < 51:
                 _v50_to_v51(conn)
             if current < 52:
@@ -4271,6 +4452,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v54_to_v55(conn)
             if current < 56:
                 _v55_to_v56(conn)
+            if current < 57:
+                _v56_to_v57(conn)
+            if current < 58:
+                _v57_to_v58(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

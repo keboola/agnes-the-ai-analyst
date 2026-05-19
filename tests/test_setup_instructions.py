@@ -1000,3 +1000,91 @@ def test_gws_prompt_emits_pass_fail_contract():
     body = gws_prompt(gws_oauth_configured=False)
     assert "✅ Google Workspace ready" in body
     assert "❌ Google Workspace setup failed" in body
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — workspace folder check (no auto-mkdir).
+# ---------------------------------------------------------------------------
+
+def test_step_2_checks_pwd_does_not_auto_mkdir():
+    """Step 2 must verify the user is already in the workspace folder
+    (the /home page Step 3 manual mkdir+cd) instead of silently re-running
+    `mkdir -p "$HOME/<dir>" && cd …` which would override an intentional
+    alternate install path.
+
+    Contract:
+      - Step 2 runs `pwd` and compares against `$HOME/<workspace_dir>`.
+      - Emits a warning message naming both the expected path and the
+        manual mkdir line the user already saw on /home.
+      - Does NOT emit `mkdir -p "$HOME/<workspace_dir>"` or the equivalent
+        PowerShell `New-Item -ItemType Directory -Force` line.
+      - Asks the user to reply 'install here' to proceed in a non-default
+        cwd, or 'abort' to stop. No automatic folder creation.
+    """
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+
+    # The new check-only step header.
+    assert "2) Verify the user is already in the workspace folder." in joined
+
+    # `pwd` check + expected-path comparison must be present.
+    assert "pwd" in joined
+    assert "$HOME/Agnes" in joined  # default workspace_dir
+    assert "~/Agnes" in joined
+
+    # Warning copy that references the /home Step 3 manual mkdir line.
+    assert "/home Step 3" in joined
+    assert "mkdir -p ~/Agnes && cd ~/Agnes" in joined
+
+    # Explicit "install here" / "abort" decision tree.
+    assert "'install here'" in joined
+    assert "'abort'" in joined
+
+    # The auto-mkdir lines from the previous step 2 must be GONE.
+    assert 'mkdir -p "$HOME/Agnes"' not in joined
+    assert 'mkdir -p "$HOME/{workspace_dir}"' not in joined
+    assert 'New-Item -ItemType Directory -Force -Path "$HOME\\Agnes"' not in joined
+    assert "Set-Location \"$HOME\\Agnes\"" not in joined
+
+
+def test_step_2_warning_substitutes_custom_brand():
+    """Custom brand + workspace_dir must thread through the new step 2
+    warning copy — no leftover placeholders, expected path matches the
+    operator's configured workspace dir."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines(
+        "agnes.whl",
+        instance_brand="Foundry AI",
+        workspace_dir="FoundryAI",
+    ))
+    assert "2) Verify the user is already in the workspace folder." in joined
+    assert "$HOME/FoundryAI" in joined
+    assert "~/FoundryAI" in joined
+    assert "mkdir -p ~/FoundryAI && cd ~/FoundryAI" in joined
+    # Brand + workspace_dir thread through the warning copy (the text
+    # wraps across two lines so we check the substrings separately).
+    assert "but Foundry AI is normally" in joined
+    assert "installed in ~/FoundryAI" in joined
+    # No placeholders survive into the rendered text.
+    assert "{workspace_dir}" not in joined
+    assert "{instance_brand}" not in joined
+
+
+def test_step_9_restart_references_install_dir_not_hardcoded():
+    """Step 9 must describe the restart cwd as the directory confirmed in
+    step 2 (mentioning the default path) rather than a bare hardcoded
+    `~/{workspace_dir}`. This keeps the wording accurate when the user
+    chose an alternate install path via 'install here' in step 2."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "9) Restart Claude Code" in joined
+    # Wording references the step-2 confirmation.
+    assert "install dir confirmed in step 2" in joined
+    # Default path still mentioned as the expected baseline.
+    assert "~/Agnes" in joined
+    # The "install here" callout in the restart step keeps the user-flow
+    # connection visible.
+    assert "'install here'" in joined

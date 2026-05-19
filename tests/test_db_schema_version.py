@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_56():
+def test_schema_version_is_58():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -125,61 +125,41 @@ def test_schema_version_is_56():
     #            New attribution logic = prefix split on `<plugin>:<local>`
     #            identifier + live lookup against marketplace_plugins /
     #            store_entities — no mapping tables needed.
-    # v48 → v49: unified stack — Data Packages + Memory Domains. Adds
+    # v48 → v49: phase-1 Flea refactor (main) — title, tagline,
+    #            synthetic_name on store_entities + backfill via
+    #            humanize_name / strip_archive_suffix.
+    # v49 → v50: UNIQUE INDEX on store_entities.synthetic_name (main).
+    # v50 → v51: unified stack — Data Packages + Memory Domains. Adds
     #            resource_grants.requirement enum, knowledge_items.is_required
     #            (splitting the status='mandatory' overload), data_packages
     #            + data_package_tables, memory_domains +
     #            knowledge_item_domains junction, and
     #            user_stack_subscriptions for per-user opt-in. Drops the
-    #            scalar knowledge_items.domain column. See spec at
-    #            docs/brainstorms/2026-05-15-unified-stack-design.md.
-    # v49 → v50: cover_image_url on data_packages + memory_domains. Closes
-    #            the visual gap with /marketplace cards (which have always
-    #            rendered uploaded JPGs/PNGs) — /catalog + /memory cards
-    #            now render <img> when set, fall back to letter initials.
-    #            Upload endpoint at POST /api/admin/uploads/cover-image
-    #            persists files under ${DATA_DIR}/uploads/covers/<sha>.<ext>.
-    # v50 → v51: lifecycle status + classification category for the
-    #            /catalog cards. data_packages adds `status` (enum:
-    #            prod/poc/coming-soon/draft, default prod) + `category`
-    #            (free text for the eyebrow above the card title);
-    #            memory_domains adds `status` only (the domain IS the
-    #            classification). Hero status checkboxes filter the
-    #            card grid; cover-corner pill renders non-prod values.
-    # v51 → v52: per-table docs columns on table_registry — feeds the
-    #            /catalog/t/<id> detail page. sample_questions (JSON
-    #            array of strings), things_to_know (markdown-ish text),
-    #            pairs_well_with (JSON array of related table_registry
-    #            ids). Admin-editable via PATCH /api/admin/registry/{id}/docs.
-    # v52 → v53: recipes table — admin-curated multi-table query
-    #            templates surfaced as a third "Recipes" tab on
-    #            /catalog. Not stack-subscribable (analysts use a
-    #            recipe, they don't opt in). related_table_ids is a
-    #            JSON array of table_registry ids drawing the
-    #            drilldown's "Touches tables" links.
-    # v53 → v54: soft-delete columns (``deleted_at TIMESTAMP``) on
-    #            data_packages, memory_domains, recipes. Powers the
-    #            "Deleted. Undo (10s)" toast on admin pages — DELETE
-    #            sets deleted_at instead of removing the row, so the
-    #            junction (data_package_tables / knowledge_item_domains)
-    #            + resource_grants survive intact for the restore flow.
-    #            list/get filter ``deleted_at IS NULL`` so soft-deleted
-    #            rows are invisible to every caller except the explicit
-    #            POST /{id}/restore path.
-    # v54 → v55: ``memory_domain_suggestions`` table backs the non-admin
+    #            scalar knowledge_items.domain column. (Originally v49
+    #            on the branch; renumbered to v51 on the merge with main.)
+    # v51 → v52: cover_image_url on data_packages + memory_domains.
+    # v52 → v53: lifecycle status + classification category for /catalog
+    #            cards (data_packages adds status + category, memory_domains
+    #            adds status only).
+    # v53 → v54: per-table docs columns on table_registry — feeds the
+    #            /catalog/t/<id> detail page (sample_questions,
+    #            things_to_know, pairs_well_with).
+    # v54 → v55: recipes table — admin-curated multi-table query templates
+    #            surfaced as a third "Recipes" tab on /catalog.
+    # v55 → v56: soft-delete columns (``deleted_at TIMESTAMP``) on
+    #            data_packages, memory_domains, recipes for the Undo
+    #            toast flow.
+    # v56 → v57: ``memory_domain_suggestions`` table backs the non-admin
     #            "Suggest a domain" affordance on /corporate-memory's
-    #            empty state. Admin queue surfaces them with approve/
-    #            reject; approve also creates the real memory_domains
-    #            row and stamps suggestion.created_domain_id.
-    # v55 → v56: extended-content columns on ``data_packages``
+    #            empty state.
+    # v57 → v58: extended-content columns on ``data_packages``
     #            (owner_name, owner_team, tags, long_description,
     #            when_to_use, when_not_to_use, example_questions) +
     #            structured per-table doc columns on ``table_registry``
-    #            (grain, platforms, partition_col, history, gotchas).
-    #            Backs the /catalog/p/<slug> rewrite per the Foundry
-    #            Data team extended-descriptions spec. All additive +
-    #            NULLABLE so existing instances upgrade cleanly.
-    assert SCHEMA_VERSION == 56
+    #            (grain, platforms, partition_col, history, gotchas) for
+    #            the /catalog/p/<slug> rewrite per the Foundry Data team
+    #            extended-descriptions spec. All additive + NULLABLE.
+    assert SCHEMA_VERSION == 58
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
