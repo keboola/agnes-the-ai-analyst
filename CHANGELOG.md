@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- Inline `code` elements globally restyled with design tokens (background, border, border-radius); `.code-block code` override extended with `border: none` to avoid border leak on dark backgrounds
+- `.form-textarea` promoted to global CSS with design tokens; local hardcoded override removed from `admin_tables.html`
+- `.btn-google:hover` border and background migrated from hardcoded values (`#c4c4c4`, `#fafafa`) to design tokens
+
+### Fixed
+- Register table modal: selected radio card now shows primary border + light background via `.sync-option-card:has(input:checked)`
+- Admin forms: `.label-qualifier` / `.optional` promoted to global CSS; local duplicate removed from `admin_tables.html`
+- Keboola edit-modal JS (`openEditKeboolaModal` and helpers) moved outside `{% if keboola %}` guard so it renders on all instance types
+
 ## [0.54.29] — 2026-05-19
 
 ### Added
