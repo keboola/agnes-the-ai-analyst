@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- `agnes query --json` shortcut for `--format json` — paste-prompts and
+  LLM-assisted analysts routinely reach for `--json` first; the typer
+  "Did you mean `--stdin`?" suggestion the missing flag produced was
+  actively misleading. `--json --format <other>` is rejected as
+  mutually exclusive. Closes #345 D.
+- Regression test for `agnes query --remote` exit-code propagation on
+  HTTP 5xx — the existing 400 case was covered, the 502 case (which
+  the reporter who filed #345 C actually hit on an older CLI build)
+  wasn't. The `raise typer.Exit(1)` in the non-200 branch is unchanged;
+  the test guards against any future regression. Closes #345 C.
+
 ## [0.55.1] — 2026-05-19
 
 ### Added
