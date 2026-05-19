@@ -35,8 +35,8 @@ def pull_bundle(
     owner: Optional[str] = typer.Option(None, "--owner", help="Filter by owner user_id"),
     search: Optional[str] = typer.Option(None, "--search", "-q"),
     out: Path = typer.Option(
-        Path("agnes-store-bundle.zip"), "-o", "--out",
-        help="Where to save the ZIP (default: ./agnes-store-bundle.zip)",
+        Path("flea.zip"), "-o", "--out",
+        help="Where to save the ZIP (default: ./flea.zip)",
     ),
     unpack: Optional[Path] = typer.Option(
         None, "--unpack",

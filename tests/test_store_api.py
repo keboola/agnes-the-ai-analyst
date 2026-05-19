@@ -404,6 +404,163 @@ class TestStoreUpload:
         assert r.json()["detail"] in {"zip_looks_like_plugin", "zip_looks_like_skill"}
 
 
+class TestStoreV49Metadata:
+    """v49 phase-1 — title, tagline, synthetic_name fields end-to-end.
+
+    Preview returns humanized title; POST accepts user-supplied title/tagline
+    and falls back to the humanizer; PUT round-trips the partial update; the
+    response always carries the v49 columns.
+    """
+
+    def test_preview_returns_humanized_title(self, web_client):
+        _, cookies = _create_user(web_client, "preview@x.com")
+        zip_bytes = _make_skill_zip("mcp-builder")
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={"type": "skill"},
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["name"] == "mcp-builder"
+        assert body["title"] == "MCP Builder", body
+
+    def test_post_with_explicit_title_and_tagline(self, web_client):
+        _, cookies = _create_user(web_client, "v49post@x.com")
+        zip_bytes = _make_skill_zip("code-review")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={
+                "type": "skill",
+                "description": _OK_DESC,
+                "title": "PR Reviewer (custom)",
+                "tagline": "Spots missing tests and weak assertions.",
+            },
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["title"] == "PR Reviewer (custom)"
+        assert body["tagline"] == "Spots missing tests and weak assertions."
+        assert body["synthetic_name"] == "code-review-by-v49post"
+
+    def test_post_falls_back_to_humanized_title_when_omitted(self, web_client):
+        _, cookies = _create_user(web_client, "fallback@x.com")
+        zip_bytes = _make_skill_zip("oauth-server")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        # Server-side humanize fallback uses the same acronym dict as JS.
+        assert body["title"] == "OAuth Server"
+        assert body["tagline"] is None
+        assert body["synthetic_name"] == "oauth-server-by-fallback"
+
+    def test_post_rejects_oversize_title(self, web_client):
+        _, cookies = _create_user(web_client, "oversize@x.com")
+        zip_bytes = _make_skill_zip("long-title")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC, "title": "x" * 101},
+            cookies=cookies,
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "title_too_long"
+
+    def test_post_rejects_oversize_tagline(self, web_client):
+        _, cookies = _create_user(web_client, "oversizetag@x.com")
+        zip_bytes = _make_skill_zip("long-tag")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={
+                "type": "skill", "description": _OK_DESC,
+                "tagline": "x" * 201,
+            },
+            cookies=cookies,
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "tagline_too_long"
+
+    def test_put_updates_title_and_tagline_and_recomputes_synthetic_on_rename(
+        self, web_client,
+    ):
+        _, cookies = _create_user(web_client, "v49put@x.com")
+        zip_bytes = _make_skill_zip("starter-name")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", zip_bytes, "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+
+        # Pure metadata edit: title + tagline.
+        e = web_client.put(
+            f"/api/store/entities/{eid}",
+            data={
+                "title": "New Title",
+                "tagline": "A pithy tagline",
+            },
+            cookies=cookies,
+        )
+        assert e.status_code == 200, e.text
+        body = e.json()
+        assert body["title"] == "New Title"
+        assert body["tagline"] == "A pithy tagline"
+        # name unchanged → synthetic unchanged.
+        assert body["synthetic_name"] == "starter-name-by-v49put"
+
+        # Rename: synthetic_name must follow.
+        e2 = web_client.put(
+            f"/api/store/entities/{eid}",
+            data={"name": "renamed-thing"},
+            cookies=cookies,
+        )
+        assert e2.status_code == 200, e2.text
+        assert e2.json()["synthetic_name"] == "renamed-thing-by-v49put"
+
+    def test_invocation_name_reads_from_synthetic_column(self, web_client):
+        """v49 phase-3: ``invocation_name`` in StoreEntityResponse sources
+        from the stored ``synthetic_name`` column, not a fresh recompute.
+        Manually override the column with a non-canonical value and verify
+        the API returns it verbatim — proves read paths consume the column
+        rather than recomputing ``<name>-by-<owner_username>`` on the fly."""
+        from src.db import get_system_db
+        _, cookies = _create_user(web_client, "synthread@x.com")
+        up = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("orig-name"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        eid = up.json()["id"]
+        # Manual divergence — pretend an admin fix-up landed a non-canonical
+        # synthetic. A pure recompute path would not see this; a column-read
+        # path will.
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE store_entities SET synthetic_name = ? WHERE id = ?",
+                ["manual-override-xyz", eid],
+            )
+        finally:
+            conn.close()
+        r = web_client.get(f"/api/store/entities/{eid}", cookies=cookies)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["synthetic_name"] == "manual-override-xyz"
+        assert body["invocation_name"] == "manual-override-xyz"
+
+
 class TestStoreSecurityFixes:
     """Regression tests for the three security blockers and one correctness
     bug found in PR #180 review (F1, F2, F4, F5)."""
@@ -1121,7 +1278,7 @@ class TestInstallCycle:
 
 class TestMarketplaceBundle:
     """End-to-end: the served /marketplace.zip merges installed Store skills
-    and agents into a single ``store-bundle`` plugin, while ``type='plugin'``
+    and agents into a single ``flea`` plugin, while ``type='plugin'``
     Store entities stay standalone."""
 
     def _zip_entries(self, content: bytes) -> set[str]:
@@ -1170,10 +1327,10 @@ class TestMarketplaceBundle:
         names = self._zip_entries(r.content)
 
         # Bundle exists with synth plugin.json + every skill + agent file.
-        assert "plugins/store-bundle/.claude-plugin/plugin.json" in names
-        assert "plugins/store-bundle/skills/alpha-by-owner/SKILL.md" in names
-        assert "plugins/store-bundle/skills/beta-by-owner/SKILL.md" in names
-        assert "plugins/store-bundle/agents/gamma-by-owner.md" in names
+        assert "plugins/flea/.claude-plugin/plugin.json" in names
+        assert "plugins/flea/skills/alpha-by-owner/SKILL.md" in names
+        assert "plugins/flea/skills/beta-by-owner/SKILL.md" in names
+        assert "plugins/flea/agents/gamma-by-owner.md" in names
 
         # The plugin-typed entity is a separate dir; skills inside its tree
         # carry their original (non-suffixed) names per spec.
@@ -1184,13 +1341,13 @@ class TestMarketplaceBundle:
             r.content, ".claude-plugin/marketplace.json",
         ))
         names_in_catalog = sorted(p["name"] for p in manifest["plugins"])
-        assert names_in_catalog == ["agnes-store-bundle", "delta-by-owner"]
+        assert names_in_catalog == ["delta-by-owner", "flea"]
 
         # Bundle's own plugin.json carries the synth fields.
         bundle_pj = _json.loads(self._read_zip_file(
-            r.content, "plugins/store-bundle/.claude-plugin/plugin.json",
+            r.content, "plugins/flea/.claude-plugin/plugin.json",
         ))
-        assert bundle_pj["name"] == "agnes-store-bundle"
+        assert bundle_pj["name"] == "flea"
         assert bundle_pj["version"]  # non-empty hash
 
     def test_only_skills_yields_only_bundle(self, web_client):
@@ -1206,7 +1363,7 @@ class TestMarketplaceBundle:
         r = web_client.get("/marketplace.zip", cookies=installer_cookies)
         assert r.status_code == 200
         names = self._zip_entries(r.content)
-        assert "plugins/store-bundle/skills/solo-by-ob/SKILL.md" in names
+        assert "plugins/flea/skills/solo-by-ob/SKILL.md" in names
         # No standalone entry for the skill — bundle is the only Store-derived
         # plugin dir present.
         assert not any(n.startswith(f"plugins/store-{eid}/") for n in names)
@@ -1230,15 +1387,15 @@ class TestMarketplaceBundle:
         # Both skills present.
         r1 = web_client.get("/marketplace.zip", cookies=installer_cookies)
         names1 = self._zip_entries(r1.content)
-        assert "plugins/store-bundle/skills/keepme-by-oc/SKILL.md" in names1
-        assert "plugins/store-bundle/skills/dropme-by-oc/SKILL.md" in names1
+        assert "plugins/flea/skills/keepme-by-oc/SKILL.md" in names1
+        assert "plugins/flea/skills/dropme-by-oc/SKILL.md" in names1
 
         # Uninstall one — bundle still exists, but only the kept skill remains.
         web_client.delete(f"/api/store/entities/{b}/install", cookies=installer_cookies)
         r2 = web_client.get("/marketplace.zip", cookies=installer_cookies)
         names2 = self._zip_entries(r2.content)
-        assert "plugins/store-bundle/skills/keepme-by-oc/SKILL.md" in names2
-        assert "plugins/store-bundle/skills/dropme-by-oc/SKILL.md" not in names2
+        assert "plugins/flea/skills/keepme-by-oc/SKILL.md" in names2
+        assert "plugins/flea/skills/dropme-by-oc/SKILL.md" not in names2
 
 
 class TestWebPages:
@@ -1250,7 +1407,14 @@ class TestWebPages:
 
     def test_marketplace_flea_detail_page_renders(self, web_client):
         """v32+: /store/{id} was deleted; /marketplace/flea/{id} is the
-        canonical detail surface."""
+        canonical detail surface.
+
+        v49 phase-2: SSR pre-render uses ``entity.title`` (humanized)
+        rather than the kebab-case entity ``name`` for the page heading.
+        Both the friendly + technical forms should be present in the
+        page (title in the hero / breadcrumbs, slug in JS data / detail
+        URL parameter passed to fetch).
+        """
         _, cookies = _create_user(web_client, "page4@x.com")
         r = web_client.post(
             "/api/store/entities",
@@ -1261,7 +1425,10 @@ class TestWebPages:
         eid = r.json()["id"]
         det = web_client.get(f"/marketplace/flea/{eid}", cookies=cookies)
         assert det.status_code == 200
-        assert "page-skill" in det.text
+        # Humanized title sits in the hero h1 + browser title.
+        assert "Page Skill" in det.text
+        # Entity id (slug-equivalent for routing) survives in detail URL.
+        assert eid in det.text
         # Confirm the legacy URL is gone (404, not 200).
         legacy = web_client.get(f"/store/{eid}", cookies=cookies)
         assert legacy.status_code == 404

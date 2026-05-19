@@ -32,7 +32,6 @@ from src.repositories.user_curated_subscriptions import (
     UserCuratedSubscriptionsRepository,
 )
 from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.store_naming import suffixed_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/my-stack", tags=["my-stack"])
@@ -182,7 +181,10 @@ async def get_my_stack(
                 version=row["version"],
                 owner_user_id=row["owner_user_id"],
                 owner_username=row["owner_username"],
-                invocation_name=suffixed_name(raw_name, row["owner_username"]),
+                # v49 phase-3: stored synthetic_name (single source of
+                # truth). The column is NOT NULL and `list_for_user`
+                # selects it explicitly from the joined store_entities row.
+                invocation_name=row["synthetic_name"],
                 install_count=int(row.get("install_count") or 0),
                 photo_url=photo_url,
                 installed_at=_to_iso(row.get("installed_at")),

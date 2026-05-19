@@ -38,7 +38,7 @@ def _seed_attribution(conn: duckdb.DuckDBPyConnection) -> None:
       `myplug:my-agent`, slash commands `myplug:compound` — note slash
       commands count as skills under the new rules, and `compound:debug`
       uses `compound` as the plugin prefix).
-    - flea bundle prefix `agnes-store-bundle` + entity name `flea-skill`.
+    - flea bundle prefix `flea` + entity name `flea-skill`.
     """
     # Curated plugin — only `name` matters for the lookup; the rest is
     # filler to satisfy NOT NULL constraints / referential expectations.
@@ -57,11 +57,14 @@ def _seed_attribution(conn: duckdb.DuckDBPyConnection) -> None:
     )
     # Flea entity — visibility_status='approved' is required (lookup filters
     # on it). type='skill' so the resolver places the invocation under
-    # type='skill' in the rollup.
+    # type='skill' in the rollup. v49 phase-1 added NOT NULL `title` +
+    # `synthetic_name`; mirror what the repo's create() fallback would write.
     conn.execute(
         "INSERT OR IGNORE INTO store_entities "
-        "(id, owner_user_id, owner_username, type, name, version, visibility_status) "
-        "VALUES ('entity-1', 'u1', 'alice', 'skill', 'flea-skill', '1.0', 'approved')"
+        "(id, owner_user_id, owner_username, type, name, version, "
+        " visibility_status, title, synthetic_name) "
+        "VALUES ('entity-1', 'u1', 'alice', 'skill', 'flea-skill', '1.0', "
+        " 'approved', 'flea-skill', 'flea-skill-by-alice')"
     )
 
 
@@ -197,10 +200,11 @@ class TestFleaSkill:
         _seed_attribution(conn)
         _process("skill_flea.jsonl", conn)
         # Flea entity bundle prefix → ref_id is '' (no parent plugin),
-        # normalised to NULL by UsageProcessor.
+        # normalised to NULL by UsageProcessor. v49 phase-5: JSONL local
+        # part is the entity's synthetic_name (= `<name>-by-<owner>`).
         row = conn.execute(
             "SELECT source, ref_id FROM usage_events "
-            "WHERE skill_name = 'agnes-store-bundle:flea-skill'"
+            "WHERE skill_name = 'flea:flea-skill-by-alice'"
         ).fetchone()
         assert row is not None
         assert row[0] == "flea"

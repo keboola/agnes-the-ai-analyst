@@ -157,7 +157,7 @@ def compute_default_agent_prompt(
         # exactly what /marketplace.zip + /marketplace.git/ serve. That's
         # the `resolve_user_marketplace` view: admin grants minus the
         # user's opt-outs, plus their Store installs (skills + agents
-        # rolled up into the synth `agnes-store-bundle` plugin, plugin-
+        # rolled up into the synth `flea` plugin, plugin-
         # typed entities standalone). `resolve_allowed_plugins` was the
         # pre-store admin-only feed and would emit installs for plugins
         # the user has opted out of, while skipping the bundle entirely.

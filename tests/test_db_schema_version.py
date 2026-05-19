@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_48():
+def test_schema_version_matches_constant():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -125,7 +125,22 @@ def test_schema_version_is_48():
     #            New attribution logic = prefix split on `<plugin>:<local>`
     #            identifier + live lookup against marketplace_plugins /
     #            store_entities — no mapping tables needed.
-    assert SCHEMA_VERSION == 48
+    # v49 (#TBD): phase-1 Flea refactor — adds title, tagline,
+    #            synthetic_name columns to store_entities. title is
+    #            user-friendly display name (acronym-aware), tagline is
+    #            an optional 200-char short description, synthetic_name is
+    #            the deterministic <name>-by-<owner_username> string baked
+    #            into served bundles. Migration backfills existing rows
+    #            via humanize_name(strip_archive_suffix(name)) for title
+    #            and the concat formula for synthetic_name.
+    # v50 (#TBD): UNIQUE INDEX on store_entities.synthetic_name. v49 made
+    #            it the canonical attribution key (rollup keyspace, JSONL
+    #            prefix, marketplace bundle naming) but uniqueness was
+    #            only app-enforced; v50 adds DB-level uniqueness via
+    #            CREATE UNIQUE INDEX. Migration pre-checks for existing
+    #            duplicates and raises RuntimeError listing them rather
+    #            than letting the index create fail mid-way.
+    assert SCHEMA_VERSION == 50
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
