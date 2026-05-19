@@ -1397,6 +1397,22 @@ class RegisterTableRequest(BaseModel):
     partition_by: Optional[str] = None
     partition_granularity: Optional[str] = None
     initial_load_chunk_days: Optional[int] = None
+    # v51 — fully-qualified BigQuery path. When set on a BigQuery row,
+    # the extractor uses ``project.dataset.table`` from this field instead
+    # of constructing the path from ``bucket`` + ``source_table`` against
+    # the globally-attached project. Decouples UX/RBAC ``bucket`` label
+    # from physical BQ dataset (issue #343). Format ``project.dataset.table``;
+    # validated by ``connectors.bigquery.extractor.parse_bq_fqn``.
+    bq_fqn: Optional[str] = Field(
+        default=None,
+        description=(
+            "Fully-qualified BigQuery path (``project.dataset.table``). "
+            "Only applies to source_type='bigquery'. When set, overrides "
+            "the legacy bucket+source_table path construction. Use this "
+            "to register a table whose BQ dataset name differs from the "
+            "Agnes ``bucket`` label (issue #343)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -1911,6 +1927,10 @@ class UpdateTableRequest(BaseModel):
     partition_by: Optional[str] = None
     partition_granularity: Optional[str] = None
     initial_load_chunk_days: Optional[int] = None
+    # v51 — see RegisterTableRequest.bq_fqn. PUT lets an admin add or
+    # clear bq_fqn on an existing row (cleared via explicit `null`,
+    # per the PUT shape contract documented on the handler below).
+    bq_fqn: Optional[str] = None
 
     @field_validator("sync_strategy", mode="before")
     @classmethod
@@ -2454,6 +2474,22 @@ def register_table(
     # deprecated and inert at the runtime layer. The DB column keeps its
     # schema default; the registry response no longer reflects request
     # values for this flag.
+    # v51 — validate bq_fqn upfront. The extractor would catch a malformed
+    # value at next rebuild and skip the row, but failing at register time
+    # gives the admin a clean 422 with the specific complaint instead of
+    # a silent "table registered but never materialized" state.
+    if request.bq_fqn is not None and request.source_type != "bigquery":
+        raise HTTPException(
+            status_code=422,
+            detail="bq_fqn only applies to source_type='bigquery'",
+        )
+    if request.bq_fqn is not None:
+        from connectors.bigquery.extractor import parse_bq_fqn
+        try:
+            parse_bq_fqn(request.bq_fqn)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
     repo.register(
         id=table_id,
         name=request.name,
@@ -2477,6 +2513,7 @@ def register_table(
         partition_by=request.partition_by,
         partition_granularity=request.partition_granularity,
         initial_load_chunk_days=request.initial_load_chunk_days,
+        bq_fqn=request.bq_fqn,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).
@@ -2837,6 +2874,25 @@ async def update_table(
             merged["query_mode"] = synthetic.query_mode
             merged["profile_after_sync"] = synthetic.profile_after_sync
             merged["source_query"] = synthetic.source_query
+
+            # v51 — same bq_fqn validation as register-table. PUT can both
+            # add a fresh bq_fqn or update an existing one; in either case
+            # malformed values should reject at PUT time, not silently
+            # land in the DB and break the next rebuild.
+            if merged.get("bq_fqn"):
+                from connectors.bigquery.extractor import parse_bq_fqn
+                try:
+                    parse_bq_fqn(merged["bq_fqn"])
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e))
+        else:
+            # Non-BQ row carrying bq_fqn is nonsensical — reject the same
+            # way register-table does.
+            if merged.get("bq_fqn"):
+                raise HTTPException(
+                    status_code=422,
+                    detail="bq_fqn only applies to source_type='bigquery'",
+                )
 
         repo.register(id=table_id, **merged)
 

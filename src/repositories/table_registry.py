@@ -123,6 +123,12 @@ class TableRegistryRepository:
         partition_by: Optional[str] = None,
         partition_granularity: Optional[str] = None,
         initial_load_chunk_days: Optional[int] = None,
+        # v51 — fully-qualified BigQuery path (``project.dataset.table``).
+        # When set, the orchestrator uses this in place of constructing the
+        # path from ``_remote_attach.url.project`` + ``bucket`` +
+        # ``source_table`` at rebuild. Decouples the UX/RBAC ``bucket``
+        # label from the physical BQ dataset name (issue #343).
+        bq_fqn: Optional[str] = None,
     ) -> None:
         # `registered_at` defaults to "now" for fresh inserts. Updaters that
         # want to preserve the original registration time across edits pass
@@ -142,8 +148,8 @@ class TableRegistryRepository:
                 sync_schedule, profile_after_sync,
                 incremental_window_days, max_history_days, incremental_column,
                 where_filters, partition_by, partition_granularity,
-                initial_load_chunk_days)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                initial_load_chunk_days, bq_fqn)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name, folder = excluded.folder,
                 sync_strategy = excluded.sync_strategy, primary_key = excluded.primary_key,
@@ -159,13 +165,14 @@ class TableRegistryRepository:
                 where_filters = excluded.where_filters,
                 partition_by = excluded.partition_by,
                 partition_granularity = excluded.partition_granularity,
-                initial_load_chunk_days = excluded.initial_load_chunk_days""",
+                initial_load_chunk_days = excluded.initial_load_chunk_days,
+                bq_fqn = excluded.bq_fqn""",
             [id, name, folder, effective_strategy, encoded_pk, description, registered_by, ts,
              source_type, bucket, source_table, source_query, query_mode,
              sync_schedule, profile_after_sync,
              incremental_window_days, max_history_days, incremental_column,
              encoded_filters, partition_by, partition_granularity,
-             initial_load_chunk_days],
+             initial_load_chunk_days, bq_fqn],
         )
 
     @staticmethod

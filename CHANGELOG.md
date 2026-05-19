@@ -12,7 +12,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 - **Extended Data Packages content (v56 schema)** backing the rewritten
-  `/catalog/p/<slug>` package detail page per the Foundry Data team
+  `/catalog/p/<slug>` package detail page per the extended-descriptions admin
   extended-descriptions spec. Eight new schema fields, validated API,
   per-section template rendering, Browse-grid card augmentation:
   * **`data_packages`** gains owner_name + owner_team (rendered as
@@ -31,7 +31,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
     (`data-badge="…"` hooks) + the detail-page hero.
 - **`PUT/POST /api/admin/data-packages`** and **`PATCH
   /api/admin/registry/{id}/docs`** accept the new fields with per-field
-  validation matching the Foundry spec checklist (tags ≤8 × ≤30 chars,
+  validation matching the extended-descriptions admin spec checklist (tags ≤8 × ≤30 chars,
   long_description ≤4000, bullets ≤8 × ≤200, example_questions ≤12,
   gotchas ≤8). PATCH echoes the fresh state for round-trip rendering.
 - **CI guard `test_data_packages_no_vendor_content.py`** scans `app/` +
@@ -311,6 +311,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   module top so 11 tests skip cleanly on installs without the optional
   `kbcstorage` dep (default CI image, contributor laptops). CI now
   reports 1 failure (a flaky perf smoke) instead of 12.
+- **Schema chain shifted v51..v58 → v52..v59** on the merge with main's
+  0.54.29 release. Main introduced a NEW v51 (`table_registry.bq_fqn`,
+  issue #343) that releases ahead of this branch, so the unified-stack
+  chain renumbers up by one to make room. SCHEMA_VERSION → 59. No
+  functional change beyond the number shift; the migration ladder runs
+  main's v51 first, then mine in order.
 
 
 ### Added
@@ -435,7 +441,59 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `marketplace_plugins.is_system` + `user_plugin_optouts` retained
   per spec D1 — Marketplace was deliberately not touched.
 
+## [0.54.29] — 2026-05-19
+
+### Added
+- **`table_registry.bq_fqn` column** (schema v51, issue #343) — optional
+  fully-qualified BigQuery path (`project.dataset.table`) that decouples
+  the UX/RBAC `bucket` label from the physical BQ dataset name. Pre-v51
+  the orchestrator constructed the rebuild path as
+  `{remote_attach.project}.{bucket}.{source_table}`, which coupled
+  package naming to BQ storage layout — renaming a package broke its
+  tables and ad-hoc proxy datasets were needed when the UX name
+  differed from the dataset name. With `bq_fqn` set, the extractor
+  takes the project / dataset / table directly from the field; rows
+  without it use the legacy path (backwards-compatible).
+- **`data_source.bigquery.location`** is now strongly recommended in
+  `instance.yaml` (`/admin/server-config`). When unset on a cross-
+  project setup, metadata-cache region resolution falls back to a
+  REST `dataset.get()` per metadata refresh that requires
+  `bigquery.datasets.get` IAM (often missing from data-viewer-only
+  SAs) and silently returns "provider returned no data" when it 404s.
+  Setting `location` (e.g. `us-central1` or `EU`) skips the REST hop
+  entirely. The `_resolve_bq_location` warning now points at this
+  config key explicitly.
+- **Startup config check** (`connectors.bigquery.access.validate_bigquery_startup_config`)
+  surfaces two common BQ misconfigs in the boot log: cross-project
+  setup with `location` unset, and a warehouse-like data project
+  with no `billing_project` override (which silently bills to the
+  warehouse, where the SA usually lacks `serviceusage.services.use`).
+  Non-fatal warnings only — never blocks startup.
+- **`POST /api/admin/register-table`** and **`PUT /api/admin/registry/{id}`**
+  accept `bq_fqn`. Malformed values are rejected at the API boundary
+  (422) instead of landing in the registry and breaking the next
+  rebuild silently.
+
+### Internal
+- **Schema v51** — adds nullable `table_registry.bq_fqn VARCHAR`;
+  existing rows default to `NULL` and use the legacy
+  `bucket + source_table` path (backwards-compatible, no backfill).
+- New test suite `tests/test_bq_fqn.py` (25 cases): `parse_bq_fqn`
+  unit matrix, extractor override paths (same-project VIEW + cross-
+  project VIEW success + cross-project BASE TABLE skip), orchestrator
+  drift sync, startup-validator heuristic, admin Pydantic models.
+
 ### Changed
+- **`SyncOrchestrator.rebuild()` self-heals BQ `_remote_attach.url`
+  drift**. When an admin edits `data_source.bigquery.project` in
+  `/admin/server-config`, the overlay is the source of truth but the
+  on-disk `extract.duckdb._remote_attach.url` would stay frozen at
+  the old project until the next BQ register/sync trigger — silently
+  routing every remote BQ query to the previous project (manifests as
+  `Dataset not found in <old project>` errors even though the admin
+  UI shows the corrected project). The orchestrator now compares the
+  two at every rebuild and, if they differ, calls
+  `rebuild_from_registry()` to regenerate the extract.
 - Setup script no longer auto-creates the workspace folder. Step 2 of
   the pasted prompt now runs `pwd`, compares it to `$HOME/<workspace_dir>`
   (the folder the /home page's visible Step 3 told the user to create

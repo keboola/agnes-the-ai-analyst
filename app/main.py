@@ -212,6 +212,18 @@ async def lifespan(app):
     except Exception:
         logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
 
+    # Surface BQ config gaps at startup so the operator sees them in the
+    # boot log instead of as cryptic "provider returned no data" /
+    # "403 serviceusage" later. Issue #343 — these are the same gaps that
+    # made every remote BQ query on foundryai-prod fail silently mid-May
+    # 2026. Non-fatal: warnings only, no startup abort.
+    try:
+        from connectors.bigquery.access import validate_bigquery_startup_config
+        for warning in validate_bigquery_startup_config():
+            logger.warning("BQ config check: %s", warning)
+    except Exception:
+        logger.exception("BQ startup config validation crashed (non-fatal)")
+
     # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
     # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
     # without going through bootstrap; never overwritten if already set.

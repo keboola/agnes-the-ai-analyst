@@ -321,7 +321,13 @@ CREATE TABLE IF NOT EXISTS table_registry (
     partition_by VARCHAR,
     partition_granularity VARCHAR,
     initial_load_chunk_days INTEGER,
-    -- v52: per-table docs surface used by /catalog/t/<id>. All
+    -- v51: fully-qualified BigQuery path (`project.dataset.table`) for
+    -- BigQuery rows. When set, decouples the UX/RBAC `bucket` label from
+    -- the physical BQ dataset name; rows without it fall back to the
+    -- legacy `<remote_attach.project>.<bucket>.<source_table>` path.
+    -- Issue #343 (released on main as 0.54.29).
+    bq_fqn VARCHAR,
+    -- v55: per-table docs surface used by /catalog/t/<id>. All
     -- admin-authored, optional. sample_questions + pairs_well_with are
     -- JSON arrays so admins can edit lists without us cascading a new
     -- junction table; things_to_know is freeform notes (markdown-ish
@@ -329,7 +335,7 @@ CREATE TABLE IF NOT EXISTS table_registry (
     sample_questions JSON,
     things_to_know   TEXT,
     pairs_well_with  JSON,
-    -- v56: structured per-table documentation for the package-detail
+    -- v59: structured per-table documentation for the package-detail
     -- rewrite. ``grain`` (e.g. "1 row per session × event_date"),
     -- ``platforms`` (JSON list of platform names), ``partition_col``
     -- (single column name — distinct from the v33-era ``partition_by``
@@ -3775,6 +3781,18 @@ def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 52")
 
 
+_V50_TO_V51_MIGRATIONS = [
+    # ``bq_fqn`` carries the fully-qualified BigQuery path
+    # (``project.dataset.table``) for a registered remote table when set,
+    # so the orchestrator's rebuild path no longer has to reconstruct it
+    # from the globally-attached ``_remote_attach`` project + the dual-
+    # purpose ``bucket`` field (which is also a UX/RBAC label).
+    # Nullable for backwards compat — rows without it keep using the
+    # legacy ``<remote_attach.project>.<bucket>.<source_table>`` fallback.
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS bq_fqn VARCHAR",
+]
+
+
 _V33_TO_V34_MIGRATIONS = [
     # DuckDB blocks DROP COLUMN while indexes reference the table
     # ("Dependency Error: Cannot alter entry … because there are entries
@@ -4440,6 +4458,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v48_to_v49_migrate(conn)
             if current < 50:
                 _v49_to_v50_migrate(conn)
+            if current < 51:
+                for sql in _V50_TO_V51_MIGRATIONS:
+                    conn.execute(sql)
             if current < 52:
                 _v51_to_v52(conn)
             if current < 53:

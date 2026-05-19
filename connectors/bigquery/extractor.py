@@ -26,6 +26,49 @@ from src.identifier_validation import validate_identifier, validate_quoted_ident
 
 logger = logging.getLogger(__name__)
 
+
+def parse_bq_fqn(value: Optional[str]) -> Optional[tuple]:
+    """Parse a ``project.dataset.table`` fully-qualified BigQuery name.
+
+    Returns ``(project, dataset, table)`` on success, ``None`` if ``value``
+    is empty / None, or raises ``ValueError`` with a descriptive message
+    if the string is non-empty but malformed (wrong segment count, empty
+    segments, or any segment that fails the BQ identifier validators).
+
+    Distinguishes "not set" (None / empty -> return None, caller falls
+    back to legacy bucket+source_table path) from "set but invalid" (raise
+    -> caller surfaces a registration error). Silently treating malformed
+    values as missing would let an admin typo land in the registry and
+    then rebuild against the legacy path, hiding the typo until query
+    time.
+    """
+    if not value:
+        return None
+    parts = value.split(".")
+    if len(parts) != 3 or not all(p for p in parts):
+        raise ValueError(
+            f"malformed bq_fqn {value!r}: expected exactly three non-empty "
+            f"segments 'project.dataset.table'"
+        )
+    project, dataset, table = parts
+    if not _validate_project_id(project):
+        raise ValueError(
+            f"malformed bq_fqn {value!r}: project {project!r} fails BQ "
+            f"project-id grammar"
+        )
+    if not validate_quoted_identifier(dataset, "BQ dataset"):
+        raise ValueError(
+            f"malformed bq_fqn {value!r}: dataset {dataset!r} fails BQ "
+            f"identifier grammar"
+        )
+    if not validate_quoted_identifier(table, "BQ table"):
+        raise ValueError(
+            f"malformed bq_fqn {value!r}: table {table!r} fails BQ "
+            f"identifier grammar"
+        )
+    return (project, dataset, table)
+
+
 # Serializes the body of `init_extract` across threads so two concurrent
 # materialize calls (e.g. the synchronous timeout-fallback BackgroundTask
 # kicking in while the original daemon thread is still running) can't both
@@ -245,6 +288,7 @@ def _detect_table_type(
     project: str,
     dataset: str,
     table: str,
+    billing_project: str | None = None,
 ) -> str | None:
     """Return BQ entity type for `project.dataset.table`.
 
@@ -252,18 +296,34 @@ def _detect_table_type(
     API — works on tables, views, and materialized views alike. Returns the
     value of INFORMATION_SCHEMA.TABLES.table_type ('BASE TABLE', 'VIEW',
     'MATERIALIZED_VIEW') or None if not found.
+
+    Args:
+        project: Data project (where the entity lives — appears in the
+            INFORMATION_SCHEMA FROM clause).
+        dataset, table: Identify the BQ entity.
+        billing_project: Project whose SA quota pays for the lookup job and
+            against which `serviceusage.services.use` is checked. When ``None``
+            (default), bills against ``project`` — fine for same-project
+            lookups. Cross-project callers MUST pass ``billing_project`` to
+            the extractor's billing project explicitly; the data-side SA
+            typically has only ``bigquery.dataViewer`` on ``project`` and lacks
+            ``serviceusage.services.use`` there, so reusing ``project`` for
+            billing 403s and the caller's broad ``except Exception`` silently
+            drops the row.
     """
+    if billing_project is None:
+        billing_project = project
     bq_sql = (
         f"SELECT table_type FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES` "
         f"WHERE table_name = ? LIMIT 1"
     )
-    # Parameter-bind project (1st arg of bigquery_query), the inner BQ SQL
-    # (2nd arg), and the table-name predicate. This avoids the nested-quote
+    # Parameter-bind billing_project (1st arg of bigquery_query), the inner BQ
+    # SQL (2nd arg), and the table-name predicate. This avoids the nested-quote
     # bug where inline `'{table}'` would close the outer `bigquery_query('...')`
     # string. Note: bigquery_query forwards extra positional args as BQ query
     # parameters, bound positionally to the `?` placeholders inside `bq_sql`.
     duck_sql = "SELECT * FROM bigquery_query(?, ?, ?)"
-    row = conn.execute(duck_sql, [project, bq_sql, table]).fetchone()
+    row = conn.execute(duck_sql, [billing_project, bq_sql, table]).fetchone()
     return row[0] if row else None
 
 
@@ -548,8 +608,35 @@ def _init_extract_locked(
                 continue
 
             table_name = tc["name"]
-            dataset = tc.get("bucket", "")
-            source_table = tc.get("source_table", table_name)
+            # v51: if ``bq_fqn`` is set on the registry row, it overrides the
+            # legacy bucket+source_table+project_id triplet. ``bq_fqn``
+            # decouples the UX/RBAC ``bucket`` label from the physical BQ
+            # dataset name (issue #343). Missing/empty bq_fqn falls back to
+            # the legacy path — backwards compat for pre-v51 registrations.
+            raw_fqn = tc.get("bq_fqn")
+            try:
+                parsed_fqn = parse_bq_fqn(raw_fqn)
+            except ValueError as e:
+                stats["errors"].append({"table": table_name, "error": str(e)})
+                continue
+            if parsed_fqn is not None:
+                fqn_project, dataset, source_table = parsed_fqn
+                # Cross-project bq_fqn: extractor ATTACHed `bq` against
+                # `project_id` (the overlay's data project). When
+                # bq_fqn.project differs, the BASE TABLE path via the bq
+                # alias would silently route to the wrong project. The
+                # VIEW path goes through ``bigquery_query(billing, …)``
+                # which takes its own billing arg, so cross-project works
+                # there — but BASE TABLE we skip with a clear warning
+                # rather than serve wrong-source data. Multi-ATTACH per
+                # distinct project is the proper fix (follow-up; see PR
+                # description).
+                cross_project = fqn_project != project_id
+            else:
+                dataset = tc.get("bucket", "")
+                source_table = tc.get("source_table", table_name)
+                fqn_project = project_id
+                cross_project = False
 
             # #81 Group D — refuse rows with unsafe identifiers. Same
             # rationale as the keboola extractor: registry is admin-controlled
@@ -573,10 +660,21 @@ def _init_extract_locked(
                 continue
 
             try:
-                entity_type = _detect_table_type(conn, project_id, dataset, source_table)
+                # Cross-project rows MUST bill against ``project_id`` (the
+                # extractor's billing project where the SA has
+                # ``serviceusage.services.use``). Passing ``fqn_project`` for
+                # both data + billing 403s on cross-project setups, the
+                # broad ``except Exception`` below silently drops the row,
+                # and the cross-project VIEW path at line ~696 never
+                # executes. (Same-project rows: ``fqn_project == project_id``
+                # so this is a no-op.)
+                entity_type = _detect_table_type(
+                    conn, fqn_project, dataset, source_table,
+                    billing_project=project_id,
+                )
                 if entity_type is None:
                     raise RuntimeError(
-                        f"BQ entity {project_id}.{dataset}.{source_table} not found"
+                        f"BQ entity {fqn_project}.{dataset}.{source_table} not found"
                     )
 
                 # Issue #160: always create a master view for query_mode='remote'
@@ -588,6 +686,18 @@ def _init_extract_locked(
                 # logged + skipped, with NO _meta row, since orchestrator-side
                 # master-view creation requires a corresponding inner view.
                 if entity_type == "BASE TABLE":
+                    if cross_project:
+                        # bq_fqn points to a different project than the
+                        # ATTACH alias — see comment above. Skip with a
+                        # diagnostic instead of serving wrong-source data.
+                        logger.warning(
+                            "bq_fqn project mismatch for BASE TABLE %s: "
+                            "bq_fqn=%s, extractor ATTACHed to %s. Master "
+                            "view skipped — multi-ATTACH follow-up needed "
+                            "or register a same-project proxy view.",
+                            table_name, fqn_project, project_id,
+                        )
+                        continue
                     view_sql = (
                         f'CREATE OR REPLACE VIEW "{table_name}" AS '
                         f'SELECT * FROM bq."{dataset}"."{source_table}"'
@@ -595,12 +705,20 @@ def _init_extract_locked(
                     conn.execute(view_sql)
                 elif entity_type in ("VIEW", "MATERIALIZED_VIEW"):
                     # `dataset` and `source_table` are validated above by
-                    # validate_quoted_identifier; project_id is validated at
-                    # the entry boundary of init_extract (lines 152-160).
+                    # validate_quoted_identifier; ``fqn_project`` is either
+                    # the entry-validated ``project_id`` or comes from
+                    # ``parse_bq_fqn`` which re-validates the project
+                    # segment via ``_validate_project_id``.
                     # The .replace("'", "''") is defense-in-depth on the
                     # inline literal.
-                    bq_inner = f"SELECT * FROM `{project_id}.{dataset}.{source_table}`"
+                    bq_inner = f"SELECT * FROM `{fqn_project}.{dataset}.{source_table}`"
                     bq_inner_escaped = bq_inner.replace("'", "''")
+                    # Billing project stays ``project_id`` (the extractor's
+                    # ATTACH project) — that's the project whose SA quota
+                    # pays for the job. ``fqn_project`` is the data project
+                    # (where the table lives); ``bigquery_query`` reads
+                    # cross-project just fine when the SA on ``project_id``
+                    # has BQ Data Viewer on ``fqn_project``.
                     view_sql = (
                         f'CREATE OR REPLACE VIEW "{table_name}" AS '
                         f"SELECT * FROM bigquery_query('{project_id}', '{bq_inner_escaped}')"
@@ -615,7 +733,7 @@ def _init_extract_locked(
                         "Unverified BQ entity_type %r for %s.%s.%s — master view skipped. "
                         "Use `agnes snapshot create` for this row, or file an issue with "
                         "a repro to request native support.",
-                        entity_type, project_id, dataset, source_table,
+                        entity_type, fqn_project, dataset, source_table,
                     )
                     continue  # Do NOT insert _meta — no inner view to point at.
 
@@ -626,7 +744,7 @@ def _init_extract_locked(
                 stats["tables_registered"] += 1
                 logger.info(
                     "Registered remote view: %s -> %s.%s.%s (%s)",
-                    table_name, project_id, dataset, source_table, entity_type,
+                    table_name, fqn_project, dataset, source_table, entity_type,
                 )
             except Exception as e:
                 logger.error("Failed to register %s: %s", table_name, e)

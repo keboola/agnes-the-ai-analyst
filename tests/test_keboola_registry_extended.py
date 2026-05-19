@@ -6,7 +6,7 @@ pattern used for primary_key). Other fields are scalar pass-through.
 import duckdb
 import pytest
 
-from src.db import _V26_TO_V27_MIGRATIONS
+from src.db import _V26_TO_V27_MIGRATIONS, _V50_TO_V51_MIGRATIONS
 from src.repositories.table_registry import TableRegistryRepository
 
 
@@ -27,6 +27,8 @@ def repo(tmp_path):
         "sync_schedule VARCHAR, profile_after_sync BOOLEAN DEFAULT true)"
     )
     for sql in _V26_TO_V27_MIGRATIONS:
+        conn.execute(sql)
+    for sql in _V50_TO_V51_MIGRATIONS:
         conn.execute(sql)
     return TableRegistryRepository(conn)
 

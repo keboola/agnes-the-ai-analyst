@@ -125,13 +125,19 @@ def test_schema_version_is_59():
     #            New attribution logic = prefix split on `<plugin>:<local>`
     #            identifier + live lookup against marketplace_plugins /
     #            store_entities — no mapping tables needed.
-    # v48 → v49: phase-1 Flea refactor (main) — title, tagline,
-    #            synthetic_name on store_entities + backfill via
-    #            humanize_name / strip_archive_suffix.
-    # v49 → v50: UNIQUE INDEX on store_entities.synthetic_name (main).
-    # v50 → v51: fully-qualified BigQuery path (``table_registry.bq_fqn``)
-    #            decoupling the UX/RBAC ``bucket`` label from the BQ
-    #            dataset name. Released on main as 0.54.29 (PR #346).
+    # v48 → v49: phase-1 Flea refactor — title, tagline, synthetic_name on
+    #            store_entities, backfilled via humanize_name(strip_archive_suffix).
+    # v49 → v50: UNIQUE INDEX on store_entities.synthetic_name (canonical
+    #            attribution key — rollup keyspace, JSONL prefix, marketplace
+    #            bundle naming). Migration pre-checks for duplicates and
+    #            raises RuntimeError listing them rather than letting the
+    #            CREATE UNIQUE INDEX fail mid-way.
+    # v50 → v51: nullable ``table_registry.bq_fqn`` (issue #343) — fully-
+    #            qualified BigQuery path that decouples the UX/RBAC
+    #            ``bucket`` label from the physical BQ dataset name. Rows
+    #            without it fall back to the legacy
+    #            bucket+source_table+remote_attach.project path.
+    #            Released on main as 0.54.29 (PR #346).
     # v51 → v52: unified stack — Data Packages + Memory Domains. Adds
     #            resource_grants.requirement enum, knowledge_items.is_required
     #            (splitting the status='mandatory' overload), data_packages
