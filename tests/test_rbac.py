@@ -45,10 +45,23 @@ def setup_db(tmp_path, monkeypatch):
         "INSERT INTO table_registry (id, name) VALUES (?, ?)",
         ["salaries", "salaries"],
     )
+    # Stack-gated RBAC: wrap 'orders' in an auto data_package and grant the
+    # package to the analysts group with required=true so it lands in the
+    # user's stack automatically. Per-table grants on resource_grants are
+    # no longer consulted for analyst visibility.
+    from src.repositories.data_packages import DataPackagesRepository
+    pkgs = DataPackagesRepository(conn)
+    pkg_id = pkgs.create(
+        name="orders-pkg", slug="orders-pkg",
+        description=None, icon=None, color=None,
+        created_by="test",
+    )
+    pkgs.add_table(pkg_id, "orders", added_by="test")
     conn.execute(
-        """INSERT INTO resource_grants (id, group_id, resource_type, resource_id)
-           VALUES (?, ?, 'table', 'orders')""",
-        [str(uuid.uuid4()), analysts["id"]],
+        """INSERT INTO resource_grants
+           (id, group_id, resource_type, resource_id, requirement)
+           VALUES (?, ?, 'data_package', ?, 'required')""",
+        [str(uuid.uuid4()), analysts["id"], pkg_id],
     )
 
     conn.close()
