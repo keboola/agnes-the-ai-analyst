@@ -1033,8 +1033,8 @@ def test_step_2_checks_pwd_does_not_auto_mkdir():
     assert "$HOME/Agnes" in joined  # default workspace_dir
     assert "~/Agnes" in joined
 
-    # Warning copy that references the /home Step 3 manual mkdir line.
-    assert "/home Step 3" in joined
+    # Warning copy that references the /home Step 2 manual mkdir line.
+    assert "/home Step 2" in joined
     assert "mkdir -p ~/Agnes && cd ~/Agnes" in joined
 
     # Explicit "install here" / "abort" decision tree.
