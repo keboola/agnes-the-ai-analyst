@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.2] — 2026-05-19
+
 ### Fixed
 - **Customer-instance Terraform module pre-creates `/data/uploads`**
   (`infra/modules/customer-instance/startup-script.sh.tpl`). v50/0.55.0
