@@ -529,10 +529,38 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
     document.querySelectorAll('.stack-card[data-id="' + CSS.escape(id) + '"]')
       .forEach(c => {
         c.dataset.inStack = becameInStack ? '1' : '0';
+        // Toggle the ``is-in-stack`` class so the border + visual state
+        // match what the server-side macro would render. Without this
+        // the button label flipped but the card chrome stayed the same
+        // — the user-reported "fajfka se zobrazí, ale celé se to
+        // nezmění" bug.
+        c.classList.toggle('is-in-stack', becameInStack);
+
+        // Top-right "In stack" badge mirrors the macro's elif-in_stack
+        // branch (see _stack_card.html). Skip when requirement is
+        // 'required' — that slot is owned by the Required badge which
+        // the server-rendered DOM keeps in place.
+        const isRequired = c.dataset.requirement === 'required';
+        let inStackBadge = c.querySelector('.stack-card__req-badge--instack');
+        if (becameInStack && !isRequired) {
+          if (!inStackBadge) {
+            inStackBadge = document.createElement('div');
+            inStackBadge.className = 'stack-card__req-badge stack-card__req-badge--instack';
+            inStackBadge.title = 'In your stack';
+            inStackBadge.textContent = 'In stack';
+            c.insertBefore(inStackBadge, c.firstChild);
+          }
+        } else if (inStackBadge && !isRequired) {
+          inStackBadge.remove();
+        }
+
         const actionBtn = c.querySelector('[data-action]');
         if (actionBtn) {
           actionBtn.dataset.action = becameInStack ? 'remove' : 'add';
-          actionBtn.textContent = becameInStack ? '✓ In stack' : '+ Add to stack';
+          // Mirror the macro's footer text — "Remove" / "+ Add to stack".
+          actionBtn.textContent = becameInStack ? 'Remove' : '+ Add to stack';
+          actionBtn.classList.toggle('stack-card__btn--add', !becameInStack);
+          actionBtn.classList.toggle('stack-card__btn--remove', becameInStack);
           actionBtn.disabled = false;
         }
       });
@@ -556,10 +584,13 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
         if (sourceCard) {
           const clone = sourceCard.cloneNode(true);
           clone.dataset.inStack = '1';
+          clone.classList.add('is-in-stack');
           const cloneBtn = clone.querySelector('[data-action]');
           if (cloneBtn) {
             cloneBtn.dataset.action = 'remove';
-            cloneBtn.textContent = '✓ In stack';
+            cloneBtn.textContent = 'Remove';
+            cloneBtn.classList.remove('stack-card__btn--add');
+            cloneBtn.classList.add('stack-card__btn--remove');
             cloneBtn.disabled = false;
           }
           myGrid.appendChild(clone);

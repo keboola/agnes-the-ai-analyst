@@ -302,10 +302,29 @@
     document.querySelectorAll('.stack-card[data-id="' + CSS.escape(id) + '"]')
       .forEach(c => {
         c.dataset.inStack = becameInStack ? '1' : '0';
+        // Toggle is-in-stack class + top-right "In stack" badge so the
+        // whole card chrome matches the server-side render — not just
+        // the footer button (see catalog.html for full rationale).
+        c.classList.toggle('is-in-stack', becameInStack);
+        const isRequired = c.dataset.requirement === 'required';
+        let inStackBadge = c.querySelector('.stack-card__req-badge--instack');
+        if (becameInStack && !isRequired) {
+          if (!inStackBadge) {
+            inStackBadge = document.createElement('div');
+            inStackBadge.className = 'stack-card__req-badge stack-card__req-badge--instack';
+            inStackBadge.title = 'In your stack';
+            inStackBadge.textContent = 'In stack';
+            c.insertBefore(inStackBadge, c.firstChild);
+          }
+        } else if (inStackBadge && !isRequired) {
+          inStackBadge.remove();
+        }
         const actionBtn = c.querySelector('[data-action]');
         if (actionBtn) {
           actionBtn.dataset.action = becameInStack ? 'remove' : 'add';
-          actionBtn.textContent = becameInStack ? '✓ In stack' : '+ Add to stack';
+          actionBtn.textContent = becameInStack ? 'Remove' : '+ Add to stack';
+          actionBtn.classList.toggle('stack-card__btn--add', !becameInStack);
+          actionBtn.classList.toggle('stack-card__btn--remove', becameInStack);
           actionBtn.disabled = false;
         }
       });
@@ -326,10 +345,13 @@
         if (sourceCard) {
           const clone = sourceCard.cloneNode(true);
           clone.dataset.inStack = '1';
+          clone.classList.add('is-in-stack');
           const cloneBtn = clone.querySelector('[data-action]');
           if (cloneBtn) {
             cloneBtn.dataset.action = 'remove';
-            cloneBtn.textContent = '✓ In stack';
+            cloneBtn.textContent = 'Remove';
+            cloneBtn.classList.remove('stack-card__btn--add');
+            cloneBtn.classList.add('stack-card__btn--remove');
             cloneBtn.disabled = false;
           }
           myGrid.appendChild(clone);
