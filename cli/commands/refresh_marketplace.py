@@ -242,18 +242,7 @@ def _bootstrap_clone(token: str) -> bool:
         except OSError:
             pass
 
-    # Add execute bit to every `.sh` under the clone — git's checkout doesn't
-    # always preserve the file-mode bit (filemode=false repos, archive
-    # extractions), and Claude Code's later `plugin install` copies the
-    # files into the workspace `.claude/hooks/` AS-IS, so hooks that lost
-    # the +x bit here would fire with Permission denied. Fixing at the
-    # source (marketplace clone) means every downstream plugin install
-    # gets executable hooks for free. Best-effort: no-op on Windows NTFS.
-    for sh in CLONE_DIR.rglob("*.sh"):
-        try:
-            sh.chmod(sh.stat().st_mode | 0o111)
-        except OSError:
-            pass
+    _chmod_clone_sh_files()
 
     if not _register_clone_with_claude(CLONE_DIR):
         return False
@@ -444,12 +433,41 @@ def _local_head_sha() -> Optional[str]:
     return sha or None
 
 
+def _chmod_clone_sh_files() -> None:
+    """Add execute bit to every `.sh` under CLONE_DIR.
+
+    Git's checkout doesn't always preserve the file-mode bit (filemode=false
+    repos, archive extractions, FUSE/NFS mounts with filemode detection
+    disabled), and Claude Code's later `plugin install` copies the files
+    into the workspace `.claude/hooks/` AS-IS, so hooks that lost the +x
+    bit here would fire with Permission denied. Fixing at the source
+    (marketplace clone) means every downstream plugin install gets
+    executable hooks for free.
+
+    Called from both `_bootstrap_clone` (after the initial `git clone`)
+    and `_git_fetch_and_reset` (after every `git reset --hard FETCH_HEAD`
+    on subsequent refreshes) so a version bump that touches a `.sh`
+    can't silently strip the bit. Best-effort: no-op on Windows NTFS,
+    swallows per-file errors.
+    """
+    for sh in CLONE_DIR.rglob("*.sh"):
+        try:
+            sh.chmod(sh.stat().st_mode | 0o111)
+        except OSError:
+            pass
+
+
 def _git_fetch_and_reset(token: str) -> bool:
     """Fetch from origin then hard-reset to FETCH_HEAD.
 
     Not `pull --ff-only`: the marketplace bare repo on the server rebuilds
     as a fresh orphan commit on every content change, so two snapshots
     have unrelated histories and fast-forward is impossible.
+
+    After a successful reset, re-applies the `.sh` execute bit across the
+    clone — `git reset --hard` overwrites working-tree files according to
+    the repo's `core.filemode` setting, and on systems where that is
+    `false` the bit gets stripped silently.
     """
     if not _git_fetch_only(token):
         return False
@@ -464,6 +482,8 @@ def _git_fetch_and_reset(token: str) -> bool:
         if reset.stderr:
             typer.echo(reset.stderr, err=True)
         return False
+
+    _chmod_clone_sh_files()
 
     if reset.stdout:
         typer.echo(reset.stdout.rstrip())

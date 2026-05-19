@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- `agnes refresh-marketplace` (non-bootstrap path) now re-applies
+  `chmod +x` to every `.sh` under `~/.agnes/marketplace` after each
+  `git reset --hard FETCH_HEAD`, not just on the initial bootstrap
+  clone. `git reset --hard` rewrites the working tree from the tree
+  object — if the upstream tree stores a hook script as non-
+  executable (or on `core.filemode=false` setups), every refresh
+  silently re-strips the +x bit and the previously-fixed hooks fire
+  with "Permission denied" again on the next `SessionStart`.
+  Extracted `_chmod_clone_sh_files()` helper, called from both
+  `_bootstrap_clone` and `_git_fetch_and_reset`. Best-effort, no-op
+  on Windows NTFS. Closes the coverage gap Devin Review flagged on
+  PR #350.
+- Stripped six stale unresolved merge-conflict markers
+  (`<<<<<<<` / `=======` / `>>>>>>>`) from the `[0.55.1]` section of
+  `CHANGELOG.md` that landed on `main` via PR #350's release-cut
+  commit. Markers were rendering as raw conflict text on GitHub and
+  in any tooling that parses the changelog; the HEAD-side content
+  inside each pair is what was kept (the incoming side held
+  superseded intermediate-commit duplicates).
+
 ## [0.55.2] — 2026-05-19
 
 ### Fixed
@@ -205,7 +226,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   save) mirroring the Memory Domain pattern.
 
 ### Changed
-<<<<<<< HEAD
 - **Bulk-assign tables → package** modal — package dropdown options
   now carry a `(N of M tables already in)` suffix so admins see the
   existing distribution before picking a target. Counts surface
@@ -515,8 +535,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Single PR cutover (no two-phase rollout). Legacy
   `marketplace_plugins.is_system` + `user_plugin_optouts` retained
   per spec D1 — Marketplace was deliberately not touched.
-=======
-<<<<<<< HEAD
 - /home onboarding Step 2 retitled "turn on permission-skip for setup"
   and now leads with `claude --dangerously-skip-permissions` as the
   recommended session flag, because the Step 4 paste runs ~20 shell
@@ -524,7 +542,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   The flag is session-scoped, drops on next plain `claude`. Auto-accept
   via Shift + Tab kept as the strict-review fallback for users who want
   to approve each command; persistent YOLO setup link unchanged.
->>>>>>> 4c4e9e42 (fix(web): swap /home Steps 2↔3, claude --yolo as copy-button command)
 
 ## [0.54.29] — 2026-05-19
 
@@ -579,18 +596,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   UI shows the corrected project). The orchestrator now compares the
   two at every rebuild and, if they differ, calls
   `rebuild_from_registry()` to regenerate the extract.
-=======
-- /home onboarding reordered: folder creation is now Step 2 (was
-  Step 3) and starting Claude with `claude --dangerously-skip-permissions`
-  is the new Step 3 (was the auto-mode step), rendered with the same
-  `.install-cmd` + copy-button affordance the other steps use. Step 4
-  paste runs ~20 shell commands that auto-accept-edits would not cover
-  (Bash still prompts), so the YOLO flag is the default recommendation;
-  session-scoped, drops on next plain `claude`. Shift + Tab → auto-
-  accept-edits kept as the strict-review fallback; persistent YOLO
-  allowlist link to /setup-advanced#yolo unchanged. Setup script's
-  "Verify cwd" warning copy refreshed to reference "/home Step 2".
->>>>>>> c195e0fa (fix(web): swap /home Steps 2↔3, claude --yolo as copy-button command)
 - Setup script no longer auto-creates the workspace folder. Step 2 of
   the pasted prompt now runs `pwd`, compares it to `$HOME/<workspace_dir>`
   (the folder the /home page's visible Step 3 told the user to create
