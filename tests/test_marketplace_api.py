@@ -943,3 +943,69 @@ class TestFleaPhase2Presentation:
         # Humanizer + acronym dict from phase 1 — "mcp-tools" → "MCP Tools".
         assert d["parent_display_name"] == "MCP Tools"
         assert d["manifest_name"] == "mcp-tools"
+
+
+# ---------------------------------------------------------------------------
+# v49 hardening — owner-display N+1 regression guard
+# ---------------------------------------------------------------------------
+
+
+class TestFleaOwnerDisplayBatched:
+    """Pre-fix, ``_flea_to_item`` called ``_resolve_owner_display`` for every
+    item in the list comprehension — one ``SELECT … FROM users WHERE id = ?``
+    per item. v49 hardening batches the prefetch via ``_load_users_display``
+    so the listing endpoint runs O(1) user lookups regardless of item count.
+
+    Regression guard: assert ``_resolve_owner_display`` is NEVER invoked
+    during the flea listing path. If a future change reintroduces the per-row
+    helper inside ``_flea_to_item``, this fails immediately."""
+
+    def test_listing_does_not_call_per_row_owner_resolver(self, web_client, monkeypatch):
+        # Three owners + three flea uploads — enough to make any per-row
+        # call obviously visible if it sneaks back in.
+        for email in ("alice@x.com", "bob@x.com", "carol@x.com"):
+            _, cookies = _create_user(web_client, email)
+            web_client.post(
+                "/api/store/entities",
+                files={
+                    "file": (
+                        "s.zip",
+                        _make_skill_zip(f"skill-{email.split('@')[0]}"),
+                        "application/zip",
+                    ),
+                },
+                data={"type": "skill", "description": _OK_DESC},
+                cookies=cookies,
+            )
+
+        # Any logged-in user can see the public flea tab.
+        _, viewer_cookies = _create_user(web_client, "viewer@x.com")
+
+        # Spy on the per-row resolver. The fixed implementation must not
+        # call it inside the listing comprehension.
+        from app.api import marketplace as marketplace_module
+        calls: list[str] = []
+        original = marketplace_module._resolve_owner_display
+
+        def spy(conn, owner_user_id, fallback):
+            calls.append(owner_user_id)
+            return original(conn, owner_user_id, fallback)
+
+        monkeypatch.setattr(marketplace_module, "_resolve_owner_display", spy)
+
+        r = web_client.get(
+            "/api/marketplace/items?tab=flea", cookies=viewer_cookies,
+        )
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 3
+        assert calls == [], (
+            f"_resolve_owner_display called {len(calls)} times inside the "
+            f"flea listing path — regression to the N+1 pattern."
+        )
+
+        # All three owner display strings still resolved correctly via the
+        # batch prefetch (so we're not just sidestepping the assertion by
+        # returning blank owners).
+        owners = sorted(it["owner"] for it in items)
+        assert owners == ["alice", "bob", "carol"]

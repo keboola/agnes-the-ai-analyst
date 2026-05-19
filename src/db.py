@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 49
+SCHEMA_VERSION = 50
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -672,6 +672,12 @@ CREATE TABLE IF NOT EXISTS store_submissions (
 
 CREATE INDEX IF NOT EXISTS idx_store_submissions_status ON store_submissions(status);
 CREATE INDEX IF NOT EXISTS idx_store_submissions_entity ON store_submissions(entity_id);
+-- NOTE: the v50 UNIQUE INDEX on store_entities.synthetic_name is created
+-- by ``_v49_to_v50_migrate``, not here. Reason: ``_v48_to_v49_migrate``
+-- runs ``ALTER TABLE store_entities ALTER COLUMN … SET NOT NULL`` which
+-- DuckDB blocks when an index already references the table. Fresh-install
+-- ordering is therefore: CREATE TABLE (no index) → v49 migrate (no-op
+-- ALTERs on empty table) → v50 migrate (CREATE UNIQUE INDEX).
 -- NOTE: no created_at index. DuckDB 1.x has a bug where
 -- `ORDER BY <indexed col> DESC LIMIT N` short-returns on small tables
 -- (reproduced with N=2 against 3 rows during /admin/store/submissions
@@ -3125,8 +3131,76 @@ def _v48_to_v49_migrate(conn: duckdb.DuckDBPyConnection) -> None:
             [title, synthetic, row_id],
         )
 
-    conn.execute("ALTER TABLE store_entities ALTER COLUMN title SET NOT NULL")
-    conn.execute("ALTER TABLE store_entities ALTER COLUMN synthetic_name SET NOT NULL")
+    # Gate ALTER … SET NOT NULL on current nullability. DuckDB blocks
+    # ALTER COLUMN once an index references the table (which happens after
+    # v50 creates the UNIQUE INDEX on synthetic_name), so an unconditional
+    # re-run on a fully-migrated DB would explode. Idempotent path: skip
+    # the ALTER when the column is already NOT NULL.
+    nullable = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT column_name, is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'store_entities' "
+            "AND column_name IN ('title', 'synthetic_name')"
+        ).fetchall()
+    }
+    if nullable.get("title") == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN title SET NOT NULL")
+    if nullable.get("synthetic_name") == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN synthetic_name SET NOT NULL")
+
+
+def _v49_to_v50_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """v50: enforce DB-level uniqueness on ``store_entities.synthetic_name``.
+
+    v49 introduced the column as NOT NULL but without uniqueness. App-level
+    ``_suffixed_already_taken`` only fires at upload/rename; any other write
+    path (admin DB hand-fix, future migration drift) could silently insert a
+    duplicate, and ``WHERE synthetic_name = ?`` would then non-deterministically
+    return one of the matching rows. With ``synthetic_name`` now the canonical
+    attribution key (rollup tables, marketplace bundle naming, JSONL invocation
+    prefix), uniqueness must be enforced at the DB level.
+
+    DuckDB has no ``ALTER TABLE ADD CONSTRAINT UNIQUE`` for existing tables,
+    but ``CREATE UNIQUE INDEX`` is functionally equivalent (rejects duplicate
+    inserts). The archive rewrite path
+    (``StoreEntitiesRepository.archive``) renames synthetic_name alongside
+    name, so archived rows cannot collide with live ones — a full-table
+    UNIQUE index is correct.
+
+    Steps:
+      1. Pre-flight: scan for existing duplicates. If any are found, abort
+         with ``RuntimeError`` listing them — the index creation would fail
+         anyway, but a structured error gives the operator a clear diagnostic
+         instead of a raw DuckDB constraint-violation message.
+      2. Create the UNIQUE index (idempotent via IF NOT EXISTS).
+
+    Idempotent: a re-run finds the index already present and skips both
+    the duplicate scan (which would still pass) and the CREATE.
+    """
+    # Pre-flight duplicate detection. List the actual conflicting slugs +
+    # row counts so the operator can resolve manually (typically by
+    # archiving one of the colliding rows, which rewrites its
+    # synthetic_name to the __archived__<epoch>-suffixed form).
+    dupes = conn.execute(
+        """SELECT synthetic_name, COUNT(*) AS n
+             FROM store_entities
+            GROUP BY synthetic_name
+           HAVING COUNT(*) > 1
+            ORDER BY n DESC, synthetic_name"""
+    ).fetchall()
+    if dupes:
+        summary = ", ".join(f"{name!r} x{n}" for name, n in dupes)
+        raise RuntimeError(
+            "v49→v50 migration blocked: duplicate synthetic_name values "
+            f"present in store_entities ({summary}). Resolve manually "
+            "(archive or rename the colliding rows) and re-run."
+        )
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_store_entities_synthetic_name "
+        "ON store_entities(synthetic_name)"
+    )
 
 
 _V33_TO_V34_MIGRATIONS = [
@@ -3428,6 +3502,11 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # installs; this call is a no-op (table empty, ALTER IF NOT
             # EXISTS, no rows to backfill, SET NOT NULL idempotent).
             _v48_to_v49_migrate(conn)
+            # v50 UNIQUE INDEX on synthetic_name. _SYSTEM_SCHEMA already
+            # creates the index on fresh installs; this call is a no-op
+            # (table empty so no duplicates possible, CREATE UNIQUE
+            # INDEX IF NOT EXISTS is idempotent).
+            _v49_to_v50_migrate(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -3580,6 +3659,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v47_to_v48(conn)
             if current < 49:
                 _v48_to_v49_migrate(conn)
+            if current < 50:
+                _v49_to_v50_migrate(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

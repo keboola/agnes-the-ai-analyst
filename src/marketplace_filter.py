@@ -186,9 +186,10 @@ into a single Claude Code plugin. Skill / agent uploads share this single
 plugin in the served marketplace; only ``type='plugin'`` Store entities
 materialize as their own plugin entry. See ``resolve_user_marketplace``.
 
-v49 phase-4: renamed from ``agnes-store-bundle`` to ``flea``. Historic
-session JSONL events still carry the old prefix — attribution layer in
-``services/session_processors/usage_lib.py`` accepts both."""
+v49 phase-4: renamed from ``agnes-store-bundle`` to ``flea``. Clean cut —
+``usage_events`` rows whose JSONL was written before the rename stay
+attributed as ``source='builtin'``; no legacy-prefix fallback in the
+attribution layer (``services/session_processors/usage_lib.py``)."""
 
 BUNDLE_PREFIXED_NAME = "flea"
 """On-disk directory name in the served ZIP / git tree for the bundle plugin.

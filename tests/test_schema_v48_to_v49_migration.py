@@ -23,10 +23,6 @@ from src.db import (
 )
 
 
-def test_schema_version_is_49():
-    assert SCHEMA_VERSION == 49
-
-
 def test_fresh_install_has_v49_columns(tmp_path):
     """Fresh install reaches v49 with the three new columns present."""
     db_path = tmp_path / "system.duckdb"

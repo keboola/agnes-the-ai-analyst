@@ -22,7 +22,7 @@ import logging
 import re
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -795,10 +795,10 @@ def _curated_to_item(
 
 
 def _flea_to_item(
-    conn: duckdb.DuckDBPyConnection,
     entity: dict,
     *,
     installed_set: set,
+    users_display: Dict[str, Tuple[Optional[str], Optional[str]]],
     viewer_id: Optional[str] = None,
     stats: Optional[Dict[str, Dict]] = None,
 ) -> MarketplaceItem:
@@ -834,9 +834,11 @@ def _flea_to_item(
     # rides the same chain JS uses for curated. Owner display resolves
     # `users.name → users.email → owner_username` so cards no longer
     # leak the kebab-case username (e.g. `c-marustamyan`) when the user
-    # has a real name on their account.
-    owner_display = _resolve_owner_display(
-        conn,
+    # has a real name on their account. Reads from a prefetched
+    # ``users_display`` map (one IN-query per page) — see
+    # ``_load_users_display`` callers in ``list_items``.
+    owner_display = _owner_display_from_map(
+        users_display,
         entity["owner_user_id"],
         entity.get("owner_username") or "",
     )
@@ -1089,9 +1091,13 @@ async def list_items(
                 include_owner_id=include_owner,
             )
         flea_stats = _load_invocation_stats(conn, "flea")
+        flea_users_display = _load_users_display(
+            conn, (r["owner_user_id"] for r in all_flea_rows),
+        )
         items = [
             _flea_to_item(
-                conn, r, installed_set=installed_set,
+                r, installed_set=installed_set,
+                users_display=flea_users_display,
                 viewer_id=user["id"],
                 stats=flea_stats,
             )
@@ -1165,9 +1171,13 @@ async def list_items(
 
     flea_installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
     flea_installed_set = {row["id"] for row in flea_installs}
+    flea_users_display = _load_users_display(
+        conn, (row["owner_user_id"] for row in flea_installs),
+    )
     for entity in flea_installs:
         items.append(_flea_to_item(
-            conn, entity, installed_set=flea_installed_set, stats=flea_stats,
+            entity, installed_set=flea_installed_set,
+            users_display=flea_users_display, stats=flea_stats,
         ))
 
     # Apply optional filters client-server-style for `my` tab (small N):
@@ -1517,10 +1527,48 @@ def _resolve_owner_display(
 
     Mirrors the inline lookup ``app/web/router.py::store_detail`` already does
     so the marketplace API surfaces the same string the Store page shows.
+
+    Single-row variant for detail endpoints. List endpoints must use
+    ``_load_users_display`` to avoid an N+1 against ``users``.
     """
     row = conn.execute(
         "SELECT name, email FROM users WHERE id = ?", [owner_user_id]
     ).fetchone()
+    if not row:
+        return fallback
+    return row[0] or row[1] or fallback
+
+
+def _load_users_display(
+    conn: duckdb.DuckDBPyConnection,
+    user_ids: Iterable[str],
+) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
+    """Batch-fetch ``(name, email)`` for a set of user_ids — single round-trip.
+
+    Returns a dict keyed by user_id. Use with ``_owner_display_from_map``
+    inside list comprehensions to compose the same
+    ``users.name → users.email → fallback`` resolution that
+    ``_resolve_owner_display`` does per-row.
+    """
+    ids = [u for u in {uid for uid in user_ids if uid}]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT id, name, email FROM users WHERE id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    return {r[0]: (r[1], r[2]) for r in rows}
+
+
+def _owner_display_from_map(
+    users_display: Dict[str, Tuple[Optional[str], Optional[str]]],
+    owner_user_id: str,
+    fallback: str,
+) -> str:
+    """Resolve owner display from a prefetched map, mirroring
+    ``_resolve_owner_display`` semantics."""
+    row = users_display.get(owner_user_id)
     if not row:
         return fallback
     return row[0] or row[1] or fallback

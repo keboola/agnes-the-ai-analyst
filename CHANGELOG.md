@@ -11,58 +11,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Changed
-- Marketplace detail page **Details sidebar** unified across all five
-  surfaces (curated plugin / flea plugin / curated inner skill+agent /
-  flea inner skill+agent / flea standalone skill+agent). Render order
-  now scans **identity → life-stage → telemetry → debug-tier**:
-  Curator / Owner → (Parent plugin for inner / Released for top-level)
-  → Last used → Active days → Version (flea standalone only) →
-  Bundle size. Drops the previous Slug row (debug-tier, never user-
-  relevant) from plugin detail and the Category + Installs rows
-  (duplicated hero badge + telemetry chip) from flea standalone
-  detail. Flea plugin Owner row now reads `d.owner_display` — the
-  fullname resolved via `users.name → users.email → owner_username`
-  — instead of the kebab-case `owner_username` slug.
-
-### Fixed
-- Flea **plugin entity** cards (`/marketplace?tab=flea`) and detail
-  pages (`/marketplace/flea/{id}` for `type='plugin'`) now show the
-  sum of nested skill/agent invocations. Pre-fix the plugin-level
-  rollup pass in `services/session_processors/usage_lib.py:_aggregate_events`
-  was hardcoded to `source='curated'` only, so flea plugin entities
-  never got a `(source='flea', type='plugin', parent_plugin='',
-  name=<plugin_synth>)` aggregated row. The API path's
-  `_load_invocation_stats('flea')` filters `parent_plugin=''` and
-  returned nothing for plugin cards even though nested children had
-  correct rollup rows. Triggered by empirical observation on dev VM
-  (`codex-second-opinion-by-c-marustamyan` plugin showed 0 calls
-  while its three inner skills had 1+1+3 invocations). Fix extends
-  the aggregation pass to `source in ('curated', 'flea')` and
-  preserves the original source tag in the synthetic plugin row.
-  `USAGE_PROCESSOR_VERSION` bumped 8→9 so the reprocess pass fills
-  the new aggregated rows for historic data.
-- Flea-market attribution layer now keys its lookup tables by
-  `store_entities.synthetic_name` instead of `name`, matching what
-  Claude Code writes in the JSONL invocation local-part
-  (`flea:<synthetic_name>` e.g. `flea:xlsx-by-c-marustamyan`).
-  Pre-fix every flea skill/agent invocation silently fell through to
-  `usage_events.source = 'builtin'` because the dict was keyed by
-  the un-suffixed `name`. Result: marketplace cards, detail
-  telemetry chips, and admin group-by-source had 0 flea invocations
-  even though raw events were arriving correctly. Both
-  `MarketplaceItemLookup` (live writer) and `_attribute_event`
-  (rollup rebuilder) updated; rollup `name`/`parent_plugin`
-  columns now carry the synthetic_name keyspace. API stats lookups
-  in `app/api/marketplace.py` switched from `entity["name"]` to
-  `entity["synthetic_name"]` (4 callsites: `_flea_to_item`,
-  `flea_detail`, two flea inner-detail endpoints). `_attribute_event`
-  also gains the flea-plugin-nested branch it was missing since
-  v6 — nested skills/agents inside flea plugins now flow into
-  rollup tables too. `USAGE_PROCESSOR_VERSION` bumped 7→8 so the
-  session-pipeline reprocess loop re-attributes existing events
-  with the corrected lookup. Closes issue #335.
-
-### Changed
 - **BREAKING (marketplace identifier)**: synthetic plugin bundling flea
   skills + agents renamed from `agnes-store-bundle` to `flea`. The
   served `marketplace.json` now lists `flea` (previously
@@ -82,7 +30,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   undocumented in our codebase — to be verified empirically on the
   dev VM. If the orphan entry lingers, users can manually run
   `claude plugin uninstall agnes-store-bundle@agnes`.
-
+- Marketplace detail page **Details sidebar** unified across all five
+  surfaces (curated plugin / flea plugin / curated inner skill+agent /
+  flea inner skill+agent / flea standalone skill+agent). Render order
+  now scans **identity → life-stage → telemetry → debug-tier**:
+  Curator / Owner → (Parent plugin for inner / Released for top-level)
+  → Last used → Active days → Version (flea standalone only) →
+  Bundle size. Drops the previous Slug row (debug-tier, never user-
+  relevant) from plugin detail and the Category + Installs rows
+  (duplicated hero badge + telemetry chip) from flea standalone
+  detail. Flea plugin Owner row now reads `d.owner_display` — the
+  fullname resolved via `users.name → users.email → owner_username`
+  — instead of the kebab-case `owner_username` slug.
 - Flea marketplace cards and detail pages now render the user-friendly
   **title** instead of the kebab-case `<name>-by-<owner>` slug, the
   owner's full name from `users.name` (with email → `owner_username`
@@ -124,6 +83,51 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   concat for `WHERE synthetic_name = ?` — indexable + single source
   of truth.
 
+### Fixed
+- Flea **plugin entity** cards (`/marketplace?tab=flea`) and detail
+  pages (`/marketplace/flea/{id}` for `type='plugin'`) now show the
+  sum of nested skill/agent invocations. Pre-fix the plugin-level
+  rollup pass in `services/session_processors/usage_lib.py:_aggregate_events`
+  was hardcoded to `source='curated'` only, so flea plugin entities
+  never got a `(source='flea', type='plugin', parent_plugin='',
+  name=<plugin_synth>)` aggregated row. The API path's
+  `_load_invocation_stats('flea')` filters `parent_plugin=''` and
+  returned nothing for plugin cards even though nested children had
+  correct rollup rows. Triggered by empirical observation on dev VM
+  (`codex-second-opinion-by-c-marustamyan` plugin showed 0 calls
+  while its three inner skills had 1+1+3 invocations). Fix extends
+  the aggregation pass to `source in ('curated', 'flea')` and
+  preserves the original source tag in the synthetic plugin row.
+  `USAGE_PROCESSOR_VERSION` bumped 8→9 so the reprocess pass fills
+  the new aggregated rows for historic data.
+- Flea-market attribution layer now keys its lookup tables by
+  `store_entities.synthetic_name` instead of `name`, matching what
+  Claude Code writes in the JSONL invocation local-part
+  (`flea:<synthetic_name>` e.g. `flea:xlsx-by-c-marustamyan`).
+  Pre-fix every flea skill/agent invocation silently fell through to
+  `usage_events.source = 'builtin'` because the dict was keyed by
+  the un-suffixed `name`. Result: marketplace cards, detail
+  telemetry chips, and admin group-by-source had 0 flea invocations
+  even though raw events were arriving correctly. Both
+  `MarketplaceItemLookup` (live writer) and `_attribute_event`
+  (rollup rebuilder) updated; rollup `name`/`parent_plugin`
+  columns now carry the synthetic_name keyspace. API stats lookups
+  in `app/api/marketplace.py` switched from `entity["name"]` to
+  `entity["synthetic_name"]` (4 callsites: `_flea_to_item`,
+  `flea_detail`, two flea inner-detail endpoints). `_attribute_event`
+  also gains the flea-plugin-nested branch it was missing since
+  v6 — nested skills/agents inside flea plugins now flow into
+  rollup tables too. `USAGE_PROCESSOR_VERSION` bumped 7→8 so the
+  session-pipeline reprocess loop re-attributes existing events
+  with the corrected lookup. Closes issue #335.
+- Flea-tab marketplace listing endpoint
+  (`GET /api/marketplace/items?tab=flea`) no longer issues an N+1
+  query against `users`. The owner-display resolution previously
+  fired one `SELECT name, email FROM users WHERE id = ?` per item
+  inside the list comprehension; now batched into a single
+  `WHERE id IN (…)` prefetch via `_load_users_display`. With 50
+  flea items per page that drops 51 queries to 2.
+
 ### Added
 - Flea-market upload + edit forms now collect a user-friendly **Title**
   (humanized from the kebab-case `name`, acronym-aware: `mcp-builder` →
@@ -136,6 +140,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   v49 adds `title NOT NULL`, `tagline`, and `synthetic_name NOT NULL`
   columns; backfill humanizes existing names (archive-suffix stripped
   first) and composes synthetic from the deterministic formula.
+- Schema **v50** adds a UNIQUE INDEX on `store_entities.synthetic_name`
+  (`idx_store_entities_synthetic_name`). v49 made `synthetic_name` the
+  canonical attribution key (rollup keyspace, JSONL invocation prefix,
+  marketplace bundle naming) but uniqueness was only enforced
+  application-side at upload/rename time via `_suffixed_already_taken`.
+  v50 promotes the invariant to the DB layer so admin DB hand-fixes or
+  future write-path bugs can't silently introduce duplicates.
+  DuckDB has no `ALTER TABLE ADD CONSTRAINT UNIQUE`, but
+  `CREATE UNIQUE INDEX` is functionally equivalent. Migration pre-checks
+  for existing duplicates and raises `RuntimeError` listing them rather
+  than letting the index create fail mid-way with a raw DuckDB error.
 
 ## [0.54.28] — 2026-05-18
 
