@@ -266,6 +266,7 @@ async def lifespan(app):
                     logger.info("Set password on existing seed admin: %s", seed_email)
             # Make sure the seed admin is actually in the Admin group — this
             # is what gives them admin access in v12. Idempotent.
+            from src.db import SYSTEM_EVERYONE_GROUP
             admin_group = conn.execute(
                 "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
             ).fetchone()
@@ -273,6 +274,22 @@ async def lifespan(app):
                 UserGroupMembersRepository(conn).add_member(
                     user_id=user_id,
                     group_id=admin_group[0],
+                    source="system_seed",
+                    added_by="app.main:seed_admin",
+                )
+            # Also seed Everyone membership — Everyone-scoped grants are the
+            # canonical "every-user-sees-this" pattern (Required onboarding,
+            # default reference packages). The seed admin not being in
+            # Everyone meant their own Required grants didn't surface on
+            # /catalog as Required for them, which read as a bug.
+            everyone_group = conn.execute(
+                "SELECT id FROM user_groups WHERE name = ?",
+                [SYSTEM_EVERYONE_GROUP],
+            ).fetchone()
+            if everyone_group:
+                UserGroupMembersRepository(conn).add_member(
+                    user_id=user_id,
+                    group_id=everyone_group[0],
                     source="system_seed",
                     added_by="app.main:seed_admin",
                 )
