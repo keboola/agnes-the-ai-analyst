@@ -288,6 +288,7 @@ def _detect_table_type(
     project: str,
     dataset: str,
     table: str,
+    billing_project: str | None = None,
 ) -> str | None:
     """Return BQ entity type for `project.dataset.table`.
 
@@ -295,18 +296,34 @@ def _detect_table_type(
     API — works on tables, views, and materialized views alike. Returns the
     value of INFORMATION_SCHEMA.TABLES.table_type ('BASE TABLE', 'VIEW',
     'MATERIALIZED_VIEW') or None if not found.
+
+    Args:
+        project: Data project (where the entity lives — appears in the
+            INFORMATION_SCHEMA FROM clause).
+        dataset, table: Identify the BQ entity.
+        billing_project: Project whose SA quota pays for the lookup job and
+            against which `serviceusage.services.use` is checked. When ``None``
+            (default), bills against ``project`` — fine for same-project
+            lookups. Cross-project callers MUST pass ``billing_project`` to
+            the extractor's billing project explicitly; the data-side SA
+            typically has only ``bigquery.dataViewer`` on ``project`` and lacks
+            ``serviceusage.services.use`` there, so reusing ``project`` for
+            billing 403s and the caller's broad ``except Exception`` silently
+            drops the row.
     """
+    if billing_project is None:
+        billing_project = project
     bq_sql = (
         f"SELECT table_type FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES` "
         f"WHERE table_name = ? LIMIT 1"
     )
-    # Parameter-bind project (1st arg of bigquery_query), the inner BQ SQL
-    # (2nd arg), and the table-name predicate. This avoids the nested-quote
+    # Parameter-bind billing_project (1st arg of bigquery_query), the inner BQ
+    # SQL (2nd arg), and the table-name predicate. This avoids the nested-quote
     # bug where inline `'{table}'` would close the outer `bigquery_query('...')`
     # string. Note: bigquery_query forwards extra positional args as BQ query
     # parameters, bound positionally to the `?` placeholders inside `bq_sql`.
     duck_sql = "SELECT * FROM bigquery_query(?, ?, ?)"
-    row = conn.execute(duck_sql, [project, bq_sql, table]).fetchone()
+    row = conn.execute(duck_sql, [billing_project, bq_sql, table]).fetchone()
     return row[0] if row else None
 
 
@@ -643,7 +660,18 @@ def _init_extract_locked(
                 continue
 
             try:
-                entity_type = _detect_table_type(conn, fqn_project, dataset, source_table)
+                # Cross-project rows MUST bill against ``project_id`` (the
+                # extractor's billing project where the SA has
+                # ``serviceusage.services.use``). Passing ``fqn_project`` for
+                # both data + billing 403s on cross-project setups, the
+                # broad ``except Exception`` below silently drops the row,
+                # and the cross-project VIEW path at line ~696 never
+                # executes. (Same-project rows: ``fqn_project == project_id``
+                # so this is a no-op.)
+                entity_type = _detect_table_type(
+                    conn, fqn_project, dataset, source_table,
+                    billing_project=project_id,
+                )
                 if entity_type is None:
                     raise RuntimeError(
                         f"BQ entity {fqn_project}.{dataset}.{source_table} not found"

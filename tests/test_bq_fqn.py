@@ -269,6 +269,89 @@ class TestExtractorRespectsBqFqn:
         assert result["tables_registered"] == 1
         assert any('bq."legacy_ds"."legacy_tbl"' in s for s in sqls), sqls
 
+    def test_cross_project_detect_call_bills_against_extractor_project(self, output_dir):
+        """Regression: cross-project rows must call _detect_table_type with
+        billing_project=project_id (the extractor's billing project), not
+        just the bq_fqn data project. The data SA typically has
+        bigquery.dataViewer on the data project but only holds
+        serviceusage.services.use on the billing project — reusing the
+        data project as billing 403s and the broad except Exception in
+        init_extract silently drops the row, so the cross-project VIEW
+        path never executes."""
+        captured_calls: list[dict] = []
+
+        def capturing_detector(conn, project, dataset, table, billing_project=None):
+            captured_calls.append({
+                "project": project,
+                "billing_project": billing_project,
+            })
+            return "VIEW"
+
+        tcs = [{
+            "id": "rfm",
+            "name": "rfm",
+            "source_type": "bigquery",
+            "bucket": "RFM",
+            "source_table": "ignored",
+            "bq_fqn": "other-project.revenue.bk_rfm",
+            "query_mode": "remote",
+            "description": "",
+        }]
+        _run_init_extract(output_dir, "my-project", tcs, capturing_detector)
+        assert len(captured_calls) == 1
+        call = captured_calls[0]
+        # Data project (FROM clause / INFORMATION_SCHEMA target)
+        assert call["project"] == "other-project"
+        # Billing project (bigquery_query 1st arg + serviceusage.services.use
+        # check) — must be the extractor's billing project, NOT the data project.
+        assert call["billing_project"] == "my-project"
+
+
+# ----------------------------------------------------------------------
+# _detect_table_type — direct unit
+# ----------------------------------------------------------------------
+
+class TestDetectTableTypeBilling:
+    """Verify that _detect_table_type wires billing_project into the
+    bigquery_query() 1st positional arg — the only knob that controls
+    which project the BQ jobs API charges + checks services.use on."""
+
+    def _make_fake_conn(self, captured: list, return_value):
+        class _FakeCursor:
+            def fetchone(self_inner):
+                return return_value
+        class _FakeConn:
+            def execute(self_inner, sql, params):
+                captured.append(list(params))
+                return _FakeCursor()
+        return _FakeConn()
+
+    def test_explicit_billing_project_used_for_bigquery_query_first_arg(self):
+        from connectors.bigquery.extractor import _detect_table_type
+        captured: list = []
+        conn = self._make_fake_conn(captured, ("VIEW",))
+        result = _detect_table_type(
+            conn, "data-proj", "ds", "tbl",
+            billing_project="billing-proj",
+        )
+        assert result == "VIEW"
+        # bigquery_query(billing_project, bq_sql, table_predicate)
+        params = captured[0]
+        assert params[0] == "billing-proj"
+        # FROM clause still references the data project
+        assert "`data-proj.ds.INFORMATION_SCHEMA.TABLES`" in params[1]
+        assert params[2] == "tbl"
+
+    def test_omitted_billing_project_defaults_to_data_project(self):
+        """Backwards-compat: existing same-project callers omit
+        billing_project and bill against the data project (no-op since
+        the two projects are equal in same-project lookups)."""
+        from connectors.bigquery.extractor import _detect_table_type
+        captured: list = []
+        conn = self._make_fake_conn(captured, None)
+        _detect_table_type(conn, "same-proj", "ds", "tbl")
+        assert captured[0][0] == "same-proj"
+
 
 # ----------------------------------------------------------------------
 # Orchestrator drift sync
