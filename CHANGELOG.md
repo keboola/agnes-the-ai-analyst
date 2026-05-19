@@ -42,6 +42,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   rebuild silently.
 
 ### Internal
+- **Schema v51** — adds nullable `table_registry.bq_fqn VARCHAR`;
+  existing rows default to `NULL` and use the legacy
+  `bucket + source_table` path (backwards-compatible, no backfill).
 - New test suite `tests/test_bq_fqn.py` (25 cases): `parse_bq_fqn`
   unit matrix, extractor override paths (same-project VIEW + cross-
   project VIEW success + cross-project BASE TABLE skip), orchestrator

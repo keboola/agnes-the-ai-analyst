@@ -412,7 +412,7 @@ class TestStartupValidation:
         def fake_get_value(*args, **kwargs):
             key = args[-1]
             return {
-                "project": "prj-grp-dataview-prod-1ff9",
+                "project": "my-warehouse-project",
                 "billing_project": "",
                 "location": "us-central1",
             }.get(key, "")
