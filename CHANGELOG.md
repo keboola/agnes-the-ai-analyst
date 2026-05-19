@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.0] — 2026-05-19
+
 ### Added
 - **Extended Data Packages content (v56 schema)** backing the rewritten
   `/catalog/p/<slug>` package detail page per the extended-descriptions admin
