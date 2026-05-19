@@ -2566,6 +2566,21 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP")
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR")
 
+    # If the table is already at a post-v49 shape (synthetic_name column
+    # present from phase-1 Flea refactor), the v35 visibility_status rebuild
+    # has effectively been done long ago AND the v50 UNIQUE INDEX on
+    # synthetic_name now blocks `DROP COLUMN visibility_status` (DuckDB
+    # forbids dropping a column when an index references a column after it
+    # positionally). Short-circuit so re-runs of the ladder on a fully
+    # migrated DB (e.g. a test that resets schema_version backwards) stay
+    # idempotent.
+    post_v49 = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' AND column_name = 'synthetic_name'"
+    ).fetchone()
+    if post_v49:
+        return
+
     cols = {
         r[0]
         for r in conn.execute(
@@ -2621,13 +2636,32 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
 # whose schema_version row says 36 but whose users table is missing
 # `onboarded` — the only consequence-free recovery is an idempotent
 # ADD IF NOT EXISTS at the v36 step.
-_V35_TO_V36_MIGRATIONS = [
-    "UPDATE store_entities SET visibility_status = 'pending' WHERE visibility_status IS NULL",
-    "ALTER TABLE store_entities ALTER COLUMN visibility_status SET NOT NULL",
-    "ALTER TABLE store_entities ALTER COLUMN visibility_status SET DEFAULT 'pending'",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded BOOLEAN DEFAULT FALSE",
-    "UPDATE users SET onboarded = FALSE WHERE onboarded IS NULL",
-]
+def _v35_to_v36_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotent v35→v36. Gates the ALTER COLUMN steps on current
+    nullability — once v50 creates the UNIQUE INDEX on store_entities,
+    DuckDB blocks ALTER COLUMN against the table (the index references
+    a column "after" visibility_status positionally), so a redundant
+    SET NOT NULL on an already-NOT-NULL column would explode."""
+    conn.execute(
+        "UPDATE store_entities SET visibility_status = 'pending' "
+        "WHERE visibility_status IS NULL"
+    )
+    nullable = conn.execute(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' AND column_name = 'visibility_status'"
+    ).fetchone()
+    if nullable and nullable[0] == "YES":
+        conn.execute(
+            "ALTER TABLE store_entities ALTER COLUMN visibility_status SET NOT NULL"
+        )
+        conn.execute(
+            "ALTER TABLE store_entities ALTER COLUMN visibility_status "
+            "SET DEFAULT 'pending'"
+        )
+    conn.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded BOOLEAN DEFAULT FALSE"
+    )
+    conn.execute("UPDATE users SET onboarded = FALSE WHERE onboarded IS NULL")
 
 
 # v37→v38: flea-market entity edit feature with version history.
@@ -2654,47 +2688,59 @@ _V35_TO_V36_MIGRATIONS = [
 # created_at backfilled from the entity row; submission_id is best-
 # effort (we look up the most recent submission_id for the entity_id
 # if any exists, else NULL).
-_V37_TO_V38_MIGRATIONS = [
+def _v37_to_v38_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotent v37→v38. Gates the ``version_no SET NOT NULL`` step on
+    current nullability — see ``_v35_to_v36_migrate`` for why."""
     # Defensive: minimal partial-state DBs from earlier migrations may
     # be missing columns the backfill UPDATE below references. Add
     # them idempotently first. Real post-v29 DBs already have these;
     # this is a no-op there. Keeps the recovery path through
     # `tests/test_db_schema_version.py::test_v32_db_with_partial_v35_recovers_through_full_ladder`
     # intact when walking from v32 fixture forward.
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version VARCHAR",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS file_size BIGINT",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS file_size BIGINT")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS created_at TIMESTAMP")
     # DuckDB ALTER doesn't accept "NOT NULL DEFAULT" together — split:
     # ADD nullable + DEFAULT, backfill nulls, then SET NOT NULL.
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_no INTEGER DEFAULT 1",
-    "UPDATE store_entities SET version_no = 1 WHERE version_no IS NULL",
-    "ALTER TABLE store_entities ALTER COLUMN version_no SET NOT NULL",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_history JSON DEFAULT '[]'",
-    # Backfill: synthesize a v1 entry from existing columns when the
-    # history is empty. Idempotent — re-running on a populated row
-    # is a no-op because the WHERE filters on empty/NULL history.
-    """
-    UPDATE store_entities SET version_history = json_array(
-        json_object(
-            'n',  1,
-            'hash', version,
-            'sha256', NULL,
-            'size', file_size,
-            'submission_id', (
-                SELECT id FROM store_submissions
-                 WHERE entity_id = store_entities.id
-                 ORDER BY created_at DESC
-                 LIMIT 1
-            ),
-            'created_at', CAST(created_at AS VARCHAR),
-            'created_by', owner_user_id
-        )
+    conn.execute(
+        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_no INTEGER DEFAULT 1"
     )
-    WHERE version_history IS NULL
-       OR version_history = '[]'
-       OR json_array_length(version_history) = 0
-    """,
-]
+    conn.execute("UPDATE store_entities SET version_no = 1 WHERE version_no IS NULL")
+    nullable = conn.execute(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' AND column_name = 'version_no'"
+    ).fetchone()
+    if nullable and nullable[0] == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN version_no SET NOT NULL")
+    conn.execute(
+        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_history JSON DEFAULT '[]'"
+    )
+    # Backfill: synthesize a v1 entry from existing columns when the
+    # history is empty. Idempotent — re-running on a populated row is
+    # a no-op because the WHERE filters on empty/NULL history.
+    conn.execute(
+        """
+        UPDATE store_entities SET version_history = json_array(
+            json_object(
+                'n',  1,
+                'hash', version,
+                'sha256', NULL,
+                'size', file_size,
+                'submission_id', (
+                    SELECT id FROM store_submissions
+                     WHERE entity_id = store_entities.id
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                ),
+                'created_at', CAST(created_at AS VARCHAR),
+                'created_by', owner_user_id
+            )
+        )
+        WHERE version_history IS NULL
+           OR version_history = '[]'
+           OR json_array_length(version_history) = 0
+        """
+    )
 
 
 # v39: marketplace_plugins.is_system flag backing the "system plugin"
@@ -3627,14 +3673,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 35:
                 _v34_to_v35_migrate(conn)
             if current < 36:
-                for sql in _V35_TO_V36_MIGRATIONS:
-                    conn.execute(sql)
+                _v35_to_v36_migrate(conn)
             if current < 37:
                 for sql in _V36_TO_V37_MIGRATIONS:
                     conn.execute(sql)
             if current < 38:
-                for sql in _V37_TO_V38_MIGRATIONS:
-                    conn.execute(sql)
+                _v37_to_v38_migrate(conn)
             if current < 39:
                 for sql in _V38_TO_V39_MIGRATIONS:
                     conn.execute(sql)
