@@ -87,6 +87,32 @@ _INIT_COMPLETE_FILE = ".claude/init-complete"
 _CA_ENV_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO")
 
 
+def _chmod_workspace_hooks(workspace: Path) -> None:
+    """Set execute bit on every `.sh` under `<workspace>/.claude/hooks/`.
+
+    Claude Code's plugin install path doesn't always preserve the execute
+    bit on shell hook files — depending on the archive format the plugin
+    ships in (zip, no-bit-preserving git checkout config, etc.), hooks
+    can land on disk as `rw-r--r--` and every fire returns Permission
+    denied. The user-visible symptom is a silent SessionStart / PreToolUse
+    failure that looks like the hooks just aren't installed.
+
+    Best-effort. No-op on Windows NTFS via Git Bash (chmod is meaningless
+    on NTFS without ACLs). Failures are swallowed — a hook the user can
+    still read is no worse than the pre-fix baseline.
+    """
+    hooks_dir = workspace / ".claude" / "hooks"
+    if not hooks_dir.is_dir():
+        return
+    for path in hooks_dir.rglob("*.sh"):
+        try:
+            current = path.stat().st_mode
+            # Add user/group/other execute. Same effect as `chmod +x`.
+            path.chmod(current | 0o111)
+        except OSError:
+            pass
+
+
 def _is_windows_host() -> bool:
     """True when the Python interpreter sees Windows underneath.
 
@@ -182,7 +208,25 @@ init_app = typer.Typer(help="Bootstrap an analyst workspace in this directory")
 @init_app.callback(invoke_without_command=True)
 def init(
     server_url: str = typer.Option(..., "--server-url", help="Agnes server URL"),
-    token: str = typer.Option(..., "--token", help="Personal access token"),
+    token: Optional[str] = typer.Option(
+        None, "--token",
+        help=(
+            "Personal access token. Can also be supplied via the "
+            "AGNES_TOKEN env var or --token-file (see also). Inline "
+            "--token sometimes trips Claude Code's auto-classifier "
+            "(long bearer-token string in a command line); prefer "
+            "--token-file or AGNES_TOKEN to dodge that."
+        ),
+    ),
+    token_file: Optional[str] = typer.Option(
+        None, "--token-file",
+        help=(
+            "Path to a file whose first non-blank line is the PAT. Wins "
+            "over AGNES_TOKEN env when both are set; loses to an explicit "
+            "--token flag. The token never appears in the command string "
+            "this way, which dodges Claude Code's bearer-token classifier."
+        ),
+    ),
     force: bool = typer.Option(False, "--force", help="Re-initialize an existing workspace"),
     workspace_str: Optional[str] = typer.Option(None, "--workspace", help="Target dir (default: cwd)"),
     skip_materialize: bool = typer.Option(
@@ -199,6 +243,33 @@ def init(
     """Bootstrap workspace: auth, CLAUDE.md, hooks, first pull, AGNES_WORKSPACE.md."""
     workspace = Path(workspace_str).resolve() if workspace_str else Path.cwd()
     server_url = server_url.rstrip("/")
+
+    # Resolve the token. Precedence: explicit --token > --token-file >
+    # AGNES_TOKEN env var > error. --token-file and AGNES_TOKEN exist so
+    # the analyst can paste an `agnes init --server-url … --token-file
+    # ~/.agnes/token` (or simply set the env) without Claude Code's
+    # auto-classifier flagging the long JWT in the command line.
+    if token is None and token_file:
+        try:
+            for line in Path(token_file).expanduser().read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    token = line
+                    break
+        except OSError as exc:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "partial_state",
+                "hint": f"--token-file {token_file!r} could not be read: {exc}",
+            }}), err=True)
+            raise typer.Exit(1)
+    if token is None:
+        token = os.environ.get("AGNES_TOKEN", "").strip() or None
+    if not token:
+        typer.echo(render_error(0, {"detail": {
+            "kind": "partial_state",
+            "hint": "Supply a token via --token, --token-file, or AGNES_TOKEN env var.",
+        }}), err=True)
+        raise typer.Exit(1)
 
     # Best-effort cleanup before ANY TLS handshake fires below — stale
     # SSL_CERT_FILE / REQUESTS_CA_BUNDLE / GIT_SSL_CAINFO pointers from a
@@ -417,11 +488,12 @@ def init(
         if not settings_path.exists():
             settings_path.parent.mkdir(parents=True, exist_ok=True)
             settings_path.write_text(json.dumps(
-                {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Grep", "Glob"]}},
+                {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Bash(agnes *)", "Grep", "Glob"]}},
                 indent=2,
             ), encoding="utf-8")
         install_claude_hooks(workspace)
         install_claude_commands(workspace)
+        _chmod_workspace_hooks(workspace)
 
         # ------------------------------------------------------------------
         # Step 6: CLAUDE.local.md stub — only when absent. `--force` does NOT
