@@ -10,15 +10,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- /home install-hero lead now includes a short "What leaves your
+  machine" privacy callout: explains that prompts / tool-calls /
+  tool-responses travel back to the central catalog while raw data
+  rows stay local, and points at `/agnes-private` as the per-session
+  opt-out.
+
 ### Changed
-<<<<<<< HEAD
-- /home onboarding Step 2 retitled "turn on permission-skip for setup"
-  and now leads with `claude --dangerously-skip-permissions` as the
-  recommended session flag, because the Step 4 paste runs ~20 shell
-  commands that auto-accept-edits does not cover (Bash still prompts).
-  The flag is session-scoped, drops on next plain `claude`. Auto-accept
-  via Shift + Tab kept as the strict-review fallback for users who want
-  to approve each command; persistent YOLO setup link unchanged.
+- /home onboarding reordered: folder creation is now Step 2 (was
+  Step 3) and starting Claude with `claude --dangerously-skip-permissions`
+  is the new Step 3 (was the auto-mode step), rendered with the same
+  `.install-cmd` + copy-button affordance the other steps use. Step 4
+  paste runs ~20 shell commands that auto-accept-edits would not cover
+  (Bash still prompts), so the YOLO flag is the default recommendation;
+  session-scoped, drops on next plain `claude`. Shift + Tab → auto-
+  accept-edits kept as the strict-review fallback; persistent YOLO
+  allowlist link to /setup-advanced#yolo opens in a new tab so users
+  don't lose their /home install context. Setup script's "Verify cwd"
+  warning copy refreshed to reference "/home Step 2".
 
 ## [0.54.29] — 2026-05-19
 
@@ -73,18 +83,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   UI shows the corrected project). The orchestrator now compares the
   two at every rebuild and, if they differ, calls
   `rebuild_from_registry()` to regenerate the extract.
-=======
-- /home onboarding reordered: folder creation is now Step 2 (was
-  Step 3) and starting Claude with `claude --dangerously-skip-permissions`
-  is the new Step 3 (was the auto-mode step), rendered with the same
-  `.install-cmd` + copy-button affordance the other steps use. Step 4
-  paste runs ~20 shell commands that auto-accept-edits would not cover
-  (Bash still prompts), so the YOLO flag is the default recommendation;
-  session-scoped, drops on next plain `claude`. Shift + Tab → auto-
-  accept-edits kept as the strict-review fallback; persistent YOLO
-  allowlist link to /setup-advanced#yolo unchanged. Setup script's
-  "Verify cwd" warning copy refreshed to reference "/home Step 2".
->>>>>>> c195e0fa (fix(web): swap /home Steps 2↔3, claude --yolo as copy-button command)
 - Setup script no longer auto-creates the workspace folder. Step 2 of
   the pasted prompt now runs `pwd`, compares it to `$HOME/<workspace_dir>`
   (the folder the /home page's visible Step 3 told the user to create
