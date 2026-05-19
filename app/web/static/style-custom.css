@@ -3988,7 +3988,7 @@ textarea.form-input {
     line-height: 1.5;
 }
 
-.form-textarea {
+textarea.form-textarea {
     width: 100%;
     min-height: 80px;
     padding: var(--space-2) var(--space-3);
@@ -3999,16 +3999,17 @@ textarea.form-input {
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     resize: vertical;
+    line-height: normal;
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.form-textarea:focus {
+textarea.form-textarea:focus {
     outline: none;
     border-color: var(--primary);
     box-shadow: var(--focus-ring);
 }
 
-.form-textarea::placeholder { color: var(--text-muted); }
+textarea.form-textarea::placeholder { color: var(--text-muted); }
 
 .form-input:focus {
     outline: none;
