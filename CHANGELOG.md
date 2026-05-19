@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.4] — 2026-05-19
+
+### Security
+- Bumped `idna` from 3.11 to 3.15 (Dependabot, #357). 3.14 closed a bypass of the CVE-2024-3651 mitigation by rejecting oversize inputs up-front (**CVE-2026-45409**); 3.15 hardens further by enforcing the DNS-length cap on individual labels early in `check_label`. Transitive dependency of `requests` / `httpx` — bumped via `uv.lock` only, no surface-area change.
+
 ## [0.55.3] — 2026-05-19
 
 ### Changed
