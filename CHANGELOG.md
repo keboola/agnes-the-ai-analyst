@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Fixed
+- **UI consistency pass** (I-UI-01..05): radio-card selected state on `/admin/tables` (14 cards get blue border + light bg highlight via `.sync-option-card:has(input:checked)`); promoted `.label-qualifier` / `.optional` to global rule (drops local duplicate); inline `<code>` migrated to design tokens with bg + border; `.btn-google` hover hardcoded swatches replaced with vars; `.code-block code` border + radius reset for dark containers; `.form-textarea` promoted to global. Plus #340 follow-up: removed leftover Phase F2 `{% if data_source_type == 'keboola' %}` guard around edit-modal JS so handlers ship to every instance type (Discover button onclick call sites still respect the guard). Closes #347 (credit @MonikaFeigler).
 - `agnes refresh-marketplace` (non-bootstrap path) now re-applies
   `chmod +x` to every `.sh` under `~/.agnes/marketplace` after each
   `git reset --hard FETCH_HEAD`, not just on the initial bootstrap
