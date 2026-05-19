@@ -76,7 +76,10 @@ def refresh_marketplace(
             "If no marketplace clone exists yet, clone it and register the "
             "local path with Claude Code. Used by the install flow as a "
             "one-liner replacement for an inline `git clone` + chmod + "
-            "`claude plugin marketplace add` sequence."
+            "`claude plugin marketplace add` sequence. Marketplace URL "
+            "defaults to {server_host}/marketplace.git/; override via the "
+            "AGNES_MARKETPLACE_URL env var when the marketplace lives on "
+            "a different host than the API."
         ),
     ),
 ):
@@ -177,19 +180,49 @@ def _bootstrap_clone(token: str) -> bool:
     in plaintext at `.git/config` (refreshes use the credential helper).
     Returns False on any failure.
     """
-    server_url = get_server_url()
-    if not server_url:
-        typer.echo("error: no server URL configured; run `agnes init` first.", err=True)
-        return False
+    # Marketplace URL resolution (issue #345 A):
+    # 1. `AGNES_MARKETPLACE_URL` env var — explicit override for deployments
+    #    that serve the marketplace from a different host than the API
+    #    (reverse-proxy split, CDN-fronted marketplace, etc.). Must be a
+    #    full base URL including scheme, ending at the `/marketplace.git/`
+    #    path or its equivalent on the operator's deployment.
+    # 2. Fallback to ``{scheme}://{server_host}/marketplace.git/`` derived
+    #    from the workspace's bootstrapped server URL.
+    marketplace_base = os.environ.get("AGNES_MARKETPLACE_URL", "").strip()
+    if marketplace_base:
+        parsed = urlparse(marketplace_base)
+        if not parsed.scheme or not parsed.hostname:
+            typer.echo(
+                f"error: AGNES_MARKETPLACE_URL={marketplace_base!r} is not a full URL "
+                "(expected scheme://host[:port]/marketplace.git/).",
+                err=True,
+            )
+            return False
+        # Normalize: ensure trailing slash so urljoin-style consumers don't drop the path.
+        clean_url = marketplace_base if marketplace_base.endswith("/") else marketplace_base + "/"
+        scheme = parsed.scheme
+        # Re-inject the PAT into the env-supplied URL so the clone authenticates.
+        host_with_port = parsed.netloc.split("@", 1)[-1]
+        path = parsed.path if parsed.path else "/marketplace.git/"
+        if not path.endswith("/"):
+            path += "/"
+        auth_url = f"{scheme}://x:{token}@{host_with_port}{path}"
+    else:
+        server_url = get_server_url()
+        if not server_url:
+            typer.echo("error: no server URL configured; run `agnes init` first.", err=True)
+            return False
 
-    parsed = urlparse(server_url)
-    if not parsed.hostname:
-        typer.echo(f"error: server URL has no hostname: {server_url!r}", err=True)
-        return False
-    server_host = parsed.hostname
-    if parsed.port:
-        server_host = f"{server_host}:{parsed.port}"
-    scheme = parsed.scheme or "https"
+        parsed = urlparse(server_url)
+        if not parsed.hostname:
+            typer.echo(f"error: server URL has no hostname: {server_url!r}", err=True)
+            return False
+        server_host = parsed.hostname
+        if parsed.port:
+            server_host = f"{server_host}:{parsed.port}"
+        scheme = parsed.scheme or "https"
+        auth_url = f"{scheme}://x:{token}@{server_host}/marketplace.git/"
+        clean_url = f"{scheme}://{server_host}/marketplace.git/"
 
     # Stale dir without a `.git/` subdir means an interrupted prior install;
     # remove it so the fresh clone has somewhere to land.
@@ -201,9 +234,6 @@ def _bootstrap_clone(token: str) -> bool:
             return False
 
     CLONE_DIR.parent.mkdir(parents=True, exist_ok=True)
-
-    auth_url = f"{scheme}://x:{token}@{server_host}/marketplace.git/"
-    clean_url = f"{scheme}://{server_host}/marketplace.git/"
 
     typer.echo(f"Cloning marketplace from {clean_url} into {CLONE_DIR}...")
 
