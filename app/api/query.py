@@ -400,7 +400,11 @@ def execute_query(
             for table in forbidden:
                 pattern = r'\b' + re.escape(table.lower()) + r'\b'
                 if re.search(pattern, sql_lower_masked):
-                    raise HTTPException(status_code=403, detail=f"Access denied to table '{table}'")
+                    from src.rbac import table_not_in_stack_message
+                    raise HTTPException(
+                        status_code=403,
+                        detail=table_not_in_stack_message(table),
+                    )
 
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(

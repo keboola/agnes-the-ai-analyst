@@ -261,7 +261,11 @@ def schema(
         if isinstance(exc, NotFound):
             raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
         if isinstance(exc, PermissionError):
-            raise HTTPException(status_code=403, detail="not authorized for this table")
+            from src.rbac import table_not_in_stack_message
+            raise HTTPException(
+                status_code=403,
+                detail=table_not_in_stack_message(table_id),
+            )
         if isinstance(exc, ValueError):
             raise HTTPException(
                 status_code=400,

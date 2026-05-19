@@ -75,7 +75,10 @@ async def check_access(
     except Exception:
         logger.exception("audit_log write failed for data.access_check; continuing")
     if not granted:
-        raise HTTPException(status_code=403, detail="Access denied to this table")
+        from src.rbac import table_not_in_stack_message
+        raise HTTPException(
+            status_code=403, detail=table_not_in_stack_message(table_id),
+        )
     return Response(status_code=204)
 
 
@@ -104,7 +107,10 @@ async def download_table(
         raise HTTPException(status_code=404, detail="Table not found")
     # Check access FIRST
     if not can_access_table(user, table_id, conn):
-        raise HTTPException(status_code=403, detail="Access denied to this table")
+        from src.rbac import table_not_in_stack_message
+        raise HTTPException(
+            status_code=403, detail=table_not_in_stack_message(table_id),
+        )
 
     data_dir = _get_data_dir()
 

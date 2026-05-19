@@ -443,3 +443,91 @@ def stub_bq_extractor(monkeypatch):
         lambda *a, **kw: MagicMock(),
     )
     return rebuild_mock
+
+
+def grant_table_via_package(
+    conn,
+    table_id: str,
+    user_id: str,
+    *,
+    group_name: str = "analyst-pkg-grants",
+    requirement: str = "required",
+) -> str:
+    """Test helper — wrap a single table in an auto-named data_package and
+    grant the package to a custom group the user belongs to.
+
+    Replaces the legacy "per-table resource_grants" pattern: stack-gated
+    RBAC routes all analyst visibility through data_packages, so a
+    standalone TABLE grant no longer surfaces the table to the analyst.
+    Returns the data_package id so callers can revoke (DELETE package
+    → tables_in_package + grants cascade) or assert membership.
+
+    Defaults to ``requirement='required'`` so the wrapping package
+    lands in the user's stack automatically — every existing test that
+    just asserted "table visible after grant" stays correct without
+    needing an explicit subscribe step.
+    """
+    import uuid
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.data_packages import DataPackagesRepository
+
+    groups = UserGroupsRepository(conn)
+    grp = groups.get_by_name(group_name)
+    if not grp:
+        grp = groups.create(
+            name=group_name, description="test", created_by="test",
+        )
+    members = UserGroupMembersRepository(conn)
+    if not members.has_membership(user_id, grp["id"]):
+        members.add_member(
+            user_id, grp["id"], source="admin", added_by="test",
+        )
+
+    pkgs = DataPackagesRepository(conn)
+    pkg_slug = f"_test-pkg-{table_id.lower()}"[:63]
+    existing = pkgs.get_by_slug(pkg_slug) if hasattr(pkgs, "get_by_slug") else None
+    if existing:
+        pkg_id = existing["id"]
+    else:
+        pkg_id = pkgs.create(
+            name=f"Test wrap {table_id}", slug=pkg_slug,
+            description=None, icon=None, color=None,
+            created_by="test",
+        )
+    pkgs.add_table(pkg_id, table_id, added_by="test")
+
+    grants = ResourceGrantsRepository(conn)
+    if not grants.has_grant([grp["id"]], "data_package", pkg_id):
+        grants.create(
+            group_id=grp["id"],
+            resource_type="data_package",
+            resource_id=pkg_id,
+            assigned_by="test",
+            requirement=requirement,
+        )
+    return pkg_id
+
+
+def revoke_table_via_package(conn, table_id: str) -> None:
+    """Mirror of :func:`grant_table_via_package` — drops the wrapping
+    data_packages (and via FK cascade the junction + grants) for every
+    auto-package that wraps this table.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT package_id FROM data_package_tables WHERE table_id = ?",
+        [table_id],
+    ).fetchall()
+    for r in rows:
+        # Hard-delete via raw SQL so the test fixture doesn't leak rows
+        # across tests sharing the seeded_app DB.
+        conn.execute(
+            "DELETE FROM resource_grants "
+            "WHERE resource_type = 'data_package' AND resource_id = ?",
+            [r[0]],
+        )
+        conn.execute(
+            "DELETE FROM data_package_tables WHERE package_id = ?", [r[0]],
+        )
+        conn.execute("DELETE FROM data_packages WHERE id = ?", [r[0]])

@@ -280,7 +280,11 @@ def scan_estimate_endpoint(
                 detail={"error": "validator_rejected", "kind": exc.kind, "details": exc.detail or {}},
             )
         if isinstance(exc, PermissionError):
-            raise HTTPException(status_code=403, detail="not authorized for this table")
+            from src.rbac import table_not_in_stack_message
+            raise HTTPException(
+                status_code=403,
+                detail=table_not_in_stack_message(str(exc) or "<unknown>"),
+            )
         if isinstance(exc, FileNotFoundError):
             raise HTTPException(status_code=404, detail=f"table {exc!s} not found")
         if isinstance(exc, ValueError):
@@ -509,7 +513,11 @@ def scan_endpoint(
         if isinstance(exc, FileNotFoundError):
             raise HTTPException(status_code=404, detail="table not found")
         if isinstance(exc, PermissionError):
-            raise HTTPException(status_code=403, detail="not authorized")
+            from src.rbac import table_not_in_stack_message
+            raise HTTPException(
+                status_code=403,
+                detail=table_not_in_stack_message(str(exc) or "<unknown>"),
+            )
         if isinstance(exc, ValueError):
             raise HTTPException(status_code=400, detail=str(exc))
         raise HTTPException(

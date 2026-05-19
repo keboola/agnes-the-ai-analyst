@@ -79,20 +79,12 @@ class TestCatalog:
                                json={"name": "granted_table", "source_type": "keboola"},
                                headers=_h(client["admin"]))
         from src.db import get_system_db
-        from src.repositories.user_groups import UserGroupsRepository
-        from src.repositories.user_group_members import UserGroupMembersRepository
-        from src.repositories.resource_grants import ResourceGrantsRepository
+        from tests.conftest import grant_table_via_package
         conn = get_system_db()
         try:
-            grp = UserGroupsRepository(conn).create(
-                name="api-complete-grant", description="t", created_by="t",
-            )
-            UserGroupMembersRepository(conn).add_member(
-                "analyst1", grp["id"], source="admin", added_by="t",
-            )
-            ResourceGrantsRepository(conn).create(
-                group_id=grp["id"], resource_type="table", resource_id="granted_table",
-                assigned_by="t",
+            grant_table_via_package(
+                conn, "granted_table", "analyst1",
+                group_name="api-complete-grant",
             )
         finally:
             conn.close()
