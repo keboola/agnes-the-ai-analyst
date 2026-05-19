@@ -11,6 +11,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `AGNES_MARKETPLACE_URL` env override for `agnes refresh-marketplace --bootstrap`. Pre-fix the marketplace endpoint was hardcoded to `{server_host}/marketplace.git/`, which broke deployments that serve the marketplace from a different host than the API (reverse-proxy split, CDN-fronted marketplace). When set, the env var is parsed via `urlparse`; missing scheme or host fails fast with a clear error (operator misconfiguration surfaces immediately). The PAT injection / strip behavior is preserved on the override path. Default behavior unchanged when the env var is empty / unset. Closes #345 A.
+
+### Added
 - `agnes query --json` is now a shortcut for `--format json` — paste-prompts and LLM-assisted analysts routinely reach for `--json` first, and the typer "Did you mean `--stdin`?" suggestion the missing flag previously produced was actively misleading. `--json --format <other>` is rejected as mutually exclusive (`--json --format json` is redundantly allowed). Closes #345 D.
 
 ### Internal
