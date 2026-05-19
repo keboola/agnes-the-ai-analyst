@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.55.5] — 2026-05-19
+
 ### Fixed
 - `agnes init` now runs `_chmod_workspace_hooks(workspace)` for OVERRIDE
   mode too (Initial Workspace Template seed-repo flow), not just the
