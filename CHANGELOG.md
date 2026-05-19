@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- `agnes query --json` is now a shortcut for `--format json` — paste-prompts and LLM-assisted analysts routinely reach for `--json` first, and the typer "Did you mean `--stdin`?" suggestion the missing flag previously produced was actively misleading. `--json --format <other>` is rejected as mutually exclusive (`--json --format json` is redundantly allowed). Closes #345 D.
+
+### Internal
+- Added explicit 5xx-path regression test alongside the existing 4xx case for `agnes query --remote` to lock in the `raise typer.Exit(1)` rc=1 contract for any non-2xx response (`tests/test_cli_query.py::test_remote_query_5xx_exits_nonzero`). No code change — the existing exit-code logic already does the right thing; the test guards against future regression. Closes #345 C.
+
 ### Fixed
 - **UI consistency pass** (I-UI-01..05): radio-card selected state on `/admin/tables` (14 cards get blue border + light bg highlight via `.sync-option-card:has(input:checked)`); promoted `.label-qualifier` / `.optional` to global rule (drops local duplicate); inline `<code>` migrated to design tokens with bg + border; `.btn-google` hover hardcoded swatches replaced with vars; `.code-block code` border + radius reset for dark containers; `.form-textarea` promoted to global. Plus #340 follow-up: removed leftover Phase F2 `{% if data_source_type == 'keboola' %}` guard around edit-modal JS so handlers ship to every instance type (Discover button onclick call sites still respect the guard). Closes #347 (credit @MonikaFeigler).
 - `agnes refresh-marketplace` (non-bootstrap path) now re-applies
