@@ -10,6 +10,42 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (analyst RBAC)**: per-table ``resource_grants`` no longer
+  surface a table to analysts on their own. The unified-stack design
+  routes all analyst visibility through Data Packages — a table is
+  visible iff at least one Data Package containing it is in the
+  analyst's stack (Required ∪ subscribed). Admins manage access by
+  adding tables to a package and granting the package; the legacy
+  pattern of minting a ``resource_grants(group, 'table', id)`` row
+  without a wrapping package is now a no-op for analyst surfaces
+  (``agnes catalog``, manifest, ``/api/v2/sample``, ``/api/v2/schema``,
+  ``/api/v2/scan``, ``/api/data/*``). Admin god-mode and the three
+  internal data-source tables (``agnes_sessions``, ``agnes_telemetry``,
+  ``agnes_audit`` — row-level RBAC at query time) keep their existing
+  carve-outs. ``manifest.direct_tables`` is now always ``[]`` (key
+  kept for older-CLI destructuring).
+- Standardised 403 response across every CLI gate that calls
+  ``can_access_table``: ``Table 'X' is not in your stack. Ask an
+  admin to add it to a Data Package you have access to (Required or
+  in your stack), then run `agnes pull` to refresh.`` Single source
+  in ``src.rbac.table_not_in_stack_message`` so all surfaces speak
+  the same language.
+- ``/catalog`` Browse grid sorts **Required** packages first
+  (clustering at the top) instead of by ``created_at``. Same fix on
+  ``/corporate-memory``. First-demo feedback.
+- ``.stack-card__desc`` line clamp bumped 2 → 4 lines — two-line
+  clamp trailed almost every admin-authored description in "…" before
+  the meaningful second clause. The detail page keeps the unclamped
+  body for longer content.
+
+### Removed
+- ``/catalog/t/<id>`` table detail page dropped the four editorial
+  sections (Sample questions, What's inside, Things to know, Pairs
+  well with). The page now renders the hero (name + description +
+  parent-packages line) only. The ``PATCH /api/admin/registry/{id}/docs``
+  endpoint stays available for direct callers.
+
 ## [0.55.1] — 2026-05-19
 
 ### Added
