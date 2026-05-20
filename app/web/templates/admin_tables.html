@@ -864,10 +864,10 @@
 
 {% block layout %}
 <!-- ═══════════════ PAGE TITLE ═══════════════ -->
-    <div class="page-title">
-        <h1>Tables &amp; Data Packages</h1>
-        <p>Group registered tables into Data Packages so analysts can opt-in to bundles.</p>
-    </div>
+    {% set page_hero_eyebrow = "Administration" %}
+    {% set page_hero_title = "Tables & Data Packages" %}
+    {% set page_hero_subtitle = "Group registered tables into Data Packages so analysts can opt-in to bundles." %}
+    {% include "_page_hero.html" %}
 
     <!-- ═══════════════ CONTENT ═══════════════ -->
     <div class="content">

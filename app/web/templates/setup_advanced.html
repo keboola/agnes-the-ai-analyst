@@ -15,12 +15,17 @@
 .advanced-mock * { box-sizing: border-box; }
 
 .advanced-mock .ad-hero {
+    /* Same dimensions as `.page-header--hero` so /setup-advanced lines
+       up with every other page hero; green gradient comes from the
+       redesign palette via `--ds-*` tokens. */
     background: linear-gradient(135deg, var(--ds-primary) 0%, var(--ds-primary-dark) 100%);
     color: white;
-    border-radius: 16px;
-    padding: 32px 36px;
-    margin-bottom: 22px;
-    box-shadow: 0 8px 24px rgba(31, 138, 94, 0.18);
+    border-radius: 14px;
+    padding: 28px 32px 24px;
+    margin: var(--space-5) auto;
+    max-width: var(--width-app);
+    box-sizing: border-box;
+    box-shadow: 0 4px 16px rgba(31, 138, 94, 0.2);
 }
 .advanced-mock .ad-hero .eyebrow {
     font-size: 11px;
