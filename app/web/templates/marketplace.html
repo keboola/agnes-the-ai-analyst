@@ -91,15 +91,21 @@
     display: flex; align-items: center; justify-content: space-between;
     gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
   }
+  /* Tabs sit on the same navy as the page-hero so the visual
+     language carries through from the header. Inactive tabs are
+     translucent white on navy (mirroring the "Just browse — no
+     install needed" pill on /home's hero); active tab gets a
+     brighter translucent fill so the selected state still reads. */
   .mp-tabs {
     display: flex; gap: 4px; align-items: center;
-    background: var(--surface); border: 1px solid var(--border);
+    background: var(--ds-hero-bg);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 10px; padding: 4px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    box-shadow: 0 4px 16px rgba(15, 27, 58, 0.22);
   }
   .mp-tabs button {
-    appearance: none; border: none; background: transparent;
-    color: var(--text-secondary);
+    appearance: none; border: 1px solid transparent; background: transparent;
+    color: rgba(255, 255, 255, 0.75);
     padding: 8px 16px; border-radius: 7px;
     font-size: 13px; font-weight: 500; cursor: pointer;
     font-family: var(--font-primary);
@@ -109,23 +115,28 @@
   .mp-tabs button .tab-icon {
     width: 16px; height: 16px; flex-shrink: 0;
   }
-  /* Per-tab icon tint reuses the established palette: blue = curated/
-     vetted, purple = flea/community, amber = "in your stack" (mirrors
-     the In Stack badge on installed cards). The active-tab override
-     flips icons to white so they read against the blue active fill. */
-  .mp-tabs button[data-tab="curated"] .tab-icon { color: var(--primary); }
-  .mp-tabs button[data-tab="flea"] .tab-icon    { color: #6D28D9; }
-  .mp-tabs button[data-tab="my"] .tab-icon      { color: #F59F0A; }
-  .mp-tabs button.is-active .tab-icon           { color: #fff; }
-  .mp-tabs button:hover { color: var(--text-primary); background: var(--bg); }
-  .mp-tabs button.is-active { background: var(--primary); color: #fff; }
+  /* All icons render as soft white on the navy fill — the icon
+     identity comes from the glyph, not the colour. Active tab
+     bumps to full white. */
+  .mp-tabs button .tab-icon              { color: rgba(255, 255, 255, 0.75); }
+  .mp-tabs button.is-active .tab-icon    { color: #fff; }
+  .mp-tabs button:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255, 255, 255, 0.20);
+  }
+  .mp-tabs button.is-active {
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.32);
+    color: #fff;
+  }
   .mp-tabs button .count {
     display: inline-flex; align-items: center; justify-content: center;
     min-width: 22px; height: 18px; padding: 0 6px; border-radius: 9px;
-    background: rgba(0,0,0,0.08); color: inherit;
+    background: rgba(255, 255, 255, 0.14); color: inherit;
     font-size: 11px; font-weight: 600;
   }
-  .mp-tabs button.is-active .count { background: rgba(255,255,255,0.2); }
+  .mp-tabs button.is-active .count { background: rgba(255, 255, 255, 0.28); }
 
   .mp-actions { display: flex; gap: 8px; align-items: center; }
   .mp-actions .btn {
