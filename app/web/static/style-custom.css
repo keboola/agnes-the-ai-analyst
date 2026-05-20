@@ -242,15 +242,20 @@ nav {
 }
 
 .btn-primary {
-    background-color: var(--primary);
+    /* Primary action buttons across the app share /home's green CTA
+       fill (`--ds-primary`) so users see one consistent "do it"
+       affordance everywhere. The brand-blue `--primary` stays as
+       the link / accent colour elsewhere; only the filled button
+       background flips to green. */
+    background-color: var(--ds-primary);
     color: white;
     font-weight: 500;
     transition: all 0.15s ease;
 }
 
 .btn-primary:hover {
-    background-color: var(--primary-dark);
-    box-shadow: 0 2px 8px rgba(26, 115, 232, 0.3);
+    background-color: var(--ds-primary-dark);
+    box-shadow: 0 2px 8px rgba(46, 168, 119, 0.3);
 }
 
 .btn-primary:active {
@@ -3852,16 +3857,16 @@ a.news-cta:hover { background: #0056A3; }
    ===================================================== */
 
 .btn-primary {
-    background-color: var(--primary);
+    background-color: var(--ds-primary);
     color: #fff;
-    border: 1px solid var(--primary);
+    border: 1px solid var(--ds-primary);
     transition: all 0.15s ease;
 }
 .btn-primary:hover,
 .btn-primary-v2:hover,
 .modal-btn.primary:hover {
-    background-color: var(--primary-dark);
-    border-color: var(--primary-dark);
+    background-color: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
     box-shadow: 0 2px 8px rgba(46, 168, 119, 0.3);
 }
 
