@@ -139,10 +139,32 @@
   .mp-tabs button.is-active .count { background: rgba(255, 255, 255, 0.28); }
 
   .mp-actions { display: flex; gap: 8px; align-items: center; }
+  /* Submit / action buttons in the tab row — green primary fill,
+     same height + padding as `.stack-tabs-row__actions .btn` on
+     /catalog and /memory so the right-slot CTA reads identically
+     across all three browse pages. */
   .mp-actions .btn {
-    font-size: 13px; font-weight: 500; cursor: pointer;
-    font-family: var(--font-primary); text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    line-height: 1;
+    padding: 9px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--ds-primary);
+    background: var(--ds-primary);
+    color: #fff;
+    text-decoration: none;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: var(--font-primary);
+    box-sizing: border-box;
     transition: all 0.15s ease;
+  }
+  .mp-actions .btn:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+    color: #fff;
   }
 
 
