@@ -1327,6 +1327,35 @@
     margin: 0 0 24px;
     max-width: 720px;
 }
+/* Session-intro card — white surface w/ mint icon block, frames the
+   "five beats" tagline above the walkthrough. Mock spec verbatim. */
+.home-mock .session-intro {
+    background: var(--hp-surface);
+    border: 1px solid var(--hp-border);
+    border-radius: 14px;
+    padding: 20px 24px;
+    margin: 4px 0 28px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    font-size: 14.5px;
+    color: var(--hp-text-secondary);
+    line-height: 1.55;
+    box-shadow: var(--hp-shadow-sm);
+}
+.home-mock .session-intro-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--hp-primary-light);
+    color: var(--hp-primary-dark);
+    display: grid;
+    place-items: center;
+    font-size: 22px;
+    flex-shrink: 0;
+}
+.home-mock .session-intro strong { color: var(--hp-text-primary); }
+
 .home-mock .session-walk {
     display: flex;
     flex-direction: column;
@@ -2418,7 +2447,7 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
                     <p><strong>Open a terminal</strong> &mdash; in VS Code, press <kbd>⌘</kbd>+<kbd>`</kbd> (Mac) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows). On macOS you can also open the standalone Terminal app from Spotlight.</p>
                     <p><strong>Type one word</strong> &mdash; <code>{{ workspace_dir | lower }}</code> (or <code>claude</code> if you skipped Step&nbsp;6) &mdash; and hit Enter.</p>
                     <div class="terminal-frame">
-                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">~/{{ workspace_dir }}&nbsp;&mdash;&nbsp;zsh</span></div>
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
                         <div class="terminal-body"><span class="prompt">$</span> <span class="cmd">{{ workspace_dir | lower }}</span></div>
                     </div>
                     <p class="annotation">That single word jumps into your <code>~/{{ workspace_dir }}</code> folder and launches Claude in one go &mdash; same on day&nbsp;1 as day&nbsp;100. No <code>cd</code>, no flags, no setup to remember. (The shortcut was installed in Step&nbsp;6 of the setup above.)</p>
@@ -2429,7 +2458,7 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
                 <div class="session-num">2</div>
                 <div class="session-content">
                     <h3>{{ instance_brand }} greets you with today's menu</h3>
-                    <p>Claude reads your recent activity and shows the projects you've touched most recently. Your screen looks something like this:</p>
+                    <p>Claude reads your recent activity and shows the five projects you've touched most recently. Your screen looks something like this:</p>
                     <div class="terminal-frame">
                         <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
                         <div class="terminal-body">2026-05-20
@@ -2439,13 +2468,12 @@ What would you like to do?
   <strong>[1]</strong> Talk to {{ instance_brand }} &mdash; workspace questions, setup, admin
   <strong>[2]</strong> New project &mdash; scaffold a new project
   <strong>[3]</strong> Switch to recent project:
-        <span class="path">a.</span> RevenueAnalysis (2 hours ago)
-        <span class="path">b.</span> WeeklyReview (today)
-        <span class="path">c.</span> Onboarding (1 day ago)
-        <span class="path">d.</span> OpsDb (4 days ago)
-        <span class="path">e.</span> HRHandShake (5 days ago)
+      a. RevenueAnalysis            <span class="dim">(2 hours ago)</span>
+      b. WeeklyReview               <span class="dim">(today)</span>
+      c. Onboarding                 <span class="dim">(1 day ago)</span>
+      d. OpsDb                      <span class="dim">(4 days ago)</span>
+      e. HRHandShake                <span class="dim">(5 days ago)</span>
   <strong>[4]</strong> Switch to another project &mdash; browse the full registry
-
 <span class="prompt">&gt;</span><span class="caret"></span></div>
                     </div>
                     <p class="annotation">The recent-projects list updates every session based on what you actually worked on. Pick a code (like <code>3a</code>) or just type free text &mdash; <em>"open the news project"</em> or <em>"keep working on the marketing plan"</em> work the same way. Claude figures out the intent.</p>
@@ -2459,14 +2487,18 @@ What would you like to do?
                     <p>Type your choice and hit Enter. Claude switches into that project's folder, reads its <code>CLAUDE.md</code> (the project's living briefing doc), checks for new inputs you've dropped in, and tells you the state of play.</p>
                     <div class="terminal-frame">
                         <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
-                        <div class="terminal-body"><span class="prompt">&gt;</span> <span class="you">3a</span>
+                        <div class="terminal-body"><span class="prompt">&gt;</span><span class="you">3a</span>
 
-<span class="dim">Switched to <span class="path">RevenueAnalysis</span> &mdash; quarterly revenue review.
-Loaded: <span class="path">CLAUDE.md</span>, 8 knowledge files, 4 active decisions
-Last session: yesterday, 4:12 PM &mdash; "Q1 close review"
-One unprocessed input detected: <span class="path">inputs/Q1_close_DRAFT.pdf</span> (3.4&nbsp;MB)
+Switched to <strong>RevenueAnalysis</strong> &mdash; quarterly revenue
+review program.
+
+<span class="dim">Loaded: CLAUDE.md, 8 knowledge files, 4 active decisions</span>
+<span class="dim">Last session: yesterday, 4:12 PM &mdash; "Q1 close review"</span>
+
+One unprocessed input detected:
+  <span class="path">inputs/Q1_close_DRAFT.pdf</span> (3.4&nbsp;MB)
+
 Want me to process it into <span class="path">knowledge/</span> now?
-</span>
 <span class="prompt">&gt;</span><span class="caret"></span></div>
                     </div>
                     <p class="annotation">Claude now has full project context loaded &mdash; past decisions, key numbers, ongoing work, who's involved. You don't have to re-explain anything every session. New files in <code>inputs/</code> are auto-detected so nothing gets forgotten on your hard drive.</p>
@@ -2480,26 +2512,29 @@ Want me to process it into <span class="path">knowledge/</span> now?
                     <p>Plain English. No commands to memorise. Claude pulls from the project's files, your registered data packages, installed plugins, and the team's shared memory &mdash; quoting exact sources as it goes.</p>
                     <div class="terminal-frame">
                         <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
-                        <div class="terminal-body"><span class="prompt">&gt;</span> <span class="you">what's the latest on the Q1 close? Give me the headline numbers and the open risks.</span>
+                        <div class="terminal-body"><span class="prompt">&gt;</span><span class="you">what's the latest on the Q1 close? Give me the
+  headline numbers and the open risks.</span>
 
-<span class="dim">Reading <span class="path">knowledge/q1-close-input.md</span> …
-Reading <span class="path">temp/v4/close.md</span> …</span>
+<span class="dim">Reading <span class="path">knowledge/q1-close-input.md</span>…</span>
+<span class="dim">Reading <span class="path">temp/v4/close.md</span>…</span>
 
 <strong>Q1 close summary &mdash; v4, Apr 2026</strong>
-  &bull; Revenue: $124.3M &rarr; $131.0M (+5.4% QoQ)
-  &bull; Gross margin: 62.1% &rarr; 63.4%
-  &bull; 4 markets above plan, 2 below
-  &bull; Customer churn flat at 6.1%
+
+• Revenue: $124.3M &rarr; $131.0M (+5.4% QoQ)
+• Gross margin: 62.1% &rarr; 63.4%
+• 4 markets above plan, 2 below
+• Customer churn flat at 6.1%
 
 <strong>Open risks</strong>
-  &bull; FX hedging assumption is 6 weeks old &mdash; needs refresh
-  &bull; No DRI yet on the EMEA segmentation prerequisite
-  &bull; Q2 forecast model still in review
+
+• FX hedging assumption is 6 weeks old &mdash; needs refresh
+• No DRI yet on the EMEA segmentation prerequisite
+• Q2 forecast model still in review
 
 Want me to draft a 1-page brief, or dig into one of these?
 <span class="prompt">&gt;</span><span class="caret"></span></div>
                     </div>
-                    <p class="annotation">Cited sources are clickable paths &mdash; tap to open the actual file in your editor. If Claude needs data from a remote system, your registered plugins kick in silently. No copy-pasting between tabs.</p>
+                    <p class="annotation"><strong>Cited sources are clickable paths</strong> &mdash; tap to open the actual file in your editor. If Claude needs data from a remote system, your registered plugins kick in silently. No copy-pasting between tabs.</p>
                 </div>
             </div>
 
@@ -2510,12 +2545,12 @@ Want me to draft a 1-page brief, or dig into one of these?
                     <p>Type <code>/exit</code> or close the terminal window. {{ instance_brand }} saves the session, captures any new knowledge into the project's memory, and puts today's project at the top of tomorrow's menu.</p>
                     <div class="terminal-frame">
                         <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
-                        <div class="terminal-body"><span class="prompt">&gt;</span> <span class="you">/exit</span>
+                        <div class="terminal-body"><span class="prompt">&gt;</span><span class="you">/exit</span>
 
-<span class="dim">Session saved &mdash; 12 prompts, 4 files referenced.
-<span class="path">RevenueAnalysis</span> will appear as "today" in your menu tomorrow.
-See you next time.</span>
+<span class="dim">Session saved &mdash; 12 prompts, 4 files referenced.</span>
+<span class="dim">RevenueAnalysis will appear as "today" in your menu tomorrow.</span>
 
+<span class="ai-name">See you next time.</span>
 <span class="prompt">$</span><span class="caret"></span></div>
                     </div>
                     <p class="annotation">Nothing to clean up, no "save your work" prompt, no version to remember. Next time you type <code>{{ workspace_dir | lower }}</code>, this project is right at the top of the recent list &mdash; and Claude remembers every decision, file, and follow-up from today.</p>
