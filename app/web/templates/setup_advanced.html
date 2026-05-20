@@ -6,27 +6,16 @@
 {% include "_page_chrome.html" %}
 <style>
 .advanced-mock {
-    /* /setup-advanced shares the /home redesign palette — green/navy.
-       Explicit hex (not `var(--primary)`) so the green stays
-       opted-in here regardless of the global blue brand colour the
-       rest of the app uses. */
-    --hp-primary: #2ea877;
-    --hp-primary-dark: #1f8a5e;
-    --hp-primary-light: #e6f9f0;
-    --hp-border: #E5E7EB;
-    --hp-border-light: #F3F4F6;
-    --hp-text-primary: #111827;
-    --hp-text-secondary: #6B7280;
-    --hp-text-muted: #9CA3AF;
-    --hp-font-mono: ui-monospace, "SF Mono", Consolas, monospace;
-    color: var(--hp-text-primary);
+    /* Design-system scope — tokens live globally in
+       app/web/static/css/design-tokens.css. */
+    color: var(--ds-text-primary);
     font-size: 14px;
     line-height: 1.55;
 }
 .advanced-mock * { box-sizing: border-box; }
 
 .advanced-mock .ad-hero {
-    background: linear-gradient(135deg, var(--hp-primary) 0%, var(--hp-primary-dark) 100%);
+    background: linear-gradient(135deg, var(--ds-primary) 0%, var(--ds-primary-dark) 100%);
     color: white;
     border-radius: 16px;
     padding: 32px 36px;
@@ -60,7 +49,7 @@
 
 .advanced-mock .ad-toc {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 16px 22px;
     margin-bottom: 22px;
@@ -70,7 +59,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin-bottom: 10px;
 }
 .advanced-mock .ad-toc ol {
@@ -85,12 +74,12 @@
 .advanced-mock .ad-toc ol { counter-reset: ad-toc; }
 .advanced-mock .ad-toc ol li::before {
     content: counter(ad-toc) ". ";
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     margin-right: 4px;
     font-variant-numeric: tabular-nums;
 }
 .advanced-mock .ad-toc a {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     text-decoration: none;
     font-size: 13px;
     font-weight: 500;
@@ -99,7 +88,7 @@
 
 .advanced-mock .ad-section {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 22px 26px;
     margin-bottom: 18px;
@@ -108,24 +97,24 @@
 .advanced-mock .ad-section h2 {
     font-size: 16px;
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     margin-bottom: 6px;
 }
 .advanced-mock .ad-section .ad-lead {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin-bottom: 14px;
 }
 .advanced-mock .ad-section h3 {
     font-size: 13px;
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     margin-top: 14px;
     margin-bottom: 6px;
 }
 .advanced-mock .ad-section p {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin-bottom: 8px;
     line-height: 1.6;
 }
@@ -133,7 +122,7 @@
 .advanced-mock .ad-section ol {
     padding-left: 22px;
     margin-bottom: 10px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
 }
 .advanced-mock .ad-section li {
     margin-bottom: 4px;
@@ -141,22 +130,22 @@
     font-size: 13px;
 }
 .advanced-mock .ad-section code {
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
-    background: var(--hp-border-light);
+    background: var(--ds-border-light);
     padding: 1px 5px;
     border-radius: 3px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .advanced-mock .ad-section a {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
 }
 .advanced-mock .ad-section pre {
     background: #0F172A;
     color: #E2E8F0;
     border-radius: 8px;
     padding: 12px 14px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12px;
     line-height: 1.55;
     overflow-x: auto;
@@ -174,13 +163,13 @@
 
 .advanced-mock kbd {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-bottom-width: 2px;
     border-radius: 4px;
     padding: 1px 6px;
     font-size: 11px;
-    font-family: var(--hp-font-mono);
-    color: var(--hp-text-primary);
+    font-family: var(--ds-font-mono);
+    color: var(--ds-text-primary);
 }
 
 .advanced-mock table.ad-table {
@@ -193,22 +182,22 @@
 .advanced-mock table.ad-table td {
     text-align: left;
     padding: 8px 10px;
-    border-bottom: 1px solid var(--hp-border-light);
+    border-bottom: 1px solid var(--ds-border-light);
     vertical-align: top;
 }
 .advanced-mock table.ad-table th {
-    background: var(--hp-border-light);
+    background: var(--ds-border-light);
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     font-size: 11.5px;
     text-transform: uppercase;
     letter-spacing: 0.4px;
 }
 .advanced-mock table.ad-table td {
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
 }
 .advanced-mock table.ad-table td strong {
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 
 .advanced-mock .ad-warn {
@@ -226,7 +215,7 @@
 
 .advanced-mock .plugin-cmd {
     display: inline-block;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
     background: #0F172A;
     color: #FBBF24;
@@ -236,7 +225,7 @@
     word-break: break-all;
 }
 .advanced-mock .plugin-copy {
-    background: var(--hp-primary);
+    background: var(--ds-primary);
     color: white;
     border: none;
     border-radius: 4px;
@@ -247,7 +236,7 @@
     font-family: inherit;
     vertical-align: middle;
 }
-.advanced-mock .plugin-copy:hover { background: var(--hp-primary-dark); }
+.advanced-mock .plugin-copy:hover { background: var(--ds-primary-dark); }
 .advanced-mock .plugin-copy.copied { background: #047857; }
 
 .advanced-mock .plugin-prompt-row {
@@ -266,7 +255,7 @@
     color: inherit;
     padding: 0;
     border-radius: 0;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
     line-height: 1.55;
     white-space: pre-wrap;

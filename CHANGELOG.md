@@ -95,6 +95,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   hex set in-scope, not via `var(--primary)`), so the green only
   applies on the redesigned pages.
 
+### Internal
+- New `app/web/static/css/design-tokens.css` declares the `--ds-*`
+  design-system token set (green/navy palette, system font stack,
+  callout vocabularies, navy-tinted elevation shadows) globally on
+  `:root`. Loaded by `base.html` alongside `style-custom.css`.
+- `.home-mock` and `.advanced-mock` scopes in `home_not_onboarded`,
+  `home_onboarded`, and `setup_advanced` reference `var(--ds-*)` so
+  the values live in one place. Local `--hp-*` declarations removed
+  from all three templates (~330 token declarations deduped to a
+  single source). Tokens stay opt-in: pages without one of those
+  scope classes don't pick up any `--ds-*`-driven styling and keep
+  reading the legacy `--primary` family.
+
 ### Removed
 - Collapsed-by-default *Getting Started* `<details>` block at the
   top of `/home` (the in-page anchor it carried — *Setup Agnes in

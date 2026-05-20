@@ -1,0 +1,84 @@
+/* Design system tokens — `--ds-*` namespace.
+ *
+ * The `--ds-*` set is the opt-in design system introduced by the
+ * /home redesign: green/navy palette, system font stack, light/dark
+ * surface pair, blue-info + amber-warn callout vocabularies.
+ *
+ * Pages opt into the design system by adding a scope class
+ * (`.home-mock`, `.advanced-mock`) and referencing `var(--ds-*)`.
+ * Tokens live globally so any future page (or shared component) can
+ * pick them up without re-declaring values.
+ *
+ * The legacy `--primary` family in style-custom.css remains the
+ * default app brand (blue) used by login, dashboard, catalog,
+ * marketplace, admin, etc. The two systems coexist — pages that
+ * haven't been redesigned keep reading `var(--primary)` and stay
+ * blue; redesigned pages reference `var(--ds-*)` and get the green
+ * surface.
+ */
+
+:root {
+    /* Brand surface — green/navy palette. Opted into via the
+       `.home-mock` / `.advanced-mock` scopes. */
+    --ds-primary: #2ea877;          /* brand-dark green */
+    --ds-primary-dark: #1f8a5e;     /* hover/active */
+    --ds-primary-light: #e6f9f0;    /* mint tint */
+    --ds-brand-accent: #54d3a0;     /* brand (lighter) */
+
+    /* Hero surface — deep navy used by setup hero + first-session
+       terminal-frame backgrounds. Reads as the visual ground for any
+       "this is what your terminal will look like" mock-up. */
+    --ds-hero-bg: #0f1b3a;
+    --ds-hero-bg-deep: #0a1430;
+    --ds-hero-ink: #f3f6ff;
+
+    /* Code-panel surface — near-black bg with cool-blue ink + warm
+       yellow command accent. Used by `.code-block` (copyable install
+       command), `.terminal-body`, expected-output blocks. */
+    --ds-code-bg: #0c1224;
+    --ds-code-ink: #d7e4ff;
+    --ds-code-yellow: #ffd866;
+
+    /* Light surface — page background, card surface, dim variant
+       for inset panels. */
+    --ds-bg: #f6f7fa;
+    --ds-surface: #ffffff;
+    --ds-surface-dim: #f0f2f6;
+    --ds-border: #e4e7ee;
+    --ds-border-light: #f0f2f6;
+
+    /* Text — primary / secondary / muted on light surfaces. Primary
+       is near-black for body copy; muted is for chrome (timestamps,
+       hints, captions). */
+    --ds-text-primary: #0e1525;
+    --ds-text-secondary: #4a5168;
+    --ds-text-muted: #788098;
+
+    /* Accent — orange used for terminal `[3]`-style prompts and the
+       Cowork surface card warning chip. */
+    --ds-orange: #C2410C;
+    --ds-orange-light: #FED7AA;
+
+    /* Callout vocabularies — `.callout-hint` (blue info) and
+       `.callout-rec` (amber recommendation). Background +
+       left-border + ink so the box reads at a glance. */
+    --ds-info-bg: #eef3ff;
+    --ds-info-ink: #1c3994;
+    --ds-info-line: #4f7cf2;
+    --ds-warn-bg: #fff8e6;
+    --ds-warn-ink: #6e4d00;
+    --ds-warn-line: #f5c84b;
+
+    /* Elevation — navy-tinted shadow stack. Matches the deep-navy
+       hero so the depth perception reads consistently across the
+       page. */
+    --ds-shadow-sm: 0 1px 2px rgba(15, 27, 58, .05), 0 1px 3px rgba(15, 27, 58, .06);
+    --ds-shadow-md: 0 4px 16px rgba(15, 27, 58, .08);
+    --ds-shadow-lg: 0 8px 24px rgba(15, 27, 58, .14);
+
+    /* Typography — system stack so weight + letterforms render
+       identically on macOS (San Francisco) and Windows (Segoe UI).
+       Inter remains a graceful fallback in the cascade. */
+    --ds-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+    --ds-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
