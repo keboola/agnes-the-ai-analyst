@@ -20,7 +20,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-## [0.55.6] — 2026-05-20
+## [0.55.7] — 2026-05-20
 
 ### Changed
 - Admin pages now surface filters and CTA buttons inside the hero banner — sessions (time range), activity (time range + auto-refresh), telemetry (time range + group by), users (search + add), groups (search + new), marketplaces (search + format guide + add), server-config (subtitle full-width, workspace template above danger zone).
@@ -28,11 +28,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Hero CTA buttons use a ghost/glass style (`rgba(255,255,255,0.15)` background) to avoid the CSS specificity conflict that made them invisible.
 
 ### Fixed
-- `agnes query --remote`: SQL using only a full backtick BQ path (`` `<proj>.<dataset>.<table>` ``) no longer fails with `Parser Error: syntax error at or near "``"`. The rewriter now detects backtick-quoted paths and wraps them in `bigquery_query()` before passing to DuckDB, instead of sending the BQ-native backtick syntax to the local DuckDB parser. (#363)
 - Removed non-existent CDN CSS links (`markdown.min.css`, `shell.min.css`) from init-prompt and workspace-prompt pages — the CDN was returning 404 HTML, triggering MIME-type rejection errors in the browser console.
 - Hero-select display text stayed stale when external code set the native select's value programmatically — fixed by dispatching a `change` event at the call site and subscribing `syncVal` to `change` on the native select.
 - Multiple hero-select dropdowns could be open simultaneously due to `stopPropagation` — opening one panel now closes all other open panels first.
 - KPI quick-filter cards on the telemetry page triggered a double API fetch after the hero-select `change` listener was added — fixed by calling only `loadFacets()` in branches that already dispatch `change` (which handles kpis + table via the existing listener).
+
+## [0.55.6] — 2026-05-20
+
+### Fixed
+- `agnes query --remote`: SQL using only a full backtick BQ path (`` `<proj>.<dataset>.<table>` ``) no longer fails with `Parser Error: syntax error at or near "``"`. The rewriter now detects backtick-quoted paths and wraps them in `bigquery_query()` before passing to DuckDB, instead of sending the BQ-native backtick syntax to the local DuckDB parser. (#363)
 
 ## [0.55.5] — 2026-05-19
 
