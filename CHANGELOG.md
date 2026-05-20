@@ -11,8 +11,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `/home` now opens with a value-first intro hero — eyebrow greeting,
+  one-line product framing, **Set up in ~15 min** / **Just browse**
+  CTAs, and a four-pillar row (Data packages · Plugins · Skills ·
+  Memory) — so analysts understand *what* the instance is before any
+  install step.
+- New **Your first session** narrative on `/home` walks through the
+  five beats of a real session (launch → pick project → memory loads
+  → ask → close) with mock terminal frames so the visual rhythm is
+  obvious before the user copies their first command.
+- Setup wizard inside the install-hero now carries a progress chip
+  (`Step 1 of N · ~15 min · One-time · Reversible`), a thin progress
+  bar, and per-step number badges next to each install block.
 
 ### Changed
+- `/home` palette shifted from blue to green/navy: brand accent is now
+  `#2ea877` (mint green) on light surfaces, hero card is navy
+  `#0f1b3a`, code panels are near-black `#0c1224` with warm-yellow
+  `#ffd866` accents. The existing `--hp-primary` token alias is
+  reused so all downstream rules pick up the new green automatically;
+  instance theme overrides via `config.theme_overrides()` still win.
+- VS Code surface tile on `/home` carries a **Recommended** pill so
+  new analysts default to the editor flow.
+- "Want to look around first?" section renamed to **Explore your
+  workspace**, with an `id="look-around"` anchor wired to the new
+  hero's secondary CTA.
 
 ### Fixed
 
