@@ -71,6 +71,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   beside it. The hero is now a sibling rendered before the
   `<header>` so it spans the full container width like every other
   admin page; the controls keep their original flex row underneath.
+- Same flex-row squeeze applied to `/admin/users`, `/admin/access`,
+  `/admin/groups`, `/admin/marketplaces`, `/admin/server-config`,
+  `/admin/welcome`, `/admin/workspace-prompt`, `/admin/sessions`,
+  `/admin/sessions/<id>`, `/admin/usage`. Each had `_page_hero.html`
+  nested inside a `display: flex; justify-content: space-between`
+  toolbar that pinned the page filter/search controls next to the
+  hero. Hero now renders outside the toolbar so it spans the full
+  container width; toolbar continues to hold only the controls.
+- Page-shell canonicalised — `.container` in `style-custom.css`
+  now sets the canonical `1280px` max-width and `16px 32px 48px`
+  padding so every page (admin, marketplace, catalog, profile,
+  /home, /setup-advanced) inherits the same nav-to-hero gap and
+  side gutters. Per-page `.container:has(.<page>) { max-width: none }`
+  + `.<page>-page { max-width: 1400px }` overrides removed from
+  `admin_users`, `admin_access`, `admin_groups`,
+  `admin_marketplaces`, `admin_welcome`, `admin_workspace_prompt`.
+  `.page-header--hero` no longer self-constrains via `max-width:
+  var(--width-app)`; the container provides the width so the hero
+  sits flush with the toolbar / table beneath it.
+- `_page_chrome.html` trimmed to just the page-background tint for
+  the redesign scopes (`/home`, `/store`, `/setup-advanced`); the
+  duplicate `.container` + `.container > main` rules it carried are
+  redundant with the new canonical container.
 - Marketplace hero unified with the canonical `.page-header--hero`
   box. The bespoke `.mp-hero` rule duplicated padding, radius,
   gradient, shadow, and font sizes that already lived on

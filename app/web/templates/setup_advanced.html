@@ -17,13 +17,13 @@
 .advanced-mock .ad-hero {
     /* Same dimensions as `.page-header--hero` so /setup-advanced lines
        up with every other page hero; green gradient comes from the
-       redesign palette via `--ds-*` tokens. */
+       redesign palette via `--ds-*` tokens. Container provides the
+       max-width + gutters. */
     background: linear-gradient(135deg, var(--ds-primary) 0%, var(--ds-primary-dark) 100%);
     color: white;
     border-radius: 14px;
     padding: 28px 32px 24px;
-    margin: var(--space-5) auto;
-    max-width: var(--width-app);
+    margin: 0 0 var(--space-5);
     box-sizing: border-box;
     box-shadow: 0 4px 16px rgba(31, 138, 94, 0.2);
 }

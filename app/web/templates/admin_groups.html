@@ -2,11 +2,7 @@
 {% block title %}Groups — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
-<style>
-  .container:has(.gp-page) { max-width: none; padding: 24px 16px; }
-  .gp-page { max-width: 1400px; margin: 0 auto; padding: 0; }
-
-  .gp-toolbar {
+<style>  .gp-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
   }
@@ -120,12 +116,16 @@
 </style>
 
 <div class="gp-page">
+  {% set page_hero_eyebrow = "Users & Access" %}
+
+  {% set page_hero_title = "Groups" %}
+
+  {% set page_hero_subtitle = "Named groups + members. Resource access lives on the Resource access page." %}
+
+  {% include "_page_hero.html" %}
+
   <div class="gp-toolbar">
     <div>
-      {% set page_hero_eyebrow = "Users & Access" %}
-      {% set page_hero_title = "Groups" %}
-      {% set page_hero_subtitle = "Named groups + members. Resource access lives on the Resource access page." %}
-      {% include "_page_hero.html" %}
     </div>
     <div style="display:flex; gap:10px; align-items:center;">
       <input id="search" type="search" class="gp-search" placeholder="Filter by name or description…" autocomplete="off">
