@@ -158,8 +158,7 @@
    per-device localStorage dismissibility for free. */
 
 .home-mock .home-getting-started,
-.home-mock .home-overview,
-.home-mock .home-usage {
+.home-mock .home-overview {
     position: relative;
     background: white;
     border: 1px solid var(--hp-border);
@@ -167,6 +166,19 @@
     padding: 22px 24px;
     margin-bottom: 18px;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+/* `.home-usage` (the Surfaces section) used to inherit the white-card
+   chrome above; in the CEO mock the section is bare (just header +
+   grid on the page bg), so we leave it un-styled here and only set
+   bottom-margin. */
+.home-mock .home-usage {
+    position: relative;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin-bottom: 36px;
+    box-shadow: none;
 }
 /* Getting Started uses <details> for native collapsed-by-default
    behaviour. The summary owns the padding when collapsed; row layout
@@ -1087,30 +1099,30 @@
     pointer-events: none;
 }
 .home-mock .home-hero-intro .eyebrow {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 1.5px;
     color: var(--hp-brand-accent);
-    margin-bottom: 10px;
+    margin-bottom: 14px;
     position: relative;
 }
 .home-mock .home-hero-intro h1 {
-    font-size: 32px;
-    font-weight: 600;
-    letter-spacing: -0.4px;
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: -1px;
     margin: 0 0 16px;
     color: #ffffff;
-    line-height: 1.2;
+    line-height: 1.1;
     position: relative;
 }
 .home-mock .home-hero-intro h1 .accent { color: var(--hp-brand-accent); }
 .home-mock .home-hero-intro .lede {
-    font-size: 16px;
+    font-size: 18px;
     line-height: 1.6;
-    color: rgba(255, 255, 255, 0.82);
-    margin: 0 0 24px;
-    max-width: 760px;
+    color: rgba(255, 255, 255, 0.8);
+    margin: 0 0 28px;
+    max-width: 720px;
     position: relative;
 }
 .home-mock .home-hero-intro .lede strong { color: #ffffff; font-weight: 600; }
@@ -1277,181 +1289,235 @@
     justify-content: center;
 }
 
-/* First-session story — narrative card stack. White surface so the
-   navy install-hero above pops as the "do this now" card and the
-   first-session reads as supporting "what you'll see" content. */
+/* First-session story — bare section on the page bg (no wrapping
+   card). Matches the CEO mock where the eyebrow + h2 + lede sit
+   inline on the page and individual session-step rows have their
+   own visual rhythm via the 48px green circle on the left. */
 .home-mock .first-session {
-    background: var(--hp-surface);
-    border: 1px solid var(--hp-border);
-    border-radius: 14px;
-    padding: 26px 30px;
-    margin: 22px 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin: 36px 0;
 }
 .home-mock .first-session > .eyebrow {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: var(--hp-primary);
-    margin-bottom: 8px;
+    letter-spacing: 1.5px;
+    color: var(--hp-primary-dark);
+    margin-bottom: 14px;
 }
+/* First-session beat sizing — verbatim from the CEO mock. h2 28px,
+   lede 18px, session-step a 48px / 1fr grid, session-num a 40px
+   GREEN circle with WHITE text + soft green shadow, content h3 18px
+   + p 15px. */
 .home-mock .first-session > h2 {
-    font-size: 19px;
-    font-weight: 600;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
     margin: 0 0 8px;
     color: var(--hp-text-primary);
 }
 .home-mock .first-session > .lede {
-    font-size: 13.5px;
+    font-size: 18px;
     color: var(--hp-text-secondary);
     line-height: 1.55;
-    margin: 0 0 18px;
-    max-width: 780px;
+    margin: 0 0 24px;
+    max-width: 720px;
+}
+.home-mock .session-walk {
+    display: flex;
+    flex-direction: column;
+    gap: 36px;
+    margin-top: 8px;
 }
 .home-mock .session-step {
-    display: flex;
-    gap: 16px;
-    padding: 14px 0;
-    border-top: 1px solid var(--hp-border-light);
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    gap: 22px;
+    padding: 0;
+    border-top: none;
 }
-.home-mock .session-step:first-of-type { border-top: none; padding-top: 6px; }
+.home-mock .session-step:first-of-type { padding-top: 0; }
 .home-mock .session-num {
-    flex-shrink: 0;
-    width: 28px;
-    height: 28px;
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--hp-primary);
+    color: #ffffff;
+    display: grid;
+    place-items: center;
     font-weight: 700;
-    font-size: 13px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-top: 2px;
+    font-size: 16px;
+    box-shadow: 0 2px 6px rgba(46, 168, 119, 0.25);
+    flex-shrink: 0;
 }
-.home-mock .session-content {
-    flex: 1;
-    min-width: 0;
-}
+.home-mock .session-content { min-width: 0; }
 .home-mock .session-content h3 {
-    font-size: 14.5px;
+    margin: 0 0 6px;
+    font-size: 18px;
     font-weight: 600;
-    margin: 0 0 4px;
     color: var(--hp-text-primary);
 }
-.home-mock .session-content p {
-    font-size: 13px;
+.home-mock .session-content > p {
+    font-size: 15px;
     color: var(--hp-text-secondary);
     line-height: 1.55;
     margin: 0 0 10px;
 }
-.home-mock .session-content p:last-child { margin-bottom: 0; }
+.home-mock .session-content > p:last-child { margin-bottom: 0; }
+.home-mock .session-content .annotation {
+    font-size: 13.5px;
+    color: var(--hp-text-muted);
+    margin: 10px 0 0;
+    line-height: 1.55;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+}
+.home-mock .session-content .annotation strong { color: var(--hp-text-primary); }
 .home-mock .session-content code {
     background: var(--hp-bg);
     border: 1px solid var(--hp-border);
     padding: 1px 6px;
     border-radius: 4px;
     font-family: var(--hp-font-mono);
-    font-size: 11.5px;
+    font-size: 12.5px;
 }
+.home-mock .session-tldr {
+    background: var(--hp-primary-light);
+    border-left: 4px solid var(--hp-primary-dark);
+    padding: 20px 24px;
+    border-radius: 0 8px 8px 0;
+    margin-top: 28px;
+    font-size: 15px;
+    color: var(--hp-text-primary);
+    line-height: 1.6;
+}
+.home-mock .session-tldr strong { color: var(--hp-primary-dark); }
 
-/* Terminal frame — used inside first-session beats to mock what the
-   user will actually see on screen. Traffic-light dots are the
-   recognizable macOS-window signature; near-black body matches the
-   wizard's .install-cmd palette so the design language stays
-   consistent. */
+/* Terminal frame — exact mock colors. Box-shadow uses the global
+   --hp-shadow-md so the frame lifts off the white first-session
+   surface; macOS traffic-light reds/yellows/greens match the real
+   colors (#ff5f57 / #febc2e / #28c840) so the framing reads as a
+   terminal, not a generic dark card. */
 .home-mock .terminal-frame {
     background: var(--hp-code-bg);
-    border-radius: 8px;
+    border: 1px solid #1f2a4a;
+    border-radius: 10px;
     overflow: hidden;
-    margin-top: 6px;
-    box-shadow: 0 2px 8px rgba(15, 27, 58, 0.18);
+    box-shadow: var(--hp-shadow-md);
+    margin: 10px 0 4px;
 }
 .home-mock .terminal-bar {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 7px 12px;
-    background: #1a2440;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    gap: 8px;
+    background: #182241;
+    padding: 8px 14px;
+    border-bottom: 1px solid #1f2a4a;
 }
 .home-mock .terminal-bar .traffic {
-    width: 10px;
-    height: 10px;
+    width: 11px;
+    height: 11px;
     border-radius: 50%;
+    background: #4a5168;
     display: inline-block;
 }
-.home-mock .terminal-bar .traffic.r { background: #e35e5e; }
-.home-mock .terminal-bar .traffic.y { background: #ffd866; }
-.home-mock .terminal-bar .traffic.g { background: #2ea877; }
+.home-mock .terminal-bar .traffic.r { background: #ff5f57; }
+.home-mock .terminal-bar .traffic.y { background: #febc2e; }
+.home-mock .terminal-bar .traffic.g { background: #28c840; }
 .home-mock .terminal-bar .terminal-title {
-    margin-left: 10px;
+    margin-left: 8px;
     font-family: var(--hp-font-mono);
-    font-size: 11.5px;
+    font-size: 12px;
     color: rgba(255, 255, 255, 0.55);
 }
 .home-mock .terminal-body {
-    padding: 12px 14px;
     font-family: var(--hp-font-mono);
-    font-size: 12.5px;
-    line-height: 1.6;
+    font-size: 13px;
+    line-height: 1.65;
     color: var(--hp-code-ink);
+    padding: 16px 20px;
     white-space: pre-wrap;
-    overflow-x: auto;
+    word-break: normal;
 }
-.home-mock .terminal-body .prompt { color: var(--hp-brand-accent); margin-right: 6px; }
-.home-mock .terminal-body .cmd { color: var(--hp-code-yellow); }
+.home-mock .terminal-body .prompt {
+    color: var(--hp-primary);
+    margin-right: 8px;
+    user-select: none;
+}
+.home-mock .terminal-body .you { color: #ffd866; }
+.home-mock .terminal-body .cmd { color: #ffd866; }
+.home-mock .terminal-body .ai-name { color: var(--hp-primary); font-weight: 600; }
+.home-mock .terminal-body .path { color: #8b9fe0; }
 .home-mock .terminal-body .dim { color: rgba(215, 228, 255, 0.55); }
+.home-mock .terminal-body strong { color: #ffffff; font-weight: 600; }
+.home-mock .terminal-body .caret {
+    display: inline-block;
+    width: 8px;
+    height: 14px;
+    background: var(--hp-primary);
+    vertical-align: text-bottom;
+    animation: agnes-blink 1s steps(2, end) infinite;
+}
+@keyframes agnes-blink { 50% { opacity: 0; } }
 
-/* ── Surfaces — 4-card layout matching the CEO mock's "Where you can
-   use it" section. Each card has a head row (icon + title + optional
-   badge), a pitch, an annotation eyebrow (DAILY USE / QUICK ACCESS /
-   CONNECT IT), a numbered step list, and a foot line. */
+/* ── Surfaces — 4-card layout matching the CEO mock verbatim. h2
+   28px / 700, surface-card padding 28px, .feature variant uses a
+   brand-light gradient + 2px brand border, .incomplete variant uses
+   a red-tinted gradient + 2px red border. Steps render in a tinted
+   panel with surface-dim bg. */
 .home-mock .surfaces { padding: 24px 28px; }
 .home-mock .surfaces > header { margin-bottom: 20px; }
 .home-mock .surfaces > header .eyebrow {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--hp-primary);
-    margin-bottom: 6px;
+    letter-spacing: 1.5px;
+    color: var(--hp-primary-dark);
+    margin-bottom: 14px;
 }
 .home-mock .surfaces > header h2 {
-    font-size: 22px;
-    font-weight: 600;
-    margin: 0 0 6px;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+    margin: 0 0 8px;
     color: var(--hp-text-primary);
 }
 .home-mock .surfaces > header p {
-    font-size: 14.5px;
+    font-size: 18px;
     color: var(--hp-text-secondary);
     line-height: 1.55;
-    margin: 0;
+    margin: 0 0 12px;
     max-width: 760px;
 }
 .home-mock .surfaces-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 18px;
+    gap: 16px;
     margin-bottom: 14px;
 }
 .home-mock .surface-card {
     background: var(--hp-surface);
     border: 1px solid var(--hp-border);
     border-radius: 14px;
-    padding: 22px;
+    padding: 28px;
+    box-shadow: var(--hp-shadow-sm);
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
 }
 .home-mock .surface-card.feature {
-    border-color: var(--hp-brand-accent);
-    box-shadow: 0 0 0 1px rgba(84, 211, 160, 0.20);
+    border: 2px solid var(--hp-primary);
+    background: linear-gradient(180deg, var(--hp-primary-light) 0%, var(--hp-surface) 40%);
 }
 .home-mock .surface-card.incomplete {
-    background: var(--hp-warn-bg);
-    border-color: var(--hp-warn-line);
+    border: 2px solid #e35e5e;
+    background: linear-gradient(180deg, #fdecec 0%, var(--hp-surface) 60%);
 }
 .home-mock .surface-card-head {
     display: flex;
@@ -1459,40 +1525,43 @@
     gap: 10px;
 }
 .home-mock .surface-ico {
-    font-size: 22px;
+    font-size: 26px;
     line-height: 1;
+    margin-bottom: 6px;
 }
 .home-mock .surface-card h3 {
-    font-size: 16px;
-    font-weight: 700;
+    font-size: 18px;
+    font-weight: 600;
     margin: 0;
     color: var(--hp-text-primary);
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     flex-wrap: wrap;
 }
 .home-mock .surface-card .badge-warn {
-    background: var(--hp-warn-line);
-    color: var(--hp-warn-ink);
-    font-size: 10.5px;
+    background: #e35e5e;
+    color: #ffffff;
+    font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    padding: 2px 8px;
-    border-radius: 999px;
+    padding: 3px 8px;
+    border-radius: 4px;
 }
-.home-mock .surface-pitch {
+.home-mock .surface-pitch,
+.home-mock .surface-card .what {
     font-size: 14px;
     color: var(--hp-text-secondary);
     line-height: 1.55;
     margin: 0;
+    flex-grow: 1;
 }
 .home-mock .surface-thumb {
     background: var(--hp-surface-dim);
     border: 1px dashed var(--hp-border);
     border-radius: 8px;
-    min-height: 100px;
+    min-height: 80px;
     display: grid;
     place-items: center;
     color: var(--hp-text-muted);
@@ -1500,34 +1569,38 @@
     font-style: italic;
 }
 .home-mock .surface-card .annotation {
-    font-size: 10.5px;
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 1px;
     color: var(--hp-text-muted);
     text-transform: uppercase;
-    margin-top: 4px;
+    margin: 8px 0 4px;
 }
 .home-mock .surface-steps {
-    margin: 0;
-    padding-left: 20px;
+    background: var(--hp-surface-dim);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 4px 0;
     list-style: decimal;
+    padding-left: 32px;
 }
 .home-mock .surface-steps li {
-    font-size: 13.5px;
+    font-size: 13px;
     color: var(--hp-text-primary);
     line-height: 1.55;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
 }
 .home-mock .surface-steps li:last-child { margin-bottom: 0; }
 .home-mock .surface-steps li code,
-.home-mock .surface-pitch code {
+.home-mock .surface-pitch code,
+.home-mock .surface-card .what code {
     background: var(--hp-primary-light);
     color: var(--hp-primary-dark);
     border: 1px solid rgba(46, 168, 119, 0.30);
     padding: 1px 6px;
     border-radius: 4px;
     font-family: var(--hp-font-mono);
-    font-size: 11.5px;
+    font-size: 12px;
 }
 .home-mock .surface-steps li kbd {
     background: var(--hp-surface);
@@ -1540,28 +1613,32 @@
 }
 .home-mock .surface-foot {
     font-size: 13px;
-    color: var(--hp-text-secondary);
-    margin: 0;
+    color: var(--hp-text-muted);
+    margin: 4px 0 0;
     line-height: 1.5;
+    border-top: 1px solid var(--hp-border);
+    padding-top: 12px;
 }
+.home-mock .surface-foot strong { color: var(--hp-text-primary); }
 .home-mock .surface-foot a { color: var(--hp-primary-dark); text-decoration: underline; }
 .home-mock .surface-foot a:hover { color: var(--hp-primary); }
 .home-mock .incomplete-callout {
-    background: rgba(245, 200, 75, 0.18);
-    border-left: 3px solid var(--hp-warn-line);
-    padding: 12px 14px;
-    border-radius: 6px;
+    background: #ffffff;
+    border: 1px dashed #e35e5e;
+    border-radius: 8px;
+    padding: 12px 16px;
     font-size: 13px;
-    color: var(--hp-warn-ink);
+    color: #7a1f1f;
 }
 .home-mock .incomplete-callout strong {
     display: block;
     margin-bottom: 6px;
-    color: var(--hp-warn-ink);
+    color: #5a0e0e;
 }
 .home-mock .incomplete-callout ul {
     margin: 0;
     padding-left: 18px;
+    color: #7a1f1f;
 }
 .home-mock .incomplete-callout li { margin-bottom: 4px; }
 @media (max-width: 880px) {
@@ -1584,12 +1661,117 @@
     vertical-align: middle;
 }
 
-/* Style overrides for the existing .home-usage tiles so they read as
-   the "Surfaces" cards from the CEO mock — slightly more padding,
-   subtle hover lift. The structural classes are unchanged so tests
-   pinning them still pass. */
-.home-mock .home-usage {
-    padding: 24px 28px;
+/* Surfaces wrapper is now bare (no white card). Padding lives on the
+   inner header + grid, not on .home-usage itself. The global
+   `header { display: flex; justify-content: space-between; ... }`
+   rule absorbed from style.css makes our section header lay out
+   the eyebrow/h2/lede side-by-side; force block + no padding/border
+   so the title sits on the LEFT under the eyebrow as the mock has. */
+.home-mock .home-usage { padding: 0; text-align: left; }
+.home-mock .home-usage > header,
+.home-mock .first-session > header,
+.home-mock .browse-section > header,
+.home-mock section > header {
+    display: block;
+    padding: 0;
+    margin-bottom: 20px;
+    border-bottom: none;
+    flex-wrap: initial;
+    gap: 0;
+    justify-content: initial;
+    align-items: initial;
+}
+.home-mock .home-usage > header h2,
+.home-mock .home-usage > header p {
+    text-align: left;
+    width: 100%;
+}
+
+/* Browse-section — bare section on the page bg, 5-col grid, cards
+   with green-hover lift. Mock spec verbatim. */
+.home-mock .browse-section {
+    margin: 36px 0;
+}
+.home-mock .browse-section .eyebrow {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--hp-primary-dark);
+    margin-bottom: 14px;
+}
+.home-mock .browse-section h2 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+    margin: 0 0 8px;
+    color: var(--hp-text-primary);
+}
+.home-mock .browse-section .lede {
+    font-size: 18px;
+    color: var(--hp-text-secondary);
+    line-height: 1.55;
+    margin: 0 0 20px;
+    max-width: 720px;
+}
+.home-mock .browse-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 14px;
+}
+.home-mock .browse-card {
+    background: var(--hp-surface);
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 22px 20px;
+    text-decoration: none;
+    color: var(--hp-text-primary);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: transform 0.1s, box-shadow 0.1s, border-color 0.1s;
+    box-shadow: none;
+    transform: none;
+    position: relative;
+}
+.home-mock .browse-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--hp-shadow-md);
+    border-color: var(--hp-primary);
+}
+.home-mock .browse-card .browse-icon {
+    font-size: 28px;
+    margin-bottom: 4px;
+    line-height: 1;
+}
+.home-mock .browse-card .browse-title {
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--hp-text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.home-mock .browse-card .browse-title .arrow {
+    color: var(--hp-primary-dark);
+    font-weight: 600;
+    transition: transform 0.15s ease;
+}
+.home-mock .browse-card:hover .browse-title .arrow {
+    transform: translateX(2px);
+}
+.home-mock .browse-card .browse-desc {
+    font-size: 12.5px;
+    color: var(--hp-text-muted);
+    line-height: 1.45;
+}
+@media (max-width: 880px) {
+    .home-mock .browse-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+    .home-mock .browse-grid { grid-template-columns: 1fr; }
 }
 .home-mock .home-usage-item {
     padding: 16px;
@@ -2221,69 +2403,128 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
     <section class="first-session" id="first-session">
         <div class="eyebrow">Your first session</div>
         <h2>What happens when you launch {{ instance_brand }}</h2>
-        <p class="lede">
-            A real session, end-to-end. Five beats: <strong>launch</strong> &rarr;
-            <strong>pick a project</strong> &rarr; <strong>Claude loads memory</strong> &rarr;
-            <strong>ask anything</strong> &rarr; <strong>close when done</strong>. Plugins,
-            data packages, skills, and shared memory quietly do their job inside this loop &mdash;
-            you don't have to manage them.
-        </p>
+        <p class="lede">A real session, end-to-end. You'll see exactly what appears on screen and what to type at each step. No prior terminal experience needed.</p>
 
-        <div class="session-step">
-            <div class="session-num">1</div>
-            <div class="session-content">
-                <h3>Launch your workspace</h3>
-                <p>Open a terminal in your <code>~/{{ workspace_dir }}</code> folder and type <code>claude</code>. That single command launches Claude Code wired to {{ instance_brand }}.</p>
-                <div class="terminal-frame">
-                    <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">~/{{ workspace_dir }} &mdash; zsh</span></div>
-                    <div class="terminal-body"><span class="prompt">$</span> <span class="cmd">claude</span></div>
+        <div class="session-intro">
+            <span class="session-intro-icon" aria-hidden="true">&#x1F9ED;</span>
+            <span>The whole loop is <strong>five beats</strong>: launch &rarr; pick a project &rarr; Claude loads its memory &rarr; ask anything &rarr; close when done. Every part of {{ instance_brand }} &mdash; plugins, data packages, skills, shared memory &mdash; quietly does its job inside this loop. You don't have to manage them.</span>
+        </div>
+
+        <div class="session-walk">
+            <div class="session-step">
+                <div class="session-num">1</div>
+                <div class="session-content">
+                    <h3>Launch your workspace</h3>
+                    <p><strong>Open a terminal</strong> &mdash; in VS Code, press <kbd>⌘</kbd>+<kbd>`</kbd> (Mac) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows). On macOS you can also open the standalone Terminal app from Spotlight.</p>
+                    <p><strong>Type one word</strong> &mdash; <code>{{ workspace_dir | lower }}</code> (or <code>claude</code> if you skipped Step&nbsp;6) &mdash; and hit Enter.</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">~/{{ workspace_dir }}&nbsp;&mdash;&nbsp;zsh</span></div>
+                        <div class="terminal-body"><span class="prompt">$</span> <span class="cmd">{{ workspace_dir | lower }}</span></div>
+                    </div>
+                    <p class="annotation">That single word jumps into your <code>~/{{ workspace_dir }}</code> folder and launches Claude in one go &mdash; same on day&nbsp;1 as day&nbsp;100. No <code>cd</code>, no flags, no setup to remember. (The shortcut was installed in Step&nbsp;6 of the setup above.)</p>
+                </div>
+            </div>
+
+            <div class="session-step">
+                <div class="session-num">2</div>
+                <div class="session-content">
+                    <h3>{{ instance_brand }} greets you with today's menu</h3>
+                    <p>Claude reads your recent activity and shows the projects you've touched most recently. Your screen looks something like this:</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-body">2026-05-20
+
+What would you like to do?
+
+  <strong>[1]</strong> Talk to {{ instance_brand }} &mdash; workspace questions, setup, admin
+  <strong>[2]</strong> New project &mdash; scaffold a new project
+  <strong>[3]</strong> Switch to recent project:
+        <span class="path">a.</span> RevenueAnalysis (2 hours ago)
+        <span class="path">b.</span> WeeklyReview (today)
+        <span class="path">c.</span> Onboarding (1 day ago)
+        <span class="path">d.</span> OpsDb (4 days ago)
+        <span class="path">e.</span> HRHandShake (5 days ago)
+  <strong>[4]</strong> Switch to another project &mdash; browse the full registry
+
+<span class="prompt">&gt;</span><span class="caret"></span></div>
+                    </div>
+                    <p class="annotation">The recent-projects list updates every session based on what you actually worked on. Pick a code (like <code>3a</code>) or just type free text &mdash; <em>"open the news project"</em> or <em>"keep working on the marketing plan"</em> work the same way. Claude figures out the intent.</p>
+                </div>
+            </div>
+
+            <div class="session-step">
+                <div class="session-num">3</div>
+                <div class="session-content">
+                    <h3>Pick a project &mdash; Claude loads its memory</h3>
+                    <p>Type your choice and hit Enter. Claude switches into that project's folder, reads its <code>CLAUDE.md</code> (the project's living briefing doc), checks for new inputs you've dropped in, and tells you the state of play.</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-body"><span class="prompt">&gt;</span> <span class="you">3a</span>
+
+<span class="dim">Switched to <span class="path">RevenueAnalysis</span> &mdash; quarterly revenue review.
+Loaded: <span class="path">CLAUDE.md</span>, 8 knowledge files, 4 active decisions
+Last session: yesterday, 4:12 PM &mdash; "Q1 close review"
+One unprocessed input detected: <span class="path">inputs/Q1_close_DRAFT.pdf</span> (3.4&nbsp;MB)
+Want me to process it into <span class="path">knowledge/</span> now?
+</span>
+<span class="prompt">&gt;</span><span class="caret"></span></div>
+                    </div>
+                    <p class="annotation">Claude now has full project context loaded &mdash; past decisions, key numbers, ongoing work, who's involved. You don't have to re-explain anything every session. New files in <code>inputs/</code> are auto-detected so nothing gets forgotten on your hard drive.</p>
+                </div>
+            </div>
+
+            <div class="session-step">
+                <div class="session-num">4</div>
+                <div class="session-content">
+                    <h3>Ask anything &mdash; Claude is now scoped to that project</h3>
+                    <p>Plain English. No commands to memorise. Claude pulls from the project's files, your registered data packages, installed plugins, and the team's shared memory &mdash; quoting exact sources as it goes.</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-body"><span class="prompt">&gt;</span> <span class="you">what's the latest on the Q1 close? Give me the headline numbers and the open risks.</span>
+
+<span class="dim">Reading <span class="path">knowledge/q1-close-input.md</span> …
+Reading <span class="path">temp/v4/close.md</span> …</span>
+
+<strong>Q1 close summary &mdash; v4, Apr 2026</strong>
+  &bull; Revenue: $124.3M &rarr; $131.0M (+5.4% QoQ)
+  &bull; Gross margin: 62.1% &rarr; 63.4%
+  &bull; 4 markets above plan, 2 below
+  &bull; Customer churn flat at 6.1%
+
+<strong>Open risks</strong>
+  &bull; FX hedging assumption is 6 weeks old &mdash; needs refresh
+  &bull; No DRI yet on the EMEA segmentation prerequisite
+  &bull; Q2 forecast model still in review
+
+Want me to draft a 1-page brief, or dig into one of these?
+<span class="prompt">&gt;</span><span class="caret"></span></div>
+                    </div>
+                    <p class="annotation">Cited sources are clickable paths &mdash; tap to open the actual file in your editor. If Claude needs data from a remote system, your registered plugins kick in silently. No copy-pasting between tabs.</p>
+                </div>
+            </div>
+
+            <div class="session-step">
+                <div class="session-num">5</div>
+                <div class="session-content">
+                    <h3>When you're done, just close &mdash; everything's saved</h3>
+                    <p>Type <code>/exit</code> or close the terminal window. {{ instance_brand }} saves the session, captures any new knowledge into the project's memory, and puts today's project at the top of tomorrow's menu.</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-body"><span class="prompt">&gt;</span> <span class="you">/exit</span>
+
+<span class="dim">Session saved &mdash; 12 prompts, 4 files referenced.
+<span class="path">RevenueAnalysis</span> will appear as "today" in your menu tomorrow.
+See you next time.</span>
+
+<span class="prompt">$</span><span class="caret"></span></div>
+                    </div>
+                    <p class="annotation">Nothing to clean up, no "save your work" prompt, no version to remember. Next time you type <code>{{ workspace_dir | lower }}</code>, this project is right at the top of the recent list &mdash; and Claude remembers every decision, file, and follow-up from today.</p>
                 </div>
             </div>
         </div>
 
-        <div class="session-step">
-            <div class="session-num">2</div>
-            <div class="session-content">
-                <h3>{{ instance_brand }} greets you with today's menu</h3>
-                <p>A short status line shows the workspace, recent sync, and pinned skills. You don't have to read it &mdash; it's there if something looks off.</p>
-                <div class="terminal-frame">
-                    <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude</span></div>
-                    <div class="terminal-body"><span class="dim">Workspace: ~/{{ workspace_dir }}
-Synced: 2 min ago &middot; 14 tables &middot; 12 plugins
-Memory: 38 notes loaded
-</span><span class="prompt">&gt;</span></div>
-                </div>
-            </div>
-        </div>
-
-        <div class="session-step">
-            <div class="session-num">3</div>
-            <div class="session-content">
-                <h3>Pick a project &mdash; Claude loads its memory</h3>
-                <p>Each project under <code>~/{{ workspace_dir }}/Projects/</code> carries its own context. Switching projects swaps in the right data scopes, plugins, and prior solutions automatically.</p>
-            </div>
-        </div>
-
-        <div class="session-step">
-            <div class="session-num">4</div>
-            <div class="session-content">
-                <h3>Ask anything &mdash; Claude is now scoped to that project</h3>
-                <p>Plain language. Claude knows what tables it can query, which plugins to call, and what prior analysts already figured out.</p>
-                <div class="terminal-frame">
-                    <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude</span></div>
-                    <div class="terminal-body"><span class="prompt">&gt;</span> <span class="cmd">how many active subscribers in CZ last week?</span>
-<span class="dim">running: agnes query &mdash; subscribers_daily &middot; filtered country=CZ
-&rarr; 24,807 (week of 2026-05-13)</span></div>
-                </div>
-            </div>
-        </div>
-
-        <div class="session-step">
-            <div class="session-num">5</div>
-            <div class="session-content">
-                <h3>When you're done, just close &mdash; everything's saved</h3>
-                <p>Session transcripts feed back into the central catalog so future questions don't trip on the same gap. Anything you marked private (<code>/agnes-private</code>) stays off the record.</p>
-            </div>
+        <div class="session-tldr">
+            That's the whole loop. <strong>One word to launch &mdash; pick a project &mdash; ask &mdash; close.</strong> Everything else (plugins, data packages, skills, shared memory) is Claude doing more for you inside the same five-beat rhythm. You learn it once on day&nbsp;1 and never re-learn it.
         </div>
     </section>
 
@@ -2402,37 +2643,45 @@ Memory: 38 notes loaded
        benefits ("third-party tools (Asana, Google Workspace,
        Atlassian)"); deep ops live in /setup-advanced. #}
 
-    <div class="section-label" id="look-around">Explore your workspace</div>
-    <p class="look-around-lead">You don't need {{ instance_brand }} installed locally to browse what's available. Anything you bookmark or subscribe to will be there waiting after you set {{ instance_brand }} up.</p>
+    <section class="browse-section" id="look-around">
+        <div class="eyebrow">{{ instance_brand }} workspace</div>
+        <h2>Explore your workspace</h2>
+        <p class="lede">Jump into any part of {{ instance_brand }} &mdash; what your team has registered, what's curated company-wide, and what's shared by your colleagues.</p>
 
-    <div class="what-is look-around-grid">
-        <a class="what-is-item" href="/marketplace">
-            <span class="ico">&#x1F9E9;</span>
-            <div class="ttl">Plugin marketplace <span class="arrow">&rarr;</span></div>
-            <div class="desc">Curated and community-built plugins for Claude Code — Asana, Jira, Google Workspace, and more. Browse, install, sync.</div>
-        </a>
-        <a class="what-is-item" href="/catalog">
-            <span class="ico">&#x1F4E6;</span>
-            <div class="ttl">Curated data packages <span class="arrow">&rarr;</span></div>
-            <div class="desc">Tables, schema, and metric definitions your team has registered. Subscribe and Claude can query them with documented business rules.</div>
-        </a>
-        {# Curated Memory is user-facing — the /corporate-memory route runs
-           on get_current_user, so the tile shows for everyone, matching
-           its primary-nav placement. #}
-        <a class="what-is-item" href="/corporate-memory">
-            <span class="ico">&#x1F9E0;</span>
-            <div class="ttl">Curated memory <span class="arrow">&rarr;</span></div>
-            <div class="desc">Shared analyst knowledge and prior solutions to draw from. Searchable, versioned, fed back into Claude's context on demand.</div>
-        </a>
-        {# Activity center admin-only — matches the top-nav gating logic. #}
-        {% if is_admin %}
-        <a class="what-is-item" href="/activity-center">
-            <span class="ico">&#x1F4C8;</span>
-            <div class="ttl">Activity center <span class="arrow">&rarr;</span></div>
-            <div class="desc">Per-user analytics on {{ instance_brand }} adoption across your team. Sessions, plugin installs, prompt patterns.</div>
-        </a>
-        {% endif %}
-    </div>
+        <div class="browse-grid what-is look-around-grid">
+            <a class="browse-card what-is-item" href="/marketplace">
+                <span class="browse-icon ico" aria-hidden="true">&#x1F9E9;</span>
+                <span class="browse-title ttl">Plugin marketplace <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Two tiers: Curated (official, vetted &mdash; Asana, Jira, GWS, GitHub) and Flea Market (team-shared, anyone can publish for the team).</span>
+            </a>
+            <a class="browse-card what-is-item" href="/catalog">
+                <span class="browse-icon ico" aria-hidden="true">&#x1F4E6;</span>
+                <span class="browse-title ttl">Data packages <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Tables, schema, metric definitions registered by your team. Subscribe + query with documented business rules.</span>
+            </a>
+            <a class="browse-card what-is-item" href="/marketplace?type=skills">
+                <span class="browse-icon ico" aria-hidden="true">&#x26A1;</span>
+                <span class="browse-title ttl">Skills <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Two tiers: Curated workflow templates (brainstorming, planning, review) + Flea Market skills your team publishes.</span>
+            </a>
+            {# Curated Memory is user-facing — the /corporate-memory route runs
+               on get_current_user, so the tile shows for everyone, matching
+               its primary-nav placement. #}
+            <a class="browse-card what-is-item" href="/corporate-memory">
+                <span class="browse-icon ico" aria-hidden="true">&#x1F9E0;</span>
+                <span class="browse-title ttl">Memory <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Shared analyst knowledge + prior solutions. Searchable, versioned, fed back into Claude's context on demand.</span>
+            </a>
+            {# Activity center admin-only — matches the top-nav gating logic. #}
+            {% if is_admin %}
+            <a class="browse-card what-is-item" href="/activity-center">
+                <span class="browse-icon ico" aria-hidden="true">&#x1F4C8;</span>
+                <span class="browse-title ttl">Activity center <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Adoption analytics across your team. Sessions, plugins, prompt patterns.</span>
+            </a>
+            {% endif %}
+        </div>
+    </section>
 
     {# Legacy `.advanced-pointer` row removed — same link now lives in
        the Getting Started card at the top of /home. `.advanced-pointer`
