@@ -1086,7 +1086,17 @@ def _rewrite_user_sql_for_bigquery_query(
         source_table_raw = m.group(2).strip('"')
         direct_paths.add((bucket_raw, source_table_raw))
 
-    if not name_lookups and not direct_paths:
+    # Issue #363: full backtick BQ paths (`<project>.<dataset>.<table>`) are
+    # already BQ-native syntax — DuckDB can't parse backtick quoting locally.
+    # When the user SQL uses only backtick paths (no bare names, no bq.ds.tbl),
+    # both name_lookups and direct_paths stay empty and Skip 1 fires, sending
+    # the backtick SQL to analytics.execute() → "syntax error at or near `"`.
+    # Detect them here so the SQL still gets wrapped in bigquery_query().
+    # _rewrite_bq_table_refs_to_native already preserves backtick segments
+    # verbatim (backtick-split pass 1), so no additional rewrite is needed.
+    has_backtick_paths = bool(_BACKTICK_FULL_PATH.search(user_sql))
+
+    if not name_lookups and not direct_paths and not has_backtick_paths:
         # Skip 1: no BQ tables referenced.
         return user_sql, False
 
