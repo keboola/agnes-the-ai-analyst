@@ -1,14 +1,19 @@
-{# Shared "Setup a new Claude Code" behaviour.
+{# Shared install-script clipboard behaviour.
 
-   Provides the JS + CSS that drives any page's "Setup a new Claude Code"
-   button. The button itself is rendered by the consuming page (because
-   each page wraps it in its own card chrome — dashboard's blue CTA card,
-   /home's hero, /install's section). The contract is:
+   Provides the JS + CSS that drives any page's "Copy install script
+   to clipboard" button. The button itself is rendered by the consuming
+   page (each page wraps it in its own card chrome — dashboard's CTA
+   card, /home's install hero). The contract is:
 
    - A button with `onclick="setupNewClaude(this)"` and ideally id
      `setupClaudeBtn` so the visible-state transitions read sensibly.
    - Optional `<div id="setupClaudeError">` for inline error reporting.
      If absent, errors fall back to `alert()`.
+
+   Canonical button label across consumers: **Copy install script to
+   clipboard**. Keep all consumers aligned; the action does the same
+   thing everywhere (copies a 90-day token-stamped setup script that
+   pastes into Claude Code in `~/Desktop/{workspace_dir}`).
 
    The clipboard payload is single-sourced through
    `_claude_setup_instructions.jinja` (preview_mode=False), which emits
