@@ -13,16 +13,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
-- Admin pages now surface filters and CTA buttons inside the hero banner — sessions (time range), activity (time range + auto-refresh), telemetry (time range + group by), users (search + add), groups (search + new), marketplaces (search + format guide + add), server-config (subtitle full-width, workspace template above danger zone).
-- `_page_hero.html` extended with an `page_hero_actions` slot; custom always-downward select dropdown replaces native selects inside the hero (native select kept hidden for JS compatibility).
-- Hero CTA buttons use a ghost/glass style (`rgba(255,255,255,0.15)` background) to avoid the CSS specificity conflict that made them invisible.
 
 ### Fixed
-- Removed non-existent CDN CSS links (`markdown.min.css`, `shell.min.css`) from init-prompt and workspace-prompt pages — the CDN was returning 404 HTML, triggering MIME-type rejection errors in the browser console.
 
 ### Removed
 
 ### Internal
+
+## [0.55.6] — 2026-05-20
+
+### Changed
+- Admin pages now surface filters and CTA buttons inside the hero banner — sessions (time range), activity (time range + auto-refresh), telemetry (time range + group by), users (search + add), groups (search + new), marketplaces (search + format guide + add), server-config (subtitle full-width, workspace template above danger zone).
+- `_page_hero.html` extended with a `page_hero_actions` slot; custom always-downward select dropdown replaces native selects inside the hero (native select kept hidden for JS compatibility).
+- Hero CTA buttons use a ghost/glass style (`rgba(255,255,255,0.15)` background) to avoid the CSS specificity conflict that made them invisible.
+
+### Fixed
+- Removed non-existent CDN CSS links (`markdown.min.css`, `shell.min.css`) from init-prompt and workspace-prompt pages — the CDN was returning 404 HTML, triggering MIME-type rejection errors in the browser console.
 
 ## [0.55.5] — 2026-05-19
 
