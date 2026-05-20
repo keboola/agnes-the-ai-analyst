@@ -972,11 +972,14 @@ function renderAll(data) {
     return (ia === -1 ? 9999 : ia) - (ib === -1 ? 9999 : ib);
   });
   const known = data.known_fields || {};
+  // Detach iw-section before innerHTML replacement so it isn't destroyed when
+  // renderAll is called a second time (e.g. after saving any config section).
+  const iwEl = document.getElementById("iw-section");
+  if (iwEl && iwEl.parentNode === wrap) wrap.removeChild(iwEl);
   wrap.innerHTML = sections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
 
-  // Move iw-section into cfg-sections, before the first danger zone section,
-  // so the body order matches the sidebar (Integrations → Workspace template → Danger zone).
-  const iwEl = document.getElementById("iw-section");
+  // Re-insert iw-section before the first danger zone section so the body
+  // order matches the sidebar (Integrations → Workspace template → Danger zone).
   if (iwEl) {
     const dangerSecs = (SECTION_GROUPS.find(g => g.isDanger) || {}).sections || [];
     let refEl = null;
