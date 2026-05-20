@@ -6,24 +6,16 @@
 {% include "_page_chrome.html" %}
 <style>
 .home-mock {
-    /* /home redesign palette — green/navy. Explicit hex (not
-       `var(--primary)`) so the green stays opted-in here regardless
-       of the global blue brand colour the rest of the app uses. */
-    --hp-primary: #2ea877;
-    --hp-primary-dark: #1f8a5e;
-    --hp-primary-light: #e6f9f0;
-    --hp-border: #E5E7EB;
-    --hp-border-light: #F3F4F6;
-    --hp-text-primary: #111827;
-    --hp-text-secondary: #6B7280;
-    color: var(--hp-text-primary);
+    /* Design-system scope — tokens live globally in
+       app/web/static/css/design-tokens.css. */
+    color: var(--ds-text-primary);
     font-size: 14px;
     line-height: 1.5;
 }
 .home-mock * { box-sizing: border-box; }
 
 .home-mock .hero {
-    background: linear-gradient(135deg, var(--hp-primary) 0%, var(--hp-primary-dark) 100%);
+    background: linear-gradient(135deg, var(--ds-primary) 0%, var(--ds-primary-dark) 100%);
     color: white;
     border-radius: 16px;
     padding: 38px 40px;
@@ -73,7 +65,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin: 30px 0 12px;
 }
 
@@ -85,7 +77,7 @@
 }
 .home-mock .quick-card {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 22px;
     text-decoration: none;
@@ -96,7 +88,7 @@
     transition: border-color .15s, box-shadow .15s;
 }
 .home-mock .quick-card:hover {
-    border-color: var(--hp-primary);
+    border-color: var(--ds-primary);
     box-shadow: 0 4px 12px rgba(46, 168, 119, 0.10);
 }
 .home-mock .quick-card .ico {
@@ -106,11 +98,11 @@
 .home-mock .quick-card .ttl {
     font-size: 15px;
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .quick-card .desc {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
 }
 </style>

@@ -6,65 +6,32 @@
 {% include "_page_chrome.html" %}
 <style>
 .home-mock {
-    /* design spec palette + type system. Green accent on light surfaces, navy hero, near-black
-       code panels with warm yellow accents. System-font stack matches
-       the design so the rendered weight/letterform is identical on macOS
-       (San Francisco) and Windows (Segoe UI). */
-    --hp-primary: #2ea877;          /* brand-dark green */
-    --hp-primary-dark: #1f8a5e;     /* hover/active */
-    --hp-primary-light: #e6f9f0;    /* mint tint */
-    --hp-brand-accent: #54d3a0;     /* brand (lighter) */
-    --hp-hero-bg: #0f1b3a;          /* navy hero */
-    --hp-hero-bg-deep: #0a1430;
-    --hp-hero-ink: #f3f6ff;
-    --hp-code-bg: #0c1224;
-    --hp-code-ink: #d7e4ff;
-    --hp-code-yellow: #ffd866;
-    --hp-border: #e4e7ee;
-    --hp-border-light: #f0f2f6;
-    --hp-text-primary: #0e1525;
-    --hp-text-secondary: #4a5168;
-    --hp-text-muted: #788098;
-    --hp-bg: #f6f7fa;
-    --hp-surface: #ffffff;
-    --hp-surface-dim: #f0f2f6;
-    --hp-orange: #C2410C;
-    --hp-orange-light: #FED7AA;
-    /* Info / warn hint vocabularies — design uses these for in-step
-       "Don't have X yet?" callouts. */
-    --hp-info-bg: #eef3ff;
-    --hp-info-ink: #1c3994;
-    --hp-info-line: #4f7cf2;
-    --hp-warn-bg: #fff8e6;
-    --hp-warn-ink: #6e4d00;
-    --hp-warn-line: #f5c84b;
-    --hp-shadow-sm: 0 1px 2px rgba(15,27,58,.05), 0 1px 3px rgba(15,27,58,.06);
-    --hp-shadow-md: 0 4px 16px rgba(15,27,58,.08);
-    --hp-shadow-lg: 0 8px 24px rgba(15,27,58,.14);
-    --hp-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    --hp-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    font-family: var(--hp-font);
-    color: var(--hp-text-primary);
+    /* Design-system scope — tokens live globally in
+       app/web/static/css/design-tokens.css (loaded by base.html).
+       This rule only applies the typography + base ink that the
+       redesign opts into. */
+    font-family: var(--ds-font);
+    color: var(--ds-text-primary);
     font-size: 15px;
     line-height: 1.55;
 }
 .home-mock,
-.home-mock * { font-family: var(--hp-font); }
+.home-mock * { font-family: var(--ds-font); }
 .home-mock code, .home-mock kbd, .home-mock pre,
 .home-mock .install-cmd, .home-mock .install-cmd *,
 .home-mock .terminal-body, .home-mock .terminal-body * {
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
 }
 .home-mock * { box-sizing: border-box; }
 
 .home-mock .install-hero {
     position: relative;
-    background: linear-gradient(135deg, var(--hp-hero-bg) 0%, var(--hp-hero-bg-deep) 100%);
-    color: var(--hp-hero-ink);
+    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
+    color: var(--ds-hero-ink);
     border-radius: 16px;
     padding: 38px 40px;
     margin-bottom: 22px;
-    box-shadow: var(--hp-shadow-lg);
+    box-shadow: var(--ds-shadow-lg);
 }
 /* Subtle green accent strip across the top of the install-hero so the
    wizard reads as the brand's primary CTA card. */
@@ -75,7 +42,7 @@
     left: 0;
     right: 0;
     height: 3px;
-    background: linear-gradient(90deg, var(--hp-brand-accent) 0%, var(--hp-primary) 60%, transparent 100%);
+    background: linear-gradient(90deg, var(--ds-brand-accent) 0%, var(--ds-primary) 60%, transparent 100%);
     border-top-left-radius: 16px;
     border-top-right-radius: 16px;
 }
@@ -105,10 +72,10 @@
 .home-mock .offboard-strip {
     margin: 0 0 22px;
     padding: 10px 14px;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 10px;
-    background: var(--hp-border-light);
-    color: var(--hp-text-secondary);
+    background: var(--ds-border-light);
+    color: var(--ds-text-secondary);
     font-size: 13px;
     display: flex;
     align-items: center;
@@ -116,14 +83,14 @@
     gap: 12px;
 }
 .home-mock .offboard-strip button {
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     background: white;
     border-radius: 6px;
     padding: 4px 10px;
     font-size: 13px;
     cursor: pointer;
 }
-.home-mock .offboard-strip button:hover { background: var(--hp-border-light); }
+.home-mock .offboard-strip button:hover { background: var(--ds-border-light); }
 .home-mock .install-hero .eyebrow {
     font-size: 11px;
     font-weight: 600;
@@ -159,7 +126,7 @@
 .home-mock .home-overview {
     position: relative;
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 22px 24px;
     margin-bottom: 18px;
@@ -189,11 +156,11 @@
     font-size: 18px;
     font-weight: 600;
     margin: 0 0 6px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .home-usage > header p {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin: 0 0 14px;
 }
 
@@ -206,7 +173,7 @@
     border: none;
     border-radius: 50%;
     background: transparent;
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     font-size: 18px;
     line-height: 1;
     cursor: pointer;
@@ -216,8 +183,8 @@
 }
 .home-mock .home-card-close:hover,
 .home-mock .home-card-close:focus-visible {
-    background: var(--hp-border-light);
-    color: var(--hp-text-primary);
+    background: var(--ds-border-light);
+    color: var(--ds-text-primary);
     outline: none;
 }
 
@@ -225,11 +192,11 @@
 .home-mock .home-overview-body {
     font-size: 14px;
     line-height: 1.6;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .home-overview-body p { margin: 0 0 10px; }
 .home-mock .home-overview-body p:last-child { margin-bottom: 0; }
-.home-mock .home-overview-body a { color: var(--hp-primary); }
+.home-mock .home-overview-body a { color: var(--ds-primary); }
 
 .home-mock .home-usage-grid {
     display: grid;
@@ -242,7 +209,7 @@
     flex-direction: column;
     gap: 4px;
     padding: 14px;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 10px;
     text-decoration: none;
     color: inherit;
@@ -254,19 +221,19 @@
    click-through from here would round-trip to content the user just
    scrolled past. */
 .home-mock a.home-usage-item:hover {
-    border-color: var(--hp-primary);
-    background: var(--hp-primary-light);
+    border-color: var(--ds-primary);
+    background: var(--ds-primary-light);
 }
 .home-mock .home-usage-item .ico { font-size: 20px; }
 .home-mock .home-usage-item strong { font-weight: 600; }
 .home-mock .home-usage-item span {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.5;
 }
 .home-mock .home-usage-foot {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin: 0;
 }
 @media (max-width: 720px) {
@@ -281,7 +248,7 @@
 }
 .home-mock .what-is-item {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 18px 22px;
     color: inherit;
@@ -290,7 +257,7 @@
     transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 .home-mock a.what-is-item:hover {
-    border-color: var(--hp-primary);
+    border-color: var(--ds-primary);
     box-shadow: 0 4px 12px rgba(46, 168, 119, 0.14);
     transform: translateY(-1px);
 }
@@ -298,7 +265,7 @@
 .home-mock .what-is-item .ttl {
     font-size: 14px;
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     margin-bottom: 4px;
     display: flex;
     align-items: center;
@@ -306,7 +273,7 @@
     gap: 8px;
 }
 .home-mock .what-is-item .ttl .arrow {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     font-weight: 600;
     transition: transform 0.15s ease;
 }
@@ -315,13 +282,13 @@
 }
 .home-mock .what-is-item .desc {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
 }
 
 .home-mock .look-around-lead {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
     margin: -4px 0 12px;
 }
@@ -376,7 +343,7 @@
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 8px;
     padding: 14px 18px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 13.5px;
     color: #FBBF24;
     display: flex;
@@ -423,11 +390,11 @@
     border: 1px solid rgba(251, 191, 36, 0.30);
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
 }
 /* Links inside the blue install-hero need a non-blue color — the default
-   `<a>` style elsewhere on /home renders as `var(--hp-primary)` blue,
+   `<a>` style elsewhere on /home renders as `var(--ds-primary)` blue,
    which is invisible against the hero's blue background. Use the same
    high-contrast white-with-underline pattern the lead paragraph uses,
    and bump hover to full white so the affordance stays obvious. */
@@ -448,7 +415,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin: 30px 0 12px;
 }
 
@@ -460,12 +427,12 @@
 }
 .home-mock .card {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 22px;
 }
 .home-mock .card h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-.home-mock .card p { font-size: 13px; color: var(--hp-text-secondary); line-height: 1.55; margin-bottom: 12px; }
+.home-mock .card p { font-size: 13px; color: var(--ds-text-secondary); line-height: 1.55; margin-bottom: 12px; }
 .home-mock .card-list { list-style: none; padding: 0; margin: 0; }
 .home-mock .card-list li {
     display: flex;
@@ -473,14 +440,14 @@
     gap: 10px;
     padding: 8px 0;
     font-size: 13px;
-    border-bottom: 1px solid var(--hp-border-light);
+    border-bottom: 1px solid var(--ds-border-light);
 }
 .home-mock .card-list li:last-child { border-bottom: none; }
 .home-mock .card-list .num {
     width: 22px; height: 22px;
     border-radius: 50%;
-    background: var(--hp-primary-light);
-    color: var(--hp-primary);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary);
     flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
     font-weight: 700; font-size: 11px;
@@ -488,12 +455,12 @@
 .home-mock .card-list .step-text { flex: 1; line-height: 1.55; }
 .home-mock .card-list .step-text strong { display: block; margin-bottom: 2px; }
 .home-mock .card-list .step-text code {
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
-    background: var(--hp-border-light);
+    background: var(--ds-border-light);
     padding: 1px 5px;
     border-radius: 3px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 
 .home-mock .explore-list { list-style: none; padding: 0; margin: 0; }
@@ -503,16 +470,16 @@
     align-items: center;
     gap: 12px;
     padding: 12px 14px;
-    background: var(--hp-border-light);
+    background: var(--ds-border-light);
     border: 1px solid transparent;
     border-radius: 8px;
     text-decoration: none;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     transition: border-color 0.15s ease, background 0.15s ease;
 }
 .home-mock .explore-item:hover {
-    border-color: var(--hp-primary);
-    background: var(--hp-primary-light);
+    border-color: var(--ds-primary);
+    background: var(--ds-primary-light);
 }
 .home-mock .explore-item .ico {
     font-size: 22px;
@@ -523,18 +490,18 @@
 .home-mock .explore-item .explore-text {
     flex: 1;
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.45;
 }
 .home-mock .explore-item .explore-text strong {
     display: block;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     font-size: 13.5px;
     font-weight: 600;
     margin-bottom: 2px;
 }
 .home-mock .explore-item .arrow {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     font-size: 16px;
     flex-shrink: 0;
     font-weight: 600;
@@ -547,16 +514,16 @@
     margin-top: 10px;
     padding: 16px 22px;
     background: white;
-    border: 1px solid var(--hp-border);
-    border-left: 4px solid var(--hp-primary);
+    border: 1px solid var(--ds-border);
+    border-left: 4px solid var(--ds-primary);
     border-radius: 12px;
     text-decoration: none;
     color: inherit;
     transition: background 0.15s ease, border-color 0.15s ease;
 }
 .home-mock .advanced-pointer:hover {
-    background: var(--hp-primary-light);
-    border-color: var(--hp-primary);
+    background: var(--ds-primary-light);
+    border-color: var(--ds-primary);
 }
 .home-mock .advanced-pointer .ico {
     font-size: 22px;
@@ -566,18 +533,18 @@
 .home-mock .advanced-pointer-text {
     flex: 1;
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
 }
 .home-mock .advanced-pointer-text strong {
     display: block;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     font-size: 14px;
     font-weight: 600;
     margin-bottom: 2px;
 }
 .home-mock .advanced-pointer .arrow {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     font-size: 16px;
     font-weight: 600;
     flex-shrink: 0;
@@ -593,7 +560,7 @@
     background: rgba(255, 255, 255, 0.12);
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
 }
 .home-mock .setup-cta-row {
@@ -606,7 +573,7 @@
     font-family: inherit;
     font-size: 13px;
     font-weight: 600;
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     background: #FFFFFF;
     border: none;
     border-radius: 6px;
@@ -659,7 +626,7 @@
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 8px;
     padding: 14px 16px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12.5px;
     line-height: 1.55;
     overflow-x: auto;
@@ -747,7 +714,7 @@
 .home-mock .home-news {
     margin-top: 28px;
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     overflow: hidden;     /* keep the green strip's corners rounded */
 }
@@ -778,7 +745,7 @@
 .home-mock .home-news-body {
     font-size: 14px;
     line-height: 1.55;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     padding: 18px 22px;
 }
 .home-mock .home-news-body p { margin: 0 0 8px; }
@@ -794,7 +761,7 @@
     border: 1px solid rgba(255, 255, 255, 0.18);
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12px;
     color: #FBBF24;
 }
@@ -840,7 +807,7 @@
     border-radius: 4px;
     padding: 1px 6px;
     font-size: 11px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     color: white;
 }
 
@@ -870,7 +837,7 @@
     background: rgba(0, 0, 0, 0.18);
     padding: 1px 5px;
     border-radius: 3px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
 }
 @keyframes agnes-pulse {
@@ -958,7 +925,7 @@
     border: 1px solid #E5E7EB;
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono, ui-monospace, monospace);
+    font-family: var(--ds-font-mono, ui-monospace, monospace);
     font-size: 12px;
 }
 .cta-modal ol li kbd { border-bottom-width: 2px; }
@@ -981,7 +948,7 @@
     cursor: pointer;
     font-family: inherit;
 }
-.cta-modal-foot button:hover { background: var(--hp-primary-dark); }
+.cta-modal-foot button:hover { background: var(--ds-primary-dark); }
 
 /* ─────────────────────────────────────────────────────────────────
    Reskin overlay — value-first intro hero, pillars, progress chip,
@@ -997,12 +964,12 @@
    eyebrow, green pill primary CTA on navy. Pillars row sits inside
    the same card separated by a hairline border. */
 .home-mock .home-hero-intro {
-    background: linear-gradient(135deg, var(--hp-hero-bg) 0%, #1a2a5f 100%);
-    color: var(--hp-hero-ink);
+    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, #1a2a5f 100%);
+    color: var(--ds-hero-ink);
     border-radius: 20px;
     padding: 44px 44px 36px;
     margin-bottom: 22px;
-    box-shadow: var(--hp-shadow-md);
+    box-shadow: var(--ds-shadow-md);
     position: relative;
     overflow: hidden;
 }
@@ -1021,7 +988,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1.5px;
-    color: var(--hp-brand-accent);
+    color: var(--ds-brand-accent);
     margin-bottom: 14px;
     position: relative;
 }
@@ -1034,7 +1001,7 @@
     line-height: 1.1;
     position: relative;
 }
-.home-mock .home-hero-intro h1 .accent { color: var(--hp-brand-accent); }
+.home-mock .home-hero-intro h1 .accent { color: var(--ds-brand-accent); }
 .home-mock .home-hero-intro .lede {
     font-size: 18px;
     line-height: 1.6;
@@ -1064,13 +1031,13 @@
     border: 1px solid transparent;
 }
 .home-mock .btn-intro-primary {
-    background: var(--hp-brand-accent);
-    color: var(--hp-hero-bg);
-    border-color: var(--hp-brand-accent);
+    background: var(--ds-brand-accent);
+    color: var(--ds-hero-bg);
+    border-color: var(--ds-brand-accent);
 }
 .home-mock .btn-intro-primary:hover {
-    background: var(--hp-primary);
-    border-color: var(--hp-primary);
+    background: var(--ds-primary);
+    border-color: var(--ds-primary);
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(84, 211, 160, 0.32);
     color: #ffffff;
@@ -1120,7 +1087,7 @@
     width: 8px;
     height: 8px;
     border-radius: 2px;
-    background: var(--hp-brand-accent);
+    background: var(--ds-brand-accent);
     flex-shrink: 0;
 }
 .home-mock .pillar p {
@@ -1152,8 +1119,8 @@
     gap: 6px;
     padding: 4px 10px;
     border-radius: 999px;
-    background: var(--hp-brand-accent);
-    color: var(--hp-hero-bg);
+    background: var(--ds-brand-accent);
+    color: var(--ds-hero-bg);
     font-size: 11.5px;
     font-weight: 600;
     letter-spacing: 0.2px;
@@ -1178,7 +1145,7 @@
 }
 .home-mock .progress-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--hp-brand-accent), var(--hp-primary));
+    background: linear-gradient(90deg, var(--ds-brand-accent), var(--ds-primary));
     border-radius: 999px;
     transition: width 0.3s ease;
 }
@@ -1198,8 +1165,8 @@
     width: 28px;
     height: 28px;
     border-radius: 50%;
-    background: var(--hp-brand-accent);
-    color: var(--hp-hero-bg);
+    background: var(--ds-brand-accent);
+    color: var(--ds-hero-bg);
     font-weight: 700;
     font-size: 13px;
     display: flex;
@@ -1223,7 +1190,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1.5px;
-    color: var(--hp-primary-dark);
+    color: var(--ds-primary-dark);
     margin-bottom: 14px;
 }
 /* First-session beat sizing — verbatim from the design spec. h2 28px,
@@ -1236,11 +1203,11 @@
     letter-spacing: -0.5px;
     line-height: 1.2;
     margin: 0 0 8px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .first-session > .lede {
     font-size: 18px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
     margin: 0 0 24px;
     max-width: 720px;
@@ -1248,8 +1215,8 @@
 /* Session-intro card — white surface w/ mint icon block, frames the
    "five beats" tagline above the walkthrough. Per design spec. */
 .home-mock .session-intro {
-    background: var(--hp-surface);
-    border: 1px solid var(--hp-border);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
     border-radius: 14px;
     padding: 20px 24px;
     margin: 4px 0 28px;
@@ -1257,22 +1224,22 @@
     gap: 16px;
     align-items: center;
     font-size: 14.5px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
-    box-shadow: var(--hp-shadow-sm);
+    box-shadow: var(--ds-shadow-sm);
 }
 .home-mock .session-intro-icon {
     width: 44px;
     height: 44px;
     border-radius: 12px;
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
     display: grid;
     place-items: center;
     font-size: 22px;
     flex-shrink: 0;
 }
-.home-mock .session-intro strong { color: var(--hp-text-primary); }
+.home-mock .session-intro strong { color: var(--ds-text-primary); }
 
 .home-mock .session-walk {
     display: flex;
@@ -1292,7 +1259,7 @@
     width: 40px;
     height: 40px;
     border-radius: 50%;
-    background: var(--hp-primary);
+    background: var(--ds-primary);
     color: #ffffff;
     display: grid;
     place-items: center;
@@ -1306,56 +1273,56 @@
     margin: 0 0 6px;
     font-size: 18px;
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .session-content > p {
     font-size: 15px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
     margin: 0 0 10px;
 }
 .home-mock .session-content > p:last-child { margin-bottom: 0; }
 .home-mock .session-content .annotation {
     font-size: 13.5px;
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     margin: 10px 0 0;
     line-height: 1.55;
     font-weight: 400;
     text-transform: none;
     letter-spacing: 0;
 }
-.home-mock .session-content .annotation strong { color: var(--hp-text-primary); }
+.home-mock .session-content .annotation strong { color: var(--ds-text-primary); }
 .home-mock .session-content code {
-    background: var(--hp-bg);
-    border: 1px solid var(--hp-border);
+    background: var(--ds-bg);
+    border: 1px solid var(--ds-border);
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12.5px;
 }
 .home-mock .session-tldr {
-    background: var(--hp-primary-light);
-    border-left: 4px solid var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    border-left: 4px solid var(--ds-primary-dark);
     padding: 20px 24px;
     border-radius: 0 8px 8px 0;
     margin-top: 28px;
     font-size: 15px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     line-height: 1.6;
 }
-.home-mock .session-tldr strong { color: var(--hp-primary-dark); }
+.home-mock .session-tldr strong { color: var(--ds-primary-dark); }
 
 /* Terminal frame — exact design colors. Box-shadow uses the global
-   --hp-shadow-md so the frame lifts off the white first-session
+   --ds-shadow-md so the frame lifts off the white first-session
    surface; macOS traffic-light reds/yellows/greens match the real
    colors (#ff5f57 / #febc2e / #28c840) so the framing reads as a
    terminal, not a generic dark card. */
 .home-mock .terminal-frame {
-    background: var(--hp-code-bg);
+    background: var(--ds-code-bg);
     border: 1px solid #1f2a4a;
     border-radius: 10px;
     overflow: hidden;
-    box-shadow: var(--hp-shadow-md);
+    box-shadow: var(--ds-shadow-md);
     margin: 10px 0 4px;
 }
 .home-mock .terminal-bar {
@@ -1378,27 +1345,27 @@
 .home-mock .terminal-bar .traffic.g { background: #28c840; }
 .home-mock .terminal-bar .terminal-title {
     margin-left: 8px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12px;
     color: rgba(255, 255, 255, 0.55);
 }
 .home-mock .terminal-body {
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 13px;
     line-height: 1.65;
-    color: var(--hp-code-ink);
+    color: var(--ds-code-ink);
     padding: 16px 20px;
     white-space: pre-wrap;
     word-break: normal;
 }
 .home-mock .terminal-body .prompt {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     margin-right: 8px;
     user-select: none;
 }
 .home-mock .terminal-body .you { color: #ffd866; }
 .home-mock .terminal-body .cmd { color: #ffd866; }
-.home-mock .terminal-body .ai-name { color: var(--hp-primary); font-weight: 600; }
+.home-mock .terminal-body .ai-name { color: var(--ds-primary); font-weight: 600; }
 .home-mock .terminal-body .path { color: #8b9fe0; }
 .home-mock .terminal-body .dim { color: rgba(215, 228, 255, 0.55); }
 .home-mock .terminal-body strong { color: #ffffff; font-weight: 600; }
@@ -1406,7 +1373,7 @@
     display: inline-block;
     width: 8px;
     height: 14px;
-    background: var(--hp-primary);
+    background: var(--ds-primary);
     vertical-align: text-bottom;
     animation: agnes-blink 1s steps(2, end) infinite;
 }
@@ -1424,7 +1391,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1.5px;
-    color: var(--hp-primary-dark);
+    color: var(--ds-primary-dark);
     margin-bottom: 14px;
 }
 .home-mock .surfaces > header h2 {
@@ -1433,11 +1400,11 @@
     letter-spacing: -0.5px;
     line-height: 1.2;
     margin: 0 0 8px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .surfaces > header p {
     font-size: 18px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
     margin: 0 0 12px;
     max-width: 760px;
@@ -1449,22 +1416,22 @@
     margin-bottom: 14px;
 }
 .home-mock .surface-card {
-    background: var(--hp-surface);
-    border: 1px solid var(--hp-border);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
     border-radius: 14px;
     padding: 28px;
-    box-shadow: var(--hp-shadow-sm);
+    box-shadow: var(--ds-shadow-sm);
     display: flex;
     flex-direction: column;
     gap: 10px;
 }
 .home-mock .surface-card.feature {
-    border: 2px solid var(--hp-primary);
-    background: linear-gradient(180deg, var(--hp-primary-light) 0%, var(--hp-surface) 40%);
+    border: 2px solid var(--ds-primary);
+    background: linear-gradient(180deg, var(--ds-primary-light) 0%, var(--ds-surface) 40%);
 }
 .home-mock .surface-card.incomplete {
     border: 2px solid #e35e5e;
-    background: linear-gradient(180deg, #fdecec 0%, var(--hp-surface) 60%);
+    background: linear-gradient(180deg, #fdecec 0%, var(--ds-surface) 60%);
 }
 .home-mock .surface-icon {
     font-size: 26px;
@@ -1475,14 +1442,14 @@
     font-size: 18px;
     font-weight: 600;
     margin: 0;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     display: flex;
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
 }
 .home-mock .surface-card .badge {
-    background: var(--hp-primary);
+    background: var(--ds-primary);
     color: #ffffff;
     font-size: 10px;
     font-weight: 700;
@@ -1503,17 +1470,17 @@
 }
 .home-mock .surface-card .what {
     font-size: 14px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
     margin: 0;
 }
 .home-mock .surface-card .what code {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
     border: 1px solid rgba(46, 168, 119, 0.30);
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12px;
 }
 /* VS Code thumb — anchor wrapping the real screenshot. Clicking opens
@@ -1524,7 +1491,7 @@
     position: relative;
     border-radius: 8px;
     overflow: hidden;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     background: #0c1224;
     text-decoration: none;
     color: inherit;
@@ -1535,7 +1502,7 @@
 .home-mock .vscode-thumb:hover {
     transform: translateY(-1px);
     box-shadow: 0 4px 16px rgba(15, 27, 58, 0.25);
-    border-color: var(--hp-brand-accent);
+    border-color: var(--ds-brand-accent);
 }
 .home-mock .vscode-thumb img {
     display: block;
@@ -1544,7 +1511,7 @@
 }
 .home-mock .vscode-thumb.thumb-empty {
     aspect-ratio: 16 / 9;
-    background: var(--hp-surface-dim);
+    background: var(--ds-surface-dim);
     cursor: default;
     display: grid;
     place-items: center;
@@ -1552,13 +1519,13 @@
 .home-mock .vscode-thumb.thumb-empty:hover {
     transform: none;
     box-shadow: none;
-    border-color: var(--hp-border);
+    border-color: var(--ds-border);
 }
 .home-mock .vscode-thumb .thumb-fallback {
     display: none;
     padding: 18px;
     font-size: 12px;
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     text-align: center;
 }
 .home-mock .vscode-thumb.thumb-empty .thumb-fallback { display: block; }
@@ -1579,7 +1546,7 @@
     vertical-align: middle;
 }
 .home-mock .vscode-thumb .dot.d-explorer { background: #ffd866; }
-.home-mock .vscode-thumb .dot.d-t1 { background: var(--hp-brand-accent); }
+.home-mock .vscode-thumb .dot.d-t1 { background: var(--ds-brand-accent); }
 .home-mock .vscode-thumb .dot.d-t2 { background: #e07b3f; }
 .home-mock .vscode-thumb .dot.d-t3 { background: #8b6ec7; }
 .home-mock .vscode-thumb .thumb-fallback-hint {
@@ -1632,17 +1599,17 @@
 /* Steps inner panel — surface-dim bg matching design + small caps
    eyebrow on the first <strong>. */
 .home-mock .surface-card .steps {
-    background: var(--hp-surface-dim);
+    background: var(--ds-surface-dim);
     border-radius: 8px;
     padding: 12px 16px;
     margin: 4px 0;
     font-size: 13px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .surface-card .steps .steps-eyebrow {
     font-size: 12px;
     letter-spacing: 1px;
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     display: block;
     margin-bottom: 8px;
     font-weight: 700;
@@ -1659,38 +1626,38 @@
 }
 .home-mock .surface-card .steps li:last-child { margin-bottom: 0; }
 .home-mock .surface-card .steps code {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
     border: 1px solid rgba(46, 168, 119, 0.30);
     padding: 1px 5px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12px;
 }
 .home-mock .surface-card .steps kbd {
-    background: var(--hp-surface);
-    border: 1px solid var(--hp-border);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
     border-bottom-width: 2px;
     padding: 1px 6px;
     border-radius: 4px;
     font-size: 12px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
 }
 .home-mock .surface-card .steps a {
-    color: var(--hp-primary-dark);
+    color: var(--ds-primary-dark);
     text-decoration: underline;
 }
 
 /* Expected-output — dashed dim panel showing "what you should see"
    on the Terminal surface card. Per design spec. */
 .home-mock .expected-output {
-    background: var(--hp-surface-dim);
-    border: 1px dashed var(--hp-border);
+    background: var(--ds-surface-dim);
+    border: 1px dashed var(--ds-border);
     border-radius: 8px;
     padding: 14px 16px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12.5px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin: 10px 0;
     white-space: pre-line;
     line-height: 1.55;
@@ -1698,11 +1665,11 @@
 .home-mock .expected-output::before {
     content: "What you should see";
     display: block;
-    font-family: var(--hp-font);
+    font-family: var(--ds-font);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 1px;
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     text-transform: uppercase;
     margin-bottom: 8px;
 }
@@ -1711,15 +1678,15 @@
    links. Per design spec. */
 .home-mock .surface-card .when-to-use {
     font-size: 13px;
-    color: var(--hp-text-muted);
-    border-top: 1px solid var(--hp-border);
+    color: var(--ds-text-muted);
+    border-top: 1px solid var(--ds-border);
     padding-top: 12px;
     margin-top: 4px;
     line-height: 1.55;
 }
-.home-mock .surface-card .when-to-use strong { color: var(--hp-text-primary); }
-.home-mock .surface-card .when-to-use a { color: var(--hp-primary-dark); text-decoration: underline; }
-.home-mock .surface-card .when-to-use a:hover { color: var(--hp-primary); }
+.home-mock .surface-card .when-to-use strong { color: var(--ds-text-primary); }
+.home-mock .surface-card .when-to-use a { color: var(--ds-primary-dark); text-decoration: underline; }
+.home-mock .surface-card .when-to-use a:hover { color: var(--ds-primary); }
 
 .home-mock .incomplete-callout {
     background: #ffffff;
@@ -1753,8 +1720,8 @@
     letter-spacing: 0.5px;
     text-transform: uppercase;
     padding: 2px 8px;
-    background: var(--hp-brand-accent);
-    color: var(--hp-hero-bg);
+    background: var(--ds-brand-accent);
+    color: var(--ds-hero-bg);
     border-radius: 999px;
     vertical-align: middle;
 }
@@ -1795,7 +1762,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1.5px;
-    color: var(--hp-primary-dark);
+    color: var(--ds-primary-dark);
     margin-bottom: 14px;
 }
 .home-mock .browse-section h2 {
@@ -1804,11 +1771,11 @@
     letter-spacing: -0.5px;
     line-height: 1.2;
     margin: 0 0 8px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .browse-section .lede {
     font-size: 18px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
     margin: 0 0 20px;
     max-width: 720px;
@@ -1819,12 +1786,12 @@
     gap: 14px;
 }
 .home-mock .browse-card {
-    background: var(--hp-surface);
-    border: 1px solid var(--hp-border);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 22px 20px;
     text-decoration: none;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -1835,8 +1802,8 @@
 }
 .home-mock .browse-card:hover {
     transform: translateY(-2px);
-    box-shadow: var(--hp-shadow-md);
-    border-color: var(--hp-primary);
+    box-shadow: var(--ds-shadow-md);
+    border-color: var(--ds-primary);
 }
 .home-mock .browse-card .browse-icon {
     font-size: 28px;
@@ -1846,14 +1813,14 @@
 .home-mock .browse-card .browse-title {
     font-weight: 600;
     font-size: 15px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
 }
 .home-mock .browse-card .browse-title .arrow {
-    color: var(--hp-primary-dark);
+    color: var(--ds-primary-dark);
     font-weight: 600;
     transition: transform 0.15s ease;
 }
@@ -1862,7 +1829,7 @@
 }
 .home-mock .browse-card .browse-desc {
     font-size: 12.5px;
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     line-height: 1.45;
     flex-grow: 1;
 }
@@ -1872,7 +1839,7 @@
     position: absolute;
     top: 12px;
     right: 12px;
-    background: var(--hp-primary);
+    background: var(--ds-primary);
     color: #ffffff;
     font-size: 10px;
     font-weight: 700;
@@ -1922,75 +1889,75 @@
    so they stand out as "what the user will type".
    ───────────────────────────────────────────────────────────────── */
 .home-mock .install-hero {
-    background: var(--hp-surface);
-    color: var(--hp-text-primary);
-    border: 1px solid var(--hp-border);
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
     border-radius: 16px;
     padding: 36px;
-    box-shadow: var(--hp-shadow-sm);
+    box-shadow: var(--ds-shadow-sm);
 }
 /* Drop the navy gradient + sweep-shadow remnant; keep the slim green
    accent strip across the top so the wizard reads as the brand CTA. */
 .home-mock .install-hero::before { content: none; }
 .home-mock .install-hero-close {
-    background: var(--hp-surface);
-    border: 1px solid var(--hp-border);
-    color: var(--hp-text-muted);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-muted);
 }
 .home-mock .install-hero-close:hover,
 .home-mock .install-hero-close:focus-visible {
-    background: var(--hp-bg);
-    color: var(--hp-text-primary);
+    background: var(--ds-bg);
+    color: var(--ds-text-primary);
 }
 .home-mock .install-hero .eyebrow {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     opacity: 1;
 }
 .home-mock .install-hero h1 {
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     font-size: 24px;
 }
 .home-mock .install-hero .lead,
 .home-mock .install-hero .lead-privacy {
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     opacity: 1;
 }
-.home-mock .install-hero .lead strong { color: var(--hp-text-primary); }
+.home-mock .install-hero .lead strong { color: var(--ds-text-primary); }
 .home-mock .install-hero a {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     text-decoration: underline;
     text-decoration-color: rgba(46, 168, 119, 0.4);
 }
 .home-mock .install-hero a:hover,
 .home-mock .install-hero a:focus {
-    color: var(--hp-primary-dark);
-    text-decoration-color: var(--hp-primary-dark);
+    color: var(--ds-primary-dark);
+    text-decoration-color: var(--ds-primary-dark);
 }
 /* In-lead `<code>` chips — light variant (design uses brand-light bg). */
 .home-mock .install-hero code,
 .home-mock .install-note code,
 .home-mock .install-note > code {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
     border-color: rgba(46, 168, 119, 0.30);
 }
 /* Setup-meta chips on light bg — primary chip uses brand-light pill,
    secondary chips lose the white-on-dark treatment for ink-muted. */
 .home-mock .setup-chip {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
 }
 .home-mock .setup-chip-quiet {
-    background: var(--hp-bg);
-    color: var(--hp-text-secondary);
-    border-color: var(--hp-border);
+    background: var(--ds-bg);
+    color: var(--ds-text-secondary);
+    border-color: var(--ds-border);
 }
 .home-mock .progress-bar {
     height: 6px;
-    background: var(--hp-bg);
+    background: var(--ds-bg);
 }
 .home-mock .progress-fill {
-    background: var(--hp-primary);
+    background: var(--ds-primary);
 }
 
 /* Step rows — grid layout with a light circle for the step number,
@@ -1998,7 +1965,7 @@
 .home-mock .install-block {
     background: transparent;
     border: none;
-    border-top: 1px solid var(--hp-border);
+    border-top: 1px solid var(--ds-border);
     border-radius: 0;
     padding: 22px 0 22px 64px;
     margin-top: 0 !important;
@@ -2013,13 +1980,13 @@
     left: 8px;
     width: 40px;
     height: 40px;
-    background: var(--hp-surface-dim);
-    color: var(--hp-text-secondary);
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-secondary);
     font-size: 16px;
     font-weight: 700;
 }
 .home-mock .install-block .label {
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     font-size: 17px;
     font-weight: 700;
     text-transform: none;
@@ -2031,45 +1998,45 @@
 /* Subhead under each step label — short body type explaining what
    the step accomplishes before the OS tabs / code panel appear. */
 .home-mock .install-block .step-lede {
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     font-size: 14.5px;
     line-height: 1.55;
     margin: 0 0 12px;
     max-width: 720px;
 }
-.home-mock .install-block .step-lede strong { color: var(--hp-text-primary); font-weight: 600; }
+.home-mock .install-block .step-lede strong { color: var(--ds-text-primary); font-weight: 600; }
 .home-mock .install-block .step-lede code {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
     border: 1px solid rgba(46, 168, 119, 0.30);
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12px;
 }
 /* OS tabs sit on white now — borders + colors flip to ink. */
 .home-mock .os-tabs {
-    border-bottom-color: var(--hp-border);
+    border-bottom-color: var(--ds-border);
 }
 .home-mock .os-tab {
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
 }
-.home-mock .os-tab:hover { color: var(--hp-text-primary); }
+.home-mock .os-tab:hover { color: var(--ds-text-primary); }
 .home-mock .os-tab.is-active {
-    color: var(--hp-primary-dark);
-    border-bottom-color: var(--hp-primary-dark);
+    color: var(--ds-primary-dark);
+    border-bottom-color: var(--ds-primary-dark);
 }
 /* Code panel (.install-cmd) STAYS dark — it's the "type this" surface.
    Just adjust spacing + ensure it pops on the white step row. */
 .home-mock .install-cmd {
-    background: var(--hp-code-bg);
+    background: var(--ds-code-bg);
     border-color: rgba(0, 0, 0, 0.08);
-    color: var(--hp-code-yellow);
+    color: var(--ds-code-yellow);
 }
 /* Install-note prose — ink-soft secondary on white, 14px to match
    design's body type. */
 .home-mock .install-note {
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     font-size: 14px;
     line-height: 1.55;
     margin-top: 10px;
@@ -2078,9 +2045,9 @@
    design's `.step-body .rec`. Used for opinionated "I do it this way"
    guidance that's softer than a warning. Lightbulb prefix via ::before. */
 .home-mock .install-block .rec {
-    background: var(--hp-warn-bg);
-    border-left: 3px solid var(--hp-warn-line);
-    color: var(--hp-warn-ink);
+    background: var(--ds-warn-bg);
+    border-left: 3px solid var(--ds-warn-line);
+    color: var(--ds-warn-ink);
     padding: 12px 16px;
     border-radius: 8px;
     font-size: 14px;
@@ -2090,10 +2057,10 @@
 .home-mock .install-block .rec::before {
     content: "\1F4A1\00a0";
 }
-.home-mock .install-block .rec strong { color: var(--hp-warn-ink); }
+.home-mock .install-block .rec strong { color: var(--ds-warn-ink); }
 .home-mock .install-block .rec code {
     background: rgba(245, 200, 75, 0.18);
-    color: var(--hp-warn-ink);
+    color: var(--ds-warn-ink);
     padding: 1px 6px;
     border-radius: 4px;
 }
@@ -2102,19 +2069,19 @@
    command (e.g. "What does mkdir -p do?"). Always visible — for
    collapsible OS-aware variants see `details.terminal-howto`. */
 .home-mock .install-block .hint {
-    background: var(--hp-info-bg);
-    border-left: 3px solid var(--hp-info-line);
-    color: var(--hp-info-ink);
+    background: var(--ds-info-bg);
+    border-left: 3px solid var(--ds-info-line);
+    color: var(--ds-info-ink);
     padding: 12px 16px;
     border-radius: 8px;
     font-size: 14px;
     line-height: 1.55;
     margin: 12px 0;
 }
-.home-mock .install-block .hint strong { color: var(--hp-info-ink); }
+.home-mock .install-block .hint strong { color: var(--ds-info-ink); }
 .home-mock .install-block .hint code {
     background: rgba(79, 124, 242, 0.14);
-    color: var(--hp-info-ink);
+    color: var(--ds-info-ink);
     padding: 1px 6px;
     border-radius: 4px;
 }
@@ -2129,18 +2096,18 @@
 .home-mock .install-block .step-mode-heading {
     font-weight: 600;
     margin: 14px 0 6px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .install-block .mode-tabs {
     display: flex;
     gap: 4px;
     margin-bottom: 8px;
-    border-bottom: 1px solid var(--hp-border);
+    border-bottom: 1px solid var(--ds-border);
 }
 .home-mock .install-block .mode-tab {
     background: transparent;
     border: none;
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     font-size: 13px;
     font-weight: 600;
     padding: 8px 14px;
@@ -2150,8 +2117,8 @@
     font-family: inherit;
 }
 .home-mock .install-block .mode-tab.is-active {
-    color: var(--hp-primary-dark);
-    border-bottom-color: var(--hp-primary-dark);
+    color: var(--ds-primary-dark);
+    border-bottom-color: var(--ds-primary-dark);
 }
 /* Single-line description below the mode-tab — kept on one row.
    The text is tight enough to fit at typical widths; on narrow
@@ -2159,15 +2126,15 @@
 .home-mock .install-block .mode-panel-lede {
     font-size: 13.5px;
     line-height: 1.5;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin: 10px 0 12px;
 }
 .home-mock .install-block .mode-panel-lede code {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12px;
 }
 /* Setup section header — eyebrow + heading + lede that float above
@@ -2181,37 +2148,37 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1.2px;
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     margin-bottom: 8px;
 }
 .home-mock .setup-section-header .setup-heading {
     font-size: 28px;
     font-weight: 700;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     margin: 0 0 12px;
     line-height: 1.2;
 }
 .home-mock .setup-section-header .lead {
     font-size: 15px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.6;
     margin: 0 0 10px;
     max-width: 760px;
 }
 .home-mock .setup-section-header .lead code {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12.5px;
 }
 .home-mock .setup-section-header .lead.lead-privacy {
     font-size: 13.5px;
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     margin-bottom: 0;
 }
-.home-mock .setup-section-header .lead.lead-privacy strong { color: var(--hp-text-secondary); }
+.home-mock .setup-section-header .lead.lead-privacy strong { color: var(--ds-text-secondary); }
 /* Step 5 manual-fallback details — inline with the copy button on the
    right of the cta row. When closed, just the summary is visible;
    when opened, the expanded preview spans the full row width. */
@@ -2231,22 +2198,22 @@
     margin-left: 0;
 }
 .home-mock .install-block .setup-cta-row .manual-fallback > summary {
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     cursor: pointer;
     list-style: none;
 }
 .home-mock .install-block .setup-cta-row .manual-fallback > summary::-webkit-details-marker { display: none; }
 .home-mock .install-block .setup-cta-row .manual-fallback > summary::before {
     content: "\25B8 ";
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
 }
 .home-mock .install-block .setup-cta-row .manual-fallback[open] > summary::before { content: "\25BE "; }
-.home-mock .install-block .setup-cta-row .manual-fallback > summary:hover { color: var(--hp-text-primary); }
+.home-mock .install-block .setup-cta-row .manual-fallback > summary:hover { color: var(--ds-text-primary); }
 /* Setup-finish strip — flex row separating "waiting for agnes pull"
    status from the right-aligned "Mark me as onboarded" fallback link.
    Matches design spec's footer row on the setup card. */
 .home-mock .install-hero .setup-finish-strip {
-    border-top: 1px solid var(--hp-border);
+    border-top: 1px solid var(--ds-border);
     padding-top: 16px;
     margin-top: 20px;
     display: flex;
@@ -2254,22 +2221,22 @@
     flex-wrap: wrap;
     gap: 12px;
     font-size: 13px;
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
 }
 .home-mock .install-hero .setup-finish-text code {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
     padding: 1px 6px;
     border-radius: 4px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
 }
 .home-mock .install-hero .setup-finish-link {
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     text-decoration: underline;
     cursor: pointer;
 }
-.home-mock .install-hero .setup-finish-link:hover { color: var(--hp-text-primary); }
+.home-mock .install-hero .setup-finish-link:hover { color: var(--ds-text-primary); }
 .home-mock .install-hero .setup-finish-strip .status {
     width: 100%;
     font-style: italic;
@@ -2277,76 +2244,76 @@
 }
 /* Setup-CTA inside Step 4 — green primary button on light. */
 .home-mock .setup-cta-lead {
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
 }
 .home-mock .setup-cta-lead code {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
 }
 .home-mock .btn-setup-primary {
-    background: var(--hp-primary);
+    background: var(--ds-primary);
     color: #ffffff;
 }
-.home-mock .btn-setup-primary:hover { background: var(--hp-primary-dark); }
-.home-mock .setup-cta-hint { color: var(--hp-text-muted); }
+.home-mock .btn-setup-primary:hover { background: var(--ds-primary-dark); }
+.home-mock .setup-cta-hint { color: var(--ds-text-muted); }
 .home-mock details.manual-fallback {
-    border-top-color: var(--hp-border);
+    border-top-color: var(--ds-border);
 }
 .home-mock details.manual-fallback > summary {
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
 }
 /* Self-mark + auto-detect badge — light variants. */
-.home-mock .self-mark { color: var(--hp-text-secondary); }
+.home-mock .self-mark { color: var(--ds-text-secondary); }
 .home-mock .self-mark button {
-    background: var(--hp-surface);
-    color: var(--hp-text-primary);
-    border: 1px solid var(--hp-border);
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
 }
-.home-mock .self-mark button:hover { background: var(--hp-bg); }
+.home-mock .self-mark button:hover { background: var(--ds-bg); }
 .home-mock .auto-detect-badge {
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
     border: 1px solid rgba(46, 168, 119, 0.30);
 }
-.home-mock .auto-detect-badge .pulse { background: var(--hp-primary); }
+.home-mock .auto-detect-badge .pulse { background: var(--ds-primary); }
 .home-mock .auto-detect-badge code {
     background: rgba(46, 168, 119, 0.18);
-    color: var(--hp-primary-dark);
+    color: var(--ds-primary-dark);
 }
 /* Terminal-howto disclosure — blue info-hint box matching the design's
    `.step-body .hint` vocabulary (light blue bg, blue left-border,
    blue ink, white kbd chips with thin border). */
 .home-mock details.terminal-howto {
-    background: var(--hp-info-bg);
+    background: var(--ds-info-bg);
     border: none;
-    border-left: 3px solid var(--hp-info-line);
+    border-left: 3px solid var(--ds-info-line);
     border-radius: 8px;
     padding: 12px 16px;
     margin-top: 10px;
 }
 .home-mock details.terminal-howto > summary {
-    color: var(--hp-info-ink);
+    color: var(--ds-info-ink);
     font-weight: 700;
     font-size: 14px;
 }
-.home-mock details.terminal-howto > summary::before { color: var(--hp-info-ink); }
+.home-mock details.terminal-howto > summary::before { color: var(--ds-info-ink); }
 .home-mock .terminal-howto-body {
-    color: var(--hp-info-ink);
+    color: var(--ds-info-ink);
     margin-top: 8px;
     font-size: 14px;
 }
 .home-mock .terminal-howto-body p { margin: 0 0 6px; }
 .home-mock .terminal-howto-body p:last-child { margin: 0; }
-.home-mock .terminal-howto-body strong { color: var(--hp-info-ink); }
+.home-mock .terminal-howto-body strong { color: var(--ds-info-ink); }
 .home-mock .terminal-howto-body kbd {
-    background: var(--hp-surface);
-    color: var(--hp-text-primary);
-    border: 1px solid var(--hp-border);
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
     border-bottom-width: 2px;
     padding: 1px 6px;
     border-radius: 4px;
     font-size: 12px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
 }
 /* Step 3 (home_automode) extra .install-cmd nested inside — already
    dark via .install-cmd rule above. Notes around it use ink-soft. */
@@ -2576,7 +2543,7 @@ Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
             <div class="expected-output">$ pwd
 /Users/yourname/Desktop/{{ workspace_dir }}</div>
 
-            <p class="step-lede" style="font-size: 13px; color: var(--hp-text-muted); margin-top: 6px;">
+            <p class="step-lede" style="font-size: 13px; color: var(--ds-text-muted); margin-top: 6px;">
                 (Optional: run <code>pwd</code> to print the path you're currently in. If it ends in <code>/Desktop/{{ workspace_dir }}</code>, you're in the right place.)
             </p>
         </div>
