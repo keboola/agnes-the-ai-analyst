@@ -1,15 +1,17 @@
 /* Design System - Data Analyst Portal v2 */
 
 :root {
-    /* Colors — green/navy palette aligned with the CEO mock
-       (data/ceo_home.html). The `--primary` token is the canonical
-       "brand" color used across nav, buttons, links, and active
-       states; the rest of the app picks this up automatically. Old
-       blue palette (var(--primary) / var(--primary-dark)) retired. */
-    --primary: #2ea877;
-    --primary-light: #e6f9f0;
-    --primary-dark: #1f8a5e;
-    --brand-accent: #54d3a0;
+    /* Colors — `--primary` is the canonical app-wide brand colour
+       (blue), used across nav, buttons, links, and active states on
+       login, dashboard, catalog, marketplace, admin, etc. The /home
+       redesign opted into a green/navy palette via local
+       `.home-mock` / `.advanced-mock` overrides; those scopes set
+       their own `--hp-primary` so the green only applies where the
+       redesign explicitly opts in. Everything else inherits blue. */
+    --primary: #0073D1;
+    --primary-light: rgba(0, 115, 209, 0.1);
+    --primary-dark: #005BA3;
+    --brand-accent: #4F9DEB;
     --hero-bg: #0f1b3a;
     --hero-ink: #f3f6ff;
     --text-primary: #0e1525;
