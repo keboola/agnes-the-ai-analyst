@@ -436,22 +436,28 @@
   document.querySelectorAll('.obs-kpi').forEach(b => {
     b.addEventListener('click', () => {
       const k = b.dataset.quick;
+      let changeDispatched = false;
       if (k === 'errors') {
         state.only_errors = true;
       } else if (k === 'users') {
         state.group_by = 'username';
         groupSel.value = 'username';
         groupSel.dispatchEvent(new Event('change', {bubbles: true}));
+        changeDispatched = true;
       } else if (k === 'tools') {
         state.group_by = 'tool_name';
         groupSel.value = 'tool_name';
         groupSel.dispatchEvent(new Event('change', {bubbles: true}));
+        changeDispatched = true;
       } else {
         Object.assign(state, { username: '', tool_name: '', source: '', event_type: '', only_errors: false, q: '' });
         fUser.value=''; fTool.value=''; fSrc.value=''; fEv.value=''; fQ.value='';
       }
       state.offset = 0;
-      writeUrl(); refreshAll();
+      writeUrl();
+      // change listener already called refreshOnFilter (kpis + table) for the
+      // users/tools branches — only facets still need updating
+      if (changeDispatched) loadFacets(); else refreshAll();
     });
   });
 
