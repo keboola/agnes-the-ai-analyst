@@ -1548,12 +1548,7 @@
     border: 2px solid #e35e5e;
     background: linear-gradient(180deg, #fdecec 0%, var(--hp-surface) 60%);
 }
-.home-mock .surface-card-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-.home-mock .surface-ico {
+.home-mock .surface-icon {
     font-size: 26px;
     line-height: 1;
     margin-bottom: 6px;
@@ -1568,6 +1563,16 @@
     gap: 10px;
     flex-wrap: wrap;
 }
+.home-mock .surface-card .badge {
+    background: var(--hp-primary);
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 3px 8px;
+    border-radius: 4px;
+}
 .home-mock .surface-card .badge-warn {
     background: #e35e5e;
     color: #ffffff;
@@ -1578,50 +1583,12 @@
     padding: 3px 8px;
     border-radius: 4px;
 }
-.home-mock .surface-pitch,
 .home-mock .surface-card .what {
     font-size: 14px;
     color: var(--hp-text-secondary);
     line-height: 1.55;
     margin: 0;
-    flex-grow: 1;
 }
-.home-mock .surface-thumb {
-    background: var(--hp-surface-dim);
-    border: 1px dashed var(--hp-border);
-    border-radius: 8px;
-    min-height: 80px;
-    display: grid;
-    place-items: center;
-    color: var(--hp-text-muted);
-    font-size: 12.5px;
-    font-style: italic;
-}
-.home-mock .surface-card .annotation {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    color: var(--hp-text-muted);
-    text-transform: uppercase;
-    margin: 8px 0 4px;
-}
-.home-mock .surface-steps {
-    background: var(--hp-surface-dim);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin: 4px 0;
-    list-style: decimal;
-    padding-left: 32px;
-}
-.home-mock .surface-steps li {
-    font-size: 13px;
-    color: var(--hp-text-primary);
-    line-height: 1.55;
-    margin-bottom: 4px;
-}
-.home-mock .surface-steps li:last-child { margin-bottom: 0; }
-.home-mock .surface-steps li code,
-.home-mock .surface-pitch code,
 .home-mock .surface-card .what code {
     background: var(--hp-primary-light);
     color: var(--hp-primary-dark);
@@ -1631,7 +1598,116 @@
     font-family: var(--hp-font-mono);
     font-size: 12px;
 }
-.home-mock .surface-steps li kbd {
+/* VS Code thumb — dark-bg labeled panel matching the mock's
+   `<a class="vscode-thumb">` fallback. Real screenshot would replace
+   `.thumb-fallback` when an `<img>` lands in the markup. */
+.home-mock .vscode-thumb {
+    display: block;
+    position: relative;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--hp-border);
+    background: #0c1224;
+    text-decoration: none;
+    color: inherit;
+    margin: 2px 0 4px;
+    aspect-ratio: 16 / 9;
+}
+.home-mock .vscode-thumb .thumb-fallback {
+    padding: 18px;
+    color: var(--hp-text-muted);
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    height: 100%;
+    background:
+        linear-gradient(90deg, #ffd866 0 60px, transparent 60px 100%) 0 14px / 100% 4px no-repeat,
+        linear-gradient(90deg, transparent 0 60px, #8b6ec7 60px calc(60px + 90px), transparent calc(60px + 90px) 100%) 0 24px / 100% 4px no-repeat,
+        linear-gradient(90deg, transparent 0 calc(60px + 90px), #2ea877 calc(60px + 90px) calc(60px + 180px), transparent calc(60px + 180px) 100%) 0 34px / 100% 4px no-repeat,
+        linear-gradient(90deg, transparent 0 calc(60px + 180px), #e07b3f calc(60px + 180px) calc(60px + 270px), transparent calc(60px + 270px) 100%) 0 44px / 100% 4px no-repeat;
+}
+.home-mock .vscode-thumb .thumb-fallback-row {
+    font-family: var(--hp-font-mono);
+    font-size: 12px;
+    color: #d7e4ff;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin-bottom: 12px;
+    align-items: center;
+}
+.home-mock .vscode-thumb .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+.home-mock .vscode-thumb .dot.d-explorer { background: #ffd866; }
+.home-mock .vscode-thumb .dot.d-t1 { background: #8b6ec7; }
+.home-mock .vscode-thumb .dot.d-t2 { background: #2ea877; }
+.home-mock .vscode-thumb .dot.d-t3 { background: #e07b3f; }
+.home-mock .vscode-thumb .thumb-fallback-hint {
+    font-size: 11.5px;
+    color: rgba(215, 228, 255, 0.6);
+    font-style: italic;
+}
+.home-mock .vscode-thumb .thumb-caption {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    background: rgba(15, 27, 58, 0.78);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+}
+
+/* Steps inner panel — surface-dim bg matching mock + small caps
+   eyebrow on the first <strong>. */
+.home-mock .surface-card .steps {
+    background: var(--hp-surface-dim);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 4px 0;
+    font-size: 13px;
+    color: var(--hp-text-primary);
+}
+.home-mock .surface-card .steps .steps-eyebrow {
+    font-size: 12px;
+    letter-spacing: 1px;
+    color: var(--hp-text-muted);
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+.home-mock .surface-card .steps ol {
+    margin: 0;
+    padding-left: 18px;
+    list-style: decimal;
+}
+.home-mock .surface-card .steps li {
+    margin-bottom: 4px;
+    line-height: 1.55;
+}
+.home-mock .surface-card .steps li:last-child { margin-bottom: 0; }
+.home-mock .surface-card .steps code {
+    background: var(--hp-primary-light);
+    color: var(--hp-primary-dark);
+    border: 1px solid rgba(46, 168, 119, 0.30);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: var(--hp-font-mono);
+    font-size: 12px;
+}
+.home-mock .surface-card .steps kbd {
     background: var(--hp-surface);
     border: 1px solid var(--hp-border);
     border-bottom-width: 2px;
@@ -1640,17 +1716,51 @@
     font-size: 12px;
     font-family: var(--hp-font-mono);
 }
-.home-mock .surface-foot {
+.home-mock .surface-card .steps a {
+    color: var(--hp-primary-dark);
+    text-decoration: underline;
+}
+
+/* Expected-output — dashed dim panel showing "what you should see"
+   on the Terminal surface card. Mock spec verbatim. */
+.home-mock .expected-output {
+    background: var(--hp-surface-dim);
+    border: 1px dashed var(--hp-border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: var(--hp-font-mono);
+    font-size: 12.5px;
+    color: var(--hp-text-secondary);
+    margin: 10px 0;
+    white-space: pre-line;
+    line-height: 1.55;
+}
+.home-mock .expected-output::before {
+    content: "What you should see";
+    display: block;
+    font-family: var(--hp-font);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--hp-text-muted);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+
+/* When-to-use footer — top-border + ink-muted body, brand-dark for
+   links. Mock spec. */
+.home-mock .surface-card .when-to-use {
     font-size: 13px;
     color: var(--hp-text-muted);
-    margin: 4px 0 0;
-    line-height: 1.5;
     border-top: 1px solid var(--hp-border);
     padding-top: 12px;
+    margin-top: 4px;
+    line-height: 1.55;
 }
-.home-mock .surface-foot strong { color: var(--hp-text-primary); }
-.home-mock .surface-foot a { color: var(--hp-primary-dark); text-decoration: underline; }
-.home-mock .surface-foot a:hover { color: var(--hp-primary); }
+.home-mock .surface-card .when-to-use strong { color: var(--hp-text-primary); }
+.home-mock .surface-card .when-to-use a { color: var(--hp-primary-dark); text-decoration: underline; }
+.home-mock .surface-card .when-to-use a:hover { color: var(--hp-primary); }
+
 .home-mock .incomplete-callout {
     background: #ffffff;
     border: 1px dashed #e35e5e;
@@ -1658,15 +1768,14 @@
     padding: 12px 16px;
     font-size: 13px;
     color: #7a1f1f;
+    line-height: 1.55;
 }
 .home-mock .incomplete-callout strong {
-    display: block;
-    margin-bottom: 6px;
     color: #5a0e0e;
 }
 .home-mock .incomplete-callout ul {
-    margin: 0;
-    padding-left: 18px;
+    margin: 8px 0 4px 18px;
+    padding: 0;
     color: #7a1f1f;
 }
 .home-mock .incomplete-callout li { margin-bottom: 4px; }
@@ -1795,7 +1904,25 @@
     font-size: 12.5px;
     color: var(--hp-text-muted);
     line-height: 1.45;
+    flex-grow: 1;
 }
+/* "NEW" corner badge — mock spec verbatim. */
+.home-mock .browse-card.new::after {
+    content: "NEW";
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: var(--hp-primary);
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.5px;
+}
+/* Equal heights — grid stretches items by default; this just keeps
+   inner content laid out so titles + descs line up across cards. */
+.home-mock .browse-card { align-self: stretch; }
 @media (max-width: 880px) {
     .home-mock .browse-grid { grid-template-columns: repeat(2, 1fr); }
 }
@@ -2597,70 +2724,92 @@ Want me to draft a 1-page brief, or dig into one of these?
         </header>
         <div class="surfaces-grid">
             <article class="surface-card feature">
-                <div class="surface-card-head">
-                    <span class="surface-ico" aria-hidden="true">&#x1F4DD;</span>
-                    <h3>VS Code <span class="recommend-pill">Recommended</span></h3>
+                <div class="surface-icon" aria-hidden="true">&#x1F4DD;</div>
+                <h3>VS Code <span class="badge">RECOMMENDED</span></h3>
+                <p class="what">The best place to live in {{ instance_brand }}. Multi-panel layout, built-in file editor, diff viewer, and a terminal Claude runs in &mdash; all in one window. Easier than a bare terminal for most people.</p>
+                <div class="vscode-thumb" aria-hidden="true">
+                    <div class="thumb-fallback">
+                        <div class="thumb-fallback-row">
+                            <span class="dot d-explorer"></span>EXPLORER
+                            <span class="dot d-t1"></span>TERMINAL&nbsp;1
+                            <span class="dot d-t2"></span>TERMINAL&nbsp;2
+                            <span class="dot d-t3"></span>TERMINAL&nbsp;3
+                        </div>
+                        <div class="thumb-fallback-hint">Recommended layout &mdash; one terminal for the conversation, one for diffs, one spare.</div>
+                    </div>
+                    <span class="thumb-caption">Recommended layout</span>
                 </div>
-                <p class="surface-pitch">The best place to live in {{ instance_brand }}. Multi-panel layout, built-in file editor, diff viewer, and a terminal Claude runs in &mdash; all in one window. Easier than a bare terminal for most people.</p>
-                <div class="surface-thumb thumb-empty" aria-hidden="true">Screenshot pending</div>
-                <div class="annotation">Daily use</div>
-                <ol class="surface-steps">
-                    <li>Open VS Code &rarr; <strong>File &rarr; Open Folder</strong> &rarr; select your <code>~/{{ workspace_dir }}</code> folder.</li>
-                    <li>Open terminal: <kbd>⌘</kbd>+<kbd>`</kbd> (macOS) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows).</li>
-                    <li>Right-click the terminal tab &rarr; <em>Move Terminal into Editor Area</em>.</li>
-                    <li>Split with <kbd>⌘</kbd>+<kbd>\</kbd> &mdash; one panel for the conversation, one for diffs.</li>
-                    <li>Type <code>claude</code> (or your shortcut from Step 6) &mdash; the welcome menu fires; pick a project or describe what you want.</li>
-                </ol>
-                <p class="surface-foot"><a href="/setup-advanced#vscode">Open VS Code setup guide &rarr;</a></p>
+                <div class="steps">
+                    <strong class="steps-eyebrow">DAILY USE</strong>
+                    <ol>
+                        <li>Open VS Code &rarr; <strong>File &rarr; Open Folder</strong> &rarr; select your <code>~/{{ workspace_dir }}</code> folder.</li>
+                        <li>Open terminal: <kbd>⌘</kbd>+<kbd>`</kbd> (macOS) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows).</li>
+                        <li>Right-click the terminal tab &rarr; <em>"Move Terminal into Editor Area"</em>. Split with <kbd>⌘</kbd>+<kbd>\</kbd> &mdash; one panel for the conversation, one for diffs.</li>
+                        <li>Type <code>claude</code> (or <code>{{ workspace_dir | lower }}</code> if you set the Step&nbsp;6 shortcut). The welcome menu fires &mdash; pick a project or describe what you want.</li>
+                    </ol>
+                </div>
+                <div class="when-to-use">
+                    <strong>Full step-by-step guide:</strong> <a href="/setup-advanced#vscode">Open VS Code setup guide &rarr;</a>
+                </div>
             </article>
 
             <article class="surface-card">
-                <div class="surface-card-head">
-                    <span class="surface-ico" aria-hidden="true">&#x2328;&#xFE0F;</span>
-                    <h3>Terminal</h3>
+                <div class="surface-icon" aria-hidden="true">&#x2328;&#xFE0F;</div>
+                <h3>Terminal</h3>
+                <p class="what">Quick access &mdash; when you don't want a whole IDE open. Same Claude, same plugins, just bare. Best for short questions and one-off scripts.</p>
+                <div class="steps">
+                    <strong class="steps-eyebrow">QUICK ACCESS</strong>
+                    <ol>
+                        <li>Open <strong>Terminal</strong> (macOS: <kbd>⌘</kbd>+<kbd>Space</kbd>, type <em>Terminal</em>) or <strong>PowerShell</strong> (Windows: <kbd>⊞</kbd>, type <em>PowerShell</em>).</li>
+                        <li>Go to your folder: <code>cd ~/{{ workspace_dir }}</code></li>
+                        <li>Type <code>claude</code> (or <code>{{ workspace_dir | lower }}</code>) and hit Enter.</li>
+                        <li>Welcome menu fires &mdash; same as in VS Code.</li>
+                    </ol>
                 </div>
-                <p class="surface-pitch">Quick access &mdash; when you don't want a whole IDE open. Same Claude, same plugins, just bare. Best for short questions and one-off scripts.</p>
-                <div class="annotation">Quick access</div>
-                <ol class="surface-steps">
-                    <li>Open Terminal (macOS: <kbd>⌘</kbd>+<kbd>Space</kbd>, type <kbd>Terminal</kbd>) or PowerShell (Windows: press <kbd>⊞</kbd>, type <kbd>PowerShell</kbd>).</li>
-                    <li>Go to your folder: <code>cd ~/{{ workspace_dir }}</code></li>
-                    <li>Type <code>claude</code> (or your shortcut) and hit Enter.</li>
-                    <li>Welcome menu fires &mdash; same as in VS Code.</li>
-                </ol>
-                <p class="surface-foot"><strong>Best for:</strong> quick questions, scripts, when you already have a terminal open.</p>
+                <div class="expected-output">2026-05-20
+
+What would you like to do?
+
+  [1] Talk to {{ instance_brand }} &mdash; workspace questions
+  [2] New project &mdash; scaffold a new project
+  [3] Switch to recent project:
+      a. RevenueAnalysis (2 hours ago)
+      b. WeeklyReview (1 day ago)
+      c. Onboarding (3 days ago)
+  [4] Browse full registry</div>
+                <div class="when-to-use"><strong>Best for:</strong> quick questions, scripts, when you already have a terminal open from something else.</div>
             </article>
 
             <article class="surface-card">
-                <div class="surface-card-head">
-                    <span class="surface-ico" aria-hidden="true">&#x1F5A5;&#xFE0F;</span>
-                    <h3>Claude Code (Desktop app)</h3>
+                <div class="surface-icon" aria-hidden="true">&#x1F5A5;&#xFE0F;</div>
+                <h3>Claude Code (Desktop app)</h3>
+                <p class="what">The Claude Code agent running inside the Claude Desktop app instead of in a terminal. You point it at your <code>{{ workspace_dir }}</code> folder and work from there with a native UI for diffs, file tree, and chat.</p>
+                <div class="steps">
+                    <strong class="steps-eyebrow">CONNECT IT</strong>
+                    <ol>
+                        <li>Install Claude Desktop from <a href="https://claude.ai/download" target="_blank" rel="noopener">claude.ai/download</a>.</li>
+                        <li>Sign in with the same account you use for Claude Code.</li>
+                        <li>Open the <code>{{ workspace_dir }}</code> folder in Claude Code (<strong>File &rarr; Open Folder</strong>).</li>
+                        <li>Everything in the workspace &mdash; plugins, skills, data packages, memory &mdash; is available there automatically.</li>
+                    </ol>
                 </div>
-                <p class="surface-pitch">The Claude Code agent running inside the Claude Desktop app instead of in a terminal. Point it at your <code>{{ workspace_dir }}</code> folder and work with a native UI for diffs, file tree, and chat.</p>
-                <div class="annotation">Connect it</div>
-                <ol class="surface-steps">
-                    <li>Install Claude Desktop from <a href="https://claude.ai/download" target="_blank" rel="noopener">claude.ai/download</a>.</li>
-                    <li>Sign in with the same account you use for Claude Code.</li>
-                    <li>Open the <code>{{ workspace_dir }}</code> folder in Claude Code (<strong>File &rarr; Open Folder</strong>).</li>
-                    <li>Everything in the workspace &mdash; plugins, skills, data packages, memory &mdash; is available automatically.</li>
-                </ol>
-                <p class="surface-foot"><strong>Best for:</strong> people who prefer a native UI to a terminal. Same Claude Code engine, same workspace.</p>
+                <div class="when-to-use"><strong>Best for:</strong> people who prefer a native UI to a terminal. Same Claude Code engine, same workspace.</div>
             </article>
 
             <article class="surface-card incomplete">
-                <div class="surface-card-head">
-                    <span class="surface-ico" aria-hidden="true">&#x1F91D;</span>
-                    <h3>Cowork (claude.ai) <span class="badge-warn">Instructions needed</span></h3>
-                </div>
-                <p class="surface-pitch">Claude Cowork &mdash; the collaborative workspace on <a href="https://claude.ai/" target="_blank" rel="noopener">claude.ai</a>. Currently {{ instance_brand }} supports skills only here (no data packages or plugins yet).</p>
+                <div class="surface-icon" aria-hidden="true">&#x1F91D;</div>
+                <h3>Cowork (claude.ai) <span class="badge-warn">INSTRUCTIONS NEEDED</span></h3>
+                <p class="what">Claude Cowork &mdash; the collaborative workspace on <a href="https://claude.ai/" target="_blank" rel="noopener">claude.ai</a>. Currently {{ instance_brand }} supports <strong>skills only</strong> here (no data packages or plugins yet).</p>
                 <div class="incomplete-callout">
-                    <strong>Status: partial support &mdash; skills only.</strong>
+                    &#x26A0;&#xFE0F; <strong>This section is missing detailed instructions.</strong> Add the step-by-step here:
                     <ul>
                         <li>How to enable {{ instance_brand }}'s skills in Cowork (URL, sign-in, where to paste config)</li>
-                        <li>What syncs (skills) and what doesn't (plugins, data packages, memory)</li>
-                        <li>When to reach for Cowork vs the other surfaces</li>
-                        <li>Roadmap for plugin + data package support</li>
+                        <li>What does and doesn't sync (skills &#x2705;, plugins &#x274C;, data packages &#x274C;, memory &#x274C;)</li>
+                        <li>When to use Cowork vs the other surfaces</li>
+                        <li>Known limits / roadmap for plugin + data package support</li>
                     </ul>
                 </div>
+                <div class="when-to-use"><strong>Status:</strong> partial support &mdash; skills only. Full instructions to be written.</div>
             </article>
         </div>
         <p class="home-usage-foot">For the deepest integration, create every project under <code>~/{{ workspace_dir }}/Projects/</code> &mdash; existing or new. The bundled plugin keeps each project in sync with the central catalog automatically, and the session-analysis loop is scoped to that root. Anything outside <code>{{ workspace_dir }}/</code> is invisible to the platform.</p>
@@ -2694,7 +2843,7 @@ Want me to draft a 1-page brief, or dig into one of these?
                 <span class="browse-title ttl">Data packages <span class="arrow">&rarr;</span></span>
                 <span class="browse-desc desc">Tables, schema, metric definitions registered by your team. Subscribe + query with documented business rules.</span>
             </a>
-            <a class="browse-card what-is-item" href="/marketplace?type=skills">
+            <a class="browse-card new what-is-item" href="/marketplace?type=skills">
                 <span class="browse-icon ico" aria-hidden="true">&#x26A1;</span>
                 <span class="browse-title ttl">Skills <span class="arrow">&rarr;</span></span>
                 <span class="browse-desc desc">Two tiers: Curated workflow templates (brainstorming, planning, review) + Flea Market skills your team publishes.</span>
