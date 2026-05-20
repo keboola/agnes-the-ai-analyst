@@ -6,9 +6,9 @@
 {% include "_page_chrome.html" %}
 <style>
 .home-mock {
-    --hp-primary: #0073D1;
+    --hp-primary: var(--primary);
     --hp-primary-dark: #0056A3;
-    --hp-primary-light: #E6F3FC;
+    --hp-primary-light: var(--primary-light);
     --hp-border: #E5E7EB;
     --hp-border-light: #F3F4F6;
     --hp-text-primary: #111827;
@@ -20,12 +20,12 @@
 .home-mock * { box-sizing: border-box; }
 
 .home-mock .hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, #0056A3 100%);
     color: white;
     border-radius: 16px;
     padding: 38px 40px;
     margin-bottom: 22px;
-    box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
+    box-shadow: 0 8px 24px rgba(31, 138, 94, 0.18);
 }
 .home-mock .hero .eyebrow {
     font-size: 11px;
@@ -94,7 +94,7 @@
 }
 .home-mock .quick-card:hover {
     border-color: var(--hp-primary);
-    box-shadow: 0 4px 12px rgba(0, 115, 209, 0.10);
+    box-shadow: 0 4px 12px rgba(46, 168, 119, 0.10);
 }
 .home-mock .quick-card .ico {
     font-size: 22px;

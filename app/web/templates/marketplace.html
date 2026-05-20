@@ -5,7 +5,7 @@
 <style>
   .mp-page {
     --surface: #ffffff;
-    --primary-light: rgba(0, 115, 209, 0.12);
+    --primary-light: rgba(46, 168, 119, 0.12);
     --border-light: #eceff1;
     --text-primary: #202124;
     --text-secondary: #5f6368;
@@ -25,11 +25,11 @@
   .mp-hero {
     position: relative;
     overflow: hidden;
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, #0056A3 100%);
     border-radius: 12px;
     padding: 28px 32px;
     margin-bottom: 24px;
-    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+    box-shadow: 0 4px 16px rgba(46, 168, 119, 0.2);
     color: #fff;
   }
   .mp-hero-content {
@@ -129,7 +129,7 @@
      vetted, purple = flea/community, amber = "in your stack" (mirrors
      the In Stack badge on installed cards). The active-tab override
      flips icons to white so they read against the blue active fill. */
-  .mp-tabs button[data-tab="curated"] .tab-icon { color: #0073D1; }
+  .mp-tabs button[data-tab="curated"] .tab-icon { color: var(--primary); }
   .mp-tabs button[data-tab="flea"] .tab-icon    { color: #6D28D9; }
   .mp-tabs button[data-tab="my"] .tab-icon      { color: #F59F0A; }
   .mp-tabs button.is-active .tab-icon           { color: #fff; }
@@ -245,7 +245,7 @@
   }
   .mp-card:hover {
     border-color: var(--primary);
-    box-shadow: 0 6px 20px rgba(0, 115, 209, 0.12);
+    box-shadow: 0 6px 20px rgba(46, 168, 119, 0.12);
     transform: translateY(-2px);
   }
   .mp-card .photo {
@@ -283,7 +283,7 @@
     font-size: 10px; font-weight: var(--font-semibold);
     text-transform: uppercase; letter-spacing: 0.5px;
   }
-  .mp-card .type-badge[data-type="plugin"] { background: rgba(0, 115, 209, 0.12); color: #0056A3; }
+  .mp-card .type-badge[data-type="plugin"] { background: rgba(46, 168, 119, 0.12); color: #0056A3; }
   .mp-card .type-badge[data-type="skill"]  { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
   .mp-card .type-badge[data-type="agent"]  { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
   .mp-card .cat-badge {
