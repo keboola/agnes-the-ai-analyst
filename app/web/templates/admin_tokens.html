@@ -10,16 +10,10 @@
      token" button here — admins use /me/profile for their own.
      ───────────────────────────────────────────────────────────────────────── */
 
-  body > .container { max-width: 1280px; }
+  /* Width + gutters come from the canonical `.container` in
+     style-custom.css. `.tokens-page` is just a font-family scope. */
   .tokens-page {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 28px 8px 48px;
-    box-sizing: border-box;
     font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
-  }
-  @media (max-width: 720px) {
-    .tokens-page { padding: 20px 0 32px; }
   }
 
   /* ── Hero ──────────────────────────────────────────────────────────────── */
@@ -550,7 +544,6 @@
 
   /* ── Responsive ────────────────────────────────────────────────────────── */
   @media (max-width: 720px) {
-    .tokens-page { padding: 20px 16px 32px; }
     .tokens-hero { padding: 24px 20px 20px; }
     .tokens-hero .tokens-title { font-size: 22px; }
     .tokens-hero .hero-top { flex-direction: column; align-items: stretch; }
