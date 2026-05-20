@@ -17,36 +17,10 @@
     .profile-page { padding: 20px 0 32px; }
   }
 
-  .profile-hero {
-    background: linear-gradient(135deg, var(--primary) 0%, #0056A3 100%);
-    border-radius: 14px;
-    padding: 28px 32px 24px;
-    margin-bottom: 20px;
-    box-shadow: 0 4px 16px rgba(46, 168, 119, 0.2);
-    color: #fff;
-  }
-  .profile-hero .hero-eyebrow {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: rgba(255, 255, 255, 0.75);
-    margin-bottom: 8px;
-  }
-  .profile-hero .profile-title {
-    font-size: 28px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    margin: 0 0 6px;
-    color: #fff;
-  }
-  .profile-hero .profile-subtitle {
-    font-size: 14px;
-    font-weight: 400;
-    color: rgba(255, 255, 255, 0.9);
-    margin: 0;
-    line-height: 1.5;
-  }
+  /* Hero box (gradient, padding, radius, max-width, shadow,
+     typography) comes from the canonical `.page-header--hero` rule
+     in style-custom.css — markup migrated to use the shared
+     `_page_hero.html` include. */
 
   .section-card {
     background: var(--surface, #fff);
@@ -234,11 +208,10 @@
 </style>
 
 <div class="profile-page">
-  <section class="profile-hero" aria-labelledby="profile-title">
-    <div class="hero-eyebrow">Your account</div>
-    <h2 class="profile-title" id="profile-title">Profile</h2>
-    <p class="profile-subtitle">Account details and your group memberships.</p>
-  </section>
+  {% set page_hero_eyebrow = "Your account" %}
+  {% set page_hero_title = "Profile" %}
+  {% set page_hero_subtitle = "Account details and your group memberships." %}
+  {% include "_page_hero.html" %}
 
   <section class="section-card" aria-label="Account details">
     <h3>Account</h3>

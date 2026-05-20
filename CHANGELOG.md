@@ -81,6 +81,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `.page-header__eyebrow / __title / __subtitle` classes the rest
   of the app already uses. Same width, same height, same shadow
   tint as every other page-hero on the app.
+- `/admin/tables`, `/admin/tokens`, `/install`, `/profile`,
+  `/store/upload`, `/setup-advanced`, `/catalog`, `/corporate-memory`
+  page heroes now all share the canonical `.page-header--hero`
+  dimensions (padding, border-radius, max-width, shadow tint).
+  Each page either migrated to the shared `_page_hero.html` include
+  (`admin_tables`, `profile`) or kept its bespoke wrapper with the
+  canonical class added (`admin_tokens`, `install`, `store_upload`)
+  so per-page extras (counts chips, version pills) live as children
+  inside the canonical box. `.stack-hero` (catalog + memory search
+  hero) and `.advanced-mock .ad-hero` (setup-advanced) now reference
+  the same gradient + dimensions so widths line up across the app.
 - `.page-header--hero` shadow tint follows the brand blue
   (`rgba(0, 115, 209, 0.2)`) instead of the legacy green
   (`rgba(46, 168, 119, 0.2)`) — the gradient is blue everywhere

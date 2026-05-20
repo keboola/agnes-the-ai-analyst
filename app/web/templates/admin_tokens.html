@@ -23,43 +23,13 @@
   }
 
   /* ── Hero ──────────────────────────────────────────────────────────────── */
+  /* Hero box (gradient, padding, radius, max-width, shadow) comes
+     from the canonical `.page-header--hero` rule in
+     style-custom.css. `.tokens-hero` is now just a marker — the
+     extras (token-counts chip row) sit inside it as a child below
+     the canonical hero text. */
   .tokens-hero {
-    background: linear-gradient(135deg, var(--primary) 0%, #0056A3 100%);
-    border-radius: 14px;
-    padding: 28px 32px 24px;
     margin-bottom: 20px;
-    box-shadow: 0 4px 16px rgba(46, 168, 119, 0.2);
-    color: #fff;
-    position: relative;
-  }
-  .tokens-hero .hero-top {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-  }
-  .tokens-hero .hero-text { min-width: 0; }
-  .tokens-hero .hero-eyebrow {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: rgba(255, 255, 255, 0.75);
-    margin-bottom: 8px;
-  }
-  .tokens-hero .tokens-title {
-    font-size: 28px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    margin: 0 0 6px;
-    color: #fff;
-  }
-  .tokens-hero .tokens-subtitle {
-    font-size: 14px;
-    font-weight: 400;
-    color: rgba(255, 255, 255, 0.9);
-    margin: 0;
-    line-height: 1.5;
   }
 
   .tokens-counts {
@@ -611,15 +581,16 @@
 
 <div class="tokens-page" data-is-admin="true" data-view="admin">
   <!-- ═════════ HERO ═════════ -->
-  <section class="tokens-hero" aria-labelledby="tokens-title">
-    <div class="hero-top">
-      <div class="hero-text">
-        <div class="hero-eyebrow">Administration</div>
-        <h2 class="tokens-title" id="tokens-title">Access tokens</h2>
-        <p class="tokens-subtitle">
-          Personal access tokens across all users &mdash; for incident response and offboarding.
-        </p>
-      </div>
+  {# Canonical page-hero box + bespoke `tokens-counts` chip row on the
+     gradient. `.page-header__title` etc. drive the typography from the
+     shared rule in style-custom.css, matching every other admin page. #}
+  <section class="page-header page-header--hero tokens-hero" aria-labelledby="tokens-title">
+    <div class="page-header__main">
+      <div class="page-header__eyebrow">Administration</div>
+      <h1 class="page-header__title" id="tokens-title">Access tokens</h1>
+      <p class="page-header__subtitle">
+        Personal access tokens across all users &mdash; for incident response and offboarding.
+      </p>
     </div>
 
     <div class="tokens-counts" id="tokens-counts" aria-live="polite" aria-label="Token counts summary">
