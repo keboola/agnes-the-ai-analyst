@@ -108,6 +108,7 @@
     function close() { panel.hidden = true;  btn.setAttribute('aria-expanded','false'); }
     btn.addEventListener('click', function(e){ e.stopPropagation(); panel.hidden ? open() : close(); });
     document.addEventListener('click', function(e){ if (!wrap.contains(e.target)) close(); });
+    sel.addEventListener('change', syncVal);
     syncVal();
   }
   function init() {
