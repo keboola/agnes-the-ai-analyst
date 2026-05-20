@@ -107,11 +107,17 @@
             background: var(--border-light);
         }
 
-        /* ── Main Container ── */
+        /* ── Main Container ──
+           Dashboard overrides base.html's `layout` block to render
+           a full-width <main class="main"> instead of the canonical
+           `.container`. Width + gutters here match the shared
+           `.container` rule exactly so the dashboard lines up with
+           every other page (nav-to-content gap 16px, 1280px
+           max-width, 32px side gutters). */
         .main {
             max-width: 1280px;
             margin: 0 auto;
-            padding: 28px 32px 48px;
+            padding: 16px 32px 48px;
         }
 
         /* ── Stats Row ── */
