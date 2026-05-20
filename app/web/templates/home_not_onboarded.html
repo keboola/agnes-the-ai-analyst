@@ -6,21 +6,21 @@
 {% include "_page_chrome.html" %}
 <style>
 .home-mock {
-    /* Palette shifted from blue to green/navy. Green is the new brand
-       accent on light surfaces; navy is the hero background; near-black
-       + warm yellow is the code-panel signature. The --hp-primary alias
-       still names "the brand color" so existing rules that use it pick
-       up the green automatically. */
-    --hp-primary: #2ea877;          /* brand-dark green — was #0073D1 blue */
-    --hp-primary-dark: #1f8a5e;     /* hover/active for green */
-    --hp-primary-light: #e6f9f0;    /* mint tint on white surfaces */
-    --hp-brand-accent: #54d3a0;     /* lighter green for chips, dots */
-    --hp-hero-bg: #0f1b3a;          /* navy hero base */
-    --hp-hero-bg-deep: #0a1430;     /* gradient endpoint */
-    --hp-hero-ink: #f3f6ff;         /* hero text */
-    --hp-code-bg: #0c1224;          /* near-black code panel */
-    --hp-code-ink: #d7e4ff;         /* code-panel text */
-    --hp-code-yellow: #ffd866;      /* warm yellow accent on code */
+    /* CEO mock palette + type system (verbatim from data/ceo_home.html
+       `:root`). Green accent on light surfaces, navy hero, near-black
+       code panels with warm yellow accents. System-font stack matches
+       the mock so the rendered weight/letterform is identical on macOS
+       (San Francisco) and Windows (Segoe UI). */
+    --hp-primary: #2ea877;          /* brand-dark green */
+    --hp-primary-dark: #1f8a5e;     /* hover/active */
+    --hp-primary-light: #e6f9f0;    /* mint tint */
+    --hp-brand-accent: #54d3a0;     /* brand (lighter) */
+    --hp-hero-bg: #0f1b3a;          /* navy hero */
+    --hp-hero-bg-deep: #0a1430;
+    --hp-hero-ink: #f3f6ff;
+    --hp-code-bg: #0c1224;
+    --hp-code-ink: #d7e4ff;
+    --hp-code-yellow: #ffd866;
     --hp-border: #e4e7ee;
     --hp-border-light: #f0f2f6;
     --hp-text-primary: #0e1525;
@@ -28,15 +28,33 @@
     --hp-text-muted: #788098;
     --hp-bg: #f6f7fa;
     --hp-surface: #ffffff;
+    --hp-surface-dim: #f0f2f6;
     --hp-orange: #C2410C;
     --hp-orange-light: #FED7AA;
+    /* Info / warn hint vocabularies — mock uses these for in-step
+       "Don't have X yet?" callouts. */
+    --hp-info-bg: #eef3ff;
+    --hp-info-ink: #1c3994;
+    --hp-info-line: #4f7cf2;
+    --hp-warn-bg: #fff8e6;
+    --hp-warn-ink: #6e4d00;
+    --hp-warn-line: #f5c84b;
     --hp-shadow-sm: 0 1px 2px rgba(15,27,58,.05), 0 1px 3px rgba(15,27,58,.06);
     --hp-shadow-md: 0 4px 16px rgba(15,27,58,.08);
     --hp-shadow-lg: 0 8px 24px rgba(15,27,58,.14);
-    --hp-font-mono: ui-monospace, "SF Mono", Consolas, monospace;
+    --hp-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --hp-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-family: var(--hp-font);
     color: var(--hp-text-primary);
-    font-size: 14px;
-    line-height: 1.5;
+    font-size: 15px;
+    line-height: 1.55;
+}
+.home-mock,
+.home-mock * { font-family: var(--hp-font); }
+.home-mock code, .home-mock kbd, .home-mock pre,
+.home-mock .install-cmd, .home-mock .install-cmd *,
+.home-mock .terminal-body, .home-mock .terminal-body * {
+    font-family: var(--hp-font-mono);
 }
 .home-mock * { box-sizing: border-box; }
 
@@ -1534,18 +1552,20 @@
     left: 8px;
     width: 40px;
     height: 40px;
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
+    background: var(--hp-surface-dim);
+    color: var(--hp-text-secondary);
     font-size: 16px;
+    font-weight: 700;
 }
 .home-mock .install-block .label {
     color: var(--hp-text-primary);
-    font-size: 15px;
-    font-weight: 600;
+    font-size: 17px;
+    font-weight: 700;
     text-transform: none;
     letter-spacing: 0;
     opacity: 1;
-    margin-bottom: 12px;
+    margin-bottom: 6px;
+    line-height: 1.35;
 }
 /* OS tabs sit on white now — borders + colors flip to ink. */
 .home-mock .os-tabs {
@@ -1566,9 +1586,13 @@
     border-color: rgba(0, 0, 0, 0.08);
     color: var(--hp-code-yellow);
 }
-/* Install-note prose — ink-soft secondary on white. */
+/* Install-note prose — ink-soft secondary on white, 14px to match
+   mock's body type. */
 .home-mock .install-note {
     color: var(--hp-text-secondary);
+    font-size: 14px;
+    line-height: 1.55;
+    margin-top: 10px;
 }
 /* Setup-CTA inside Step 4 — green primary button on light. */
 .home-mock .setup-cta-lead {
@@ -1608,21 +1632,40 @@
     background: rgba(46, 168, 119, 0.18);
     color: var(--hp-primary-dark);
 }
-/* Terminal-howto disclosure — light variant on the white step row. */
+/* Terminal-howto disclosure — blue info-hint box matching the mock's
+   `.step-body .hint` vocabulary (light blue bg, blue left-border,
+   blue ink, white kbd chips with thin border). */
 .home-mock details.terminal-howto {
-    background: var(--hp-bg);
-    border-color: var(--hp-border);
+    background: var(--hp-info-bg);
+    border: none;
+    border-left: 3px solid var(--hp-info-line);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-top: 10px;
 }
 .home-mock details.terminal-howto > summary {
-    color: var(--hp-primary-dark);
+    color: var(--hp-info-ink);
+    font-weight: 700;
+    font-size: 14px;
 }
+.home-mock details.terminal-howto > summary::before { color: var(--hp-info-ink); }
 .home-mock .terminal-howto-body {
-    color: var(--hp-text-secondary);
+    color: var(--hp-info-ink);
+    margin-top: 8px;
+    font-size: 14px;
 }
+.home-mock .terminal-howto-body p { margin: 0 0 6px; }
+.home-mock .terminal-howto-body p:last-child { margin: 0; }
+.home-mock .terminal-howto-body strong { color: var(--hp-info-ink); }
 .home-mock .terminal-howto-body kbd {
     background: var(--hp-surface);
     color: var(--hp-text-primary);
-    border-color: var(--hp-border);
+    border: 1px solid var(--hp-border);
+    border-bottom-width: 2px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: var(--hp-font-mono);
 }
 /* Step 3 (home_automode) extra .install-cmd nested inside — already
    dark via .install-cmd rule above. Notes around it use ink-soft. */
