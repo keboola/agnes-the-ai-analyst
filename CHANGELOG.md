@@ -107,6 +107,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   single source). Tokens stay opt-in: pages without one of those
   scope classes don't pick up any `--ds-*`-driven styling and keep
   reading the legacy `--primary` family.
+- New `app/web/static/css/components.css` carries the first set of
+  shared design-system components, free of any scope prefix and
+  reusable on any page: `.callout-rec` (amber lightbulb), `.callout-hint`
+  (blue info), `.code-output` (dashed "what you should see" block),
+  `.lightbox` (image enlarge overlay), `.setup-section-header`
+  (eyebrow + heading + lede wizard header). Loaded by `base.html`.
+- `/home` install hero migrated to the shared classes — markup
+  renamed (`class="rec"` → `class="callout-rec"`, `class="hint"` →
+  `class="callout-hint"`, `class="expected-output"` →
+  `class="code-output"`). Local `.home-mock .install-block .rec`,
+  `.hint`, `.expected-output`, `.setup-section-header`, and
+  `.lightbox` CSS rules removed from `home_not_onboarded.html` —
+  they now live in `components.css` and any page can pick them up
+  by adding the class. Wizard-specific patterns (`.install-cmd`,
+  `.os-tabs`, `.mode-tabs`, `.terminal-frame`) stay scoped to the
+  template for now; future PR work can lift them once a second
+  consumer needs them.
 
 ### Removed
 - Collapsed-by-default *Getting Started* `<details>` block at the
