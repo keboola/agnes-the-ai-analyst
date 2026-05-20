@@ -4148,11 +4148,16 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     max-width: 720px;
 }
 .page-header--hero .page-header__eyebrow {
-    color: rgba(255, 255, 255, 0.75);
+    /* Mint green on white-text background — matches the /home setup
+       section header (green eyebrow + dark heading combo) so every
+       page-hero reads as part of the same brand surface. The green
+       (`--ds-brand-accent` = #54d3a0) is on top of the blue gradient
+       so it contrasts cleanly while still announcing the brand. */
+    color: var(--ds-brand-accent);
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.8px;
+    letter-spacing: 1.2px;
     margin: 0 0 6px;
 }
 .page-header--hero .page-header__actions a,
