@@ -3495,12 +3495,11 @@ a.app-header-logo:focus-visible {
    dashboard's `.main` dimensions so /dashboard, /marketplace, and the
    marketplace detail pages all align. Add `page-shell` to a page's root
    wrapper to opt in. */
-.container:has(.page-shell) {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 28px 32px 48px;
-}
-.container:has(.page-shell) > main { margin: 0; padding: 0; }
+/* `.page-shell` opt-in is now redundant — the canonical `.container`
+   already provides the 1280px max-width + `16px 32px 48px` padding +
+   stripped `<main>` defaults that this rule used to add. Kept as a
+   no-op marker so existing templates that opt in continue to render
+   the same as everything else. */
 
 
 /* ==============================================================
