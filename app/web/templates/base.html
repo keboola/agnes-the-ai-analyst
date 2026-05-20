@@ -11,6 +11,10 @@
        anywhere; pages that haven't opted in just continue using the
        legacy `--primary` family from style-custom.css. #}
     <link rel="stylesheet" href="{{ static_url('css/design-tokens.css') }}">
+    {# Shared design-system components — `.callout-rec`, `.callout-hint`,
+       `.code-output`, `.lightbox`, `.setup-section-header`. Pages
+       opt in by adding the class to markup; no scope wrapper needed. #}
+    <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
     {# Shared stack card styles — drives /catalog + /memory Browse/My Stack
        cards (matches marketplace.html .mp-card visual language). #}
     <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">

@@ -1572,30 +1572,6 @@
     backdrop-filter: blur(4px);
 }
 
-/* Lightbox for the VS Code screenshot. Click .vscode-thumb to open;
-   click the backdrop or hit Esc to close. Wired in the JS block at end
-   of file. */
-.lightbox {
-    position: fixed;
-    inset: 0;
-    background: rgba(15, 27, 58, 0.85);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    padding: 32px;
-    z-index: 200;
-    cursor: zoom-out;
-    -webkit-backdrop-filter: blur(6px);
-    backdrop-filter: blur(6px);
-}
-.lightbox.open { display: flex; }
-.lightbox img {
-    max-width: 100%;
-    max-height: 100%;
-    border-radius: 10px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-}
-
 /* Steps inner panel — surface-dim bg matching design + small caps
    eyebrow on the first <strong>. */
 .home-mock .surface-card .steps {
@@ -1648,31 +1624,9 @@
     text-decoration: underline;
 }
 
-/* Expected-output — dashed dim panel showing "what you should see"
-   on the Terminal surface card. Per design spec. */
-.home-mock .expected-output {
-    background: var(--ds-surface-dim);
-    border: 1px dashed var(--ds-border);
-    border-radius: 8px;
-    padding: 14px 16px;
-    font-family: var(--ds-font-mono);
-    font-size: 12.5px;
-    color: var(--ds-text-secondary);
-    margin: 10px 0;
-    white-space: pre-line;
-    line-height: 1.55;
-}
-.home-mock .expected-output::before {
-    content: "What you should see";
-    display: block;
-    font-family: var(--ds-font);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    color: var(--ds-text-muted);
-    text-transform: uppercase;
-    margin-bottom: 8px;
-}
+/* `.code-output` extracted to shared
+   app/web/static/css/components.css — markup renamed accordingly
+   (`<div class="expected-output">` → `<div class="code-output">`). */
 
 /* When-to-use footer — top-border + ink-muted body, brand-dark for
    links. Per design spec. */
@@ -2041,55 +1995,9 @@
     line-height: 1.55;
     margin-top: 10px;
 }
-/* Recommendation callout — amber/warn-bg vocabulary mirroring the CEO
-   design's `.step-body .rec`. Used for opinionated "I do it this way"
-   guidance that's softer than a warning. Lightbulb prefix via ::before. */
-.home-mock .install-block .rec {
-    background: var(--ds-warn-bg);
-    border-left: 3px solid var(--ds-warn-line);
-    color: var(--ds-warn-ink);
-    padding: 12px 16px;
-    border-radius: 8px;
-    font-size: 14px;
-    line-height: 1.55;
-    margin: 12px 0;
-}
-.home-mock .install-block .rec::before {
-    content: "\1F4A1\00a0";
-}
-.home-mock .install-block .rec strong { color: var(--ds-warn-ink); }
-.home-mock .install-block .rec code {
-    background: rgba(245, 200, 75, 0.18);
-    color: var(--ds-warn-ink);
-    padding: 1px 6px;
-    border-radius: 4px;
-}
-/* Inline hint callout — blue info-bg matching the design spec's
-   `.step-body .hint`. Used for short educational asides next to a
-   command (e.g. "What does mkdir -p do?"). Always visible — for
-   collapsible OS-aware variants see `details.terminal-howto`. */
-.home-mock .install-block .hint {
-    background: var(--ds-info-bg);
-    border-left: 3px solid var(--ds-info-line);
-    color: var(--ds-info-ink);
-    padding: 12px 16px;
-    border-radius: 8px;
-    font-size: 14px;
-    line-height: 1.55;
-    margin: 12px 0;
-}
-.home-mock .install-block .hint strong { color: var(--ds-info-ink); }
-.home-mock .install-block .hint code {
-    background: rgba(79, 124, 242, 0.14);
-    color: var(--ds-info-ink);
-    padding: 1px 6px;
-    border-radius: 4px;
-}
-.home-mock .install-block .hint ol {
-    margin: 8px 0 0 0;
-    padding-left: 20px;
-}
-.home-mock .install-block .hint li { margin-bottom: 4px; }
+/* `.callout-rec` and `.callout-hint` extracted to shared
+   app/web/static/css/components.css — markup renamed accordingly
+   (`<div class="rec">` → `<div class="callout-rec">`). */
 /* Mode-tabs — Auto / YOLO toggle in Step 6 selecting which shell
    function gets installed. Visually mirrors `.os-tabs` but with a
    labeled heading above. */
@@ -2137,48 +2045,14 @@
     font-family: var(--ds-font-mono);
     font-size: 12px;
 }
-/* Setup section header — eyebrow + heading + lede that float above
-   the install-hero card (matching the design spec's `<section id="setup">`
-   structure: header floats on page bg, white setup card sits below). */
-.home-mock .setup-section-header {
-    margin-bottom: 18px;
-}
-.home-mock .setup-section-header .eyebrow {
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--ds-primary);
-    margin-bottom: 8px;
-}
-.home-mock .setup-section-header .setup-heading {
-    font-size: 28px;
-    font-weight: 700;
-    color: var(--ds-text-primary);
-    margin: 0 0 12px;
-    line-height: 1.2;
-}
-.home-mock .setup-section-header .lead {
-    font-size: 15px;
-    color: var(--ds-text-secondary);
-    line-height: 1.6;
-    margin: 0 0 10px;
-    max-width: 760px;
-}
-.home-mock .setup-section-header .lead code {
-    background: var(--ds-primary-light);
-    color: var(--ds-primary-dark);
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-family: var(--ds-font-mono);
-    font-size: 12.5px;
-}
-.home-mock .setup-section-header .lead.lead-privacy {
+/* `.setup-section-header` (eyebrow + heading + lede above a wizard
+   card) extracted to shared app/web/static/css/components.css. */
+.setup-section-header .lead.lead-privacy {
     font-size: 13.5px;
     color: var(--ds-text-muted);
     margin-bottom: 0;
 }
-.home-mock .setup-section-header .lead.lead-privacy strong { color: var(--ds-text-secondary); }
+.setup-section-header .lead.lead-privacy strong { color: var(--ds-text-secondary); }
 /* Step 5 manual-fallback details — inline with the copy button on the
    right of the cta row. When closed, just the summary is visible;
    when opened, the expanded preview spans the full row width. */
@@ -2450,7 +2324,7 @@
                 <button class="copy-btn" data-copy-target="install-cmd-claude-windows">Copy</button>
             </div>
 
-            <div class="hint">
+            <div class="callout-hint">
                 <strong>Don't have a terminal open yet?</strong>
                 On macOS, press <kbd>⌘</kbd> + <kbd>Space</kbd>, type <em>Terminal</em>, hit Enter.
                 On Windows, press the <kbd>⊞</kbd> key, type <em>PowerShell</em>, hit Enter.
@@ -2469,7 +2343,7 @@
             <div class="label">Pick a folder for {{ instance_brand }}</div>
             <p class="step-lede">This is where {{ instance_brand }} &mdash; and all your AI projects &mdash; will live. <strong>~1&nbsp;min.</strong></p>
 
-            <div class="rec">
+            <div class="callout-rec">
                 <strong>My recommendation: put it on your Desktop.</strong>
                 Desktop is easy to see in Finder/Explorer and easy to find from anywhere
                 (<code>~/Desktop/{{ workspace_dir }}</code> on macOS, <code>%USERPROFILE%\Desktop\{{ workspace_dir }}</code> on Windows).
@@ -2492,7 +2366,7 @@
 Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
                 <button class="copy-btn" data-copy-target="install-cmd-mkdir-windows">Copy</button>
             </div>
-            <div class="hint">
+            <div class="callout-hint">
                 <strong>What does <code>mkdir -p</code> do?</strong>
                 It creates a folder. The <code>-p</code> just means "don't complain if it already exists."
                 After this command, you have an empty folder called <code>{{ workspace_dir }}</code> on your Desktop.
@@ -2511,7 +2385,7 @@ Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
             <div class="label">Open a terminal inside that folder</div>
             <p class="step-lede">The terminal is how you tell Claude what to do. You need to "be in" the <code>{{ workspace_dir }}</code> folder before you launch Claude. <strong>~1&nbsp;min.</strong></p>
 
-            <div class="hint">
+            <div class="callout-hint">
                 <strong>Two ways to get there.</strong> Pick whichever feels easier.
                 <ol>
                     <li><strong>Drag-and-drop (easy).</strong> Open Terminal. Type <code>cd</code> followed by a space. Then drag the <code>{{ workspace_dir }}</code> folder from your file browser right onto the Terminal window &mdash; it pastes the path for you. Hit Enter.</li>
@@ -2534,13 +2408,13 @@ Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
                 <button class="copy-btn" data-copy-target="install-cmd-cd-windows">Copy</button>
             </div>
 
-            <div class="hint">
+            <div class="callout-hint">
                 <strong>What does <code>cd</code> mean?</strong>
                 "Change directory" &mdash; like double-clicking into a folder, but in the terminal.
                 After this command, every command you type happens <em>inside</em> the <code>{{ workspace_dir }}</code> folder.
             </div>
 
-            <div class="expected-output">$ pwd
+            <div class="code-output">$ pwd
 /Users/yourname/Desktop/{{ workspace_dir }}</div>
 
             <p class="step-lede" style="font-size: 13px; color: var(--ds-text-muted); margin-top: 6px;">
@@ -2563,7 +2437,7 @@ Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
                 Persistent YOLO (allowlisted): see <a href="/setup-advanced#yolo" target="_blank" rel="noopener">YOLO mode</a> on /setup-advanced — pairs <code>--dangerously-skip-permissions</code> with a reviewed <code>~/.claude/settings.local.json</code> allowlist.
             </div>
 
-            <div class="expected-output">Welcome to Claude Code!
+            <div class="code-output">Welcome to Claude Code!
 
 What can I help you with?
 &gt;</div>
@@ -2610,7 +2484,7 @@ What can I help you with?
             </div>
             <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
 
-            <div class="hint">
+            <div class="callout-hint">
                 <strong>You're done when</strong> the script finishes and {{ instance_brand }} auto-detects
                 your first <code>agnes pull</code> (~30 seconds after the script ends). This page will
                 update on its own.
@@ -2694,7 +2568,7 @@ What can I help you with?
                 Bash users: swap <code>~/.zshrc</code> for <code>~/.bashrc</code>. The shortcut is reversible &mdash; open the rc file and delete the function line to remove it.
             </div>
 
-            <div class="rec">
+            <div class="callout-rec">
                 <strong>The install bundled a curated security allowlist &mdash; review it before going further.</strong>
                 {{ instance_brand }}'s setup script installed a reviewed <code>~/.claude/settings.local.json</code> for you,
                 with sensible defaults: read freely, run common dev tools, gate destructive ops. This is your
@@ -2970,7 +2844,7 @@ Want me to draft a 1-page brief, or dig into one of these?
                         <li>Welcome menu fires &mdash; same as in VS Code.</li>
                     </ol>
                 </div>
-                <div class="expected-output">2026-05-20
+                <div class="code-output">2026-05-20
 
 What would you like to do?
 
