@@ -106,7 +106,13 @@
     }
     function open()  { buildPanel(); panel.hidden = false; btn.setAttribute('aria-expanded','true'); }
     function close() { panel.hidden = true;  btn.setAttribute('aria-expanded','false'); }
-    btn.addEventListener('click', function(e){ e.stopPropagation(); panel.hidden ? open() : close(); });
+    btn.addEventListener('click', function(e){
+      e.stopPropagation();
+      document.querySelectorAll('.hero-sel-panel:not([hidden])').forEach(function(p){
+        if (p !== panel) { p.hidden = true; p.previousElementSibling.setAttribute('aria-expanded','false'); }
+      });
+      panel.hidden ? open() : close();
+    });
     document.addEventListener('click', function(e){ if (!wrap.contains(e.target)) close(); });
     sel.addEventListener('change', syncVal);
     syncVal();
