@@ -4184,6 +4184,20 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     text-underline-offset: 2px;
 }
 .page-header--hero a:hover { color: rgba(255, 255, 255, 0.85); }
+/* `<code>` chips inside the gradient hero — translucent white pill
+   with white amber-yellow text so they read as code samples
+   against the navy background. The global `code` rule sets a
+   dark `color: var(--text-primary)` that turned chips into dark
+   text on a faint white pill (invisible on navy). */
+.page-header--hero code {
+    background: rgba(255, 255, 255, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: #ffd866;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 1px 6px;
+    border-radius: 4px;
+}
 @media (max-width: 640px) {
     .page-header--hero { padding: 24px 20px 20px; border-radius: 12px; }
     .page-header--hero .page-header__title { font-size: 22px; }
