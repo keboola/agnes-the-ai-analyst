@@ -123,6 +123,25 @@
   color: var(--text-secondary, #5f6368);
   pointer-events: none;
 }
+/* Green Search button anchored to the right edge of the pill. Same
+ * fill + spacing as marketplace's `.mp-hero .search-btn` so /catalog,
+ * /memory, /marketplace all wear the same search affordance. */
+.stack-hero__search-btn {
+  appearance: none;
+  border: none;
+  background: var(--ds-primary);
+  color: #fff;
+  padding: 0 24px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+.stack-hero__search-btn:hover { background: var(--ds-primary-dark); }
+.stack-hero__search-btn:active { transform: scale(0.98); }
 
 /* ── Curator info block (marketplace .mp-curator-block) ──────────────── */
 /* Light card with a primary-blue left border + bold title + body text;
@@ -171,10 +190,17 @@
 /* Admin action button — green primary fill matching `.btn-primary`
  * across the app (and /home's "Copy install script to clipboard"
  * CTA). The right slot of the tab row carries +Recipe / +Data
- * Package on /catalog and +Domain on /memory. */
+ * Package on /catalog and +Domain on /memory. `inline-flex` +
+ * `line-height: 1` so an `<a class="btn">` and a `<button class="btn">`
+ * render at exactly the same height even when the label embeds an
+ * `.admin-only-hint` chip (inline-block, taller line). */
 .stack-tabs-row__actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 13px;
-  padding: 8px 16px;
+  line-height: 1;
+  padding: 9px 16px;
   border-radius: 8px;
   border: 1px solid var(--ds-primary);
   background: var(--ds-primary);
@@ -183,6 +209,7 @@
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
+  box-sizing: border-box;
   transition: all 0.15s ease;
 }
 .stack-tabs-row__actions .btn:hover {

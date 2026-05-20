@@ -23,6 +23,7 @@
       <input id="catalog-hero-search" type="search"
              placeholder="Search Data Packages by name or description…">
     </div>
+    <button class="stack-hero__search-btn" id="catalog-search-btn" type="button">Search</button>
   </div>
 
   {# v51 lifecycle status filter — show / hide cards by per-package
@@ -821,6 +822,16 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
   var heroSearch = document.getElementById('catalog-hero-search');
   if (heroSearch) {
     heroSearch.addEventListener('input', applyFilters);
+  }
+  // Explicit Search button — visual parity with /marketplace. The
+  // input already filters live; the button just re-applies and
+  // returns focus to the input.
+  var heroSearchBtn = document.getElementById('catalog-search-btn');
+  if (heroSearchBtn && heroSearch) {
+    heroSearchBtn.addEventListener('click', function () {
+      applyFilters();
+      heroSearch.focus();
+    });
   }
 
   // ── v53 Create Recipe modal (admin-only) ──────────────────────────
