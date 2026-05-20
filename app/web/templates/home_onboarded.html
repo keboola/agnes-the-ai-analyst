@@ -6,9 +6,12 @@
 {% include "_page_chrome.html" %}
 <style>
 .home-mock {
-    --hp-primary: var(--primary);
-    --hp-primary-dark: var(--primary-dark);
-    --hp-primary-light: var(--primary-light);
+    /* /home redesign palette — green/navy. Explicit hex (not
+       `var(--primary)`) so the green stays opted-in here regardless
+       of the global blue brand colour the rest of the app uses. */
+    --hp-primary: #2ea877;
+    --hp-primary-dark: #1f8a5e;
+    --hp-primary-light: #e6f9f0;
     --hp-border: #E5E7EB;
     --hp-border-light: #F3F4F6;
     --hp-text-primary: #111827;
@@ -20,7 +23,7 @@
 .home-mock * { box-sizing: border-box; }
 
 .home-mock .hero {
-    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+    background: linear-gradient(135deg, var(--hp-primary) 0%, var(--hp-primary-dark) 100%);
     color: white;
     border-radius: 16px;
     padding: 38px 40px;

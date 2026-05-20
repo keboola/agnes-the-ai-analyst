@@ -88,6 +88,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   labelled **Copy install script to clipboard**, matching `/home`
   and the canonical action wording now documented inside
   `_claude_setup_cta.jinja`.
+- Global brand colour reverted to blue (`--primary: #0073D1`). Login,
+  dashboard, catalog, marketplace, admin, profile, etc. read blue
+  again. The `/home` redesign green palette is now an opt-in via
+  the local `.home-mock` / `.advanced-mock` scopes (explicit green
+  hex set in-scope, not via `var(--primary)`), so the green only
+  applies on the redesigned pages.
 
 ### Removed
 - Collapsed-by-default *Getting Started* `<details>` block at the
