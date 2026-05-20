@@ -11,8 +11,8 @@
 <style>
         :root {
             /* Colors - Design System */
-            --primary: #0073D1;
-            --primary-light: rgba(0, 115, 209, 0.1);
+            --primary: var(--primary);
+            --primary-light: rgba(46, 168, 119, 0.1);
             --text-primary: #1A253C;
             --text-secondary: #6B7280;
             --background: #F5F7FA;
@@ -744,7 +744,7 @@
         .form-select:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.1);
+            box-shadow: 0 0 0 3px rgba(46, 168, 119, 0.1);
         }
 
         .form-input[readonly] {
@@ -5308,7 +5308,7 @@
             if (!idCell || idCell.textContent.trim() !== tableId) return;
             var statusCell = tr.querySelector('td.col-status');
             if (!statusCell) return;
-            var color = {fresh: '#10B77F', warming: '#0073D1', pending: '#9CA3AF', error: '#EA580C'}[rs.status] || '#9CA3AF';
+            var color = {fresh: '#10B77F', warming: 'var(--primary)', pending: '#9CA3AF', error: '#EA580C'}[rs.status] || '#9CA3AF';
             var label = rs.status === 'fresh' ? 'fresh' : rs.status;
             // Build via DOM API so rs.error escapes safely into the title
             // attribute (XSS guard — rs.error is server-derived, may contain

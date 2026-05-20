@@ -632,7 +632,7 @@ def _preflight_block(step_num: str) -> list[str]:
         "     - Linux:   sudo apt-get install git    OR    sudo dnf install git",
         "",
         "   If `claude --version` fails, install Claude Code:",
-        "     - npm (Linux / WSL): npm i -g @anthropic-ai/claude-code",
+        "     - npm (Linux): npm i -g @anthropic-ai/claude-code",
         "     - macOS / Windows native installer: see https://docs.claude.com/claude-code",
         "",
         "   Then re-run both `--version` checks to confirm before continuing.",

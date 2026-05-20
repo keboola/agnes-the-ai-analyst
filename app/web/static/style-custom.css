@@ -1,23 +1,40 @@
 /* Design System - Data Analyst Portal v2 */
 
 :root {
-    /* Colors */
-    --primary: #0073D1;
-    --primary-light: rgba(0, 115, 209, 0.1);
-    --primary-dark: #005BA3;
-    --text-primary: #1A253C;
-    --text-secondary: #6B7280;
-    --background: #F5F7FA;
-    --surface: #FFFFFF;
-    --border: #E5E7EB;
-    --border-light: #F3F4F6;
-    --border-dark: #C4C4C4;
+    /* Colors — green/navy palette aligned with the CEO mock
+       (data/ceo_home.html). The `--primary` token is the canonical
+       "brand" color used across nav, buttons, links, and active
+       states; the rest of the app picks this up automatically. Old
+       blue palette (var(--primary) / var(--primary-dark)) retired. */
+    --primary: #2ea877;
+    --primary-light: #e6f9f0;
+    --primary-dark: #1f8a5e;
+    --brand-accent: #54d3a0;
+    --hero-bg: #0f1b3a;
+    --hero-ink: #f3f6ff;
+    --text-primary: #0e1525;
+    --text-secondary: #4a5168;
+    --background: #f6f7fa;
+    --surface: #ffffff;
+    --surface-dim: #f0f2f6;
+    --border: #e4e7ee;
+    --border-light: #f0f2f6;
+    --border-dark: #c4c4c4;
     --success: #10B77F;
     --warning: #F59F0A;
     --error: #EA580C;
+    --info-bg: #eef3ff;
+    --info-ink: #1c3994;
+    --info-line: #4f7cf2;
+    --warn-bg: #fff8e6;
+    --warn-ink: #6e4d00;
+    --warn-line: #f5c84b;
 
-    /* Typography */
-    --font-primary: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    /* Typography — system stack matching the CEO mock so weight +
+       letterforms render identically on macOS (San Francisco) and
+       Windows (Segoe UI). Inter remains a graceful fallback in the
+       cascade. */
+    --font-primary: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", system-ui, sans-serif;
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
     /* Font sizes */
@@ -64,15 +81,16 @@
     --radius-full: 9999px;
 
     /* Shadows. --shadow-card is the canonical card elevation;
-       --shadow-elevated lifts hero blocks (home install-hero used a
-       custom blue-tinted shadow before this token landed). */
-    --shadow-sm: rgba(0, 0, 0, 0.05) 0px 1px 2px 0px;
-    --shadow-md: rgba(0, 0, 0, 0.1) 0px 1px 3px 0px, rgba(0, 0, 0, 0.1) 0px 1px 2px -1px;
-    --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
-    --shadow-elevated: 0 8px 24px rgba(0, 86, 163, 0.18);
+       --shadow-elevated lifts hero blocks. Shadow tints aligned with
+       the new green/navy palette so heavy elevations don't carry a
+       leftover blue cast. */
+    --shadow-sm: rgba(15, 27, 58, 0.05) 0px 1px 2px 0px, rgba(15, 27, 58, 0.06) 0px 1px 3px 0px;
+    --shadow-md: rgba(15, 27, 58, 0.08) 0px 4px 16px 0px;
+    --shadow-card: 0 1px 3px 0 rgba(15, 27, 58, 0.06), 0 1px 2px -1px rgba(15, 27, 58, 0.05);
+    --shadow-elevated: 0 8px 24px rgba(15, 27, 58, 0.14);
 
     /* Focus + interaction */
-    --focus-ring: 0 0 0 3px rgba(0, 115, 209, 0.25);
+    --focus-ring: 0 0 0 3px rgba(46, 168, 119, 0.25);
     --transition-fast: 120ms ease;
     --transition-base: 200ms ease;
     --transition-slow: 320ms ease;
@@ -1605,7 +1623,7 @@ footer {
 }
 
 .badge-admin-v2 {
-    background: rgba(0, 115, 209, 0.1);
+    background: rgba(46, 168, 119, 0.1);
     color: var(--primary);
 }
 
@@ -1766,7 +1784,7 @@ footer {
 .flash-info-v2 {
     background: var(--primary-light);
     color: var(--primary);
-    border: 1px solid rgba(0, 115, 209, 0.3);
+    border: 1px solid rgba(46, 168, 119, 0.3);
 }
 
 /* Footer */
@@ -1904,10 +1922,10 @@ footer {
 
 .category-tag.finance { background: rgba(16, 183, 127, 0.1); color: #0d9668; }
 .category-tag.hr { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
-.category-tag.sales { background: rgba(0, 115, 209, 0.1); color: #0073D1; }
+.category-tag.sales { background: rgba(46, 168, 119, 0.1); color: var(--primary); }
 .category-tag.telemetry { background: rgba(245, 159, 10, 0.1); color: #b45309; }
 .category-tag.support { background: rgba(234, 88, 12, 0.1); color: #EA580C; }
-.category-tag.revenue { background: rgba(0, 115, 209, 0.1); color: #0073D1; }
+.category-tag.revenue { background: rgba(46, 168, 119, 0.1); color: var(--primary); }
 .category-tag.customers { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
 .category-tag.marketing { background: rgba(245, 159, 10, 0.1); color: #b45309; }
 
@@ -2056,7 +2074,7 @@ a.slack-badge:hover {
     width: 32px;
     height: 32px;
     background: white;
-    color: #0073D1;
+    color: var(--primary);
     border-radius: 50%;
     font-weight: 700;
     font-size: 16px;
@@ -3284,12 +3302,12 @@ a.app-header-logo:focus-visible {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 500;
     font-family: inherit;
-    color: var(--text-secondary, #6b7280);
+    color: var(--text-secondary);
     text-decoration: none;
-    padding: 6px 12px;
+    padding: 8px 14px;
     border-radius: 8px;
     border: 0;
     background: transparent;
@@ -3298,18 +3316,18 @@ a.app-header-logo:focus-visible {
     transition: all 0.15s ease;
 }
 .app-nav-link:hover {
-    color: var(--text-primary, #111827);
-    background: var(--border-light, #f3f4f6);
+    color: var(--primary-dark);
+    background: var(--primary-light);
 }
 .app-nav-link.is-active,
 .app-nav-link[aria-expanded="true"] {
-    color: var(--primary, #0073D1);
-    background: var(--primary-light, rgba(0, 115, 209, 0.1));
+    color: var(--primary-dark);
+    background: var(--primary-light);
 }
 .app-nav-link:focus { outline: none; }
 .app-nav-link:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.25);
+    box-shadow: var(--focus-ring);
 }
 
 .app-btn-logout {
@@ -3367,7 +3385,7 @@ a.app-header-logo:focus-visible {
     text-decoration: none; border-radius: 6px;
 }
 .app-user-menu-item:hover { background: var(--border-light, #f3f4f6); }
-.app-user-menu-item.is-active { background: rgba(0, 115, 209, 0.08); color: var(--primary, #0073D1); font-weight: 500; }
+.app-user-menu-item.is-active { background: rgba(46, 168, 119, 0.08); color: var(--primary, var(--primary)); font-weight: 500; }
 
 /* ── Admin nav dropdown — same vocabulary as user menu, scoped under nav links ── */
 .app-nav-menu { position: relative; display: inline-flex; }
@@ -3393,7 +3411,7 @@ a.app-header-logo:focus-visible {
     text-decoration: none; border-radius: 6px;
 }
 .app-nav-menu-item:hover { background: var(--border-light, #f3f4f6); }
-.app-nav-menu-item.is-active { background: rgba(0, 115, 209, 0.08); color: var(--primary, #0073D1); font-weight: 500; }
+.app-nav-menu-item.is-active { background: var(--primary-light); color: var(--primary-dark); font-weight: 500; }
 .admin-menu-separator { margin: 4px 8px; border: 0; border-top: 1px solid var(--border, #e5e7eb); }
 /* Section header inside the admin dropdown — non-clickable, small-caps,
    sitting in a light gray band so each named group (Activity Center /
@@ -3494,14 +3512,14 @@ a.app-header-logo:focus-visible {
 
 /* Callouts — boxed inline notice with colored left border. */
 .callout {
-    border-left: 4px solid #0073D1;
-    background: #E6F3FC;
+    border-left: 4px solid var(--primary);
+    background: var(--primary-light);
     color: #111827;
     padding: 12px 16px;
     border-radius: 6px;
     margin: 12px 0;
 }
-.callout-info    { border-left-color: #0073D1; background: #E6F3FC; }
+.callout-info    { border-left-color: var(--primary); background: var(--primary-light); }
 .callout-warn    { border-left-color: #C2410C; background: #FED7AA; }
 .callout-success { border-left-color: #047857; background: #D1FAE5; }
 .callout-danger  { border-left-color: #B91C1C; background: #FEE2E2; }
@@ -3555,7 +3573,7 @@ a.app-header-logo:focus-visible {
 /* Anchor styled as primary button. */
 a.news-cta {
     display: inline-block;
-    background: #0073D1;
+    background: var(--primary);
     color: white !important;       /* override link colors on /home */
     text-decoration: none !important;
     padding: 9px 18px;
@@ -3660,12 +3678,12 @@ a.news-cta:hover { background: #0056A3; }
    drop `<section class="news-hero">` anywhere — /home perex, /news
    body, /admin/news preview. */
 .news-hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, #0056A3 100%);
     color: white;
     border-radius: 16px;
     padding: 28px 32px;
     margin: 18px 0;
-    box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
+    box-shadow: 0 8px 24px rgba(31, 138, 94, 0.18);
 }
 .news-hero .eyebrow {
     font-size: 11px;
@@ -3832,7 +3850,7 @@ a.news-cta:hover { background: #0056A3; }
 .modal-btn.primary:hover {
     background-color: var(--primary-dark);
     border-color: var(--primary-dark);
-    box-shadow: 0 2px 8px rgba(0, 115, 209, 0.3);
+    box-shadow: 0 2px 8px rgba(46, 168, 119, 0.3);
 }
 
 .btn-secondary {
@@ -4097,7 +4115,7 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     background: linear-gradient(135deg, var(--primary), var(--primary-dark));
     color: #fff;
     border-radius: 14px;
-    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+    box-shadow: 0 4px 16px rgba(46, 168, 119, 0.2);
     position: relative;
 }
 .page-header--hero .page-header__main { color: inherit; }

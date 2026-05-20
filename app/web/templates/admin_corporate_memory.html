@@ -359,7 +359,7 @@
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.4px;
-            background: rgba(0, 115, 209, 0.12);
+            background: rgba(46, 168, 119, 0.12);
             color: #0056A3;
         }
         .badge--category { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
@@ -415,7 +415,7 @@
             width: 22px;
             height: 22px;
             border-radius: 50%;
-            background: rgba(0, 115, 209, 0.18);
+            background: rgba(46, 168, 119, 0.18);
             color: #0056A3;
             font-size: 10px;
             font-weight: 600;
@@ -952,13 +952,13 @@
             cursor: text;
         }
         .tag-input-widget:focus-within {
-            border-color: var(--primary, #0073D1);
-            box-shadow: 0 0 0 2px rgba(0, 115, 209, 0.15);
+            border-color: var(--primary, var(--primary));
+            box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.15);
         }
         .tag-input-widget .tag-pill {
             display: inline-flex; align-items: center; gap: 4px;
             padding: 2px 4px 2px 10px;
-            background: var(--primary, #0073D1);
+            background: var(--primary, var(--primary));
             color: white;
             border-radius: 999px;
             font-size: 12px; font-weight: 500;
@@ -1006,13 +1006,13 @@
         }
         .tag-suggestion:hover, .tag-suggestion.active {
             background: var(--primary-light, #eef5fb);
-            color: var(--primary, #0073D1);
+            color: var(--primary, var(--primary));
         }
         .tag-suggestion .hint {
             color: var(--text-muted); font-size: 11px; margin-left: 8px;
             font-weight: 500;
         }
-        .tag-suggestion.new-tag .hint { color: var(--primary, #0073D1); }
+        .tag-suggestion.new-tag .hint { color: var(--primary, var(--primary)); }
         .tag-suggestions .empty-hint {
             padding: 8px 12px; color: var(--text-muted); font-size: 12px; font-style: italic;
         }
