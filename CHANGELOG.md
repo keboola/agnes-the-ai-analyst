@@ -15,11 +15,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- `agnes query --remote`: SQL using only a full backtick BQ path (`` `<proj>.<dataset>.<table>` ``) no longer fails with `Parser Error: syntax error at or near "``"`. The rewriter now detects backtick-quoted paths and wraps them in `bigquery_query()` before passing to DuckDB, instead of sending the BQ-native backtick syntax to the local DuckDB parser. (#363)
 
 ### Removed
 
 ### Internal
+
+## [0.55.6] - 2026-05-20
+
+### Fixed
+- `agnes query --remote`: SQL using only a full backtick BQ path (`` `<proj>.<dataset>.<table>` ``) no longer fails with `Parser Error: syntax error at or near "``"`. The rewriter now detects backtick-quoted paths and wraps them in `bigquery_query()` before passing to DuckDB, instead of sending the BQ-native backtick syntax to the local DuckDB parser. (#363)
 
 ## [0.55.5] — 2026-05-19
 
