@@ -36,8 +36,46 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - "Want to look around first?" section renamed to **Explore your
   workspace**, with an `id="look-around"` anchor wired to the new
   hero's secondary CTA.
+- `/home` setup wizard restructured to match the published design
+  spec section by section: header (eyebrow + heading + lede) floats
+  above the card, install hero is a plain bordered surface (no
+  accent strip), per-step labels drop the `Step N —` prefix, and
+  the closing strip is a single flex row with the `agnes pull`
+  waiting status on the left and the *Already set up? Mark me as
+  onboarded →* fallback link on the right.
+- VS Code surface tile on `/home` now renders the recommended-layout
+  screenshot (served from `/static/img/vscode-layout.png`) and opens
+  a full-page lightbox on click. Falls back to the labeled
+  EXPLORER/TERMINAL panel when the image is missing.
+- Workspace install path moved to `~/Desktop/{workspace_dir}` across
+  every step, surface card, and shortcut command. The Step 2
+  recommendation callout acknowledges home-folder placement as a
+  valid fallback.
+- Step 1 verify text in the install hero reintroduces the Enterprise
+  plan as the Finance and Legal option alongside Pro / Max 5× /
+  Max 20×.
+- Step 6 shortcut installs a shell *function* (not an alias) so
+  arguments pass through with `"$@"` (unix) and `@args` (Windows),
+  and offers an end-user **Auto / YOLO** permission toggle —
+  `--permission-mode auto` by default, `--dangerously-skip-permissions`
+  for the YOLO variant.
+- Step 5 *Or paste manually* fallback `<details>` is now inline on
+  the copy-script button row (right-aligned when closed, full-width
+  preview when opened); the description above the row reads at the
+  standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- Setup-section heading on `/home` no longer right-aligns. The
+  inherited `header { display: flex; justify-content: space-between }`
+  rule from the legacy stylesheet was kicking in on the new section
+  header; the wrapper is now a `<div>` so the eyebrow / heading /
+  lede stack normally on the left.
+
+### Removed
+- Collapsed-by-default *Getting Started* `<details>` block at the
+  top of `/home` (the in-page anchor it carried — *Setup Agnes in
+  your Claude Code* / *Go deeper into your AI workspace* — duplicated
+  links already reachable from the install hero and `/setup-advanced`).
 
 ### Removed
 
