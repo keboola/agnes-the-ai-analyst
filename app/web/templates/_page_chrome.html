@@ -1,33 +1,10 @@
-{# Shared outer chrome for the wide-content pages (/store, /home, /setup-advanced).
-
-   Keeps the navbar gap, max-width, and side gutters identical across these
-   pages so they read as one product surface. The base.html `.container` ships
-   at `max-width: 800px` for narrow utility pages; this partial widens it via
-   `:has()` whenever one of the wide-page wrapper classes is present.
-
-   Consuming templates: include this once at the top of their `{% block content %}`
-   and rely on a wrapper element with one of the registered classes
-   (`.store-page`, `.home-mock`, `.advanced-mock`). Add the partial's selector
-   list when registering a new wide page; do NOT re-declare the chrome rule
-   in the consuming template.
-#}
+{# Page-background tint for the redesign scopes (/store, /home,
+   /setup-advanced). Canonical `.container` (width + gutters) now
+   lives in style-custom.css and applies to every page — this
+   partial only sets the body background so it visually matches the
+   gradient hero card sitting on top. Other pages keep the default
+   `--background` from :root. #}
 <style>
-body:has(.store-page) .container,
-body:has(.home-mock) .container,
-body:has(.advanced-mock) .container {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 16px 32px 48px;
-    background: transparent;
-}
-
-body:has(.store-page) .container > main,
-body:has(.home-mock) .container > main,
-body:has(.advanced-mock) .container > main {
-    margin: 0;
-    padding: 0;
-}
-
 body:has(.store-page),
 body:has(.home-mock),
 body:has(.advanced-mock) {

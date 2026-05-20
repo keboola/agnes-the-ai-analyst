@@ -141,15 +141,26 @@ body {
    ===================================================== */
 
 .container {
-    /* Canonical page-shell width. Bumped from the legacy 800px (which
-       was a relic of single-form login pages) to --width-app (1280px)
-       — generous enough for admin dashboards, dense tables, and
-       catalog grids without feeling wasteful at 1440-1600px screens.
+    /* Canonical page-shell width + gutters. Pages inherit this
+       directly — no per-page max-width / padding override needed.
+       The 16px / 48px asymmetric vertical padding gives a tight gap
+       between the sticky nav and the first hero (matches /home) and
+       generous breathing room above the footer. Side gutters are
+       32px so dense tables / grids align to the same vertical rules
+       as the canonical `.page-header--hero`.
        Pages that genuinely need narrower line-length (setup wizards,
-       single-form flows) opt in via .container--narrow. */
+       single-form flows) opt in via .container--narrow; wide tables
+       opt in via .container--wide. */
     max-width: var(--width-app);
     margin: 0 auto;
-    padding: var(--space-6) var(--space-5);
+    padding: 16px 32px 48px;
+}
+/* Strip default `<main>` padding/margin when it sits inside our
+   canonical `.container`. The container already owns the gutters,
+   so the `<main>` element is a pure flow container. */
+.container > main {
+    margin: 0;
+    padding: 0;
 }
 
 /* Width modifiers — opt-in alternatives to the default page shell. */
@@ -4106,13 +4117,13 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
    admin section reads as one product instead of a patchwork. */
 .page-header--hero {
     padding: 28px 32px 24px;
-    margin: var(--space-5) auto;
-    /* Self-constrain to the canonical app width so the gradient stays
-       visually balanced even on standalone pages (catalog, corporate-memory,
-       install, dashboard) that don't wrap content in `.container`. On
-       templates that DO use `.container` (admin pages), the parent's
-       max-width is the same or tighter, so this is a no-op there. */
-    max-width: var(--width-app);
+    /* Spans the parent container width. `.container` already provides
+       the canonical max-width (1280px) + 32px side gutters, so the
+       hero sits flush with the rest of the page content rather than
+       self-constraining. Standalone pages without a `.container`
+       wrapper still get a sensible width via `.container--wide` /
+       `.container--narrow` modifiers on their own wrappers. */
+    margin: 0 0 var(--space-5);
     box-sizing: border-box;
     background: linear-gradient(135deg, var(--primary), var(--primary-dark));
     color: #fff;

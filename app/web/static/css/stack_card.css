@@ -13,17 +13,16 @@
 
 /* ── Hero (gradient, mirrors marketplace.html .mp-hero) ──────────────── */
 /* Search-driven hero (catalog, corporate-memory) — same box as the
- * canonical `.page-header--hero` rule in style-custom.css. Inner
- * search row + status filter are stack-hero-specific extras
- * rendered as children below. */
+ * canonical `.page-header--hero` rule in style-custom.css. The
+ * container (`.container`) provides max-width + gutters; the hero
+ * just owns its own padding + gradient + radius + shadow. */
 .stack-hero {
   position: relative;
   overflow: hidden;
   background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   border-radius: 14px;
   padding: 28px 32px 24px;
-  margin: var(--space-5) auto;
-  max-width: var(--width-app);
+  margin: 0 0 var(--space-5);
   box-sizing: border-box;
   box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
   color: #fff;
