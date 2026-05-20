@@ -31,6 +31,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Removed non-existent CDN CSS links (`markdown.min.css`, `shell.min.css`) from init-prompt and workspace-prompt pages — the CDN was returning 404 HTML, triggering MIME-type rejection errors in the browser console.
 - Hero-select display text stayed stale when external code set the native select's value programmatically — fixed by dispatching a `change` event at the call site and subscribing `syncVal` to `change` on the native select.
 - Multiple hero-select dropdowns could be open simultaneously due to `stopPropagation` — opening one panel now closes all other open panels first.
+- KPI quick-filter cards on the telemetry page triggered a double API fetch after the hero-select `change` listener was added — fixed by calling only `loadFacets()` in branches that already dispatch `change` (which handles kpis + table via the existing listener).
 
 ## [0.55.5] — 2026-05-19
 
