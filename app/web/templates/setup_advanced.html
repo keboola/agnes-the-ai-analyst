@@ -7,7 +7,7 @@
 <style>
 .advanced-mock {
     --hp-primary: var(--primary);
-    --hp-primary-dark: #0056A3;
+    --hp-primary-dark: var(--primary-dark);
     --hp-primary-light: var(--primary-light);
     --hp-border: #E5E7EB;
     --hp-border-light: #F3F4F6;
@@ -22,7 +22,7 @@
 .advanced-mock * { box-sizing: border-box; }
 
 .advanced-mock .ad-hero {
-    background: linear-gradient(135deg, var(--primary) 0%, #0056A3 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
     color: white;
     border-radius: 16px;
     padding: 32px 36px;
@@ -292,7 +292,7 @@
         <ol>
             <li><a href="#vscode">VS Code as your workspace</a></li>
             <li><a href="#claude-app">Claude Desktop &amp; claude.ai</a></li>
-            <li><a href="#workspace">~/{{ workspace_dir }} workspace anatomy</a></li>
+            <li><a href="#workspace">~/Desktop/{{ workspace_dir }} workspace anatomy</a></li>
             <li><a href="#projects">Project workflows</a></li>
             <li><a href="#plugins">Recommended plugins</a></li>
             <li><a href="#second-opinions">Multi-model second opinions</a></li>
@@ -308,7 +308,7 @@
 
         <h3>Recommended layout</h3>
         <ul>
-            <li>Open <code>~/{{ workspace_dir }}</code>: <strong>File → Open Folder…</strong> → select <code>~/{{ workspace_dir }}</code>.</li>
+            <li>Open <code>~/Desktop/{{ workspace_dir }}</code>: <strong>File → Open Folder…</strong> → select <code>~/Desktop/{{ workspace_dir }}</code>.</li>
             <li>Open the built-in terminal: <kbd>Cmd</kbd>+<kbd>&#96;</kbd> on macOS, <kbd>Ctrl</kbd>+<kbd>&#96;</kbd> on Windows/Linux.</li>
             <li>Move terminal into the editor area: right-click the terminal tab → <strong>"Move Terminal into Editor Area"</strong>. Now it fills the main panel.</li>
             <li>Split into more terminals: <kbd>Cmd</kbd>+<kbd>\</kbd> (or <kbd>Ctrl</kbd>+<kbd>\</kbd>) splits side-by-side. One for your Claude conversation, one for diffs/output, optional third for parallel work.</li>
@@ -336,13 +336,13 @@
 
         <p>The exact registration commands (URL, PAT, hook setup) are baked into the clipboard payload at <a href="/setup">/setup</a> — that page detects your platform and chooses the right channel automatically. The setup script also installs the bundled hooks that keep the marketplace + session telemetry in sync between Claude Desktop and the central catalog.</p>
 
-        <p class="ad-lead" style="margin-top: 14px;">When to prefer the terminal anyway: large refactors, anything that touches files outside of <code>~/{{ workspace_dir }}</code>, or workflows that need Claude Code's CLI-only features (auto-mode, YOLO, custom hooks). Claude Desktop and claude.ai are best for short-form chat with read-only / well-scoped tools.</p>
+        <p class="ad-lead" style="margin-top: 14px;">When to prefer the terminal anyway: large refactors, anything that touches files outside of <code>~/Desktop/{{ workspace_dir }}</code>, or workflows that need Claude Code's CLI-only features (auto-mode, YOLO, custom hooks). Claude Desktop and claude.ai are best for short-form chat with read-only / well-scoped tools.</p>
     </section>
 
     <section class="ad-section" id="workspace">
-        <h2>2. <code>~/{{ workspace_dir }}</code> workspace anatomy</h2>
+        <h2>2. <code>~/Desktop/{{ workspace_dir }}</code> workspace anatomy</h2>
         <p class="ad-lead">Your workspace was created by <code>agnes init</code> and the bundled {{ instance_brand }} plugin. Here's what each folder is for.</p>
-<pre>~/{{ workspace_dir }}/
+<pre>~/Desktop/{{ workspace_dir }}/
 ├── .claude/
 │   ├── skills/      # Reusable workflow templates Claude follows
 │   ├── rules/       # Behavioral rules injected into every message
@@ -363,11 +363,11 @@
 
     <section class="ad-section" id="projects">
         <h2>3. Project workflows</h2>
-        <p class="ad-lead">Every piece of work lives in a project folder. Always start Claude from the <code>~/{{ workspace_dir }}</code> root — the welcome menu and prompt-history logging both depend on it.</p>
+        <p class="ad-lead">Every piece of work lives in a project folder. Always start Claude from the <code>~/Desktop/{{ workspace_dir }}</code> root — the welcome menu and prompt-history logging both depend on it.</p>
 
         <h3>Daily startup</h3>
         <ol>
-            <li>Open terminal in <code>~/{{ workspace_dir }}</code>.</li>
+            <li>Open terminal in <code>~/Desktop/{{ workspace_dir }}</code>.</li>
             <li>Type <code>claude</code> (or <code>yolo</code>).</li>
             <li>The agnes-welcome menu shows recent projects ranked by activity. Pick a number, type a name, or describe what you want.</li>
         </ol>
@@ -377,11 +377,11 @@
         <ul>
             <li><em>"Create a new project called 'website redesign' under work"</em> — Claude scaffolds folders, initializes Git, drops in a CLAUDE.md.</li>
             <li><em>"Switch to the quarterly review project"</em> — Claude <code>cd</code>s and loads project context.</li>
-            <li><em>"Go back to {{ instance_brand }} root"</em> — returns to <code>~/{{ workspace_dir }}</code>.</li>
+            <li><em>"Go back to {{ instance_brand }} root"</em> — returns to <code>~/Desktop/{{ workspace_dir }}</code>.</li>
         </ul>
 
         <h3>Why this matters</h3>
-        <p>The agnes-welcome hook fires only when Claude starts in <code>~/{{ workspace_dir }}</code>. Prompt-history logging uses <code>$PWD</code> to route prompts to the right project's history. Launch Claude from inside a project folder and you skip both.</p>
+        <p>The agnes-welcome hook fires only when Claude starts in <code>~/Desktop/{{ workspace_dir }}</code>. Prompt-history logging uses <code>$PWD</code> to route prompts to the right project's history. Launch Claude from inside a project folder and you skip both.</p>
     </section>
 
     <section class="ad-section" id="plugins">
@@ -525,7 +525,7 @@
         <p class="ad-lead">Pick whichever you can run today.</p>
 
         <h3>A. Create a project plan (no services needed)</h3>
-        <p>Paste this into Claude Code at the <code>~/{{ workspace_dir }}</code> root:</p>
+        <p>Paste this into Claude Code at the <code>~/Desktop/{{ workspace_dir }}</code> root:</p>
 <pre>Create a new project called "Q4 strategy review" under work. Then enter plan mode and draft a 6-week project plan covering: stakeholder interviews, current-state analysis, gap identification, recommendations, and stakeholder review. Save the plan to docs/plans/.</pre>
 
         <h3>B. Process your emails (requires Google Workspace connected)</h3>
@@ -548,13 +548,14 @@
         <h3>One-shot YOLO</h3>
         <p>Run with the flag once: <code>claude --dangerously-skip-permissions</code>. Useful for trusted batch operations.</p>
 
-        <h3>Persistent YOLO via alias</h3>
+        <h3>Persistent YOLO via shell function</h3>
+        <p>Drops into <code>~/Desktop/{{ workspace_dir }}</code> and launches Claude in one word. Shell function (not alias) so arguments forward through.</p>
         <p>macOS / Linux (zsh):</p>
-<pre>echo 'alias yolo="claude --dangerously-skip-permissions"' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</pre>
+<pre>echo 'yolo() { cd ~/Desktop/{{ workspace_dir }} &amp;&amp; claude --dangerously-skip-permissions "$@"; }' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</pre>
         <p>Windows PowerShell:</p>
 <pre>if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }
-Add-Content $PROFILE 'function yolo { claude --dangerously-skip-permissions @args }'</pre>
-        <p>Now <code>yolo</code> launches Claude in YOLO mode. The reference <code>~/.claude/settings.local.json</code> ships with safe defaults (read freely, run common dev tools, gate destructive ops). Customize as you learn what you trust.</p>
+Add-Content $PROFILE 'function yolo { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --dangerously-skip-permissions @args }'</pre>
+        <p>Now <code>yolo</code> launches Claude in YOLO mode from your workspace. The reference <code>~/.claude/settings.local.json</code> ships with safe defaults (read freely, run common dev tools, gate destructive ops). Customize as you learn what you trust.</p>
     </section>
 
     <section class="ad-section" id="tips">

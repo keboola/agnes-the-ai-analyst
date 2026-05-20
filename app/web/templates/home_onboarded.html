@@ -7,7 +7,7 @@
 <style>
 .home-mock {
     --hp-primary: var(--primary);
-    --hp-primary-dark: #0056A3;
+    --hp-primary-dark: var(--primary-dark);
     --hp-primary-light: var(--primary-light);
     --hp-border: #E5E7EB;
     --hp-border-light: #F3F4F6;
@@ -20,7 +20,7 @@
 .home-mock * { box-sizing: border-box; }
 
 .home-mock .hero {
-    background: linear-gradient(135deg, var(--primary) 0%, #0056A3 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
     color: white;
     border-radius: 16px;
     padding: 38px 40px;

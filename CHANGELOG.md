@@ -70,6 +70,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   rule from the legacy stylesheet was kicking in on the new section
   header; the wrapper is now a `<div>` so the eyebrow / heading /
   lede stack normally on the left.
+- `/home` (onboarded view) and `/setup-advanced` hero gradients
+  picked up the new green palette — both pages still carried the
+  retired blue (`#0056A3`) endpoint as a per-template override,
+  reading visibly out of sync with the rest of the app. Both pages
+  now reference `var(--primary-dark)` so any future palette shift
+  cascades automatically.
+- `/setup-advanced` YOLO snippet was the old `alias yolo="claude
+  --dangerously-skip-permissions"` form (no `cd`, no arg
+  forwarding). Replaced with the shell function variant that
+  matches `/home` Step 6 — drops into `~/Desktop/{workspace_dir}`
+  and forwards `"$@"` (unix) / `@args` (Windows).
+- `/setup-advanced` workspace path references migrated from
+  `~/{workspace_dir}` to `~/Desktop/{workspace_dir}` so the install
+  story is consistent between `/home` and `/setup-advanced`.
+- "Setup a new Claude Code" CTA button on `/dashboard` is now
+  labelled **Copy install script to clipboard**, matching `/home`
+  and the canonical action wording now documented inside
+  `_claude_setup_cta.jinja`.
 
 ### Removed
 - Collapsed-by-default *Getting Started* `<details>` block at the
