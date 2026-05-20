@@ -156,7 +156,6 @@
    `<button class="home-card-close" data-dismiss-key="...">` gets
    per-device localStorage dismissibility for free. */
 
-.home-mock .home-getting-started,
 .home-mock .home-overview {
     position: relative;
     background: white;
@@ -178,47 +177,6 @@
     padding: 0;
     margin-bottom: 36px;
     box-shadow: none;
-}
-/* Getting Started uses <details> for native collapsed-by-default
-   behaviour. The summary owns the padding when collapsed; row layout
-   reveals on expand. Chevron rotates 90deg when open. */
-.home-mock details.home-getting-started {
-    padding: 0;
-}
-.home-mock .home-gs-summary {
-    list-style: none;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 16px 24px;
-    user-select: none;
-}
-.home-mock .home-gs-summary::-webkit-details-marker { display: none; }
-.home-mock .home-gs-summary-title {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--hp-text-primary);
-}
-.home-mock .home-gs-summary-hint {
-    flex: 1;
-    font-size: 13px;
-    color: var(--hp-text-secondary);
-}
-.home-mock .home-gs-summary-chev {
-    font-size: 18px;
-    color: var(--hp-text-muted);
-    transition: transform 0.15s;
-}
-.home-mock details.home-getting-started[open] .home-gs-summary-chev {
-    transform: rotate(90deg);
-}
-.home-mock details.home-getting-started[open] {
-    padding-bottom: 18px;
-}
-.home-mock details.home-getting-started[open] .home-gs-item {
-    margin-left: 24px;
-    margin-right: 24px;
 }
 /* Install-hero is the scroll target for Getting Started's first row.
    Offset the anchor jump by the 72px sticky .app-header height + a
@@ -263,45 +221,6 @@
     outline: none;
 }
 
-.home-mock .home-gs-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 14px;
-    border: 1px solid var(--hp-border);
-    border-radius: 10px;
-    text-decoration: none;
-    color: inherit;
-    margin-top: 8px;
-    transition: border-color 0.15s, background 0.15s;
-}
-.home-mock .home-gs-item:hover {
-    border-color: var(--hp-primary);
-    background: var(--hp-primary-light);
-}
-.home-mock .home-gs-item .ico {
-    font-size: 20px;
-    flex: 0 0 24px;
-    text-align: center;
-}
-.home-mock .home-gs-item .text {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-.home-mock .home-gs-item .text strong {
-    font-weight: 600;
-    color: var(--hp-text-primary);
-}
-.home-mock .home-gs-item .text .desc {
-    font-size: 13px;
-    color: var(--hp-text-secondary);
-}
-.home-mock .home-gs-item .arrow {
-    color: var(--hp-text-muted);
-    font-size: 16px;
-}
 
 .home-mock .home-overview-body {
     font-size: 14px;

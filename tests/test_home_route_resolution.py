@@ -281,10 +281,9 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    # Renamed in the 6-step wizard restructure (CEO mock parity) — was
-    # "Step 3 — start Claude Code with permission-skip"; same step, new
-    # number and CEO-mock wording.
-    assert "Step 4 — Launch Claude with auto-approve on" in body
+    # The `Step N —` prefix was dropped from labels (the step-number
+    # badge already carries the number); match the bare label text.
+    assert "Launch Claude with auto-approve on" in body
     # Recommended path: `claude --dangerously-skip-permissions`.
     assert "claude --dangerously-skip-permissions" in body
     # Strict fallback: Shift + Tab → auto-accept-edits.

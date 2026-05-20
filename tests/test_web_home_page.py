@@ -312,53 +312,51 @@ def test_home_hides_email_admin_button_when_gws_configured(fresh_db, monkeypatch
 # prompts, restore a parity test scoped to that new consumer.
 
 
-# ── Getting Started + Overview + Usage modes (PR #289 home additions) ────
+# ── Setup section header + Overview + Usage modes ────────────────────────
 
 
-def test_getting_started_card_renders_on_home(fresh_db):
-    """The dismissible Getting Started card now renders BEFORE the
-    install-hero (chronologically first in the not-onboarded flow) as
-    a <details> element — collapsed by default so the install hero
-    stays visible on first paint. Disappears when the user is
-    onboarded (no `<details class="home-getting-started">`) so the
-    in-page #install-hero anchor on the first row never points at
-    nothing. First row links to #install-hero (same-page jump to the
-    blue setup hero); second row still leaves the page for
-    /setup-advanced."""
+def test_setup_section_renders_for_not_onboarded(fresh_db):
+    """Not-onboarded users land on /home and see the setup section
+    header (eyebrow + heading + lede) floating above the install hero
+    card. The dismissible Getting Started shortcut block has been
+    removed — its two links lived only as in-page jumps and duplicated
+    the install-hero + /setup-advanced affordances already present on
+    the page. Onboarded users see neither header nor install hero so
+    the page reads as a hub, not a setup screen."""
     from src.db import get_system_db, close_system_db
 
-    # Not-onboarded: GS is rendered + install-hero anchor target exists.
+    # Not-onboarded: setup header + install hero both render.
     conn = get_system_db()
     try:
         _, sess = _make_user_and_session(
-            conn, email="gs-not-onboarded@example.com", onboarded=False
+            conn, email="setup-not-onboarded@example.com", onboarded=False
         )
     finally:
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert '<details class="home-getting-started"' in body
-    assert 'data-dismiss-key="agnes_home_gs_dismissed"' in body
-    assert 'class="home-gs-item" href="#install-hero"' in body
-    assert 'class="home-gs-item" href="/setup-advanced"' in body
-    # Install-hero must carry the matching id so the first-row anchor
-    # resolves. Co-asserted with the GS markup so a refactor that drops
-    # one but not the other breaks here, not in the browser.
-    assert '<div class="install-hero" id="install-hero">' in body
+    # Header floats above the card with the design spec eyebrow + h2.
+    assert '<div class="setup-section-header"' in body
+    assert ">First time here<" in body
+    assert "Set up" in body and "on your machine" in body
+    # Install hero card sits below the header.
+    assert '<div class="install-hero">' in body
+    # Getting Started shortcut block is gone.
+    assert "home-getting-started" not in body
+    assert "agnes_home_gs_dismissed" not in body
 
-    # Onboarded: install-hero is gone, GS rides alongside it — neither
-    # renders. Prevents a dangling #install-hero anchor.
+    # Onboarded: install hero (and the setup header above it) are gone.
     conn = get_system_db()
     try:
         _, sess2 = _make_user_and_session(
-            conn, email="gs-onboarded@example.com", onboarded=True
+            conn, email="setup-onboarded@example.com", onboarded=True
         )
     finally:
         conn.close()
         close_system_db()
     body2 = _client().get("/home", cookies={"access_token": sess2}).text
-    assert '<details class="home-getting-started"' not in body2
     assert '<div class="install-hero"' not in body2
+    assert '<div class="setup-section-header"' not in body2
 
 
 def test_overview_section_renders_when_yaml_set(fresh_db, monkeypatch):
