@@ -4,28 +4,24 @@
 {% block content %}
 <div class="obs-page page-shell">
 
-  <header class="obs-topbar">
-    <div class="obs-topbar-left">
-      {% set page_hero_eyebrow = "Activity Center" %}
-      {% set page_hero_title = "Sessions" %}
-      {% set page_hero_subtitle = "Every collected JSONL across users plus a transcript viewer with next-error navigation." %}
-      {% include "_page_hero.html" %}
-      <p class="obs-subtitle">All Claude Code sessions across every user. Also available locally for analysis. Click any row to read the full transcript; tick <b>Errors only</b> to surface sessions where tools failed.</p>
-      <div class="obs-narrative" id="sx-narrative">Loading…</div>
-    </div>
-    <div class="obs-topbar-right">
-      <label class="obs-window">
-        <span class="obs-label">Time range</span>
-        <select id="sx-window">
-          <option value="1440">Last 24h</option>
-          <option value="10080" selected>Last 7d</option>
-          <option value="43200">Last 30d</option>
-          <option value="129600">Last 90d</option>
-          <option value="525600">All time</option>
-        </select>
-      </label>
-    </div>
-  </header>
+  {% set page_hero_eyebrow = "Activity Center" %}
+  {% set page_hero_title = "Sessions" %}
+  {% set page_hero_subtitle = "Every collected JSONL across users plus a transcript viewer with next-error navigation." %}
+  {% set page_hero_actions %}
+    <label class="obs-window">
+      <span class="obs-label">Time range</span>
+      <select id="sx-window">
+        <option value="1440">Last 24h</option>
+        <option value="10080" selected>Last 7d</option>
+        <option value="43200">Last 30d</option>
+        <option value="129600">Last 90d</option>
+        <option value="525600">All time</option>
+      </select>
+    </label>
+  {% endset %}
+  {% include "_page_hero.html" %}
+  <p class="obs-subtitle">All Claude Code sessions across every user. Also available locally for analysis. Click any row to read the full transcript; tick <b>Errors only</b> to surface sessions where tools failed.</p>
+  <div class="obs-narrative" id="sx-narrative">Loading…</div>
 
   <section class="obs-kpis" aria-label="Session metrics">
     <button class="obs-kpi" data-quick="" type="button">
@@ -91,18 +87,15 @@
 
 <style>
 .obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--text-primary, #111827); }
-.obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
-  padding: 12px 0 20px; border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 16px; }
-.obs-topbar-left { flex: 1; min-width: 0; }
 .obs-subtitle { margin: 0 0 10px; color: var(--text-secondary, #6b7280); font-size: 13px; max-width: 720px; }
 .obs-subtitle b { color: var(--text-primary, #111827); }
-.obs-narrative { font-size: 16px; line-height: 1.45; }
+.obs-narrative { font-size: 16px; line-height: 1.45; margin-bottom: 16px; }
 .obs-narrative b { font-weight: 600; }
-.obs-topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .obs-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
   color: var(--text-secondary, #6b7280); display: block; margin-bottom: 2px; }
 .obs-window select { padding: 6px 8px; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
-  background: var(--surface, #fff); font: inherit; }
+  background: var(--surface, #fff); font: inherit; color: var(--text-primary, #111827); }
+.page-header--hero .obs-label { color: rgba(255,255,255,0.8); }
 .obs-btn { border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
   padding: 6px 12px; border-radius: 6px; font: inherit; cursor: pointer; }
 .obs-btn:hover { background: var(--border-light, #f3f4f6); }

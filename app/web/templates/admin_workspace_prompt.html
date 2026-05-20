@@ -8,8 +8,6 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css"
       integrity="sha512-2OhXH4Il3n2tHKwLLSDPhrkgnLBC+6lHGGQzSFi3chgVB6DJ/v6+nbx+XYO9CugQyHVF/8D/0k3Hx1eaUK2K9g=="
       crossorigin="anonymous">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.css"
-      crossorigin="anonymous">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"
         integrity="sha512-OeZ4Yrb/W7d2W4rAMOO0HQ9Ro/aWLtpW9BUSR2UOWnSV2hprXLkkYnnCGc9NeLUxxE4ZG7zN16UuT1Elqq8Opg=="
         crossorigin="anonymous"></script>
@@ -204,13 +202,11 @@
 </style>
 
 <div class="welcome-page">
+  {% set page_hero_eyebrow = "Agent Experience" %}
+  {% set page_hero_title = "Workspace Prompt" %}
+  {% set page_hero_subtitle = "CLAUDE.md template injected into each analyst workspace. Overrides the OSS default." %}
+  {% include "_page_hero.html" %}
   <div class="welcome-toolbar">
-    <div>
-      {% set page_hero_eyebrow = "Agent Experience" %}
-      {% set page_hero_title = "Workspace Prompt" %}
-      {% set page_hero_subtitle = "CLAUDE.md template injected into each analyst workspace. Overrides the OSS default." %}
-      {% include "_page_hero.html" %}
-    </div>
     <div id="status-chip">
       {% if is_override %}
         <span class="origin-chip origin-override"

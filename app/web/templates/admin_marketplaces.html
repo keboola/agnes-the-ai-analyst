@@ -6,10 +6,12 @@
   /* Override base.html's 800px .container cap for this wide table. */
   .container:has(.marketplaces-page) { max-width: none; padding: 24px 16px; }
   .marketplaces-page { max-width: 1400px; margin: 0 auto; padding: 0; }
-  .marketplaces-toolbar {
-    display: flex; justify-content: space-between; align-items: center;
-    gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
-  }
+  .page-header--hero .search-input { min-width: 220px; }
+  /* Ghost CTAs on blue hero — white text from global rule, semi-transparent bg for visibility */
+  .page-header--hero .btn-primary { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.55); }
+  .page-header--hero .btn-primary:hover { background: rgba(255,255,255,0.28); filter: none; }
+  .page-header--hero .icon-btn { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.4); color: rgba(255,255,255,0.9); }
+  .page-header--hero .icon-btn:hover { background: rgba(255,255,255,0.22); color: #fff; border-color: rgba(255,255,255,0.6); }
 
 
   .mp-cell { display: flex; align-items: center; gap: 10px; }
@@ -214,18 +216,16 @@
 </style>
 
 <div class="marketplaces-page">
-  <div class="marketplaces-toolbar">
-    {% set page_hero_eyebrow = "Agent Experience" %}
-    {% set page_hero_title = "Curated Marketplaces" %}
-    {% set page_hero_subtitle = "Admin-managed git repos cloned nightly. Synced plugins surface in the Claude Code marketplace feed." %}
-    {% include "_page_hero.html" %}
+  {% set page_hero_eyebrow = "Agent Experience" %}
+  {% set page_hero_title = "Curated Marketplaces" %}
+  {% set page_hero_subtitle = "Admin-managed git repos cloned nightly. Synced plugins surface in the Claude Code marketplace feed." %}
+  {% set page_hero_actions %}
     <input id="mp-search" type="search" class="search-input" placeholder="Filter by slug, name, or URL…" autocomplete="off">
     <a class="icon-btn" href="/marketplace/format-guide" target="_blank" rel="noopener"
-       title="Open the marketplace-metadata.json format guide in a new tab">
-      Format guide →
-    </a>
+       title="Open the marketplace-metadata.json format guide in a new tab">Format guide →</a>
     <button class="btn btn-primary" id="open-create-btn">+ Add marketplace</button>
-  </div>
+  {% endset %}
+  {% include "_page_hero.html" %}
 
   <div class="data-table-wrap">
     <table class="data-table" id="marketplaces-table">
