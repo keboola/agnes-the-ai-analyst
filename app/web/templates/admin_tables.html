@@ -9,36 +9,11 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-        :root {
-            /* Colors - Design System */
-            --primary: var(--primary);
-            --primary-light: rgba(46, 168, 119, 0.1);
-            --text-primary: #1A253C;
-            --text-secondary: #6B7280;
-            --background: #F5F7FA;
-            --surface: #FFFFFF;
-            --border: #E5E7EB;
-            --border-light: #F3F4F6;
-            --success: #10B77F;
-            --success-light: rgba(16, 183, 127, 0.1);
-            --warning: #F59F0A;
-            --error: #EA580C;
-            --error-light: rgba(234, 88, 12, 0.1);
-
-            /* Typography */
-            --font-primary: 'Inter', system-ui, sans-serif;
-            --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-
-            /* Shadows */
-            --shadow-sm: rgba(0, 0, 0, 0.05) 0px 1px 2px 0px;
-            --shadow-md: rgba(0, 0, 0, 0.1) 0px 4px 6px -1px;
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        /* Design tokens come from the global `:root` block in
+           style-custom.css. The local override that used to live
+           here re-declared `--primary` as `var(--primary)` (a
+           circular reference that resolved to empty), which
+           collapsed the gradient on the page-header hero. */
 
         body {
             font-family: var(--font-primary);
