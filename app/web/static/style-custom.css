@@ -4117,8 +4117,11 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     background: linear-gradient(135deg, var(--primary), var(--primary-dark));
     color: #fff;
     border-radius: 14px;
-    box-shadow: 0 4px 16px rgba(46, 168, 119, 0.2);
+    /* Shadow tint follows the brand colour (blue) so depth reads
+       consistently against the gradient background. */
+    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
     position: relative;
+    overflow: hidden;
 }
 .page-header--hero .page-header__main { color: inherit; }
 .page-header--hero .page-header__title {

@@ -65,6 +65,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- `/activity-center` audit-log hero rendered as half-width because
+  `_page_hero.html` was nested inside `<header class="obs-topbar">`,
+  a flex row that pinned the time-range + auto-refresh controls
+  beside it. The hero is now a sibling rendered before the
+  `<header>` so it spans the full container width like every other
+  admin page; the controls keep their original flex row underneath.
+- Marketplace hero unified with the canonical `.page-header--hero`
+  box. The bespoke `.mp-hero` rule duplicated padding, radius,
+  gradient, shadow, and font sizes that already lived on
+  `.page-header--hero`; markup is now
+  `<section class="page-header page-header--hero mp-hero">` so the
+  shared box drives dimensions + colour, and `.mp-hero` only adds
+  the right-anchored cover image. Inner text uses the
+  `.page-header__eyebrow / __title / __subtitle` classes the rest
+  of the app already uses. Same width, same height, same shadow
+  tint as every other page-hero on the app.
+- `.page-header--hero` shadow tint follows the brand blue
+  (`rgba(0, 115, 209, 0.2)`) instead of the legacy green
+  (`rgba(46, 168, 119, 0.2)`) — the gradient is blue everywhere
+  outside the `/home` redesign, so the depth highlight now matches.
 - Setup-section heading on `/home` no longer right-aligns. The
   inherited `header { display: flex; justify-content: space-between }`
   rule from the legacy stylesheet was kicking in on the new section
