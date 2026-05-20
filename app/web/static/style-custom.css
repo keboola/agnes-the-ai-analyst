@@ -4124,12 +4124,17 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
        `.container--narrow` modifiers on their own wrappers. */
     margin: 0 0 var(--space-5);
     box-sizing: border-box;
-    background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+    /* Navy gradient — matches the /home redesign hero
+       (`.home-hero-intro`) so every page-hero reads as part of the
+       same brand surface. The brand blue (`--primary`) stays as
+       the link / CTA colour elsewhere; the hero box itself is the
+       deeper navy so the white + mint-green text on top has full
+       contrast. */
+    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, #1a2a5f 100%);
     color: #fff;
     border-radius: 14px;
-    /* Shadow tint follows the brand colour (blue) so depth reads
-       consistently against the gradient background. */
-    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+    /* Shadow tint follows the navy gradient depth. */
+    box-shadow: 0 4px 16px rgba(15, 27, 58, 0.22);
     position: relative;
     overflow: hidden;
 }
