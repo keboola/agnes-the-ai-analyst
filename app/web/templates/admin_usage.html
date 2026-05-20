@@ -441,9 +441,11 @@
       } else if (k === 'users') {
         state.group_by = 'username';
         groupSel.value = 'username';
+        groupSel.dispatchEvent(new Event('change', {bubbles: true}));
       } else if (k === 'tools') {
         state.group_by = 'tool_name';
         groupSel.value = 'tool_name';
+        groupSel.dispatchEvent(new Event('change', {bubbles: true}));
       } else {
         Object.assign(state, { username: '', tool_name: '', source: '', event_type: '', only_errors: false, q: '' });
         fUser.value=''; fTool.value=''; fSrc.value=''; fEv.value=''; fQ.value='';
