@@ -23,6 +23,7 @@
       <input id="catalog-hero-search" type="search"
              placeholder="Search Data Packages by name or description…">
     </div>
+    <button class="stack-hero__search-btn" id="catalog-search-btn" type="button">Search</button>
   </div>
 
   {# v51 lifecycle status filter — show / hide cards by per-package
@@ -262,7 +263,7 @@
           <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
             <span style="font-size:12px; color:var(--text-muted);">Color</span>
             <div class="cf-palette-row" data-target="rcp-color"></div>
-            <input id="rcp-color" type="color" value="#0073D1"
+            <input id="rcp-color" type="color" value="var(--primary)"
                    style="padding:2px; border:1px solid var(--border); border-radius:6px;
                           height:32px; cursor:pointer;">
           </label>
@@ -702,7 +703,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
   function _renderRecipeCard(r) {
     const esc = (s) => String(s == null ? '' : s).replace(/[<>&"']/g, (c) =>
       ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
-    const color = r.color || '#0073D1';
+    const color = r.color || 'var(--primary)';
     const title = esc(r.title);
     const desc = esc(r.description);
     const parts = (r.title || '?').split(/\s+/);
@@ -822,6 +823,16 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
   if (heroSearch) {
     heroSearch.addEventListener('input', applyFilters);
   }
+  // Explicit Search button — visual parity with /marketplace. The
+  // input already filters live; the button just re-applies and
+  // returns focus to the input.
+  var heroSearchBtn = document.getElementById('catalog-search-btn');
+  if (heroSearchBtn && heroSearch) {
+    heroSearchBtn.addEventListener('click', function () {
+      applyFilters();
+      heroSearch.focus();
+    });
+  }
 
   // ── v53 Create Recipe modal (admin-only) ──────────────────────────
   // Exposed on window so the inline button onclicks reach it (we're
@@ -841,7 +852,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
     const status = document.getElementById('rcp-status');
     if (status) status.value = 'prod';
     const color = document.getElementById('rcp-color');
-    if (color) color.value = '#0073D1';
+    if (color) color.value = 'var(--primary)';
     // Collapse + reset the RBAC matrix so reopen doesn't show last
     // recipe's group selections.
     const det = document.getElementById('rcp-rbac-details');
@@ -947,7 +958,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       document.getElementById('ercp-sql').value = rec.sql_template || '';
       document.getElementById('ercp-related').value =
         (rec.related_table_ids || []).join(',');
-      document.getElementById('ercp-color').value = rec.color || '#0073D1';
+      document.getElementById('ercp-color').value = rec.color || 'var(--primary)';
       document.getElementById('ercp-status').value = rec.status || 'prod';
       // Reset the RBAC matrix; lazy-rehydrates next time the admin
       // expands the <details>, so the panel always reflects the recipe

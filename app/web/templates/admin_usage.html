@@ -4,12 +4,20 @@
 {% block content %}
 <div class="obs-page page-shell">
 
+  {% set page_hero_eyebrow = "Activity Center" %}
+
+
+  {% set page_hero_title = "Telemetry" %}
+
+
+  {% set page_hero_subtitle = "Claude Code tool / skill / agent / slash-command invocations across users." %}
+
+
+  {% include "_page_hero.html" %}
+
+
   <header class="obs-topbar">
     <div class="obs-topbar-left">
-      {% set page_hero_eyebrow = "Activity Center" %}
-      {% set page_hero_title = "Telemetry" %}
-      {% set page_hero_subtitle = "Claude Code tool / skill / agent / slash-command invocations across users." %}
-      {% include "_page_hero.html" %}
       <p class="obs-subtitle">Tool and skill invocations from Claude Code. Also available locally for analysis. For server-side admin / API audit events, see <a href="/admin/activity">Audit log</a>.</p>
       <div class="obs-narrative" id="usage-narrative">Loading…</div>
     </div>

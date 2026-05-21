@@ -34,8 +34,8 @@
     background: var(--surface, #fff);
   }
   .dom-detail-actions .btn-primary {
-    background: var(--primary, #0073D1); color: #fff;
-    border-color: var(--primary, #0073D1);
+    background: var(--primary, var(--primary)); color: #fff;
+    border-color: var(--primary, var(--primary));
   }
   .dom-detail-actions .btn-danger { color: #b91c1c; border-color: #fecaca; }
   .dom-detail-actions .btn-required {
@@ -68,7 +68,7 @@
     display: inline-block; padding: 2px 8px; border-radius: 4px;
     font-size: 10px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.4px;
-    background: rgba(0, 115, 209, 0.12); color: #0056A3;
+    background: rgba(46, 168, 119, 0.12); color: #0056A3;
   }
   .badge--category    { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
   .badge--source      { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
@@ -102,9 +102,9 @@
     transition: all 0.15s ease;
   }
   .memory-item__votes button:hover {
-    border-color: var(--primary, #0073D1);
-    color: var(--primary, #0073D1);
-    background: rgba(0, 115, 209, 0.06);
+    border-color: var(--primary, var(--primary));
+    color: var(--primary, var(--primary));
+    background: rgba(46, 168, 119, 0.06);
   }
   .memory-item__votes button[data-vote="down"]:hover {
     border-color: #b91c1c; color: #b91c1c;
@@ -117,7 +117,7 @@
   }
   .memory-item__avatar {
     width: 22px; height: 22px; border-radius: 50%;
-    background: rgba(0, 115, 209, 0.18); color: #0056A3;
+    background: rgba(46, 168, 119, 0.18); color: #0056A3;
     font-size: 10px; font-weight: 600;
     display: inline-flex; align-items: center; justify-content: center;
   }
@@ -143,7 +143,7 @@
     color: var(--text-secondary, #5f6368); text-decoration: none;
     font-size: 13px; margin-bottom: 12px;
   }
-  .back-link:hover { color: var(--primary, #0073D1); }
+  .back-link:hover { color: var(--primary, var(--primary)); }
 </style>
 
 <a class="back-link" href="/corporate-memory">← All memory domains</a>

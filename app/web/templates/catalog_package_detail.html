@@ -9,7 +9,7 @@
     color: var(--text-secondary, #5f6368); text-decoration: none;
     font-size: 13px; margin-bottom: 12px;
   }
-  .back-link:hover { color: var(--primary, #0073D1); }
+  .back-link:hover { color: var(--primary, var(--primary)); }
 
   /* ── Hero ─────────────────────────────────────────────────── */
   .pkg-hero {
@@ -67,7 +67,7 @@
     border: 1px solid var(--border, #eceff1); background: var(--surface, #fff);
   }
   .pkg-hero__actions .btn-primary {
-    background: var(--primary, #0073D1); color: #fff; border-color: var(--primary, #0073D1);
+    background: var(--primary, var(--primary)); color: #fff; border-color: var(--primary, var(--primary));
   }
   .pkg-hero__actions .btn-danger { color: #b91c1c; border-color: #fecaca; }
   .pkg-hero__actions .btn-required {
@@ -129,7 +129,7 @@
     text-transform: uppercase; letter-spacing: 0.4px;
   }
   .qm-local         { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
-  .qm-remote        { background: rgba(0, 115, 209, 0.12); color: #0056A3; }
+  .qm-remote        { background: rgba(46, 168, 119, 0.12); color: #0056A3; }
   .qm-materialized  { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
   .qm-internal      { background: #f3f4f6; color: #4b5563; }
 
@@ -179,7 +179,7 @@
 {% endif %}
 
 <div class="pkg-hero">
-  <div class="pkg-hero__icon" style="background: {{ pkg.color or '#0073D1' }};">
+  <div class="pkg-hero__icon" style="background: {{ pkg.color or 'var(--primary)' }};">
     {% if pkg.icon %}{{ pkg.icon }}{% else %}{{ _initials }}{% endif %}
   </div>
   <div class="pkg-hero__body">
@@ -261,7 +261,7 @@
       <a class="pkg-table-row__name"
          href="/catalog/t/{{ t.id }}"
          onclick="event.stopPropagation();"
-         style="color: var(--primary, #0073D1); text-decoration: none;">{{ t.name }}</a>
+         style="color: var(--primary, var(--primary)); text-decoration: none;">{{ t.name }}</a>
       <span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span>
       {% if t.description %}
       <span class="pkg-table-row__desc">{{ t.description }}</span>

@@ -19,11 +19,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"
         crossorigin="anonymous"></script>
 
-<style>
-  .container:has(.welcome-page) { max-width: none; padding: 24px 16px; }
-  .welcome-page { max-width: 1400px; margin: 0 auto; padding: 0; }
-
-  .welcome-toolbar {
+<style>  .welcome-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
   }
@@ -204,12 +200,16 @@
 </style>
 
 <div class="welcome-page">
+  {% set page_hero_eyebrow = "Agent Experience" %}
+
+  {% set page_hero_title = "Workspace Prompt" %}
+
+  {% set page_hero_subtitle = "CLAUDE.md template injected into each analyst workspace. Overrides the OSS default." %}
+
+  {% include "_page_hero.html" %}
+
   <div class="welcome-toolbar">
     <div>
-      {% set page_hero_eyebrow = "Agent Experience" %}
-      {% set page_hero_title = "Workspace Prompt" %}
-      {% set page_hero_subtitle = "CLAUDE.md template injected into each analyst workspace. Overrides the OSS default." %}
-      {% include "_page_hero.html" %}
     </div>
     <div id="status-chip">
       {% if is_override %}

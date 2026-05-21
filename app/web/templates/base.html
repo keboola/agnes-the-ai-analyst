@@ -1,10 +1,20 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{{ instance_theme | default('navy') }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
+    {# Design-system tokens (`--ds-*`) — opt-in green/navy palette used
+       by pages that scope themselves with `.home-mock` /
+       `.advanced-mock`. Loaded globally so the tokens are available
+       anywhere; pages that haven't opted in just continue using the
+       legacy `--primary` family from style-custom.css. #}
+    <link rel="stylesheet" href="{{ static_url('css/design-tokens.css') }}">
+    {# Shared design-system components — `.callout-rec`, `.callout-hint`,
+       `.code-output`, `.lightbox`, `.setup-section-header`. Pages
+       opt in by adding the class to markup; no scope wrapper needed. #}
+    <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
     {# Shared stack card styles — drives /catalog + /memory Browse/My Stack
        cards (matches marketplace.html .mp-card visual language). #}
     <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">

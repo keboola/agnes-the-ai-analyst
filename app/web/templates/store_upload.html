@@ -8,25 +8,9 @@
      1280px container as /dashboard, /marketplace, /admin/* peers. */
   .container:has(.upload-page) > main { margin: 0; padding: 0; }
 
-  /* ── Hero (mirrors /setup) ─────────────────────────────────────── */
-  .upload-hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
-    border-radius: 12px;
-    padding: 32px 36px;
-    margin-bottom: 24px;
-    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
-    color: white;
-  }
-  .upload-hero .eyebrow {
-    font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.8px; color: rgba(255, 255, 255, 0.75);
-    margin-bottom: 10px;
-  }
-  .upload-hero h1 {
-    font-size: 30px; font-weight: 700; margin: 0 0 8px;
-    color: #fff; letter-spacing: -0.4px;
-  }
-  .upload-hero .sub { font-size: 14px; color: rgba(255,255,255,0.85); line-height: 1.6; }
+  /* Hero box + typography come from the canonical `.page-header--hero`
+     rule in style-custom.css. store_upload.html only adds the `meta`
+     chip row below the canonical subtitle. */
   .upload-hero .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
   .upload-hero .pill {
     background: rgba(255,255,255,0.15); padding: 6px 12px;
@@ -42,7 +26,7 @@
     background: var(--border, #e5e7eb);
     transition: background 0.15s ease;
   }
-  .progress .seg.is-done { background: var(--primary, #0073D1); }
+  .progress .seg.is-done { background: var(--primary, var(--primary)); }
 
   /* ── Card (mirrors /setup) ─────────────────────────────────────── */
   .card {
@@ -57,7 +41,7 @@
   .card-body { padding: 16px 24px 24px; }
   .step-num {
     width: 26px; height: 26px;
-    background: var(--primary, #0073D1); color: #fff;
+    background: var(--primary, var(--primary)); color: #fff;
     border-radius: 50%; display: inline-flex; align-items: center;
     justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0;
   }
@@ -94,8 +78,8 @@
   .field input[type=url]:focus,
   .field textarea:focus,
   .field select:focus {
-    outline: none; border-color: var(--primary, #0073D1);
-    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.12);
+    outline: none; border-color: var(--primary, var(--primary));
+    box-shadow: 0 0 0 3px rgba(46, 168, 119, 0.12);
   }
 
   /* ── Type tiles (radio cards) ──────────────────────────────────── */
@@ -108,9 +92,9 @@
   }
   .type-tiles label:hover { border-color: #c7d2fe; }
   .type-tiles label.is-active {
-    border-color: var(--primary, #0073D1);
-    background: linear-gradient(180deg, rgba(0,115,209,0.06), rgba(0,115,209,0.02));
-    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.12);
+    border-color: var(--primary, var(--primary));
+    background: linear-gradient(180deg, rgba(46, 168, 119, 0.06), rgba(46, 168, 119, 0.02));
+    box-shadow: 0 0 0 3px rgba(46, 168, 119, 0.12);
   }
   .type-tiles input[type=radio] { display: none; }
   .type-tiles .type-name {
@@ -126,23 +110,23 @@
     display: flex; align-items: center; gap: 12px;
     transition: all 0.15s ease;
   }
-  .file-drop:hover { border-color: var(--primary, #0073D1); background: #fff; }
+  .file-drop:hover { border-color: var(--primary, var(--primary)); background: #fff; }
   .file-drop.is-dragover {
-    border-color: var(--primary, #0073D1); background: #fff;
-    box-shadow: 0 0 0 4px rgba(0, 115, 209, 0.15);
+    border-color: var(--primary, var(--primary)); background: #fff;
+    box-shadow: 0 0 0 4px rgba(46, 168, 119, 0.15);
     transform: scale(1.005);
   }
   .file-drop.has-file { border-style: solid; border-color: #10b981; background: #f0fdf4; }
   .file-drop .icon {
     width: 36px; height: 36px; border-radius: 8px;
-    background: rgba(0, 115, 209, 0.1); color: var(--primary, #0073D1);
+    background: rgba(46, 168, 119, 0.1); color: var(--primary, var(--primary));
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0; font-size: 16px;
   }
   .file-drop.has-file .icon { background: rgba(16, 185, 129, 0.1); color: #10b981; }
   .file-drop .file-info { flex: 1; min-width: 0; }
   .file-drop .file-info .label { font-size: 13px; font-weight: 500; color: var(--text-primary, #111827); }
-  .file-drop .file-info .label .filename { color: var(--primary, #0073D1); margin-left: 6px; }
+  .file-drop .file-info .label .filename { color: var(--primary, var(--primary)); margin-left: 6px; }
   .file-drop.has-file .file-info .label { color: #047857; }
   .file-drop .file-info .meta { font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 2px; }
   .file-drop input[type=file] { display: none; }
@@ -153,7 +137,7 @@
     font-size: 12px; font-weight: 500; cursor: pointer;
     flex-shrink: 0; font-family: var(--font-primary, inherit);
   }
-  .file-drop button:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
+  .file-drop button:hover { border-color: var(--primary, var(--primary)); color: var(--primary, var(--primary)); }
 
   /* ── Doc list ──────────────────────────────────────────────────── */
   .doc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
@@ -176,7 +160,7 @@
     font-size: 13px; cursor: pointer; align-self: flex-start;
     font-family: var(--font-primary, inherit);
   }
-  .doc-add:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
+  .doc-add:hover { border-color: var(--primary, var(--primary)); color: var(--primary, var(--primary)); }
 
   /* ── Buttons ───────────────────────────────────────────────────── */
   .actions { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
@@ -277,13 +261,13 @@
        button clears the sticky page header. */
     scroll-margin-top: 80px;
   }
-  .guidelines-toggle:hover { background: rgba(0, 115, 209, 0.06); }
+  .guidelines-toggle:hover { background: rgba(46, 168, 119, 0.06); }
   .guidelines-toggle::before {
     content: "▸"; transition: transform 0.15s ease;
-    display: inline-block; color: var(--primary, #0073D1); font-weight: 700;
+    display: inline-block; color: var(--primary, var(--primary)); font-weight: 700;
   }
   .guidelines-toggle[aria-expanded="true"] {
-    background: rgba(0, 115, 209, 0.08);
+    background: rgba(46, 168, 119, 0.08);
     border-bottom: 1px solid var(--border, #e5e7eb);
   }
   .guidelines-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
@@ -331,8 +315,8 @@
   }
   .comp-text .type {
     display: inline-block; margin-left: 6px; padding: 1px 6px;
-    border-radius: 4px; background: rgba(0, 115, 209, 0.08);
-    color: var(--primary, #0073D1); font-size: 11px;
+    border-radius: 4px; background: rgba(46, 168, 119, 0.08);
+    color: var(--primary, var(--primary)); font-size: 11px;
   }
   .comp-text .preview {
     margin-top: 3px; color: var(--text-secondary, #6b7280); font-size: 12px;
@@ -344,16 +328,18 @@
 </style>
 
 <div class="upload-page page-shell">
-  <div class="upload-hero">
-    <div class="eyebrow">Store</div>
-    <h1>Upload an entity</h1>
-    <p class="sub">
-      Share a skill, agent, or plugin with everyone on this instance.
-      Display name will be suffixed with
-      <code style="background: rgba(255,255,255,0.18); padding: 1px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px;">-by-{{ session.user.email.split('@')[0] }}</code>
-      so it doesn't collide.
-    </p>
-  </div>
+  <section class="page-header page-header--hero upload-hero">
+    <div class="page-header__main">
+      <div class="page-header__eyebrow">Store</div>
+      <h1 class="page-header__title">Upload an entity</h1>
+      <p class="page-header__subtitle">
+        Share a skill, agent, or plugin with everyone on this instance.
+        Display name will be suffixed with
+        <code>-by-{{ session.user.email.split('@')[0] }}</code>
+        so it doesn't collide.
+      </p>
+    </div>
+  </section>
 
   <div class="progress">
     <div class="seg is-done" id="seg-1"></div>
@@ -365,7 +351,7 @@
   </div>
   <div id="banner-actions" hidden style="margin: -10px 0 14px 0; font-size: 13px;">
     <a href="/store/examples" target="_blank" rel="noopener"
-       style="color: var(--primary, #0073D1); text-decoration: none; font-weight: 500;">
+       style="color: var(--primary, var(--primary)); text-decoration: none; font-weight: 500;">
       See submission examples ↗
     </a>
   </div>
@@ -414,7 +400,7 @@
             </p>
             <p style="margin-top: 10px;">
               <a href="/store/examples" target="_blank" rel="noopener"
-                 style="color: var(--primary, #0073D1); text-decoration: none; font-weight: 500;">
+                 style="color: var(--primary, var(--primary)); text-decoration: none; font-weight: 500;">
                 See full examples ↗
               </a>
             </p>
@@ -499,7 +485,7 @@
             </ul>
             <p style="margin-top: 10px;">
               <a href="/store/examples" target="_blank" rel="noopener"
-                 style="color: var(--primary, #0073D1); text-decoration: none; font-weight: 500;">
+                 style="color: var(--primary, var(--primary)); text-decoration: none; font-weight: 500;">
                 See full examples ↗
               </a>
             </p>
@@ -542,7 +528,7 @@
             Shown on the marketplace tile. Same bar as the per-component
             descriptions —
             <a href="#guidelines-2" id="open-guidelines-link"
-               style="color: var(--primary, #0073D1); text-decoration: underline;">see Before you upload</a>.
+               style="color: var(--primary, var(--primary)); text-decoration: underline;">see Before you upload</a>.
           </div>
         </div>
 
@@ -1143,7 +1129,7 @@ function renderComponents(components) {
       link.rel = 'noopener';
       link.textContent = 'See ' + anchor + ' example ↗';
       link.style.fontSize = '12px';
-      link.style.color = 'var(--primary, #0073D1)';
+      link.style.color = 'var(--primary, var(--primary))';
       link.style.textDecoration = 'underline';
       linkRow.appendChild(link);
       text.appendChild(linkRow);

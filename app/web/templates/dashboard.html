@@ -107,11 +107,17 @@
             background: var(--border-light);
         }
 
-        /* ── Main Container ── */
+        /* ── Main Container ──
+           Dashboard overrides base.html's `layout` block to render
+           a full-width <main class="main"> instead of the canonical
+           `.container`. Width + gutters here match the shared
+           `.container` rule exactly so the dashboard lines up with
+           every other page (nav-to-content gap 16px, 1280px
+           max-width, 32px side gutters). */
         .main {
             max-width: 1280px;
             margin: 0 auto;
-            padding: 28px 32px 48px;
+            padding: 16px 32px 48px;
         }
 
         /* ── Stats Row ── */
@@ -435,13 +441,16 @@
 
 
         /* ── Setup Banner ── */
-        /* ── Environment Setup CTA (shown after account creation) ── */
+        /* ── Environment Setup CTA (shown after account creation) ──
+           Hero gradient + shadow follow the active theme via
+           `--ds-hero-*` so /dashboard's top CTA flips alongside
+           every other page hero. */
         .env-setup-cta {
-            background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
-            border-radius: 12px;
-            padding: 24px 32px;
+            background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
+            border-radius: 14px;
+            padding: 28px 32px 24px;
             margin-bottom: 24px;
-            box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+            box-shadow: 0 4px 16px var(--ds-hero-shadow);
             color: white;
         }
 
@@ -491,7 +500,7 @@
         }
 
         .env-setup-row .btn-setup:hover {
-            background: #F0F7FF;
+            background: var(--primary-light);
         }
 
         .env-setup-row .btn-setup.copied {
@@ -554,7 +563,7 @@
         }
 
         .btn-setup-secondary:hover {
-            background: rgba(0, 115, 209, 0.05);
+            background: rgba(46, 168, 119, 0.05);
         }
 
         .btn-setup-secondary.copied {
@@ -813,7 +822,7 @@
         .reg-inline .reg-field textarea:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 2px rgba(0, 115, 209, 0.1);
+            box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.1);
         }
 
         .reg-inline .reg-meta {
@@ -829,7 +838,7 @@
             font-family: var(--font-mono);
             font-weight: 600;
             color: var(--primary);
-            background: rgba(0, 115, 209, 0.08);
+            background: rgba(46, 168, 119, 0.08);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -849,7 +858,7 @@
         }
 
         .reg-inline .btn-register:hover {
-            background: #005BA3;
+            background: var(--primary-dark);
         }
 
         /* ── Claude Code section (step 5) ── */
@@ -884,7 +893,7 @@
         }
 
         .btn-copy-v2:hover {
-            background: #005BA3;
+            background: var(--primary-dark);
         }
 
         .btn-copy-v2.copied {
@@ -952,7 +961,7 @@
         .form-group-v2 textarea:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 2px rgba(0, 115, 209, 0.1);
+            box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.1);
         }
 
         .form-row-v2 {
@@ -994,7 +1003,7 @@
         }
 
         .btn-primary-v2:hover {
-            background: #005BA3;
+            background: var(--primary-dark);
         }
 
         .help-text-v2 {
@@ -1143,7 +1152,7 @@
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                     </svg>
-                    Setup a new Claude Code
+                    Copy install script to clipboard
                 </button>
                 <span class="env-meta">
                     <span class="env-hint">Valid 90 days · token stays in clipboard only</span>

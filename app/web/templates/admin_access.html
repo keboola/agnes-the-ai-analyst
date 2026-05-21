@@ -2,10 +2,7 @@
 {% block title %}Resource access — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
-<style>
-  .container:has(.ax-page) { max-width: none; padding: 24px 16px; }
-  .ax-page { max-width: 1400px; margin: 0 auto; padding: 0; }
-  .ax-toolbar {
+<style>  .ax-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }
@@ -101,9 +98,9 @@
     font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
     text-transform: uppercase; color: #1e293b;
     border-bottom: 1px solid var(--border, #e5e7eb);
-    border-left: 4px solid #0073D1;
+    border-left: 4px solid var(--primary);
     background: linear-gradient(to right,
-      rgba(0, 115, 209, 0.10), rgba(0, 115, 209, 0.02));
+      rgba(46, 168, 119, 0.10), rgba(46, 168, 119, 0.02));
   }
   .rt-section:nth-child(4n+2) > .rt-section-head {
     border-left-color: #10b981;
@@ -325,12 +322,16 @@
 </style>
 
 <div class="ax-page">
+  {% set page_hero_eyebrow = "Users & Access" %}
+
+  {% set page_hero_title = "Resource access" %}
+
+  {% set page_hero_subtitle %}Pick a group on the left, check resources on the right to grant access. Manage groups and members on <a href="/admin/groups">Groups</a>.{% endset %}
+
+  {% include "_page_hero.html" %}
+
   <div class="ax-toolbar">
     <div>
-      {% set page_hero_eyebrow = "Users & Access" %}
-      {% set page_hero_title = "Resource access" %}
-      {% set page_hero_subtitle = "Pick a group on the left, check resources on the right to grant access. Manage groups and members on <a href=&quot;/admin/groups&quot; style=&quot;color:#fff;text-decoration:underline;&quot;>Groups</a>." %}
-      {% include "_page_hero.html" %}
     </div>
   </div>
 

@@ -2,11 +2,7 @@
 {% block title %}Curated Marketplaces — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
-<style>
-  /* Override base.html's 800px .container cap for this wide table. */
-  .container:has(.marketplaces-page) { max-width: none; padding: 24px 16px; }
-  .marketplaces-page { max-width: 1400px; margin: 0 auto; padding: 0; }
-  .marketplaces-toolbar {
+<style>  .marketplaces-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }
@@ -214,11 +210,15 @@
 </style>
 
 <div class="marketplaces-page">
+  {% set page_hero_eyebrow = "Agent Experience" %}
+
+  {% set page_hero_title = "Curated Marketplaces" %}
+
+  {% set page_hero_subtitle = "Admin-managed git repos cloned nightly. Synced plugins surface in the Claude Code marketplace feed." %}
+
+  {% include "_page_hero.html" %}
+
   <div class="marketplaces-toolbar">
-    {% set page_hero_eyebrow = "Agent Experience" %}
-    {% set page_hero_title = "Curated Marketplaces" %}
-    {% set page_hero_subtitle = "Admin-managed git repos cloned nightly. Synced plugins surface in the Claude Code marketplace feed." %}
-    {% include "_page_hero.html" %}
     <input id="mp-search" type="search" class="search-input" placeholder="Filter by slug, name, or URL…" autocomplete="off">
     <a class="icon-btn" href="/marketplace/format-guide" target="_blank" rel="noopener"
        title="Open the marketplace-metadata.json format guide in a new tab">

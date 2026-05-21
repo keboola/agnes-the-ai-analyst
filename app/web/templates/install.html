@@ -100,35 +100,9 @@
             padding: 28px 32px 48px;
         }
 
-        /* ── Hero ── */
-        .hero {
-            background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
-            border-radius: 12px;
-            padding: 32px 36px;
-            margin-bottom: 24px;
-            box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
-            color: white;
-        }
-        .hero-eyebrow {
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            color: rgba(255, 255, 255, 0.75);
-            margin-bottom: 10px;
-        }
-        .hero h1 {
-            font-size: 30px;
-            font-weight: 700;
-            margin: 0 0 8px 0;
-            color: white;
-            letter-spacing: -0.4px;
-        }
-        .hero-sub {
-            font-size: 14px;
-            color: rgba(255, 255, 255, 0.85);
-            line-height: 1.6;
-        }
+        /* Hero box + typography come from `.page-header--hero` in
+           style-custom.css. install.html only adds the hero-meta chip
+           row (version/server URL pills) below the canonical subtitle. */
         .hero-meta {
             display: flex;
             flex-wrap: wrap;
@@ -308,7 +282,7 @@
         .btn-oneclick:hover {
             background: var(--primary-dark, #0056A3);
             transform: translateY(-1px);
-            box-shadow: 0 4px 14px rgba(0, 115, 209, 0.25);
+            box-shadow: 0 4px 14px rgba(46, 168, 119, 0.25);
         }
         .btn-oneclick[disabled] {
             opacity: 0.7;
@@ -489,7 +463,7 @@
             margin-bottom: 14px;
         }
         .btn-cta:hover {
-            background: rgba(0, 115, 209, 0.18);
+            background: rgba(46, 168, 119, 0.18);
         }
 
         /* ── Collapsible manual install ── */
@@ -610,8 +584,9 @@
         @media (max-width: 720px) {
             .header { padding: 0 16px; }
             .main { padding: 20px 16px 32px; }
-            .hero { padding: 24px 20px; }
-            .hero h1 { font-size: 22px; }
+            /* mobile hero shrink — canonical `.page-header--hero`
+               already has its own narrow-viewport rule; no override
+               needed here. */
             .card-header { padding: 18px 18px 0; }
             .card-body { padding: 14px 18px 20px; }
             .code-block {
@@ -629,7 +604,7 @@
         .setup-banner {
             background: var(--background, #f6f7f9);
             border: 1px solid var(--border, #e1e4e8);
-            border-left: 3px solid var(--primary, #0073D1);
+            border-left: 3px solid var(--primary, var(--primary));
             border-radius: 8px;
             padding: 14px 18px;
             margin-bottom: 20px;
@@ -659,19 +634,21 @@
         {% if banner_html %}<div class="setup-banner">{{ banner_html | safe }}</div>{% endif %}
 
         <!-- ═══════════════ HERO ═══════════════ -->
-        <section class="hero">
-            <div class="hero-eyebrow">Getting started</div>
-            <h1>Install the {{ instance_brand or "Agnes" }} CLI on this machine</h1>
-            <p class="hero-sub">
-                Connect your terminal and Claude Code to this server. Copy the
-                one-liner below — it downloads and installs the CLI wheel,
-                then seeds your local config.
-            </p>
-            <div class="hero-meta">
-                <span class="hero-pill">{{ server_url }}</span>
-                {% if agnes_version and agnes_version != "dev" %}
-                <span class="hero-pill">v{{ agnes_version }}</span>
-                {% endif %}
+        <section class="page-header page-header--hero">
+            <div class="page-header__main">
+                <div class="page-header__eyebrow">Getting started</div>
+                <h1 class="page-header__title">Install the {{ instance_brand or "Agnes" }} CLI on this machine</h1>
+                <p class="page-header__subtitle">
+                    Connect your terminal and Claude Code to this server. Copy the
+                    one-liner below — it downloads and installs the CLI wheel,
+                    then seeds your local config.
+                </p>
+                <div class="hero-meta">
+                    <span class="hero-pill">{{ server_url }}</span>
+                    {% if agnes_version and agnes_version != "dev" %}
+                    <span class="hero-pill">v{{ agnes_version }}</span>
+                    {% endif %}
+                </div>
             </div>
         </section>
 
