@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- Default `instance.theme` flipped from `navy` to `blue`. The brand-blue
+  palette is now the out-of-the-box look; `navy` (dark hero + mint-green
+  CTAs) is the opt-in via `AGNES_INSTANCE_THEME` / `instance.theme`
+  / admin server-config. Existing instances that explicitly set `navy`
+  are unaffected; instances relying on the implicit default will switch
+  to blue.
+
+### Fixed
+- Pre-login pages (`/login`, magic-link screens, first-time `/setup`)
+  now honour the configured `instance.theme` instead of always
+  rendering with the default `:root` palette. Eliminates the
+  jarring blue → navy flip after sign-in on navy-configured
+  instances.
+
 ### Added
 - New `marketplace.curators_url` config item (editable via
   `/admin/server-config` → **Marketplace** section). Drives the
