@@ -4,6 +4,12 @@
 
 {% block content %}
 {% include "_page_chrome.html" %}
+{# Design-system component macros — used by the offboard-strip button
+   and the cta-modal "Got it" button below. Setup-wizard chrome
+   (.install-hero, .install-block, .os-tabs, .home-overview, .what-is,
+   .session-step, .cta-modal, .home-news) is page-local and stays as-is
+   per system.md's known-follow-ups list. #}
+{% import "_components.html" as ds %}
 <style>
 .home-mock {
     /* Design-system scope — tokens live globally in
@@ -82,15 +88,10 @@
     justify-content: space-between;
     gap: 12px;
 }
-.home-mock .offboard-strip button {
-    border: 1px solid var(--ds-border);
-    background: white;
-    border-radius: 6px;
-    padding: 4px 10px;
-    font-size: 13px;
-    cursor: pointer;
-}
-.home-mock .offboard-strip button:hover { background: var(--ds-border-light); }
+/* `.offboard-strip button` styling moved onto `.btn.btn-secondary.btn-sm`
+   (rendered via `ds.button`). The page-local bg/border/padding rules
+   used to live here; they conflicted with the canonical .btn family
+   the moment the button adopted the .btn classes. */
 .home-mock .install-hero .eyebrow {
     font-size: 11px;
     font-weight: 600;
@@ -937,18 +938,10 @@
     border-top: 1px solid #F3F4F6;
 }
 .cta-modal-foot .meta { font-size: 12px; color: #6B7280; }
-.cta-modal-foot button {
-    background: var(--primary);
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 8px 18px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    font-family: inherit;
-}
-.cta-modal-foot button:hover { background: var(--ds-primary-dark); }
+/* `.cta-modal-foot button` styling moved onto `.btn.btn-primary`
+   (rendered via `ds.button`). Was previously a 1:1 reimplementation
+   of the green-fill CTA pattern; the .btn-primary class supplies the
+   identical surface + hover-darken behavior from style-custom.css. */
 
 /* ─────────────────────────────────────────────────────────────────
    Reskin overlay — value-first intro hero, pillars, progress chip,
@@ -2606,8 +2599,9 @@ What can I help you with?
        users land on /home expecting the nav hub, not a setup screen. #}
     <div class="offboard-strip">
         <span>Workspace ready — wiped it and need the full setup view back?</span>
-        <button id="offboard-btn" type="button"
-                data-target-source="self_unmark">Mark me as offboarded</button>
+        {{ ds.button('Mark me as offboarded', variant='secondary', size='sm',
+                     id='offboard-btn',
+                     attrs='data-target-source="self_unmark"') }}
         <span id="offboard-status" class="status" role="status" aria-live="polite"></span>
     </div>
     {% endif %}
@@ -2994,7 +2988,7 @@ What would you like to do?
         </ol>
         <div class="cta-modal-foot">
             <span class="meta">Token is in clipboard only — never displayed here.</span>
-            <button type="button" id="cta-modal-close">Got it</button>
+            {{ ds.button('Got it', variant='primary', id='cta-modal-close') }}
         </div>
     </div>
 </div>

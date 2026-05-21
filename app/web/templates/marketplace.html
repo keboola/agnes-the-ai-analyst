@@ -2,6 +2,14 @@
 {% block title %}Marketplace — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — action-row CTAs ("Submit a skill or
+   plugin" / "+ Upload") render via `ds.button`. The bespoke .mp-tabs,
+   .mp-card, .mp-curator-block, .pill, and .search-btn chrome stays
+   page-local: .mp-tabs carries inline SVG icons + count spans that
+   the ds.tabs macro doesn't model, the install/remove buttons inside
+   .mp-card are JS-generated client-side, and the curator/flea/mystack
+   info blocks use custom accent colours outside the .ds-accent vocab. #}
+{% import "_components.html" as ds %}
 <style>
   .mp-page {
     --surface: #ffffff;
@@ -502,10 +510,14 @@
       </button>
     </div>
     <div class="mp-actions">
-      <a class="btn btn-secondary" data-actions-for="curated" href="/marketplace/guide/curated">Submit a skill or plugin</a>
-      <!-- Flea has a self-service +Upload button below — no second
-           "how to" CTA needed. Anyone uploads via the form directly. -->
-      <a class="btn btn-primary" data-actions-for="flea" href="/store/new" hidden>+ Upload</a>
+      {{ ds.button('Submit a skill or plugin', variant='secondary',
+                   href='/marketplace/guide/curated',
+                   attrs='data-actions-for="curated"') }}
+      {# Flea has a self-service +Upload button below — no second
+         "how to" CTA needed. Anyone uploads via the form directly. #}
+      {{ ds.button('+ Upload', variant='primary',
+                   href='/store/new',
+                   attrs='data-actions-for="flea" hidden') }}
     </div>
   </div>
 

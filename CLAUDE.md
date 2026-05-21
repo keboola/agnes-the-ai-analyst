@@ -320,6 +320,11 @@ Two committed locations carry Agnes-specific Claude Code behavior:
 
 Design rationale: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`.
 
+## Design system
+- Source of truth: system.md, static/css/tokens.css
+- All new UI must use shared partials in templates/_partials/
+- Run /interface-design:audit before merging any template change
+
 ## Project conventions
 
 ### Vendor-agnostic OSS — no customer-specific content

@@ -3,6 +3,11 @@
 {% block title %}Login - Data Analyst Portal{% endblock %}
 
 {% block content %}
+{# Design-system component macros — login provider buttons below render
+   via `ds.button(variant=...)`. css_class from router carries the
+   canonical .btn variant name (btn-primary for Google, btn-secondary
+   for email/magic-link) which we strip to feed `variant=`. #}
+{% import "_components.html" as ds %}
 <div class="login-page">
     <div class="login-split">
         <!-- Left: Features & Value Proposition -->
@@ -106,16 +111,27 @@
                     'google_not_configured': "Google sign-in is not configured on this server.",
                 } %}
                 {% if _err and _err_messages.get(_err) %}
-                <div class="login-error" role="alert" style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;padding:12px 14px;border-radius:8px;font-size:13px;line-height:1.5;margin:0 auto 16px;max-width:280px;text-align:left;">
+                {# Inline error banner — uses the canonical `.flash flash-error`
+                   vocabulary (see `--ds-accent-danger-*` in design-tokens.css)
+                   so a future palette tweak updates this surface together with
+                   every other error chip on the app. The login-page-only
+                   width/margin override lives in style-custom.css under
+                   `.login-page .flash`. #}
+                <div class="flash flash-error login-error" role="alert">
                     {{ _err_messages.get(_err) }}
                 </div>
                 {% endif %}
 
                 {% for btn in login_buttons %}
-                <a href="{{ btn.url }}" class="btn {{ btn.css_class|default('btn-secondary') }}" style="width: 100%; max-width: 280px;">
-                    {% if btn.icon_html %}{{ btn.icon_html|safe }}{% endif %}
+                {# Router sets css_class to 'btn-primary' (Google) or
+                   'btn-secondary' (email/magic-link). Strip the 'btn-' prefix
+                   to feed `variant=`; default to 'secondary' for safety. #}
+                {% set _variant = btn.css_class[4:] if btn.css_class and btn.css_class.startswith('btn-') else 'secondary' %}
+                {% call ds.button(variant=_variant, href=btn.url,
+                                  klass='btn-block login-provider-btn') %}
+                    {%- if btn.icon_html %}{{ btn.icon_html|safe }}{% endif -%}
                     {{ btn.text }}
-                </a>
+                {% endcall %}
 
                 {% if btn.subtitle %}
                 <p class="login-note">

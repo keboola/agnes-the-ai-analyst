@@ -7,6 +7,11 @@
    only as a fallback since flea has a self-service +Upload button).
 
    Two distinct flows, one template — `guide_kind` switches the body. #}
+{# Design-system component macros — the bottom-of-page .guide-cta
+   buttons render via `ds.button`. The purple .fastpath-cta inside
+   .guide-fastpath stays bespoke (custom flea-violet palette, not in
+   the .ds-accent vocabulary). #}
+{% import "_components.html" as ds %}
 <style>
   .guide-page {
     max-width: 760px; margin: 0 auto;
@@ -136,30 +141,13 @@
   }
 
   /* ── CTA bar ────────────────────────────────────────────────────── */
+  /* Container layout only — the two buttons inside render via
+     `ds.button(variant='primary'|'secondary')`, so the bg/border/
+     padding/hover styling that lived here is now supplied by the
+     canonical .btn family in style-custom.css. */
   .guide-cta {
-    display: flex; gap: 10px; flex-wrap: wrap;
-    margin-top: 24px;
-  }
-  .guide-cta a {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 9px 16px;
-    border: 1px solid var(--border);
-    background: var(--card-bg);
-    color: var(--text-primary);
-    border-radius: 8px;
-    font-size: 13px; font-weight: 500;
-    text-decoration: none;
-    transition: all 0.15s ease;
-  }
-  .guide-cta a:hover { border-color: var(--primary); color: var(--primary); }
-  .guide-cta a.primary {
-    background: var(--ds-primary); color: #fff; border-color: var(--ds-primary);
-    font-weight: 600;
-  }
-  .guide-cta a.primary:hover {
-    background: var(--ds-primary-dark);
-    border-color: var(--ds-primary-dark);
-    color: #fff;
+    display: flex; gap: var(--space-3); flex-wrap: wrap;
+    margin-top: var(--space-6);
   }
 </style>
 
@@ -223,8 +211,10 @@
   </div>
 
   <div class="guide-cta">
-    <a class="primary" href="/marketplace/guide/flea">Submit a skill to Flea Market &rarr;</a>
-    <a href="/marketplace?tab=curated">&larr; Back to Curated</a>
+    {{ ds.button('Submit a skill to Flea Market →', variant='primary',
+                 href='/marketplace/guide/flea') }}
+    {{ ds.button('← Back to Curated', variant='secondary',
+                 href='/marketplace?tab=curated') }}
   </div>
   {% else %}
   {# Flea publishing guide — self-service flow. No human gatekeeper,
@@ -273,8 +263,10 @@
   </ol>
 
   <div class="guide-cta">
-    <a class="primary" href="/store/new">+ Upload to Flea Market</a>
-    <a href="/marketplace?tab=curated">Browse Curated &rarr;</a>
+    {{ ds.button('+ Upload to Flea Market', variant='primary',
+                 href='/store/new') }}
+    {{ ds.button('Browse Curated →', variant='secondary',
+                 href='/marketplace?tab=curated') }}
   </div>
   {% endif %}
 </div>

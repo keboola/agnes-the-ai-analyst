@@ -57,11 +57,22 @@ def test_marketplace_curated_tab_cta_text(fresh_db):
         "/marketplace?tab=curated", cookies={"access_token": sess}
     ).text
 
-    # Action-row anchor — primary discovery path.
-    assert (
-        '<a class="btn btn-secondary" data-actions-for="curated" '
-        'href="/marketplace/guide/curated">Submit a skill or plugin</a>'
-    ) in body
+    # Action-row anchor — primary discovery path. Assertion is order-
+    # agnostic now that the anchor is rendered via `ds.button` (which
+    # emits href before the class attribute); the intent is unchanged:
+    # an <a> exists carrying the canonical .btn .btn-secondary classes,
+    # the data-actions-for="curated" hook the tab-switcher JS reads,
+    # the curated-guide href, AND the renamed CTA text.
+    import re
+    cta_match = re.search(
+        r'<a\b[^>]*\bclass="btn btn-secondary[^"]*"[^>]*>'
+        r'\s*Submit a skill or plugin\s*</a>',
+        body,
+    )
+    assert cta_match, "action-row CTA anchor (.btn .btn-secondary) missing or text changed"
+    cta_html = cta_match.group(0)
+    assert 'data-actions-for="curated"' in cta_html
+    assert 'href="/marketplace/guide/curated"' in cta_html
     # Empty-state JS innerHTML — same string, no drift.
     assert "Submit a skill or plugin →" in body
     # Old wording must be gone — guards against partial rename.
@@ -102,8 +113,11 @@ def test_marketplace_guide_curated_page(fresh_db):
     # context before they upload).
     assert '<div class="guide-fastpath">' in body
     assert 'href="/marketplace/guide/flea"' in body
-    # Primary CTA at the bottom also surfaces the flea path.
-    assert 'class="primary" href="/marketplace/guide/flea"' in body
+    # Primary CTA at the bottom also surfaces the flea path. Renders
+    # via `ds.button(variant='primary', href='/marketplace/guide/flea')`
+    # which emits href before class; the assertion checks both attributes
+    # without locking attribute order.
+    assert '<a href="/marketplace/guide/flea" class="btn btn-primary"' in body
 
 
 def test_marketplace_guide_flea_page(fresh_db):

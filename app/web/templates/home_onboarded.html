@@ -4,12 +4,15 @@
 
 {% block content %}
 {% include "_page_chrome.html" %}
+{# Design-system component macros — quick-card grid below renders via
+   `ds.panel(href=...)`. #}
+{% import "_components.html" as ds %}
 <style>
 .home-mock {
     /* Design-system scope — tokens live globally in
        app/web/static/css/design-tokens.css. */
     color: var(--ds-text-primary);
-    font-size: 14px;
+    font-size: var(--text-base);
     line-height: 1.5;
 }
 .home-mock * { box-sizing: border-box; }
@@ -17,24 +20,24 @@
 .home-mock .hero {
     background: linear-gradient(135deg, var(--ds-primary) 0%, var(--ds-primary-dark) 100%);
     color: white;
-    border-radius: 16px;
-    padding: 38px 40px;
-    margin-bottom: 22px;
+    border-radius: var(--radius-2xl);
+    padding: 38px var(--space-9);
+    margin-bottom: var(--space-6);
     box-shadow: 0 8px 24px rgba(31, 138, 94, 0.18);
 }
 .home-mock .hero .eyebrow {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
     text-transform: uppercase;
     letter-spacing: 0.8px;
     opacity: 0.85;
-    margin-bottom: 10px;
+    margin-bottom: var(--space-2);
 }
 .home-mock .hero h1 {
-    font-size: 30px;
-    font-weight: 600;
+    font-size: var(--text-2xl);
+    font-weight: var(--font-semibold);
     letter-spacing: -0.4px;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
     line-height: 1.2;
     color: white;
 }
@@ -44,29 +47,29 @@
     max-width: 680px;
     line-height: 1.6;
 }
-/* Inline `<code>` chips inside the blue welcome hero — mirror the
+/* Inline `<code>` chips inside the green welcome hero — mirror the
    .install-hero rule on the not-onboarded view (amber-on-dark-navy,
    ≈9:1 contrast). Previous inline `style="background: rgba(255,255,
    255,0.12)..."` rendered as a near-invisible faint-white pill on the
-   blue gradient, with inherited white text on top — low contrast +
+   gradient, with inherited white text on top — low contrast +
    the chip silhouette merged into the hero. */
 .home-mock .hero code {
     background: rgba(15, 23, 42, 0.75);
     color: #FBBF24;
     border: 1px solid rgba(251, 191, 36, 0.30);
     padding: 1px 6px;
-    border-radius: 4px;
-    font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+    border-radius: var(--radius-sm);
+    font-family: var(--ds-font-mono);
     font-size: 12.5px;
 }
 
 .home-mock .section-label {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
     text-transform: uppercase;
     letter-spacing: 0.6px;
     color: var(--ds-text-secondary);
-    margin: 30px 0 12px;
+    margin: 30px 0 var(--space-3);
 }
 
 .home-mock .quick-grid {
@@ -75,33 +78,36 @@
     gap: 18px;
     margin-bottom: 18px;
 }
+/* `.quick-card` is layered on `.ds-card` via {% raw %}{{ ds.panel(href=…, klass='quick-card') }}{% endraw %}.
+   The .ds-card base supplies surface bg, 1px border, padding, shadow,
+   and `[data-clickable]` hover-lift; these overrides bump the radius
+   from 8 → 12 (matches .stack-card scale), open the gap, and swap the
+   neutral hover for the brand-green hover the page-local design used. */
 .home-mock .quick-card {
-    background: white;
-    border: 1px solid var(--ds-border);
-    border-radius: 12px;
-    padding: 22px;
+    border-radius: var(--radius-xl);
     text-decoration: none;
     color: inherit;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    transition: border-color .15s, box-shadow .15s;
+    gap: var(--space-1);
+    padding: 22px;
 }
-.home-mock .quick-card:hover {
+.home-mock .quick-card[data-clickable]:hover {
     border-color: var(--ds-primary);
     box-shadow: 0 4px 12px rgba(46, 168, 119, 0.10);
+    transform: none;
 }
 .home-mock .quick-card .ico {
     font-size: 22px;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
 }
 .home-mock .quick-card .ttl {
     font-size: 15px;
-    font-weight: 600;
+    font-weight: var(--font-semibold);
     color: var(--ds-text-primary);
 }
 .home-mock .quick-card .desc {
-    font-size: 13px;
+    font-size: var(--text-sm);
     color: var(--ds-text-secondary);
     line-height: 1.55;
 }
@@ -122,38 +128,38 @@
     <div class="section-label">Quick links</div>
 
     <div class="quick-grid">
-        <a class="quick-card" href="/dashboard">
+        {% call ds.panel(href='/dashboard', klass='quick-card') %}
             <span class="ico">&#x1F4CA;</span>
             <div class="ttl">Dashboard</div>
             <div class="desc">Sync state, table inventory, recent activity.</div>
-        </a>
-        <a class="quick-card" href="/catalog">
+        {% endcall %}
+        {% call ds.panel(href='/catalog', klass='quick-card') %}
             <span class="ico">&#x1F4DA;</span>
             <div class="ttl">Catalog</div>
             <div class="desc">Browse tables, schema, and metric definitions.</div>
-        </a>
+        {% endcall %}
         {# Curated Memory is user-facing — the /corporate-memory route runs
            on get_current_user, so the card shows for everyone, matching
            its primary-nav placement next to Data Packages. #}
-        <a class="quick-card" href="/corporate-memory">
+        {% call ds.panel(href='/corporate-memory', klass='quick-card') %}
             <span class="ico">&#x1F9E0;</span>
             <div class="ttl">Curated Memory</div>
             <div class="desc">Shared analyst knowledge and prior solutions.</div>
-        </a>
+        {% endcall %}
         {# Activity Center admin-only — parity with the top-nav gating. #}
         {% if is_admin %}
-        <a class="quick-card" href="/activity-center">
+        {% call ds.panel(href='/activity-center', klass='quick-card') %}
             <span class="ico">&#x1F4C8;</span>
             <div class="ttl">Activity Center</div>
             <div class="desc">Per-user analytics on {{ instance_brand }} adoption.</div>
-        </a>
+        {% endcall %}
         {% endif %}
         {% if is_admin %}
-        <a class="quick-card" href="/admin/server-config">
+        {% call ds.panel(href='/admin/server-config', klass='quick-card') %}
             <span class="ico">&#x2699;&#xFE0F;</span>
             <div class="ttl">Admin</div>
             <div class="desc">Server configuration, RBAC, marketplaces.</div>
-        </a>
+        {% endcall %}
         {% endif %}
     </div>
 </div>

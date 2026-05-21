@@ -1,84 +1,325 @@
-/* Design system tokens — `--ds-*` namespace.
+/* Design system tokens — canonical `--ds-*` namespace + shared scales.
  *
- * The `--ds-*` set is the opt-in design system introduced by the
- * /home redesign: green/navy palette, system font stack, light/dark
- * surface pair, blue-info + amber-warn callout vocabularies.
+ * Philosophy: "Calm editorial dashboard." See
+ * `.design/design-system-unification/DESIGN_BRIEF.md` for the full
+ * direction. Borders-dominant, shadows reserved; system font stack;
+ * green primary + navy hero + white card surfaces.
  *
- * Pages opt into the design system by adding a scope class
- * (`.home-mock`, `.advanced-mock`) and referencing `var(--ds-*)`.
- * Tokens live globally so any future page (or shared component) can
- * pick them up without re-declaring values.
+ * This file is the SOURCE OF TRUTH for every visual primitive in
+ * the app — palette, surfaces, ink, accent vocabulary, type scale,
+ * spacing, radius, shadow, motion, layout widths, focus ring, and
+ * the per-variant button tokens.
  *
- * The legacy `--primary` family in style-custom.css remains the
- * default app brand (blue) used by login, dashboard, catalog,
- * marketplace, admin, etc. The two systems coexist — pages that
- * haven't been redesigned keep reading `var(--primary)` and stay
- * blue; redesigned pages reference `var(--ds-*)` and get the green
- * surface.
+ * Load order (see base.html): style-custom.css → design-tokens.css.
+ * That ordering means anything declared here OVERRIDES the legacy
+ * `:root` block in style-custom.css, which is how the compatibility
+ * shim at the bottom flips the legacy `--primary` blue to the new
+ * green without touching any consumer rule.
+ *
+ * Naming convention:
+ *   --ds-*            — palette/surface/ink/component tokens (carry brand identity).
+ *   unprefixed scales — `--space-*`, `--radius-*`, `--text-*` (size),
+ *                       `--font-*` (weight), `--shadow-*`, `--transition-*`,
+ *                       `--width-*`. These are palette-agnostic and shared.
+ *
+ * Dark mode is OUT OF SCOPE per the unification brief. A future
+ * brief will populate the `[data-theme="dark"]` scaffold at the
+ * bottom of this file.
  */
 
 :root {
-    /* Brand surface — green/navy palette. Opted into via the
-       `.home-mock` / `.advanced-mock` scopes. */
-    --ds-primary: #2ea877;          /* brand-dark green */
-    --ds-primary-dark: #1f8a5e;     /* hover/active */
-    --ds-primary-light: #e6f9f0;    /* mint tint */
-    --ds-brand-accent: #54d3a0;     /* brand (lighter) */
+    /* ─── Brand surface — green primary ──────────────────────────── */
+    --ds-primary:        #2ea877;   /* CTAs, active states, eyebrows in scoped surfaces */
+    --ds-primary-dark:   #1f8a5e;   /* hover/active */
+    --ds-primary-light:  #e6f9f0;   /* mint tint — inline-code chips, info-light fills */
+    --ds-brand-accent:   #54d3a0;   /* lighter brand for accents */
 
-    /* Hero surface — deep navy used by setup hero + first-session
-       terminal-frame backgrounds. Reads as the visual ground for any
-       "this is what your terminal will look like" mock-up. */
-    --ds-hero-bg: #0f1b3a;
-    --ds-hero-bg-deep: #0a1430;
-    --ds-hero-ink: #f3f6ff;
+    /* ─── Hero & code surfaces — deep navy ───────────────────────── */
+    --ds-hero-bg:        #0f1b3a;   /* `.page-header--hero`, dashboard cover */
+    --ds-hero-bg-deep:   #0a1430;   /* darker variant for gradient stops */
+    --ds-hero-ink:       #f3f6ff;   /* ink on navy surfaces */
+    --ds-code-bg:        #0c1224;   /* terminal mocks, `.code-block` */
+    --ds-code-ink:       #d7e4ff;   /* code ink */
+    --ds-code-yellow:    #ffd866;   /* command prompt accent */
+    --ds-orange:         #c2410c;   /* terminal `[3]`-style prompts */
+    --ds-orange-light:   #fed7aa;
 
-    /* Code-panel surface — near-black bg with cool-blue ink + warm
-       yellow command accent. Used by `.code-block` (copyable install
-       command), `.terminal-body`, expected-output blocks. */
-    --ds-code-bg: #0c1224;
-    --ds-code-ink: #d7e4ff;
-    --ds-code-yellow: #ffd866;
+    /* ─── Light surfaces — page bg, cards, inset wells ───────────── */
+    --ds-bg:             #f6f7fa;
+    --ds-surface:        #ffffff;
+    --ds-surface-dim:    #f0f2f6;   /* button-secondary hover, inset wells, hover rows */
+    --ds-border:         #e4e7ee;
+    --ds-border-light:   #f0f2f6;
+    --ds-border-strong:  #c4c4c4;   /* keyboard hint outlines, OS-only borders */
 
-    /* Light surface — page background, card surface, dim variant
-       for inset panels. */
-    --ds-bg: #f6f7fa;
-    --ds-surface: #ffffff;
-    --ds-surface-dim: #f0f2f6;
-    --ds-border: #e4e7ee;
-    --ds-border-light: #f0f2f6;
+    /* ─── Text (light surface) ───────────────────────────────────── */
+    --ds-text-primary:   #0e1525;   /* body, headings on `--ds-bg` / `--ds-surface` */
+    --ds-text-secondary: #4a5168;   /* lede paragraphs, table cells */
+    --ds-text-muted:     #788098;   /* timestamps, captions, eyebrows-on-dim */
+    --ds-text-disabled:  #d1d5db;
+    --ds-text-inverse:   #ffffff;   /* text on green CTAs and navy surfaces */
+    --ds-text-link:      var(--ds-primary);
 
-    /* Text — primary / secondary / muted on light surfaces. Primary
-       is near-black for body copy; muted is for chrome (timestamps,
-       hints, captions). */
-    --ds-text-primary: #0e1525;
-    --ds-text-secondary: #4a5168;
-    --ds-text-muted: #788098;
+    /* ─── Status leaf colours — feed the accent vocabulary below ─── */
+    --ds-success:        #10b77f;
+    --ds-warning:        #f59f0a;
+    --ds-error:          #ea580c;
+    --ds-danger:         #c2410c;   /* deeper variant for danger CTA fills */
+    --ds-danger-ink:     #7a2906;   /* danger button text-on-hover contrast */
 
-    /* Accent — orange used for terminal `[3]`-style prompts and the
-       Cowork surface card warning chip. */
-    --ds-orange: #C2410C;
-    --ds-orange-light: #FED7AA;
+    /* ─── Accent vocabulary — shared by `.ds-card--accent`, `.flash`,
+       `.badge`, `.callout-*`. Each role has `bg / ink / line` so any
+       component can express a status with one accent token swap. */
 
-    /* Callout vocabularies — `.callout-hint` (blue info) and
-       `.callout-rec` (amber recommendation). Background +
-       left-border + ink so the box reads at a glance. */
-    --ds-info-bg: #eef3ff;
-    --ds-info-ink: #1c3994;
-    --ds-info-line: #4f7cf2;
-    --ds-warn-bg: #fff8e6;
-    --ds-warn-ink: #6e4d00;
-    --ds-warn-line: #f5c84b;
+    /* Info (blue) — educational asides, hint callouts, info flashes */
+    --ds-accent-info-bg:   #eef3ff;
+    --ds-accent-info-ink:  #1c3994;
+    --ds-accent-info-line: #4f7cf2;
 
-    /* Elevation — navy-tinted shadow stack. Matches the deep-navy
-       hero so the depth perception reads consistently across the
-       page. */
-    --ds-shadow-sm: 0 1px 2px rgba(15, 27, 58, .05), 0 1px 3px rgba(15, 27, 58, .06);
-    --ds-shadow-md: 0 4px 16px rgba(15, 27, 58, .08);
-    --ds-shadow-lg: 0 8px 24px rgba(15, 27, 58, .14);
+    /* Success (green) — completed state, positive flashes */
+    --ds-accent-success-bg:   #e6f9f0;
+    --ds-accent-success-ink:  #145c3d;
+    --ds-accent-success-line: var(--ds-success);
 
-    /* Typography — system stack so weight + letterforms render
-       identically on macOS (San Francisco) and Windows (Segoe UI).
-       Inter remains a graceful fallback in the cascade. */
-    --ds-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
-    --ds-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    /* Warn (amber) — opinionated recommendations, warnings */
+    --ds-accent-warn-bg:   #fff8e6;
+    --ds-accent-warn-ink:  #6e4d00;
+    --ds-accent-warn-line: #f5c84b;
+
+    /* Danger (red/orange) — destructive actions, error flashes */
+    --ds-accent-danger-bg:   #fdebd9;
+    --ds-accent-danger-ink:  #7a2906;
+    --ds-accent-danger-line: var(--ds-error);
+
+    /* Legacy callout aliases (kept until callouts are reshaped to read
+       directly from `--ds-accent-*-*`) */
+    --ds-info-bg:   var(--ds-accent-info-bg);
+    --ds-info-ink:  var(--ds-accent-info-ink);
+    --ds-info-line: var(--ds-accent-info-line);
+    --ds-warn-bg:   var(--ds-accent-warn-bg);
+    --ds-warn-ink:  var(--ds-accent-warn-ink);
+    --ds-warn-line: var(--ds-accent-warn-line);
+
+    /* ─── Typography — fonts ─────────────────────────────────────── */
+    --ds-font:      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", system-ui, sans-serif;
+    --ds-font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* ─── Typography — size scale (px). Body is `--text-base` (14).
+       Unprefixed because these are palette-agnostic and consumed
+       across the legacy stylesheet too. */
+    --text-xs:    10px;
+    --text-sm:    12px;
+    --text-base:  14px;
+    --text-md:    16px;
+    --text-lg:    18px;
+    --text-xl:    24px;
+    --text-2xl:   30px;
+
+    /* ─── Typography — weight scale */
+    --font-normal:     400;
+    --font-medium:     500;
+    --font-semibold:   600;
+    --font-bold:       700;
+    --font-extrabold:  800;
+
+    /* ─── Typography — line heights */
+    --leading-tight:    1.2;    /* headings */
+    --leading-snug:     1.4;
+    --leading-normal:   1.55;   /* body — matches `.callout-*` */
+    --leading-relaxed:  1.7;
+
+    /* ─── Typography — letter spacing */
+    --tracking-tight:    -0.5px;  /* display headings */
+    --tracking-normal:   0;
+    --tracking-wide:     0.4px;   /* `.stack-card__tag`, status pills */
+    --tracking-eyebrow:  1.2px;   /* `.setup-section-header .eyebrow` */
+
+    /* ─── Spacing — base-4 scale ─────────────────────────────────── */
+    --space-0:   0;
+    --space-1:   4px;
+    --space-2:   8px;     /* most-used */
+    --space-3:   12px;    /* most-used */
+    --space-4:   16px;    /* most-used */
+    --space-5:   20px;
+    --space-6:   24px;    /* most-used */
+    --space-7:   28px;
+    --space-8:   32px;
+    --space-9:   40px;
+    --space-10:  48px;
+    --space-11:  56px;
+    --space-12:  64px;
+
+    /* ─── Border radius ──────────────────────────────────────────── */
+    --radius-sm:    4px;     /* chips, tags, inline-code */
+    --radius-md:    6px;     /* small controls */
+    --radius-lg:    8px;     /* default — buttons, callouts, page cards */
+    --radius-xl:   12px;     /* large cards (`.stack-card`, marketplace tiles) */
+    --radius-2xl:  16px;     /* hero / oversized surfaces */
+    --radius-full: 9999px;   /* pills, status badges */
+    --radius:      var(--radius-lg);   /* canonical default */
+
+    /* ─── Shadow — navy-tinted, borders-dominant strategy ────────── */
+    --shadow-sm:       0 1px 2px rgba(15, 27, 58, .05), 0 1px 3px rgba(15, 27, 58, .06);
+    --shadow-md:       0 4px 16px rgba(15, 27, 58, .08);
+    --shadow-card:     0 1px 3px rgba(15, 27, 58, .06), 0 1px 2px -1px rgba(15, 27, 58, .05);
+    --shadow-lg:       0 8px 24px rgba(15, 27, 58, .14);
+    --shadow-elevated: var(--shadow-lg);
+    /* Aliased into the `--ds-*` namespace too for consumers that
+       want the brand-explicit name. */
+    --ds-shadow-sm:        var(--shadow-sm);
+    --ds-shadow-md:        var(--shadow-md);
+    --ds-shadow-lg:        var(--shadow-lg);
+    --ds-shadow-elevated:  var(--shadow-elevated);
+
+    /* ─── Motion ─────────────────────────────────────────────────── */
+    --transition-instant:  50ms ease;     /* state-only toggles */
+    --transition-fast:    120ms ease;     /* button hover, table row hover */
+    --transition-base:    200ms ease;     /* tab underline, panel fades */
+    --transition-slow:    320ms ease;     /* hero crossfades */
+
+    --ease-default:  cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-in:       cubic-bezier(0.4, 0, 1, 1);
+    --ease-out:      cubic-bezier(0, 0, 0.2, 1);
+    --ease-bounce:   cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    /* ─── Layout widths ──────────────────────────────────────────── */
+    --width-app:   1280px;   /* default page shell */
+    --width-wide:  1400px;   /* admin index lists, marketplace grids */
+    --width-form:   720px;   /* max-width applied to FORM elements on
+                                login / password-setup pages, replacing
+                                the legacy `--width-narrow` page shell */
+    --width-prose:  720px;   /* alias for long-form reading inside cards */
+
+    /* `--width-narrow` is intentionally NOT defined here — dropped by
+       the unification brief. Pages that referenced it via
+       `.container--narrow` are migrated to the default `.container`
+       with a form-level max-width. */
+
+    /* ─── Breakpoints — documentation tokens.
+       CSS variables don't work inside @media queries, but listing
+       them keeps the values discoverable and JS-readable. Use the
+       raw px values in stylesheets, keyed off these constants. */
+    --bp-sm:    375px;   /* mobile */
+    --bp-md:    768px;   /* tablet */
+    --bp-lg:   1024px;   /* small desktop */
+    --bp-xl:   1280px;   /* desktop */
+    --bp-2xl:  1536px;   /* wide desktop */
+
+    /* ─── Focus ring ─────────────────────────────────────────────── */
+    /* Canonical focus treatment per the brief: 2px solid outline in
+       `--ds-primary`, 2px offset, applied to every interactive
+       element. Components read these tokens, not literals, so a
+       future palette tweak is single-file. */
+    --ds-focus-outline-width:   2px;
+    --ds-focus-outline-offset:  2px;
+    --ds-focus-outline-color:   var(--ds-primary);
+    --ds-focus-outline:         var(--ds-focus-outline-width) solid var(--ds-focus-outline-color);
+    --ds-focus-ring:            0 0 0 3px rgba(46, 168, 119, 0.25);   /* legacy glow — kept for one-off shadow-based focus */
+    --focus-ring:               var(--ds-focus-ring);                  /* compat alias */
+
+    /* ─── Button-variant tokens ──────────────────────────────────── */
+    /* Each `.btn-{variant}` rule reads from this block. Adding a new
+       variant means adding a token row here, not inventing colours
+       in the component file. */
+
+    /* Primary — green fill, white ink */
+    --ds-btn-primary-bg:        var(--ds-primary);
+    --ds-btn-primary-bg-hover:  var(--ds-primary-dark);
+    --ds-btn-primary-bg-active: var(--ds-primary-dark);
+    --ds-btn-primary-ink:       var(--ds-text-inverse);
+    --ds-btn-primary-border:    transparent;
+
+    /* Secondary — transparent, 1px border, fills on hover */
+    --ds-btn-secondary-bg:        transparent;
+    --ds-btn-secondary-bg-hover:  var(--ds-surface-dim);
+    --ds-btn-secondary-bg-active: var(--ds-surface-dim);
+    --ds-btn-secondary-ink:       var(--ds-text-secondary);
+    --ds-btn-secondary-border:    var(--ds-border);
+
+    /* Ghost — no border, fills on hover */
+    --ds-btn-ghost-bg:        transparent;
+    --ds-btn-ghost-bg-hover:  var(--ds-surface-dim);
+    --ds-btn-ghost-bg-active: var(--ds-surface-dim);
+    --ds-btn-ghost-ink:       var(--ds-text-secondary);
+    --ds-btn-ghost-border:    transparent;
+
+    /* Danger — red ink/border, fills red on hover */
+    --ds-btn-danger-bg:        transparent;
+    --ds-btn-danger-bg-hover:  var(--ds-error);
+    --ds-btn-danger-bg-active: var(--ds-danger);
+    --ds-btn-danger-ink:       var(--ds-error);
+    --ds-btn-danger-ink-hover: var(--ds-text-inverse);
+    --ds-btn-danger-border:    var(--ds-error);
+
+    /* Google — OAuth brand fidelity; not a semantic variant */
+    --ds-btn-google-bg:        #ffffff;
+    --ds-btn-google-bg-hover:  #f8f9fa;
+    --ds-btn-google-ink:       #3c4043;
+    --ds-btn-google-border:    #dadce0;
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Compatibility shim — legacy unprefixed palette tokens
+   ────────────────────────────────────────────────────────────────────
+   These names are read by ~4500 lines of legacy `style-custom.css`
+   rules and a handful of page-local <style> blocks. Aliasing them
+   onto the `--ds-*` family is how the unification flips the legacy
+   blue chrome to green WITHOUT touching any selector — every
+   `var(--primary)` consumer renders the new value automatically.
+
+   ACTIVE. Activated as the palette-flip step of the component-first
+   cleanup (Task #9 in the unification brief). Roll back by
+   re-commenting the block if a regression appears; the underlying
+   `--ds-*` values are unaffected.
+*/
+
+:root {
+    --primary:        var(--ds-primary);
+    --primary-light:  var(--ds-primary-light);
+    --primary-dark:   var(--ds-primary-dark);
+    --brand-accent:   var(--ds-brand-accent);
+    --hero-bg:        var(--ds-hero-bg);
+    --hero-ink:       var(--ds-hero-ink);
+
+    --text-primary:   var(--ds-text-primary);
+    --text-secondary: var(--ds-text-secondary);
+    --text-muted:     var(--ds-text-muted);
+    --text-disabled:  var(--ds-text-disabled);
+
+    --background:     var(--ds-bg);
+    --bg:             var(--ds-bg);
+    --surface:        var(--ds-surface);
+    --card-bg:        var(--ds-surface);
+    --surface-dim:    var(--ds-surface-dim);
+    --border:         var(--ds-border);
+    --border-light:   var(--ds-border-light);
+    --border-dark:    var(--ds-border-strong);
+
+    --success: var(--ds-success);
+    --warning: var(--ds-warning);
+    --error:   var(--ds-error);
+
+    --info-bg:   var(--ds-accent-info-bg);
+    --info-ink:  var(--ds-accent-info-ink);
+    --info-line: var(--ds-accent-info-line);
+    --warn-bg:   var(--ds-accent-warn-bg);
+    --warn-ink:  var(--ds-accent-warn-ink);
+    --warn-line: var(--ds-accent-warn-line);
+
+    --font-primary: var(--ds-font);
+    --font-mono:    var(--ds-font-mono);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Dark-mode scaffold — RESERVED FOR A FUTURE BRIEF
+   ────────────────────────────────────────────────────────────────────
+   The unification brief explicitly out-of-scopes dark mode (the
+   `--ds-*` palette is light-surface today; a future brief will add
+   a dark variant once the unification is done). This selector
+   exists so future overrides slot in without restructuring the
+   token file — values are intentionally absent.
+*/
+
+[data-theme="dark"] {
+    /* Reserved. Populate when the dark-mode brief lands. */
 }
