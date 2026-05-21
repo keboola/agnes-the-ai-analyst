@@ -2998,6 +2998,21 @@ a.slack-badge:hover {
     border-color: var(--text-secondary);
 }
 
+/* Login-card width constraints — provider buttons + inline error banner
+   sit centred at 280px max-width so they line up with the card's content
+   column. Previously these widths were carried inline on each element
+   (`style="max-width: 280px"`); pulled into the stylesheet so markup can
+   compose `.btn .btn-primary/secondary .btn-block .login-provider-btn`
+   via `ds.button(klass=...)`. */
+.login-page .login-provider-btn {
+    max-width: 280px;
+}
+.login-page .login-error {
+    max-width: 280px;
+    margin: 0 auto var(--space-4);
+    text-align: left;
+}
+
 /* Responsive: Tablet */
 @media (max-width: 1024px) {
     .login-split {
