@@ -20,10 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - Pre-login pages (`/login`, magic-link screens, first-time `/setup`)
-  now honour the configured `instance.theme` instead of always
-  rendering with the default `:root` palette. Eliminates the
-  jarring blue → navy flip after sign-in on navy-configured
-  instances.
+  now honour the configured `instance.theme`. `base_login.html` sets
+  `<html data-theme="...">` from `instance_theme`, and the navy
+  variant flips the `.login-features` hero panel from brand-blue
+  `--primary` to the deep-navy gradient — eliminating the jarring
+  blue → navy flip after sign-in on navy-configured instances.
 
 ### Added
 - `/home` now opens with a value-first intro hero — eyebrow greeting,
