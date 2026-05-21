@@ -2476,7 +2476,7 @@ What can I help you with?
                         {% endwith %}
                     </div>
                     <div class="install-note">
-                        The preview above is the exact text the button copies; the placeholder is replaced with a real token at click time. Don't create <code>~/{{ workspace_dir }}/Projects/</code> manually — the bundled plugin offers to set it up after install.
+                        The preview above is the exact text the button copies; the placeholder is replaced with a real token at click time. Don't create <code>~/Desktop/{{ workspace_dir }}/Projects/</code> manually — the bundled plugin offers to set it up after install.
                     </div>
                 </details>
             </div>
@@ -2598,7 +2598,7 @@ What can I help you with?
 
     {% if onboarded %}
     {# Offboarding escape hatch shown only after the hero has disappeared.
-       Lets the analyst (e.g. after wiping ~/{{ workspace_dir }}) flip the
+       Lets the analyst (e.g. after wiping ~/Desktop/{{ workspace_dir }}) flip the
        users.onboarded boolean back to false so the full install hero
        renders again on next reload. Discrete by design — onboarded
        users land on /home expecting the nav hub, not a setup screen. #}

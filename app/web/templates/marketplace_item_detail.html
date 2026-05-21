@@ -1002,12 +1002,16 @@
   const d = await res.json();
 
   // ── Title resolution per source ─────────────────────────────────────
-  // Curated: marketplace-metadata.json `display_name` wins, else frontmatter `name`.
-  // Flea standalone skill/agent reuses PluginDetailResponse — `display_name`
-  // populated by the same on-demand parser path, otherwise `plugin_name`
-  // (the entity name; manifest_name is the suffixed `<name>-by-<username>`).
+  // Curated inner + flea inner: prefer marketplace-metadata `display_name`,
+  // then frontmatter `name` (returned as `d.name`), then the URL slug.
+  // Standalone flea (no innerName) falls back to `d.plugin_name` — for
+  // plugin entities that field IS the entity's user-set title. The earlier
+  // shape branched on `source === 'curated'` and so flea inner skills/agents
+  // fell through to `d.plugin_name`, which the flea inner-detail API
+  // populates with the *parent plugin's* entity name — so a skill nested
+  // inside a flea plugin rendered the plugin's title on its hero.
   const heroTitle = d.display_name
-    || (source === 'curated' ? (d.name || innerName) : (d.plugin_name || ''));
+    || (innerName ? (d.name || innerName) : (d.plugin_name || ''));
 
   document.title = `${heroTitle} — Marketplace`;
 

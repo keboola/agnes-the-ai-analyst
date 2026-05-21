@@ -527,7 +527,9 @@
       <div class="title">Each plugin here has a named curator accountable for it.</div>
       <div class="body">Each plugin in this marketplace has a named curator and meets a baseline review bar (security, telemetry hygiene, documentation).</div>
     </div>
-    <a class="link" href="#">See all curators →</a>
+    {% if curators_url %}
+    <a class="link" href="{{ curators_url }}" target="_blank" rel="noopener">See all curators →</a>
+    {% endif %}
   </div>
 
   <!-- Flea Market info block — open-shelf signal, mirror structure of

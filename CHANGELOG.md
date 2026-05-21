@@ -11,6 +11,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `instance.custom_scripts`: operator-injected HTML/JS blocks rendered
+  into every page that extends `base.html`. Each entry takes `name`,
+  `enabled`, `placement` (`head_start` | `head_end` | `body_end`), and
+  `html`. Use for feedback widgets (Marker.io), analytics (GTM,
+  PostHog), error capture (Sentry). Admin-only; rendered with `| safe`
+  — same trust boundary as `instance.logo_svg` / `instance.overview`.
+  Empty default keeps the OSS vendor-neutral. Resolved by
+  `app/instance_config.py::get_custom_scripts()`; surfaced in
+  `/admin/server-config` via `_KNOWN_FIELDS["instance"]`. Example
+  Marker.io block in `config/instance.yaml.example`.
+- New `marketplace.curators_url` config item (editable via
+  `/admin/server-config` → **Marketplace** section). Drives the
+  "See all curators →" link on the `/marketplace` curated-tab info
+  block; when empty the link is hidden (matches today's behaviour).
+  SSRF-guarded on save (private-IP allowlist, same posture as
+  `data_source.keboola.stack_url`).
 - `/home` now opens with a value-first intro hero — eyebrow greeting,
   one-line product framing, **Set up in ~15 min** / **Just browse**
   CTAs, and a four-pillar row (Data packages · Plugins · Skills ·
@@ -25,6 +41,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   bar, and per-step number badges next to each install block.
 
 ### Changed
+- Default `instance.theme` flipped from `navy` to `blue`. The brand-blue
+  palette is now the out-of-the-box look; `navy` (dark hero + mint-green
+  CTAs) is the opt-in via `AGNES_INSTANCE_THEME` / `instance.theme`
+  / admin server-config. Existing instances that explicitly set `navy`
+  are unaffected; instances relying on the implicit default will switch
+  to blue.
 - `/home` palette shifted from blue to green/navy: brand accent is now
   `#2ea877` (mint green) on light surfaces, hero card is navy
   `#0f1b3a`, code panels are near-black `#0c1224` with warm-yellow
@@ -65,6 +87,42 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- Google Workspace connector prompt's Step 8 verify no longer asks
+  Claude to parse a row count out of `gws drive files list` / `gws
+  chat spaces list` JSON. Claude would improvise a `python3 -c 'f"…
+  {len(d.get(\"files\",[]))}…"'` snippet that fails two ways: f-string
+  expressions reject backslashes in Python <3.12 (`SyntaxError`), and
+  `gws` can emit a banner before the JSON body (`json.JSONDecodeError`).
+  Step 8 now treats exit code 0 as success, drops the `<N> drive
+  file(s), <M> chat space(s) visible` counts, and explicitly warns
+  against both anti-patterns. The summary-grep prefix (`✅ Google
+  Workspace ready —`) is preserved.
+- Install-script Step 2 + Step 9 restart cue + post-install `/home` hero
+  now reference `~/Desktop/<workspace_dir>` to match the `/home` "Step 2
+  — pick a folder" recommendation users actually run (`mkdir -p
+  ~/Desktop/<workspace_dir>`). Previously the pasted setup script
+  checked `pwd` against `$HOME/<workspace_dir>` and would warn
+  "Foundry AI is normally installed in ~/FoundryAI" even though the
+  /home page had just sent the user to `~/Desktop/FoundryAI`.
+- Pre-login pages (`/login`, magic-link screens, first-time `/setup`)
+  now honour the configured `instance.theme`. `base_login.html` sets
+  `<html data-theme="...">` from `instance_theme`, additionally loads
+  `design-tokens.css` so the `.btn-primary` Google SSO button gets
+  its `--ds-primary` green fill (previously rendered as invisible
+  white text on a white card because the `--ds-*` tokens weren't
+  defined), and the navy variant flips the `.login-features` hero
+  panel from brand-blue `--primary` to the deep-navy gradient —
+  eliminating the jarring blue → navy flip after sign-in on
+  navy-configured instances.
+- Skill / agent detail pages nested inside a Flea Market plugin
+  rendered the parent plugin's title on the hero instead of the
+  skill/agent name. The frontend fallback chain branched on
+  `source === 'curated'` and so flea-inner items fell through to
+  `d.plugin_name`, which the inner-detail API populates with the
+  parent entity name. Branch now keys on the presence of an inner
+  segment in the URL so inner items use `d.name || innerName`
+  (the actual skill/agent name) and standalone flea plugins keep
+  their `d.plugin_name`.
 - `/activity-center` audit-log hero rendered as half-width because
   `_page_hero.html` was nested inside `<header class="obs-topbar">`,
   a flex row that pinned the time-range + auto-refresh controls

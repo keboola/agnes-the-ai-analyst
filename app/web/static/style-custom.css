@@ -2788,6 +2788,18 @@ a.slack-badge:hover {
     justify-content: center;
 }
 
+/* Navy theme — when the instance opts in via
+   `AGNES_INSTANCE_THEME=navy` / `instance.theme=navy`, the
+   `<html data-theme="navy">` attribute is set by base_login.html and
+   we flip the login-page hero panel from the legacy brand-blue
+   `--primary` to the deep-navy gradient used by the design-system
+   hero so /login matches the rest of the navy-themed app. Only
+   `.login-features` carries a brand colour on the pre-login screens;
+   the rest of the login chrome is theme-neutral. */
+:root[data-theme="navy"] .login-features {
+    background: linear-gradient(135deg, #0f1b3a 0%, #0a1430 100%);
+}
+
 .features-content {
     max-width: 480px;
 }
