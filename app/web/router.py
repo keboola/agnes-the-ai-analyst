@@ -1921,9 +1921,12 @@ async def marketplace_listing(
 ):
     import json as _json
     from src.category_icons import all_paths
+    from app.instance_config import get_value
+    curators_url = (get_value("marketplace", "curators_url") or "").strip()
     ctx = _build_context(
         request, user=user,
         category_icons_json=_json.dumps(all_paths()),
+        curators_url=curators_url,
     )
     return templates.TemplateResponse(request, "marketplace.html", ctx)
 

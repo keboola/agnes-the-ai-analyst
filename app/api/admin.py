@@ -167,6 +167,7 @@ def _normalize_primary_key(v):
 # Devin ANALYSIS_0001 on PR #141 5f649a4 review.
 _URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
     ("data_source", "keboola", "stack_url"),
+    ("marketplace", "curators_url"),
 )
 
 
@@ -257,6 +258,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "corporate_memory",
     "materialize",
     "guardrails",
+    "marketplace",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -808,6 +810,17 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "before the reaper flips it to `review_error`. Default "
                 "1800 (30 min) comfortably exceeds Sonnet / Opus p99 "
                 "wall time. 0 disables the reaper."
+            ),
+        },
+    },
+    "marketplace": {
+        "curators_url": {
+            "kind": "string",
+            "hint": (
+                "URL the 'See all curators →' link on /marketplace points to "
+                "(e.g. an internal wiki page listing curators accountable for "
+                "the curated marketplace). Empty → the link is hidden. "
+                "Validated against private-IP allowlist on save (SSRF guard)."
             ),
         },
     },
