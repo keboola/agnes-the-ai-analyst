@@ -442,15 +442,15 @@
 
         /* ── Setup Banner ── */
         /* ── Environment Setup CTA (shown after account creation) ──
-           Navy gradient matching /home's `.home-hero-intro` +
-           `.page-header--hero` across the app so the dashboard's
-           top CTA card sits on the same brand surface. */
+           Hero gradient + shadow follow the active theme via
+           `--ds-hero-*` so /dashboard's top CTA flips alongside
+           every other page hero. */
         .env-setup-cta {
-            background: linear-gradient(135deg, var(--ds-hero-bg) 0%, #1a2a5f 100%);
+            background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
             border-radius: 14px;
             padding: 28px 32px 24px;
             margin-bottom: 24px;
-            box-shadow: 0 4px 16px rgba(15, 27, 58, 0.22);
+            box-shadow: 0 4px 16px var(--ds-hero-shadow);
             color: white;
         }
 

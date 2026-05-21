@@ -4129,17 +4129,14 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
        `.container--narrow` modifiers on their own wrappers. */
     margin: 0 0 var(--space-5);
     box-sizing: border-box;
-    /* Navy gradient — matches the /home redesign hero
-       (`.home-hero-intro`) so every page-hero reads as part of the
-       same brand surface. The brand blue (`--primary`) stays as
-       the link / CTA colour elsewhere; the hero box itself is the
-       deeper navy so the white + mint-green text on top has full
-       contrast. */
-    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, #1a2a5f 100%);
+    /* Hero gradient — `--ds-hero-bg` / `--ds-hero-bg-deep` flip
+       between themes (navy by default, blue under
+       `data-theme="blue"`). Markup and class names don't change. */
+    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
     color: #fff;
     border-radius: 14px;
-    /* Shadow tint follows the navy gradient depth. */
-    box-shadow: 0 4px 16px rgba(15, 27, 58, 0.22);
+    /* Shadow tint follows the gradient via `--ds-hero-shadow`. */
+    box-shadow: 0 4px 16px var(--ds-hero-shadow);
     position: relative;
     overflow: hidden;
 }
@@ -4158,12 +4155,10 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     max-width: 720px;
 }
 .page-header--hero .page-header__eyebrow {
-    /* Mint green on white-text background — matches the /home setup
-       section header (green eyebrow + dark heading combo) so every
-       page-hero reads as part of the same brand surface. The green
-       (`--ds-brand-accent` = #54d3a0) is on top of the blue gradient
-       so it contrasts cleanly while still announcing the brand. */
-    color: var(--ds-brand-accent);
+    /* Eyebrow accent follows the theme: mint-green on navy
+       (default) or translucent white on blue. `--ds-hero-eyebrow`
+       is set per-theme in design-tokens.css. */
+    color: var(--ds-hero-eyebrow);
     font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;

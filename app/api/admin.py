@@ -290,9 +290,21 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # don't need to touch admin_server_config.html.
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     "instance": {
-        # No commonly-missing instance-level fields. The example YAML's
-        # `name`/`subtitle` are always populated by `agnes setup` so they
-        # render via the populated path; nothing to surface here.
+        # UI theme — flips `<html data-theme="...">` so the
+        # design-system tokens (`--ds-*`) switch palettes via CSS
+        # without any markup change. Resolved by
+        # `app/instance_config.py::get_instance_theme()`.
+        "theme": {
+            "kind": "select",
+            "options": ["navy", "blue"],
+            "default": "navy",
+            "hint": (
+                "Page-hero colour scheme. `navy` (default) uses the "
+                "dark navy hero gradient + mint-green CTAs and "
+                "eyebrow accents. `blue` reverts to the pre-redesign "
+                "brand-blue hero + blue CTAs."
+            ),
+        },
     },
     "data_source": {
         "bigquery": {

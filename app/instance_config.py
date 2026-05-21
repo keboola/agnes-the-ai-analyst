@@ -228,6 +228,33 @@ def get_gws_oauth_credentials() -> dict:
     }
 
 
+def get_instance_theme() -> str:
+    """Active UI theme for this instance — drives the `data-theme`
+    attribute on `<html>` so the design-system token set
+    (`--ds-*`) flips between palettes without touching markup.
+
+    Values:
+      - ``navy``   — current default. Dark navy hero gradient,
+                     mint-green CTAs + eyebrow accents.
+      - ``blue``   — pre-redesign palette. Brand-blue hero gradient,
+                     blue CTAs, translucent-white eyebrow.
+
+    Resolution: ``AGNES_INSTANCE_THEME`` env var
+    (Terraform-friendly) > ``instance.theme`` in instance.yaml >
+    default ``"navy"``. Unrecognised values fall back to ``"navy"``
+    so a typo doesn't silently break every page.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_THEME")
+    if raw is None:
+        raw = get_value("instance", "theme", default="navy")
+    if not isinstance(raw, str):
+        return "navy"
+    value = raw.strip().lower()
+    if value not in ("navy", "blue"):
+        return "navy"
+    return value
+
+
 def get_home_automode_visibility() -> bool:
     """Whether /home renders the "Step 3 — turn on auto-accept mode"
     install-block. Auto-accept mode is the recommended middle ground
