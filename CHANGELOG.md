@@ -79,10 +79,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 - Pre-login pages (`/login`, magic-link screens, first-time `/setup`)
   now honour the configured `instance.theme`. `base_login.html` sets
-  `<html data-theme="...">` from `instance_theme`, and the navy
-  variant flips the `.login-features` hero panel from brand-blue
-  `--primary` to the deep-navy gradient — eliminating the jarring
-  blue → navy flip after sign-in on navy-configured instances.
+  `<html data-theme="...">` from `instance_theme`, additionally loads
+  `design-tokens.css` so the `.btn-primary` Google SSO button gets
+  its `--ds-primary` green fill (previously rendered as invisible
+  white text on a white card because the `--ds-*` tokens weren't
+  defined), and the navy variant flips the `.login-features` hero
+  panel from brand-blue `--primary` to the deep-navy gradient —
+  eliminating the jarring blue → navy flip after sign-in on
+  navy-configured instances.
 - Skill / agent detail pages nested inside a Flea Market plugin
   rendered the parent plugin's title on the hero instead of the
   skill/agent name. The frontend fallback chain branched on

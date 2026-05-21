@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
+    {# Design-system tokens (`--ds-*`) — required so `.btn-primary`
+       (Google SSO on /login) gets its `--ds-primary` green fill;
+       otherwise the white button text renders invisible on a white
+       card. Same reason base.html loads it globally. #}
+    <link rel="stylesheet" href="{{ static_url('css/design-tokens.css') }}">
     {% include '_theme.html' %}
 </head>
 <body>
