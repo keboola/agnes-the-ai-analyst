@@ -4,6 +4,12 @@
 {% block title %}Data Packages — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — admin "+ New Recipe" / "+ New Data
+   Package" buttons + 4 modal action buttons (Create/Edit recipe) render
+   via `ds.button`. Bespoke `.stack-hero__search-btn`, `.stack-tabs`
+   (SVG icons + count badges), `.pill` filter chips, JS-generated
+   `.stack-card` install buttons stay page-local. #}
+{% import "_components.html" as ds %}
 {# Hero — gradient banner mirroring marketplace.html .mp-hero so /catalog
    and /marketplace read as one product. Eyebrow + h1 + sub layered on
    the same blue gradient, plus an embedded search row identical to the
@@ -87,13 +93,15 @@
     </div>
     {% if user.is_admin %}
     <div class="stack-tabs-row__actions" style="display:flex; gap:8px;">
-      <button class="btn btn-secondary" onclick="openCreateRecipeModal()" type="button"
-              title="Visible only to admins — analysts won't see this button.">
+      {% call ds.button(variant='secondary', type='button',
+                        attrs='onclick="openCreateRecipeModal()" title="Visible only to admins — analysts won\'t see this button."') %}
         + New Recipe <span class="admin-only-hint">admin-only</span>
-      </button>
-      <a class="btn btn-secondary" href="/admin/tables?new_package=1"
-         title="Visible only to admins — analysts won't see this button.">
-        + New Data Package <span class="admin-only-hint">admin-only</span></a>
+      {% endcall %}
+      {% call ds.button(variant='secondary',
+                        href='/admin/tables?new_package=1',
+                        attrs='title="Visible only to admins — analysts won\'t see this button."') %}
+        + New Data Package <span class="admin-only-hint">admin-only</span>
+      {% endcall %}
     </div>
     {% endif %}
   </div>
@@ -303,9 +311,11 @@
         </details>
       </div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
-        <button class="btn" type="button" onclick="closeCreateRecipeModal()">Cancel</button>
-        <button class="btn btn-primary" type="button" id="rcp-submit-btn"
-                onclick="submitCreateRecipe()">Create</button>
+        {{ ds.button('Cancel', variant='secondary', type='button',
+                     attrs='onclick="closeCreateRecipeModal()"') }}
+        {{ ds.button('Create', variant='primary', type='button',
+                     id='rcp-submit-btn',
+                     attrs='onclick="submitCreateRecipe()"') }}
       </div>
     </div>
   </div>
@@ -399,9 +409,11 @@
         </details>
       </div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
-        <button class="btn" type="button" onclick="closeEditRecipeModal()">Cancel</button>
-        <button class="btn btn-primary" type="button" id="ercp-submit-btn"
-                onclick="submitEditRecipe()">Save</button>
+        {{ ds.button('Cancel', variant='secondary', type='button',
+                     attrs='onclick="closeEditRecipeModal()"') }}
+        {{ ds.button('Save', variant='primary', type='button',
+                     id='ercp-submit-btn',
+                     attrs='onclick="submitEditRecipe()"') }}
       </div>
     </div>
   </div>
