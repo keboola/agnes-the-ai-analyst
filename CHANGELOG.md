@@ -189,18 +189,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-## [0.55.7] — 2026-05-20
+## [0.55.7] — 2026-05-21
 
 ### Changed
-- Admin pages now surface filters and CTA buttons inside the hero banner — sessions (time range), activity (time range + auto-refresh), telemetry (time range + group by), users (search + add), groups (search + new), marketplaces (search + format guide + add), server-config (subtitle full-width, workspace template above danger zone).
-- `_page_hero.html` extended with a `page_hero_actions` slot; custom always-downward select dropdown replaces native selects inside the hero (native select kept hidden for JS compatibility).
-- Hero CTA buttons use a ghost/glass style (`rgba(255,255,255,0.15)` background) to avoid the CSS specificity conflict that made them invisible.
+- Server configuration page (`/admin/server-config`) now has a sticky two-column layout: a section-navigation sidebar on the left (jumps to Instance, Data source, Email, Auth, AI, etc.) and scrollable config fields on the right. The sidebar is a fixed-width white card with per-section links; active section highlights as the user scrolls.
+- Initial Workspace Template panel moved above the Danger zone section on the server-config page.
 
 ### Fixed
-- Removed non-existent CDN CSS links (`markdown.min.css`, `shell.min.css`) from init-prompt and workspace-prompt pages — the CDN was returning 404 HTML, triggering MIME-type rejection errors in the browser console.
-- Hero-select display text stayed stale when external code set the native select's value programmatically — fixed by dispatching a `change` event at the call site and subscribing `syncVal` to `change` on the native select.
-- Multiple hero-select dropdowns could be open simultaneously due to `stopPropagation` — opening one panel now closes all other open panels first.
-- KPI quick-filter cards on the telemetry page triggered a double API fetch after the hero-select `change` listener was added — fixed by calling only `loadFacets()` in branches that already dispatch `change` (which handles kpis + table via the existing listener).
+- Second `renderAll()` call on the server-config page destroyed the `#iw-section` DOM node because `wrap.innerHTML = …` replaces all children — fixed by detaching `#iw-section` before the innerHTML replacement and re-inserting it before the danger zone.
 
 ## [0.55.6] — 2026-05-20
 

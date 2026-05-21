@@ -3,15 +3,11 @@
        {% set page_hero_eyebrow  = "Users & Access" %}
        {% set page_hero_title    = "Users" %}
        {% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
-       {% set page_hero_actions %}
-         <input id="user-search" type="search" class="search-input" placeholder="Filter…">
-         <button class="btn btn-primary">+ Add user</button>
-       {% endset %}
        {% include "_page_hero.html" %}
 
-   `eyebrow`, `subtitle`, and `actions` are optional; `title` is required
-   (the block is a no-op without one). CSS lives at `.page-header--hero`
-   in style-custom.css. #}
+   `eyebrow` + `subtitle` are optional; `title` is required (the block is
+   a no-op without one). CSS lives at `.page-header--hero` in
+   style-custom.css. #}
 {% if page_hero_title %}
 <section class="page-header page-header--hero">
     <div class="page-header__main">
@@ -19,108 +15,5 @@
         <h1 class="page-header__title">{{ page_hero_title }}</h1>
         {% if page_hero_subtitle %}<p class="page-header__subtitle">{{ page_hero_subtitle | safe }}</p>{% endif %}
     </div>
-    {% if page_hero_actions %}<div class="page-header__actions">{{ page_hero_actions | safe }}</div>{% endif %}
 </section>
-{% endif %}
-{# Custom hero-select: upgrades every <select> inside .page-header__actions to a
-   custom dropdown that always opens downward (native selects open upward when
-   the element is near the top of the viewport). The native <select> is kept
-   hidden so existing JS reading .value / listening to 'change' keeps working. #}
-{% if page_hero_actions %}
-<style>
-.hero-sel { position: relative; display: inline-flex; flex-direction: column; gap: 3px; }
-.hero-sel-trigger {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 7px 10px 7px 12px; min-width: 130px;
-  background: rgba(255,255,255,0.12); border: 1.5px solid rgba(255,255,255,0.35);
-  border-radius: 8px; cursor: pointer; font: inherit; font-size: 13px; font-weight: 500;
-  color: #fff; text-align: left; transition: background .15s, border-color .15s;
-}
-.hero-sel-trigger:hover { background: rgba(255,255,255,0.22); border-color: rgba(255,255,255,0.55); }
-.hero-sel-trigger[aria-expanded="true"] { background: rgba(255,255,255,0.22); border-color: rgba(255,255,255,0.6); }
-.hero-sel-chevron { flex-shrink: 0; opacity: .75; transition: transform .15s; }
-.hero-sel-trigger[aria-expanded="true"] .hero-sel-chevron { transform: rotate(180deg); }
-.hero-sel-panel {
-  position: absolute; top: calc(100% + 6px); right: 0; left: auto;
-  background: #fff; border: 1px solid #e5e7eb;
-  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.13);
-  min-width: 100%; z-index: 300; padding: 4px; list-style: none; margin: 0;
-}
-.hero-sel-panel[hidden] { display: none; }
-.hero-sel-opt {
-  padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
-  color: #111827; white-space: nowrap;
-}
-.hero-sel-opt:hover { background: #f3f4f6; }
-.hero-sel-opt[aria-selected="true"] { color: var(--primary, #0073d1); font-weight: 600; background: rgba(0,115,209,.07); }
-</style>
-<script>
-(function(){
-  if (window._heroSelInit) return;
-  window._heroSelInit = true;
-  function upgrade(sel) {
-    if (sel.dataset.hu) return;
-    sel.dataset.hu = '1';
-    var lbl = sel.closest('label');
-    var labelText = lbl && lbl.querySelector('.obs-label') ? lbl.querySelector('.obs-label').textContent.trim() : '';
-    var wrap = document.createElement('div');
-    wrap.className = 'hero-sel';
-    var parent = lbl ? lbl.parentNode : sel.parentNode;
-    var ref    = lbl ? lbl           : sel;
-    parent.insertBefore(wrap, ref);
-    wrap.appendChild(ref);
-    if (lbl) lbl.style.display = 'none';
-    else     sel.hidden = true;
-    // label above trigger
-    if (labelText) {
-      var lt = document.createElement('span');
-      lt.className = 'obs-label'; lt.textContent = labelText;
-      wrap.insertBefore(lt, wrap.firstChild);
-    }
-    // trigger
-    var btn = document.createElement('button');
-    btn.type = 'button'; btn.className = 'hero-sel-trigger';
-    btn.setAttribute('aria-haspopup','listbox'); btn.setAttribute('aria-expanded','false');
-    btn.innerHTML = '<span class="hero-sel-val"></span>' +
-      '<svg class="hero-sel-chevron" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4l4 4 4-4"/></svg>';
-    wrap.appendChild(btn);
-    // panel
-    var panel = document.createElement('ul');
-    panel.className = 'hero-sel-panel'; panel.setAttribute('role','listbox'); panel.hidden = true;
-    wrap.appendChild(panel);
-
-    function syncVal() {
-      var o = sel.options[sel.selectedIndex];
-      btn.querySelector('.hero-sel-val').textContent = o ? o.text : '';
-      panel.querySelectorAll('.hero-sel-opt').forEach(function(li,i){ li.setAttribute('aria-selected', String(i===sel.selectedIndex)); });
-    }
-    function buildPanel() {
-      panel.innerHTML = '';
-      Array.from(sel.options).forEach(function(o,i){
-        var li = document.createElement('li');
-        li.className = 'hero-sel-opt'; li.setAttribute('role','option'); li.setAttribute('aria-selected', String(i===sel.selectedIndex));
-        li.textContent = o.text;
-        li.addEventListener('click', function(){ sel.selectedIndex = i; sel.dispatchEvent(new Event('change',{bubbles:true})); syncVal(); close(); });
-        panel.appendChild(li);
-      });
-    }
-    function open()  { buildPanel(); panel.hidden = false; btn.setAttribute('aria-expanded','true'); }
-    function close() { panel.hidden = true;  btn.setAttribute('aria-expanded','false'); }
-    btn.addEventListener('click', function(e){
-      e.stopPropagation();
-      document.querySelectorAll('.hero-sel-panel:not([hidden])').forEach(function(p){
-        if (p !== panel) { p.hidden = true; p.previousElementSibling.setAttribute('aria-expanded','false'); }
-      });
-      panel.hidden ? open() : close();
-    });
-    document.addEventListener('click', function(e){ if (!wrap.contains(e.target)) close(); });
-    sel.addEventListener('change', syncVal);
-    syncVal();
-  }
-  function init() {
-    document.querySelectorAll('.page-header--hero .page-header__actions select').forEach(upgrade);
-  }
-  document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', init) : init();
-})();
-</script>
 {% endif %}

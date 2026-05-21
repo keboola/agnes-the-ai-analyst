@@ -2,14 +2,10 @@
 {% block title %}Groups — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
-<style>
-  .container:has(.gp-page) { max-width: none; padding: 24px 16px; }
-  .gp-page { max-width: 1400px; margin: 0 auto; padding: 0; }
-
-  .page-header--hero .gp-search { min-width: 220px; background-color: #fff; }
-  /* Ghost CTA on blue hero — white text from global rule, semi-transparent bg for visibility */
-  .page-header--hero .gp-btn.primary { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.55); }
-  .page-header--hero .gp-btn.primary:hover { background: rgba(255,255,255,0.28); filter: none; }
+<style>  .gp-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
+  }
   .gp-search {
     padding: 8px 12px 8px 32px; min-width: 280px;
     border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
@@ -121,13 +117,21 @@
 
 <div class="gp-page">
   {% set page_hero_eyebrow = "Users & Access" %}
+
   {% set page_hero_title = "Groups" %}
+
   {% set page_hero_subtitle = "Named groups + members. Resource access lives on the Resource access page." %}
-  {% set page_hero_actions %}
-    <input id="search" type="search" class="gp-search" placeholder="Filter by name or description…" autocomplete="off">
-    <button class="gp-btn primary" id="open-create-btn">+ New group</button>
-  {% endset %}
+
   {% include "_page_hero.html" %}
+
+  <div class="gp-toolbar">
+    <div>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <input id="search" type="search" class="gp-search" placeholder="Filter by name or description…" autocomplete="off">
+      <button class="gp-btn primary" id="open-create-btn">+ New group</button>
+    </div>
+  </div>
 
   <div class="data-table-wrap">
     <table class="data-table" id="groups-table">

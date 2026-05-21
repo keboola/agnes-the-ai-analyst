@@ -4,28 +4,36 @@
 {% block content %}
 <div class="obs-page page-shell">
 
+  {# Canonical page hero — full container width, matches every other
+     admin page. Controls (time range, auto-refresh) sit below in a
+     separate row so the hero isn't squeezed into a flex column. #}
   {% set page_hero_eyebrow = "Activity Center" %}
   {% set page_hero_title = "Audit log" %}
   {% set page_hero_subtitle = "Every admin and user-mutating action — RBAC writes, sync triggers, marketplace edits, …" %}
-  {% set page_hero_actions %}
-    <label class="obs-window">
-      <span class="obs-label">Time range</span>
-      <select id="obs-window">
-        <option value="60">Last 1h</option>
-        <option value="360">Last 6h</option>
-        <option value="1440" selected>Last 24h</option>
-        <option value="10080">Last 7d</option>
-        <option value="43200">Last 30d</option>
-      </select>
-    </label>
-    <label class="obs-live" title="Re-fetches KPIs + table every 30s. Independent of the time range — the range still controls what counts as 'recent'.">
-      <input type="checkbox" id="obs-live" />
-      <span>Auto-refresh (30s)</span>
-      <span class="obs-live-dot" id="obs-live-dot" aria-hidden="true"></span>
-    </label>
-  {% endset %}
   {% include "_page_hero.html" %}
-  <div class="obs-narrative" id="obs-narrative">Loading…</div>
+
+  <header class="obs-topbar">
+    <div class="obs-topbar-left">
+      <div class="obs-narrative" id="obs-narrative">Loading…</div>
+    </div>
+    <div class="obs-topbar-right">
+      <label class="obs-window">
+        <span class="obs-label">Time range</span>
+        <select id="obs-window">
+          <option value="60">Last 1h</option>
+          <option value="360">Last 6h</option>
+          <option value="1440" selected>Last 24h</option>
+          <option value="10080">Last 7d</option>
+          <option value="43200">Last 30d</option>
+        </select>
+      </label>
+      <label class="obs-live" title="Re-fetches KPIs + table every 30s. Independent of the time range — the range still controls what counts as 'recent'.">
+        <input type="checkbox" id="obs-live" />
+        <span>Auto-refresh (30s)</span>
+        <span class="obs-live-dot" id="obs-live-dot" aria-hidden="true"></span>
+      </label>
+    </div>
+  </header>
 
   <!-- KPI CARDS ------------------------------------------------------- -->
   <section class="obs-kpis" aria-label="Key metrics">
@@ -162,21 +170,24 @@
 
 .obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--obs-fg); }
 
-/* Narrative below hero -------------------------------------------------- */
-.obs-narrative { font-size: 16px; color: var(--obs-fg); line-height: 1.45; margin-bottom: 16px; }
+/* Top bar -------------------------------------------------------------- */
+.obs-topbar {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 24px; padding: 12px 0 20px;
+  border-bottom: 1px solid var(--obs-border);
+  margin-bottom: 16px;
+}
+.obs-topbar-left { flex: 1; min-width: 0; }
+.obs-narrative { font-size: 16px; color: var(--obs-fg); line-height: 1.45; }
 .obs-narrative b { font-weight: 600; }
 .obs-narrative a { color: var(--obs-link); text-decoration: none; border-bottom: 1px dashed transparent; cursor: pointer; }
 .obs-narrative a:hover { border-bottom-color: var(--obs-link); }
 
+.obs-topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .obs-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
   color: var(--obs-muted); display: block; margin-bottom: 2px; }
-.obs-window select { padding: 6px 8px; border: 1px solid var(--obs-border); border-radius: 6px; background: var(--obs-bg); font: inherit; color: var(--obs-fg); }
+.obs-window select { padding: 6px 8px; border: 1px solid var(--obs-border); border-radius: 6px; background: var(--obs-bg); font: inherit; }
 .obs-live { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--obs-muted); cursor: pointer; }
-/* Controls inside the blue hero — lighten labels so they're legible */
-.page-header--hero .obs-label { color: rgba(255,255,255,0.8); }
-.page-header--hero .obs-live { color: rgba(255,255,255,0.85); }
-/* Stack Time range above Auto-refresh in the hero */
-.page-header--hero .page-header__actions { flex-direction: column; align-items: flex-end; gap: 8px; }
 .obs-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #d1d5db; transition: background 0.2s; }
 .obs-live input:checked ~ .obs-live-dot { background: #10b981; animation: obs-pulse 2s ease-in-out infinite; }
 @keyframes obs-pulse {

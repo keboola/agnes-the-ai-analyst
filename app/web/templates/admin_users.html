@@ -2,14 +2,10 @@
 {% block title %}Users — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
-<style>
-  /* Override base.html's 800px .container cap for this wide table. */
-  .container:has(.users-page) { max-width: none; padding: 24px 16px; }
-  .users-page { max-width: 1400px; margin: 0 auto; padding: 0; }
-  .page-header--hero .search-input { min-width: 220px; }
-  /* Ghost CTA on blue hero — white text from global rule, semi-transparent bg for visibility */
-  .page-header--hero .btn-primary { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.55); }
-  .page-header--hero .btn-primary:hover { background: rgba(255,255,255,0.28); filter: none; }
+<style>  .users-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+  }
 
 
   /* Whole user-info cell is the click target for the detail page —
@@ -166,13 +162,17 @@
 
 <div class="users-page">
   {% set page_hero_eyebrow = "Users & Access" %}
+
   {% set page_hero_title = "Users" %}
+
   {% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
-  {% set page_hero_actions %}
+
+  {% include "_page_hero.html" %}
+
+  <div class="users-toolbar">
     <input id="user-search" type="search" class="search-input" placeholder="Filter by email or name…" autocomplete="off">
     <button class="btn btn-primary" id="open-create-btn">+ Add user</button>
-  {% endset %}
-  {% include "_page_hero.html" %}
+  </div>
 
   <div class="data-table-wrap">
     <table class="data-table" id="users-table">
