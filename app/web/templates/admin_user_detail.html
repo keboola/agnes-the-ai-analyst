@@ -2,6 +2,11 @@
 {% block title %}{{ target_user.email }} — User detail — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — Download-all + Sessions/Activity
+   paginators + 3 account-action buttons render via `ds.button`. The
+   JS-generated per-row Remove button + Download .jsonl anchor inside
+   the sessions table stay page-local (built in template literals). #}
+{% import "_components.html" as ds %}
 <style>
   .container:has(.ud-page) { max-width: none; padding: 24px 16px; }
   .ud-page { max-width: 1100px; margin: 0 auto; padding: 0; }
@@ -47,6 +52,9 @@
     display: grid; grid-template-columns: 1fr auto; gap: 12px;
     align-items: center;
   }
+  /* `.account-action-btn` family kept only for the JS-generated
+     Remove button (which builds markup in a template literal we can't
+     reach). The page-rendered action buttons use ds.button instead. */
   .account-action-btn {
     padding: 7px 14px; border-radius: 6px; font-size: 12px;
     border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
@@ -229,9 +237,12 @@
         Loading…
       </div>
       <div style="display:flex; gap:8px;">
-        <button class="account-action-btn" id="reset-pw-btn">Reset password</button>
-        <button class="account-action-btn" id="toggle-active-btn">Deactivate</button>
-        <button class="account-action-btn danger" id="delete-user-btn">Delete</button>
+        {{ ds.button('Reset password', variant='secondary', size='sm',
+                     id='reset-pw-btn') }}
+        {{ ds.button('Deactivate', variant='secondary', size='sm',
+                     id='toggle-active-btn') }}
+        {{ ds.button('Delete', variant='danger', size='sm',
+                     id='delete-user-btn') }}
       </div>
     </div>
   </section>
@@ -276,7 +287,8 @@
   <section class="ud-section">
     <div class="ud-section-head">
       <h2>Sessions</h2>
-      <a class="btn btn-secondary" id="ud-download-all" href="#">Download all (.zip)</a>
+      {{ ds.button('Download all (.zip)', variant='secondary',
+                   id='ud-download-all', href='#') }}
     </div>
 
     <div class="ud-empty" id="ud-sessions-loading">Loading…</div>
@@ -300,9 +312,11 @@
     </table>
 
     <div class="ud-pagination" id="ud-sessions-pagination" hidden>
-      <button class="btn" id="ud-sessions-prev">Prev</button>
+      {{ ds.button('Prev', variant='secondary', size='sm',
+                   id='ud-sessions-prev') }}
       <span id="ud-sessions-page-meta"></span>
-      <button class="btn" id="ud-sessions-next">Next</button>
+      {{ ds.button('Next', variant='secondary', size='sm',
+                   id='ud-sessions-next') }}
     </div>
   </section>
 
@@ -334,9 +348,11 @@
     </div>
 
     <div class="ud-pagination" id="ud-activity-pagination" hidden>
-      <button class="btn" id="ud-activity-prev">Prev</button>
+      {{ ds.button('Prev', variant='secondary', size='sm',
+                   id='ud-activity-prev') }}
       <span id="ud-activity-page-meta"></span>
-      <button class="btn" id="ud-activity-next">Next</button>
+      {{ ds.button('Next', variant='secondary', size='sm',
+                   id='ud-activity-next') }}
     </div>
   </section>
 </div>
