@@ -364,6 +364,84 @@ def get_instance_overview() -> str:
     return (raw or "").strip()
 
 
+_CUSTOM_SCRIPT_PLACEMENTS = ("head_start", "head_end", "body_end")
+
+
+def get_custom_scripts() -> list[dict]:
+    """Operator-injected HTML/JS blocks rendered by ``base.html``.
+
+    Reads ``instance.custom_scripts`` from instance.yaml — a list of
+    dicts ``{name, enabled, placement, html}``. Each block lands in one
+    of three template slots:
+
+    - ``head_start`` — first thing in ``<head>``, before any CSS/JS
+      (rare; GTM dataLayer init).
+    - ``head_end`` — last thing in ``<head>`` (default; analytics +
+      feedback widgets like Marker.io, Sentry, Hotjar).
+    - ``body_end`` — just before ``</body>`` (vendors that explicitly
+      ask for bottom placement).
+
+    Trust boundary: admin-only. ``instance.yaml`` is written through
+    ``/api/admin/server-config`` (gated by ``require_admin``) and the
+    rendered HTML is interpolated with ``| safe``, exactly mirroring
+    ``instance.logo_svg`` / ``instance.overview``.
+
+    Normalization:
+    - Drop entries with ``enabled=False``.
+    - Drop entries whose ``html`` strips to empty.
+    - Default missing ``name`` to "" and missing ``placement`` to
+      "head_end".
+    - Drop entries whose ``placement`` isn't in the allowlist, with a
+      logged warning naming the offending block — admin sees the
+      mistake instead of the server crashing.
+
+    No env-var override: the structure is a list of objects, which
+    doesn't round-trip cleanly through env vars; deployment-time
+    injection happens by writing the YAML from the deploy script.
+
+    Returns ``[]`` when YAML omits the key — empty by default keeps the
+    OSS vendor-neutral.
+    """
+    raw = get_value("instance", "custom_scripts", default=None)
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        logger.warning(
+            "instance.custom_scripts must be a list, got %s — ignoring",
+            type(raw).__name__,
+        )
+        return []
+    out: list[dict] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            logger.warning(
+                "instance.custom_scripts[%d] must be a dict, got %s — skipping",
+                idx, type(entry).__name__,
+            )
+            continue
+        if entry.get("enabled") is False:
+            continue
+        html = (entry.get("html") or "").strip()
+        if not html:
+            continue
+        placement = (entry.get("placement") or "head_end").strip()
+        if placement not in _CUSTOM_SCRIPT_PLACEMENTS:
+            logger.warning(
+                "instance.custom_scripts[%d] (name=%r) has unknown placement "
+                "%r — must be one of %s — skipping",
+                idx, entry.get("name", ""), placement,
+                ", ".join(_CUSTOM_SCRIPT_PLACEMENTS),
+            )
+            continue
+        out.append({
+            "name": str(entry.get("name") or ""),
+            "enabled": True,
+            "placement": placement,
+            "html": html,
+        })
+    return out
+
+
 def get_workspace_dir_name() -> str:
     """Filesystem-safe folder name for the analyst's local workspace
     (``~/<workspace_dir_name>``). Defaults to :func:`get_instance_brand`

@@ -160,3 +160,138 @@ class TestInstanceBrand:
         assert "Bootstrap your Agnes workspace" in joined
         assert "Agnes workspace is ready" in joined
         mod._instance_config = None
+
+
+class TestCustomScripts:
+    """instance.custom_scripts — operator-injected HTML/JS blocks rendered
+    by base.html. Validates the normalization + filtering done by
+    get_custom_scripts() so the template can iterate over a clean list."""
+
+    def _reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+        import importlib
+        import app.instance_config as mod
+        mod._instance_config = None
+        importlib.reload(mod)
+        return mod
+
+    def _write(self, tmp_path, yaml_body: str):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "instance.yaml").write_text(yaml_body)
+
+    def test_yaml_absent_returns_empty_list(self, tmp_path, monkeypatch):
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_custom_scripts() == []
+        mod._instance_config = None
+
+    def test_valid_entry_normalized(self, tmp_path, monkeypatch):
+        self._write(tmp_path, (
+            "instance:\n"
+            "  name: Acme\n"
+            "  custom_scripts:\n"
+            "    - name: marker-io\n"
+            "      enabled: true\n"
+            "      placement: head_end\n"
+            "      html: |\n"
+            "        <script>window.markerConfig={project:'abc'};</script>\n"
+        ))
+        mod = self._reload(tmp_path, monkeypatch)
+        scripts = mod.get_custom_scripts()
+        assert len(scripts) == 1
+        s = scripts[0]
+        assert s["name"] == "marker-io"
+        assert s["enabled"] is True
+        assert s["placement"] == "head_end"
+        assert "markerConfig" in s["html"]
+        mod._instance_config = None
+
+    def test_disabled_entry_dropped(self, tmp_path, monkeypatch):
+        self._write(tmp_path, (
+            "instance:\n"
+            "  name: Acme\n"
+            "  custom_scripts:\n"
+            "    - name: off\n"
+            "      enabled: false\n"
+            "      placement: head_end\n"
+            "      html: <script>1</script>\n"
+        ))
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_custom_scripts() == []
+        mod._instance_config = None
+
+    def test_empty_html_dropped(self, tmp_path, monkeypatch):
+        self._write(tmp_path, (
+            "instance:\n"
+            "  name: Acme\n"
+            "  custom_scripts:\n"
+            "    - name: noop\n"
+            "      enabled: true\n"
+            "      placement: head_end\n"
+            "      html: '   '\n"
+        ))
+        mod = self._reload(tmp_path, monkeypatch)
+        assert mod.get_custom_scripts() == []
+        mod._instance_config = None
+
+    def test_bad_placement_dropped_with_warning(self, tmp_path, monkeypatch, caplog):
+        self._write(tmp_path, (
+            "instance:\n"
+            "  name: Acme\n"
+            "  custom_scripts:\n"
+            "    - name: typo\n"
+            "      enabled: true\n"
+            "      placement: body_start\n"
+            "      html: <script>1</script>\n"
+        ))
+        mod = self._reload(tmp_path, monkeypatch)
+        import logging
+        with caplog.at_level(logging.WARNING, logger="app.instance_config"):
+            assert mod.get_custom_scripts() == []
+        assert any("unknown placement" in r.message for r in caplog.records)
+        mod._instance_config = None
+
+    def test_missing_placement_defaults_to_head_end(self, tmp_path, monkeypatch):
+        self._write(tmp_path, (
+            "instance:\n"
+            "  name: Acme\n"
+            "  custom_scripts:\n"
+            "    - name: defaulting\n"
+            "      enabled: true\n"
+            "      html: <script>x</script>\n"
+        ))
+        mod = self._reload(tmp_path, monkeypatch)
+        scripts = mod.get_custom_scripts()
+        assert len(scripts) == 1
+        assert scripts[0]["placement"] == "head_end"
+        mod._instance_config = None
+
+    def test_three_placements_all_pass_through(self, tmp_path, monkeypatch):
+        self._write(tmp_path, (
+            "instance:\n"
+            "  name: Acme\n"
+            "  custom_scripts:\n"
+            "    - {name: a, enabled: true, placement: head_start, html: '<script>1</script>'}\n"
+            "    - {name: b, enabled: true, placement: head_end,   html: '<script>2</script>'}\n"
+            "    - {name: c, enabled: true, placement: body_end,   html: '<script>3</script>'}\n"
+        ))
+        mod = self._reload(tmp_path, monkeypatch)
+        scripts = mod.get_custom_scripts()
+        assert [s["placement"] for s in scripts] == ["head_start", "head_end", "body_end"]
+        assert [s["name"] for s in scripts] == ["a", "b", "c"]
+        mod._instance_config = None
+
+    def test_non_list_value_ignored_with_warning(self, tmp_path, monkeypatch, caplog):
+        self._write(tmp_path, (
+            "instance:\n"
+            "  name: Acme\n"
+            "  custom_scripts: not-a-list\n"
+        ))
+        mod = self._reload(tmp_path, monkeypatch)
+        import logging
+        with caplog.at_level(logging.WARNING, logger="app.instance_config"):
+            assert mod.get_custom_scripts() == []
+        assert any("must be a list" in r.message for r in caplog.records)
+        mod._instance_config = None

@@ -1,6 +1,12 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="{{ instance_theme | default('navy') }}">
 <head>
+    {# Operator-injected scripts (placement=head_start) — run before any
+       CSS/JS so vendors that need to install global hooks first (GTM
+       dataLayer init, etc.) work. Admin-only, see instance.custom_scripts. #}
+    {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
+    {{ s.html | safe }}
+    {% endfor %}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
@@ -23,6 +29,12 @@
        still get the nav-dropdown wiring. #}
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' %}
+    {# Operator-injected scripts (placement=head_end, the default) —
+       analytics + feedback widgets like Marker.io, Sentry, Hotjar.
+       Admin-only, see instance.custom_scripts. #}
+    {% for s in custom_scripts | default([]) if s.placement == 'head_end' %}
+    {{ s.html | safe }}
+    {% endfor %}
 </head>
 <body {% block body_attrs %}{% endblock %}>
     {% include '_app_header.html' %}
@@ -634,5 +646,11 @@
       })();
     </script>
     {% block scripts %}{% endblock %}
+    {# Operator-injected scripts (placement=body_end) — for vendors that
+       explicitly want bottom placement. Admin-only, see
+       instance.custom_scripts. #}
+    {% for s in custom_scripts | default([]) if s.placement == 'body_end' %}
+    {{ s.html | safe }}
+    {% endfor %}
 </body>
 </html>

@@ -26,7 +26,7 @@ from app.instance_config import (
     get_instance_admin_email, get_atlassian_base_url,
     get_instance_brand, get_workspace_dir_name,
     get_instance_logo_svg, get_instance_overview,
-    get_instance_theme,
+    get_instance_theme, get_custom_scripts,
 )
 from app.web.connector_prompts import all_connector_prompts
 from app.api.me_debug import (
@@ -499,6 +499,12 @@ def _build_context(
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.
         "home_automode": {"show": get_home_automode_visibility()},
+        # Operator-injected HTML/JS blocks rendered into base.html at
+        # head_start / head_end / body_end. Admin-only (instance.yaml,
+        # gated by require_admin) — used for feedback widgets
+        # (Marker.io), analytics, error capture. Empty default keeps
+        # the OSS vendor-neutral.
+        "custom_scripts": get_custom_scripts(),
     }
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
