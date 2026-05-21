@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{{ instance_theme | default('blue') }}">
 <head>
     {# HTML5 requires <meta charset> within the first 1024 bytes; any
        operator-injected snippet must come AFTER charset + viewport. See
@@ -13,6 +13,11 @@
     {% endfor %}
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
+    {# Design-system tokens (`--ds-*`) — required so `.btn-primary`
+       (Google SSO on /login) gets its `--ds-primary` green fill;
+       otherwise the white button text renders invisible on a white
+       card. Same reason base.html loads it globally. #}
+    <link rel="stylesheet" href="{{ static_url('css/design-tokens.css') }}">
     {% include '_theme.html' %}
     {# Operator-injected scripts (placement=head_end). Mirrors base.html. #}
     {% for s in custom_scripts | default([]) if s.placement == 'head_end' %}

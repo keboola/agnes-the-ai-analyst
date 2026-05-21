@@ -491,8 +491,8 @@ def _build_context(
         "workspace_dir": get_workspace_dir_name(),
         # Active palette — drives `<html data-theme="...">` in
         # base.html so `--ds-*` tokens flip via CSS without
-        # touching markup. "navy" (default) = current design;
-        # "blue" = pre-redesign brand. Admin toggles via
+        # touching markup. "blue" (default) = brand-blue palette;
+        # "navy" = darker opt-in palette. Admin toggles via
         # /admin/server-config.
         "instance_theme": get_instance_theme(),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
@@ -1927,9 +1927,12 @@ async def marketplace_listing(
 ):
     import json as _json
     from src.category_icons import all_paths
+    from app.instance_config import get_value
+    curators_url = (get_value("marketplace", "curators_url") or "").strip()
     ctx = _build_context(
         request, user=user,
         category_icons_json=_json.dumps(all_paths()),
+        curators_url=curators_url,
     )
     return templates.TemplateResponse(request, "marketplace.html", ctx)
 

@@ -234,24 +234,25 @@ def get_instance_theme() -> str:
     (`--ds-*`) flips between palettes without touching markup.
 
     Values:
-      - ``navy``   — current default. Dark navy hero gradient,
-                     mint-green CTAs + eyebrow accents.
-      - ``blue``   — pre-redesign palette. Brand-blue hero gradient,
+      - ``blue``   — current default. Brand-blue hero gradient,
                      blue CTAs, translucent-white eyebrow.
+      - ``navy``   — darker palette opted into via server config.
+                     Dark navy hero gradient, mint-green CTAs +
+                     eyebrow accents.
 
     Resolution: ``AGNES_INSTANCE_THEME`` env var
     (Terraform-friendly) > ``instance.theme`` in instance.yaml >
-    default ``"navy"``. Unrecognised values fall back to ``"navy"``
+    default ``"blue"``. Unrecognised values fall back to ``"blue"``
     so a typo doesn't silently break every page.
     """
     raw = os.environ.get("AGNES_INSTANCE_THEME")
     if raw is None:
-        raw = get_value("instance", "theme", default="navy")
+        raw = get_value("instance", "theme", default="blue")
     if not isinstance(raw, str):
-        return "navy"
+        return "blue"
     value = raw.strip().lower()
     if value not in ("navy", "blue"):
-        return "navy"
+        return "blue"
     return value
 
 

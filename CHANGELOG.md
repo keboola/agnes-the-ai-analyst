@@ -21,6 +21,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `app/instance_config.py::get_custom_scripts()`; surfaced in
   `/admin/server-config` via `_KNOWN_FIELDS["instance"]`. Example
   Marker.io block in `config/instance.yaml.example`.
+- New `marketplace.curators_url` config item (editable via
+  `/admin/server-config` → **Marketplace** section). Drives the
+  "See all curators →" link on the `/marketplace` curated-tab info
+  block; when empty the link is hidden (matches today's behaviour).
+  SSRF-guarded on save (private-IP allowlist, same posture as
+  `data_source.keboola.stack_url`).
 - `/home` now opens with a value-first intro hero — eyebrow greeting,
   one-line product framing, **Set up in ~15 min** / **Just browse**
   CTAs, and a four-pillar row (Data packages · Plugins · Skills ·
@@ -35,6 +41,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   bar, and per-step number badges next to each install block.
 
 ### Changed
+- Default `instance.theme` flipped from `navy` to `blue`. The brand-blue
+  palette is now the out-of-the-box look; `navy` (dark hero + mint-green
+  CTAs) is the opt-in via `AGNES_INSTANCE_THEME` / `instance.theme`
+  / admin server-config. Existing instances that explicitly set `navy`
+  are unaffected; instances relying on the implicit default will switch
+  to blue.
 - `/home` palette shifted from blue to green/navy: brand accent is now
   `#2ea877` (mint green) on light surfaces, hero card is navy
   `#0f1b3a`, code panels are near-black `#0c1224` with warm-yellow
@@ -75,6 +87,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- Pre-login pages (`/login`, magic-link screens, first-time `/setup`)
+  now honour the configured `instance.theme`. `base_login.html` sets
+  `<html data-theme="...">` from `instance_theme`, additionally loads
+  `design-tokens.css` so the `.btn-primary` Google SSO button gets
+  its `--ds-primary` green fill (previously rendered as invisible
+  white text on a white card because the `--ds-*` tokens weren't
+  defined), and the navy variant flips the `.login-features` hero
+  panel from brand-blue `--primary` to the deep-navy gradient —
+  eliminating the jarring blue → navy flip after sign-in on
+  navy-configured instances.
+- Skill / agent detail pages nested inside a Flea Market plugin
+  rendered the parent plugin's title on the hero instead of the
+  skill/agent name. The frontend fallback chain branched on
+  `source === 'curated'` and so flea-inner items fell through to
+  `d.plugin_name`, which the inner-detail API populates with the
+  parent entity name. Branch now keys on the presence of an inner
+  segment in the URL so inner items use `d.name || innerName`
+  (the actual skill/agent name) and standalone flea plugins keep
+  their `d.plugin_name`.
 - `/activity-center` audit-log hero rendered as half-width because
   `_page_hero.html` was nested inside `<header class="obs-topbar">`,
   a flex row that pinned the time-range + auto-refresh controls
