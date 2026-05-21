@@ -491,8 +491,8 @@ def _build_context(
         "workspace_dir": get_workspace_dir_name(),
         # Active palette — drives `<html data-theme="...">` in
         # base.html so `--ds-*` tokens flip via CSS without
-        # touching markup. "navy" (default) = current design;
-        # "blue" = pre-redesign brand. Admin toggles via
+        # touching markup. "blue" (default) = brand-blue palette;
+        # "navy" = darker opt-in palette. Admin toggles via
         # /admin/server-config.
         "instance_theme": get_instance_theme(),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
