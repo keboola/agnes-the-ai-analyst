@@ -87,6 +87,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- Google Workspace connector prompt's Step 8 verify no longer asks
+  Claude to parse a row count out of `gws drive files list` / `gws
+  chat spaces list` JSON. Claude would improvise a `python3 -c 'f"…
+  {len(d.get(\"files\",[]))}…"'` snippet that fails two ways: f-string
+  expressions reject backslashes in Python <3.12 (`SyntaxError`), and
+  `gws` can emit a banner before the JSON body (`json.JSONDecodeError`).
+  Step 8 now treats exit code 0 as success, drops the `<N> drive
+  file(s), <M> chat space(s) visible` counts, and explicitly warns
+  against both anti-patterns. The summary-grep prefix (`✅ Google
+  Workspace ready —`) is preserved.
 - Install-script Step 2 + Step 9 restart cue + post-install `/home` hero
   now reference `~/Desktop/<workspace_dir>` to match the `/home` "Step 2
   — pick a folder" recommendation users actually run (`mkdir -p
