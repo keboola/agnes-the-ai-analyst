@@ -298,13 +298,13 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         # `app/instance_config.py::get_instance_theme()`.
         "theme": {
             "kind": "select",
-            "options": ["navy", "blue"],
-            "default": "navy",
+            "options": ["blue", "navy"],
+            "default": "blue",
             "hint": (
-                "Page-hero colour scheme. `navy` (default) uses the "
-                "dark navy hero gradient + mint-green CTAs and "
-                "eyebrow accents. `blue` reverts to the pre-redesign "
-                "brand-blue hero + blue CTAs."
+                "Page-hero colour scheme. `blue` (default) uses the "
+                "brand-blue hero + blue CTAs. `navy` opts into the "
+                "darker palette with the dark navy hero gradient + "
+                "mint-green CTAs and eyebrow accents."
             ),
         },
     },
