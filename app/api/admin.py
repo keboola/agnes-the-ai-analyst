@@ -307,6 +307,24 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "mint-green CTAs and eyebrow accents."
             ),
         },
+        # Operator-injected HTML/JS blocks rendered into base.html.
+        # `kind: array` renders as a JSON textarea in the admin UI
+        # (per admin_server_config.html:702-708 — arrays fall back to
+        # the JSON path); the hint documents the per-item shape so the
+        # operator knows what to paste. Resolved by
+        # `app/instance_config.py::get_custom_scripts()`.
+        "custom_scripts": {
+            "kind": "array",
+            "hint": (
+                "Operator-injected HTML/JS blocks rendered into base.html. "
+                "Each entry: {name: str, enabled: bool, placement: "
+                "head_start|head_end|body_end, html: str}. Used for feedback "
+                "widgets (Marker.io), analytics (GTM, PostHog), error capture "
+                "(Sentry). Rendered with | safe — admin trust boundary. Review "
+                "third-party widget privacy posture before enabling (most "
+                "capture session data). Restart required after save."
+            ),
+        },
     },
     "data_source": {
         "bigquery": {

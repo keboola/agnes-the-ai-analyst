@@ -11,6 +11,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `instance.custom_scripts`: operator-injected HTML/JS blocks rendered
+  into every page that extends `base.html`. Each entry takes `name`,
+  `enabled`, `placement` (`head_start` | `head_end` | `body_end`), and
+  `html`. Use for feedback widgets (Marker.io), analytics (GTM,
+  PostHog), error capture (Sentry). Admin-only; rendered with `| safe`
+  — same trust boundary as `instance.logo_svg` / `instance.overview`.
+  Empty default keeps the OSS vendor-neutral. Resolved by
+  `app/instance_config.py::get_custom_scripts()`; surfaced in
+  `/admin/server-config` via `_KNOWN_FIELDS["instance"]`. Example
+  Marker.io block in `config/instance.yaml.example`.
 - New `marketplace.curators_url` config item (editable via
   `/admin/server-config` → **Marketplace** section). Drives the
   "See all curators →" link on the `/marketplace` curated-tab info
