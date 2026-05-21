@@ -1,14 +1,19 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="{{ instance_theme | default('navy') }}">
 <head>
+    {# HTML5 requires <meta charset> within the first 1024 bytes; any
+       operator-injected snippet must come AFTER charset + viewport to
+       avoid pushing the declaration past that window (which makes
+       browsers fall back to a locale-default encoding and historically
+       opened UTF-7 charset-confusion XSS). #}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     {# Operator-injected scripts (placement=head_start) — run before any
        CSS/JS so vendors that need to install global hooks first (GTM
        dataLayer init, etc.) work. Admin-only, see instance.custom_scripts. #}
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
     {{ s.html | safe }}
     {% endfor %}
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
     {# Design-system tokens (`--ds-*`) — opt-in green/navy palette used

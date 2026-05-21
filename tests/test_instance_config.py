@@ -295,3 +295,48 @@ class TestCustomScripts:
             assert mod.get_custom_scripts() == []
         assert any("must be a list" in r.message for r in caplog.records)
         mod._instance_config = None
+
+    @pytest.mark.parametrize("enabled_yaml,expect_dropped", [
+        # Boolean false in every YAML truthy-shape the operator might use.
+        # All of these must drop the entry so the kill switch behaves the
+        # same regardless of whether the operator pasted a quoted block.
+        ("false",   True),
+        ("False",   True),
+        ('"false"', True),  # quoted string — bool("false") == True in Python
+        ('"no"',    True),
+        ('"NO"',    True),
+        ('"off"',   True),
+        ('"0"',     True),
+        ("0",       True),
+        # Boolean true / typical live values must keep the entry alive.
+        ("true",    False),
+        ("True",    False),
+        ('"true"',  False),
+        ('"yes"',   False),
+        ("1",       False),
+    ])
+    def test_enabled_coercion(self, tmp_path, monkeypatch, enabled_yaml, expect_dropped):
+        """Quoted-string + numeric `enabled` values must be coerced the same
+        way the operator expects from a Boolean field — the kill switch is
+        the whole point of the field, and `bool("false") == True` would
+        silently leave the snippet live (review PR #372)."""
+        self._write(tmp_path, (
+            "instance:\n"
+            "  name: Acme\n"
+            "  custom_scripts:\n"
+            f"    - name: probe\n"
+            f"      enabled: {enabled_yaml}\n"
+            "      placement: head_end\n"
+            "      html: <script>1</script>\n"
+        ))
+        mod = self._reload(tmp_path, monkeypatch)
+        scripts = mod.get_custom_scripts()
+        if expect_dropped:
+            assert scripts == [], (
+                f"enabled={enabled_yaml!r} should drop the entry but it survived"
+            )
+        else:
+            assert len(scripts) == 1, (
+                f"enabled={enabled_yaml!r} should keep the entry but it was dropped"
+            )
+        mod._instance_config = None

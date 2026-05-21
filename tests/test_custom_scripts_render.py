@@ -62,7 +62,7 @@ def test_head_end_snippet_lands_before_head_close(render_client, monkeypatch):
     assert snippet_idx < head_close_idx, "head_end must render before </head>"
 
 
-def test_head_start_snippet_lands_before_first_link(render_client, monkeypatch):
+def test_head_start_snippet_lands_after_charset_before_first_link(render_client, monkeypatch):
     _patch_scripts(monkeypatch, [{
         "name": "gtm-init",
         "enabled": True,
@@ -73,8 +73,19 @@ def test_head_start_snippet_lands_before_first_link(render_client, monkeypatch):
     sentinel = "AGNES_CUSTOM_SCRIPT_HEAD_START"
     assert sentinel in body
     snippet_idx = body.index(sentinel)
+    charset_idx = body.index('<meta charset="UTF-8">')
+    viewport_idx = body.index('<meta name="viewport"')
     first_link_idx = body.index("<link")
     head_close_idx = body.index("</head>")
+    # HTML5 spec: <meta charset> must appear within the first 1024 bytes.
+    # head_start MUST land after both required <meta> tags so a long
+    # operator snippet can't push the charset declaration past that window
+    # (which would trigger locale-default encoding fallback + historical
+    # UTF-7 charset-confusion XSS).
+    assert charset_idx < snippet_idx, "head_start must render AFTER <meta charset>"
+    assert viewport_idx < snippet_idx, "head_start must render AFTER <meta viewport>"
+    # Still before CSS/JS so vendor hooks (e.g. GTM dataLayer init) install
+    # before any other script can read them.
     assert snippet_idx < first_link_idx, "head_start must render before first <link>"
     assert snippet_idx < head_close_idx
 

@@ -367,6 +367,29 @@ def get_instance_overview() -> str:
 _CUSTOM_SCRIPT_PLACEMENTS = ("head_start", "head_end", "body_end")
 
 
+def _custom_script_enabled(value) -> bool:
+    """Coerce the per-entry ``enabled`` field tolerant of YAML's many
+    truthiness shapes.
+
+    Operators hand-editing YAML (or pasting blocks from another source)
+    can land ``enabled: "false"`` (quoted string), ``enabled: 0``, or
+    ``enabled: no`` rather than the boolean ``false``. ``bool("false")``
+    is ``True`` in Python, so a naive truth check silently keeps the
+    script live — a footgun for what's meant to be a kill switch on
+    admin-injected JS. Missing / ``None`` → live (default-on, matches
+    the registered field shape).
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "no", "0", "off")
+    return bool(value)
+
+
 def get_custom_scripts() -> list[dict]:
     """Operator-injected HTML/JS blocks rendered by ``base.html``.
 
@@ -387,7 +410,9 @@ def get_custom_scripts() -> list[dict]:
     ``instance.logo_svg`` / ``instance.overview``.
 
     Normalization:
-    - Drop entries with ``enabled=False``.
+    - Drop entries whose ``enabled`` resolves to false via
+      :func:`_custom_script_enabled` (handles quoted strings, 0/1, etc.
+      — not just the Python ``False`` singleton).
     - Drop entries whose ``html`` strips to empty.
     - Default missing ``name`` to "" and missing ``placement`` to
       "head_end".
@@ -419,7 +444,7 @@ def get_custom_scripts() -> list[dict]:
                 idx, type(entry).__name__,
             )
             continue
-        if entry.get("enabled") is False:
+        if not _custom_script_enabled(entry.get("enabled")):
             continue
         html = (entry.get("html") or "").strip()
         if not html:
