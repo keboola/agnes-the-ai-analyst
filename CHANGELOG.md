@@ -11,6 +11,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- New `marketplace.curators_url` config item (editable via
+  `/admin/server-config` → **Marketplace** section). Drives the
+  "See all curators →" link on the `/marketplace` curated-tab info
+  block; when empty the link is hidden (matches today's behaviour).
+  SSRF-guarded on save (private-IP allowlist, same posture as
+  `data_source.keboola.stack_url`).
 - `/home` now opens with a value-first intro hero — eyebrow greeting,
   one-line product framing, **Set up in ~15 min** / **Just browse**
   CTAs, and a four-pillar row (Data packages · Plugins · Skills ·
@@ -65,6 +71,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- Skill / agent detail pages nested inside a Flea Market plugin
+  rendered the parent plugin's title on the hero instead of the
+  skill/agent name. The frontend fallback chain branched on
+  `source === 'curated'` and so flea-inner items fell through to
+  `d.plugin_name`, which the inner-detail API populates with the
+  parent entity name. Branch now keys on the presence of an inner
+  segment in the URL so inner items use `d.name || innerName`
+  (the actual skill/agent name) and standalone flea plugins keep
+  their `d.plugin_name`.
 - `/activity-center` audit-log hero rendered as half-width because
   `_page_hero.html` was nested inside `<header class="obs-topbar">`,
   a flex row that pinned the time-range + auto-refresh controls
