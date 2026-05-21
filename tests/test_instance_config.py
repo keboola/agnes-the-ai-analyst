@@ -137,8 +137,8 @@ class TestInstanceBrand:
         assert "Set up the Foundry AI CLI on this machine." in joined
         # Step 2 is a pwd-check now (no auto-mkdir); brand + workspace_dir
         # thread through the warning copy + expected-path string.
-        assert "$HOME/FoundryAI" in joined
-        assert "mkdir -p ~/FoundryAI && cd ~/FoundryAI" in joined
+        assert "$HOME/Desktop/FoundryAI" in joined
+        assert "mkdir -p ~/Desktop/FoundryAI && cd ~/Desktop/FoundryAI" in joined
         assert "Bootstrap your Foundry AI workspace" in joined
         assert "Foundry AI workspace is ready" in joined
         # No raw placeholders survive substitution.
@@ -148,15 +148,15 @@ class TestInstanceBrand:
 
     def test_default_brand_keeps_agnes_branding(self, tmp_path, monkeypatch):
         """Backwards-compat: callers that don't pass brand/workspace_dir
-        get the literal 'Agnes' / '~/Agnes' rendering."""
+        get the literal 'Agnes' / '~/Desktop/Agnes' rendering."""
         mod = self._reload(tmp_path, monkeypatch)
         from app.web.setup_instructions import resolve_lines
         joined = "\n".join(resolve_lines("agnes.whl"))
         assert "Set up the Agnes CLI on this machine." in joined
         # Step 2 is a pwd-check (no auto-mkdir); default path threads
-        # through as `$HOME/Agnes` + the warning's manual-mkdir example.
-        assert "$HOME/Agnes" in joined
-        assert "mkdir -p ~/Agnes && cd ~/Agnes" in joined
+        # through as `$HOME/Desktop/Agnes` + the warning's manual-mkdir example.
+        assert "$HOME/Desktop/Agnes" in joined
+        assert "mkdir -p ~/Desktop/Agnes && cd ~/Desktop/Agnes" in joined
         assert "Bootstrap your Agnes workspace" in joined
         assert "Agnes workspace is ready" in joined
         mod._instance_config = None

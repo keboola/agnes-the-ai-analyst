@@ -87,6 +87,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- Install-script Step 2 + Step 9 restart cue + post-install `/home` hero
+  now reference `~/Desktop/<workspace_dir>` to match the `/home` "Step 2
+  — pick a folder" recommendation users actually run (`mkdir -p
+  ~/Desktop/<workspace_dir>`). Previously the pasted setup script
+  checked `pwd` against `$HOME/<workspace_dir>` and would warn
+  "Foundry AI is normally installed in ~/FoundryAI" even though the
+  /home page had just sent the user to `~/Desktop/FoundryAI`.
 - Pre-login pages (`/login`, magic-link screens, first-time `/setup`)
   now honour the configured `instance.theme`. `base_login.html` sets
   `<html data-theme="...">` from `instance_theme`, additionally loads
