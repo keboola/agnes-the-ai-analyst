@@ -96,13 +96,19 @@
   .guide-fastpath p strong { color: var(--text-primary); }
   .guide-fastpath a.fastpath-cta {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 8px 14px;
-    background: #6D28D9; color: #fff;
+    padding: 9px 16px;
+    background: var(--ds-primary); color: #fff;
+    border: 1px solid var(--ds-primary);
     border-radius: 8px;
-    font-size: 13px; font-weight: 500;
+    font-size: 13px; line-height: 1; font-weight: 600;
     text-decoration: none;
+    box-sizing: border-box;
+    transition: all 0.15s ease;
   }
-  .guide-fastpath a.fastpath-cta:hover { background: #5B21B6; }
+  .guide-fastpath a.fastpath-cta:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+  }
 
   /* ── Section block ──────────────────────────────────────────────── */
   .guide-section {
@@ -147,14 +153,13 @@
   }
   .guide-cta a:hover { border-color: var(--primary); color: var(--primary); }
   .guide-cta a.primary {
-    background: var(--primary); color: #fff; border-color: var(--primary);
+    background: var(--ds-primary); color: #fff; border-color: var(--ds-primary);
+    font-weight: 600;
   }
-  .guide-cta a.primary:hover { background: var(--primary-dark, #0056A3); color: #fff; }
-  .guide-page[data-kind="flea"] .guide-cta a.primary {
-    background: #6D28D9; border-color: #6D28D9;
-  }
-  .guide-page[data-kind="flea"] .guide-cta a.primary:hover {
-    background: #5B21B6; border-color: #5B21B6;
+  .guide-cta a.primary:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+    color: #fff;
   }
 </style>
 

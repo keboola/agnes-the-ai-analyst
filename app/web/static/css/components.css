@@ -1,0 +1,165 @@
+/* Shared design-system components — pick up `--ds-*` tokens from
+ * design-tokens.css. Any page can use these classes directly; no
+ * scope wrapper needed.
+ *
+ * Class naming uses the `.callout-` / `.code-` prefix so the
+ * semantics are obvious at the markup site (no ambiguity with a
+ * page-local `.rec` or `.hint` that might mean something else).
+ *
+ * Components included:
+ *   .callout-rec       — amber recommendation box (lightbulb prefix)
+ *   .callout-hint      — blue info box
+ *   .code-output       — terminal-style "WHAT YOU SHOULD SEE" block
+ *   .lightbox          — full-bleed image overlay (click backdrop / Esc to close)
+ *   .setup-section-header — eyebrow + heading + lede floating above a wizard card
+ *
+ * JS contract for `.lightbox`: an anchor with class
+ * `.lightbox-trigger` opens the matching `#<id>-lightbox` div. The
+ * VS Code thumb on /home is the canonical consumer; the inline JS
+ * there shows the pattern. A future shared lightbox-trigger.js can
+ * generalize this when a second consumer arrives.
+ */
+
+/* ─── Recommendation callout ─────────────────────────────────────
+   Amber/warn vocabulary. Used for opinionated "I do it this way"
+   guidance that's softer than a warning. Lightbulb prefix via
+   ::before. */
+.callout-rec {
+    background: var(--ds-warn-bg);
+    border-left: 3px solid var(--ds-warn-line);
+    color: var(--ds-warn-ink);
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 12px 0;
+}
+.callout-rec::before { content: "\1F4A1\00a0"; }
+.callout-rec strong { color: var(--ds-warn-ink); }
+.callout-rec code {
+    background: rgba(245, 200, 75, 0.18);
+    color: var(--ds-warn-ink);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+
+/* ─── Hint callout ────────────────────────────────────────────────
+   Blue info vocabulary. Used for short educational asides next to
+   a command (e.g. "What does mkdir -p do?"). Always visible. For
+   collapsible OS-aware variants the wizard uses `details` with the
+   same colour vocabulary. */
+.callout-hint {
+    background: var(--ds-info-bg);
+    border-left: 3px solid var(--ds-info-line);
+    color: var(--ds-info-ink);
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 12px 0;
+}
+.callout-hint strong { color: var(--ds-info-ink); }
+.callout-hint code {
+    background: rgba(79, 124, 242, 0.14);
+    color: var(--ds-info-ink);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+.callout-hint ol {
+    margin: 8px 0 0 0;
+    padding-left: 20px;
+}
+.callout-hint li { margin-bottom: 4px; }
+
+/* ─── Code output block ───────────────────────────────────────────
+   Dim surface with a dashed border + a "WHAT YOU SHOULD SEE"
+   eyebrow rendered via ::before. Reserves vertical space for a
+   block of terminal output so the reader knows exactly what the
+   command should print. Whitespace is preserved (pre-line). */
+.code-output {
+    background: var(--ds-surface-dim);
+    border: 1px dashed var(--ds-border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: var(--ds-font-mono);
+    font-size: 12.5px;
+    color: var(--ds-text-secondary);
+    margin: 10px 0;
+    white-space: pre-line;
+}
+.code-output::before {
+    content: "What you should see";
+    display: block;
+    font-family: var(--ds-font);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--ds-text-muted);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+
+/* ─── Image lightbox overlay ──────────────────────────────────────
+   Page-level overlay. Click the backdrop or press Esc to close
+   (consumer wires the keydown handler). Designed for click-to-
+   enlarge image triggers; the VS Code thumb on /home is the first
+   consumer. */
+.lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 27, 58, 0.85);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    z-index: 200;
+    cursor: zoom-out;
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+}
+.lightbox.open { display: flex; }
+.lightbox img {
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 10px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+/* ─── Setup-section header ────────────────────────────────────────
+   Wizard-style "First time here / <heading> / <lede>" header that
+   floats above its setup card. Stays on the page background so the
+   card below is the visible rectangle. Used by the /home install
+   hero. */
+.setup-section-header {
+    margin-bottom: 18px;
+}
+.setup-section-header .eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--ds-primary);
+    margin-bottom: 8px;
+}
+.setup-section-header .setup-heading {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--ds-text-primary);
+    margin: 0 0 12px;
+    line-height: 1.2;
+}
+.setup-section-header .lead {
+    font-size: 15px;
+    color: var(--ds-text-secondary);
+    line-height: 1.6;
+    margin: 0 0 10px;
+    max-width: 760px;
+}
+.setup-section-header .lead code {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 12.5px;
+}

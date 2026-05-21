@@ -20,6 +20,7 @@
       <input id="memory-hero-search" type="search"
              placeholder="Search Memory by name or description…">
     </div>
+    <button class="stack-hero__search-btn" id="memory-search-btn" type="button">Search</button>
   </div>
 
   {# v51 lifecycle filter — same pattern as /catalog. Default opt-in to
@@ -460,6 +461,16 @@
   var heroSearch = document.getElementById('memory-hero-search');
   if (heroSearch) {
     heroSearch.addEventListener('input', applyFilters);
+  }
+  // Explicit Search button — visual parity with /marketplace and
+  // /catalog. The input already filters live; the button just
+  // re-applies and returns focus to the input.
+  var heroSearchBtn = document.getElementById('memory-search-btn');
+  if (heroSearchBtn && heroSearch) {
+    heroSearchBtn.addEventListener('click', function () {
+      applyFilters();
+      heroSearch.focus();
+    });
   }
 })();
 

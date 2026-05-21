@@ -9,7 +9,7 @@
     color: var(--text-secondary, #5f6368); text-decoration: none;
     font-size: 13px; margin-bottom: 12px;
   }
-  .rcp-back:hover { color: var(--primary, #0073D1); }
+  .rcp-back:hover { color: var(--primary, var(--primary)); }
   .rcp-header {
     display: flex; align-items: flex-start; gap: 16px;
     padding: 24px; background: var(--surface, #fff);
@@ -20,7 +20,7 @@
     display: inline-flex; align-items: center; justify-content: center;
     width: 56px; height: 56px; border-radius: 12px; flex-shrink: 0;
     font-size: 22px; font-weight: 700; color: #fff;
-    background: var(--primary, #0073D1);
+    background: var(--primary, var(--primary));
   }
   .rcp-header h1 {
     margin: 0 0 6px; font-size: 22px; font-weight: 700;
@@ -58,7 +58,7 @@
   }
   .rcp-related-tables a:hover {
     background: var(--primary-light, #e0f2fe);
-    color: var(--primary, #0073D1);
+    color: var(--primary, var(--primary));
   }
   .rcp-empty { color: var(--text-secondary); font-style: italic; font-size: 13px; }
   .rcp-copy-btn {
@@ -77,7 +77,7 @@
 <a class="rcp-back" href="/catalog#recipes">← Back to recipes</a>
 
 <div class="rcp-header">
-  <div class="rcp-header__icon" style="background: {{ recipe.color or '#0073D1' }};">
+  <div class="rcp-header__icon" style="background: {{ recipe.color or 'var(--primary)' }};">
     {% set _name_parts = (recipe.title or '?').split() %}
     {% if _name_parts|length >= 2 %}
       {{ (_name_parts[0][0] ~ _name_parts[1][0])|upper }}

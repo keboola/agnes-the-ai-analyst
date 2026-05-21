@@ -26,6 +26,7 @@ from app.instance_config import (
     get_instance_admin_email, get_atlassian_base_url,
     get_instance_brand, get_workspace_dir_name,
     get_instance_logo_svg, get_instance_overview,
+    get_instance_theme,
 )
 from app.web.connector_prompts import all_connector_prompts
 from app.api.me_debug import (
@@ -488,6 +489,12 @@ def _build_context(
         "instance_name": get_instance_name(),
         "instance_brand": get_instance_brand(),
         "workspace_dir": get_workspace_dir_name(),
+        # Active palette — drives `<html data-theme="...">` in
+        # base.html so `--ds-*` tokens flip via CSS without
+        # touching markup. "navy" (default) = current design;
+        # "blue" = pre-redesign brand. Admin toggles via
+        # /admin/server-config.
+        "instance_theme": get_instance_theme(),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.

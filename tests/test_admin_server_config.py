@@ -44,7 +44,7 @@ class TestServerConfigPageAuth:
 
         # Page-shell markers the JS targets.
         assert 'data-page="server-config"' in body
-        assert "Instance settings" in body
+        assert "Server configuration" in body
         # Form skeleton: loader + per-section container.
         assert 'id="cfg-loading"' in body
         assert 'id="cfg-sections"' in body

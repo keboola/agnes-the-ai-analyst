@@ -11,10 +11,179 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `/home` now opens with a value-first intro hero — eyebrow greeting,
+  one-line product framing, **Set up in ~15 min** / **Just browse**
+  CTAs, and a four-pillar row (Data packages · Plugins · Skills ·
+  Memory) — so analysts understand *what* the instance is before any
+  install step.
+- New **Your first session** narrative on `/home` walks through the
+  five beats of a real session (launch → pick project → memory loads
+  → ask → close) with mock terminal frames so the visual rhythm is
+  obvious before the user copies their first command.
+- Setup wizard inside the install-hero now carries a progress chip
+  (`Step 1 of N · ~15 min · One-time · Reversible`), a thin progress
+  bar, and per-step number badges next to each install block.
 
 ### Changed
+- `/home` palette shifted from blue to green/navy: brand accent is now
+  `#2ea877` (mint green) on light surfaces, hero card is navy
+  `#0f1b3a`, code panels are near-black `#0c1224` with warm-yellow
+  `#ffd866` accents. The existing `--hp-primary` token alias is
+  reused so all downstream rules pick up the new green automatically;
+  instance theme overrides via `config.theme_overrides()` still win.
+- VS Code surface tile on `/home` carries a **Recommended** pill so
+  new analysts default to the editor flow.
+- "Want to look around first?" section renamed to **Explore your
+  workspace**, with an `id="look-around"` anchor wired to the new
+  hero's secondary CTA.
+- `/home` setup wizard restructured to match the published design
+  spec section by section: header (eyebrow + heading + lede) floats
+  above the card, install hero is a plain bordered surface (no
+  accent strip), per-step labels drop the `Step N —` prefix, and
+  the closing strip is a single flex row with the `agnes pull`
+  waiting status on the left and the *Already set up? Mark me as
+  onboarded →* fallback link on the right.
+- VS Code surface tile on `/home` now renders the recommended-layout
+  screenshot (served from `/static/img/vscode-layout.png`) and opens
+  a full-page lightbox on click. Falls back to the labeled
+  EXPLORER/TERMINAL panel when the image is missing.
+- Workspace install path moved to `~/Desktop/{workspace_dir}` across
+  every step, surface card, and shortcut command. The Step 2
+  recommendation callout acknowledges home-folder placement as a
+  valid fallback.
+- Step 1 verify text in the install hero reintroduces the Enterprise
+  plan as the Finance and Legal option alongside Pro / Max 5× /
+  Max 20×.
+- Step 6 shortcut installs a shell *function* (not an alias) so
+  arguments pass through with `"$@"` (unix) and `@args` (Windows),
+  and offers an end-user **Auto / YOLO** permission toggle —
+  `--permission-mode auto` by default, `--dangerously-skip-permissions`
+  for the YOLO variant.
+- Step 5 *Or paste manually* fallback `<details>` is now inline on
+  the copy-script button row (right-aligned when closed, full-width
+  preview when opened); the description above the row reads at the
+  standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- `/activity-center` audit-log hero rendered as half-width because
+  `_page_hero.html` was nested inside `<header class="obs-topbar">`,
+  a flex row that pinned the time-range + auto-refresh controls
+  beside it. The hero is now a sibling rendered before the
+  `<header>` so it spans the full container width like every other
+  admin page; the controls keep their original flex row underneath.
+- Same flex-row squeeze applied to `/admin/users`, `/admin/access`,
+  `/admin/groups`, `/admin/marketplaces`, `/admin/server-config`,
+  `/admin/welcome`, `/admin/workspace-prompt`, `/admin/sessions`,
+  `/admin/sessions/<id>`, `/admin/usage`. Each had `_page_hero.html`
+  nested inside a `display: flex; justify-content: space-between`
+  toolbar that pinned the page filter/search controls next to the
+  hero. Hero now renders outside the toolbar so it spans the full
+  container width; toolbar continues to hold only the controls.
+- Page-shell canonicalised — `.container` in `style-custom.css`
+  now sets the canonical `1280px` max-width and `16px 32px 48px`
+  padding so every page (admin, marketplace, catalog, profile,
+  /home, /setup-advanced) inherits the same nav-to-hero gap and
+  side gutters. Per-page `.container:has(.<page>) { max-width: none }`
+  + `.<page>-page { max-width: 1400px }` overrides removed from
+  `admin_users`, `admin_access`, `admin_groups`,
+  `admin_marketplaces`, `admin_welcome`, `admin_workspace_prompt`.
+  `.page-header--hero` no longer self-constrains via `max-width:
+  var(--width-app)`; the container provides the width so the hero
+  sits flush with the toolbar / table beneath it.
+- `_page_chrome.html` trimmed to just the page-background tint for
+  the redesign scopes (`/home`, `/store`, `/setup-advanced`); the
+  duplicate `.container` + `.container > main` rules it carried are
+  redundant with the new canonical container.
+- Marketplace hero unified with the canonical `.page-header--hero`
+  box. The bespoke `.mp-hero` rule duplicated padding, radius,
+  gradient, shadow, and font sizes that already lived on
+  `.page-header--hero`; markup is now
+  `<section class="page-header page-header--hero mp-hero">` so the
+  shared box drives dimensions + colour, and `.mp-hero` only adds
+  the right-anchored cover image. Inner text uses the
+  `.page-header__eyebrow / __title / __subtitle` classes the rest
+  of the app already uses. Same width, same height, same shadow
+  tint as every other page-hero on the app.
+- `/admin/tables`, `/admin/tokens`, `/install`, `/profile`,
+  `/store/upload`, `/setup-advanced`, `/catalog`, `/corporate-memory`
+  page heroes now all share the canonical `.page-header--hero`
+  dimensions (padding, border-radius, max-width, shadow tint).
+  Each page either migrated to the shared `_page_hero.html` include
+  (`admin_tables`, `profile`) or kept its bespoke wrapper with the
+  canonical class added (`admin_tokens`, `install`, `store_upload`)
+  so per-page extras (counts chips, version pills) live as children
+  inside the canonical box. `.stack-hero` (catalog + memory search
+  hero) and `.advanced-mock .ad-hero` (setup-advanced) now reference
+  the same gradient + dimensions so widths line up across the app.
+- `.page-header--hero` shadow tint follows the brand blue
+  (`rgba(0, 115, 209, 0.2)`) instead of the legacy green
+  (`rgba(46, 168, 119, 0.2)`) — the gradient is blue everywhere
+  outside the `/home` redesign, so the depth highlight now matches.
+- Setup-section heading on `/home` no longer right-aligns. The
+  inherited `header { display: flex; justify-content: space-between }`
+  rule from the legacy stylesheet was kicking in on the new section
+  header; the wrapper is now a `<div>` so the eyebrow / heading /
+  lede stack normally on the left.
+- `/home` (onboarded view) and `/setup-advanced` hero gradients
+  picked up the new green palette — both pages still carried the
+  retired blue (`#0056A3`) endpoint as a per-template override,
+  reading visibly out of sync with the rest of the app. Both pages
+  now reference `var(--primary-dark)` so any future palette shift
+  cascades automatically.
+- `/setup-advanced` YOLO snippet was the old `alias yolo="claude
+  --dangerously-skip-permissions"` form (no `cd`, no arg
+  forwarding). Replaced with the shell function variant that
+  matches `/home` Step 6 — drops into `~/Desktop/{workspace_dir}`
+  and forwards `"$@"` (unix) / `@args` (Windows).
+- `/setup-advanced` workspace path references migrated from
+  `~/{workspace_dir}` to `~/Desktop/{workspace_dir}` so the install
+  story is consistent between `/home` and `/setup-advanced`.
+- "Setup a new Claude Code" CTA button on `/dashboard` is now
+  labelled **Copy install script to clipboard**, matching `/home`
+  and the canonical action wording now documented inside
+  `_claude_setup_cta.jinja`.
+- Global brand colour reverted to blue (`--primary: #0073D1`). Login,
+  dashboard, catalog, marketplace, admin, profile, etc. read blue
+  again. The `/home` redesign green palette is now an opt-in via
+  the local `.home-mock` / `.advanced-mock` scopes (explicit green
+  hex set in-scope, not via `var(--primary)`), so the green only
+  applies on the redesigned pages.
+
+### Internal
+- New `app/web/static/css/design-tokens.css` declares the `--ds-*`
+  design-system token set (green/navy palette, system font stack,
+  callout vocabularies, navy-tinted elevation shadows) globally on
+  `:root`. Loaded by `base.html` alongside `style-custom.css`.
+- `.home-mock` and `.advanced-mock` scopes in `home_not_onboarded`,
+  `home_onboarded`, and `setup_advanced` reference `var(--ds-*)` so
+  the values live in one place. Local `--hp-*` declarations removed
+  from all three templates (~330 token declarations deduped to a
+  single source). Tokens stay opt-in: pages without one of those
+  scope classes don't pick up any `--ds-*`-driven styling and keep
+  reading the legacy `--primary` family.
+- New `app/web/static/css/components.css` carries the first set of
+  shared design-system components, free of any scope prefix and
+  reusable on any page: `.callout-rec` (amber lightbulb), `.callout-hint`
+  (blue info), `.code-output` (dashed "what you should see" block),
+  `.lightbox` (image enlarge overlay), `.setup-section-header`
+  (eyebrow + heading + lede wizard header). Loaded by `base.html`.
+- `/home` install hero migrated to the shared classes — markup
+  renamed (`class="rec"` → `class="callout-rec"`, `class="hint"` →
+  `class="callout-hint"`, `class="expected-output"` →
+  `class="code-output"`). Local `.home-mock .install-block .rec`,
+  `.hint`, `.expected-output`, `.setup-section-header`, and
+  `.lightbox` CSS rules removed from `home_not_onboarded.html` —
+  they now live in `components.css` and any page can pick them up
+  by adding the class. Wizard-specific patterns (`.install-cmd`,
+  `.os-tabs`, `.mode-tabs`, `.terminal-frame`) stay scoped to the
+  template for now; future PR work can lift them once a second
+  consumer needs them.
+
+### Removed
+- Collapsed-by-default *Getting Started* `<details>` block at the
+  top of `/home` (the in-page anchor it carried — *Setup Agnes in
+  your Claude Code* / *Go deeper into your AI workspace* — duplicated
+  links already reachable from the install hero and `/setup-advanced`).
 
 ### Removed
 

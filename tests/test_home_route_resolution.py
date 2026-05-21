@@ -281,7 +281,9 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    assert "Step 3 — start Claude Code with permission-skip" in body
+    # The `Step N —` prefix was dropped from labels (the step-number
+    # badge already carries the number); match the bare label text.
+    assert "Launch Claude with auto-approve on" in body
     # Recommended path: `claude --dangerously-skip-permissions`.
     assert "claude --dangerously-skip-permissions" in body
     # Strict fallback: Shift + Tab → auto-accept-edits.
@@ -302,7 +304,7 @@ def test_home_hides_automode_block_when_env_off(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    assert "Step 3 — start Claude Code with permission-skip" not in body
+    assert "Step 4 — Launch Claude with auto-approve on" not in body
 
 
 def test_navbar_home_link_uses_home_route(fresh_db, monkeypatch):
