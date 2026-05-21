@@ -989,7 +989,10 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1.5px;
-    color: var(--ds-brand-accent);
+    /* Eyebrow accent follows the theme: mint-green on navy
+       (default) or translucent white on blue. `--ds-hero-eyebrow`
+       is set per-theme in design-tokens.css. */
+    color: var(--ds-hero-eyebrow);
     margin-bottom: 14px;
     position: relative;
 }
@@ -1032,16 +1035,19 @@
     border: 1px solid transparent;
 }
 .home-mock .btn-intro-primary {
-    background: var(--ds-brand-accent);
-    color: var(--ds-hero-bg);
-    border-color: var(--ds-brand-accent);
+    /* Primary CTA pill on the intro hero. Mint-green on navy by
+       default; white on blue under the "blue" theme.
+       `--ds-hero-cta-*` flips per theme in design-tokens.css. */
+    background: var(--ds-hero-cta-bg);
+    color: var(--ds-hero-cta-fg);
+    border-color: var(--ds-hero-cta-bg);
 }
 .home-mock .btn-intro-primary:hover {
-    background: var(--ds-primary);
-    border-color: var(--ds-primary);
+    background: var(--ds-hero-cta-bg-hover);
+    border-color: var(--ds-hero-cta-bg-hover);
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(84, 211, 160, 0.32);
-    color: #ffffff;
+    box-shadow: 0 4px 12px var(--ds-hero-shadow);
+    color: var(--ds-hero-cta-fg);
 }
 .home-mock .btn-intro-secondary {
     background: rgba(255, 255, 255, 0.10);

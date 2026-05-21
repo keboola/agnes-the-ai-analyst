@@ -86,6 +86,14 @@
        translucent white because mint-green on blue reads poorly. */
     --ds-hero-eyebrow: var(--ds-brand-accent);
 
+    /* Hero CTA pill — `<a class="btn-intro-primary">` on /home's
+       intro hero. Mint-green-on-navy by default; the "blue" theme
+       flips it to white-on-blue because mint-on-blue has poor
+       contrast. */
+    --ds-hero-cta-bg: var(--ds-brand-accent);
+    --ds-hero-cta-fg: var(--ds-hero-bg);
+    --ds-hero-cta-bg-hover: var(--ds-primary);
+
     /* Typography — system stack so weight + letterforms render
        identically on macOS (San Francisco) and Windows (Segoe UI).
        Inter remains a graceful fallback in the cascade. */
@@ -114,5 +122,12 @@
     --ds-hero-bg-deep: var(--primary-dark);
 
     --ds-hero-shadow: rgba(0, 115, 209, 0.20);
-    --ds-hero-eyebrow: rgba(255, 255, 255, 0.75);
+    --ds-hero-eyebrow: rgba(255, 255, 255, 0.92);
+
+    /* Blue theme — hero CTA pill flips to white-on-blue. Mint-green
+       on blue reads badly; white on the brand-blue gradient has
+       full contrast. Hover state darkens to a translucent white. */
+    --ds-hero-cta-bg: #ffffff;
+    --ds-hero-cta-fg: var(--primary-dark);
+    --ds-hero-cta-bg-hover: rgba(255, 255, 255, 0.88);
 }
