@@ -4,6 +4,12 @@
 {% block title %}Memory — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the Manage-domains link, Suggest-
+   domain CTA, and Suggest-domain modal Cancel/Submit render via
+   `ds.button`. Bespoke `.stack-hero__search-btn`, `.stack-tabs`,
+   `.stack-curator-block`, `.pill` filter chips, and JS-generated
+   `.stack-card` install buttons stay page-local. #}
+{% import "_components.html" as ds %}
 {# Hero — gradient banner mirroring marketplace.html .mp-hero so /memory
    and /marketplace read as one product. #}
 <div class="stack-hero">
@@ -87,9 +93,11 @@
       {# Admin-only — the yellow ``admin-only`` chip is a visibility
          hint for the admin (analysts never see this affordance, the
          outer {% if user.is_admin %} gates it). #}
-      <a class="btn btn-secondary" href="/admin/corporate-memory#domains"
-         title="Visible only to admins — analysts won't see this button.">
-        Manage domains <span class="admin-only-hint">admin-only</span> →</a>
+      {% call ds.button(variant='secondary',
+                        href='/admin/corporate-memory#domains',
+                        attrs='title="Visible only to admins — analysts won\'t see this button."') %}
+        Manage domains <span class="admin-only-hint">admin-only</span> →
+      {% endcall %}
     </div>
     {% endif %}
   </div>
@@ -138,9 +146,9 @@
          new domain is ready — or suggest one yourself if there's a body
          of knowledge you'd like to see bundled.</p>
       <div class="cta">
-        <button class="btn btn-primary" type="button" onclick="openSuggestDomainModal()">
-          Suggest a domain
-        </button>
+        {{ ds.button('Suggest a domain', variant='primary',
+                     type='button',
+                     attrs='onclick="openSuggestDomainModal()"') }}
       </div>
       {% endif %}
     </div>
@@ -214,9 +222,11 @@
         </label>
       </div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
-        <button class="btn" type="button" onclick="closeSuggestDomainModal()">Cancel</button>
-        <button class="btn btn-primary" type="button" id="sg-domain-submit-btn"
-                onclick="submitSuggestDomain()">Send suggestion</button>
+        {{ ds.button('Cancel', variant='secondary', type='button',
+                     attrs='onclick="closeSuggestDomainModal()"') }}
+        {{ ds.button('Send suggestion', variant='primary', type='button',
+                     id='sg-domain-submit-btn',
+                     attrs='onclick="submitSuggestDomain()"') }}
       </div>
     </div>
   </div>

@@ -2,6 +2,11 @@
 {% block title %}Access tokens — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the modal Cancel/Revoke buttons
+   render via `ds.button`. Bespoke `.chip-btn` filter strips, `.clear-link`
+   inline-link buttons, JS-generated `.revoke-btn` row actions, and the
+   token card stack stay page-local. #}
+{% import "_components.html" as ds %}
 <style>
   /* ─────────────────────────────────────────────────────────────────────────
      /admin/tokens — ALL tokens across users for incident response + offboarding.
@@ -703,8 +708,9 @@
     </p>
     <div class="modal-meta" id="confirm-meta" aria-hidden="true"></div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" id="confirm-cancel-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="btn btn-danger" id="confirm-ok-btn">Revoke token</button>
+      {{ ds.button('Cancel', variant='secondary', id='confirm-cancel-btn',
+                   attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Revoke token', variant='danger', id='confirm-ok-btn') }}
     </div>
   </div>
 </div>

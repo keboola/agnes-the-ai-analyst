@@ -3,6 +3,7 @@
 {% block title %}Check Your Email - {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{% import "_components.html" as ds %}
 <div class="login-page">
     <div class="login-split">
         <div class="login-features">
@@ -54,9 +55,9 @@
                     <span>or</span>
                 </div>
 
-                <a href="{{ url_for('email_auth.login_email_form') }}" class="btn btn-secondary" style="width: 100%; max-width: 280px;">
-                    Try a different email
-                </a>
+                {{ ds.button('Try a different email', variant='secondary',
+                             href=url_for('email_auth.login_email_form'),
+                             klass='btn-block login-provider-btn') }}
             </div>
         </div>
     </div>

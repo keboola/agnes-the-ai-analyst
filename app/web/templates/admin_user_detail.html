@@ -2,6 +2,11 @@
 {% block title %}{{ target_user.email }} — User detail — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the Download-all anchor and
+   Sessions / Activity paginators render via `ds.button`. The
+   `.account-action-btn` family + JS-generated row actions stay
+   page-local. #}
+{% import "_components.html" as ds %}
 <style>
   .container:has(.ud-page) { max-width: none; padding: 24px 16px; }
   .ud-page { max-width: 1100px; margin: 0 auto; padding: 0; }
@@ -276,7 +281,8 @@
   <section class="ud-section">
     <div class="ud-section-head">
       <h2>Sessions</h2>
-      <a class="btn btn-secondary" id="ud-download-all" href="#">Download all (.zip)</a>
+      {{ ds.button('Download all (.zip)', variant='secondary',
+                   id='ud-download-all', href='#') }}
     </div>
 
     <div class="ud-empty" id="ud-sessions-loading">Loading…</div>
@@ -300,9 +306,11 @@
     </table>
 
     <div class="ud-pagination" id="ud-sessions-pagination" hidden>
-      <button class="btn" id="ud-sessions-prev">Prev</button>
+      {{ ds.button('Prev', variant='secondary', size='sm',
+                   id='ud-sessions-prev') }}
       <span id="ud-sessions-page-meta"></span>
-      <button class="btn" id="ud-sessions-next">Next</button>
+      {{ ds.button('Next', variant='secondary', size='sm',
+                   id='ud-sessions-next') }}
     </div>
   </section>
 
@@ -334,9 +342,11 @@
     </div>
 
     <div class="ud-pagination" id="ud-activity-pagination" hidden>
-      <button class="btn" id="ud-activity-prev">Prev</button>
+      {{ ds.button('Prev', variant='secondary', size='sm',
+                   id='ud-activity-prev') }}
       <span id="ud-activity-page-meta"></span>
-      <button class="btn" id="ud-activity-next">Next</button>
+      {{ ds.button('Next', variant='secondary', size='sm',
+                   id='ud-activity-next') }}
     </div>
   </section>
 </div>

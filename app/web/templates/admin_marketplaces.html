@@ -2,6 +2,11 @@
 {% block title %}Curated Marketplaces — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — toolbar "+ Add marketplace" and all
+   6 modal action sets render via `ds.button`. JS-generated per-row
+   `.icon-btn` actions and the `.plugin-system-btn` toggle stay
+   page-local. #}
+{% import "_components.html" as ds %}
 <style>  .marketplaces-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
@@ -224,7 +229,7 @@
        title="Open the marketplace-metadata.json format guide in a new tab">
       Format guide →
     </a>
-    <button class="btn btn-primary" id="open-create-btn">+ Add marketplace</button>
+    {{ ds.button('+ Add marketplace', variant='primary', id='open-create-btn') }}
   </div>
 
   <div class="data-table-wrap">
@@ -286,8 +291,9 @@
     <div class="help">Stored in <code>$DATA_DIR/state/.env_overlay</code> (chmod 600) on the data volume. Never written to the database or committed to git.</div>
 
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="create-modal">Cancel</button>
-      <button class="btn btn-primary" id="confirm-create-btn">Register</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="create-modal"') }}
+      {{ ds.button('Register', variant='primary', id='confirm-create-btn') }}
     </div>
   </div>
 </div>
@@ -326,8 +332,9 @@
     </div>
 
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="edit-modal">Cancel</button>
-      <button class="btn btn-primary" id="confirm-edit-btn">Save</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="edit-modal"') }}
+      {{ ds.button('Save', variant='primary', id='confirm-edit-btn') }}
     </div>
   </div>
 </div>
@@ -339,7 +346,8 @@
     <p class="sub" id="sync-target"></p>
     <div id="sync-result-body" class="sync-result"></div>
     <div class="modal-actions">
-      <button class="btn btn-primary" data-close-modal="sync-modal">Close</button>
+      {{ ds.button('Close', variant='primary',
+                   attrs='data-close-modal="sync-modal"') }}
     </div>
   </div>
 </div>
@@ -351,7 +359,8 @@
     <p class="sub" id="details-sub"></p>
     <div id="details-body" class="plugin-list"></div>
     <div class="modal-actions">
-      <button class="btn btn-primary" data-close-modal="details-modal">Close</button>
+      {{ ds.button('Close', variant='primary',
+                   attrs='data-close-modal="details-modal"') }}
     </div>
   </div>
 </div>
@@ -365,8 +374,9 @@
       <input id="confirm-purge" type="checkbox" checked> Also delete the working copy from disk
     </label>
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="confirm-modal">Cancel</button>
-      <button class="btn btn-danger" id="confirm-ok-btn">Delete</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Delete', variant='danger', id='confirm-ok-btn') }}
     </div>
   </div>
 </div>
@@ -382,8 +392,9 @@
     <p class="sub" id="system-confirm-plugin" style="margin: 0 0 14px; font-size: 13px; color: var(--text-primary, #111827); font-weight: 500;"></p>
     <div id="system-confirm-body" style="font-size: 13px; line-height: 1.55; color: var(--text-secondary, #374151);"></div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="system-confirm-modal">Cancel</button>
-      <button class="btn btn-danger" id="system-confirm-ok-btn">Confirm</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="system-confirm-modal"') }}
+      {{ ds.button('Confirm', variant='danger', id='system-confirm-ok-btn') }}
     </div>
   </div>
 </div>

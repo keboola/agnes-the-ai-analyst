@@ -2,6 +2,11 @@
 {% block title %}Init Prompt — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the editor's Reset/Save action
+   buttons + the reset-confirmation modal's Cancel/Reset render via
+   `ds.button`. `.btn-copy` (page-local Catppuccin dark-surface copy
+   pill) stays page-local per system.md. #}
+{% import "_components.html" as ds %}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css"
       integrity="sha512-uf06llspW44/LZpHzHT6qBOIVODjWtv4MxCricRxkzvopAlSWnTf6hpZTFxuuZcuNE9CBQhqE0Seu1CoRk84nQ=="
       crossorigin="anonymous">
@@ -155,17 +160,9 @@
     border-top: 1px solid var(--border, #e5e7eb);
     display: flex; gap: 8px; justify-content: flex-end;
   }
-  .welcome-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; transition: all 0.15s;
-  }
-  .welcome-btn:hover { background: var(--border-light, #f9fafb); }
-  .welcome-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .welcome-btn.primary:hover { filter: brightness(1.05); }
-  .welcome-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
-  .welcome-btn.danger:hover { filter: brightness(1.05); }
-  .welcome-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  /* `.welcome-btn` family deleted — editor actions render via
+     `ds.button(variant='secondary'|'primary'|'danger')` which carries
+     the canonical .btn family from style-custom.css. */
 
   /* Modal */
   .modal-backdrop {
@@ -272,8 +269,10 @@
       </div>
     </div>
     <div class="welcome-actions">
-      <button type="button" class="welcome-btn" id="reset-btn">Reset to default</button>
-      <button type="button" class="welcome-btn primary" id="save-btn">Save override</button>
+      {{ ds.button('Reset to default', variant='secondary',
+                   type='button', id='reset-btn') }}
+      {{ ds.button('Save override', variant='primary',
+                   type='button', id='save-btn') }}
     </div>
   </div>
 </div>
@@ -284,8 +283,9 @@
     <h3 id="reset-modal-title">Reset to default?</h3>
     <p class="sub">Your override will be permanently removed. The auto-generated bash bootstrap script will be shown on <code>/setup</code> instead. This cannot be undone.</p>
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="reset-modal">Cancel</button>
-      <button class="btn btn-danger" id="reset-confirm-btn">Reset</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="reset-modal"') }}
+      {{ ds.button('Reset', variant='danger', id='reset-confirm-btn') }}
     </div>
   </div>
 </div>

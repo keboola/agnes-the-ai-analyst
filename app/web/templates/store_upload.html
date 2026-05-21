@@ -2,6 +2,7 @@
 {% block title %}Upload to Store — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{% import "_components.html" as ds %}
 <style>
   /* ── Container override ────────────────────────────────────────── */
   /* Width + padding come from .page-shell (style-custom.css) — same
@@ -445,8 +446,9 @@
         </div>
 
         <div class="actions">
-          <button type="button" class="btn btn-primary" id="next-btn">Next →</button>
-          <a href="/marketplace?tab=flea" class="btn btn-secondary">Cancel</a>
+          {{ ds.button('Next →', variant='primary', type='button', id='next-btn') }}
+          {{ ds.button('Cancel', variant='secondary',
+                       href='/marketplace?tab=flea') }}
         </div>
       </div>
     </div>
@@ -581,8 +583,8 @@
         </div>
 
         <div class="actions">
-          <button type="button" class="btn btn-primary" id="finish-btn">Finish</button>
-          <button type="button" class="btn btn-secondary" id="back-btn">← Back</button>
+          {{ ds.button('Finish', variant='primary', type='button', id='finish-btn') }}
+          {{ ds.button('← Back', variant='secondary', type='button', id='back-btn') }}
         </div>
       </div>
     </div>

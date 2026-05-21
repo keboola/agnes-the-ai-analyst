@@ -2,6 +2,7 @@
 {% block title %}Edit {{ entity.name | store_display_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{% import "_components.html" as ds %}
 <style>
   .edit-back { font-size: 13px; color: var(--text-secondary, #6b7280); text-decoration: none; }
   .edit-back:hover { color: var(--text, #111827); text-decoration: underline; }
@@ -209,9 +210,10 @@
     </div>
 
     <div class="actions">
-      <button type="submit" class="btn btn-primary" id="save-btn"
-              {% if pending_sub %}disabled{% endif %}>Save</button>
-      <a href="/marketplace/flea/{{ entity.id }}" class="btn btn-secondary">Cancel</a>
+      {{ ds.button('Save', variant='primary', type='submit', id='save-btn',
+                   disabled=(pending_sub is not none and pending_sub)) }}
+      {{ ds.button('Cancel', variant='secondary',
+                   href='/marketplace/flea/' ~ entity.id) }}
     </div>
   </form>
 </div>

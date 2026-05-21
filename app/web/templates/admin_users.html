@@ -2,6 +2,11 @@
 {% block title %}Users — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the toolbar "+ Add user" button and
+   all 5 modal action sets (Create / Set-password / Reset-link / Invite /
+   Confirm) render via `ds.button`. Per-row action buttons in the table
+   are JS-generated and stay page-local. #}
+{% import "_components.html" as ds %}
 <style>  .users-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
@@ -171,7 +176,7 @@
 
   <div class="users-toolbar">
     <input id="user-search" type="search" class="search-input" placeholder="Filter by email or name…" autocomplete="off">
-    <button class="btn btn-primary" id="open-create-btn">+ Add user</button>
+    {{ ds.button('+ Add user', variant='primary', id='open-create-btn') }}
   </div>
 
   <div class="data-table-wrap">
@@ -215,8 +220,9 @@
       Send invitation link (generates setup token, emails it if transport is configured)
     </label>
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="create-modal">Cancel</button>
-      <button class="btn btn-primary" id="confirm-create-btn">Create</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="create-modal"') }}
+      {{ ds.button('Create', variant='primary', id='confirm-create-btn') }}
     </div>
   </div>
 </div>
@@ -229,8 +235,9 @@
     <label for="setpwd-input">New password (min 8 chars)</label>
     <input id="setpwd-input" type="password" autocomplete="new-password">
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="setpwd-modal">Cancel</button>
-      <button class="btn btn-primary" id="confirm-setpwd-btn">Set password</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="setpwd-modal"') }}
+      {{ ds.button('Set password', variant='primary', id='confirm-setpwd-btn') }}
     </div>
   </div>
 </div>
@@ -246,7 +253,8 @@
       <button class="copy-btn" id="reset-copy-btn">Copy</button>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-primary" data-close-modal="reset-modal">Done</button>
+      {{ ds.button('Done', variant='primary',
+                   attrs='data-close-modal="reset-modal"') }}
     </div>
   </div>
 </div>
@@ -262,7 +270,8 @@
       <button class="copy-btn" id="invite-copy-btn">Copy</button>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-primary" data-close-modal="invite-modal">Done</button>
+      {{ ds.button('Done', variant='primary',
+                   attrs='data-close-modal="invite-modal"') }}
     </div>
   </div>
 </div>
@@ -273,8 +282,9 @@
     <h3 id="confirm-title">Are you sure?</h3>
     <p class="sub" id="confirm-text"></p>
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="confirm-modal">Cancel</button>
-      <button class="btn btn-danger" id="confirm-ok-btn">Confirm</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Confirm', variant='danger', id='confirm-ok-btn') }}
     </div>
   </div>
 </div>

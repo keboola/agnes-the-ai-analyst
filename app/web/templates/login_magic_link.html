@@ -3,6 +3,7 @@
 {% block title %}Sign in with Email - {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{% import "_components.html" as ds %}
 <div class="login-page">
     <div class="login-split">
         <div class="login-features">
@@ -34,9 +35,8 @@
                                style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 15px; box-sizing: border-box;">
                     </div>
 
-                    <button type="submit" class="btn btn-primary" style="width: 100%;">
-                        Send Sign-In Link
-                    </button>
+                    {{ ds.button('Send Sign-In Link', variant='primary',
+                                 type='submit', klass='btn-block') }}
                 </form>
 
                 {% if allowed_domains %}
@@ -49,9 +49,9 @@
                     <span>or</span>
                 </div>
 
-                <a href="{{ url_for('auth.login') }}" class="btn btn-secondary" style="width: 100%; max-width: 280px;">
-                    Back to Login
-                </a>
+                {{ ds.button('Back to Login', variant='secondary',
+                             href=url_for('auth.login'),
+                             klass='btn-block login-provider-btn') }}
             </div>
         </div>
     </div>

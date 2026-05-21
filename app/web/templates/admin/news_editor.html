@@ -220,6 +220,13 @@ document.addEventListener('DOMContentLoaded', function () {
 {% endblock %}
 
 {% block content %}
+{# Design-system component macros — Save draft / Publish / Unpublish
+   buttons render via `ds.button`. The page-local `body.news-admin
+   button.primary` / `button.ghost` rules are no longer matched (markup
+   now carries `.btn .btn-*` instead) — canonical .btn family supplies
+   equivalent styling. The `.unpublish-btn` class survives via `klass=`
+   to keep the JS selector working. #}
+{% import "_components.html" as ds %}
 {% set page_hero_eyebrow = "Server" %}
 {% set page_hero_title = "News editor" %}
 {% set page_hero_subtitle = "Compose the news intro shown at the bottom of /home." %}
@@ -249,11 +256,12 @@ document.addEventListener('DOMContentLoaded', function () {
             <textarea id="content" placeholder="<h1>Full body</h1>&#10;<p>Use the documented classes — see Format help below.</p>">{{ news_draft.content if news_draft else '' }}</textarea>
 
             <div class="row-actions">
-                <button type="button" class="primary" id="save-btn">Save draft</button>
-                <button type="button" class="primary" id="publish-btn"
-                        {% if not news_draft %}disabled title="Save a draft first"{% endif %}>
-                    Publish this draft
-                </button>
+                {{ ds.button('Save draft', variant='primary',
+                             type='button', id='save-btn') }}
+                {{ ds.button('Publish this draft', variant='primary',
+                             type='button', id='publish-btn',
+                             disabled=(not news_draft),
+                             attrs=('title="Save a draft first"' if not news_draft else '')) }}
                 <span class="status" id="save-status"></span>
             </div>
 
@@ -308,7 +316,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 <td>{{ v.intro_preview }}</td>
                 <td>
                     {% if v.published %}
-                    <button type="button" class="ghost unpublish-btn" data-version="{{ v.version }}">Unpublish</button>
+                    {{ ds.button('Unpublish', variant='ghost', size='sm',
+                                 type='button', klass='unpublish-btn',
+                                 attrs='data-version="' ~ v.version ~ '"') }}
                     {% endif %}
                 </td>
             </tr>

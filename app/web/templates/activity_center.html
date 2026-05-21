@@ -2,6 +2,15 @@
 {% block title %}Activity — Admin{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the six page-local `.obs-btn`
+   buttons (filter reset, load more, side-panel close + 3 quick-filter
+   actions) render via `ds.button(variant='secondary', size='sm')`.
+   Bespoke chrome (`.obs-table` with sort arrows + row selection,
+   `.obs-kpi` clickable cards, `.obs-panel` slide-out, sort-header
+   `<button>` elements inside `<th>`, the `<select>` filter controls)
+   stays page-local — system.md explicitly carves out .obs-table's
+   page-local enhancements; the rest doesn't fit the 5 macros. #}
+{% import "_components.html" as ds %}
 <div class="obs-page page-shell">
 
   {# Canonical page hero — full container width, matches every other
@@ -99,7 +108,8 @@
       <input id="f-q" type="search" placeholder="token, table id, correlation…" />
     </div>
     <div class="obs-filter-actions">
-      <button id="f-reset" class="obs-btn" type="button">Reset</button>
+      {{ ds.button('Reset', variant='secondary', size='sm',
+                   type='button', id='f-reset') }}
     </div>
   </section>
 
@@ -127,7 +137,8 @@
     </table>
     <div class="obs-table-footer">
       <span id="obs-row-count" class="obs-row-count">—</span>
-      <button id="obs-loadmore" class="obs-btn" type="button" hidden>Load more</button>
+      {{ ds.button('Load more', variant='secondary', size='sm',
+                   type='button', id='obs-loadmore', attrs='hidden') }}
     </div>
   </section>
 
@@ -137,7 +148,9 @@
 <aside class="obs-panel" id="obs-panel" hidden aria-label="Event detail">
   <header class="obs-panel-head">
     <h2 id="obs-panel-title">Event</h2>
-    <button class="obs-btn" id="obs-panel-close" type="button" aria-label="Close">✕</button>
+    {% call ds.button(variant='ghost', size='sm', icon_only=True,
+                      type='button', id='obs-panel-close',
+                      attrs='aria-label="Close"') %}✕{% endcall %}
   </header>
   <dl class="obs-panel-meta" id="obs-panel-meta"></dl>
   <h3>Params</h3>
@@ -145,9 +158,13 @@
   <h3 class="obs-panel-result-h">Result</h3>
   <pre class="obs-panel-pre" id="obs-panel-result">—</pre>
   <div class="obs-panel-actions">
-    <button class="obs-btn" id="obs-panel-filter-user" type="button">Filter to this user</button>
-    <button class="obs-btn" id="obs-panel-filter-action" type="button">Filter to this action</button>
-    <button class="obs-btn" id="obs-panel-filter-resource" type="button" hidden>Filter to this resource type</button>
+    {{ ds.button('Filter to this user', variant='secondary', size='sm',
+                 type='button', id='obs-panel-filter-user') }}
+    {{ ds.button('Filter to this action', variant='secondary', size='sm',
+                 type='button', id='obs-panel-filter-action') }}
+    {{ ds.button('Filter to this resource type', variant='secondary', size='sm',
+                 type='button', id='obs-panel-filter-resource',
+                 attrs='hidden') }}
   </div>
 </aside>
 
@@ -196,14 +213,13 @@
 }
 
 /* Saved views dropdown -------------------------------------------------- */
+/* `.obs-btn` + `.obs-btn-primary` styles deleted — the markup now uses
+   `ds.button(variant='secondary'|'ghost', size='sm')` which carries
+   the canonical .btn family from style-custom.css. (The saved-views
+   modal/dropdown UI was removed earlier; the related .obs-views,
+   .obs-views-panel, .obs-chev rules are now dead-code — left in place
+   for a future revival or a separate dead-code sweep.) */
 .obs-views { position: relative; }
-.obs-btn {
-  border: 1px solid var(--obs-border); background: var(--obs-bg); color: var(--obs-fg);
-  padding: 6px 12px; border-radius: 6px; font: inherit; cursor: pointer;
-}
-.obs-btn:hover { background: var(--obs-soft); }
-.obs-btn-primary { background: var(--obs-link); color: #fff; border-color: var(--obs-link); }
-.obs-btn-primary:hover { filter: brightness(1.07); background: var(--obs-link); }
 .obs-chev { font-size: 10px; color: var(--obs-muted); }
 .obs-views-panel {
   position: absolute; right: 0; top: calc(100% + 6px);

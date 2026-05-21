@@ -2,6 +2,10 @@
 {% block title %}Session — {{ username }} / {{ session_file }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the two header buttons (Next error
+   + Download .jsonl) render via `ds.button`. The JS-rendered event
+   cards (`.td-event`, `.td-role-chip`, etc.) stay page-local. #}
+{% import "_components.html" as ds %}
 <div class="obs-page page-shell">
 
   {% set page_hero_eyebrow = "Activity Center" %}
@@ -25,11 +29,11 @@
       <div class="td-meta" id="td-meta"></div>
     </div>
     <div class="obs-topbar-right">
-      <button class="obs-btn" id="td-prev-err" type="button" hidden>↡ Next error</button>
-      <a class="obs-btn" id="td-download"
-         href="/api/admin/sessions/{{ username }}/{{ session_file }}/download">
-        Download .jsonl
-      </a>
+      {{ ds.button('↡ Next error', variant='secondary', size='sm',
+                   type='button', id='td-prev-err', attrs='hidden') }}
+      {{ ds.button('Download .jsonl', variant='secondary', size='sm',
+                   id='td-download',
+                   href='/api/admin/sessions/' ~ username ~ '/' ~ session_file ~ '/download') }}
     </div>
   </header>
 
@@ -45,10 +49,8 @@
 .obs-subtitle { margin: 0 0 10px; color: var(--text-secondary, #6b7280); font-size: 13px; }
 .obs-subtitle a { color: #2563eb; text-decoration: none; }
 .obs-subtitle a:hover { text-decoration: underline; }
-.obs-btn { border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-  padding: 6px 12px; border-radius: 6px; font: inherit; cursor: pointer; color: inherit;
-  text-decoration: none; display: inline-block; }
-.obs-btn:hover { background: var(--border-light, #f3f4f6); }
+/* `.obs-btn` rules deleted — buttons now render via `ds.button(variant=
+   'secondary', size='sm')` which carries the canonical .btn family. */
 .td-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px;
   color: var(--text-secondary, #6b7280); }
 .td-meta b { color: var(--text-primary, #111827); font-weight: 500; }

@@ -2,6 +2,11 @@
 {% block title %}Groups — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the toolbar "+ New group" button
+   and the 4 modal action buttons render via `ds.button`. The
+   JS-generated `.icon-btn` row actions (Edit / Delete / →) and the
+   `.modal-card`, `.toast` chrome stay page-local. #}
+{% import "_components.html" as ds %}
 <style>  .gp-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
@@ -61,18 +66,9 @@
   }
   .gp-empty .big { font-size: 15px; font-weight: 600; color: var(--text-primary, #111827); margin-bottom: 4px; }
 
-  .gp-btn {
-    padding: 8px 14px; border-radius: 8px;
-    font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer;
-  }
-  .gp-btn:hover { background: var(--border-light, #f9fafb); }
-  .gp-btn.primary {
-    background: var(--primary, #6366f1); color: #fff;
-    border-color: var(--primary, #6366f1);
-  }
-  .gp-btn.primary:hover { filter: brightness(1.05); }
+  /* `.gp-btn` / `.gp-btn.primary` rules deleted — the toolbar New-group
+     button now renders via `ds.button(variant='primary')` which carries
+     the canonical .btn family from style-custom.css. */
 
   /* Modal — same vocabulary as the rest of the admin pages */
   .modal-backdrop {
@@ -129,7 +125,7 @@
     </div>
     <div style="display:flex; gap:10px; align-items:center;">
       <input id="search" type="search" class="gp-search" placeholder="Filter by name or description…" autocomplete="off">
-      <button class="gp-btn primary" id="open-create-btn">+ New group</button>
+      {{ ds.button('+ New group', variant='primary', id='open-create-btn') }}
     </div>
   </div>
 
@@ -167,8 +163,9 @@
     <label for="group-desc">Description (optional)</label>
     <textarea id="group-desc" autocomplete="off"></textarea>
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="group-modal">Cancel</button>
-      <button class="btn btn-primary" id="group-save-btn">Save</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="group-modal"') }}
+      {{ ds.button('Save', variant='primary', id='group-save-btn') }}
     </div>
   </div>
 </div>
@@ -179,8 +176,9 @@
     <h3 id="confirm-title">Delete group?</h3>
     <p class="sub" id="confirm-text"></p>
     <div class="modal-actions">
-      <button class="btn btn-secondary" data-close-modal="confirm-modal">Cancel</button>
-      <button class="btn btn-danger" id="confirm-ok-btn">Delete</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Delete', variant='danger', id='confirm-ok-btn') }}
     </div>
   </div>
 </div>

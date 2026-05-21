@@ -287,7 +287,7 @@
        {% endcall %}
    ───────────────────────────────────────────────────────────────────── #}
 {% macro panel(title=None, accent=None, clickable=False, href=None,
-               klass='', attrs='') -%}
+               klass='', attrs='', tag=None) -%}
   {%- set classes = ['ds-card'] -%}
   {%- if accent %}
     {%- set _ = classes.append('ds-card--accent') -%}
@@ -296,7 +296,11 @@
   {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
   {%- set is_clickable = clickable or href -%}
   {%- set class_str = classes | join(' ') -%}
-  {%- set tag = 'a' if href else 'div' -%}
+  {# `tag` overrides the default. Pass `tag='section'` when the card
+     functions as an aria-labelled landmark (Profile, etc.) so screen
+     readers can still navigate by region. Default tag is 'a' when
+     `href` is set (clickable card), else 'div'. #}
+  {%- set tag = tag or ('a' if href else 'div') -%}
 <{{ tag }} class="{{ class_str }}"
   {%- if href %} href="{{ href }}"{% endif -%}
   {%- if is_clickable %} data-clickable{% if not href %} tabindex="0"{% endif %}{% endif -%}

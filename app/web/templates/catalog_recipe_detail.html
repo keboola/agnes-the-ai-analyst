@@ -30,10 +30,14 @@
     color: var(--text-primary); font-size: 14px; line-height: 1.5;
     margin: 0;
   }
+  /* .rcp-section sits on top of .ds-card (rendered by ds.panel) — the
+     base surface/border/shadow comes from .ds-card; this rule overrides
+     only the radius (8 → 12, matches the rest of /catalog) and padding
+     (24 → 20). The page-local h2 inside acts as the section eyebrow. */
   .rcp-section {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border); border-radius: 12px;
-    padding: 20px; margin-bottom: 16px;
+    border-radius: var(--radius-xl);
+    padding: var(--space-5);
+    margin-bottom: var(--space-4);
   }
   .rcp-section h2 {
     margin: 0 0 12px; font-size: 14px; font-weight: 700;
@@ -74,6 +78,11 @@
 {% endblock %}
 
 {% block content %}
+{# Design-system component macros — the two `.rcp-section` panels below
+   render via `ds.panel`. The bespoke `.rcp-header` hero (with the
+   coloured icon block) and `.rcp-copy-btn` (page-local dark-on-light
+   pill) stay as-is — neither cleanly maps onto .ds-card or .btn-*. #}
+{% import "_components.html" as ds %}
 <a class="rcp-back" href="/catalog#recipes">← Back to recipes</a>
 
 <div class="rcp-header">
@@ -95,7 +104,7 @@
 
 {# SQL template — copyable. The template is meant to be adapted, not
    executed as-is; render in a code block with a copy button. #}
-<section class="rcp-section">
+{% call ds.panel(tag='section', klass='rcp-section') %}
   <h2>Query template</h2>
   {% if recipe.sql_template %}
   <button class="rcp-copy-btn" type="button" onclick="copyRecipeSql(this)">Copy SQL</button>
@@ -113,9 +122,9 @@
   {% else %}
   <p class="rcp-empty">No SQL template authored yet.</p>
   {% endif %}
-</section>
+{% endcall %}
 
-<section class="rcp-section">
+{% call ds.panel(tag='section', klass='rcp-section') %}
   <h2>Touches tables</h2>
   {% if related_tables %}
   <div class="rcp-related-tables">
@@ -126,5 +135,5 @@
   {% else %}
   <p class="rcp-empty">No related tables linked.</p>
   {% endif %}
-</section>
+{% endcall %}
 {% endblock %}
