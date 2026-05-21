@@ -140,3 +140,43 @@
     --ds-info-line: var(--primary);
     --ds-info-ink: var(--primary-dark);
 }
+
+/* ─── Design-system additions driven by .interface-design/system.md ────
+   Tokens consumed by the .ds-card family, the .badge--* modifiers, and
+   the canonical focus-ring contract. Append-only; nothing above this
+   block changed. */
+:root {
+    /* Cross-pattern accent vocabulary — one set of {bg,ink,line} per
+       status that feeds .flash-*, .badge--*, .ds-card--*, and the
+       legacy .card-error/.card-highlight/.card-ai re-skins. Info +
+       warn alias the pre-existing tokens above; success + danger are
+       net-new. Per system.md: "One status vocabulary, five surfaces."
+       Re-tinting any status is a one-token edit. */
+    --ds-accent-info-bg:    var(--ds-info-bg);
+    --ds-accent-info-ink:   var(--ds-info-ink);
+    --ds-accent-info-line:  var(--ds-info-line);
+
+    --ds-accent-warn-bg:    var(--ds-warn-bg);
+    --ds-accent-warn-ink:   var(--ds-warn-ink);
+    --ds-accent-warn-line:  var(--ds-warn-line);
+
+    --ds-accent-success-bg:    #dcfce7;
+    --ds-accent-success-ink:   #166534;
+    --ds-accent-success-line:  #16a34a;
+
+    --ds-accent-danger-bg:    #fee2e2;
+    --ds-accent-danger-ink:   #991b1b;
+    --ds-accent-danger-line:  #dc2626;
+
+    /* Canonical focus-ring — one outline + offset reused on every
+       interactive element (button, link, tab, table row, input). Per
+       system.md: "Focus ring is non-negotiable. No outline: none
+       carve-outs." */
+    --ds-focus-outline:        2px solid var(--ds-primary);
+    --ds-focus-outline-offset: 2px;
+
+    /* Extended text hierarchy used by .ds-card and form-control rules. */
+    --ds-text-disabled: #d1d5db;
+    --ds-text-inverse:  #ffffff;
+    --ds-text-link:     var(--ds-primary);
+}
