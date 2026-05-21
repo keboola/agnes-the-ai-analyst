@@ -130,4 +130,13 @@
     --ds-hero-cta-bg: #ffffff;
     --ds-hero-cta-fg: var(--primary-dark);
     --ds-hero-cta-bg-hover: rgba(255, 255, 255, 0.88);
+
+    /* `.callout-hint` info-bg vocabulary — default is a cool-blue
+       indigo (#eef3ff / #4f7cf2 / #1c3994) that reads as a
+       distinct "info" hue on the navy theme. Under the brand-blue
+       theme the indigo clashes with the hero gradient; re-tint to
+       brand-blue so all the blue surfaces share a hue family. */
+    --ds-info-bg: rgba(0, 115, 209, 0.08);
+    --ds-info-line: var(--primary);
+    --ds-info-ink: var(--primary-dark);
 }
