@@ -964,7 +964,8 @@
    eyebrow, green pill primary CTA on navy. Pillars row sits inside
    the same card separated by a hairline border. */
 .home-mock .home-hero-intro {
-    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, #1a2a5f 100%);
+    /* Hero gradient follows the active theme via `--ds-hero-*`. */
+    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
     color: var(--ds-hero-ink);
     border-radius: 20px;
     padding: 44px 44px 36px;

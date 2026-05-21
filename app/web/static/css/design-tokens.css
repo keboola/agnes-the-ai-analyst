@@ -76,9 +76,43 @@
     --ds-shadow-md: 0 4px 16px rgba(15, 27, 58, .08);
     --ds-shadow-lg: 0 8px 24px rgba(15, 27, 58, .14);
 
+    /* Hero box-shadow tint — used by `.page-header--hero`,
+       `.stack-hero`, `.env-setup-cta`. Flipped per theme so the
+       drop-shadow colour follows the gradient. */
+    --ds-hero-shadow: rgba(15, 27, 58, 0.22);
+
+    /* Hero eyebrow colour — green accent on top of the navy
+       gradient by default. The "blue" theme aliases this to a
+       translucent white because mint-green on blue reads poorly. */
+    --ds-hero-eyebrow: var(--ds-brand-accent);
+
     /* Typography — system stack so weight + letterforms render
        identically on macOS (San Francisco) and Windows (Segoe UI).
        Inter remains a graceful fallback in the cascade. */
     --ds-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
     --ds-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ─── Theme: blue (pre-redesign palette) ──────────────────────────
+   Activated by `<html data-theme="blue">`. Overrides only the
+   tokens that diverge from the default navy theme:
+     - brand fill          → blue (legacy `--primary`)
+     - hero gradient       → blue → blue-dark
+     - eyebrow accent      → translucent white (mint-green on blue
+                              reads poorly)
+     - drop-shadow tint    → blue
+   Everything else (surfaces, callouts, code panels, fonts)
+   stays the same. Page markup and component classes don't change
+   between themes. */
+:root[data-theme="blue"] {
+    --ds-primary: var(--primary);
+    --ds-primary-dark: var(--primary-dark);
+    --ds-primary-light: var(--primary-light);
+    --ds-brand-accent: var(--brand-accent);
+
+    --ds-hero-bg: var(--primary);
+    --ds-hero-bg-deep: var(--primary-dark);
+
+    --ds-hero-shadow: rgba(0, 115, 209, 0.20);
+    --ds-hero-eyebrow: rgba(255, 255, 255, 0.75);
 }

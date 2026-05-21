@@ -19,15 +19,13 @@
 .stack-hero {
   position: relative;
   overflow: hidden;
-  /* Navy gradient — matches `.page-header--hero` and the /home
-   * hero so search-driven landing pages (catalog, memory) read
-   * as the same brand surface. */
-  background: linear-gradient(135deg, var(--ds-hero-bg) 0%, #1a2a5f 100%);
+  /* Hero gradient + shadow flip per theme via `--ds-hero-*`. */
+  background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
   border-radius: 14px;
   padding: 28px 32px 24px;
   margin: 0 0 var(--space-5);
   box-sizing: border-box;
-  box-shadow: 0 4px 16px rgba(15, 27, 58, 0.22);
+  box-shadow: 0 4px 16px var(--ds-hero-shadow);
   color: #fff;
 }
 .stack-hero .eyebrow {
