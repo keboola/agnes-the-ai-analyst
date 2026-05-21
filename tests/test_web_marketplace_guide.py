@@ -148,7 +148,9 @@ def test_marketplace_guide_flea_page(fresh_db):
     assert "Automated review" in body
     assert "Published" in body
     # Primary CTA goes straight to /store/new (flea is one click away
-    # from being live, no intermediate handoff).
-    assert 'class="primary" href="/store/new"' in body
+    # from being live, no intermediate handoff). Renders via
+    # `ds.button(variant='primary', href='/store/new')` which emits
+    # href before class.
+    assert '<a href="/store/new" class="btn btn-primary"' in body
     # No fast-path callout here — sanity check the asymmetry sticks.
     assert '<div class="guide-fastpath">' not in body
