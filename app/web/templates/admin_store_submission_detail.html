@@ -2,6 +2,11 @@
 {% block title %}Submission {{ sub.id[:8] }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — 5 detail-page action buttons
+   (Override+publish / Rescan / Download bundle / Retry LLM / Delete)
+   render via `ds.button`. Page-local chrome (.det-back, .badge status
+   pills, dl/dd metadata grid) stays as-is. #}
+{% import "_components.html" as ds %}
 <style>
   /* Width + padding come from .page-shell (style-custom.css) — same
      1280px container as /dashboard, /marketplace, /admin/* peers. */
@@ -228,19 +233,23 @@
     {# Action buttons — same JSON endpoints as the list page. #}
     <div class="det-actions">
       {% if sub.status in ['blocked_inline','blocked_llm','review_error'] and sub.entity_id %}
-      <button class="btn btn-primary" data-action="override" title="Force-publish this entity. Requires reason; recorded in audit_log.">Override + publish</button>
+      {{ ds.button('Override + publish', variant='primary',
+                   attrs='data-action="override" title="Force-publish this entity. Requires reason; recorded in audit_log."') }}
       {% endif %}
       {% if sub.entity_id %}
-      <button class="btn btn-secondary" data-action="rescan" title="Re-run all checks (inline + LLM) against the current bundle. Use after check rules change.">Rescan</button>
+      {{ ds.button('Rescan', variant='secondary',
+                   attrs='data-action="rescan" title="Re-run all checks (inline + LLM) against the current bundle. Use after check rules change."') }}
       {% endif %}
       {% if sub.entity_id and not sub.bundle_purged_at %}
-      <a class="btn btn-secondary" href="/api/admin/store/submissions/{{ sub.id }}/bundle.zip"
-         title="Download the on-disk bundle as a ZIP for forensic inspection. Audit-logged.">Download bundle</a>
+      {{ ds.button('Download bundle', variant='secondary',
+                   href='/api/admin/store/submissions/' ~ sub.id ~ '/bundle.zip',
+                   attrs='title="Download the on-disk bundle as a ZIP for forensic inspection. Audit-logged."') }}
       {% endif %}
       {% if sub.status in ['review_error','blocked_llm'] and sub.entity_id %}
-      <button class="btn btn-secondary" data-action="retry" title="Re-queue LLM review only (skips inline checks).">Retry LLM</button>
+      {{ ds.button('Retry LLM', variant='secondary',
+                   attrs='data-action="retry" title="Re-queue LLM review only (skips inline checks)."') }}
       {% endif %}
-      <button class="btn btn-danger" data-action="delete">Delete</button>
+      {{ ds.button('Delete', variant='danger', attrs='data-action="delete"') }}
     </div>
     {# Help text: explain why override isn't shown on this row, when applicable. #}
     {% if sub.status == 'approved' %}
