@@ -11,6 +11,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- New `marketplace.curators_url` config item (editable via
+  `/admin/server-config` → **Marketplace** section). Drives the
+  "See all curators →" link on the `/marketplace` curated-tab info
+  block; when empty the link is hidden (matches today's behaviour).
+  SSRF-guarded on save (private-IP allowlist, same posture as
+  `data_source.keboola.stack_url`).
 - `/home` now opens with a value-first intro hero — eyebrow greeting,
   one-line product framing, **Set up in ~15 min** / **Just browse**
   CTAs, and a four-pillar row (Data packages · Plugins · Skills ·
