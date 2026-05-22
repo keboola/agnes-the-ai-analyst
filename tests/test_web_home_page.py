@@ -359,15 +359,13 @@ def test_setup_section_renders_for_not_onboarded(fresh_db):
     assert '<div class="setup-section-header"' not in body2
 
 
-def test_overview_section_renders_when_yaml_set(fresh_db, monkeypatch):
-    """Setting `AGNES_INSTANCE_OVERVIEW` env (mirrors
-    instance.overview yaml) injects raw HTML into the Overview section
-    via the same `| safe` filter as news_intro. The marker text must
-    appear inside the rendered section wrapper. Overview deliberately
-    has NO dismiss button — it's operator-owned reference content
-    (privacy posture, telemetry policy, product framing), and a
-    per-device hide would leave returning users unable to re-read
-    it without clearing localStorage."""
+def test_overview_section_never_renders(fresh_db, monkeypatch):
+    """The operator-owned Overview `<section>` was removed from
+    `/home` — its privacy / workspace-layout copy now ships inline
+    in the welcome hero footnotes. The `get_instance_overview()`
+    helper and `instance.overview` yaml field still exist (to avoid
+    breaking instances that override them), but the rendered
+    section MUST NOT appear regardless of the env value."""
     monkeypatch.setenv("AGNES_INSTANCE_OVERVIEW", "<p>OVERVIEW_TEST_MARKER</p>")
     from src.db import get_system_db, close_system_db
 
@@ -378,25 +376,5 @@ def test_overview_section_renders_when_yaml_set(fresh_db, monkeypatch):
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert '<section class="home-overview">' in body
-    assert "OVERVIEW_TEST_MARKER" in body
-    # Overview must NOT carry a dismiss key — content stays
-    # reachable on every visit so users can re-read it.
-    assert 'data-dismiss-key="agnes_home_overview_dismissed"' not in body
-
-
-def test_overview_section_hidden_when_yaml_empty(fresh_db, monkeypatch):
-    """Default empty `instance.overview` (no env override) hides the
-    section entirely so the OSS ships without a stray empty
-    Overview placeholder."""
-    monkeypatch.delenv("AGNES_INSTANCE_OVERVIEW", raising=False)
-    from src.db import get_system_db, close_system_db
-
-    conn = get_system_db()
-    try:
-        _, sess = _make_user_and_session(conn)
-    finally:
-        conn.close()
-        close_system_db()
-    body = _client().get("/home", cookies={"access_token": sess}).text
     assert '<section class="home-overview">' not in body
+    assert "OVERVIEW_TEST_MARKER" not in body
