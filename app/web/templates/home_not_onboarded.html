@@ -2308,23 +2308,7 @@
            block is opt-in at the operator level (empty yaml →
            block absent), which is the right axis of control. #}
         {% if config.INSTANCE_OVERVIEW %}
-        <div class="home-hero-footnotes">
-            <p>
-                <strong>What leaves your machine.</strong> Session telemetry &mdash; prompts, tool calls,
-                and tool responses &mdash; flows back to the central catalog so the team can analyse failure
-                patterns. Raw data rows you query locally stay on your machine; only the prompt/response
-                transcript travels. Need a session off the record? Toggle Private in Claude Code to disable
-                telemetry for that chat by calling command <code>/agnes-private</code> in {{ instance_brand }}
-                project folder &mdash; nothing from that session reaches the system.
-            </p>
-            <p>
-                <strong>Get the most out of it</strong> by working under <code>~/{{ workspace_dir }}/Projects/</code>.
-                Create every project there &mdash; existing or new, fresh starts or clones of repos you already
-                use. The bundled plugin keeps each project in sync with the central catalog (data packages,
-                plugins, skills, memory) automatically, and the session-analysis loop is scoped to that root.
-                Anything outside <code>~/{{ workspace_dir }}/</code> is invisible to the platform.
-            </p>
-        </div>
+        <div class="home-hero-footnotes">{{ config.INSTANCE_OVERVIEW | safe }}</div>
         {% endif %}
     </section>
 

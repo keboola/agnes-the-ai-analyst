@@ -40,20 +40,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (`Step 1 of N · ~15 min · One-time · Reversible`), a thin progress
   bar, and per-step number badges next to each install block.
 
-### Changed
 - `/home` welcome hero gains a *footnotes* row beneath the four
-  pillars: a hairline-separated block carrying the privacy posture
-  (*"What leaves your machine"* — telemetry travels, raw data
-  stays local, `/agnes-private` toggles per-session) and the
-  workspace-layout convention (*"Get the most out of it"* — work
-  under `~/<workspace_dir>/Projects/`, anything outside the
-  workspace root is invisible to the platform). Gated on the same
-  `instance.overview` / `AGNES_INSTANCE_OVERVIEW` flag that used
-  to drive the standalone Overview section — any non-empty value
-  acts as the feature flag — so the OSS keeps a vendor-neutral
-  default (empty yaml → footnotes absent) while operators who
-  flip the flag get a consistent message across instances.
-  Renders for both onboarded and not-onboarded users.
+  pillars: a hairline-separated block rendering operator-authored
+  HTML from `instance.overview` (`AGNES_INSTANCE_OVERVIEW` env
+  override). This is the same `| safe`-filtered body that used to
+  drive the standalone Overview section between the walkthrough
+  and surfaces grid — the rendering contract is unchanged, only
+  the location and styling moved. Empty yaml → footnotes absent
+  (OSS stays vendor-neutral). Renders for both onboarded and
+  not-onboarded users.
 - Welcome hero's *"AI Chief of Staff"* lede gains a trailing
   sentence ("*You run all your projects inside and it learns
   from it.*") so the workspace-folder framing lands before the
@@ -259,17 +254,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   top of `/home` (the in-page anchor it carried — *Setup Agnes in
   your Claude Code* / *Go deeper into your AI workspace* — duplicated
   links already reachable from the install hero and `/setup-advanced`).
-- Operator-owned *Overview* `<section>` on `/home` (rendered the
-  `instance.overview` / `AGNES_INSTANCE_OVERVIEW` HTML body between
-  the first-session walkthrough and the surfaces grid). The
-  privacy-posture / workspace-layout copy it carried now ships
-  inline in the welcome hero footnotes (see *Changed* above). The
-  `get_instance_overview()` helper and yaml field still drive the
-  feature flag for the new footnotes block, but the raw HTML body
-  the operator stored there is no longer rendered (the static
-  product framing replaces it) — operators who relied on injecting
-  custom Overview HTML should migrate that content to
-  `instance.custom_scripts` or admin-edited news.
+- Operator-owned *Overview* `<section>` on `/home` no longer
+  renders as a standalone block between the first-session
+  walkthrough and the surfaces grid. The same operator-authored
+  HTML body (`instance.overview` / `AGNES_INSTANCE_OVERVIEW`) now
+  renders inside the welcome hero footnotes instead (see *Changed*
+  above) — the rendering contract is unchanged, only the location
+  and styling moved, so existing instances that set the yaml
+  field get the same content in the new home.
 
 ### Removed
 
