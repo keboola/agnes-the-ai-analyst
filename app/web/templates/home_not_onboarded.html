@@ -2289,6 +2289,25 @@
                 <p>Shared analyst knowledge and prior solutions, fed back into Claude's context on demand.</p>
             </div>
         </div>
+        {# Welcome-hero footnotes — operator-owned, opt-in. Gated on
+           the same `instance.overview` yaml field
+           (`AGNES_INSTANCE_OVERVIEW` env override) that used to
+           drive the standalone Overview section: any non-empty
+           value acts as the feature flag. The body itself is no
+           longer the operator's raw HTML — it's the canonical
+           product framing (privacy posture + workspace convention)
+           baked into the template, so the OSS keeps a
+           vendor-neutral default (empty yaml → footnotes absent)
+           while operators who flip the flag get a consistent
+           message across instances. #}
+        {# Footnotes are operator-owned reference content, not
+           per-user chrome — no dismiss button on purpose. A
+           one-time per-device hide would leave returning users
+           unable to re-read the privacy posture / workspace
+           convention without clearing localStorage. The whole
+           block is opt-in at the operator level (empty yaml →
+           block absent), which is the right axis of control. #}
+        {% if config.INSTANCE_OVERVIEW %}
         <div class="home-hero-footnotes">
             <p>
                 <strong>What leaves your machine.</strong> Session telemetry &mdash; prompts, tool calls,
@@ -2306,6 +2325,7 @@
                 Anything outside <code>~/{{ workspace_dir }}/</code> is invisible to the platform.
             </p>
         </div>
+        {% endif %}
     </section>
 
     {# Homepage status frame — five counters with 24h/7d toggle.

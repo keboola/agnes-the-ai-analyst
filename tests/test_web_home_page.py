@@ -359,13 +359,17 @@ def test_setup_section_renders_for_not_onboarded(fresh_db):
     assert '<div class="setup-section-header"' not in body2
 
 
-def test_overview_section_never_renders(fresh_db, monkeypatch):
-    """The operator-owned Overview `<section>` was removed from
-    `/home` — its privacy / workspace-layout copy now ships inline
-    in the welcome hero footnotes. The `get_instance_overview()`
-    helper and `instance.overview` yaml field still exist (to avoid
-    breaking instances that override them), but the rendered
-    section MUST NOT appear regardless of the env value."""
+def test_overview_section_replaced_by_welcome_footnotes(fresh_db, monkeypatch):
+    """The standalone operator-owned Overview `<section>` was removed
+    from `/home`. Its privacy / workspace-layout copy now ships as
+    static product framing inside the welcome hero footnotes
+    (`.home-hero-footnotes`). The `instance.overview` yaml field
+    (`AGNES_INSTANCE_OVERVIEW`) keeps its gating role — any
+    non-empty value acts as the feature flag — but its raw HTML
+    body is no longer rendered (the static copy replaces it). When
+    set: the standalone section MUST stay absent and the
+    footnotes block MUST appear, but the raw yaml HTML body MUST
+    NOT leak into the page."""
     monkeypatch.setenv("AGNES_INSTANCE_OVERVIEW", "<p>OVERVIEW_TEST_MARKER</p>")
     from src.db import get_system_db, close_system_db
 
@@ -378,3 +382,31 @@ def test_overview_section_never_renders(fresh_db, monkeypatch):
     body = _client().get("/home", cookies={"access_token": sess}).text
     assert '<section class="home-overview">' not in body
     assert "OVERVIEW_TEST_MARKER" not in body
+    assert '<div class="home-hero-footnotes">' in body
+    # "Get the most out of it" is unique to the footnotes block — the
+    # original "What leaves your machine" copy still exists in the
+    # session-privacy annotation lower on the page (untouched), so we
+    # can't use it as a footnotes marker.
+    assert "Get the most out of it" in body
+
+
+def test_welcome_footnotes_hidden_when_overview_unset(fresh_db, monkeypatch):
+    """Default empty `instance.overview` (no env override) hides the
+    welcome-hero footnotes entirely so the OSS ships without the
+    central-catalog privacy framing baked into the welcome card."""
+    monkeypatch.delenv("AGNES_INSTANCE_OVERVIEW", raising=False)
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert '<div class="home-hero-footnotes">' not in body
+    # "Get the most out of it" is the unique footnotes marker — the
+    # original "What leaves your machine" copy in the session-privacy
+    # annotation lower on the page always renders, so checking that
+    # would be a false-positive.
+    assert "Get the most out of it" not in body

@@ -47,9 +47,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   stays local, `/agnes-private` toggles per-session) and the
   workspace-layout convention (*"Get the most out of it"* — work
   under `~/<workspace_dir>/Projects/`, anything outside the
-  workspace root is invisible to the platform). Renders for both
-  onboarded and not-onboarded users so the operating model is
-  visible on every visit.
+  workspace root is invisible to the platform). Gated on the same
+  `instance.overview` / `AGNES_INSTANCE_OVERVIEW` flag that used
+  to drive the standalone Overview section — any non-empty value
+  acts as the feature flag — so the OSS keeps a vendor-neutral
+  default (empty yaml → footnotes absent) while operators who
+  flip the flag get a consistent message across instances.
+  Renders for both onboarded and not-onboarded users.
 - Welcome hero's *"AI Chief of Staff"* lede gains a trailing
   sentence ("*You run all your projects inside and it learns
   from it.*") so the workspace-folder framing lands before the
@@ -259,11 +263,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `instance.overview` / `AGNES_INSTANCE_OVERVIEW` HTML body between
   the first-session walkthrough and the surfaces grid). The
   privacy-posture / workspace-layout copy it carried now ships
-  inline in the welcome hero footnotes, so a separate operator
-  surface for the same content is no longer needed. The
-  `get_instance_overview()` helper and yaml field remain (harmless
-  if set; just not rendered) so existing instances that override
-  it don't trip on a removed config key.
+  inline in the welcome hero footnotes (see *Changed* above). The
+  `get_instance_overview()` helper and yaml field still drive the
+  feature flag for the new footnotes block, but the raw HTML body
+  the operator stored there is no longer rendered (the static
+  product framing replaces it) — operators who relied on injecting
+  custom Overview HTML should migrate that content to
+  `instance.custom_scripts` or admin-edited news.
 
 ### Removed
 
