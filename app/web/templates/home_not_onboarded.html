@@ -1131,6 +1131,59 @@
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
 }
+/* Support callout — operator-owned panel rendered inside the welcome
+   hero, below the Overview footnotes. Mint-tint background + brand-
+   accent border reads as a complementary help affordance (distinct
+   from the flat hairline-separated footnotes above it). Speech-bubble
+   icon on the left, operator HTML on the right. */
+.home-mock .home-hero-support {
+    margin-top: 22px;
+    padding: 16px 20px;
+    background: rgba(84, 211, 160, 0.10);
+    border: 1px solid rgba(84, 211, 160, 0.28);
+    border-radius: 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    position: relative;
+}
+.home-mock .home-hero-support-icon {
+    font-size: 22px;
+    line-height: 1.2;
+    flex-shrink: 0;
+    color: var(--ds-brand-accent);
+}
+.home-mock .home-hero-support-body {
+    font-size: 13.5px;
+    color: rgba(255, 255, 255, 0.92);
+    line-height: 1.55;
+    flex: 1;
+    min-width: 0;
+}
+.home-mock .home-hero-support-body p { margin: 0 0 8px; }
+.home-mock .home-hero-support-body p:last-child { margin-bottom: 0; }
+.home-mock .home-hero-support-body strong { color: #ffffff; font-weight: 600; }
+.home-mock .home-hero-support-body a {
+    color: #ffffff;
+    text-decoration: underline;
+    text-decoration-color: var(--ds-brand-accent);
+    text-underline-offset: 2px;
+    font-weight: 600;
+}
+.home-mock .home-hero-support-body a:hover,
+.home-mock .home-hero-support-body a:focus {
+    text-decoration-color: #ffffff;
+    color: #ffffff;
+}
+.home-mock .home-hero-support-body code {
+    background: rgba(15, 23, 42, 0.55);
+    color: #FBBF24;
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+}
 @media (max-width: 880px) {
     .home-mock .home-hero-intro { padding: 32px 24px 28px; }
     .home-mock .home-hero-intro h1 { font-size: 26px; }
@@ -2309,6 +2362,20 @@
            block absent), which is the right axis of control. #}
         {% if config.INSTANCE_OVERVIEW %}
         <div class="home-hero-footnotes">{{ config.INSTANCE_OVERVIEW | safe }}</div>
+        {% endif %}
+        {# Support callout — operator-owned, opt-in. Separate
+           `instance.support` (`AGNES_INSTANCE_SUPPORT` env override)
+           field so help/chat pointers can be updated independently
+           from the product framing in `instance.overview`. Body is
+           operator-authored HTML rendered through the same | safe
+           filter — typical content is a one-line invitation linking
+           a chat space, mailing list, or runbook. Empty value →
+           block hidden, keeping the OSS vendor-neutral. #}
+        {% if config.INSTANCE_SUPPORT %}
+        <div class="home-hero-support" role="note" aria-label="Support">
+            <div class="home-hero-support-icon" aria-hidden="true">&#x1F4AC;</div>
+            <div class="home-hero-support-body">{{ config.INSTANCE_SUPPORT | safe }}</div>
+        </div>
         {% endif %}
     </section>
 
