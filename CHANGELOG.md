@@ -51,6 +51,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (`Step 1 of N · ~15 min · One-time · Reversible`), a thin progress
   bar, and per-step number badges next to each install block.
 
+### Changed
 - `/home` welcome hero gains a *footnotes* row beneath the four
   pillars: a hairline-separated block rendering operator-authored
   HTML from `instance.overview` (`AGNES_INSTANCE_OVERVIEW` env
