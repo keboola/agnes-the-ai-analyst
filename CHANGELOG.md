@@ -11,6 +11,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `instance.support`: operator-authored HTML body rendered in a
+  mint-accent callout panel inside the welcome hero on `/home`,
+  below the Overview footnotes. Designed for a one-line invitation
+  pointing analysts at a chat space, mailing list, or runbook so
+  every user sees where to ask for help. HTML in, HTML out (same
+  `| safe` filter as `instance.overview`); empty default keeps the
+  OSS vendor-neutral. Resolved by
+  `app/instance_config.py::get_instance_support()`; surfaced in
+  `/admin/server-config` via `_KNOWN_FIELDS["instance"]` so it
+  appears as "Available but unset" for operators who haven't
+  populated it yet. Env override: `AGNES_INSTANCE_SUPPORT`.
 - `instance.custom_scripts`: operator-injected HTML/JS blocks rendered
   into every page that extends `base.html`. Each entry takes `name`,
   `enabled`, `placement` (`head_start` | `head_end` | `body_end`), and
@@ -41,6 +52,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   bar, and per-step number badges next to each install block.
 
 ### Changed
+- `/home` welcome hero gains a *footnotes* row beneath the four
+  pillars: a hairline-separated block rendering operator-authored
+  HTML from `instance.overview` (`AGNES_INSTANCE_OVERVIEW` env
+  override). This is the same `| safe`-filtered body that used to
+  drive the standalone Overview section between the walkthrough
+  and surfaces grid — the rendering contract is unchanged, only
+  the location and styling moved. Empty yaml → footnotes absent
+  (OSS stays vendor-neutral). Renders for both onboarded and
+  not-onboarded users.
+- Welcome hero's *"AI Chief of Staff"* lede gains a trailing
+  sentence ("*You run all your projects inside and it learns
+  from it.*") so the workspace-folder framing lands before the
+  reader scrolls past.
 - Default `instance.theme` flipped from `navy` to `blue`. The brand-blue
   palette is now the out-of-the-box look; `navy` (dark hero + mint-green
   CTAs) is the opt-in via `AGNES_INSTANCE_THEME` / `instance.theme`
@@ -242,6 +266,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   top of `/home` (the in-page anchor it carried — *Setup Agnes in
   your Claude Code* / *Go deeper into your AI workspace* — duplicated
   links already reachable from the install hero and `/setup-advanced`).
+- Operator-owned *Overview* `<section>` on `/home` no longer
+  renders as a standalone block between the first-session
+  walkthrough and the surfaces grid. The same operator-authored
+  HTML body (`instance.overview` / `AGNES_INSTANCE_OVERVIEW`) now
+  renders inside the welcome hero footnotes instead (see *Changed*
+  above) — the rendering contract is unchanged, only the location
+  and styling moved, so existing instances that set the yaml
+  field get the same content in the new home.
 
 ### Removed
 

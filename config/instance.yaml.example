@@ -36,14 +36,23 @@ instance:
   #                                  # `name` above still drives browser <title> text and page
   #                                  # headings — keep it populated. Env override:
   #                                  # AGNES_INSTANCE_LOGO_SVG.
-  # overview: |                      # Operator-authored Overview body rendered in the new
+  # overview: |                      # Operator-authored Overview body rendered inside the
   #   <p>Free-form HTML — paragraphs, links, lists.</p>
-  #                                  # Overview section on /home (between Getting Started and
-  #                                  # Usage modes). Use for product framing, privacy posture,
-  #                                  # what-data-flows summary — operator-specific copy stays
-  #                                  # out of the OSS this way. HTML in, HTML out (same `| safe`
-  #                                  # filter as news_intro). Empty/unset = section hidden.
+  #                                  # welcome hero on /home (hairline-separated footnotes
+  #                                  # below the four-pillar row). Use for product framing,
+  #                                  # privacy posture, what-data-flows summary —
+  #                                  # operator-specific copy stays out of the OSS this way.
+  #                                  # HTML in, HTML out (same `| safe` filter as news_intro).
+  #                                  # Empty/unset = block hidden.
   #                                  # Env override: AGNES_INSTANCE_OVERVIEW.
+  # support: |                       # Operator-authored Support body rendered in a
+  #   <p><strong>Need help?</strong> Drop into our <a href="...">Support</a> chat space.</p>
+  #                                  # mint-accent panel inside the welcome hero on /home
+  #                                  # (below the Overview footnotes). Use to point analysts
+  #                                  # at a chat space, mailing list, or runbook so they know
+  #                                  # where to ask for help. HTML in, HTML out (same `| safe`
+  #                                  # filter as overview). Empty/unset = block hidden.
+  #                                  # Env override: AGNES_INSTANCE_SUPPORT.
   # sync_interval: "1 hour"          # Cadence shown in analyst CLAUDE.md (e.g., "1 hour", "30 minutes", "daily")
   # admin_email: "ops@acme.com"      # Operator contact shown on /home GWS connector tile as
                                      # an "Email admin" mailto button (analysts whose operator

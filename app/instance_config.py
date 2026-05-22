@@ -365,6 +365,28 @@ def get_instance_overview() -> str:
     return (raw or "").strip()
 
 
+def get_instance_support() -> str:
+    """Operator-authored Support body rendered inside the welcome hero
+    on ``/home``. Same ``| safe``-filter shape as
+    :func:`get_instance_overview` — operators paste HTML. Distinct
+    config field so help/chat pointers can be updated independently
+    from the product framing in ``instance.overview``.
+
+    Typical content: a one-line invitation pointing at a chat space
+    (Google Chat / Slack / Teams), a mailing list, or an internal
+    runbook. Empty default = block hidden, keeping the OSS
+    vendor-neutral when an instance ships without an operator-defined
+    support channel.
+
+    Resolution: ``AGNES_INSTANCE_SUPPORT`` env > ``instance.support``
+    YAML > ``""``. Mirrors :func:`get_instance_overview`.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_SUPPORT")
+    if raw is None:
+        raw = get_value("instance", "support", default="")
+    return (raw or "").strip()
+
+
 _CUSTOM_SCRIPT_PLACEMENTS = ("head_start", "head_end", "body_end")
 
 

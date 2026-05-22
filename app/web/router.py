@@ -25,7 +25,7 @@ from app.instance_config import (
     get_gws_oauth_credentials, get_home_automode_visibility,
     get_instance_admin_email, get_atlassian_base_url,
     get_instance_brand, get_workspace_dir_name,
-    get_instance_logo_svg, get_instance_overview,
+    get_instance_logo_svg, get_instance_overview, get_instance_support,
     get_instance_theme, get_custom_scripts,
 )
 from app.web.connector_prompts import all_connector_prompts
@@ -378,6 +378,7 @@ def _build_context(
         INSTANCE_COPYRIGHT = ""
         LOGO_SVG = get_instance_logo_svg()
         INSTANCE_OVERVIEW = get_instance_overview()
+        INSTANCE_SUPPORT = get_instance_support()
         TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "")
         SSH_ALIAS = "data-analyst"
         SERVER_HOST = os.environ.get("SERVER_HOST", "")
