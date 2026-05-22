@@ -11,6 +11,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `instance.support`: operator-authored HTML body rendered in a
+  mint-accent callout panel inside the welcome hero on `/home`,
+  below the Overview footnotes. Designed for a one-line invitation
+  pointing analysts at a chat space, mailing list, or runbook so
+  every user sees where to ask for help. HTML in, HTML out (same
+  `| safe` filter as `instance.overview`); empty default keeps the
+  OSS vendor-neutral. Resolved by
+  `app/instance_config.py::get_instance_support()`; surfaced in
+  `/admin/server-config` via `_KNOWN_FIELDS["instance"]` so it
+  appears as "Available but unset" for operators who haven't
+  populated it yet. Env override: `AGNES_INSTANCE_SUPPORT`.
 - `instance.custom_scripts`: operator-injected HTML/JS blocks rendered
   into every page that extends `base.html`. Each entry takes `name`,
   `enabled`, `placement` (`head_start` | `head_end` | `body_end`), and
