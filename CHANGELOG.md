@@ -41,6 +41,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   bar, and per-step number badges next to each install block.
 
 ### Changed
+- `/home` welcome hero gains a *footnotes* row beneath the four
+  pillars: a hairline-separated block carrying the privacy posture
+  (*"What leaves your machine"* — telemetry travels, raw data
+  stays local, `/agnes-private` toggles per-session) and the
+  workspace-layout convention (*"Get the most out of it"* — work
+  under `~/<workspace_dir>/Projects/`, anything outside the
+  workspace root is invisible to the platform). Renders for both
+  onboarded and not-onboarded users so the operating model is
+  visible on every visit.
+- Welcome hero's *"AI Chief of Staff"* lede gains a trailing
+  sentence ("*You run all your projects inside and it learns
+  from it.*") so the workspace-folder framing lands before the
+  reader scrolls past.
 - Default `instance.theme` flipped from `navy` to `blue`. The brand-blue
   palette is now the out-of-the-box look; `navy` (dark hero + mint-green
   CTAs) is the opt-in via `AGNES_INSTANCE_THEME` / `instance.theme`
@@ -242,6 +255,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   top of `/home` (the in-page anchor it carried — *Setup Agnes in
   your Claude Code* / *Go deeper into your AI workspace* — duplicated
   links already reachable from the install hero and `/setup-advanced`).
+- Operator-owned *Overview* `<section>` on `/home` (rendered the
+  `instance.overview` / `AGNES_INSTANCE_OVERVIEW` HTML body between
+  the first-session walkthrough and the surfaces grid). The
+  privacy-posture / workspace-layout copy it carried now ships
+  inline in the welcome hero footnotes, so a separate operator
+  surface for the same content is no longer needed. The
+  `get_instance_overview()` helper and yaml field remain (harmless
+  if set; just not rendered) so existing instances that override
+  it don't trip on a removed config key.
 
 ### Removed
 
