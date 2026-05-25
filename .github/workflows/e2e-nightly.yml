@@ -69,6 +69,14 @@ jobs:
         if: failure() && env.SKIP_MATRIX != '1'
         run: docker compose logs app | tail -200
 
+      - name: Seed E2E test user
+        if: env.SKIP_MATRIX != '1'
+        # The seed_e2e_user.py script is idempotent; running it before
+        # the smoke step lets _login.sh inside the smoke scripts sign
+        # the agent-browser session in. See
+        # docs/superpowers/specs/2026-05-25-smoke-login-flow-design.md.
+        run: docker compose exec -T app python scripts/seed_e2e_user.py
+
       - name: Run smoke ${{ matrix.script }}
         if: env.SKIP_MATRIX != '1'
         env:
