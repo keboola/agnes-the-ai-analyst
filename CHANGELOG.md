@@ -10,6 +10,37 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.9] — 2026-05-25
+
+### Fixed
+- **`/admin/tables` first-run setup prompt example trimmed.** The verbatim sample
+  for connector verify lines previously hardcoded a personal name + an
+  Asana-specific `2 workspace(s) visible.` tail. Now reads
+  `✅ Asana ready — ...` / `❌ Atlassian setup failed: ...` — the marker shape
+  the assistant actually greps for, with no hardcoded identity or connector-
+  specific texture. Producer side already substitutes the live `$display` name
+  at runtime, so no functional change to real verify lines. (#413 — credit
+  @cvrysanek; CHANGELOG bullet recovered after it was lost during the cross-
+  branch cherry-pick that landed the fix.)
+- **`.github/workflows/e2e-nightly.yml` unblocked.** The agent-browser nightly
+  smoke had been failing every night since it landed in #333 (6 duplicate
+  issues filed in 6 days: #362, #368, #376, #385, #386, #387). Two bugs in the
+  *Build + start agnes stack* step:
+  1. `docker-compose.yml` declares `env_file: .env` as required, but CI never
+     created one — `docker compose up -d --build` aborted with exit 1 before
+     the stack ever started. (Same trap `ci.yml` works around with a plain
+     `touch .env`.)
+  2. The hand-rolled curl loop polled `/healthz`, but the real endpoint is
+     `/api/health` (see `app/api/health.py:331`); on timeout the loop fell
+     through silently — so even past bug 1 the smoke step would have run
+     against a half-dead app and the failure would have pointed at the wrong
+     place.
+  Fix: `touch .env` + `docker compose up -d --build --wait --wait-timeout 120`
+  (relies on compose-defined healthcheck which hits `/api/health`, fails step
+  on timeout, same pattern as `ci.yml`) + `docker compose logs app | tail -200`
+  on failure so triage gets real logs instead of a 404 mystery. Closes #387,
+  #386, #385, #376, #368, #362.
+
 ## [0.55.8] — 2026-05-25
 
 ### Changed
@@ -249,6 +280,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   applies on the redesigned pages.
 
 ### Internal
+- First-run setup prompt — confirm-step bullet's illustrative
+  ✅/❌ example trimmed to the marker shape only
+  (`✅ Asana ready — ...` / `❌ Atlassian setup failed: ...`).
+  Drops a hardcoded personal name (OSS vendor-agnostic rule) and
+  an Asana-specific workspace-count tail that would otherwise
+  imply every connector's verify line shares that shape.
 - New `app/web/static/css/design-tokens.css` declares the `--ds-*`
   design-system token set (green/navy palette, system font stack,
   callout vocabularies, navy-tinted elevation shadows) globally on
