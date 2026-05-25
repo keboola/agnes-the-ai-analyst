@@ -567,9 +567,11 @@
 
         .registry-table .col-last-sync {
             width: 110px;
+            white-space: nowrap;
+        }
+        .registry-table td.col-last-sync {
             font-size: 12px;
             color: var(--text-secondary);
-            white-space: nowrap;
         }
 
         .registry-table .col-status {
@@ -5477,13 +5479,16 @@
         if (!tables || !tables.length) {
             return '<div class="panel-body-empty">No tables here yet.</div>';
         }
+        // Only show Last synced column when the section has at least one
+        // syncable (non-internal) table — internal tables never sync.
+        var hasSync = tables.some(function(t) { return t.source_type !== 'internal'; });
         var html = '<table class="registry-table" style="margin-top:8px;">';
         html += '<thead><tr>';
         html += '<th class="col-id">Table</th>';
         html += '<th>Source</th>';
         html += '<th>Bucket</th>';
         html += '<th class="col-mode">Mode</th>';
-        html += '<th class="col-last-sync">Last synced</th>';
+        if (hasSync) { html += '<th class="col-last-sync">Last synced</th>'; }
         html += '<th class="col-actions">Actions</th>';
         html += '</tr></thead><tbody>';
         tables.forEach(function(t) {
@@ -5516,7 +5521,7 @@
             html += '<td style="font-family:var(--font-mono); font-size:12px; color:var(--text-secondary);">'
                   + escapeHtml(bucket || '—') + '</td>';
             html += '<td class="col-mode">' + renderModeBadge(t.query_mode) + '</td>';
-            html += '<td class="col-last-sync">' + escapeHtml(t.last_sync_display || '—') + '</td>';
+            if (hasSync) { html += '<td class="col-last-sync">' + escapeHtml(t.last_sync_display || '—') + '</td>'; }
             html += '<td class="col-actions"><div style="display:flex; gap:4px; justify-content:flex-end;">';
             if (!isInternal) {
                 html += '<button class="btn-icon" data-tooltip="Edit" '
