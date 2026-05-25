@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.10] — 2026-05-25
+
+### Internal
+- Nightly agent-browser smoke now signs in before hitting protected pages (#417, follows #389). New `scripts/seed_e2e_user.py` creates an idempotent hardcoded `e2e@example.com` Admin user in dev/CI containers; `scripts/e2e/_login.sh` (sourced by the smoke scripts) signs the agent-browser session in via `/auth/password/login/web`; the nightly workflow runs the seed between stack-up and smoke. The password is committed in the repo — acceptable because the user exists only inside an ephemeral container (`docker compose down -v` at end of every run) that has no external exposure; the container is the privilege boundary, not the credentials.
+
 ## [0.55.9] — 2026-05-25
 
 ### Fixed
