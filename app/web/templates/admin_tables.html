@@ -242,9 +242,10 @@
             color: var(--error);
         }
 
-        /* CSS tooltip — shown on hover via the title attribute */
-        .btn-icon[title]:hover::after {
-            content: attr(title);
+        /* CSS tooltip — shown on hover via data-tooltip (avoids the
+           browser's native title delay appearing alongside our chip) */
+        .btn-icon[data-tooltip]:hover::after {
+            content: attr(data-tooltip);
             position: absolute;
             bottom: calc(100% + 5px);
             left: 50%;
@@ -5516,18 +5517,18 @@
             html += '<td class="col-mode">' + renderModeBadge(t.query_mode) + '</td>';
             html += '<td class="col-actions"><div style="display:flex; gap:4px; justify-content:flex-end;">';
             if (!isInternal) {
-                html += '<button class="btn-icon" title="Edit" '
+                html += '<button class="btn-icon" data-tooltip="Edit" '
                       + 'onclick=\'openEditModal(' + escapeHtmlAttr(JSON.stringify(t)) + ')\'>'
                       + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
                       + '</button>';
             }
             if (!isInternal) {
-                html += '<button class="btn-icon" title="Sync now" onclick="syncTable(this, &#39;' + escapeHtmlAttr(id) + '&#39;)">'
+                html += '<button class="btn-icon" data-tooltip="Sync now" onclick="syncTable(this, &#39;' + escapeHtmlAttr(id) + '&#39;)">'
                       + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>'
                       + '</button>';
             }
             if (pkgIdOrNull && !isInternal) {
-                html += '<button class="btn-icon danger" title="Remove from package" '
+                html += '<button class="btn-icon danger" data-tooltip="Remove from package" '
                       + 'onclick="removeTableFromPackageById(&#39;' + escapeHtmlAttr(pkgIdOrNull) + '&#39;, &#39;' + escapeHtmlAttr(id) + '&#39;)">'
                       + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
                       + '</button>';
@@ -5538,7 +5539,7 @@
                 // column — user-reported visual bug). Title attr keeps
                 // the explicit label discoverable on hover.
                 html += '<button class="btn-icon" type="button" '
-                      + 'title="Add to a Data Package" '
+                      + 'data-tooltip="Add to a Data Package" '
                       + 'onclick="openBulkAssignFromRow(&#39;' + escapeHtmlAttr(id) + '&#39;)" '
                       + 'style="color:var(--primary);">'
                       + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
