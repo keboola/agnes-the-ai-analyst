@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.8] — 2026-05-25
+
+### Changed
+- `/admin/server-config` now has a sticky two-column layout: a section-navigation sidebar on the left (jumps to Instance, Data source, Email, Auth, AI, etc.) and scrollable config fields on the right. Page title corrected from "Server config" to "Server configuration".
+- Initial Workspace Template panel moved above the Danger zone section on the server-config page.
+
+### Fixed
+- Second `renderAll()` call on the server-config page no longer destroys the `#iw-section` DOM node; the element is now detached before `wrap.innerHTML` replaces child nodes and re-inserted before the danger zone.
+
 ## [0.55.7] — 2026-05-25
 
 ### Changed
@@ -286,15 +295,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
-
-## [0.55.7] — 2026-05-21
-
-### Changed
-- Server configuration page (`/admin/server-config`) now has a sticky two-column layout: a section-navigation sidebar on the left (jumps to Instance, Data source, Email, Auth, AI, etc.) and scrollable config fields on the right. The sidebar is a fixed-width white card with per-section links; active section highlights as the user scrolls.
-- Initial Workspace Template panel moved above the Danger zone section on the server-config page.
-
-### Fixed
-- Second `renderAll()` call on the server-config page destroyed the `#iw-section` DOM node because `wrap.innerHTML = …` replaces all children — fixed by detaching `#iw-section` before the innerHTML replacement and re-inserting it before the danger zone.
 
 ## [0.55.6] — 2026-05-20
 
