@@ -337,7 +337,6 @@ def download(
                 yield chunk
 
     try:
-        from src.repositories.audit import AuditRepository
         audit_repo().log(
             user_id=user.get("id"),
             action="session_download",
@@ -389,7 +388,6 @@ def transcript(
     # Audit: looking at someone else's transcript is a privacy-sensitive
     # operation; record actor + target + bytes scanned for traceability.
     try:
-        from src.repositories.audit import AuditRepository
         audit_repo().log(
             user_id=user.get("id"),
             action="session.transcript_view",

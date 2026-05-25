@@ -101,9 +101,6 @@ async def google_callback(request: Request):
             SYSTEM_ADMIN_GROUP,
             SYSTEM_EVERYONE_GROUP,
         )
-        from src.repositories.users import UserRepository
-        from src.repositories.user_groups import UserGroupsRepository
-        from src.repositories.user_group_members import UserGroupMembersRepository
         from app.auth.group_sync import fetch_user_groups
         import uuid
 
@@ -134,12 +131,8 @@ async def google_callback(request: Request):
                 # above, so a transient marketplace_plugins read failure
                 # doesn't block sign-in.
                 try:
-                    from src.repositories.user_curated_subscriptions import (
-                        UserCuratedSubscriptionsRepository,
-                    )
-                    UserCuratedSubscriptionsRepository(
-                        conn
-                    ).fanout_system_for_user(user_id)
+                    from src.repositories import user_curated_subscriptions_repo
+                    user_curated_subscriptions_repo().fanout_system_for_user(user_id)
                 except Exception:
                     logger.exception(
                         "system-plugin fanout failed for new user %s",
