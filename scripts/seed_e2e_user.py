@@ -16,6 +16,7 @@ state -- refuses to create an orphan user).
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -29,7 +30,21 @@ E2E_USER_PASSWORD = "E2eSmokePass!"
 
 
 def seed() -> None:
-    """Idempotent. SystemExit(1) on missing Admin group."""
+    """Idempotent. SystemExit(1) on missing Admin group or missing opt-in env."""
+    # Defence-in-depth: the seed module ships in the production image via
+    # `COPY . .` in the Dockerfile. Without this env-gate, anyone with
+    # `docker exec` on a production container could mint an Admin user
+    # with the committed password. The CI workflow sets AGNES_E2E_SEED=1
+    # explicitly; production images run without it.
+    if os.environ.get("AGNES_E2E_SEED") != "1":
+        print(
+            "error: refusing to seed -- set AGNES_E2E_SEED=1 to opt in. "
+            "This script is intended for CI/local-dev e2e smoke setup only; "
+            "see docs/superpowers/specs/2026-05-25-smoke-login-flow-design.md.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
@@ -54,8 +69,19 @@ def seed() -> None:
         existing = users.get_by_email(E2E_USER_EMAIL)
         now = datetime.now(timezone.utc)
 
+        # Single PasswordHasher instance — argon2-cffi reuses the same
+        # defaults (time_cost / memory_cost / parallelism) across calls,
+        # so the hasher is effectively stateless. Matches the pattern in
+        # app/auth/providers/password.py.
+        hasher = PasswordHasher()
+
         if existing is None:
-            password_hash = PasswordHasher().hash(E2E_USER_PASSWORD)
+            password_hash = hasher.hash(E2E_USER_PASSWORD)
+            # `users.active` is not passed explicitly — UserRepository.create
+            # relies on the column's DEFAULT TRUE. Mirrors the seed_admin
+            # bootstrap in app/main.py; if active ever loses its default
+            # (NOT NULL with no DEFAULT) both seeds break together and the
+            # fix is a one-liner here, not a silent semantic drift.
             users.create(
                 id=E2E_USER_ID,
                 email=E2E_USER_EMAIL,
@@ -67,20 +93,27 @@ def seed() -> None:
             user_id = existing["id"]
             # Verify the stored hash. Skip the UPDATE on the common case
             # (hash already matches) to avoid a needless ~100 ms re-hash +
-            # DB write. If verification fails (stale password or corrupt row),
-            # re-hash and heal the row.
+            # DB write. Only catch argon2 verifier failures — any other
+            # exception (DuckDB lock timeout, disk I/O, library version
+            # mismatch surfacing as a non-argon2 error) propagates so a
+            # real bug surfaces instead of silently re-hashing on every
+            # subsequent run.
             try:
-                PasswordHasher().verify(existing["password_hash"], E2E_USER_PASSWORD)
-            except (VerifyMismatchError, Exception):
-                password_hash = PasswordHasher().hash(E2E_USER_PASSWORD)
+                hasher.verify(existing["password_hash"], E2E_USER_PASSWORD)
+            except VerifyMismatchError:
+                password_hash = hasher.hash(E2E_USER_PASSWORD)
                 conn.execute(
                     "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
                     [password_hash, now, user_id],
                 )
 
         # Re-assert Admin membership. add_member is idempotent on
-        # (user_id, group_id) per the repository contract.
-        memberships.add_member(user_id, admin_gid, source="system_seed")
+        # (user_id, group_id) per the repository contract. `added_by` tags
+        # the row so the cleanup query in src/db.py that excludes
+        # `app.main:seed_admin` can apply the same rule to scripts.* seeds.
+        memberships.add_member(
+            user_id, admin_gid, source="system_seed", added_by="scripts.seed_e2e_user"
+        )
 
         print(f"seeded: {E2E_USER_EMAIL} (id={user_id}) in Admin group")
     finally:

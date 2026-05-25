@@ -26,7 +26,36 @@ def seed_module():
     return _load_seed_module()
 
 
-def test_seed_creates_admin_user_on_fresh_db(e2e_env, seed_module):
+@pytest.fixture
+def e2e_seed_env(e2e_env, monkeypatch):
+    """e2e_env + AGNES_E2E_SEED=1 opt-in. Mirrors the CI workflow.
+
+    The seed script refuses to run without this env var (defence-in-depth so
+    a stray ``docker exec`` on a production image can't mint Admin users);
+    every happy-path test needs the opt-in set.
+    """
+    monkeypatch.setenv("AGNES_E2E_SEED", "1")
+    return e2e_env
+
+
+def test_seed_refuses_without_opt_in_env(e2e_env, seed_module):
+    """Without AGNES_E2E_SEED=1 -> SystemExit(1), no user created."""
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+
+    # AGNES_E2E_SEED deliberately NOT set. (e2e_env doesn't set it; only
+    # the e2e_seed_env wrapper does.)
+    with pytest.raises(SystemExit) as excinfo:
+        seed_module.seed()
+    assert excinfo.value.code == 1
+
+    conn = get_system_db()
+    user = UserRepository(conn).get_by_email(seed_module.E2E_USER_EMAIL)
+    assert user is None, "no user should be created when opt-in is missing"
+    conn.close()
+
+
+def test_seed_creates_admin_user_on_fresh_db(e2e_seed_env, seed_module):
     """Fresh DB -> user is created with password hash + Admin membership."""
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
@@ -51,7 +80,7 @@ def test_seed_creates_admin_user_on_fresh_db(e2e_env, seed_module):
     conn.close()
 
 
-def test_seed_is_idempotent(e2e_env, seed_module):
+def test_seed_is_idempotent(e2e_seed_env, seed_module):
     """Running seed twice does not duplicate the user or fail."""
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
@@ -76,7 +105,7 @@ def test_seed_is_idempotent(e2e_env, seed_module):
     conn.close()
 
 
-def test_seed_refuses_when_admin_group_missing(e2e_env, seed_module):
+def test_seed_refuses_when_admin_group_missing(e2e_seed_env, seed_module):
     """If the Admin system group is absent, seed exits 1 -- never an orphan user."""
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.users import UserRepository

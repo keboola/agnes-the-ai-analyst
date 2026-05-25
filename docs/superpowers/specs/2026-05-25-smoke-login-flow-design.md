@@ -184,3 +184,56 @@ introduces a secret-rotation chore.
    points at the missing seed step.
 4. Running the seed twice in a row: second invocation is a no-op (no
    duplicate user row, no error).
+
+---
+
+## Amendment 2026-05-25 — DuckDB lock + env-gate
+
+First end-to-end dispatch on the PR branch failed in the seed step with
+`_duckdb.IOException: IO Error: Could not set lock on file
+"/data/state/system.duckdb": Conflicting lock is held in
+/usr/local/bin/python3.13 (PID 1)`.
+
+The spec's claim that DuckDB's cooperative file lock would block the seed
+until the app writer was idle was wrong — DuckDB enforces exclusive POSIX
+locks per file, not cooperative ones. `docker compose exec` runs a second
+Python process inside the same container; that process cannot open the DB
+because uvicorn (PID 1) is holding the writer lock.
+
+The actual workflow recipe shipped is:
+
+```yaml
+- name: Seed E2E test user
+  run: |
+    docker compose stop app
+    docker compose run --rm -T -e AGNES_E2E_SEED=1 app python scripts/seed_e2e_user.py
+    docker compose start app
+    timeout 60 sh -c 'until curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; do sleep 2; done'
+```
+
+`stop` releases the lock; `compose run --rm` is a fresh container sharing
+the same `data:/data` volume — it acquires the lock briefly, seeds, exits;
+`start` brings the app back and we poll `/api/health` until ready.
+
+In the same review pass:
+
+- The seed script gained an `AGNES_E2E_SEED=1` opt-in env-gate. The seed
+  module ships in the production image via `COPY . .`; without the gate,
+  `docker exec` on a prod container could mint an Admin user with the
+  committed password. The container-as-privilege-boundary justification
+  still holds for the CI run (where the env var is set explicitly), but
+  the gate documents the invariant in code and removes the
+  accidental-invocation footgun.
+- `scripts/e2e/_login.sh` no longer hardcodes the credentials. The
+  workflow's "Export E2E credentials" step imports them from
+  `scripts/seed_e2e_user.py` constants via `docker compose exec ... python
+  -c '...'` and writes them to `$GITHUB_ENV`. Single source of truth, so
+  the seed and the smoke helper cannot drift.
+- The bare `except (VerifyMismatchError, Exception)` in the
+  verify-before-rehash path narrowed to `except VerifyMismatchError`. DB
+  errors and library version mismatches now propagate instead of silently
+  triggering a rehash + UPDATE.
+- New regression test `tests/test_login_form_action.py` pins the literal
+  `action="/auth/password/login/web"` in `login_email.html` — the smoke
+  helper's selector and the template can't drift apart without a CI
+  failure.

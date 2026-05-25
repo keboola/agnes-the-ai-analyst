@@ -16,11 +16,18 @@ if [[ -z "${BASE_URL:-}" ]]; then
   echo "::error::_login.sh requires \$BASE_URL to be set by the caller" >&2
   exit 2
 fi
+# Credentials come from the workflow's "Export E2E credentials" step which
+# imports them from scripts/seed_e2e_user.py — single source of truth, so
+# the helper here and the seed cannot drift. Local-dev usage: export both
+# env vars before sourcing (see scripts/e2e/README.md).
+if [[ -z "${E2E_USER_EMAIL:-}" || -z "${E2E_USER_PASSWORD:-}" ]]; then
+  echo "::error::_login.sh requires \$E2E_USER_EMAIL and \$E2E_USER_PASSWORD (see scripts/e2e/README.md)" >&2
+  exit 2
+fi
 
-E2E_USER_EMAIL='e2e@example.com'
-E2E_USER_PASSWORD='E2eSmokePass!'
 # Scope every selector by the unique form action — disambiguates Sign In
 # from the sibling Forgot Password and Sign Up forms in login_email.html.
+# The form action is asserted to remain stable by tests/test_login_form_action.py.
 LOGIN_FORM='form[action="/auth/password/login/web"]'
 
 echo "→ sign in as ${E2E_USER_EMAIL}"
