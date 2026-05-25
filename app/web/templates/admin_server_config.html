@@ -420,10 +420,17 @@ const SECTION_META = {
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 
 // ── Banner ─────────────────────────────────────────────────────────────
+let _bannerTimer = null;
 function showBanner(msg, kind) {
   const el = document.getElementById("cfg-banner");
   el.textContent = msg;
   el.className = "cfg-banner is-visible" + (kind ? " " + kind : "");
+  // Auto-dismiss success (and neutral) banners after 4 s; leave errors
+  // visible until the next action so the operator can read them.
+  clearTimeout(_bannerTimer);
+  if (kind !== "error") {
+    _bannerTimer = setTimeout(hideBanner, 4000);
+  }
 }
 function hideBanner() {
   document.getElementById("cfg-banner").className = "cfg-banner";
