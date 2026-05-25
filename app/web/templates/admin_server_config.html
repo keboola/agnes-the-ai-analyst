@@ -1013,8 +1013,12 @@ function renderAll(data) {
   // point so the browser's native scroll-to-hash fires too early). Links from
   // other pages (e.g. the Keboola not-configured banner) use this.
   if (window.location.hash) {
-    const target = document.querySelector(window.location.hash);
-    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Guard against SyntaxError: window.location.hash is user-controlled and
+    // may not be a valid CSS selector (e.g. #:foo or #test[bar).
+    try {
+      const target = document.querySelector(window.location.hash);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (_) { /* invalid hash — ignore */ }
   }
 
   wrap.querySelectorAll('[data-action="save-section"]').forEach(btn =>
