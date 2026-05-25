@@ -12,7 +12,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 - `/admin/tables` now warns when a Keboola table exists but Keboola is not the configured data source: an amber "⚠ Keboola not connected" chip appears under the table name in the listing, and a banner at the top of both the Register and Edit Keboola modals links directly to the Data source section in Instance settings (`/admin/server-config#cfg-s-data_source`).
+- `/admin/tables` shows a **Last synced** column (YYYY-MM-DD HH:MM) for every registered table, populated from a single batched `sync_state` read.
+- `/admin/server-config` Data source section has a **Test Keboola connection** button (`POST /api/admin/keboola/test-connection`) that verifies the Storage API token by listing buckets and reports bucket count + elapsed time, mirroring the existing BigQuery probe.
+- `/admin/server-config` `data_source.type` field now renders as a select dropdown (`keboola` / `bigquery` / `local` / `csv`) with an inline hint explaining each option.
 - `/admin/server-config` supports hash-based deep-links — navigating to `#cfg-s-<section>` (e.g. `#cfg-s-data_source`) scrolls to that section after the page renders.
+- SVG favicon served from `/static/favicon.svg`, eliminating the 404 on every page load.
+
+### Fixed
+- `/admin/server-config` save banner is now sticky below the app header — visible regardless of scroll position; auto-dismisses after 4 s on success (errors stay until the next action).
+- `/admin/tables` table name registration now rejects names that produce unsafe DuckDB identifiers (hyphens, dots, special characters) with a 422 and a clear message, preventing silent rebuild failures.
+- `/admin/tables` action buttons: dead `renderRegistryListing` code removed; duplicate DOM IDs fixed; trash icon used for hard-delete, × for soft remove-from-package; CSS tooltips added to all icon buttons.
+- `catalog_package_detail.html`: replaced `<a>` inside `<summary>` with `role=link span` — interactive elements inside `<summary>` are invalid HTML and break keyboard / AT navigation.
+- `/admin/server-config` array and map form inputs now carry `id`, `name`, and `aria-label` attributes; group-header `<label>` elements without a `for` target replaced with `<div class="cfg-field-label">`, resolving browser accessibility warnings.
 
 ## [0.55.9] — 2026-05-25
 
