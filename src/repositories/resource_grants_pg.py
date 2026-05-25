@@ -161,6 +161,17 @@ class ResourceGrantsPgRepository:
             ).all()
         return len(rows)
 
+    def delete_all_for_group(self, group_id: str) -> int:
+        """Drop every grant for ``group_id``. Used by the group-delete cascade."""
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "DELETE FROM resource_grants WHERE group_id = :gid RETURNING 1"
+                ),
+                {"gid": group_id},
+            ).all()
+        return len(rows)
+
     def count_for_group(self, group_id: str) -> int:
         with self._engine.connect() as conn:
             row = conn.execute(

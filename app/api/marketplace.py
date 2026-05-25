@@ -34,6 +34,16 @@ from app.auth.access import (
     is_user_admin,
     require_resource_access,
 )
+
+from src.repositories import (
+    audit_repo,
+    marketplace_plugins_repo,
+    marketplace_registry_repo,
+    store_entities_repo,
+    store_submissions_repo,
+    user_curated_subscriptions_repo,
+    user_store_installs_repo,
+)
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
@@ -43,14 +53,9 @@ from src.marketplace_filter import (
 )
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
 from src.marketplace_urls import internal_asset_url, mirrored_url
-from src.repositories.audit import AuditRepository
-from src.repositories.marketplace_plugins import MarketplacePluginsRepository
-from src.repositories.marketplace_registry import MarketplaceRegistryRepository
-from src.repositories.store_entities import StoreEntitiesRepository
 from src.repositories.user_curated_subscriptions import (
     UserCuratedSubscriptionsRepository,
 )
-from src.repositories.user_store_installs import UserStoreInstallsRepository
 from src.store_categories import STORE_CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -666,7 +671,7 @@ def _audit(
     params: Optional[dict] = None,
 ) -> None:
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id, action=action, resource=target, params=params
         )
     except Exception:
@@ -719,7 +724,7 @@ def _resolve_marketplace_meta(
     for the curator fields. Caller decides what to do with the absence
     (typically: surface the ``OWNER_TODO_PLACEHOLDER``).
     """
-    row = MarketplaceRegistryRepository(conn).get(marketplace_id)
+    row = marketplace_registry_repo().get(marketplace_id)
     if not row:
         return {
             "name": marketplace_id,
@@ -1018,10 +1023,10 @@ async def list_items(
 
     if tab == "curated":
         group_ids = _user_group_ids(user["id"], conn) or set()
-        subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
+        subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
         # When sorting, we need all rows to sort before paginating.
         if needs_sort:
-            all_rows, total = MarketplacePluginsRepository(conn).list_with_filters(
+            all_rows, total = marketplace_plugins_repo().list_with_filters(
                 group_ids=group_ids,
                 search=q or None,
                 category=category or None,
@@ -1029,7 +1034,7 @@ async def list_items(
                 limit=10000,
             )
         else:
-            all_rows, total = MarketplacePluginsRepository(conn).list_with_filters(
+            all_rows, total = marketplace_plugins_repo().list_with_filters(
                 group_ids=group_ids,
                 search=q or None,
                 category=category or None,
@@ -1064,7 +1069,7 @@ async def list_items(
     if tab == "flea":
         installed_set = {
             row["id"]
-            for row in UserStoreInstallsRepository(conn).list_for_user(user["id"])
+            for row in user_store_installs_repo().list_for_user(user["id"])
         }
         # Visibility filter: non-admin sees approved + their own
         # non-approved (so submitters spot what's still under review
@@ -1077,14 +1082,14 @@ async def list_items(
             visibility_filter = ["approved"]
             include_owner = user["id"]
         if needs_sort:
-            all_flea_rows, total = StoreEntitiesRepository(conn).list(
+            all_flea_rows, total = store_entities_repo().list(
                 skip=0, limit=10000,
                 type=type, category=category, search=q or None,
                 visibility_status=visibility_filter,
                 include_owner_id=include_owner,
             )
         else:
-            all_flea_rows, total = StoreEntitiesRepository(conn).list(
+            all_flea_rows, total = store_entities_repo().list(
                 skip=skip, limit=page_size,
                 type=type, category=category, search=q or None,
                 visibility_status=visibility_filter,
@@ -1116,7 +1121,7 @@ async def list_items(
     items: List[MarketplaceItem] = []
 
     granted = resolve_allowed_plugins(conn, user)
-    subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
+    subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
     marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
 
     # Pull the enriched rows the Curated tab uses (cover_photo_url, video_url,
@@ -1126,7 +1131,7 @@ async def list_items(
     # upstream marketplace.json, which doesn't carry those columns; without
     # this lookup the same plugin renders with its cover photo on
     # ``?tab=curated`` and with a gradient placeholder on ``?tab=my``.
-    plugin_repo = MarketplacePluginsRepository(conn)
+    plugin_repo = marketplace_plugins_repo()
     subscribed_mp_ids = {mp_id for (mp_id, _) in subs}
     enriched_lookup: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for mp_id in subscribed_mp_ids:
@@ -1169,7 +1174,7 @@ async def list_items(
             stats=curated_stats, stack_counts=curated_stack_counts,
         ))
 
-    flea_installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
+    flea_installs = user_store_installs_repo().list_for_user(user["id"])
     flea_installed_set = {row["id"] for row in flea_installs}
     flea_users_display = _load_users_display(
         conn, (row["owner_user_id"] for row in flea_installs),
@@ -1228,13 +1233,13 @@ async def list_categories(
         group_ids = _user_group_ids(user["id"], conn) or set()
         if tab == "curated":
             counts.update(
-                MarketplacePluginsRepository(conn).category_counts(
+                marketplace_plugins_repo().category_counts(
                     group_ids=group_ids
                 )
             )
         else:  # my — direct read mirroring the items endpoint's `my` branch.
             granted = resolve_allowed_plugins(conn, user)
-            subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
+            subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
             # Curated plugins are always type='plugin'. When the type filter
             # is set to skill/agent, those rows won't show in the items grid
             # (filtered out by the items endpoint at line 579), so they must
@@ -1246,7 +1251,7 @@ async def list_categories(
                         continue
                     cat = (p["raw"].get("category") or "").strip() or "Other"
                     counts[cat] = counts.get(cat, 0) + 1
-            for row in UserStoreInstallsRepository(conn).list_for_user(user["id"]):
+            for row in user_store_installs_repo().list_for_user(user["id"]):
                 if type and row.get("type") != type:
                     continue
                 cat = (row.get("category") or "").strip() or "Other"
@@ -1673,7 +1678,7 @@ async def curated_detail(
     hooks = _list_hooks(plugin_root)
     mcps = _list_mcps(plugin_root)
 
-    subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
+    subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
     raw = plugin_row.get("raw") or {}
     if isinstance(raw, str):
         try:
@@ -1758,7 +1763,7 @@ async def flea_detail(
     """
     from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     # Same gate as /api/store/entities/{id}: non-owner non-admin gets
@@ -1811,7 +1816,7 @@ async def flea_detail(
         hooks = []
         mcps = []
 
-    is_installed = UserStoreInstallsRepository(conn).is_installed(
+    is_installed = user_store_installs_repo().is_installed(
         user["id"], entity_id,
     )
 
@@ -1861,7 +1866,7 @@ async def flea_detail(
     is_admin_user = is_user_admin(user["id"], conn)
     if is_owner or is_admin_user:
         from src.repositories.store_submissions import StoreSubmissionsRepository
-        latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        latest_sub = store_submissions_repo().latest_for_entity(entity_id)
         if latest_sub:
             submission_status = latest_sub.get("status")
 
@@ -1935,7 +1940,7 @@ async def curated_install(
     ).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="plugin_not_found")
-    inserted = UserCuratedSubscriptionsRepository(conn).subscribe(
+    inserted = user_curated_subscriptions_repo().subscribe(
         user["id"], marketplace_id, plugin_name,
     )
     if inserted:
@@ -1972,7 +1977,7 @@ async def curated_uninstall(
             detail="cannot_uninstall_system_plugin",
         )
 
-    deleted = UserCuratedSubscriptionsRepository(conn).unsubscribe(
+    deleted = user_curated_subscriptions_repo().unsubscribe(
         user["id"], marketplace_id, plugin_name,
     )
     if deleted:
@@ -2151,7 +2156,7 @@ def _marketplace_asset_version(
     for the grid, so request-time + sync-time URLs match for unchanged
     repos.
     """
-    row = MarketplaceRegistryRepository(conn).get(marketplace_id)
+    row = marketplace_registry_repo().get(marketplace_id)
     if not row:
         return None
     sha = (row.get("last_commit_sha") or "")[:8]
@@ -2604,7 +2609,7 @@ async def flea_skill_detail(
     """
     from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -2653,7 +2658,7 @@ async def flea_agent_detail(
     """
     from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)

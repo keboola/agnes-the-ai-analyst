@@ -36,8 +36,11 @@ def fake_registry_with_one_materialized(monkeypatch, tmp_path):
         def update_sync(self, **kw): self.update_sync_calls.append(kw)
 
     state = _State(None)
-    monkeypatch.setattr("app.api.sync.TableRegistryRepository", _Repo)
-    monkeypatch.setattr("app.api.sync.SyncStateRepository", lambda c: state)
+    # Factory swap: api module imports table_registry_repo / sync_state_repo
+    # from src.repositories and calls them with no args.
+    fake_registry = _Repo(None)
+    monkeypatch.setattr("app.api.sync.table_registry_repo", lambda: fake_registry)
+    monkeypatch.setattr("app.api.sync.sync_state_repo", lambda: state)
     return state
 
 
@@ -146,8 +149,8 @@ def fake_registry_with_three_materialized(monkeypatch, tmp_path):
         def set_error(self, *a, **kw): pass
         def update_sync(self, **kw): pass
 
-    monkeypatch.setattr("app.api.sync.TableRegistryRepository", _Repo)
-    monkeypatch.setattr("app.api.sync.SyncStateRepository", _State)
+    monkeypatch.setattr("app.api.sync.table_registry_repo", lambda: _Repo(None))
+    monkeypatch.setattr("app.api.sync.sync_state_repo", lambda: _State(None))
     return rows
 
 

@@ -17,6 +17,11 @@ from app.auth.jwt import create_access_token
 from app.auth._common import safe_next_path
 from app.instance_config import get_allowed_domains
 
+from src.repositories import (
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth/google", tags=["auth"])
@@ -117,7 +122,7 @@ async def google_callback(request: Request):
 
         conn = get_system_db()
         try:
-            repo = UserRepository(conn)
+            repo = users_repo()
             user = repo.get_by_email(email)
             if not user:
                 user_id = str(uuid.uuid4())
@@ -147,7 +152,7 @@ async def google_callback(request: Request):
             # Sync Workspace groups → user_group_members (source='google_sync').
             # Fail-soft: any error leaves the previous membership snapshot in
             # place; admin-added rows survive regardless.
-            members_repo = UserGroupMembersRepository(conn)
+            members_repo = user_group_members_repo()
             try:
                 group_names = fetch_user_groups(email)
                 # `fetch_user_groups` is fail-soft and returns [] for both
@@ -190,7 +195,7 @@ async def google_callback(request: Request):
                             url="/login?error=not_in_allowed_group"
                         )
 
-                    ug_repo = UserGroupsRepository(conn)
+                    ug_repo = user_groups_repo()
                     group_ids: list[str] = []
                     for email_addr in relevant:
                         if admin_email and email_addr == admin_email:

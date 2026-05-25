@@ -24,6 +24,9 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.auth.access import require_admin
 
+from src.repositories import (
+    table_registry_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -125,7 +128,7 @@ def _list_remote_rows() -> list[dict]:
     from src.db import get_system_db
     from src.repositories.table_registry import TableRegistryRepository
     conn = get_system_db()
-    rows = TableRegistryRepository(conn).list_all()
+    rows = table_registry_repo().list_all()
     return [
         r for r in rows
         if r.get("query_mode") == "remote" and r.get("source_type") == "bigquery"
@@ -187,7 +190,7 @@ async def warm_one_table(table_id: str) -> None:
     from src.db import get_system_db
     from src.repositories.table_registry import TableRegistryRepository
     conn = get_system_db()
-    row = TableRegistryRepository(conn).get(table_id)
+    row = table_registry_repo().get(table_id)
     if not row or row.get("query_mode") != "remote":
         return
     try:
