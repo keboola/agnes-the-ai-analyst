@@ -50,6 +50,101 @@ Resolution order: explicit `cfg.attributes["sqlalchemy.url"]` (used by tests) �
 `AGNES_DB_URL` env → `DATABASE_URL` env. No silent default to SQLite or
 file paths.
 
+## Local dev via Docker Compose
+
+The repo ships `docker-compose.postgres.yml` as a backward-compatible
+**overlay**: existing `docker compose up` continues to run the
+DuckDB-only path; adding the overlay brings up a Postgres service plus
+a one-shot migrate service.
+
+```bash
+# Bring up app + Postgres, run migrations, then start uvicorn
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up
+
+# Or set once in your shell so plain `docker compose up` picks it up
+export COMPOSE_FILE=docker-compose.yml:docker-compose.postgres.yml
+docker compose up
+```
+
+What the overlay does:
+
+- Adds a `postgres:16-alpine` service with a named volume (`postgres_data`).
+- Adds a one-shot `migrate` service that runs `alembic upgrade head`
+  against the Postgres above, then exits.
+- Wires `AGNES_DB_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes`
+  into both `migrate` and `app`. The `app` service waits for `migrate`
+  to exit 0 before booting uvicorn, so a botched upgrade blocks the
+  whole stack with a clear log trail.
+- Binds Postgres to `127.0.0.1:5432` on the host so a misconfigured
+  firewall can't expose it to the public internet.
+
+`POSTGRES_PASSWORD` is read from `.env`; defaults to `agnes` for
+zero-config local dev (change before any multi-user / exposed
+deployment).
+
+## Production wiring
+
+For managed Postgres (Cloud SQL, RDS, Azure DB), **do NOT use the
+postgres overlay** — point `AGNES_DB_URL` at the managed instance and
+run the migration step in your deploy pipeline.
+
+### Cloud SQL — TCP from private IP
+
+```bash
+# In .env or Secret Manager → injected into the systemd unit's
+# EnvironmentFile= (or container env)
+AGNES_DB_URL=postgresql+psycopg://agnes:${PG_PW}@10.x.y.z:5432/agnes
+```
+
+### Cloud SQL — Unix socket (Cloud SQL Auth Proxy or private IP)
+
+```bash
+# Note the URL-encoded socket path: %2F = /
+AGNES_DB_URL=postgresql+psycopg://agnes:${PG_PW}@/agnes?host=/cloudsql/${PROJ}:${REGION}:${INST}
+```
+
+The `cfg.attributes["sqlalchemy.url"]` trick in `migrations/env.py`
+exists specifically so the `%`-encoded socket path doesn't break
+configparser's interpolation.
+
+### Migration step in CI/CD
+
+Run `alembic upgrade head` against the production DB **before** the new
+image starts serving traffic — this is the standard expand-then-deploy
+pattern. The migration is idempotent (re-running on a head DB is a
+no-op), so a re-deploy after a failed image pull is safe.
+
+```bash
+# Recommended pattern: a one-shot pre-deploy job in your pipeline
+docker run --rm \
+  -e AGNES_DB_URL="${AGNES_DB_URL}" \
+  ghcr.io/keboola/agnes-the-ai-analyst:${IMAGE_TAG} \
+  alembic upgrade head
+
+# Then deploy the app image. The image already contains alembic + the
+# migrations dir — no extra build step needed.
+```
+
+For rollback discipline: every Alembic revision in this repo has a
+real `downgrade()` body, validated by `test_full_chain_roundtrip` and
+`test_pairwise_roundtrip` on every PR. To roll back one revision in
+production:
+
+```bash
+docker run --rm -e AGNES_DB_URL=... ghcr.io/keboola/agnes-the-ai-analyst:${IMAGE_TAG} \
+  alembic downgrade -1
+```
+
+### Connection-pool tuning
+
+`src/db_pg.py` defaults to `pool_size=5, max_overflow=10` — i.e. up to
+15 concurrent connections per app process. Cloud SQL's per-instance
+connection cap (default 100, configurable up to thousands depending on
+tier) is the binding constraint. For a 3-VM MIG running 1 uvicorn
+worker each, 3 × 15 = 45 connections — comfortably inside the default
+cap. Scale `pool_size` proportionally if you increase uvicorn workers
+per VM.
+
 ## Running migrations
 
 ```bash
