@@ -3,6 +3,11 @@
 {% block title %}Setup - {{ instance_brand or "Agnes" }} {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — all 7 wizard buttons render via
+   `ds.button`. The hidden ones (`#btn-next-sync`, `#btn-dashboard`)
+   use inline `style="display: none;"` rather than the `hidden` attr
+   because the JS toggles them via `btn.style.display`. #}
+{% import "_components.html" as ds %}
 <div class="login-page">
     <div class="login-card-wrapper" style="max-width: 520px; margin: 40px auto; padding: 0 20px;">
         <div class="login-card" style="max-width: 520px;">
@@ -33,9 +38,9 @@
                     <input type="password" id="admin-password" required minlength="8" placeholder="Min. 8 characters"
                         style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
 
-                    <button type="submit" class="btn btn-primary" style="width: 100%;" id="btn-admin">
-                        Create Admin Account
-                    </button>
+                    {{ ds.button('Create Admin Account', variant='primary',
+                                 type='submit', id='btn-admin',
+                                 klass='btn-block') }}
                 </form>
             </div>
 
@@ -70,12 +75,13 @@
                             style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
                     </div>
 
-                    <button type="submit" class="btn btn-primary" style="width: 100%;" id="btn-source">
-                        Configure Data Source
-                    </button>
-                    <button type="button" onclick="skipToStep(4)" class="btn btn-secondary" style="width: 100%; margin-top: 8px;" id="btn-skip-source">
-                        Skip (configure later)
-                    </button>
+                    {{ ds.button('Configure Data Source', variant='primary',
+                                 type='submit', id='btn-source',
+                                 klass='btn-block') }}
+                    {{ ds.button('Skip (configure later)', variant='secondary',
+                                 type='button', id='btn-skip-source',
+                                 klass='btn-block',
+                                 attrs='onclick="skipToStep(4)" style="margin-top: 8px;"') }}
                 </form>
             </div>
 
@@ -84,13 +90,15 @@
                 <p style="font-size: 14px; color: #6b7280; margin-bottom: 16px;">
                     Discover and register tables from your data source.
                 </p>
-                <button onclick="discoverTables()" class="btn btn-primary" style="width: 100%;" id="btn-discover">
-                    Discover Tables
-                </button>
+                {{ ds.button('Discover Tables', variant='primary',
+                             type='button', id='btn-discover',
+                             klass='btn-block',
+                             attrs='onclick="discoverTables()"') }}
                 <div id="discover-result" style="display: none; margin-top: 12px; padding: 12px; background: #f0fdf4; border-radius: 6px; font-size: 14px;"></div>
-                <button onclick="goToStep(4)" class="btn btn-primary" style="width: 100%; margin-top: 12px; display: none;" id="btn-next-sync">
-                    Continue
-                </button>
+                {{ ds.button('Continue', variant='primary',
+                             type='button', id='btn-next-sync',
+                             klass='btn-block',
+                             attrs='onclick="goToStep(4)" style="margin-top: 12px; display: none;"') }}
             </div>
 
             <!-- Step 4: First Sync & Done -->
@@ -98,12 +106,14 @@
                 <p style="font-size: 14px; color: #6b7280; margin-bottom: 16px;">
                     Start the first data sync and go to your dashboard.
                 </p>
-                <button onclick="triggerSync()" class="btn btn-primary" style="width: 100%;" id="btn-sync">
-                    Start First Sync
-                </button>
-                <a href="/dashboard" class="btn btn-primary" style="width: 100%; margin-top: 12px; display: none; text-align: center; text-decoration: none;" id="btn-dashboard">
-                    Go to Dashboard
-                </a>
+                {{ ds.button('Start First Sync', variant='primary',
+                             type='button', id='btn-sync',
+                             klass='btn-block',
+                             attrs='onclick="triggerSync()"') }}
+                {{ ds.button('Go to Dashboard', variant='primary',
+                             href='/dashboard', id='btn-dashboard',
+                             klass='btn-block',
+                             attrs='style="margin-top: 12px; display: none; text-align: center;"') }}
             </div>
         </div>
     </div>

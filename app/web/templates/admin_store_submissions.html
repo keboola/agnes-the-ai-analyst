@@ -2,6 +2,10 @@
 {% block title %}Store submissions — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — form Apply/Reset buttons render via
+   `ds.button`. Status filter chips, status badges, .subs-table stay
+   page-local. #}
+{% import "_components.html" as ds %}
 <style>
   /* Width + padding come from .page-shell (style-custom.css) — same
      1280px container as /dashboard, /marketplace, /admin/* peers. */
@@ -19,16 +23,10 @@
     border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
     background: var(--surface, #fff); color: var(--text, #111827);
   }
-  .subs-form .submit-btn {
-    padding: 7px 14px; border-radius: 6px;
-    background: var(--text, #111827); color: var(--surface, #fff);
-    border: 1px solid var(--text, #111827); font-size: 13px; cursor: pointer;
-  }
-  .subs-form .reset-btn {
-    padding: 7px 14px; border-radius: 6px;
-    background: var(--surface, #fff); color: var(--text, #111827);
-    border: 1px solid var(--border, #e5e7eb); font-size: 13px; text-decoration: none;
-  }
+  /* `.submit-btn` / `.reset-btn` rules deleted — form actions render
+     via `ds.button(variant='primary'|'secondary')` carrying canonical
+     .btn family. Visual delta: Apply was custom-black, now canonical
+     green primary. */
 
   .subs-status-chips { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
   .subs-status-chips a {
@@ -196,8 +194,9 @@
         {% endfor %}
       </select>
     </div>
-    <button class="submit-btn" type="submit">Apply</button>
-    <a class="reset-btn" href="/admin/store/submissions">Reset</a>
+    {{ ds.button('Apply', variant='primary', type='submit') }}
+    {{ ds.button('Reset', variant='secondary',
+                 href='/admin/store/submissions') }}
   </form>
 
   {% if submitter_filter %}

@@ -3,6 +3,9 @@
 {% block title %}Error {{ code }} — Data Analyst Portal{% endblock %}
 
 {% block content %}
+{# Design-system component macros — Go-home + Back action anchors
+   render via `ds.button`. #}
+{% import "_components.html" as ds %}
 <div class="error-container">
     <div class="error-card">
         <div class="error-code">{{ code }}</div>
@@ -29,8 +32,10 @@
         </p>
         {% endif %}
         <div class="error-actions">
-            <a href="{{ url_for('index') }}" class="btn btn-primary">Go home</a>
-            <a href="javascript:history.back()" class="btn btn-secondary">Back</a>
+            {{ ds.button('Go home', variant='primary',
+                         href=url_for('index')) }}
+            {{ ds.button('Back', variant='secondary',
+                         href='javascript:history.back()') }}
         </div>
     </div>
 </div>

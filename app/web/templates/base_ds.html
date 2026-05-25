@@ -1,0 +1,119 @@
+{#
+  Canonical design-system base layout.
+
+  Pages opt in with `{% extends 'base_ds.html' %}`. Until then, pages
+  continue extending `base.html`, which carries the production global
+  JS (undo toast, modal Esc handler, command palette, admin keyboard
+  shortcuts). Migration prerequisite: factor that inline JS out of
+  base.html into `_app_scripts.html` so both base layouts can include
+  it. Do that before migrating any page that relies on those features.
+
+  What this layout provides:
+    • Same CSS load order as base.html (style-custom → design-tokens →
+      components → stack_card). The token shim in design-tokens.css
+      means every `var(--primary)` consumer renders the unified
+      green palette automatically.
+    • Auto-imports `_components.html` as `ds` so child pages can call
+      {{ ds.button(...) }} without importing.
+    • Production nav via `_app_header.html` (no regression).
+    • Canonical `.container` page shell. Pages opt into wide by
+      overriding `container_modifier` with `'container--wide'`.
+    • Blocks: title, head_extra, body_attrs, hero, content,
+      extra_scripts, scripts.
+
+  Blocks summary:
+    title             <title> text
+    head_extra        anything inside <head> (extra <link>/<style>)
+    body_attrs        attributes on <body> (e.g. body_attrs="class='news-page'")
+    container_modifier .container width modifier — '' or 'container--wide'
+    hero              full-width hero strip ABOVE the container (e.g.
+                      .page-header--hero in catalog detail pages)
+    flash             flash-message rendering (sensible default; override
+                      if you want a different position)
+    content           the page body — the usual extension point
+    extra_scripts     deferred module scripts (e.g. chip-input)
+    scripts           inline page scripts (last in <body>)
+#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}</title>
+
+    {# CSS load order matters: style-custom.css carries the legacy
+       palette + canonical component CSS; design-tokens.css declares
+       --ds-* tokens AND runs the compat shim that flips legacy
+       --primary blue → --ds-primary green; components.css + stack_card.css
+       layer on top. Don't reorder without reading
+       app/web/templates/base.html for context. #}
+    <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/design-tokens.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">
+
+    {% block head_extra %}{% endblock %}
+    {% include '_theme.html' ignore missing %}
+</head>
+<body {% block body_attrs %}{% endblock %}>
+
+    {# Auto-import component macros for child templates. Children call
+       directly: {{ ds.button(...) }}, {% call ds.panel(...) %}…{% endcall %} #}
+    {% import '_components.html' as ds %}
+
+    {# Production nav. Once `primary_nav` macro adoption is complete
+       this include is replaced by `{{ ds.primary_nav(...) }}` in
+       `_app_header.html` itself; pages don't need to change. #}
+    {% include '_app_header.html' %}
+
+    {# Hero block — full-width, sits OUTSIDE the .container so hero
+       gradients can bleed to the viewport edges. Most pages leave it
+       empty; catalog/marketplace detail pages override it with
+       <header class="page-header--hero">…</header>. #}
+    {% block hero %}{% endblock %}
+
+    {# Standard page shell. `container_modifier` lets a page opt into
+       --wide (1400px) or --full (no max width) without overriding the
+       whole layout block. Pages that want bespoke full-width chrome
+       override the `layout` block entirely (see dashboard.html
+       on base.html for the pattern). #}
+    {% block layout %}
+    <div class="container {% block container_modifier %}{% endblock %}">
+
+        {% block flash %}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+            <div class="flash-messages">
+                {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        {% endwith %}
+        {% endblock %}
+
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+
+        <footer>
+            <p>&copy; {{ now().year if now is defined else 2026 }}
+               {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }}</p>
+        </footer>
+    </div>
+    {% endblock %}
+
+    {% include '_version_badge.html' ignore missing %}
+
+    {# Deferred module scripts (e.g. chip-input) opt in here so they
+       don't load on every page. #}
+    {% block extra_scripts %}{% endblock %}
+
+    {# Inline page scripts. Note: the global helpers from base.html
+       (showUndoToast, modal Esc handler, command palette, admin
+       keyboard shortcuts) are NOT loaded here. Pages that need them
+       must either stay on base.html OR include the future
+       _app_scripts.html partial when that refactor lands. #}
+    {% block scripts %}{% endblock %}
+</body>
+</html>
