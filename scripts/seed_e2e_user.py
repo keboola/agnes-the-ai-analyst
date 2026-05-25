@@ -20,6 +20,7 @@ import sys
 from datetime import datetime, timezone
 
 from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 
 E2E_USER_EMAIL = "e2e@example.com"
 E2E_USER_NAME = "E2E Smoke Test"
@@ -27,8 +28,8 @@ E2E_USER_ID = "e2e-smoke-user"
 E2E_USER_PASSWORD = "E2eSmokePass!"
 
 
-def seed() -> bool:
-    """Idempotent. Returns True on success; SystemExit(1) on missing Admin group."""
+def seed() -> None:
+    """Idempotent. SystemExit(1) on missing Admin group."""
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
@@ -50,11 +51,11 @@ def seed() -> bool:
 
         users = UserRepository(conn)
         memberships = UserGroupMembersRepository(conn)
-        password_hash = PasswordHasher().hash(E2E_USER_PASSWORD)
         existing = users.get_by_email(E2E_USER_EMAIL)
         now = datetime.now(timezone.utc)
 
         if existing is None:
+            password_hash = PasswordHasher().hash(E2E_USER_PASSWORD)
             users.create(
                 id=E2E_USER_ID,
                 email=E2E_USER_EMAIL,
@@ -63,24 +64,25 @@ def seed() -> bool:
             )
             user_id = E2E_USER_ID
         else:
-            # Overwrite hash so a stale row with a forgotten password
-            # doesn't leave the smoke broken.
-            conn.execute(
-                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-                [password_hash, now, existing["id"]],
-            )
             user_id = existing["id"]
+            # Verify the stored hash. Skip the UPDATE on the common case
+            # (hash already matches) to avoid a needless ~100 ms re-hash +
+            # DB write. If verification fails (stale password or corrupt row),
+            # re-hash and heal the row.
+            try:
+                PasswordHasher().verify(existing["password_hash"], E2E_USER_PASSWORD)
+            except (VerifyMismatchError, Exception):
+                password_hash = PasswordHasher().hash(E2E_USER_PASSWORD)
+                conn.execute(
+                    "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                    [password_hash, now, user_id],
+                )
 
-        # Re-assert Admin membership (no-op if already present).
-        # list_members_for_group joins users, so the user id column is "id".
-        current_members = {
-            m["id"] for m in memberships.list_members_for_group(admin_gid)
-        }
-        if user_id not in current_members:
-            memberships.add_member(user_id, admin_gid, source="system_seed")
+        # Re-assert Admin membership. add_member is idempotent on
+        # (user_id, group_id) per the repository contract.
+        memberships.add_member(user_id, admin_gid, source="system_seed")
 
         print(f"seeded: {E2E_USER_EMAIL} (id={user_id}) in Admin group")
-        return True
     finally:
         conn.close()
 
