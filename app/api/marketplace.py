@@ -53,9 +53,6 @@ from src.marketplace_filter import (
 )
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
 from src.marketplace_urls import internal_asset_url, mirrored_url
-from src.repositories.user_curated_subscriptions import (
-    UserCuratedSubscriptionsRepository,
-)
 from src.store_categories import STORE_CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -1580,20 +1577,20 @@ def _owner_display_from_map(
 
 
 def _get_plugin_row(
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection],
     marketplace_id: str,
     plugin_name: str,
 ) -> Optional[dict]:
-    """Fetch a single ``marketplace_plugins`` row as a dict, or ``None``."""
-    rows = conn.execute(
-        "SELECT * FROM marketplace_plugins "
-        "WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchall()
-    if not rows:
-        return None
-    columns = [d[0] for d in conn.description]
-    return MarketplacePluginsRepository._row_to_dict(columns, rows[0])
+    """Fetch a single ``marketplace_plugins`` row as a dict, or ``None``.
+
+    ``conn`` retained for signature stability; ignored. Looks up via the
+    factory so DuckDB and PG paths share the same code.
+    """
+    rows = marketplace_plugins_repo().list_for_marketplace(marketplace_id)
+    for row in rows:
+        if row.get("name") == plugin_name:
+            return row
+    return None
 
 
 @router.get(
@@ -1865,7 +1862,6 @@ async def flea_detail(
     is_owner = entity.get("owner_user_id") == user.get("id")
     is_admin_user = is_user_admin(user["id"], conn)
     if is_owner or is_admin_user:
-        from src.repositories.store_submissions import StoreSubmissionsRepository
         latest_sub = store_submissions_repo().latest_for_entity(entity_id)
         if latest_sub:
             submission_status = latest_sub.get("status")

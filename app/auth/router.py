@@ -17,6 +17,8 @@ from app.auth.rate_limit import limiter as _rate_limiter
 from src.db import SYSTEM_ADMIN_GROUP
 
 from src.repositories import (
+    audit_repo,
+    user_curated_subscriptions_repo,
     user_group_members_repo,
     users_repo,
 )
@@ -48,7 +50,6 @@ def _audit(user_id: str, action: str, result: str | None = None) -> None:
     """Fire-and-forget audit log entry. Swallows all errors."""
     try:
         from src.db import get_system_db
-        from src.repositories.audit import AuditRepository
         audit_conn = get_system_db()
         audit_repo().log(
             user_id=user_id,
@@ -164,12 +165,7 @@ async def bootstrap(
         # it anyway so the later bootstrap-of-rebuilt-instance path (rare
         # but supported) inherits the existing mandatory tier.
         try:
-            from src.repositories.user_curated_subscriptions import (
-                UserCuratedSubscriptionsRepository,
-            )
-            UserCuratedSubscriptionsRepository(
-                conn
-            ).fanout_system_for_user(user_id)
+            user_curated_subscriptions_repo().fanout_system_for_user(user_id)
         except Exception:
             logger.exception(
                 "system-plugin fanout failed for bootstrap user %s",

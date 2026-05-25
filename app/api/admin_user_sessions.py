@@ -356,14 +356,13 @@ def list_user_activity(
     Resolves user_id to the user record (404 if not found), filters audit_log
     on the user_id field, returns paginated rows newest first.
     """
-    from src.repositories.audit import AuditRepository
 
     row = conn.execute("SELECT id, email FROM users WHERE id = ?", [user_id]).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="user not found")
 
-    audit_repo = audit_repo()
-    rows, _ = audit_repo.query(user_id=user_id, limit=limit + offset)
+    audit = audit_repo()
+    rows, _ = audit.query(user_id=user_id, limit=limit + offset)
     # Apply offset via slicing — cursor-based pagination is per-page only
     rows = rows[offset : offset + limit]
 

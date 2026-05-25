@@ -736,7 +736,6 @@ async def home_page(
     # Pull the latest published news intro for the bottom-of-page section.
     # Template renders the section only when intro is non-empty, so an
     # instance that has never published news shows nothing extra.
-    from src.repositories.news_template import NewsTemplateRepository
     news = news_template_repo().get_current_published()
     news_intro = news["intro"] if (news and news.get("intro")) else ""
 
@@ -809,7 +808,6 @@ async def news_page(
     """Permalink page for the latest published news. Renders empty-state
     copy when no version is published. Authed-only (same as /home).
     """
-    from src.repositories.news_template import NewsTemplateRepository
     news = news_template_repo().get_current_published()
     ctx = _build_context(
         request,
@@ -830,7 +828,6 @@ async def admin_news_editor(
     """Admin authoring surface — current published banner, draft editor,
     versions table. JS hits the /api/admin/news/* endpoints for the
     write paths."""
-    from src.repositories.news_template import NewsTemplateRepository
     repo = news_template_repo()
     ctx = _build_context(
         request,
@@ -946,7 +943,7 @@ async def catalog(
     from src.repositories.data_packages import DataPackagesRepository
 
     resolver = StackResolver(conn)
-    pkg_repo = data_packages_repo()
+    pkg_repo = DataPackagesRepository(conn)
 
     # Pre-compute per-package table counts + source-type tag set in one pass
     # so we don't repeat the join per card.
@@ -1745,7 +1742,6 @@ async def setup_page(
     override is set, the live default from
     setup_instructions.resolve_lines() is used.
     """
-    from src.repositories.welcome_template import WelcomeTemplateRepository
     from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
     from jinja2 import Environment, StrictUndefined, TemplateError
 
@@ -1886,8 +1882,6 @@ async def store_edit(
     server-side).
     """
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_categories import STORE_CATEGORIES
 
     entity = store_entities_repo().get(entity_id)
@@ -1966,8 +1960,6 @@ async def marketplace_flea_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     repo = store_entities_repo()
     # Owner/admin get a version-status decorated entity so the versions
@@ -2139,7 +2131,6 @@ async def marketplace_flea_skill_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
     entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
@@ -2178,7 +2169,6 @@ async def marketplace_flea_agent_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
     entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
@@ -2278,7 +2268,6 @@ async def admin_tables(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.table_registry import TableRegistryRepository
     from app.instance_config import get_data_source_type
     repo = table_registry_repo()
     tables = repo.list_all()
@@ -2417,7 +2406,6 @@ async def admin_group_detail_page(
 ):
     """Single-group detail page — header + members table. Resource grants
     live on /admin/grants (deep-linked from here)."""
-    from src.repositories.user_groups import UserGroupsRepository
     from app.api.access import _is_google_managed, _mapped_email
     g = user_groups_repo().get(group_id)
     if not g:
@@ -2512,7 +2500,6 @@ async def admin_store_submissions_page(
     ``limit`` (default 50, clamped to [1, 200] for the UI page-size
     selector).
     """
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     statuses = None
     if status:
@@ -2551,7 +2538,6 @@ async def admin_store_submissions_page(
     # (The submitter id is opaque to admins; show the human label instead.)
     submitter_email = ""
     if submitter:
-        from src.repositories.users import UserRepository
         urow = users_repo().get_by_id(submitter)
         if urow:
             submitter_email = urow.get("email") or submitter
@@ -2584,10 +2570,6 @@ async def admin_store_submission_detail_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Per-submission detail with full verdict + override + retry actions."""
-    from src.repositories.audit import AuditRepository
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
-    from src.repositories.users import UserRepository
 
     sub = store_submissions_repo().get(submission_id)
     if sub is None:
@@ -2757,7 +2739,6 @@ async def admin_agent_prompt_page(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.welcome_template import WelcomeTemplateRepository
     from src.welcome_template import compute_default_agent_prompt
 
     row = welcome_template_repo().get()
@@ -2781,7 +2762,6 @@ async def admin_workspace_prompt_page(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.claude_md_template import ClaudeMdTemplateRepository
     from src.claude_md import compute_default_claude_md
     from app.api.claude_md import _scan_legacy_strings
 

@@ -324,8 +324,8 @@ def _mapped_email(g: dict) -> Optional[str]:
 
 def _group_to_response(
     g: dict,
-    members_repo: UserGroupMembersRepository,
-    grants_repo: ResourceGrantsRepository,
+    members_repo,
+    grants_repo,
 ) -> GroupResponse:
     return GroupResponse(
         id=g["id"],
@@ -860,9 +860,6 @@ async def delete_grant(
         rid = existing["resource_id"] or ""
         if "/" in rid:
             mp_id, plugin_name = rid.split("/", 1)
-            from src.repositories.user_curated_subscriptions import (
-                UserCuratedSubscriptionsRepository,
-            )
             optouts_dropped = UserCuratedSubscriptionsRepository(
                 conn
             ).delete_for_plugin(mp_id, plugin_name)

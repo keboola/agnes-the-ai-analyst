@@ -18,12 +18,6 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories.news_template import (
-    AlreadyDraftError,
-    NoDraftError,
-    NotFoundError,
-    VersionConflictError,
-)
 from src.repositories import (
     audit_repo,
     news_template_repo,

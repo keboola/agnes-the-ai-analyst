@@ -705,7 +705,7 @@ sys.exit(compute_exit_code(result, len(configs)))
 
             sys_conn = get_system_db()
             try:
-                profile_repo = profile_repo()
+                profiles = profile_repo()
                 profiled = 0
                 for source_name, table_names in views.items():
                     for table_name in table_names[:10]:  # Limit per sync

@@ -643,7 +643,6 @@ def metadata_apply(
                 )
         return
 
-    from src.repositories.column_metadata import ColumnMetadataRepository
     from src.db import get_system_db
 
     conn = get_system_db()
@@ -1131,9 +1130,6 @@ def break_glass_grant_admin(
     import uuid as _uuid
 
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-    from src.repositories.user_groups import UserGroupsRepository
-    from src.repositories.user_group_members import UserGroupMembersRepository
-    from src.repositories.users import UserRepository
 
     if not yes:
         confirm = typer.confirm(
