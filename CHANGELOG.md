@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.8] — 2026-05-25
+
+### Changed
+- `/admin/server-config` now has a sticky two-column layout: a section-navigation sidebar on the left (jumps to Instance, Data source, Email, Auth, AI, etc.) and scrollable config fields on the right. Page title corrected from "Server config" to "Server configuration".
+- Initial Workspace Template panel moved above the Danger zone section on the server-config page.
+
+### Fixed
+- Second `renderAll()` call on the server-config page no longer destroys the `#iw-section` DOM node; the element is now detached before `wrap.innerHTML` replaces child nodes and re-inserted before the danger zone.
+
 ## [0.55.7] — 2026-05-25
 
 ### Changed
@@ -287,7 +296,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-## [0.55.6] - 2026-05-20
+## [0.55.6] — 2026-05-20
 
 ### Fixed
 - `agnes query --remote`: SQL using only a full backtick BQ path (`` `<proj>.<dataset>.<table>` ``) no longer fails with `Parser Error: syntax error at or near "``"`. The rewriter now detects backtick-quoted paths and wraps them in `bigquery_query()` before passing to DuckDB, instead of sending the BQ-native backtick syntax to the local DuckDB parser. (#363)
