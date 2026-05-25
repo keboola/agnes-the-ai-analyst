@@ -2280,26 +2280,37 @@ async def list_registry(
     repo = TableRegistryRepository(conn)
     tables = repo.list_all()
 
-    # Single batched read of sync_state errors — avoid N+1 GETs against
+    # Single batched read of sync_state — avoid N+1 GETs against
     # `sync_state` for large registries. The sync_state row is keyed on
     # `table_id` which mirrors `table_registry.name` (see comment in
     # _run_materialized_pass / _build_manifest_for_user about name vs id).
+    # One query covers both error message (only when status='error') and
+    # last_sync timestamp so operators can see both staleness and failure.
     error_by_name: Dict[str, Optional[str]] = {}
+    sync_by_name: Dict[str, Optional[str]] = {}
     try:
         rows = conn.execute(
-            "SELECT table_id, error FROM sync_state "
-            "WHERE status = 'error' AND error IS NOT NULL AND error <> ''"
+            "SELECT table_id, "
+            "  CASE WHEN status = 'error' AND error IS NOT NULL AND error <> '' "
+            "       THEN error ELSE NULL END AS err, "
+            "  last_sync "
+            "FROM sync_state"
         ).fetchall()
-        error_by_name = {r[0]: r[1] for r in rows}
+        for tid, err, ls in rows:
+            if err:
+                error_by_name[tid] = err
+            if ls:
+                sync_by_name[tid] = str(ls)[:16]  # "YYYY-MM-DD HH:MM"
     except Exception:
         # Defensive: if sync_state is unreadable for any reason, the
         # registry response still serializes — operators just lose the
-        # last_sync_error column on this call.
-        logger.exception("Failed to read sync_state errors for registry")
+        # enriched columns on this call.
+        logger.exception("Failed to read sync_state for registry")
 
     for t in tables:
         # Sync_state.table_id == table_registry.name by convention.
         t["last_sync_error"] = error_by_name.get(t.get("name"))
+        t["last_sync_display"] = sync_by_name.get(t.get("name"))
 
     return {"tables": tables, "count": len(tables)}
 
@@ -2508,8 +2519,18 @@ def register_table(
     from fastapi.responses import JSONResponse
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
+    import re as _re
     repo = TableRegistryRepository(conn)
     table_id = request.name.strip().lower().replace(" ", "_")
+
+    if not _re.fullmatch(r"[a-z_][a-z0-9_]*", table_id):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Table name produces unsafe identifier '{table_id}'. "
+                "Use only letters, digits, and underscores — no hyphens or special characters."
+            ),
+        )
 
     if repo.get(table_id):
         raise HTTPException(status_code=409, detail=f"Table '{table_id}' already registered")
