@@ -188,7 +188,7 @@ async def run_due_scripts(
     scripts_run_count = len(claimed)
     try:
         _audit_conn = get_system_db()
-        AuditRepository(_audit_conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="script_runner.tick",
             params={"scripts_run": scripts_run_count, "scripts_failed": 0},
@@ -217,7 +217,7 @@ def _run_claimed_script(script_id: str, source: str, name: str) -> None:
     # was returned to FastAPI by the time this fires.
     bg_conn = get_system_db()
     try:
-        bg_repo = ScriptRepository(bg_conn)
+        bg_repo = notifications_script_repo()
         try:
             result = _execute_script(source, name)
             status = "success" if result.get("exit_code", 1) == 0 else "failure"

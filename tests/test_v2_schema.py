@@ -386,12 +386,12 @@ class TestBuildSchemaUncached:
         conn = MagicMock()
         repo_mock = MagicMock()
         repo_mock.get.return_value = None
-        # Patch the repo lookup the same way the implementation imports it.
+        # Patch the factory function the implementation imports.
         import app.api.v2_schema as v2_schema_mod
-        original = v2_schema_mod.TableRegistryRepository
-        v2_schema_mod.TableRegistryRepository = lambda c: repo_mock
+        original = v2_schema_mod.table_registry_repo
+        v2_schema_mod.table_registry_repo = lambda: repo_mock
         try:
             with pytest.raises(NotFound):
                 build_schema_uncached(conn, "nonexistent", bq=MagicMock())
         finally:
-            v2_schema_mod.TableRegistryRepository = original
+            v2_schema_mod.table_registry_repo = original
