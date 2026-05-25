@@ -1150,10 +1150,8 @@ async def corporate_memory_admin(
     # `<option value="group:<name>">` rows in the per-item mandate form;
     # the previous shape (`{}` from the YAML config) crashed renderItemCard
     # with "GROUPS.map is not a function" the moment any pending item rendered.
-    from src.repositories.user_groups import UserGroupsRepository as _UserGroupsRepo
-    from src.repositories.user_group_members import UserGroupMembersRepository as _UserGroupMembersRepo
-    _groups_repo = _UserGroupsRepo(conn)
-    _members_repo = _UserGroupMembersRepo(conn)
+    _groups_repo = user_groups_repo()
+    _members_repo = user_group_members_repo()
     user_groups_for_ui = [
         {"name": g["name"], "members_count": _members_repo.count_members(g["id"])}
         for g in _groups_repo.list_all()

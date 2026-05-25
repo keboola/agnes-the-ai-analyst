@@ -734,9 +734,10 @@ async def delete_grant(
         rid = existing["resource_id"] or ""
         if "/" in rid:
             mp_id, plugin_name = rid.split("/", 1)
-            optouts_dropped = UserCuratedSubscriptionsRepository(
-                conn
-            ).delete_for_plugin(mp_id, plugin_name)
+            from src.repositories import user_curated_subscriptions_repo
+            optouts_dropped = user_curated_subscriptions_repo().delete_for_plugin(
+                mp_id, plugin_name,
+            )
         try:
             from app.marketplace_server import packager
             packager.invalidate_etag_cache()
