@@ -27,29 +27,45 @@ unchanged and to exercise the real auth surface end-to-end.
 
 - Email: `e2e@example.com`
 - Password: hardcoded dev-only — `E2eSmokePass!`
-- Membership: `Admin` group (god-mode short-circuit per `docs/RBAC.md`, so
-  `/admin/activity` and any future protected page is reachable without
-  per-resource grant maintenance).
-- Lifetime: only ever exists in the ephemeral CI container (`docker compose
-  down -v` between every run wipes it). No external exposure.
+- Membership: `Admin` group (god-mode short-circuit per
+  `src/repositories/user_groups.py:4` + `docs/RBAC.md`), so `/admin/activity`
+  and any future protected HTML page is reachable without per-resource grant
+  maintenance.
+- Lifetime: only ever exists in dev images. The CI container is
+  `docker compose down -v`-ed at the end of every nightly run, wiping the
+  whole DB; outside the container the credentials grant access to nothing.
 
-Hardcoded credentials are acceptable because the user has zero privileges
-outside the throwaway container, and committing them lets a local developer
-reproduce the smoke setup byte-for-byte. No GitHub secret involved.
+Hardcoding the password in the repo is acceptable because **the container is
+the privilege boundary** — the user is Admin inside it, nothing outside it.
+Committing the password (instead of stashing it in a GitHub secret) lets a
+local developer reproduce the smoke setup byte-for-byte.
 
 ### 2. Seed script — `scripts/seed_e2e_user.py`
 
-Idempotent — running twice is a no-op (creates user only if absent, ensures
-Admin membership only if missing). Uses `UserRepository` + `UserGroupsRepository`
-via the same DuckDB connection the app uses. Exits 0 on success, non-zero with
-a clear stderr message on failure.
+Idempotent re-runnable. Direct invocation (not `-m`) — matches the existing
+`scripts/seed_corporate_memory.py` / `seed_dummy_tables.py` precedent;
+`scripts/` is intentionally not a Python package.
 
-Invoked from the workflow via:
+    docker compose exec -T app python scripts/seed_e2e_user.py
 
-    docker compose exec -T app python -m scripts.seed_e2e_user
+Idempotency rules:
 
-The `-T` disables TTY (no pty in CI). Local developers run the same command
-before invoking a smoke script.
+- **User absent** → create with the hashed password and Admin membership.
+- **User present with same email** → overwrite the `password_hash` to the
+  hardcoded value (so a stale local-dev row with a forgotten password doesn't
+  leave the smoke broken). Re-assert Admin membership.
+- **`Admin` group missing** (DB in a half-init state — should never happen
+  on a healthy image, but defensive) → exit non-zero with a clear stderr
+  message like `Admin group not seeded — refusing to create orphan user`. No
+  silent broken state.
+
+Exit codes: `0` on success (user existed or was created), `1` on
+unrecoverable error.
+
+Uses `src.repositories.users.UserRepository` for the user row and
+`src.repositories.user_groups.UserGroupsRepository` for the Admin membership
+(both verified — see file:line refs above). Password hashing via the same
+`argon2-cffi` `PasswordHasher` used by `app/auth/providers/password.py`.
 
 ### 3. Login helper — `scripts/e2e/_login.sh`
 
@@ -57,23 +73,33 @@ Sourced by both `smoke_catalog.sh` and `smoke_admin_activity.sh` _after_ the
 `SESSION` variable is exported and _before_ any `agent-browser open` against a
 protected URL.
 
-    agent-browser --session "$SESSION" open "${BASE_URL}/login"
-    agent-browser --session "$SESSION" fill 'input[name=email]' 'e2e@example.com'
-    agent-browser --session "$SESSION" fill 'input[name=password]' 'E2eSmokePass!'
-    agent-browser --session "$SESSION" click 'button[type=submit]'
+Target URL is `/login/password` (NOT `/login` — `/login` is a dispatcher per
+`app/web/router.py:539-587` that redirects to whichever provider is
+configured; the password form is at `/login/password`, served by
+`app/web/router.py:596` which renders `login_email.html`).
+
+All selectors scoped to the form's action attribute, which uniquely identifies
+the Sign-In form among the three nested forms in `#signin-tab` (Sign In,
+Forgot Password) and the sibling `#signup-tab`:
+
+    LOGIN_FORM='form[action="/auth/password/login/web"]'
+
+    agent-browser --session "$SESSION" open "${BASE_URL}/login/password"
+    agent-browser --session "$SESSION" fill "${LOGIN_FORM} input[name=email]"    'e2e@example.com'
+    agent-browser --session "$SESSION" fill "${LOGIN_FORM} input[name=password]" 'E2eSmokePass!'
+    agent-browser --session "$SESSION" click "${LOGIN_FORM} button[type=submit]"
     agent-browser --session "$SESSION" wait --load networkidle
 
-The agent-browser session naturally inherits the cookie set by the form POST —
-no manual cookie injection needed. Selectors (`input[name=email]`,
-`input[name=password]`, `button[type=submit]`) are stable because they map to
-`app/web/templates/login_email.html:26-46`, which uses the actual form-field
-names the password provider reads (`name="email"`, `name="password"` —
-verified in source).
+Why scope by form action: `login_email.html:26-46` shows the Sign-In `<form>`
+with `action="/auth/password/login/web"`, sibling Forgot-Password `<form>`
+with `action="/auth/password/reset"`, and presumably a Sign-Up `<form>` in
+`#signup-tab`. Unscoped `button[type=submit]` would match multiple submits and
+the click would be non-deterministic. The form action is the stable contract
+between template and password router (`password.py:229`) — if it changes,
+both ends update together.
 
-If a future redesign of the login form breaks these selectors, that's the
-right time to discover it: login is a critical surface, and a smoke failure
-that points at the login step is far easier to diagnose than a downstream
-assertion against half-rendered content.
+The agent-browser session naturally inherits the `Set-Cookie` from the form
+POST — no manual cookie injection needed.
 
 ### 4. Workflow changes — `.github/workflows/e2e-nightly.yml`
 
@@ -81,7 +107,7 @@ Insert one step between "Build + start agnes stack" and "Run smoke":
 
     - name: Seed E2E test user
       if: env.SKIP_MATRIX != '1'
-      run: docker compose exec -T app python -m scripts.seed_e2e_user
+      run: docker compose exec -T app python scripts/seed_e2e_user.py
 
 No new env vars, no new secrets, no rerun-loop changes.
 
@@ -96,18 +122,32 @@ Everything below that line is unchanged.
 
 ### 6. Local-dev documentation
 
-`scripts/e2e/README.md` gets a "Prerequisites" section noting the seed
-command must run once after `docker compose up` and before the first
-smoke script.
+`scripts/e2e/README.md` gets a "Prerequisites" section noting that after
+`docker compose up` the operator must run the seed once:
+
+    docker compose exec -T app python scripts/seed_e2e_user.py
+
+…before any `bash scripts/e2e/smoke_*.sh`.
+
+### 7. CHANGELOG + release-cut
+
+- `### Internal` bullet under `[Unreleased]` summarizing the seed user +
+  sign-in helper, with explicit "credentials are hardcoded; container is the
+  privilege boundary" justification so future readers don't think it's a
+  security regression.
+- Per the CLAUDE.md release-cut rule, the patch bump
+  `0.55.9 → 0.55.10` (pyproject.toml + CHANGELOG rename + new empty
+  `[Unreleased]`) ships in the final commit of the same PR.
 
 ## Failure modes
 
 | Failure | Symptom | Diagnosis |
 |---|---|---|
-| Seed script fails (DB locked, migration mismatch) | Workflow stops before "Run smoke" | Step log shows the exact Python traceback. |
-| Login form selectors change | `agent-browser fill 'input[name=email]'` exits non-zero | `set -euo pipefail` in smoke script propagates; failure points at the login step, not at a downstream assertion. |
-| Login cookie expires mid-script | A later `agent-browser open` redirects to `/login` | Existing snapshot-assert behavior — clear failure message. |
-| `docker compose exec` finds no `app` service | Workflow stops at seed step | Step log shows compose error. The new `Dump docker logs on stack failure` step from #389 runs (if `failure()` triggers). |
+| Seed script fails (DB locked, migration mismatch, missing Admin group) | Workflow stops before "Run smoke" | Step log shows the exact Python traceback / stderr message. |
+| Login form selectors change | `agent-browser fill 'form[...] input[name=email]'` exits non-zero | `set -euo pipefail` in smoke script propagates; failure points at the login step, not at a downstream assertion. |
+| Login click succeeds but cookie not set (form rejected — e.g. seed step skipped or password drift) | `agent-browser open /catalog` follows the 401 redirect to `/login?next=/catalog`; `grep -qi 'Browse'` against the snapshot fails | Screenshot shows the login page, snapshot lacks "Browse"; clear hint to inspect the seed step / login click logs above. |
+| Cookie expires mid-script | Same as above, mid-run | Same as above. |
+| `docker compose exec` finds no `app` service | Workflow stops at seed step | Step log shows compose error. The "Dump docker logs on stack failure" step from #389 fires. |
 
 ## Non-goals
 
@@ -135,8 +175,12 @@ introduces a secret-rotation chore.
 
 ## Acceptance
 
-- Nightly workflow on `main`: `gh workflow run e2e-nightly.yml` → both smoke
-  jobs succeed.
-- Run locally after `docker compose up` + seed: both smoke scripts pass.
-- Removing the seed step: both smoke scripts fail at the login step with a
-  clear `Invalid email or password` artifact in the screenshot.
+1. Nightly workflow on `main`: `gh workflow run e2e-nightly.yml` → both smoke
+   jobs succeed.
+2. Run locally after `docker compose up` + seed: both smoke scripts pass.
+3. Skipping the seed step (or seeding with wrong password): smoke fails at
+   the `/catalog` `Browse` snapshot assert because the session never got a
+   cookie; the artifact screenshot shows the login page. Failure log clearly
+   points at the missing seed step.
+4. Running the seed twice in a row: second invocation is a no-op (no
+   duplicate user row, no error).
