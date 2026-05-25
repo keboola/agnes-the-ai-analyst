@@ -33,6 +33,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   so Swagger generates an accurate schema for that endpoint (ADV-007).
 
 ### Internal
+- Introduced the Postgres app-state foundation alongside the existing
+  DuckDB layer (no behaviour change for existing deployments — the new
+  modules are dormant until ``AGNES_DB_URL`` is set and the cutover
+  starts). Adds Alembic + SQLAlchemy 2.0 + ``psycopg[binary]`` as core
+  deps; pytest infrastructure adds ``testcontainers[postgres]``,
+  ``pytest-postgresql``, and ``pgserver`` (userland-bundled PG 16 — no
+  Docker/system install required for local PG tests). Ships the
+  migration chain (``migrations/`` with revisions 0001-0010 covering
+  every table in ``system.duckdb``), matching SQLAlchemy 2.0 models
+  under ``src/models/``, **all 28 repository modules** mirrored at
+  ``src/repositories/*_pg.py``, a load-bearing round-trip + drift
+  test harness under ``tests/db_pg/`` (163 tests), and a one-shot
+  DuckDB → Postgres data migration framework at
+  ``scripts/migrate_duckdb_to_pg/`` (idempotent on re-run via
+  ``ON CONFLICT DO NOTHING``, with row-count and PK-checksum
+  validation). The ``knowledge`` repo's full-text search ports from
+  DuckDB BM25 to Postgres ``to_tsvector`` + ``ts_rank``. Operator
+  playbook in ``docs/migrations.md``.
 - Added `TestFullLifecycleFromInstaller` integration test class
   (`tests/test_store_entity_versions.py`) covering the full
   flea-market lifecycle from issuer / admin / subscribed-user
