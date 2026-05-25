@@ -143,7 +143,7 @@
 
   .cfg-field { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; margin-bottom: 14px; }
   .cfg-field:last-child { margin-bottom: 0; }
-  .cfg-field label { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; padding-top: 8px; }
+  .cfg-field label, .cfg-field .cfg-field-label { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; padding-top: 8px; }
   .cfg-field .field-help { font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 4px; }
   .cfg-field input[type="text"],
   .cfg-field input[type="password"],
@@ -580,14 +580,15 @@ function renderArrayField(section, pathSegments, label, value, spec, depth) {
   // `data-array-collect="1"` marks the wrapper so collectSection can pick
   // it up as a single unit (otherwise the per-row inputs would each emit
   // their own patch leaf and clobber each other).
+  const baseId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const rows = items.map((item, idx) => `
     <div class="array-row" data-array-row="${idx}" style="display: flex; gap: 6px; margin-bottom: 4px;">
-      <input type="text" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" style="flex: 1;">
+      <input type="text" id="${baseId}_${idx}" name="${baseId}_${idx}" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" aria-label="${escHtml(label)} item ${idx + 1}" style="flex: 1;">
       <button type="button" class="cfg-btn" data-array-remove="${idx}" title="Remove this item">×</button>
     </div>`).join("");
   return `
     <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
-      <label>${arrow}${escHtml(label)}</label>
+      <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
       <div>
         <div class="array-container"
              data-section="${section}"
@@ -625,6 +626,7 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
   const hintBlock = spec.hint
     ? `<div class="field-help">${escHtml(spec.hint)}</div>`
     : "";
+  const mapBaseId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const renderRow = (k, v, idx) => {
     if (valueKind === "array") {
       // Map<string, array<scalar>> — value column is itself a comma-separated
@@ -634,8 +636,8 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
       const items = Array.isArray(v) ? v.join(", ") : "";
       return `
         <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 2fr auto; gap: 6px; margin-bottom: 4px;">
-          <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
-          <input type="text" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values">
+          <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
+          <input type="text" id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values" aria-label="${escHtml(label)} value ${idx + 1}">
           <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
         </div>`;
     }
@@ -644,15 +646,15 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
     const stepAttr = valueKind === "float" ? ' step="any"' : "";
     return `
       <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 1fr auto; gap: 6px; margin-bottom: 4px;">
-        <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
-        <input type="${inputType}"${stepAttr} class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value">
+        <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
+        <input type="${inputType}"${stepAttr} id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value" aria-label="${escHtml(label)} value ${idx + 1}">
         <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
       </div>`;
   };
   const rows = Object.entries(obj).map(([k, v], idx) => renderRow(k, v, idx)).join("");
   return `
     <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
-      <label>${arrow}${escHtml(label)}</label>
+      <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
       <div>
         <div class="map-container"
              data-section="${section}"
@@ -774,7 +776,7 @@ function renderNestedField(section, pathSegments, label, value, spec, depth) {
 
     return `
       <div class="cfg-field nested-field nested-parent" style="margin-left: ${indent}px;">
-        <label>${arrow}${escHtml(label)}</label>
+        <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
         <div>${hintBlock || `<div class="field-help">Nested structured fields below.</div>`}</div>
       </div>
       ${populatedHtml}${unsetHtml}${fallbackHtml}`;
