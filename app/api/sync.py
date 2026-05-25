@@ -386,7 +386,7 @@ def _run_sync(tables: Optional[List[str]] = None):
         # on ebb8cc9.)
         registry_has_tables = False
         try:
-            repo = TableRegistryRepository(sys_conn)
+            repo = table_registry_repo()
             if tables:
                 # Manual operator override — bypass schedule filter entirely
                 # so an admin saying "sync these specific tables now" wins.
@@ -410,7 +410,7 @@ def _run_sync(tables: Optional[List[str]] = None):
                 # every table regardless of its sync_schedule cadence,
                 # making the field a no-op at trigger time. Tables with
                 # no schedule pass through unchanged (opt-in feature).
-                state_repo = SyncStateRepository(sys_conn)
+                state_repo = sync_state_repo()
                 table_configs = filter_due_tables(table_configs, state_repo)
         finally:
             sys_conn.close()
@@ -434,7 +434,7 @@ def _run_sync(tables: Optional[List[str]] = None):
                     # Re-read table configs after auto-registration
                     sys_conn2 = get_system_db()
                     try:
-                        table_configs = TableRegistryRepository(sys_conn2).list_local(source_type)
+                        table_configs = table_registry_repo().list_local(source_type)
                     finally:
                         sys_conn2.close()
                 except Exception as e:
@@ -471,7 +471,7 @@ def _run_sync(tables: Optional[List[str]] = None):
             # _read_last_sync's first-check-config-then-fall-back pattern.
             ws_conn = get_system_db()
             try:
-                ws_repo = SyncStateRepository(ws_conn)
+                ws_repo = sync_state_repo()
                 for tc in table_configs:
                     if tc.get("sync_strategy") in ("incremental", "partitioned"):
                         state = ws_repo.get_table_state(tc.get("id") or tc.get("name"))
@@ -705,7 +705,7 @@ sys.exit(compute_exit_code(result, len(configs)))
 
             sys_conn = get_system_db()
             try:
-                profile_repo = ProfileRepository(sys_conn)
+                profile_repo = profile_repo()
                 profiled = 0
                 for source_name, table_names in views.items():
                     for table_name in table_names[:10]:  # Limit per sync
@@ -1236,7 +1236,7 @@ async def trigger_sync(
         try:
             from src.db import get_system_db
             _audit_conn = get_system_db()
-            AuditRepository(_audit_conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="sync.trigger",
                 resource=(
@@ -1265,7 +1265,7 @@ async def trigger_sync(
     try:
         from src.db import get_system_db
         _audit_conn = get_system_db()
-        AuditRepository(_audit_conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="sync.trigger",
             resource=(

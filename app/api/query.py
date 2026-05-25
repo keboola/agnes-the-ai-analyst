@@ -716,7 +716,7 @@ def _bq_guardrail_inputs(
       grant on the registered name (`bq_path_access_denied`). None when the
       RBAC check passes.
     """
-    repo = TableRegistryRepository(sys_conn)
+    repo = table_registry_repo()
 
     # 1. Bare-name pass: look up registered remote-BQ names that appear in
     # the user SQL as word-boundary tokens. Reuses the same regex shape as
