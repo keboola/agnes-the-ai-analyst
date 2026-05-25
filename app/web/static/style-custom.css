@@ -3919,6 +3919,23 @@ a.news-cta:hover { background: #0056A3; }
     color: var(--text-primary);
 }
 
+/* When the ds.button macro composes variant='ghost' with klass='btn-link'
+ * (the 3 auth pages — login_email, password_reset, password_setup —
+ * use this combo for "Forgot Password?" / "Back to Login" affordances
+ * that should look like links, not buttons), the cascade default would
+ * let .btn-ghost (defined later in this file) override .btn-link's
+ * blue with text-secondary grey. Boost specificity (0,0,3,0 beats the
+ * single-class rules above) to keep the link color in that case.
+ * Devin review on PR #375 flagged this contrast regression. */
+.btn.btn-ghost.btn-link {
+    color: var(--primary);
+}
+.btn.btn-ghost.btn-link:hover {
+    color: var(--primary-dark);
+    text-decoration: underline;
+    background-color: transparent;
+}
+
 .btn-danger {
     background-color: #fff;
     color: var(--error);
