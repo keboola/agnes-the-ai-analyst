@@ -21,8 +21,10 @@ import duckdb
 
 from services.session_pipeline.contract import ProcessorResult, SessionProcessor
 from services.session_pipeline.lib import compute_file_hash
-from src.repositories.session_processor_state import SessionProcessorStateRepository
 
+from src.repositories import (
+    session_processor_state_repo,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -89,7 +91,7 @@ def run_processor(
         "errors_detail": [],
     }
 
-    repo = SessionProcessorStateRepository(conn)
+    repo = session_processor_state_repo()
     candidates = repo.scan_unprocessed_for(processor.name, effective_dir)
     stats["scanned"] = len(candidates)
 

@@ -27,6 +27,9 @@ from app.auth.dependencies import _get_db
 from app.api.admin_user_sessions import _SESSION_FILE_RE, _session_data_dir
 from services.session_pipeline.lib import parse_jsonl
 
+from src.repositories import (
+    audit_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/sessions", tags=["admin-sessions"])
@@ -335,7 +338,7 @@ def download(
 
     try:
         from src.repositories.audit import AuditRepository
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="session_download",
             resource=f"{username}/{session_file}",
@@ -387,7 +390,7 @@ def transcript(
     # operation; record actor + target + bytes scanned for traceability.
     try:
         from src.repositories.audit import AuditRepository
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="session.transcript_view",
             resource=f"{username}/{session_file}",

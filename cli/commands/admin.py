@@ -16,6 +16,12 @@ from cli.commands.admin_store import admin_store_app
 from cli.commands.admin_usage import app as admin_usage_app
 from cli.commands.memory_admin import memory_admin_app
 
+from src.repositories import (
+    column_metadata_repo,
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+)
 admin_app = typer.Typer(help="Admin operations (requires admin role)")
 admin_app.add_typer(activity_app, name="activity", help="Activity Center — audit_log timeline, health pulse, sync history")
 admin_app.add_typer(admin_ask_app, name="ask", help="Ask a natural-language question about telemetry")
@@ -642,7 +648,7 @@ def metadata_apply(
 
     conn = get_system_db()
     try:
-        repo = ColumnMetadataRepository(conn)
+        repo = column_metadata_repo()
         count = repo.import_proposal(proposal_path)
         typer.echo(f"Imported {count} column(s) from proposal.")
     finally:
@@ -1140,9 +1146,9 @@ def break_glass_grant_admin(
 
     conn = get_system_db()
     try:
-        users = UserRepository(conn)
-        groups = UserGroupsRepository(conn)
-        members = UserGroupMembersRepository(conn)
+        users = users_repo()
+        groups = user_groups_repo()
+        members = user_group_members_repo()
 
         admin_group = groups.get_by_name(SYSTEM_ADMIN_GROUP)
         if admin_group is None:

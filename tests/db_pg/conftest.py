@@ -191,3 +191,128 @@ def pg_session(pg_engine) -> Iterator[Session]:
     """Per-test SQLAlchemy session over the per-test engine."""
     with Session(pg_engine, future=True) as session:
         yield session
+
+
+# ---------------------------------------------------------------------------
+# parametrized backend harness — runs the same endpoint test twice, once
+# against DuckDB and once against Postgres.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(params=["duckdb", "pg"], ids=["duck", "pg"])
+def state_backend(request, monkeypatch, tmp_path, _pg_url, pg_engine):
+    """Configure the app-state backend.
+
+    Tests that consume ``seeded_app_both`` indirectly consume this and
+    therefore run twice: once with ``AGNES_DB_URL`` unset (DuckDB path)
+    and once with it set to the per-test pgserver instance + alembic
+    upgraded to head.
+
+    Tests that should ONLY run against one backend can override the
+    parametrization::
+
+        @pytest.mark.parametrize("state_backend", ["pg"], indirect=True)
+        def test_pg_only_thing(seeded_app_both): ...
+    """
+    if request.param == "pg":
+        # pg_engine already created the engine and bumped schema cleanly.
+        # Run alembic upgrade head so the chain is materialised.
+        from pathlib import Path
+        from alembic import command
+        from alembic.config import Config
+
+        REPO_ROOT = Path(__file__).resolve().parents[2]
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+        cfg.attributes["sqlalchemy.url"] = str(pg_engine.url)
+        command.upgrade(cfg, "head")
+
+        # Seed Admin + Everyone groups (DuckDB does this in _seed_system_groups
+        # on every connect; PG needs an explicit seed). Idempotent.
+        with pg_engine.begin() as conn_:
+            import uuid as _uuid
+            for name, description in (
+                ("Admin", "System: full access to all data and admin actions"),
+                ("Everyone", "System: default group every user is implicitly a member of"),
+            ):
+                conn_.execute(
+                    sa.text(
+                        "INSERT INTO user_groups (id, name, description, is_system, created_by) "
+                        "VALUES (:id, :name, :desc, TRUE, 'system:seed') "
+                        "ON CONFLICT (name) DO UPDATE SET is_system = TRUE"
+                    ),
+                    {"id": _uuid.uuid4().hex, "name": name, "desc": description},
+                )
+
+        monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+
+        # Force a fresh PG engine inside the app process
+        import src.db_pg as db_pg
+        db_pg.dispose()
+    else:
+        monkeypatch.delenv("AGNES_DB_URL", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    # Reset the factory module to pick up the env change on next import
+    import importlib
+    import src.repositories
+    importlib.reload(src.repositories)
+
+    yield request.param
+
+
+@pytest.fixture
+def seeded_app_both(state_backend, tmp_path, monkeypatch):
+    """Backend-parametrized TestClient with seeded admin + analyst users.
+
+    Drop-in for tests that want to verify endpoint behaviour identically
+    against DuckDB and Postgres. Returns the same dict shape as the
+    legacy ``seeded_app`` fixture (client + token strings + env), with
+    one extra key ``backend`` for diagnostic assertions.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+    for sub in ("extracts", "analytics", "state", "notifications"):
+        (tmp_path / sub).mkdir(exist_ok=True)
+
+    from app.auth.jwt import create_access_token
+    from app.main import create_app
+    from fastapi.testclient import TestClient
+    from src.repositories import users_repo, user_group_members_repo
+
+    if state_backend == "duckdb":
+        # DuckDB side: ensure system DB is created + system groups seeded
+        from src.db import close_system_db, get_system_db
+        close_system_db()
+        get_system_db()  # triggers _ensure_schema + _seed_system_groups
+
+    u = users_repo()
+    u.create(id="admin1", email="admin@test.com", name="Admin")
+    u.create(id="analyst1", email="analyst@test.com", name="Analyst")
+
+    # Find Admin group id (seeded by either DuckDB _ensure_schema or the
+    # PG fixture above)
+    if state_backend == "duckdb":
+        from src.db import get_system_db
+        admin_gid = get_system_db().execute(
+            "SELECT id FROM user_groups WHERE name = 'Admin'"
+        ).fetchone()[0]
+    else:
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as conn_:
+            admin_gid = conn_.execute(
+                sa.text("SELECT id FROM user_groups WHERE name = 'Admin'")
+            ).scalar()
+
+    user_group_members_repo().add_member("admin1", admin_gid, source="system_seed")
+
+    app = create_app()
+    client = TestClient(app)
+
+    return {
+        "client": client,
+        "admin_token": create_access_token("admin1", "admin@test.com"),
+        "analyst_token": create_access_token("analyst1", "analyst@test.com"),
+        "backend": state_backend,
+        "data_dir": tmp_path,
+    }

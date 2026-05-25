@@ -370,7 +370,7 @@ class TestBuildSchemaUncached:
         from unittest.mock import MagicMock
         repo_mock = MagicMock()
         repo_mock.get.return_value = {"id": "x", "source_type": "bigquery"}
-        monkeypatch.setattr(v2_schema, "TableRegistryRepository", lambda c: repo_mock)
+        monkeypatch.setattr(v2_schema, "table_registry_repo", lambda: repo_mock)
 
         v2_schema.build_schema(
             conn=MagicMock(), user={"id": "u"}, table_id="x", bq=MagicMock(),

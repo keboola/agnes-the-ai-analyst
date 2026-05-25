@@ -137,6 +137,45 @@ class UserGroupMembersPgRepository:
             ).first()
         return int(row[0]) if row else 0
 
+    def delete_all_for_group(self, group_id: str) -> int:
+        """Drop every membership row pointing at ``group_id``."""
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "DELETE FROM user_group_members WHERE group_id = :g RETURNING 1"
+                ),
+                {"g": group_id},
+            ).all()
+        return len(rows)
+
+    def list_groups_with_meta_for_user(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return groups the user is in joined with the groups table.
+
+        Each row: ``{group_id, name, is_system, created_by, source}``.
+        Mirror of the DuckDB version — same shape, same ordering.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """SELECT g.id, g.name, g.is_system, g.created_by, m.source
+                       FROM user_group_members m
+                       JOIN user_groups g ON g.id = m.group_id
+                       WHERE m.user_id = :u
+                       ORDER BY g.is_system DESC, g.name"""
+                ),
+                {"u": user_id},
+            ).all()
+        return [
+            {
+                "group_id": r[0],
+                "name": r[1],
+                "is_system": bool(r[2]),
+                "created_by": r[3],
+                "source": r[4],
+            }
+            for r in rows
+        ]
+
     def has_any_google_sync_membership(self, user_id: str) -> bool:
         with self._engine.connect() as conn:
             row = conn.execute(
