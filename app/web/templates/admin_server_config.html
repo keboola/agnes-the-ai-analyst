@@ -906,6 +906,8 @@ function renderSection(section, payload, knownForSection) {
         ${section === "data_source" ? `
         <button class="cfg-btn" data-action="test-bigquery" type="button">Test BigQuery connection</button>
         <span class="bq-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
+        <button class="cfg-btn" data-action="test-keboola" type="button" style="margin-left: 8px;">Test Keboola connection</button>
+        <span class="kbc-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
         ` : ""}
       </div>
     </section>`;
@@ -1021,6 +1023,10 @@ function renderAll(data) {
   // ssh to the VM or wait for an analyst's failed query.
   wrap.querySelectorAll('[data-action="test-bigquery"]').forEach(btn =>
     btn.addEventListener("click", () => onTestBigQuery(btn)));
+
+  // Test Keboola connection — counterpart to BigQuery probe above.
+  wrap.querySelectorAll('[data-action="test-keboola"]').forEach(btn =>
+    btn.addEventListener("click", () => onTestKeboola(btn)));
 
   // Wire array-of-scalars + map-of-scalars add/remove buttons via event
   // delegation on the wrapper. Re-attaching after every renderAll() is
@@ -1316,6 +1322,39 @@ async function onTestBigQuery(btn) {
     if (r.ok) {
       const body = await r.json();
       resultEl.textContent = `✓ ok (${body.elapsed_ms} ms; billing=${body.billing_project}, data=${body.data_project})`;
+      resultEl.style.color = "#2a8c4a";
+    } else {
+      let body;
+      try { body = await r.json(); } catch (_) { body = await r.text(); }
+      const detail = body && typeof body === "object" ? body.detail : body;
+      const kind = detail && typeof detail === "object" ? (detail.kind || "error") : "error";
+      const hint = detail && typeof detail === "object" ? (detail.hint || detail.message || "") : String(detail);
+      resultEl.textContent = `✗ ${kind}${hint ? " — " + hint : ""}`;
+      resultEl.style.color = "#c0392b";
+    }
+  } catch (e) {
+    resultEl.textContent = `✗ network error — ${e.message}`;
+    resultEl.style.color = "#c0392b";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Keboola test connection ────────────────────────────────────────────
+async function onTestKeboola(btn) {
+  const resultEl = btn.parentElement.querySelector(".kbc-test-result");
+  resultEl.hidden = false;
+  resultEl.textContent = "Testing…";
+  resultEl.style.color = "";
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/admin/keboola/test-connection", {
+      method: "POST",
+      credentials: "include",
+    });
+    if (r.ok) {
+      const body = await r.json();
+      resultEl.textContent = `✓ ok (${body.elapsed_ms} ms; ${body.bucket_count} bucket${body.bucket_count !== 1 ? "s" : ""})`;
       resultEl.style.color = "#2a8c4a";
     } else {
       let body;

@@ -347,6 +347,18 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         },
     },
     "data_source": {
+        "type": {
+            "kind": "select",
+            "options": ["keboola", "bigquery", "local", "csv"],
+            "default": "local",
+            "hint": (
+                "Active data source connector. "
+                "`keboola` — pulls tables from Keboola Storage API (configure stack_url + token below). "
+                "`bigquery` — queries BigQuery remotely via the DuckDB BQ extension (configure bigquery block below). "
+                "`local` — CSV/parquet files placed directly in the data directory. "
+                "`csv` — alias for local."
+            ),
+        },
         "bigquery": {
             "kind": "object",
             "hint": "BigQuery connection knobs (read more in docs/DEPLOYMENT.md)",
