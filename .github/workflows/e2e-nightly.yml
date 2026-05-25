@@ -69,10 +69,46 @@ jobs:
         if: failure() && env.SKIP_MATRIX != '1'
         run: docker compose logs app | tail -200
 
+      - name: Seed E2E test user
+        if: env.SKIP_MATRIX != '1'
+        # DuckDB takes an exclusive POSIX lock on /data/state/system.duckdb
+        # for the writer process — running the seed via `docker compose exec`
+        # while uvicorn (PID 1) holds the lock fails with IO Error. Pattern:
+        # let the app boot (schema bootstrap seeds the Admin group); then
+        # stop it (lock released), run the seed in a one-shot container
+        # (`docker compose run --rm`) sharing the data volume, start app
+        # again, and wait for /api/health to recover. Seed is gated on
+        # AGNES_E2E_SEED=1 — defence-in-depth so a stray `docker exec` on
+        # a production image (the seed script is shipped via `COPY . .`)
+        # cannot mint an Admin user without an explicit opt-in.
+        # See docs/superpowers/specs/2026-05-25-smoke-login-flow-design.md.
+        run: |
+          docker compose stop app
+          docker compose run --rm -T -e AGNES_E2E_SEED=1 app python scripts/seed_e2e_user.py
+          docker compose start app
+          # Poll /api/health rather than `compose up --wait` (which only
+          # honours --wait on the up command, not start). 60 s ceiling
+          # mirrors the upstream `--wait-timeout 120` halved — restart
+          # without rebuild is materially faster than initial boot.
+          timeout 60 sh -c 'until curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; do sleep 2; done'
+
+      - name: Export E2E credentials for smoke scripts
+        if: env.SKIP_MATRIX != '1'
+        # Single source of truth: import constants from scripts/seed_e2e_user.py
+        # via the running app container so _login.sh never drifts from the seed.
+        run: |
+          E2E_USER_EMAIL=$(docker compose exec -T app python -c 'from scripts.seed_e2e_user import E2E_USER_EMAIL; print(E2E_USER_EMAIL)')
+          E2E_USER_PASSWORD=$(docker compose exec -T app python -c 'from scripts.seed_e2e_user import E2E_USER_PASSWORD; print(E2E_USER_PASSWORD)')
+          echo "E2E_USER_EMAIL=$E2E_USER_EMAIL" >> $GITHUB_ENV
+          echo "::add-mask::$E2E_USER_PASSWORD"
+          echo "E2E_USER_PASSWORD=$E2E_USER_PASSWORD" >> $GITHUB_ENV
+
       - name: Run smoke ${{ matrix.script }}
         if: env.SKIP_MATRIX != '1'
         env:
           ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts/${{ matrix.script }}
+          E2E_USER_EMAIL: ${{ env.E2E_USER_EMAIL }}
+          E2E_USER_PASSWORD: ${{ env.E2E_USER_PASSWORD }}
         run: |
           mkdir -p "$ARTIFACTS_DIR"
           bash "scripts/e2e/${{ matrix.script }}" http://localhost:8000
