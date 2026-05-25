@@ -50,7 +50,7 @@ def _audit(user_id: str, action: str, result: str | None = None) -> None:
         from src.db import get_system_db
         from src.repositories.audit import AuditRepository
         audit_conn = get_system_db()
-        AuditRepository(audit_conn).log(
+        audit_repo().log(
             user_id=user_id,
             action=action,
             resource="auth",

@@ -93,7 +93,7 @@ def test_default_schedule_falls_through_env_then_every_1h(
         def __init__(self, conn): pass
         def list_all(self): return pinned_rows
 
-    monkeypatch.setattr(_sm, "TableRegistryRepository", _RepoWithSched)
+    monkeypatch.setattr(_sm, "table_registry_repo", lambda: _RepoWithSched(None))
     _run_materialized_pass(MagicMock(), MagicMock())
     assert captured["schedule"] == "every 30m", captured
 
