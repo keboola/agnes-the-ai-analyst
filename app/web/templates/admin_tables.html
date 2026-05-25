@@ -1299,7 +1299,7 @@
                         {% if data_source_type != 'keboola' %}
                         <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
                             <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                            <span>Keboola is not connected — <strong>Discover</strong> won't work. Set your token in <a href="/admin/server-config" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
+                            <span>Keboola is not connected — <strong>Discover</strong> won't work. Set your token in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
                         </div>
                         {% endif %}
                         {# Three sync-mode radios:
@@ -1525,6 +1525,12 @@
                         </button>
                     </div>
                     <div class="modal-body">
+                        {% if data_source_type != 'keboola' %}
+                        <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
+                            <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <span>Keboola is not connected — <strong>Discover</strong> won't work. Set your token in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
+                        </div>
+                        {% endif %}
                         <div class="form-group">
                             <label class="form-label" for="editKbTableId">Table ID</label>
                             <input type="text" class="form-input" id="editKbTableId" readonly>

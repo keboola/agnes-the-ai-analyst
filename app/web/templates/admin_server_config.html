@@ -992,6 +992,15 @@ function renderAll(data) {
   wrap.hidden = false;
   buildSidenav(sections);
 
+  // Hash-based deep-link: /admin/server-config#cfg-s-data_source scrolls to
+  // that section after sections are rendered (anchors don't exist before this
+  // point so the browser's native scroll-to-hash fires too early). Links from
+  // other pages (e.g. the Keboola not-configured banner) use this.
+  if (window.location.hash) {
+    const target = document.querySelector(window.location.hash);
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   wrap.querySelectorAll('[data-action="save-section"]').forEach(btn =>
     btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
 
