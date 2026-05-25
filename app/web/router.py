@@ -27,6 +27,22 @@ from app.instance_config import (
     get_instance_brand, get_workspace_dir_name,
     get_instance_logo_svg, get_instance_overview,
 )
+
+from src.repositories import (
+    audit_repo,
+    claude_md_template_repo,
+    knowledge_repo,
+    news_template_repo,
+    profile_repo,
+    store_entities_repo,
+    store_submissions_repo,
+    sync_settings_repo,
+    sync_state_repo,
+    table_registry_repo,
+    user_groups_repo,
+    users_repo,
+    welcome_template_repo,
+)
 from app.web.connector_prompts import all_connector_prompts
 from app.api.me_debug import (
     require_debug_auth_enabled,
@@ -35,11 +51,6 @@ from app.api.me_debug import (
     _token_fingerprint,
     _last_sync_summary,
 )
-from src.repositories.sync_state import SyncStateRepository
-from src.repositories.sync_settings import SyncSettingsRepository
-from src.repositories.knowledge import KnowledgeRepository
-from src.repositories.users import UserRepository
-from src.repositories.profiles import ProfileRepository
 
 
 def _resolved_home_route() -> str:
@@ -617,9 +628,9 @@ async def dashboard(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    sync_repo = SyncStateRepository(conn)
-    settings_repo = SyncSettingsRepository(conn)
-    profile_repo = ProfileRepository(conn)
+    sync_repo = sync_state_repo()
+    settings_repo = sync_settings_repo()
+    profiles = profile_repo()
 
     all_states = sync_repo.get_all_states()
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
@@ -712,7 +723,7 @@ async def home_page(
     # Template renders the section only when intro is non-empty, so an
     # instance that has never published news shows nothing extra.
     from src.repositories.news_template import NewsTemplateRepository
-    news = NewsTemplateRepository(conn).get_current_published()
+    news = news_template_repo().get_current_published()
     news_intro = news["intro"] if (news and news.get("intro")) else ""
 
     # Homepage status frame (Last sync, Sessions, Prompts, Tokens, Projects).
@@ -785,7 +796,7 @@ async def news_page(
     copy when no version is published. Authed-only (same as /home).
     """
     from src.repositories.news_template import NewsTemplateRepository
-    news = NewsTemplateRepository(conn).get_current_published()
+    news = news_template_repo().get_current_published()
     ctx = _build_context(
         request,
         user=user,
@@ -806,7 +817,7 @@ async def admin_news_editor(
     versions table. JS hits the /api/admin/news/* endpoints for the
     write paths."""
     from src.repositories.news_template import NewsTemplateRepository
-    repo = NewsTemplateRepository(conn)
+    repo = news_template_repo()
     ctx = _build_context(
         request,
         user=user,
@@ -849,12 +860,12 @@ async def catalog(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    sync_repo = SyncStateRepository(conn)
-    settings_repo = SyncSettingsRepository(conn)
-    profile_repo = ProfileRepository(conn)
+    sync_repo = sync_state_repo()
+    settings_repo = sync_settings_repo()
+    profiles = profile_repo()
 
     all_states = sync_repo.get_all_states()
-    all_profiles = profile_repo.get_all()
+    all_profiles = profiles.get_all()
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
     datasets = get_datasets()
 
@@ -866,7 +877,7 @@ async def catalog(
         from src.repositories.table_registry import TableRegistryRepository
         from app.auth.access import can_access
         from app.resource_types import ResourceType
-        table_repo = TableRegistryRepository(conn)
+        table_repo = table_registry_repo()
         registered = table_repo.list_all()
 
         user_id = user.get("id", "")
@@ -982,7 +993,7 @@ async def corporate_memory(
     (the pending-review banner) stay gated server-side: ``is_admin_view``
     zeroes ``pending_review_count`` for non-admins.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     # v46: server-side initial render mirrors the JS fetch contract — items
     # are annotated with `dismissed_by_me` so the template can gray out the
     # ones the caller dismissed without a second round-trip. The full list
@@ -1104,7 +1115,7 @@ async def corporate_memory_admin(
     page: pending items awaiting review, contradictions, duplicate
     candidates, and the audit trail. Reached from the Admin nav dropdown.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     pending = repo.list_items(statuses=["pending"], limit=100)
     all_items = repo.list_items(limit=10000)
     status_counts = {}
@@ -1231,7 +1242,7 @@ async def setup_page(
     # Determine the script text: override (Jinja2-rendered) or live default.
     # The override is per-instance, applies to every caller — admins who set
     # an override are opting into the exact text they wrote.
-    row = WelcomeTemplateRepository(conn).get()
+    row = welcome_template_repo().get()
     override_content = row.get("content")
     if override_content:
         # Admin override — render Jinja2 placeholders server-side.
@@ -1360,7 +1371,7 @@ async def store_edit(
     from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_categories import STORE_CATEGORIES
 
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     is_admin = is_user_admin(user["id"], conn)
@@ -1371,7 +1382,7 @@ async def store_edit(
 
     pending_sub = None
     if entity.get("visibility_status") == "pending":
-        latest = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        latest = store_submissions_repo().latest_for_entity(entity_id)
         if latest and latest.get("status") in ("pending_inline", "pending_llm"):
             pending_sub = latest
 
@@ -1433,7 +1444,7 @@ async def marketplace_flea_detail(
     from src.repositories.store_entities import StoreEntitiesRepository
     from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     # Owner/admin get a version-status decorated entity so the versions
     # card can gate the Restore button on past-version approval state
     # (#316). Plain viewers don't see the versions card at all, so the
@@ -1466,7 +1477,7 @@ async def marketplace_flea_detail(
     # failure from the owner — that was the regression #316 fixed.
     quarantine_sub = None
     if is_owner or is_admin:
-        quarantine_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        quarantine_sub = store_submissions_repo().latest_for_entity(entity_id)
 
     # v37: the Edit button locks while a submission is under review.
     edit_in_flight = bool(
@@ -1604,7 +1615,7 @@ async def marketplace_flea_skill_detail(
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
     from src.repositories.store_entities import StoreEntitiesRepository
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
     _enforce_visibility(entity, user, conn)
@@ -1643,7 +1654,7 @@ async def marketplace_flea_agent_detail(
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
     from src.repositories.store_entities import StoreEntitiesRepository
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
     _enforce_visibility(entity, user, conn)
@@ -1744,7 +1755,7 @@ async def admin_tables(
 ):
     from src.repositories.table_registry import TableRegistryRepository
     from app.instance_config import get_data_source_type
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     tables = repo.list_all()
     # Branch the register-modal layout server-side so the JS doesn't have
     # to round-trip /api/admin/server-config to learn the source type.
@@ -1803,7 +1814,7 @@ async def admin_user_detail_page(
     admin reload picks up state changes from a sibling tab without a
     full-page reload elsewhere.
     """
-    repo = UserRepository(conn)
+    repo = users_repo()
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1883,7 +1894,7 @@ async def admin_group_detail_page(
     live on /admin/grants (deep-linked from here)."""
     from src.repositories.user_groups import UserGroupsRepository
     from app.api.access import _is_google_managed, _mapped_email
-    g = UserGroupsRepository(conn).get(group_id)
+    g = user_groups_repo().get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
     # Project the same flags the API derives so the template avoids env
@@ -1999,7 +2010,7 @@ async def admin_store_submissions_page(
 
     valid_sort = sort if sort in {"created_at", "file_size", "status", "name"} else None
     valid_order = order if order in {"asc", "desc"} else None
-    items, total = StoreSubmissionsRepository(conn).list_for_admin(
+    items, total = store_submissions_repo().list_for_admin(
         status=statuses,
         submitter_id=submitter or None,
         type_=valid_type,
@@ -2016,7 +2027,7 @@ async def admin_store_submissions_page(
     submitter_email = ""
     if submitter:
         from src.repositories.users import UserRepository
-        urow = UserRepository(conn).get_by_id(submitter)
+        urow = users_repo().get_by_id(submitter)
         if urow:
             submitter_email = urow.get("email") or submitter
 
@@ -2053,7 +2064,7 @@ async def admin_store_submission_detail_page(
     from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.repositories.users import UserRepository
 
-    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    sub = store_submissions_repo().get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
 
@@ -2072,7 +2083,7 @@ async def admin_store_submission_detail_page(
     submission_version_no = None
     sibling_submissions: list = []
     if sub.get("entity_id"):
-        ent = StoreEntitiesRepository(conn).get(sub["entity_id"])
+        ent = store_entities_repo().get(sub["entity_id"])
         if ent:
             entity_visibility_status = ent.get("visibility_status")
             entity_version_no = ent.get("version_no")
@@ -2120,11 +2131,11 @@ async def admin_store_submission_detail_page(
                     "is_current": row["id"] == submission_id,
                 })
 
-    other_count = StoreSubmissionsRepository(conn).count_for_submitter(
+    other_count = store_submissions_repo().count_for_submitter(
         sub["submitter_id"], exclude_id=submission_id,
     )
 
-    user_repo = UserRepository(conn)
+    user_repo = users_repo()
     override_email = ""
     if sub.get("override_by"):
         urow = user_repo.get_by_id(sub["override_by"])
@@ -2155,12 +2166,12 @@ async def admin_store_submission_detail_page(
         f"store_entity:{submission_id}",
         submission_id,
     ]
-    submission_audit_rows = AuditRepository(conn).query_for_resources(
+    submission_audit_rows = audit_repo().query_for_resources(
         submission_resources, limit=100,
     )
     entity_audit_rows: list = []
     if sub.get("entity_id"):
-        entity_audit_rows = AuditRepository(conn).query_for_resources(
+        entity_audit_rows = audit_repo().query_for_resources(
             [f"store_entity:{sub['entity_id']}"], limit=100,
         )
         # Drop entity-scoped rows that are actually submission audits for
@@ -2224,7 +2235,7 @@ async def admin_agent_prompt_page(
     from src.repositories.welcome_template import WelcomeTemplateRepository
     from src.welcome_template import compute_default_agent_prompt
 
-    row = WelcomeTemplateRepository(conn).get()
+    row = welcome_template_repo().get()
     base_url = str(request.base_url).rstrip("/")
     default_template = compute_default_agent_prompt(conn, user=user, server_url=base_url)
     ctx = _build_context(
@@ -2249,7 +2260,7 @@ async def admin_workspace_prompt_page(
     from src.claude_md import compute_default_claude_md
     from app.api.claude_md import _scan_legacy_strings
 
-    row = ClaudeMdTemplateRepository(conn).get()
+    row = claude_md_template_repo().get()
     server_url = str(request.base_url).rstrip("/")
     default_template = compute_default_claude_md(conn, user=user, server_url=server_url)
     ctx = _build_context(

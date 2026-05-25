@@ -15,9 +15,10 @@ from uuid import uuid4
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-
-class SystemGroupProtected(Exception):
-    """Raised when a mutation is attempted on a system user group (is_system=TRUE)."""
+# Re-export the canonical exception class from the DuckDB module so callers
+# can catch one ``SystemGroupProtected`` regardless of which backend is
+# active. Both implementations raise the same class.
+from src.repositories.user_groups import SystemGroupProtected  # noqa: F401
 
 
 class UserGroupsPgRepository:

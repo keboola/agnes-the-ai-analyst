@@ -20,13 +20,15 @@ from app.auth.dependencies import get_current_user, _get_db
 from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
-from src.repositories.audit import AuditRepository
-from src.repositories.sync_state import SyncStateRepository
-from src.repositories.sync_settings import SyncSettingsRepository
-from src.repositories.table_registry import TableRegistryRepository
 from src.rbac import can_access_table
 from src.scheduler import filter_due_tables, is_table_due
 
+from src.repositories import (
+    audit_repo,
+    sync_settings_repo,
+    sync_state_repo,
+    table_registry_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -147,8 +149,8 @@ def _run_materialized_pass(
         n = 0
     bq_max_bytes = n if n > 0 else None
 
-    registry = TableRegistryRepository(conn)
-    state = SyncStateRepository(conn)
+    registry = table_registry_repo()
+    state = sync_state_repo()
 
     summary = {"materialized": [], "skipped": [], "errors": []}
     keboola_access = None  # lazy-init on first Keboola row
@@ -735,8 +737,8 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     (race / manual deletion), fall back to ``query_mode='local'`` and
     ``source_type=''`` so the manifest still serializes cleanly.
     """
-    sync_repo = SyncStateRepository(conn)
-    table_repo = TableRegistryRepository(conn)
+    sync_repo = sync_state_repo()
+    table_repo = table_registry_repo()
     all_states = sync_repo.get_all_states()
     # `sync_state.table_id` is sourced from `_meta.table_name` which equals
     # `table_registry.name`, NOT `table_registry.id`. Auto-discovered Keboola
@@ -817,7 +819,7 @@ async def sync_manifest(
         # recent one). Action `manifest.fetch` covers both `agnes pull`
         # via PAT and browser-driven manifest peeks; clients can
         # disambiguate via client_kind.
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user["id"],
             action="manifest.fetch",
             resource="manifest",
@@ -983,7 +985,7 @@ async def get_sync_settings(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get user's dataset sync settings."""
-    repo = SyncSettingsRepository(conn)
+    repo = sync_settings_repo()
     settings = repo.get_user_settings(user["id"])
     enabled = repo.get_enabled_datasets(user["id"])
     return {
@@ -1009,7 +1011,7 @@ async def update_sync_settings(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
 
-    settings_repo = SyncSettingsRepository(conn)
+    settings_repo = sync_settings_repo()
     results = {}
     for dataset, enabled in request.datasets.items():
         if not can_access(user["id"], ResourceType.TABLE.value, dataset, conn):
@@ -1034,7 +1036,7 @@ async def get_table_subscriptions(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get user's per-table subscription settings."""
-    repo = SyncSettingsRepository(conn)
+    repo = sync_settings_repo()
     settings = repo.get_user_settings(user["id"])
     return {"user_id": user["id"], "subscriptions": settings}
 
@@ -1054,7 +1056,7 @@ async def update_table_subscriptions(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
 
-    repo = SyncSettingsRepository(conn)
+    repo = sync_settings_repo()
     results = {}
     for table_name, enabled in request.tables.items():
         if not can_access(user["id"], ResourceType.TABLE.value, table_name, conn):

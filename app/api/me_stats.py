@@ -35,8 +35,10 @@ import duckdb
 from fastapi import APIRouter, Depends, Query
 
 from app.auth.dependencies import _get_db, get_current_user
-from src.repositories.audit import AuditRepository
 
+from src.repositories import (
+    audit_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/me/stats", tags=["me"])
@@ -418,7 +420,7 @@ def list_self_queries(
     writes don't double-render rows.
     """
     cursor = (cursor_ts, cursor_id) if cursor_ts and cursor_id else None
-    rows, next_cursor = AuditRepository(conn).query(
+    rows, next_cursor = audit_repo().query(
         user_id=user["id"],
         action_prefix="query.",
         cursor=cursor,
@@ -453,7 +455,7 @@ def list_self_sync_activity(
     the cursor is single-stream (start over to page back; first page
     is what matters for the dashboard).
     """
-    actions_seen = AuditRepository(conn).query_actions(
+    actions_seen = audit_repo().query_actions(
         actions=_sync_action_list(),
         limit=limit,
     )

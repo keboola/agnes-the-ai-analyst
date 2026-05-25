@@ -43,6 +43,14 @@ from fastapi import (
     Query,
     UploadFile,
 )
+
+from src.repositories import (
+    audit_repo,
+    store_entities_repo,
+    store_submissions_repo,
+    user_store_installs_repo,
+    users_repo,
+)
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -55,11 +63,6 @@ from app.instance_config import (
 )
 from app.utils import get_store_dir
 from src.db import get_system_db
-from src.repositories.audit import AuditRepository
-from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.store_submissions import StoreSubmissionsRepository
-from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.repositories.users import UserRepository
 from src.store_categories import STORE_CATEGORIES, is_valid_category
 from src.store_guardrails import InlineResult, run_inline_checks, run_llm_review
 from src.store_guardrails.runner import (
@@ -71,6 +74,7 @@ from src.store_naming import (
     sanitize_username,
     suffixed_name,
 )
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/store", tags=["store"])
 
@@ -224,7 +228,7 @@ def _audit(
     params: Optional[dict] = None,
 ) -> None:
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=f"store_entity:{entity_id}",
@@ -301,7 +305,7 @@ def _reject_inline_or_continue(
         bundle_meta = compute_bundle_meta(plugin_dir)
         findings = inline.static_security.get("findings") or []
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user["id"],
                 action="store.upload.security_blocked",
                 resource=f"store_upload:{bundle_meta.sha256}",
@@ -1131,7 +1135,7 @@ async def list_entities(
 ):
     if type and type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     # Visibility filter: hide pending/blocked from the public flea browse.
     # An owner viewing their own uploads (`owner=<self_id>`) sees their
     # whole catalogue regardless of guardrail status — same goes for
@@ -1189,7 +1193,7 @@ async def get_entity(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -1202,7 +1206,7 @@ async def list_entity_files(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -1241,7 +1245,7 @@ async def get_entity_photo(
     so a 30-day ``immutable`` cache is safe — a re-upload generates a
     new URL fingerprint that the browser refetches.
     """
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity or not entity.get("photo_path"):
         raise HTTPException(status_code=404, detail="photo_not_found")
     abs_path = _entity_dir(entity_id) / entity["photo_path"]
@@ -1261,7 +1265,7 @@ async def get_entity_doc(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Stream an attached doc — directory-traversal-guarded."""
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -1386,7 +1390,7 @@ async def create_entity(
     quota = get_guardrails_blocked_quota_per_day()
     if quota > 0:
         since = _dt.now(_tz.utc) - _td(hours=24)
-        recent_blocked = StoreSubmissionsRepository(conn) \
+        recent_blocked = store_submissions_repo() \
             .count_blocked_for_submitter_since(user["id"], since)
         if recent_blocked >= quota:
             raise HTTPException(
@@ -1428,7 +1432,7 @@ async def create_entity(
             raise HTTPException(status_code=400, detail="invalid_name_format")
         final_description = description or meta.get("description")
 
-        repo = StoreEntitiesRepository(conn)
+        repo = store_entities_repo()
         # Skip archived rows: archive renames the row to free the slot,
         # so a same-name re-upload after archive succeeds. Active rows
         # (approved / pending / hidden) still 409 on collision.
@@ -1492,7 +1496,7 @@ async def create_entity(
         # persisted (as a submission row).
         from src.store_guardrails.bundle_meta import compute_bundle_meta
         bundle_meta = compute_bundle_meta(plugin_dir)
-        subs_repo = StoreSubmissionsRepository(conn)
+        subs_repo = store_submissions_repo()
 
         # Three-state matrix (fail-CLOSED on misconfig):
         #   - intent False           → auto-approve (operator opt-out, e.g. local dev)
@@ -1577,7 +1581,7 @@ async def create_entity(
         shutil.rmtree(scratch, ignore_errors=True)
 
     _invalidate_etag()
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     return _entity_to_response(conn, entity)  # type: ignore[arg-type]
 
 
@@ -1652,7 +1656,7 @@ async def _update_entity_locked(
     user: dict,
     conn: duckdb.DuckDBPyConnection,
 ):
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -1683,7 +1687,7 @@ async def _update_entity_locked(
     # (each baking its own versions/v<N+1>/plugin/ which the runner
     # would then sequentially promote — violates the "single in-flight
     # version per entity" invariant).
-    latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+    latest_sub = store_submissions_repo().latest_for_entity(entity_id)
     if latest_sub and latest_sub.get("status") in (
         "pending_inline", "pending_llm",
     ):
@@ -1942,7 +1946,7 @@ async def _update_entity_locked(
         hold_for_review = guardrails_enabled
         schedule_async_llm = guardrails_enabled and provider_ready
         guardrails_on = hold_for_review
-        subs_repo = StoreSubmissionsRepository(conn)
+        subs_repo = store_submissions_repo()
         from src.store_guardrails.bundle_meta import compute_bundle_meta
         # Hash the NEW version dir, not live (which still holds the
         # prior approved bytes during a guardrails-on edit).
@@ -2081,7 +2085,7 @@ async def _restore_version_locked(
     user: dict,
     conn: duckdb.DuckDBPyConnection,
 ):
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -2091,7 +2095,7 @@ async def _restore_version_locked(
     # Block while pending — same gate as PUT. Gate on submission
     # status directly so v2+ deferred-promotion edits don't slip
     # through the visibility check.
-    latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+    latest_sub = store_submissions_repo().latest_for_entity(entity_id)
     if latest_sub and latest_sub.get("status") in (
         "pending_inline", "pending_llm",
     ):
@@ -2118,7 +2122,7 @@ async def _restore_version_locked(
         None,
     )
     if src_sub_id:
-        src_sub = StoreSubmissionsRepository(conn).get(src_sub_id)
+        src_sub = store_submissions_repo().get(src_sub_id)
         if src_sub and src_sub.get("status") not in ("approved",):
             raise HTTPException(
                 status_code=400,
@@ -2197,7 +2201,7 @@ async def _restore_version_locked(
     provider_ready = get_guardrails_llm_provider_ready()
     hold_for_review = guardrails_enabled
     schedule_async_llm = guardrails_enabled and provider_ready
-    subs_repo = StoreSubmissionsRepository(conn)
+    subs_repo = store_submissions_repo()
 
     # Idempotent restore: when the restored bundle is byte-identical
     # to a prior `approved` submission reviewed by the SAME model,
@@ -2357,7 +2361,7 @@ async def delete_entity(
     archive or hard-delete; owner is refused so they can't erase the
     evidence of a flagged upload before triage.
     """
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     is_admin_caller = is_user_admin(user["id"], conn)
@@ -2397,9 +2401,9 @@ async def delete_entity(
     if hard:
         # Mark linked submissions before dropping the entity row so
         # mark_deleted_for_entity can find them by entity_id.
-        StoreSubmissionsRepository(conn).mark_deleted_for_entity(entity_id)
-        UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
-        StoreEntitiesRepository(conn).delete(entity_id)
+        store_submissions_repo().mark_deleted_for_entity(entity_id)
+        user_store_installs_repo().delete_all_for_entity(entity_id)
+        store_entities_repo().delete(entity_id)
         shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
         # v46: attribution lookup is live — the next UsageProcessor tick
         # rebuilds its in-memory cache without the deleted entity.
@@ -2421,7 +2425,7 @@ async def delete_entity(
     # re-upload. The on-disk skill/agent/plugin subdir is renamed
     # in lockstep + frontmatter rewritten so consumers see the
     # plugin under the new slug on their next sync.
-    rename_info = StoreEntitiesRepository(conn).archive(
+    rename_info = store_entities_repo().archive(
         entity_id, by_user_id=user["id"],
     )
     original_name = rename_info["original_name"]
@@ -2487,7 +2491,7 @@ async def install_entity(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -2499,7 +2503,7 @@ async def install_entity(
     # or wait for approval.
     if entity.get("visibility_status") != "approved" and not is_user_admin(user["id"], conn):
         raise HTTPException(status_code=409, detail="entity_not_approved")
-    installs = UserStoreInstallsRepository(conn)
+    installs = user_store_installs_repo()
     inserted = installs.install(user["id"], entity_id)
     if inserted:
         repo.bump_install_count(entity_id, +1)
@@ -2514,10 +2518,10 @@ async def uninstall_entity(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    installs = UserStoreInstallsRepository(conn)
+    installs = user_store_installs_repo()
     deleted = installs.uninstall(user["id"], entity_id)
     if deleted:
-        StoreEntitiesRepository(conn).bump_install_count(entity_id, -1)
+        store_entities_repo().bump_install_count(entity_id, -1)
         _audit(conn, user["id"], "store.entity.uninstall", entity_id)
         _invalidate_etag()
     return InstallResponse(entity_id=entity_id, installed=False)
@@ -2714,7 +2718,7 @@ async def export_bundle(
     # uploads without needing to look up their own user_id first.
     if owner == "me":
         owner = user["id"]
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     # Visibility filter mirrors the marketplace browse query: only
     # `approved` is visible to non-admin non-owner callers. Without
     # this filter, an authenticated non-admin could pull the entire
@@ -2782,7 +2786,7 @@ def _import_one_entry(
     sha256(email)[:12]`` to make it idempotent across repeated imports.
     """
     entity_id = entry["entity_id"]
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     existing = repo.get(entity_id)
 
     if existing:
@@ -2795,7 +2799,7 @@ def _import_one_entry(
         # mode='replace' OR mode='merge' with newer version → fall through.
 
     # Resolve owner.
-    user_repo = UserRepository(conn)
+    user_repo = users_repo()
     owner_email = (entry.get("owner_email") or "").strip().lower()
     stub_created = 0
     owner_user_id: Optional[str] = None

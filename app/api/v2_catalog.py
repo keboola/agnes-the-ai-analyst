@@ -28,10 +28,12 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
-from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
-from src.repositories.table_registry import TableRegistryRepository
-from src.repositories.audit import AuditRepository
 
+from src.repositories import (
+    audit_repo,
+    bq_metadata_cache_repo,
+    table_registry_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
@@ -226,14 +228,14 @@ def invalidate_for_table(table_id: str) -> None:
 def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     rows = _table_rows_cache.get(_TABLE_ROWS_KEY)
     if rows is None:
-        repo = TableRegistryRepository(conn)
+        repo = table_registry_repo()
         rows = repo.list_all()
         _table_rows_cache.set(_TABLE_ROWS_KEY, rows)
 
     # One DB read for all remote-row metadata. Indexed by table_id so the
     # per-row loop below stays O(N).
     bq_cache_index: dict[str, dict[str, Any]] = {
-        r["table_id"]: r for r in BqMetadataCacheRepository(conn).list_all()
+        r["table_id"]: r for r in bq_metadata_cache_repo().list_all()
     }
 
     # RBAC is enforced fresh per request. Revoking a user's access to a
@@ -282,7 +284,7 @@ def catalog(
     try:
         result = build_catalog(conn, user)
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="catalog.list",
                 resource="catalog",
@@ -298,7 +300,7 @@ def catalog(
         return result
     except Exception as exc:
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="catalog.list",
                 resource="catalog",
