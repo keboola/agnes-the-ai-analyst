@@ -28,6 +28,20 @@ Each script:
 - Stores screenshots into `$ARTIFACTS_DIR` if set; the nightly
   workflow uploads them as build artifacts.
 
+### Prerequisites — sign-in seed
+
+The smoke scripts authenticate against the running stack via
+`/auth/password/login/web` before hitting any protected page. The
+helper expects a fixed `e2e@example.com` Admin user to exist. After
+`docker compose up` (or in any newly-`down -v`-ed environment), seed
+it once:
+
+```bash
+docker compose exec -T app python scripts/seed_e2e_user.py
+```
+
+Idempotent — re-running is safe. The CI workflow does this automatically.
+
 ## Adding a new smoke script
 
 Add `smoke_<area>.sh` and append its filename to the `script:` matrix
