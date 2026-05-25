@@ -1,0 +1,85 @@
+# Postgres app-state overlay for local dev + self-hosted prod.
+#
+# Use ON TOP OF docker-compose.yml:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.postgres.yml up
+#
+# Or set the env var ``COMPOSE_FILE=docker-compose.yml:docker-compose.postgres.yml``
+# so plain ``docker compose up`` includes the overlay automatically.
+#
+# What this adds:
+#
+#   1. A ``postgres:16-alpine`` service with a named volume for durable storage.
+#   2. A one-shot ``migrate`` service that runs ``alembic upgrade head`` against
+#      the Postgres above, then exits. ``app`` depends on it completing
+#      successfully so the schema is always present before uvicorn boots.
+#   3. ``AGNES_DB_URL`` injected into the ``app`` service. The migration
+#      modules in ``src/repositories/*_pg.py`` and ``src/db_pg.py`` activate
+#      when this is set; without the overlay, ``app`` continues to use the
+#      DuckDB ``system.duckdb`` path unchanged.
+#
+# Production guidance — operators NOT using self-hosted Postgres (e.g. Cloud SQL,
+# RDS) should NOT include this overlay. Instead, set ``AGNES_DB_URL`` in ``.env``
+# pointing at the managed instance, and run the migration step in your deploy
+# pipeline (``alembic upgrade head`` against the same URL). See
+# docs/migrations.md § "Production wiring" for the Cloud SQL Unix-socket form.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    # POSTGRES_PASSWORD is read from .env (or the operator's secret manager). For
+    # local-dev convenience the default is ``agnes`` — change it for any
+    # multi-user / exposed deployment. The username + db name are hard-coded
+    # here so the service URL stays stable; if you need different ones for a
+    # bare-metal prod-like stack, fork this file.
+    environment:
+      POSTGRES_USER: agnes
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agnes}
+      POSTGRES_DB: agnes
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready is the documented PG readiness probe; -U + -d match the
+      # actual role + db so the check fails fast on credentials drift, not
+      # just on TCP availability.
+      test: ["CMD-SHELL", "pg_isready -U agnes -d agnes"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    # Bind only to the host loopback by default so a misconfigured firewall
+    # doesn't expose PG to the public internet. Operators who need cross-host
+    # access (e.g. running the app outside the compose network) should
+    # override via ``docker-compose.override.yml``.
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  migrate:
+    build: .
+    command: alembic upgrade head
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # ``postgresql+psycopg://`` selects the psycopg 3 dialect (we don't ship
+      # psycopg2). ``postgres`` is the service name resolved by Compose's
+      # internal DNS; from outside the compose network the same DB is
+      # reachable on 127.0.0.1:5432.
+      - AGNES_DB_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
+    restart: "no"
+
+  app:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        # ``service_completed_successfully`` waits for migrate to exit 0 before
+        # bringing up app. A non-zero exit (e.g. constraint violation on an
+        # in-place upgrade) blocks app start with a clear log trail —
+        # preferable to booting app against an outdated schema.
+        condition: service_completed_successfully
+    environment:
+      - AGNES_DB_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
+
+volumes:
+  postgres_data:
