@@ -55,15 +55,19 @@ jobs:
       - name: Build + start agnes stack
         if: env.SKIP_MATRIX != '1'
         run: |
-          docker compose up -d --build
-          # Wait for /healthz with a 90s budget — first build pulls + initialises
-          # so the first poll may take a while.
-          for i in $(seq 1 30); do
-            if curl -fsS http://localhost:8000/healthz >/dev/null 2>&1; then
-              echo "agnes is up after ${i}s"; break
-            fi
-            sleep 3
-          done
+          # docker-compose.yml declares `env_file: .env` as required; CI
+          # ships no .env, so create an empty one. Runtime values are
+          # already in the compose `environment:` block.
+          touch .env
+          # --wait + healthcheck (defined in docker-compose.yml, hits
+          # /api/health) is the same pattern as ci.yml; cleaner than
+          # the prior hand-rolled curl loop, which polled the wrong
+          # path (/healthz) and silently passed on timeout.
+          docker compose up -d --build --wait --wait-timeout 120
+
+      - name: Dump docker logs on stack failure
+        if: failure() && env.SKIP_MATRIX != '1'
+        run: docker compose logs app | tail -200
 
       - name: Run smoke ${{ matrix.script }}
         if: env.SKIP_MATRIX != '1'
