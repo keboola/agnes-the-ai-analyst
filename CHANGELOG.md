@@ -232,6 +232,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   applies on the redesigned pages.
 
 ### Internal
+- `app/web/setup_instructions.py` — confirm-step bullet's inline
+  example trimmed to the marker shape only (`✅ Asana ready — ...`
+  / `❌ Atlassian setup failed: ...`); drops a hardcoded personal
+  name + Asana-specific workspace-count texture that didn't belong
+  in OSS and would otherwise pin the example to one connector's
+  output shape.
 - New `app/web/static/css/design-tokens.css` declares the `--ds-*`
   design-system token set (green/navy palette, system font stack,
   callout vocabularies, navy-tinted elevation shadows) globally on
