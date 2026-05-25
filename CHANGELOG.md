@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.7] — 2026-05-25
+
+### Changed
+- **Design system unification — phase 1 (templates → macros).** New `ds.button` + `ds.panel` macros in `app/web/templates/_components.html` plus a `base_ds.html` shell and `app/web/static/css/design-tokens.css`. 33 templates (admin / home / marketplace / catalog / auth / setup / store / activity / corporate-memory / me-activity / profile / login flows / password reset+setup / error / news editor / sessions / users / tokens / usage / workspace prompt / welcome) refactored to render their buttons + side panels via the new macros — single source of truth for button variants, sizes, icon-only, and panel chrome. Plus 234 new lines in `style-custom.css` (notably `.ds-table` with `:is()` aliases over 15 legacy table class names so existing rules cascade onto the new design) and 40 lines in `design-tokens.css`. Design rationale + per-batch refactor playbook live in `.design/design-system-unification/{DESIGN_BRIEF,DESIGN_REVIEW,REFACTOR_PLAYBOOK}.md` and `.interface-design/system.md`. Credit @davidrybar-grpn (#375).
+
+### Fixed
+- `/login`, `/auth/password/reset`, and `/auth/password/setup` "Forgot Password?" / "Back to Login" buttons now render in the link blue instead of the grey-on-grey ghost color. The new `ds.button` macro composes `variant='ghost'` with `klass='btn-link'`, but `.btn-ghost`'s `color: var(--text-secondary)` rule sits later in `style-custom.css` than `.btn-link`'s `color: var(--primary)`, so the cascade was silently winning for ghost (≈2:1 contrast on the blue auth-page background — fails WCAG AA). Added a 3-class compound selector `.btn.btn-ghost.btn-link` (specificity 0,0,3,0) that restores the link blue + hover underline. Devin review on PR #375.
+
 ### Added
 - `instance.support`: operator-authored HTML body rendered in a
   mint-accent callout panel inside the welcome hero on `/home`,
