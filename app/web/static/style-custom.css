@@ -1757,6 +1757,11 @@ footer {
     border-left: 3px solid var(--error);
 }
 
+.alert-warning-v2 {
+    background: rgba(245, 159, 10, 0.1);
+    border-left: 3px solid var(--warning);
+}
+
 .alert-v2 .alert-icon {
     font-size: var(--text-lg);
 }

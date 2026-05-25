@@ -14,6 +14,7 @@
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
     {{ s.html | safe }}
     {% endfor %}
+    <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
     {# Design-system tokens (`--ds-*`) — opt-in green/navy palette used
