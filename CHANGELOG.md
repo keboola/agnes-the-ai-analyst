@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.8] — 2026-05-25
+
+### Fixed
+- Nightly e2e smoke workflow (`.github/workflows/e2e-nightly.yml`) was broken from day one and had filed 6 noise issues (#362, #368, #376, #385, #386, #387). Two bugs in the "Build + start agnes stack" step: (1) `docker compose up` aborted immediately because `docker-compose.yml` declares `env_file: .env` as required and CI never created one — added `touch .env` (same workaround as `ci.yml:118`); (2) the hand-rolled curl loop polled `/healthz` but the real endpoint is `/api/health` (see `app/api/health.py:331`), and on timeout the loop fell through silently so the smoke step then ran against a half-dead app — replaced with `docker compose up --wait --wait-timeout 120` (same pattern as `ci.yml`) and added a `docker compose logs app | tail -200` step on failure for diagnosability.
+
 ## [0.55.7] — 2026-05-25
 
 ### Changed
