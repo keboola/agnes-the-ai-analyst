@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- `/admin/tables` now warns when a Keboola table exists but Keboola is not the configured data source: an amber "⚠ Keboola not connected" chip appears under the table name in the listing, and a banner at the top of both the Register and Edit Keboola modals links directly to the Data source section in Instance settings (`/admin/server-config#cfg-s-data_source`).
+- `/admin/server-config` supports hash-based deep-links — navigating to `#cfg-s-<section>` (e.g. `#cfg-s-data_source`) scrolls to that section after the page renders.
+
 ## [0.55.8] — 2026-05-25
 
 ### Changed
