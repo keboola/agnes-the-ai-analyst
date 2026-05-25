@@ -14,17 +14,24 @@ from argon2 import PasswordHasher
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db
 from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
-from src.repositories.users import UserRepository
-from src.repositories.user_group_members import UserGroupMembersRepository
-from src.repositories.audit import AuditRepository
 
+from src.repositories import (
+    audit_repo,
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
-def _audit(conn: duckdb.DuckDBPyConnection, actor_id: str, action: str, target_id: str, params: Optional[dict] = None) -> None:
+def _audit(conn: Optional[duckdb.DuckDBPyConnection], actor_id: str, action: str, target_id: str, params: Optional[dict] = None) -> None:
+    """Audit-log a user-management mutation.
+
+    ``conn`` is ignored — kept for backward-compat signature stability;
+    the repo factory picks the right backend per AGNES_DB_URL.
+    """
     try:
-        # Convert non-JSON-serializable values (datetime) to strings first
         safe_params = None
         if params:
             safe_params = {}
@@ -33,7 +40,7 @@ def _audit(conn: duckdb.DuckDBPyConnection, actor_id: str, action: str, target_i
                     safe_params[k] = v.isoformat()
                 else:
                     safe_params[k] = v
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=f"user:{target_id}",
@@ -84,45 +91,36 @@ class UserResponse(BaseModel):
     invite_email_sent: Optional[bool] = None
 
 
-def _resolve_role(u: dict, conn: duckdb.DuckDBPyConnection) -> str:
+def _resolve_role(u: dict, conn: Optional[duckdb.DuckDBPyConnection] = None) -> str:
     """Derive a label for the response. ``admin`` if the user is in the Admin
     system group, otherwise ``user`` — the legacy 4-value enum collapsed to
     a binary in v12 (admin / non-admin). The DB column ``users.role`` is a
     deprecated artifact; we ignore it."""
-    return "admin" if is_user_admin(u["id"], conn) else "user"
+    return "admin" if is_user_admin(u["id"]) else "user"
 
 
-def _user_groups(user_id: str, conn: duckdb.DuckDBPyConnection) -> List[GroupBrief]:
+def _user_groups(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> List[GroupBrief]:
     """Groups the user is a member of, sorted with system groups first.
 
-    Inlined into ``/api/users`` responses so the admin list view can show
-    membership chips per row without an N+1 fetch. ``origin`` is computed
-    via the same ``_derive_origin`` helper /api/admin/groups uses, so
-    chip colors stay in lock-step across the two surfaces.
+    ``conn`` is ignored — kept only for backward-compat signature
+    stability. Pulls through the repo factory.
     """
     from app.api.access import _derive_origin
-    rows = conn.execute(
-        """SELECT g.id, g.name, g.is_system, g.created_by
-           FROM user_group_members m
-           JOIN user_groups g ON g.id = m.group_id
-           WHERE m.user_id = ?
-           ORDER BY g.is_system DESC, g.name""",
-        [user_id],
-    ).fetchall()
+    rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
     return [
         GroupBrief(
-            id=r[0],
-            name=r[1],
-            is_system=bool(r[2]),
+            id=r["group_id"],
+            name=r["name"],
+            is_system=bool(r["is_system"]),
             origin=_derive_origin(
-                {"is_system": bool(r[2]), "name": r[1], "created_by": r[3]}
+                {"is_system": bool(r["is_system"]), "name": r["name"], "created_by": r["created_by"]}
             ),
         )
         for r in rows
     ]
 
 
-def _is_sso_user(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
+def _is_sso_user(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> bool:
     """Whether the user is sourced from an external SSO provider.
 
     Today the only SSO provider is Google Workspace, but the name is kept
@@ -149,18 +147,16 @@ def _is_sso_user(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
     Env values are read per-request so operators flipping the mapping
     don't have to restart the process.
     """
-    rows = conn.execute(
-        """SELECT g.name, g.is_system, g.created_by, m.source
-           FROM user_group_members m
-           JOIN user_groups g ON g.id = m.group_id
-           WHERE m.user_id = ?""",
-        [user_id],
-    ).fetchall()
+    rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
     if not rows:
         return False
     admin_mapped = bool(os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip())
     everyone_mapped = bool(os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip())
-    for name, is_system, created_by, source in rows:
+    for _row in rows:
+        name = _row["name"]
+        is_system = _row["is_system"]
+        created_by = _row["created_by"]
+        source = _row["source"]
         if created_by == "system:google-sync":
             # google-sync groups are always SSO-managed regardless of how
             # the individual membership was created — the group itself
@@ -186,18 +182,18 @@ def _is_sso_user(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
 
 def _to_response(
     u: dict,
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
     invite_url: Optional[str] = None,
     invite_email_sent: Optional[bool] = None,
 ) -> UserResponse:
-    groups = _user_groups(u["id"], conn)
+    groups = _user_groups(u["id"])
     return UserResponse(
         id=u["id"],
         email=u["email"],
         name=u.get("name"),
-        role=_resolve_role(u, conn),
+        role=_resolve_role(u),
         is_admin=any(g.name == SYSTEM_ADMIN_GROUP for g in groups),
-        is_sso_user=_is_sso_user(u["id"], conn),
+        is_sso_user=_is_sso_user(u["id"]),
         groups=groups,
         active=bool(u.get("active", True)),
         created_at=str(u.get("created_at", "")),
@@ -211,19 +207,17 @@ def _set_admin_membership(
     user_id: str,
     is_admin: bool,
     actor_email: Optional[str],
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> None:
     """Add or remove the user's Admin group membership. Idempotent."""
-    admin_group = conn.execute(
-        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
-    ).fetchone()
+    admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
     if not admin_group:
         return
-    members = UserGroupMembersRepository(conn)
+    members = user_group_members_repo()
     if is_admin:
-        members.add_member(user_id, admin_group[0], "admin", actor_email)
+        members.add_member(user_id, admin_group["id"], "admin", actor_email)
     else:
-        members.remove_member(user_id, admin_group[0])
+        members.remove_member(user_id, admin_group["id"])
 
 
 @router.get("", response_model=List[UserResponse])
@@ -231,24 +225,22 @@ async def list_users(
     limit: int = Query(default=1000, ge=1, le=10000),
     offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return [_to_response(u, conn) for u in UserRepository(conn).list_paginated(limit=limit, offset=offset)]
+    return [_to_response(u, conn) for u in users_repo().list_paginated(limit=limit, offset=offset)]
 
 
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Single-user payload used by the /admin/users/{id} detail page header
     and the account-status block. Same shape as the list endpoint, so the
     page can reuse the same response shape."""
-    target = UserRepository(conn).get_by_id(user_id)
+    target = users_repo().get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    return _to_response(target, conn)
+    return _to_response(target)
 
 
 @router.post("", response_model=UserResponse, status_code=201)
@@ -258,7 +250,7 @@ async def create_user(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = UserRepository(conn)
+    repo = users_repo()
     if repo.get_by_email(payload.email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
     import secrets
@@ -308,7 +300,7 @@ async def update_user(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = UserRepository(conn)
+    repo = users_repo()
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -347,7 +339,7 @@ _SSO_LOCKED_DETAIL = (
 )
 
 
-def _reject_if_sso(target_id: str, conn: duckdb.DuckDBPyConnection) -> None:
+def _reject_if_sso(target_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> None:
     """409 if the target is SSO-managed.
 
     The admin UI hides the password / delete affordances for SSO users, but
@@ -355,8 +347,11 @@ def _reject_if_sso(target_id: str, conn: duckdb.DuckDBPyConnection) -> None:
     directly with a valid admin token. This is the server-side enforcement
     that backs the UI: admins cannot reset / set / wipe a Google-Workspace
     account through Agnes — those mutations belong upstream.
+
+    ``conn`` retained only for signature stability — the underlying repo
+    factory picks the right backend.
     """
-    if _is_sso_user(target_id, conn):
+    if _is_sso_user(target_id):
         raise HTTPException(status_code=409, detail=_SSO_LOCKED_DETAIL)
 
 
@@ -367,7 +362,7 @@ async def delete_user(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = UserRepository(conn)
+    repo = users_repo()
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -389,7 +384,7 @@ async def reset_password(
 ):
     """Generate a reset token and (best-effort) email it to the user."""
     import secrets
-    repo = UserRepository(conn)
+    repo = users_repo()
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -423,7 +418,7 @@ async def set_password(
 ):
     if not payload.password or len(payload.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    repo = UserRepository(conn)
+    repo = users_repo()
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")

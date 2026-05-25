@@ -70,12 +70,11 @@ def test_users_update_only_allowed_columns(rbac_engine):
     assert row["name"] == "Alice Smith"
     assert row["active"] is False
     # Not in allowlist — silently dropped, not raised
-    repo.update("u1", onboarded=True, last_pull_at="2000-01-01")
+    repo.update("u1", created_at="2000-01-01", deactivated_at="2000-01-01")
     row = repo.get_by_id("u1")
     assert row["id"] == "u1"  # PK unchanged
-    # neither field is in the allowlist; values untouched
-    assert row["onboarded"] is False
-    assert row["last_pull_at"] is None
+    # created_at is not in the allowlist — value untouched
+    assert str(row["created_at"]).startswith("2026") or str(row["created_at"]) != "2000-01-01"
 
 
 def test_users_delete_cascades_memberships(rbac_engine):

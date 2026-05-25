@@ -73,6 +73,7 @@ class UsersPgRepository:
             "email", "name", "password_hash", "setup_token",
             "setup_token_created", "reset_token", "reset_token_created",
             "active", "deactivated_at", "deactivated_by",
+            "onboarded", "last_pull_at",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
