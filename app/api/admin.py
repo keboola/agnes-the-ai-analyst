@@ -2519,8 +2519,18 @@ def register_table(
     from fastapi.responses import JSONResponse
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
+    import re as _re
     repo = TableRegistryRepository(conn)
     table_id = request.name.strip().lower().replace(" ", "_")
+
+    if not _re.fullmatch(r"[a-z_][a-z0-9_]*", table_id):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Table name produces unsafe identifier '{table_id}'. "
+                "Use only letters, digits, and underscores — no hyphens or special characters."
+            ),
+        )
 
     if repo.get(table_id):
         raise HTTPException(status_code=409, detail=f"Table '{table_id}' already registered")
