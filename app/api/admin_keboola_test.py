@@ -22,8 +22,13 @@ router = APIRouter(prefix="/api/admin/keboola", tags=["admin"])
 
 
 @router.post("/test-connection")
-async def test_connection(_user: dict = Depends(require_admin)):
+def test_connection(_user: dict = Depends(require_admin)):
     """Verify the Keboola Storage API token by listing buckets.
+
+    Declared as a plain ``def`` (not ``async``) so FastAPI runs it in the
+    default threadpool executor — the underlying KeboolaClient does
+    synchronous file I/O on init and synchronous HTTP on buckets.list(),
+    neither of which is safe to call on the async event-loop thread.
 
     Returns 200 with ``{ok, stack_url, bucket_count, elapsed_ms}`` on success.
 
@@ -70,15 +75,21 @@ async def test_connection(_user: dict = Depends(require_admin)):
         buckets = client.client.buckets.list()
         bucket_count = len(buckets) if buckets else 0
     except Exception as exc:
-        msg = str(exc)
-        if "401" in msg or "Unauthorized" in msg:
+        # Inspect the HTTP status code directly from the requests HTTPError
+        # rather than string-matching the message (fragile across library versions).
+        http_status = None
+        try:
+            http_status = exc.response.status_code  # requests.exceptions.HTTPError
+        except AttributeError:
+            pass
+        if http_status == 401 or http_status == 403:
             raise HTTPException(status_code=400, detail={
                 "kind": "invalid_token",
                 "hint": "Storage API token is invalid or expired. Check the token in your .env file.",
             })
         raise HTTPException(status_code=502, detail={
             "kind": "keboola_upstream_error",
-            "hint": msg,
+            "hint": str(exc),
         })
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
