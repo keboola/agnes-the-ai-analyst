@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.11] — 2026-05-25
+
+### Fixed
+- **`e2e-nightly` smoke scripts now sign the agent-browser session in before navigating to protected pages.** After #389 unblocked the workflow far enough to reach the smoke step, both `smoke_catalog.sh` and `smoke_admin_activity.sh` were redirected to `/login?next=…` by the global 401 handler in `app/main.py:898-907` and asserted against the login snapshot. Fix introduces `scripts/seed_e2e_user.py` (idempotent — creates `e2e@example.com` in Admin group with a hardcoded dev-only password; refuses to seed without Admin group present; rehashes only when verify fails) and `scripts/e2e/_login.sh` (sourced by both smoke scripts; uses agent-browser to POST against `/auth/password/login/web`, selectors scoped to `form[action='/auth/password/login/web']` to disambiguate the tabbed login UI). `.github/workflows/e2e-nightly.yml` gains one new step (`docker compose exec` running the seed between stack-up and smoke). The hardcoded password is acceptable here because the user only exists inside an ephemeral CI container (`docker compose down -v` per run) with no external exposure — the container is the privilege boundary, not the credential. Closes #417.
+
+### Internal
+- Three new unit tests in `tests/test_seed_e2e_user.py` covering fresh-create, idempotency, and Admin-group-missing refusal paths.
+
 ## [0.55.10] — 2026-05-25
 
 ### Added
