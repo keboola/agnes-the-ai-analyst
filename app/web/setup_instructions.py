@@ -578,9 +578,9 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
         "(the marketplace clone) and that any granted plugins installed",
         "   - For each connector (Asana, Google Workspace, Atlassian): "
         "the verbatim ✅ or ❌ line that the connector's verify step "
-        "emitted earlier in this session (e.g. `✅ Asana ready — connected "
-        "as Vojtech Rysanek. 2 workspace(s) visible.` or `❌ Atlassian setup "
-        "failed: ...`). If the user declined a connector, say declined.",
+        "emitted earlier in this session (e.g. `✅ Asana ready — ...` "
+        "or `❌ Atlassian setup failed: ...`). If the user declined "
+        "a connector, say declined.",
     ]
     if has_ca:
         bullets.append(
