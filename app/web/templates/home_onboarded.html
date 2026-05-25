@@ -4,6 +4,12 @@
 
 {% block content %}
 {% include "_page_chrome.html" %}
+{# Design-system component macros — quick-card grid renders via
+   `ds.panel(href=..., klass='quick-card')`. Note: per router.py this
+   template is a kept fallback; the /home route always serves
+   home_not_onboarded.html. The conversion still has value as a clean
+   example of the panel-as-link pattern. #}
+{% import "_components.html" as ds %}
 <style>
 .home-mock {
     /* Design-system scope — tokens live globally in
@@ -114,7 +120,7 @@
         <div class="eyebrow">Welcome back, {{ display_name }}</div>
         <h1>You're all set up</h1>
         <p>
-            Open Claude Code in any project under <code>~/{{ workspace_dir }}/Projects/</code>
+            Open Claude Code in any project under <code>~/Desktop/{{ workspace_dir }}/Projects/</code>
             and start a session — your data and plugins are already synced. Use the cards below to jump into the parts of {{ instance_brand }} you need.
         </p>
     </div>
@@ -122,38 +128,38 @@
     <div class="section-label">Quick links</div>
 
     <div class="quick-grid">
-        <a class="quick-card" href="/dashboard">
+        {% call ds.panel(href='/dashboard', klass='quick-card') %}
             <span class="ico">&#x1F4CA;</span>
             <div class="ttl">Dashboard</div>
             <div class="desc">Sync state, table inventory, recent activity.</div>
-        </a>
-        <a class="quick-card" href="/catalog">
+        {% endcall %}
+        {% call ds.panel(href='/catalog', klass='quick-card') %}
             <span class="ico">&#x1F4DA;</span>
             <div class="ttl">Catalog</div>
             <div class="desc">Browse tables, schema, and metric definitions.</div>
-        </a>
+        {% endcall %}
         {# Curated Memory is user-facing — the /corporate-memory route runs
            on get_current_user, so the card shows for everyone, matching
            its primary-nav placement next to Data Packages. #}
-        <a class="quick-card" href="/corporate-memory">
+        {% call ds.panel(href='/corporate-memory', klass='quick-card') %}
             <span class="ico">&#x1F9E0;</span>
             <div class="ttl">Curated Memory</div>
             <div class="desc">Shared analyst knowledge and prior solutions.</div>
-        </a>
+        {% endcall %}
         {# Activity Center admin-only — parity with the top-nav gating. #}
         {% if is_admin %}
-        <a class="quick-card" href="/activity-center">
+        {% call ds.panel(href='/activity-center', klass='quick-card') %}
             <span class="ico">&#x1F4C8;</span>
             <div class="ttl">Activity Center</div>
             <div class="desc">Per-user analytics on {{ instance_brand }} adoption.</div>
-        </a>
+        {% endcall %}
         {% endif %}
         {% if is_admin %}
-        <a class="quick-card" href="/admin/server-config">
+        {% call ds.panel(href='/admin/server-config', klass='quick-card') %}
             <span class="ico">&#x2699;&#xFE0F;</span>
             <div class="ttl">Admin</div>
             <div class="desc">Server configuration, RBAC, marketplaces.</div>
-        </a>
+        {% endcall %}
         {% endif %}
     </div>
 </div>

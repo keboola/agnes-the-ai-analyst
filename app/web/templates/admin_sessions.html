@@ -2,6 +2,10 @@
 {% block title %}Sessions — Admin{% endblock %}
 
 {% block content %}
+{# Design-system component macros — Reset + Prev/Next paginator render
+   via `ds.button`. .obs-kpi cards + .obs-table page-local enhancements
+   stay as-is per system.md. #}
+{% import "_components.html" as ds %}
 <div class="obs-page page-shell">
 
   {% set page_hero_eyebrow = "Activity Center" %}
@@ -76,7 +80,8 @@
       <input id="sx-q" type="search" placeholder="abc-123…" />
     </div>
     <div class="obs-filter-actions">
-      <button id="sx-reset" class="obs-btn" type="button">Reset</button>
+      {{ ds.button('Reset', variant='secondary', size='sm',
+                   type='button', id='sx-reset') }}
     </div>
   </section>
 
@@ -90,8 +95,10 @@
     <div class="obs-table-footer">
       <span id="sx-row-count" class="obs-row-count">—</span>
       <div>
-        <button id="sx-prev" class="obs-btn" type="button" hidden>← Prev</button>
-        <button id="sx-next" class="obs-btn" type="button" hidden>Next →</button>
+        {{ ds.button('← Prev', variant='secondary', size='sm',
+                     type='button', id='sx-prev', attrs='hidden') }}
+        {{ ds.button('Next →', variant='secondary', size='sm',
+                     type='button', id='sx-next', attrs='hidden') }}
       </div>
     </div>
   </section>
@@ -111,9 +118,8 @@
   color: var(--text-secondary, #6b7280); display: block; margin-bottom: 2px; }
 .obs-window select { padding: 6px 8px; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
   background: var(--surface, #fff); font: inherit; }
-.obs-btn { border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-  padding: 6px 12px; border-radius: 6px; font: inherit; cursor: pointer; }
-.obs-btn:hover { background: var(--border-light, #f3f4f6); }
+/* `.obs-btn` rules deleted — buttons render via `ds.button(variant=
+   'secondary', size='sm')` carrying canonical .btn family. */
 .obs-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
 .obs-kpi { text-align: left; padding: 14px 16px; border: 1px solid var(--border, #e5e7eb);
   border-radius: 8px; background: var(--surface, #fff); cursor: pointer;

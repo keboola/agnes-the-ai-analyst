@@ -359,15 +359,15 @@ def test_setup_section_renders_for_not_onboarded(fresh_db):
     assert '<div class="setup-section-header"' not in body2
 
 
-def test_overview_section_renders_when_yaml_set(fresh_db, monkeypatch):
-    """Setting `AGNES_INSTANCE_OVERVIEW` env (mirrors
-    instance.overview yaml) injects raw HTML into the Overview section
-    via the same `| safe` filter as news_intro. The marker text must
-    appear inside the rendered section wrapper. Overview deliberately
-    has NO dismiss button — it's operator-owned reference content
-    (privacy posture, telemetry policy, product framing), and a
-    per-device hide would leave returning users unable to re-read
-    it without clearing localStorage."""
+def test_welcome_footnotes_render_overview_when_set(fresh_db, monkeypatch):
+    """Setting `AGNES_INSTANCE_OVERVIEW` (mirrors `instance.overview`
+    yaml) injects raw HTML into the welcome-hero footnotes via the
+    same `| safe` filter as the previous standalone Overview
+    section. The marker text MUST appear inside
+    `.home-hero-footnotes`, and the legacy `<section class="home-overview">`
+    wrapper MUST stay absent — the operator-owned body now lives
+    inside the welcome card, not as a separate section between the
+    walkthrough and surfaces grid."""
     monkeypatch.setenv("AGNES_INSTANCE_OVERVIEW", "<p>OVERVIEW_TEST_MARKER</p>")
     from src.db import get_system_db, close_system_db
 
@@ -378,17 +378,15 @@ def test_overview_section_renders_when_yaml_set(fresh_db, monkeypatch):
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert '<section class="home-overview">' in body
+    assert '<section class="home-overview">' not in body
+    assert '<div class="home-hero-footnotes">' in body
     assert "OVERVIEW_TEST_MARKER" in body
-    # Overview must NOT carry a dismiss key — content stays
-    # reachable on every visit so users can re-read it.
-    assert 'data-dismiss-key="agnes_home_overview_dismissed"' not in body
 
 
-def test_overview_section_hidden_when_yaml_empty(fresh_db, monkeypatch):
+def test_welcome_footnotes_hidden_when_overview_unset(fresh_db, monkeypatch):
     """Default empty `instance.overview` (no env override) hides the
-    section entirely so the OSS ships without a stray empty
-    Overview placeholder."""
+    welcome-hero footnotes entirely so the OSS ships without a
+    stray empty footnotes block in the welcome card."""
     monkeypatch.delenv("AGNES_INSTANCE_OVERVIEW", raising=False)
     from src.db import get_system_db, close_system_db
 
@@ -399,4 +397,63 @@ def test_overview_section_hidden_when_yaml_empty(fresh_db, monkeypatch):
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert '<section class="home-overview">' not in body
+    assert '<div class="home-hero-footnotes">' not in body
+
+
+def test_welcome_support_renders_when_set(fresh_db, monkeypatch):
+    """Setting `AGNES_INSTANCE_SUPPORT` (mirrors `instance.support`
+    yaml) injects raw HTML into the mint-accent Support callout
+    inside the welcome hero. The marker text MUST appear inside
+    `.home-hero-support-body`. Separate field from
+    `instance.overview` so support/help pointers can be updated
+    independently from the operator's product framing."""
+    monkeypatch.setenv("AGNES_INSTANCE_SUPPORT", "<p>SUPPORT_TEST_MARKER</p>")
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert '<div class="home-hero-support"' in body
+    assert "SUPPORT_TEST_MARKER" in body
+
+
+def test_welcome_support_hidden_when_unset(fresh_db, monkeypatch):
+    """Default empty `instance.support` (no env override) hides the
+    Support callout entirely so the OSS ships without a stray
+    empty mint panel in the welcome card."""
+    monkeypatch.delenv("AGNES_INSTANCE_SUPPORT", raising=False)
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert '<div class="home-hero-support"' not in body
+
+
+def test_welcome_support_independent_of_overview(fresh_db, monkeypatch):
+    """The Support callout MUST render even when `instance.overview`
+    is empty — the two fields are independent. Catches a regression
+    where the Support gate was accidentally wired to
+    INSTANCE_OVERVIEW instead of INSTANCE_SUPPORT."""
+    monkeypatch.delenv("AGNES_INSTANCE_OVERVIEW", raising=False)
+    monkeypatch.setenv("AGNES_INSTANCE_SUPPORT", "<p>SUPPORT_ONLY_MARKER</p>")
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert '<div class="home-hero-footnotes">' not in body
+    assert '<div class="home-hero-support"' in body
+    assert "SUPPORT_ONLY_MARKER" in body

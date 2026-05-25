@@ -57,11 +57,19 @@ def test_marketplace_curated_tab_cta_text(fresh_db):
         "/marketplace?tab=curated", cookies={"access_token": sess}
     ).text
 
-    # Action-row anchor — primary discovery path.
-    assert (
-        '<a class="btn btn-secondary" data-actions-for="curated" '
-        'href="/marketplace/guide/curated">Submit a skill or plugin</a>'
-    ) in body
+    # Action-row anchor — primary discovery path. Renders via
+    # `ds.button(variant='secondary', href=..., attrs='data-actions-for=...')`
+    # which emits href before class; assertion is order-agnostic.
+    import re
+    cta_match = re.search(
+        r'<a\b[^>]*\bclass="btn btn-secondary[^"]*"[^>]*>'
+        r'\s*Submit a skill or plugin\s*</a>',
+        body,
+    )
+    assert cta_match, "action-row CTA anchor (.btn .btn-secondary) missing or text changed"
+    cta_html = cta_match.group(0)
+    assert 'data-actions-for="curated"' in cta_html
+    assert 'href="/marketplace/guide/curated"' in cta_html
     # Empty-state JS innerHTML — same string, no drift.
     assert "Submit a skill or plugin →" in body
     # Old wording must be gone — guards against partial rename.
@@ -102,8 +110,10 @@ def test_marketplace_guide_curated_page(fresh_db):
     # context before they upload).
     assert '<div class="guide-fastpath">' in body
     assert 'href="/marketplace/guide/flea"' in body
-    # Primary CTA at the bottom also surfaces the flea path.
-    assert 'class="primary" href="/marketplace/guide/flea"' in body
+    # Primary CTA at the bottom also surfaces the flea path. Renders
+    # via `ds.button(variant='primary', href='/marketplace/guide/flea')`
+    # which emits href before class.
+    assert '<a href="/marketplace/guide/flea" class="btn btn-primary"' in body
 
 
 def test_marketplace_guide_flea_page(fresh_db):
@@ -134,7 +144,9 @@ def test_marketplace_guide_flea_page(fresh_db):
     assert "Automated review" in body
     assert "Published" in body
     # Primary CTA goes straight to /store/new (flea is one click away
-    # from being live, no intermediate handoff).
-    assert 'class="primary" href="/store/new"' in body
+    # from being live, no intermediate handoff). Renders via
+    # `ds.button(variant='primary', href='/store/new')` which emits
+    # href before class.
+    assert '<a href="/store/new" class="btn btn-primary"' in body
     # No fast-path callout here — sanity check the asymmetry sticks.
     assert '<div class="guide-fastpath">' not in body

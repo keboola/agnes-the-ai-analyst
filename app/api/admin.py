@@ -325,6 +325,26 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "capture session data). Restart required after save."
             ),
         },
+        # Operator-authored Support HTML rendered inside the welcome
+        # hero on /home, below the operator-owned Overview footnotes.
+        # Resolved by `app/instance_config.py::get_instance_support()`.
+        # Typical content: a one-line invitation pointing at a chat
+        # space, mailing list, or internal runbook. Empty value =
+        # block hidden (OSS stays vendor-neutral).
+        "support": {
+            "kind": "string",
+            "hint": (
+                "HTML body rendered inside the welcome hero's Support "
+                "block on /home (mint-accent panel below the Overview "
+                "footnotes). Typically a one-line invitation linking to "
+                "a chat space, mailing list, or runbook — e.g. "
+                "'<p><strong>Need help?</strong> Drop into our "
+                "<a href=\"https://chat.example.com/room/xxx\">Support</a> "
+                "chat space.</p>'. Rendered with | safe — admin trust "
+                "boundary (link target is operator-controlled). Empty "
+                "value hides the block."
+            ),
+        },
     },
     "data_source": {
         "bigquery": {

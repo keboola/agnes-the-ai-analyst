@@ -921,7 +921,7 @@ def test_restart_claude_step_emitted_unconditionally():
 
 def test_restart_claude_substitutes_workspace_dir():
     """The restart-claude body interpolates the workspace folder so the
-    user sees their actual `~/<brand>` path, not a literal placeholder."""
+    user sees their actual `~/Desktop/<brand>` path, not a literal placeholder."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines(
@@ -930,7 +930,7 @@ def test_restart_claude_substitutes_workspace_dir():
         workspace_dir="FoundryAI",
     ))
     assert "9) Restart Claude Code" in joined
-    assert "~/FoundryAI" in joined
+    assert "~/Desktop/FoundryAI" in joined
     assert "{workspace_dir}" not in joined
 
 
@@ -1030,12 +1030,12 @@ def test_step_2_checks_pwd_does_not_auto_mkdir():
 
     # `pwd` check + expected-path comparison must be present.
     assert "pwd" in joined
-    assert "$HOME/Agnes" in joined  # default workspace_dir
-    assert "~/Agnes" in joined
+    assert "$HOME/Desktop/Agnes" in joined  # default workspace_dir under Desktop
+    assert "~/Desktop/Agnes" in joined
 
     # Warning copy that references the /home Step 2 manual mkdir line.
     assert "/home Step 2" in joined
-    assert "mkdir -p ~/Agnes && cd ~/Agnes" in joined
+    assert "mkdir -p ~/Desktop/Agnes && cd ~/Desktop/Agnes" in joined
 
     # Explicit "install here" / "abort" decision tree.
     assert "'install here'" in joined
@@ -1060,13 +1060,13 @@ def test_step_2_warning_substitutes_custom_brand():
         workspace_dir="FoundryAI",
     ))
     assert "2) Verify the user is already in the workspace folder." in joined
-    assert "$HOME/FoundryAI" in joined
-    assert "~/FoundryAI" in joined
-    assert "mkdir -p ~/FoundryAI && cd ~/FoundryAI" in joined
+    assert "$HOME/Desktop/FoundryAI" in joined
+    assert "~/Desktop/FoundryAI" in joined
+    assert "mkdir -p ~/Desktop/FoundryAI && cd ~/Desktop/FoundryAI" in joined
     # Brand + workspace_dir thread through the warning copy (the text
     # wraps across two lines so we check the substrings separately).
     assert "but Foundry AI is normally" in joined
-    assert "installed in ~/FoundryAI" in joined
+    assert "installed in ~/Desktop/FoundryAI" in joined
     # No placeholders survive into the rendered text.
     assert "{workspace_dir}" not in joined
     assert "{instance_brand}" not in joined
@@ -1084,7 +1084,7 @@ def test_step_9_restart_references_install_dir_not_hardcoded():
     # Wording references the step-2 confirmation.
     assert "install dir confirmed in step 2" in joined
     # Default path still mentioned as the expected baseline.
-    assert "~/Agnes" in joined
+    assert "~/Desktop/Agnes" in joined
     # The "install here" callout in the restart step keeps the user-flow
     # connection visible.
     assert "'install here'" in joined

@@ -3,6 +3,13 @@
 {% block title %}{{ domain.name }} — Memory — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the 3 hero action buttons
+   (Add/Remove from stack + the required-state placeholder) render via
+   `ds.button`. `.btn-required` stays as a page-local amber-disabled
+   exception (no canonical match in the .btn family yet — flagged in
+   system.md follow-ups). Per-item vote/dismiss buttons are styled
+   via page-local selectors and stay as-is. #}
+{% import "_components.html" as ds %}
 <style>
   .dom-detail-header {
     display: flex; gap: 16px; align-items: flex-start;
@@ -162,11 +169,15 @@
   </div>
   <div class="dom-detail-actions">
     {% if effective_requirement == 'required' %}
+      {# `.btn-required` keeps page-local amber-disabled style — no
+         exact match in the canonical .btn family. #}
       <button class="btn btn-required" disabled>In stack (required)</button>
     {% elif in_stack %}
-      <button class="btn btn-danger" id="dom-remove-btn">Remove from stack</button>
+      {{ ds.button('Remove from stack', variant='danger',
+                   type='button', id='dom-remove-btn') }}
     {% else %}
-      <button class="btn btn-primary" id="dom-add-btn">+ Add to stack</button>
+      {{ ds.button('+ Add to stack', variant='primary',
+                   type='button', id='dom-add-btn') }}
     {% endif %}
   </div>
 </div>

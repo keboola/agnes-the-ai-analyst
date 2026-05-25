@@ -10,7 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.7] — 2026-05-25
+
+### Changed
+- **Design system unification — phase 1 (templates → macros).** New `ds.button` + `ds.panel` macros in `app/web/templates/_components.html` plus a `base_ds.html` shell and `app/web/static/css/design-tokens.css`. 33 templates (admin / home / marketplace / catalog / auth / setup / store / activity / corporate-memory / me-activity / profile / login flows / password reset+setup / error / news editor / sessions / users / tokens / usage / workspace prompt / welcome) refactored to render their buttons + side panels via the new macros — single source of truth for button variants, sizes, icon-only, and panel chrome. Plus 234 new lines in `style-custom.css` (notably `.ds-table` with `:is()` aliases over 15 legacy table class names so existing rules cascade onto the new design) and 40 lines in `design-tokens.css`. Design rationale + per-batch refactor playbook live in `.design/design-system-unification/{DESIGN_BRIEF,DESIGN_REVIEW,REFACTOR_PLAYBOOK}.md` and `.interface-design/system.md`. Credit @davidrybar-grpn (#375).
+
+### Fixed
+- `/login`, `/auth/password/reset`, and `/auth/password/setup` "Forgot Password?" / "Back to Login" buttons now render in the link blue instead of the grey-on-grey ghost color. The new `ds.button` macro composes `variant='ghost'` with `klass='btn-link'`, but `.btn-ghost`'s `color: var(--text-secondary)` rule sits later in `style-custom.css` than `.btn-link`'s `color: var(--primary)`, so the cascade was silently winning for ghost (≈2:1 contrast on the blue auth-page background — fails WCAG AA). Added a 3-class compound selector `.btn.btn-ghost.btn-link` (specificity 0,0,3,0) that restores the link blue + hover underline. Devin review on PR #375.
+
 ### Added
+- `instance.support`: operator-authored HTML body rendered in a
+  mint-accent callout panel inside the welcome hero on `/home`,
+  below the Overview footnotes. Designed for a one-line invitation
+  pointing analysts at a chat space, mailing list, or runbook so
+  every user sees where to ask for help. HTML in, HTML out (same
+  `| safe` filter as `instance.overview`); empty default keeps the
+  OSS vendor-neutral. Resolved by
+  `app/instance_config.py::get_instance_support()`; surfaced in
+  `/admin/server-config` via `_KNOWN_FIELDS["instance"]` so it
+  appears as "Available but unset" for operators who haven't
+  populated it yet. Env override: `AGNES_INSTANCE_SUPPORT`.
 - `instance.custom_scripts`: operator-injected HTML/JS blocks rendered
   into every page that extends `base.html`. Each entry takes `name`,
   `enabled`, `placement` (`head_start` | `head_end` | `body_end`), and
@@ -41,6 +60,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   bar, and per-step number badges next to each install block.
 
 ### Changed
+- `/home` welcome hero gains a *footnotes* row beneath the four
+  pillars: a hairline-separated block rendering operator-authored
+  HTML from `instance.overview` (`AGNES_INSTANCE_OVERVIEW` env
+  override). This is the same `| safe`-filtered body that used to
+  drive the standalone Overview section between the walkthrough
+  and surfaces grid — the rendering contract is unchanged, only
+  the location and styling moved. Empty yaml → footnotes absent
+  (OSS stays vendor-neutral). Renders for both onboarded and
+  not-onboarded users.
+- Welcome hero's *"AI Chief of Staff"* lede gains a trailing
+  sentence ("*You run all your projects inside and it learns
+  from it.*") so the workspace-folder framing lands before the
+  reader scrolls past.
 - Default `instance.theme` flipped from `navy` to `blue`. The brand-blue
   palette is now the out-of-the-box look; `navy` (dark hero + mint-green
   CTAs) is the opt-in via `AGNES_INSTANCE_THEME` / `instance.theme`
@@ -87,6 +119,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- Google Workspace connector prompt's Step 8 verify no longer asks
+  Claude to parse a row count out of `gws drive files list` / `gws
+  chat spaces list` JSON. Claude would improvise a `python3 -c 'f"…
+  {len(d.get(\"files\",[]))}…"'` snippet that fails two ways: f-string
+  expressions reject backslashes in Python <3.12 (`SyntaxError`), and
+  `gws` can emit a banner before the JSON body (`json.JSONDecodeError`).
+  Step 8 now treats exit code 0 as success, drops the `<N> drive
+  file(s), <M> chat space(s) visible` counts, and explicitly warns
+  against both anti-patterns. The summary-grep prefix (`✅ Google
+  Workspace ready —`) is preserved.
+- Install-script Step 2 + Step 9 restart cue + post-install `/home` hero
+  now reference `~/Desktop/<workspace_dir>` to match the `/home` "Step 2
+  — pick a folder" recommendation users actually run (`mkdir -p
+  ~/Desktop/<workspace_dir>`). Previously the pasted setup script
+  checked `pwd` against `$HOME/<workspace_dir>` and would warn
+  "Foundry AI is normally installed in ~/FoundryAI" even though the
+  /home page had just sent the user to `~/Desktop/FoundryAI`.
 - Pre-login pages (`/login`, magic-link screens, first-time `/setup`)
   now honour the configured `instance.theme`. `base_login.html` sets
   `<html data-theme="...">` from `instance_theme`, additionally loads
@@ -225,6 +274,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   top of `/home` (the in-page anchor it carried — *Setup Agnes in
   your Claude Code* / *Go deeper into your AI workspace* — duplicated
   links already reachable from the install hero and `/setup-advanced`).
+- Operator-owned *Overview* `<section>` on `/home` no longer
+  renders as a standalone block between the first-session
+  walkthrough and the surfaces grid. The same operator-authored
+  HTML body (`instance.overview` / `AGNES_INSTANCE_OVERVIEW`) now
+  renders inside the welcome hero footnotes instead (see *Changed*
+  above) — the rendering contract is unchanged, only the location
+  and styling moved, so existing instances that set the yaml
+  field get the same content in the new home.
 
 ### Removed
 
