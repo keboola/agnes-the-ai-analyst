@@ -229,6 +229,7 @@
             cursor: pointer;
             color: var(--text-secondary);
             transition: all 0.15s ease;
+            position: relative;
         }
 
         .btn-icon:hover {
@@ -239,6 +240,27 @@
         .btn-icon.danger:hover {
             background: var(--error-light);
             color: var(--error);
+        }
+
+        /* CSS tooltip — shown on hover via data-tooltip (avoids the
+           browser's native title delay appearing alongside our chip) */
+        .btn-icon[data-tooltip]:hover::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: calc(100% + 5px);
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--text-primary, #1a1a2e);
+            color: #fff;
+            font-size: 11px;
+            font-weight: 500;
+            line-height: 1.4;
+            padding: 3px 7px;
+            border-radius: 4px;
+            white-space: nowrap;
+            pointer-events: none;
+            z-index: 200;
+            box-shadow: 0 2px 6px rgba(0,0,0,.18);
         }
 
         /* ── Badges ── */
@@ -487,8 +509,8 @@
         }
 
         .registry-table .col-actions {
-            width: 120px;
-            min-width: 120px;
+            width: 152px;
+            min-width: 152px;
             white-space: nowrap;
             vertical-align: top;
         }
@@ -540,6 +562,15 @@
         }
 
         .registry-table .col-registered .registered-at {
+            color: var(--text-secondary);
+        }
+
+        .registry-table .col-last-sync {
+            width: 110px;
+            white-space: nowrap;
+        }
+        .registry-table td.col-last-sync {
+            font-size: 12px;
             color: var(--text-secondary);
         }
 
@@ -1295,6 +1326,15 @@
                         </button>
                     </div>
                     <div class="modal-body">
+                        {# Banner: shown when Keboola is not the configured data source.
+                           Discover buttons are hidden in that case (see guard below), so
+                           the operator would hit a silent dead-end without this warning. #}
+                        {% if data_source_type != 'keboola' %}
+                        <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
+                            <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <span>Keboola is not connected — <strong>Discover</strong> won't work. Set your token in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
+                        </div>
+                        {% endif %}
                         {# Three sync-mode radios:
                            - whole / custom → query_mode='materialized' (DuckDB Keboola
                              extension; whole synthesizes SELECT *, custom uses admin SQL)
@@ -1518,6 +1558,12 @@
                         </button>
                     </div>
                     <div class="modal-body">
+                        {% if data_source_type != 'keboola' %}
+                        <div class="alert-v2 alert-warning-v2" style="font-size:13px;">
+                            <svg style="flex-shrink:0; margin-top:1px; color:var(--warning);" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <span>Keboola is not connected — <strong>Discover</strong> won't work. Set your token in <a href="/admin/server-config#cfg-s-data_source" style="color:inherit; text-decoration:underline;">Instance settings</a>.</span>
+                        </div>
+                        {% endif %}
                         <div class="form-group">
                             <label class="form-label" for="editKbTableId">Table ID</label>
                             <input type="text" class="form-input" id="editKbTableId" readonly>
@@ -4937,109 +4983,6 @@
         return '<span class="' + cls + '" title="' + escapeHtmlAttr(tip) + '">' + escapeHtml(m) + '</span>';
     }
 
-    function renderRegistryListing(target, tables) {
-        if (!target) return;
-        if (tables.length === 0) {
-            target.innerHTML = '<div class="panel-body-empty">No tables registered yet.</div>';
-            return;
-        }
-        var html = '<table class="registry-table">';
-        html += '<thead><tr>';
-        html += '<th class="col-id">Table ID</th>';
-        html += '<th class="col-mode">Mode</th>';
-        html += '<th class="col-source">Source</th>';
-        html += '<th class="col-pk">Primary Key</th>';
-        html += '<th class="col-schedule">Schedule</th>';
-        html += '<th class="col-folder">Folder</th>';
-        html += '<th>Description</th>';
-        html += '<th class="col-registered">Registered</th>';
-        html += '<th class="col-status"></th>';
-        html += '<th class="col-actions">Actions</th>';
-        html += '</tr></thead><tbody>';
-        tables.forEach(function(table) {
-            html += '<tr>';
-            html += '<td class="col-id" title="' + escapeHtml(table.id) + '">' + escapeHtml(table.id) + '</td>';
-            html += '<td class="col-mode">' + renderModeBadge(table.query_mode) + '</td>';
-
-            // Source: bucket / source_table; em-dash when both empty (custom-SQL row).
-            var bucket = table.bucket || '';
-            var srcTable = table.source_table || '';
-            var sourceText = '';
-            if (bucket && srcTable) {
-                sourceText = bucket + ' / ' + srcTable;
-            } else if (bucket || srcTable) {
-                sourceText = bucket || srcTable;
-            }
-            var sourceCell = sourceText ? escapeHtml(sourceText) : '—';
-            html += '<td class="col-source" title="' + escapeHtml(sourceText) + '">' + sourceCell + '</td>';
-
-            html += '<td class="col-pk">' + escapeHtml((table.primary_key || []).join(', ') || '—') + '</td>';
-            html += '<td class="col-schedule">' + escapeHtml(table.sync_schedule || '—') + '</td>';
-
-            // Folder badge — '—' when null/empty.
-            if (table.folder) {
-                html += '<td class="col-folder"><span class="folder-badge">' + escapeHtml(table.folder) + '</span></td>';
-            } else {
-                html += '<td class="col-folder">—</td>';
-            }
-
-            var desc = unescapeShellQuoting(table.description || '');
-            html += '<td class="col-description" title="' + escapeHtml(desc) + '">' + escapeHtml(desc || '—') + '</td>';
-
-            // Registered: stacked email + date (first 10 chars of ISO timestamp).
-            var regBy = table.registered_by || '';
-            var regByDisplay = regBy;
-            if (regBy.length > 24 && regBy.indexOf('@') > 0) {
-                regByDisplay = regBy.split('@')[0];
-            }
-            var regAt = table.registered_at ? String(table.registered_at).slice(0, 10) : '';
-            html += '<td class="col-registered">';
-            html += '<div class="registered-by" title="' + escapeHtml(regBy) + '">' + (regByDisplay ? escapeHtml(regByDisplay) : '—') + '</div>';
-            html += '<div class="registered-at">' + escapeHtml(regAt || '') + '</div>';
-            html += '</td>';
-
-            // Status: warning icon when the last sync errored.
-            html += '<td class="col-status">';
-            if (table.last_sync_error) {
-                html += '<span title="' + escapeHtml(table.last_sync_error) + '">';
-                html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--error);"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
-                html += '</span>';
-            }
-            html += '</td>';
-
-            html += '<td class="col-actions"><div style="display:flex; gap:4px; justify-content:flex-end;">';
-            // Internal source tables (agnes_*) are seeded on every app
-            // boot from connectors/internal/registry.py — Edit/Delete
-            // would either no-op or be reverted on next start. Hide both
-            // actions; Manage access stays because RBAC is still
-            // per-table (internal tables auto-grant; the link still
-            // takes the admin to the access page if they want to inspect).
-            //
-            // Issue #265: HTML attribute values do not recognize backslash
-            // escapes the way JavaScript string literals do — use HTML-
-            // entity escape (`&#39;` for `'`, plus `"`, `<`, `>`, `&`)
-            // via escapeHtmlAttr, the right encoding for an HTML attribute.
-            var isInternal = (table.source_type === 'internal');
-            if (!isInternal) {
-                html += '<button class="btn-icon" title="Edit" onclick=\'openEditModal(' + escapeHtmlAttr(JSON.stringify(table)) + ')\'>';
-                html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
-                html += '</button>';
-            }
-            // Manage access: deep-link to /admin/access pre-filtered to this table.
-            html += '<button class="btn-icon" title="Manage access" onclick="manageAccess(&#39;' + escapeHtmlAttr(table.id) + '&#39;)">';
-            html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
-            html += '</button>';
-            if (!isInternal) {
-                html += '<button class="btn-icon danger" title="Delete" onclick="deleteTable(&#39;' + escapeHtmlAttr(table.id) + '&#39;)">';
-                html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-                html += '</button>';
-            }
-            html += '</div></td></tr>';
-        });
-        html += '</tbody></table>';
-        target.innerHTML = html;
-    }
-
     // Deep-link from a table row to /admin/access scoped to this table_id.
     // The /admin/access page reads window.location.hash on bootstrap and,
     // when it matches `table:<id>`, pre-fills the resource filter so the
@@ -5069,6 +5012,38 @@
         })
         .catch(function(err) {
             showToast('Delete failed: ' + err.message, 'error');
+        });
+    }
+
+    // btn is the clicked element (passed as `this` from onclick) so the
+    // spinner targets exactly the button that was clicked — no duplicate-ID
+    // issues when the same table appears in multiple package sections.
+    function syncTable(btn, tableId) {
+        var svgRefresh = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
+        var svgSpin   = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="animation:spin 1s linear infinite"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
+        btn.disabled = true;
+        btn.innerHTML = svgSpin;
+        fetch('/api/sync/trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tables: [tableId] })
+        })
+        .then(function(r) {
+            if (r.status === 409) throw new Error('Sync already running — wait for it to finish');
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Sync failed'); });
+            return r.json();
+        })
+        .then(function() {
+            showToast('Sync started for "' + tableId + '"', 'success');
+            // Refresh the table after a short delay so Last synced updates
+            setTimeout(loadRegistry, 4000);
+        })
+        .catch(function(err) {
+            showToast(err.message, 'error');
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.innerHTML = svgRefresh;
         });
     }
 
@@ -5506,12 +5481,16 @@
         if (!tables || !tables.length) {
             return '<div class="panel-body-empty">No tables here yet.</div>';
         }
+        // Only show Last synced column when the section has at least one
+        // syncable (non-internal) table — internal tables never sync.
+        var hasSync = tables.some(function(t) { return t.source_type !== 'internal'; });
         var html = '<table class="registry-table" style="margin-top:8px;">';
         html += '<thead><tr>';
         html += '<th class="col-id">Table</th>';
         html += '<th>Source</th>';
         html += '<th>Bucket</th>';
         html += '<th class="col-mode">Mode</th>';
+        if (hasSync) { html += '<th class="col-last-sync">Last synced</th>'; }
         html += '<th class="col-actions">Actions</th>';
         html += '</tr></thead><tbody>';
         tables.forEach(function(t) {
@@ -5528,26 +5507,39 @@
                   + 'data-table-row-name="' + escapeHtmlAttr(name.toLowerCase()) + '" '
                   + 'data-table-row-source="' + escapeHtmlAttr(src.toLowerCase()) + '" '
                   + 'data-table-row-bucket="' + escapeHtmlAttr(bucket.toLowerCase()) + '">';
+            var kbDisconnectedWarning = (src === 'keboola' && DATA_SOURCE_TYPE !== 'keboola')
+                ? '<div style="margin-top:3px; font-size:11px; color:var(--warning); display:flex; align-items:center; gap:4px;">'
+                  + '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+                  + 'Keboola not connected</div>'
+                : '';
             html += '<td class="col-id" title="' + escapeHtml(id) + '">'
                   + '<a href="' + escapeHtmlAttr(editUrl) + '" '
                   +    'style="color:var(--primary); text-decoration:none;">'
-                  + escapeHtml(name) + '</a></td>';
+                  + escapeHtml(name) + '</a>'
+                  + kbDisconnectedWarning
+                  + '</td>';
             html += '<td><span class="badge badge-available" style="font-size:11px;">'
                   + escapeHtml(src || '—') + '</span></td>';
             html += '<td style="font-family:var(--font-mono); font-size:12px; color:var(--text-secondary);">'
                   + escapeHtml(bucket || '—') + '</td>';
             html += '<td class="col-mode">' + renderModeBadge(t.query_mode) + '</td>';
+            if (hasSync) { html += '<td class="col-last-sync">' + escapeHtml(t.last_sync_display || '—') + '</td>'; }
             html += '<td class="col-actions"><div style="display:flex; gap:4px; justify-content:flex-end;">';
             if (!isInternal) {
-                html += '<button class="btn-icon" title="Edit" '
+                html += '<button class="btn-icon" data-tooltip="Edit" '
                       + 'onclick=\'openEditModal(' + escapeHtmlAttr(JSON.stringify(t)) + ')\'>'
                       + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
                       + '</button>';
             }
+            if (!isInternal) {
+                html += '<button class="btn-icon" data-tooltip="Sync now" onclick="syncTable(this, &#39;' + escapeHtmlAttr(id) + '&#39;)">'
+                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>'
+                      + '</button>';
+            }
             if (pkgIdOrNull && !isInternal) {
-                html += '<button class="btn-icon danger" title="Remove from package" '
+                html += '<button class="btn-icon danger" data-tooltip="Remove from package" '
                       + 'onclick="removeTableFromPackageById(&#39;' + escapeHtmlAttr(pkgIdOrNull) + '&#39;, &#39;' + escapeHtmlAttr(id) + '&#39;)">'
-                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>'
+                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
                       + '</button>';
             } else if (!pkgIdOrNull && !isInternal) {
                 // Icon button for visual rhythm with Edit (the wide
@@ -5556,7 +5548,7 @@
                 // column — user-reported visual bug). Title attr keeps
                 // the explicit label discoverable on hover.
                 html += '<button class="btn-icon" type="button" '
-                      + 'title="Add to a Data Package" '
+                      + 'data-tooltip="Add to a Data Package" '
                       + 'onclick="openBulkAssignFromRow(&#39;' + escapeHtmlAttr(id) + '&#39;)" '
                       + 'style="color:var(--primary);">'
                       + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'

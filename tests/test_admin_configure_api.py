@@ -433,6 +433,30 @@ class TestRegisterTable:
         )
         assert resp.status_code == 201, resp.text
 
+    def test_register_table_rejects_hyphen_in_name(self, seeded_app):
+        """Table names that produce unsafe DuckDB identifiers (e.g. hyphens) must be rejected."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json={"name": "crm-contact", "source_type": "keboola"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422
+        assert "unsafe identifier" in resp.json()["detail"].lower() or "crm-contact" in resp.json()["detail"]
+
+    def test_register_table_rejects_special_chars(self, seeded_app):
+        """Table names with special characters beyond underscores must be rejected."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        for bad_name in ["my.table", "order$s", "table name!"]:
+            resp = c.post(
+                "/api/admin/register-table",
+                json={"name": bad_name, "source_type": "keboola"},
+                headers=_auth(token),
+            )
+            assert resp.status_code == 422, f"Expected 422 for name={bad_name!r}, got {resp.status_code}"
+
 
 class TestDeleteRegistryTable:
     def test_delete_registered_table(self, seeded_app):
