@@ -10,15 +10,20 @@
    (SVG icons + count badges), `.pill` filter chips, JS-generated
    `.stack-card` install buttons stay page-local. #}
 {% import "_components.html" as ds %}
+{# ── Hero content — set here so operators can override without touching markup. #}
+{% set catalog_hero_eyebrow     = "Data" %}
+{% set catalog_hero_title       = "What data are you looking for?" %}
+{% set catalog_hero_subtitle    = "Browse curated data packages your team has approved. Add the ones you need to your stack — required packages are added automatically." %}
+{% set catalog_hero_placeholder = "Search Data Packages by name or description…" %}
 {# Hero — gradient banner mirroring marketplace.html .mp-hero so /catalog
    and /marketplace read as one product. Eyebrow + h1 + sub layered on
    the same blue gradient, plus an embedded search row identical to the
    one on /marketplace. The hero search is wired to the same JS that
    drives the per-card filter below, so typing here also narrows the grid. #}
 <div class="stack-hero">
-  <div class="eyebrow">Data</div>
-  <h1>What data are you looking for?</h1>
-  <p class="sub">Browse curated data packages your team has approved. Add the ones you need to your stack — required packages are added automatically.</p>
+  <div class="eyebrow">{{ catalog_hero_eyebrow }}</div>
+  <h1>{{ catalog_hero_title }}</h1>
+  <p class="sub">{{ catalog_hero_subtitle }}</p>
 
   <div class="stack-hero__search-row">
     <div class="stack-hero__search-wrap">
@@ -27,7 +32,7 @@
         <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
       </svg>
       <input id="catalog-hero-search" type="search"
-             placeholder="Search Data Packages by name or description…">
+             placeholder="{{ catalog_hero_placeholder }}">
     </div>
     <button class="stack-hero__search-btn" id="catalog-search-btn" type="button">Search</button>
   </div>
