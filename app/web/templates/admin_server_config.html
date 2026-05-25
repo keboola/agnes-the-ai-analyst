@@ -419,6 +419,10 @@ function showBanner(msg, kind) {
   const el = document.getElementById("cfg-banner");
   el.textContent = msg;
   el.className = "cfg-banner is-visible" + (kind ? " " + kind : "");
+  // Banner lives above the two-column layout; when the user is scrolled down
+  // to a section, the banner is off-screen. Scroll it into view so the
+  // save confirmation / error is always visible.
+  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 function hideBanner() {
   document.getElementById("cfg-banner").className = "cfg-banner";
