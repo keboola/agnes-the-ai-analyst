@@ -1,0 +1,195 @@
+/* Activity Center page styles — obs-* namespace.
+ *
+ * Extracted from inline <style> in activity_center.html.
+ * Loaded via {% block head_extra %} using static_url() cache-busting.
+ * Status colours unified to --ds-accent-* vocabulary; font stacks
+ * use --ds-font / --ds-font-mono; live-dot pulse matched to --ds-primary.
+ */
+
+:root {
+  --obs-bg:        var(--surface, #fff);
+  --obs-fg:        var(--text-primary, #111827);
+  --obs-muted:     var(--text-secondary, #6b7280);
+  --obs-border:    var(--border, #e5e7eb);
+  --obs-soft:      var(--border-light, #f3f4f6);
+  --obs-ok:        var(--ds-accent-success-ink);
+  --obs-ok-bg:     var(--ds-accent-success-bg);
+  --obs-err:       var(--ds-accent-danger-ink);
+  --obs-err-bg:    var(--ds-accent-danger-bg);
+  --obs-warn:      var(--ds-accent-warn-ink);
+  --obs-warn-bg:   var(--ds-accent-warn-bg);
+  --obs-link:      var(--ds-info-line);
+}
+
+.obs-page { font: 14px/1.5 var(--ds-font); color: var(--obs-fg); }
+
+/* Top bar -------------------------------------------------------------- */
+.obs-topbar {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 24px; padding: 12px 0 20px;
+  border-bottom: 1px solid var(--obs-border);
+  margin-bottom: 16px;
+}
+.obs-topbar-left { flex: 1; min-width: 0; }
+.obs-narrative { font-size: 16px; color: var(--obs-fg); line-height: 1.45; }
+.obs-narrative b { font-weight: 600; }
+.obs-narrative a { color: var(--obs-link); text-decoration: none; border-bottom: 1px dashed transparent; cursor: pointer; }
+.obs-narrative a:hover { border-bottom-color: var(--obs-link); }
+
+.obs-topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.obs-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--obs-muted); display: block; margin-bottom: 2px; }
+.obs-window select { padding: 6px 8px; border: 1px solid var(--obs-border); border-radius: 6px; background: var(--obs-bg); font: inherit; }
+.obs-live { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--obs-muted); cursor: pointer; }
+.obs-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ds-text-disabled); transition: background 0.2s; }
+.obs-live input:checked ~ .obs-live-dot { background: var(--ds-primary); animation: obs-pulse 2s ease-in-out infinite; }
+@keyframes obs-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(46, 168, 119, 0.6); }
+  50%      { box-shadow: 0 0 0 4px rgba(46, 168, 119, 0); }
+}
+
+/* Saved views dropdown -------------------------------------------------- */
+/* `.obs-btn` + `.obs-btn-primary` rules deleted — buttons render via
+   `ds.button(variant='secondary'|'ghost', size='sm')` carrying the
+   canonical .btn family. The saved-views modal/dropdown UI was removed
+   earlier; `.obs-views`, `.obs-views-panel`, `.obs-chev` are now
+   dead-code — left in place for a future revival or a dead-code sweep. */
+.obs-views { position: relative; }
+.obs-chev { font-size: 10px; color: var(--obs-muted); }
+.obs-views-panel {
+  position: absolute; right: 0; top: calc(100% + 6px);
+  background: var(--obs-bg); border: 1px solid var(--obs-border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+  width: 280px; padding: 8px; z-index: 50;
+}
+.obs-views-panel hr { border: 0; border-top: 1px solid var(--obs-soft); margin: 6px 0; }
+.obs-views-list { max-height: 280px; overflow-y: auto; }
+.obs-view-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 8px; border-radius: 4px; cursor: pointer;
+}
+.obs-view-item:hover { background: var(--obs-soft); }
+.obs-view-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obs-view-del { opacity: 0; transition: opacity 0.15s; color: var(--obs-err); border: 0; background: none; cursor: pointer; padding: 2px 6px; }
+.obs-view-item:hover .obs-view-del { opacity: 1; }
+.obs-views-empty { padding: 12px 8px; color: var(--obs-muted); font-size: 13px; text-align: center; }
+
+/* KPI cards ------------------------------------------------------------ */
+.obs-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.obs-kpi {
+  text-align: left; padding: 14px 16px; border: 1px solid var(--obs-border); border-radius: 8px;
+  background: var(--obs-bg); cursor: pointer; transition: border-color 0.15s, background 0.15s;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.obs-kpi:hover { border-color: var(--obs-link); background: var(--obs-soft); }
+.obs-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--obs-muted); }
+.obs-kpi-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--obs-fg); }
+.obs-kpi-sub { font-size: 12px; color: var(--obs-muted); font-variant-numeric: tabular-nums; }
+
+/* Filter bar ----------------------------------------------------------- */
+.obs-filters {
+  display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+  padding: 12px 14px; background: var(--obs-soft); border-radius: 8px;
+  margin-bottom: 12px;
+}
+.obs-filter { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.obs-filter-grow { flex: 1; min-width: 200px; }
+.obs-filter label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--obs-muted);
+}
+.obs-select, .obs-filter input {
+  padding: 6px 8px; border: 1px solid var(--obs-border); border-radius: 6px; background: var(--obs-bg); font: inherit;
+}
+.obs-filter input { min-width: 200px; }
+.obs-filter-actions { display: flex; align-items: flex-end; }
+
+/* Audit table ---------------------------------------------------------- */
+.obs-table-wrap {
+  border: 1px solid var(--obs-border); border-radius: 8px; overflow: hidden; background: var(--obs-bg);
+}
+.obs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.obs-table thead th {
+  text-align: left; padding: 10px 12px; background: var(--obs-soft);
+  border-bottom: 1px solid var(--obs-border);
+  font-weight: 600; color: var(--obs-muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap;
+}
+.obs-table thead th button {
+  background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px; text-transform: inherit; letter-spacing: inherit;
+}
+.obs-table thead th[aria-sort="ascending"] .obs-sort-arrow::before { content: "▲"; }
+.obs-table thead th[aria-sort="descending"] .obs-sort-arrow::before { content: "▼"; }
+.obs-sort-arrow { font-size: 9px; color: var(--obs-muted); }
+.obs-table tbody td {
+  padding: 8px 12px; border-bottom: 1px solid var(--obs-soft); vertical-align: top;
+}
+.obs-table tbody tr:last-child td { border-bottom: none; }
+.obs-table tbody tr { cursor: pointer; }
+.obs-table tbody tr:hover { background: var(--obs-soft); }
+.obs-table tbody tr.is-selected { background: var(--ds-info-bg); }
+.obs-time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--obs-muted); }
+.obs-user-primary { color: var(--obs-fg); }
+.obs-user-id { color: var(--obs-muted); font-family: var(--ds-font-mono); font-size: 11px; }
+.obs-action-cell { font-family: var(--ds-font-mono); font-size: 12px; }
+.obs-dur-cell { text-align: right; font-variant-numeric: tabular-nums; color: var(--obs-muted); }
+.obs-result-ok { color: var(--obs-ok); background: var(--obs-ok-bg); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+.obs-result-err { color: var(--obs-err); background: var(--obs-err-bg); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+.obs-source-pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px;
+  text-transform: lowercase; letter-spacing: 0.2px; background: var(--obs-soft); color: var(--obs-muted); }
+.obs-source-pill.is-scheduler { background: #ede9fe; color: #5b21b6; }
+.obs-source-pill.is-cli       { background: #dbeafe; color: #1e40af; }
+.obs-source-pill.is-web       { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.obs-empty { padding: 40px 16px; text-align: center; color: var(--obs-muted); font-size: 13px; }
+.obs-table-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-top: 1px solid var(--obs-border); background: var(--obs-soft);
+}
+.obs-row-count { color: var(--obs-muted); font-size: 12px; }
+
+/* Detail side panel ---------------------------------------------------- */
+.obs-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 50vw);
+  background: var(--obs-bg); border-left: 1px solid var(--obs-border);
+  box-shadow: -8px 0 24px rgba(0,0,0,0.06); padding: 20px; overflow-y: auto;
+  z-index: 100;
+}
+.obs-panel-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 16px; }
+.obs-panel-head h2 { margin: 0; font-size: 16px; font-weight: 600; font-family: var(--ds-font-mono); }
+.obs-panel-meta { margin: 0 0 16px; display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; font-size: 13px; }
+.obs-panel-meta dt { color: var(--obs-muted); }
+.obs-panel-meta dd { margin: 0; word-break: break-word; }
+.obs-panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--obs-muted); margin: 16px 0 6px; }
+.obs-panel-pre {
+  background: var(--obs-soft); border-radius: 6px; padding: 10px 12px;
+  margin: 0; font-family: var(--ds-font-mono); font-size: 12px;
+  white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto;
+}
+.obs-panel-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+
+/* Save-view modal ------------------------------------------------------ */
+/* `display: flex` would override the [hidden] attribute (UA stylesheet
+   only sets `display: none` at lower specificity than author CSS), so the
+   modal would render on page load. Gate display on the absence of the
+   attribute. */
+.obs-modal {
+  position: fixed; inset: 0; background: rgba(17, 24, 39, 0.4);
+  align-items: center; justify-content: center; z-index: 200;
+}
+.obs-modal:not([hidden]) { display: flex; }
+.obs-modal[hidden]       { display: none; }
+/* Same trap on the side panel + saved-views dropdown, prophylactically. */
+.obs-panel[hidden],
+.obs-views-panel[hidden] { display: none; }
+.obs-modal-body {
+  background: var(--obs-bg); border-radius: 12px; padding: 24px; width: min(420px, 90vw);
+  box-shadow: 0 24px 48px rgba(0,0,0,0.18);
+}
+.obs-modal-body h2 { margin: 0 0 8px; font-size: 18px; }
+.obs-modal-help { margin: 0 0 12px; color: var(--obs-muted); font-size: 13px; }
+.obs-modal-body label { display: block; font-size: 12px; color: var(--obs-muted); margin-bottom: 4px; }
+.obs-modal-body input[type=text] {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--obs-border); border-radius: 6px; font: inherit;
+  box-sizing: border-box;
+}
+.obs-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
