@@ -93,7 +93,12 @@
   .cfg-banner {
     padding: 12px 16px; border-radius: 8px;
     background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
-    font-size: 13px; margin-bottom: 16px; display: none;
+    font-size: 13px; display: none;
+    /* Sticky just below the app header so save confirmations / errors are
+       always visible regardless of scroll position. z-index stays below
+       modals (1000+) but above section content. */
+    position: sticky; top: 72px; z-index: 90;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   }
   .cfg-banner.is-visible { display: block; }
   .cfg-banner.success { background: #ecfdf5; border-color: #34d399; color: #065f46; }
@@ -138,7 +143,7 @@
 
   .cfg-field { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; margin-bottom: 14px; }
   .cfg-field:last-child { margin-bottom: 0; }
-  .cfg-field label { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; padding-top: 8px; }
+  .cfg-field label, .cfg-field .cfg-field-label { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; padding-top: 8px; }
   .cfg-field .field-help { font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 4px; }
   .cfg-field input[type="text"],
   .cfg-field input[type="password"],
@@ -415,10 +420,17 @@ const SECTION_META = {
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 
 // ── Banner ─────────────────────────────────────────────────────────────
+let _bannerTimer = null;
 function showBanner(msg, kind) {
   const el = document.getElementById("cfg-banner");
   el.textContent = msg;
   el.className = "cfg-banner is-visible" + (kind ? " " + kind : "");
+  // Auto-dismiss success (and neutral) banners after 4 s; leave errors
+  // visible until the next action so the operator can read them.
+  clearTimeout(_bannerTimer);
+  if (kind !== "error") {
+    _bannerTimer = setTimeout(hideBanner, 4000);
+  }
 }
 function hideBanner() {
   document.getElementById("cfg-banner").className = "cfg-banner";
@@ -568,14 +580,15 @@ function renderArrayField(section, pathSegments, label, value, spec, depth) {
   // `data-array-collect="1"` marks the wrapper so collectSection can pick
   // it up as a single unit (otherwise the per-row inputs would each emit
   // their own patch leaf and clobber each other).
+  const baseId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const rows = items.map((item, idx) => `
     <div class="array-row" data-array-row="${idx}" style="display: flex; gap: 6px; margin-bottom: 4px;">
-      <input type="text" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" style="flex: 1;">
+      <input type="text" id="${baseId}_${idx}" name="${baseId}_${idx}" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" aria-label="${escHtml(label)} item ${idx + 1}" style="flex: 1;">
       <button type="button" class="cfg-btn" data-array-remove="${idx}" title="Remove this item">×</button>
     </div>`).join("");
   return `
     <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
-      <label>${arrow}${escHtml(label)}</label>
+      <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
       <div>
         <div class="array-container"
              data-section="${section}"
@@ -613,6 +626,7 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
   const hintBlock = spec.hint
     ? `<div class="field-help">${escHtml(spec.hint)}</div>`
     : "";
+  const mapBaseId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const renderRow = (k, v, idx) => {
     if (valueKind === "array") {
       // Map<string, array<scalar>> — value column is itself a comma-separated
@@ -622,8 +636,8 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
       const items = Array.isArray(v) ? v.join(", ") : "";
       return `
         <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 2fr auto; gap: 6px; margin-bottom: 4px;">
-          <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
-          <input type="text" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values">
+          <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
+          <input type="text" id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values" aria-label="${escHtml(label)} value ${idx + 1}">
           <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
         </div>`;
     }
@@ -632,15 +646,15 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
     const stepAttr = valueKind === "float" ? ' step="any"' : "";
     return `
       <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 1fr auto; gap: 6px; margin-bottom: 4px;">
-        <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
-        <input type="${inputType}"${stepAttr} class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value">
+        <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
+        <input type="${inputType}"${stepAttr} id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value" aria-label="${escHtml(label)} value ${idx + 1}">
         <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
       </div>`;
   };
   const rows = Object.entries(obj).map(([k, v], idx) => renderRow(k, v, idx)).join("");
   return `
     <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
-      <label>${arrow}${escHtml(label)}</label>
+      <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
       <div>
         <div class="map-container"
              data-section="${section}"
@@ -762,7 +776,7 @@ function renderNestedField(section, pathSegments, label, value, spec, depth) {
 
     return `
       <div class="cfg-field nested-field nested-parent" style="margin-left: ${indent}px;">
-        <label>${arrow}${escHtml(label)}</label>
+        <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
         <div>${hintBlock || `<div class="field-help">Nested structured fields below.</div>`}</div>
       </div>
       ${populatedHtml}${unsetHtml}${fallbackHtml}`;
@@ -894,6 +908,8 @@ function renderSection(section, payload, knownForSection) {
         ${section === "data_source" ? `
         <button class="cfg-btn" data-action="test-bigquery" type="button">Test BigQuery connection</button>
         <span class="bq-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
+        <button class="cfg-btn" data-action="test-keboola" type="button" style="margin-left: 8px;">Test Keboola connection</button>
+        <span class="kbc-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
         ` : ""}
       </div>
     </section>`;
@@ -992,6 +1008,19 @@ function renderAll(data) {
   wrap.hidden = false;
   buildSidenav(sections);
 
+  // Hash-based deep-link: /admin/server-config#cfg-s-data_source scrolls to
+  // that section after sections are rendered (anchors don't exist before this
+  // point so the browser's native scroll-to-hash fires too early). Links from
+  // other pages (e.g. the Keboola not-configured banner) use this.
+  if (window.location.hash) {
+    // Guard against SyntaxError: window.location.hash is user-controlled and
+    // may not be a valid CSS selector (e.g. #:foo or #test[bar).
+    try {
+      const target = document.querySelector(window.location.hash);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (_) { /* invalid hash — ignore */ }
+  }
+
   wrap.querySelectorAll('[data-action="save-section"]').forEach(btn =>
     btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
 
@@ -1000,6 +1029,10 @@ function renderAll(data) {
   // ssh to the VM or wait for an analyst's failed query.
   wrap.querySelectorAll('[data-action="test-bigquery"]').forEach(btn =>
     btn.addEventListener("click", () => onTestBigQuery(btn)));
+
+  // Test Keboola connection — counterpart to BigQuery probe above.
+  wrap.querySelectorAll('[data-action="test-keboola"]').forEach(btn =>
+    btn.addEventListener("click", () => onTestKeboola(btn)));
 
   // Wire array-of-scalars + map-of-scalars add/remove buttons via event
   // delegation on the wrapper. Re-attaching after every renderAll() is
@@ -1295,6 +1328,39 @@ async function onTestBigQuery(btn) {
     if (r.ok) {
       const body = await r.json();
       resultEl.textContent = `✓ ok (${body.elapsed_ms} ms; billing=${body.billing_project}, data=${body.data_project})`;
+      resultEl.style.color = "#2a8c4a";
+    } else {
+      let body;
+      try { body = await r.json(); } catch (_) { body = await r.text(); }
+      const detail = body && typeof body === "object" ? body.detail : body;
+      const kind = detail && typeof detail === "object" ? (detail.kind || "error") : "error";
+      const hint = detail && typeof detail === "object" ? (detail.hint || detail.message || "") : String(detail);
+      resultEl.textContent = `✗ ${kind}${hint ? " — " + hint : ""}`;
+      resultEl.style.color = "#c0392b";
+    }
+  } catch (e) {
+    resultEl.textContent = `✗ network error — ${e.message}`;
+    resultEl.style.color = "#c0392b";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Keboola test connection ────────────────────────────────────────────
+async function onTestKeboola(btn) {
+  const resultEl = btn.parentElement.querySelector(".kbc-test-result");
+  resultEl.hidden = false;
+  resultEl.textContent = "Testing…";
+  resultEl.style.color = "";
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/admin/keboola/test-connection", {
+      method: "POST",
+      credentials: "include",
+    });
+    if (r.ok) {
+      const body = await r.json();
+      resultEl.textContent = `✓ ok (${body.elapsed_ms} ms; ${body.bucket_count} bucket${body.bucket_count !== 1 ? "s" : ""})`;
       resultEl.style.color = "#2a8c4a";
     } else {
       let body;
