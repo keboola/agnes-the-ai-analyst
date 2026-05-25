@@ -560,9 +560,9 @@
     font-family: inherit;
     font-size: 13px;
     font-weight: 600;
-    color: var(--ds-primary);
-    background: #FFFFFF;
-    border: none;
+    background: var(--ds-hero-cta-bg);
+    color: var(--ds-hero-cta-fg);
+    border: 1px solid var(--ds-hero-cta-bg);
     border-radius: 6px;
     padding: 10px 22px;
     cursor: pointer;
@@ -570,10 +570,14 @@
     align-items: center;
     gap: 8px;
     white-space: nowrap;
-    transition: background 0.15s ease;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.home-mock .btn-setup-primary:hover { background: var(--primary-light); }
-.home-mock .btn-setup-primary.copied { background: #047857; color: #fff; }
+.home-mock .btn-setup-primary:hover {
+    background: var(--ds-hero-cta-bg-hover);
+    color: var(--ds-hero-cta-fg-hover);
+    border-color: var(--ds-hero-cta-bg-hover);
+}
+.home-mock .btn-setup-primary.copied { background: #047857; color: #fff; border-color: #047857; }
 .home-mock .btn-setup-primary[disabled] { opacity: 0.7; cursor: wait; }
 .home-mock .setup-cta-meta {
     display: inline-flex;
@@ -1025,7 +1029,7 @@
     border-color: var(--ds-hero-cta-bg-hover);
     transform: translateY(-1px);
     box-shadow: 0 4px 12px var(--ds-hero-shadow);
-    color: var(--ds-hero-cta-fg);
+    color: var(--ds-hero-cta-fg-hover);
 }
 .home-mock .btn-intro-secondary {
     background: rgba(255, 255, 255, 0.10);
@@ -2182,7 +2186,6 @@
     font-style: italic;
     margin-top: 4px;
 }
-/* Setup-CTA inside Step 4 — green primary button on light. */
 .home-mock .setup-cta-lead {
     color: var(--ds-text-secondary);
 }
@@ -2190,11 +2193,6 @@
     background: var(--ds-primary-light);
     color: var(--ds-primary-dark);
 }
-.home-mock .btn-setup-primary {
-    background: var(--ds-primary);
-    color: #ffffff;
-}
-.home-mock .btn-setup-primary:hover { background: var(--ds-primary-dark); }
 .home-mock .setup-cta-hint { color: var(--ds-text-muted); }
 .home-mock details.manual-fallback {
     border-top-color: var(--ds-border);
