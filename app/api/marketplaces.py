@@ -617,9 +617,9 @@ def mark_plugin_system(
         except duckdb.ConstraintException:
             continue
 
-    affected_users = UserCuratedSubscriptionsRepository(
-        conn,
-    ).fanout_system_for_plugin(marketplace_id, plugin_name)
+    affected_users = user_curated_subscriptions_repo().fanout_system_for_plugin(
+        marketplace_id, plugin_name,
+    )
 
     _audit(
         conn,
