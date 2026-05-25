@@ -245,8 +245,6 @@ async def lifespan(app):
     if seed_email:
         try:
             from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-            from src.repositories.user_group_members import UserGroupMembersRepository
-            from src.repositories.users import UserRepository
             conn = get_system_db()
             repo = users_repo()
             seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
@@ -338,7 +336,6 @@ async def lifespan(app):
     if not is_local_dev_mode():
         try:
             from src.db import get_system_db
-            from src.repositories.users import UserRepository
             conn = get_system_db()
             repo = users_repo()
             all_users = repo.list_all()

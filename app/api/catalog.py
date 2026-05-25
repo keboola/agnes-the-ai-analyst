@@ -65,7 +65,6 @@ async def list_catalog_tables(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all available tables from table_registry."""
-    from src.repositories.table_registry import TableRegistryRepository
     repo = table_registry_repo()
     all_tables = repo.list_all()
 

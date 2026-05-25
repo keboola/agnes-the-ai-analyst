@@ -445,9 +445,6 @@ async def delete_marketplace(
         )
         # Drop user subscriptions to plugins from this marketplace so a
         # re-registered slug doesn't inherit stale subscribe state.
-        from src.repositories.user_curated_subscriptions import (
-            UserCuratedSubscriptionsRepository,
-        )
         user_curated_subscriptions_repo().delete_for_marketplace(
             marketplace_id
         )
@@ -577,10 +574,6 @@ def mark_plugin_system(
     runs the fanout (cheap; ON CONFLICT DO NOTHING) so any user/group
     that slipped past the creation hooks gets caught up.
     """
-    from src.repositories.resource_grants import ResourceGrantsRepository
-    from src.repositories.user_curated_subscriptions import (
-        UserCuratedSubscriptionsRepository,
-    )
 
     plugin_row = conn.execute(
         "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",

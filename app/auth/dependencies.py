@@ -15,7 +15,6 @@ from fastapi import Depends, HTTPException, Header, Request, status
 
 from app.auth.jwt import verify_token
 from src.db import get_system_db
-from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
 
