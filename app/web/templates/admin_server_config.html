@@ -93,7 +93,12 @@
   .cfg-banner {
     padding: 12px 16px; border-radius: 8px;
     background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
-    font-size: 13px; margin-bottom: 16px; display: none;
+    font-size: 13px; display: none;
+    /* Sticky just below the app header so save confirmations / errors are
+       always visible regardless of scroll position. z-index stays below
+       modals (1000+) but above section content. */
+    position: sticky; top: 72px; z-index: 90;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   }
   .cfg-banner.is-visible { display: block; }
   .cfg-banner.success { background: #ecfdf5; border-color: #34d399; color: #065f46; }
@@ -419,10 +424,6 @@ function showBanner(msg, kind) {
   const el = document.getElementById("cfg-banner");
   el.textContent = msg;
   el.className = "cfg-banner is-visible" + (kind ? " " + kind : "");
-  // Banner lives above the two-column layout; when the user is scrolled down
-  // to a section, the banner is off-screen. Scroll it into view so the
-  // save confirmation / error is always visible.
-  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 function hideBanner() {
   document.getElementById("cfg-banner").className = "cfg-banner";
