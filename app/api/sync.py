@@ -684,14 +684,13 @@ sys.exit(compute_exit_code(result, len(configs)))
         # Auto-profile synced tables (best-effort, don't fail sync on profile error)
         try:
             from src.profiler import profile_table, TableInfo
-            from src.repositories.profiles import ProfileRepository
 
             data_dir = Path(os.environ.get("DATA_DIR", "./data"))
             extracts_dir = data_dir / "extracts"
 
             sys_conn = get_system_db()
             try:
-                profile_repo = profile_repo()
+                profiles = profile_repo()
                 profiled = 0
                 for source_name, table_names in views.items():
                     for table_name in table_names[:10]:  # Limit per sync
@@ -701,7 +700,7 @@ sys.exit(compute_exit_code(result, len(configs)))
                         try:
                             table_info = TableInfo(name=table_name, table_id=table_name)
                             profile = profile_table(table_info, pq_path, [], {}, {})
-                            profile_repo.save(table_name, profile)
+                            profiles.save(table_name, profile)
                             profiled += 1
                         except Exception as pe:
                             print(f"[SYNC] Profile {table_name}: {pe}", file=_sys.stderr, flush=True)

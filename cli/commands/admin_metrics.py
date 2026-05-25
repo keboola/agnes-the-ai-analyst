@@ -22,7 +22,6 @@ def import_metrics(
 ):
     """Import metric definitions from YAML into DuckDB (direct, no API)."""
     from src.db import get_system_db
-    from src.repositories.metrics import MetricRepository
 
     import_path = Path(path)
     if not import_path.exists():
@@ -44,7 +43,6 @@ def export_metrics(
 ):
     """Export metric definitions from DuckDB to YAML files (direct, no API)."""
     from src.db import get_system_db
-    from src.repositories.metrics import MetricRepository
 
     conn = get_system_db()
     try:
@@ -59,15 +57,13 @@ def export_metrics(
 def validate_metrics():
     """Check each metric's table reference against registered tables (direct, no API)."""
     from src.db import get_system_db
-    from src.repositories.metrics import MetricRepository
-    from src.repositories.table_registry import TableRegistryRepository
 
     conn = get_system_db()
     try:
-        metric_repo = metric_repo()
+        metrics_r = metric_repo()
         registry_repo = table_registry_repo()
 
-        metrics = metric_repo.list()
+        metrics = metrics_r.list()
         registered_tables = {t["name"] for t in registry_repo.list_all()}
 
         ok_count = 0

@@ -262,12 +262,8 @@ async def create_user(
     # v39: subscribe to every system plugin so the mandatory tier
     # reaches the new user on first sign-in without admin reconcile.
     try:
-        from src.repositories.user_curated_subscriptions import (
-            UserCuratedSubscriptionsRepository,
-        )
-        UserCuratedSubscriptionsRepository(
-            conn
-        ).fanout_system_for_user(user_id)
+        from src.repositories import user_curated_subscriptions_repo
+        user_curated_subscriptions_repo().fanout_system_for_user(user_id)
     except Exception:
         logger.exception(
             "system-plugin fanout failed for new user %s", payload.email,

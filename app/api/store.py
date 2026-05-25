@@ -881,7 +881,7 @@ def _write_synth_plugin_json(
 def promote_to_version(
     entity_id: str,
     target_version_no: int,
-    repo: StoreEntitiesRepository,
+    repo,
 ) -> Optional[int]:
     """Atomic-ish promotion: swap live bundle FIRST, then update DB.
 

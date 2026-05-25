@@ -3646,7 +3646,6 @@ async def admin_list_store_submissions(
     ``plugin``. ``name`` and ``version`` are case-insensitive substrings.
     ``limit`` clamped to [1, 500].
     """
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     statuses = None
     if status:
@@ -3697,7 +3696,6 @@ async def admin_get_store_submission(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     sub = store_submissions_repo().get(submission_id)
     if sub is None:
@@ -3723,8 +3721,6 @@ async def admin_override_store_submission(
     captures who, why, and the verdict that was overridden so the next
     time this submission shows up, the trail is intact.
     """
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     subs = store_submissions_repo()
     sub = subs.get(submission_id)
@@ -3849,8 +3845,6 @@ async def admin_rescan_store_submission(
         _version_no_for_submission,
     )
     from src.db import get_system_db
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails import run_inline_checks
     from src.store_guardrails.runner import (
         default_api_key_loader,
@@ -3989,8 +3983,6 @@ async def admin_retry_store_submission(
         _version_no_for_submission,
     )
     from src.db import get_system_db
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails.runner import (
         default_api_key_loader,
         default_model_loader,
@@ -4061,9 +4053,6 @@ async def admin_delete_store_submission(
     triage needs the evidence trail later.
     """
     from app.api.store import _entity_dir
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
-    from src.repositories.user_store_installs import UserStoreInstallsRepository
 
     subs = store_submissions_repo()
     sub = subs.get(submission_id)
@@ -4120,8 +4109,6 @@ async def admin_download_store_submission_bundle(
         _version_no_for_submission,
     )
 
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     sub = store_submissions_repo().get(submission_id)
     if sub is None:
