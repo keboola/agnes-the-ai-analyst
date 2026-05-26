@@ -171,8 +171,15 @@
   font-size: 10px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.4px; margin-left: 4px;
 }
-.item-cell.is-system { background: var(--ds-accent-warn-bg); }
-.item-cell.is-system:hover { background: var(--ds-warn-bg, #fff8e6); }
+/* Restore the soft-amber tint + hover darkening lost during CSS extraction.
+   Pre-extraction values (Tailwind amber-50 → amber-100) gave a visible hover
+   step; the post-extraction `--ds-accent-warn-bg` (`#fff8e6`) collapsed both
+   states to the same cream tone. The --ds-warn-* vocabulary doesn't carry a
+   two-tone soft/strong variant yet, so we hold this as a raw-hex one-off
+   (flagged in #427 follow-ups for a future chip-token vocabulary).
+   Reported by Devin Review on PR #427. */
+.item-cell.is-system { background: #fffbeb; }
+.item-cell.is-system:hover { background: #fef3c7; }
 .item-cell input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.7; }
 .ic-desc {
   font-size: 11px; color: var(--text-secondary, #6b7280);
