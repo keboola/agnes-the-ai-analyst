@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.13] — 2026-05-26
+
+### Internal
+- `.github/workflows/e2e-nightly.yml` GitHub Actions bumped: `actions/setup-node@v4 → v6`, `actions/github-script@v7 → v9`, `actions/upload-artifact@v4 → v7`. Consolidates dependabot PRs #422, #423, #424 into one merge. Standard usage paths unchanged; the bump tracks the Node 24 runtime + ESM upgrades the actions ecosystem moved to since these were last pinned.
+
 ## [0.55.12] — 2026-05-26
 
 ### Fixed
