@@ -1433,8 +1433,8 @@
     margin-right: 8px;
     user-select: none;
 }
-.home-mock .terminal-body .you { color: #ffd866; }
-.home-mock .terminal-body .cmd { color: #ffd866; }
+.home-mock .terminal-body .you { color: var(--ds-code-yellow); }
+.home-mock .terminal-body .cmd { color: var(--ds-code-yellow); }
 .home-mock .terminal-body .ai-name { color: var(--ds-primary); font-weight: 600; }
 .home-mock .terminal-body .path { color: #8b9fe0; }
 .home-mock .terminal-body .dim { color: rgba(215, 228, 255, 0.55); }
@@ -1562,7 +1562,7 @@
     border-radius: 8px;
     overflow: hidden;
     border: 1px solid var(--ds-border);
-    background: #0c1224;
+    background: var(--ds-code-bg);
     text-decoration: none;
     color: inherit;
     margin: 2px 0 4px;
@@ -1605,7 +1605,7 @@
     gap: 14px;
     flex-wrap: wrap;
     font-weight: 600;
-    color: #d7e4ff;
+    color: var(--ds-code-ink);
 }
 .home-mock .vscode-thumb .dot {
     width: 10px;
@@ -1615,7 +1615,7 @@
     margin-right: 4px;
     vertical-align: middle;
 }
-.home-mock .vscode-thumb .dot.d-explorer { background: #ffd866; }
+.home-mock .vscode-thumb .dot.d-explorer { background: var(--ds-code-yellow); }
 .home-mock .vscode-thumb .dot.d-t1 { background: var(--ds-brand-accent); }
 .home-mock .vscode-thumb .dot.d-t2 { background: #e07b3f; }
 .home-mock .vscode-thumb .dot.d-t3 { background: #8b6ec7; }
