@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.15] — 2026-05-26
+
 ### Fixed
 - **DuckDB consolidation connections in `materialize_query` now cap
   `memory_limit` + `threads`** (`connectors/keboola/extractor.py`,
@@ -61,6 +63,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   release had landed. Non-blocking `flock -n` means the second runner
   exits cleanly; the next regular tick handles whatever real change
   is pending.
+- **`apply_bq_session_settings` now applies the materialize memory caps (`memory_limit=2GB`, `threads=2`, `preserve_insertion_order=false`) on every BQ pool acquire**, fixing the pool-state asymmetry that landed in #431. Previously the caps were SET inline inside `materialize_query`, which only mutated whichever of the ~4 pool entries handled that particular call — the other entries stayed at DuckDB's 80%-of-host default and re-opened the OOM window for any analyst query that subsequently landed on them. Mirrors the per-acquire re-apply pattern `bq_query_timeout_ms` already uses.
+- Stale `1 GiB` references in the `_open_consolidation_conn` docstring (`connectors/keboola/extractor.py`) and an inline comment in `connectors/bigquery/extractor.py::materialize_query` rewritten to match the actual 2 GiB cap. Author iterated from 1 GiB → 2 GiB during #431 and the commentary was left behind.
 
 ### Added
 - `docs/ecosystem-map.md` — operator-facing bird's-eye view of the 5 repo tiers around an Agnes deployment (OSS app, per-customer infra in two patterns A/B, curated marketplace, initial-workspace template, legacy/glue), with a cross-tier checklist for new customer onboarding. Linked from `docs/README.md` operator index.
