@@ -2208,6 +2208,10 @@
 .home-mock .btn-setup-primary:hover {
     background: var(--ds-primary-dark);
     border-color: var(--ds-primary-dark);
+    /* Force white ink — without this, `color` cascades to the base hover
+       rule at line 575 (`--ds-hero-cta-fg-hover` = `--primary-dark` on
+       blue theme), giving dark-blue text on a dark-blue background. */
+    color: #ffffff;
 }
 .home-mock .setup-cta-hint { color: var(--ds-text-muted); }
 .home-mock details.manual-fallback {
