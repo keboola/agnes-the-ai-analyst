@@ -1100,6 +1100,30 @@ def _get_state_dir() -> Path:
     return _get_data_dir() / "state"
 
 
+def _peek_schema_version(snapshot_path: Path) -> int:
+    """Open a DuckDB snapshot read-only and return its
+    ``MAX(schema_version.version)``.
+
+    Read-only mode bypasses WAL replay entirely — even if the snapshot
+    has its own stale WAL, the read-only handle ignores it. Any
+    ``duckdb.Error`` (table missing, file corrupt, permission denied)
+    is treated conservatively as version 0, so an unreadable snapshot
+    fails the freshness check in :func:`_try_open_system_db` and ends
+    in the refusal path. Defensive: never returns -1 / None / raises.
+    """
+    try:
+        conn = duckdb.connect(str(snapshot_path), read_only=True)
+        try:
+            row = conn.execute(
+                "SELECT MAX(version) FROM schema_version"
+            ).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        finally:
+            conn.close()
+    except duckdb.Error:
+        return 0
+
+
 def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
     """Open ``system.duckdb``. If DuckDB's WAL replay raises an
     ``INTERNAL Error`` from ``ReplayAlter`` (a known failure mode when a
@@ -1134,6 +1158,35 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
             )
             raise
         wal_path = Path(db_path + ".wal")
+
+        # #379: refuse auto-recovery if the snapshot is older than the
+        # current SCHEMA_VERSION. The migration ladder is idempotent
+        # for schema but not for data; re-running it against a stale
+        # snapshot silently drops every row added since the snapshot
+        # was captured. Better to fail loudly and let an operator
+        # decide. The broken DB + WAL are preserved either way.
+        snapshot_version = _peek_schema_version(snapshot)
+        if snapshot_version < SCHEMA_VERSION:
+            broken = Path(db_path + f".broken.{int(time.time())}")
+            shutil.move(db_path, str(broken))
+            if wal_path.exists():
+                shutil.move(str(wal_path), str(broken) + ".wal")
+            logger.critical(
+                "REFUSING auto-recovery: pre-migrate snapshot is at "
+                "schema v%d, target is v%d. Auto-recovery would re-run "
+                "the migration ladder and silently drop all rows added "
+                "since v%d. Broken DB preserved at %s; broken WAL at "
+                "%s.wal if it existed. Manual intervention required.",
+                snapshot_version, SCHEMA_VERSION, snapshot_version,
+                broken, broken,
+                exc_info=e,
+            )
+            raise RuntimeError(
+                f"pre-migrate snapshot stale "
+                f"(v{snapshot_version} < target v{SCHEMA_VERSION}); "
+                f"auto-recovery refused. Broken DB at {broken}."
+            )
+
         logger.warning(
             "WAL replay failed (%s) — auto-restoring from pre-migrate "
             "snapshot %s. The migration ladder will re-run on this start.",
