@@ -2193,6 +2193,22 @@
     background: var(--ds-primary-light);
     color: var(--ds-primary-dark);
 }
+/* Light-surface re-skin of the install CTA. The base rule at home.css:559
+   uses --ds-hero-cta-* tokens designed for the dark-navy hero context; on
+   the white .install-hero surface (re-skinned at home.css:1915) and the
+   blue theme (where --ds-hero-cta-bg resolves to #ffffff), those tokens
+   would render a white button on a white card. Override to brand-primary
+   fill + white ink so the CTA reads regardless of theme. Reported by
+   Devin Review on PR #427. */
+.home-mock .btn-setup-primary {
+    background: var(--ds-primary);
+    color: #ffffff;
+    border-color: var(--ds-primary);
+}
+.home-mock .btn-setup-primary:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+}
 .home-mock .setup-cta-hint { color: var(--ds-text-muted); }
 .home-mock details.manual-fallback {
     border-top-color: var(--ds-border);
