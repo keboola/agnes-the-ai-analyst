@@ -18,8 +18,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   ~3.2 GiB of process-resident buffer pool. With Python objects +
   sidecar containers that exceeds the cgroup cap and triggers OOM
   during slice consolidation of any non-trivial table — observed on
-  the live dev VM with the `gcp_cost` Keboola table: uvicorn anon
-  RSS climbed from ~350 MiB to ~3.5 GiB in minutes, then SIGKILL.
+  a 4 GiB dev container against a multi-GiB Keboola table: uvicorn
+  anon RSS climbed from ~350 MiB to ~3.5 GiB in minutes, then SIGKILL.
   New `_open_consolidation_conn()` helper in the Keboola extractor
   applies `SET memory_limit='2GB'` + `SET threads=2` +
   `SET preserve_insertion_order=false` immediately after each
@@ -44,7 +44,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   left on device` as a possibility; the common case now fails
   fast with an actionable message instead of triggering the
   multi-GiB Python traceback retention path that compounded into
-  a cascading cgroup OOM on the live dev VM (the retained `chunk`
+  a cascading cgroup OOM on small dev containers (the retained `chunk`
   buffer + response object references in the `_download_single`
   failure frame multiplied across `download_file_slices`'
   per-slice loop).

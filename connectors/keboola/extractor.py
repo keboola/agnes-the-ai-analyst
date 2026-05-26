@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Python objects + a few hundred MiB for orchestrator state + caddy /
 # scheduler sidecars, that exceeds the cgroup cap and triggers OOM-kill
 # during slice consolidation against any non-trivial table (observed
-# on the live dev VM with the ``gcp_cost`` Keboola table: anon RSS
+# on a 4 GiB dev container against a multi-GiB Keboola table: anon RSS
 # climbed from ~350 MiB to ~3.5 GiB in minutes, then SIGKILL).
 #
 # 2 GiB strikes the balance: the parquet path's streaming row-group

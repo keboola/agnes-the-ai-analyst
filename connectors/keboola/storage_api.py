@@ -425,7 +425,7 @@ class KeboolaStorageClient:
             # orphan ``.part`` + a half-written destination behind
             # AND triggering the Python traceback retention path that
             # held a multi-GiB response buffer in every retained frame
-            # on agnes-dev (cascaded into a cgroup OOM via
+            # on small dev containers (cascaded into a cgroup OOM via
             # ``connectors/keboola/extractor.py`` consolidation
             # connection — see the matching DuckDB-side cap there).
             content_length = r.headers.get("Content-Length")
