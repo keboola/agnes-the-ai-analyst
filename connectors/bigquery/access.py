@@ -573,6 +573,34 @@ def apply_bq_session_settings(conn) -> None:
             "apply_bq_session_settings: bq_query_timeout_ms=%d applied", ms,
         )
 
+    # Core DuckDB resource caps — applied uniformly on EVERY pool acquire
+    # so the materialize-only invariants (#431) apply to every pool entry,
+    # not just whichever one happens to get used for materialize first.
+    # Without this, a 4-entry pool could end up with one entry capped at
+    # 2 GiB and three entries at the 80%-of-host default, and the cap
+    # would only kick in for materialize calls that happened to land on
+    # the already-mutated entry — non-deterministic enough that the
+    # production-OOM trace #431 was chasing might silently come back.
+    #
+    # See ``connectors/keboola/extractor.py`` module-level comment block
+    # for the empirical 2 GiB / threads=2 / preserve_insertion_order
+    # rationale. The same caps are applied to standalone (non-pooled)
+    # ``duckdb.connect()`` calls in the Keboola materialize path via
+    # ``_open_consolidation_conn`` there.
+    for stmt in (
+        "SET memory_limit='2GB'",
+        "SET threads=2",
+        "SET preserve_insertion_order=false",
+    ):
+        try:
+            conn.execute(stmt)
+        except Exception as e:
+            logger.warning(
+                "apply_bq_session_settings: %s failed (%s); pool entry will "
+                "run with DuckDB defaults — re-check pool config",
+                stmt, e,
+            )
+
 
 class BqAccess:
     """Single entry point for BigQuery access. Stateless after construction.
