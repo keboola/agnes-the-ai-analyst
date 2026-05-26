@@ -17,11 +17,23 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _ensure_no_sentinel_leak(monkeypatch):
+def _ensure_no_sentinel_leak(monkeypatch, request):
     """Pytest test order is not guaranteed; explicitly clear the recursion
     sentinel before every test so a leaked value from a prior test doesn't
-    produce a false-positive 'cleared on exit' assertion."""
+    produce a false-positive 'cleared on exit' assertion.
+
+    Also default ``_python_is_uv_tool_install`` to True so the bulk of
+    existing tests (which exercise the uv install path) keep passing
+    without each one having to mock the routing helper itself. Tests that
+    exercise the pip-fallback path flip it back to False explicitly. Unit
+    tests that exercise the helper *itself* opt out via
+    ``@pytest.mark.no_routing_override``."""
     monkeypatch.delenv("AGNES_SELF_UPGRADE_IN_PROGRESS", raising=False)
+    if "no_routing_override" not in request.keywords:
+        monkeypatch.setattr(
+            "cli.commands.self_upgrade._python_is_uv_tool_install",
+            lambda: True,
+        )
     yield
 
 
@@ -83,8 +95,11 @@ def test_uv_path_when_uv_available():
         assert _OUTDATED_URL in args
 
 
-def test_pip_fallback_uses_sys_executable_not_user():
+def test_pip_fallback_uses_sys_executable_not_user(monkeypatch):
     """pip path must target the running interpreter's venv, never --user."""
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade._python_is_uv_tool_install", lambda: False,
+    )
     with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
          patch("cli.commands.self_upgrade.shutil.which", return_value=None), \
          patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
@@ -101,6 +116,42 @@ def test_pip_fallback_uses_sys_executable_not_user():
         assert pip_cmd[0] == sys.executable, pip_cmd
         assert "--force-reinstall" in pip_cmd
         assert "--user" not in pip_cmd
+
+
+def test_uv_available_but_python_outside_uv_tools_uses_pip(monkeypatch):
+    """uv is on PATH but agnes runs from a project venv (sys.executable
+    is NOT under uv's tool-install root). Self-upgrade MUST route through
+    pip targeting sys.executable so the active binary is upgraded.
+
+    Before this fix the routing condition was just `shutil.which("uv")`,
+    which led to `uv tool install --force` rewriting `~/.local/bin/agnes`
+    (a different binary entirely) while the user's `.venv/bin/agnes`
+    stayed stale forever — and the stale-version banner spammed every
+    subsequent command output because self-upgrade reported success but
+    the running binary never changed."""
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade._python_is_uv_tool_install", lambda: False,
+    )
+    # uv IS on PATH (otherwise the bug doesn't manifest — pip path would
+    # be taken anyway). The fix's job is to route on whether the running
+    # python belongs to uv-tool, not on whether uv exists.
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which",
+               side_effect=lambda name: "/usr/local/bin/uv" if name == "uv" else None), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_pass()), \
+         patch("cli.commands.self_upgrade._read_last_known_good", return_value=None), \
+         patch("cli.commands.self_upgrade._record_last_known_good"), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"):
+        mock_run.return_value = MagicMock(returncode=0)
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+        cmds = [c.args[0] for c in mock_run.call_args_list]
+        assert not any(
+            len(cmd) >= 3 and cmd[:3] == ["uv", "tool", "install"] for cmd in cmds
+        ), f"uv tool install was called despite python being outside uv-tool root: {cmds}"
+        pip_cmd = next(cmd for cmd in cmds if "pip" in cmd)
+        assert pip_cmd[0] == sys.executable
 
 
 def test_force_invalidates_cache_before_check():
@@ -449,3 +500,72 @@ def test_hook_refresh_failure_does_not_flip_exit_code(monkeypatch):
                side_effect=PermissionError("settings.json read-only")):
         result = runner.invoke(app, ["self-upgrade"])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# _python_is_uv_tool_install — install-manager detection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.no_routing_override
+def test_python_is_uv_tool_install_no_uv_on_path(monkeypatch):
+    """No uv on PATH → not a uv-tool install (routes to pip)."""
+    from cli.commands import self_upgrade as su
+    monkeypatch.setattr("cli.commands.self_upgrade.shutil.which", lambda _name: None)
+    assert su._python_is_uv_tool_install() is False
+
+
+@pytest.mark.no_routing_override
+def test_python_is_uv_tool_install_sys_executable_under_uv_root(monkeypatch, tmp_path):
+    """`sys.executable` lives under `uv tool dir` → uv-tool install."""
+    from cli.commands import self_upgrade as su
+    fake_uv_root = tmp_path / "uv" / "tools"
+    fake_python = fake_uv_root / "agnes-the-ai-analyst" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    fake_python.touch()
+    monkeypatch.setattr("cli.commands.self_upgrade.shutil.which",
+                        lambda name: "/usr/local/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade.subprocess.run",
+        lambda *a, **kw: MagicMock(returncode=0, stdout=f"{fake_uv_root}\n"),
+    )
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.executable", str(fake_python))
+    assert su._python_is_uv_tool_install() is True
+
+
+@pytest.mark.no_routing_override
+def test_python_is_uv_tool_install_sys_executable_in_project_venv(monkeypatch, tmp_path):
+    """`sys.executable` is in a project venv outside uv's tool root →
+    not a uv-tool install (routes to pip). This is the bug scenario: uv
+    is installed (perhaps the user has other uv-managed tools) but agnes
+    came in via `pip install -e .` into a project venv."""
+    from cli.commands import self_upgrade as su
+    fake_uv_root = tmp_path / "uv" / "tools"
+    fake_uv_root.mkdir(parents=True)
+    project_venv_python = tmp_path / "project" / ".venv" / "bin" / "python"
+    project_venv_python.parent.mkdir(parents=True)
+    project_venv_python.touch()
+    monkeypatch.setattr("cli.commands.self_upgrade.shutil.which",
+                        lambda name: "/usr/local/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade.subprocess.run",
+        lambda *a, **kw: MagicMock(returncode=0, stdout=f"{fake_uv_root}\n"),
+    )
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade.sys.executable", str(project_venv_python),
+    )
+    assert su._python_is_uv_tool_install() is False
+
+
+@pytest.mark.no_routing_override
+def test_python_is_uv_tool_install_uv_tool_dir_nonzero_exit(monkeypatch):
+    """`uv tool dir` exits non-zero (e.g. corrupt uv config) → treat as
+    not-uv-tool so self-upgrade falls back to pip rather than crashing."""
+    from cli.commands import self_upgrade as su
+    monkeypatch.setattr("cli.commands.self_upgrade.shutil.which",
+                        lambda name: "/usr/local/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade.subprocess.run",
+        lambda *a, **kw: MagicMock(returncode=1, stdout=""),
+    )
+    assert su._python_is_uv_tool_install() is False

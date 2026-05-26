@@ -269,7 +269,13 @@ def sync(
     typer.echo("  " + "-" * (len(header) - 2))
     for row in rows:
         table_id = str(row.get("table_id") or row.get("name") or "")[:col_table]
-        synced_at = str(row.get("synced_at") or row.get("last_synced_at") or "")[:col_time]
+        raw_ts = str(row.get("synced_at") or row.get("last_synced_at") or "")
+        # Render ISO 8601 → `YYYY-MM-DD HH:MM:SSZ` (19 chars). Naive
+        # `[:col_time]` on an ISO timestamp truncated at 20 chars after
+        # the microseconds delimiter, producing the trailing-dot eyesore
+        # `2026-05-26T12:46:54.` — meaningless to readers and breaks the
+        # column alignment in scripts that grep on whitespace.
+        synced_at = (raw_ts.replace("T", " ")[:19] + "Z") if raw_ts else ""
         row_count = str(row.get("rows") or row.get("row_count") or "")
         dur_ms = row.get("duration_ms")
         dur_str = f"{dur_ms}ms" if dur_ms is not None else ""
