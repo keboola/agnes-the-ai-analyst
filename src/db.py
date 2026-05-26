@@ -1100,6 +1100,30 @@ def _get_state_dir() -> Path:
     return _get_data_dir() / "state"
 
 
+def _peek_schema_version(snapshot_path: Path) -> int:
+    """Open a DuckDB snapshot read-only and return its
+    ``MAX(schema_version.version)``.
+
+    Read-only mode bypasses WAL replay entirely — even if the snapshot
+    has its own stale WAL, the read-only handle ignores it. Any
+    ``duckdb.Error`` (table missing, file corrupt, permission denied)
+    is treated conservatively as version 0, so an unreadable snapshot
+    fails the freshness check in :func:`_try_open_system_db` and ends
+    in the refusal path. Defensive: never returns -1 / None / raises.
+    """
+    try:
+        conn = duckdb.connect(str(snapshot_path), read_only=True)
+        try:
+            row = conn.execute(
+                "SELECT MAX(version) FROM schema_version"
+            ).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        finally:
+            conn.close()
+    except duckdb.Error:
+        return 0
+
+
 def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
     """Open ``system.duckdb``. If DuckDB's WAL replay raises an
     ``INTERNAL Error`` from ``ReplayAlter`` (a known failure mode when a
@@ -1134,6 +1158,53 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
             )
             raise
         wal_path = Path(db_path + ".wal")
+
+        # #379: refuse auto-recovery if the snapshot version doesn't
+        # match SCHEMA_VERSION exactly. The migration ladder is
+        # idempotent for schema but not for data; re-running it against
+        # a stale snapshot (peek < SCHEMA_VERSION) silently drops every
+        # row added since the snapshot was captured. The mirror case
+        # (peek > SCHEMA_VERSION) is just as bad: an operator rolled
+        # the code back, but the snapshot was captured at a later
+        # migration transition — auto-recovery would copy the future
+        # snapshot in and the next start's _ensure_schema would land
+        # in the split-brain "current > target" branch. Both directions
+        # mean data corruption; the only safe move is to refuse and
+        # surface the version mismatch loudly. The broken DB + WAL are
+        # preserved either way for forensics.
+        snapshot_version = _peek_schema_version(snapshot)
+        if snapshot_version != SCHEMA_VERSION:
+            broken = _move_to_broken(db_path, wal_path)
+            direction = (
+                "stale" if snapshot_version < SCHEMA_VERSION else "future"
+            )
+            risk = (
+                "would re-run the migration ladder and silently drop all "
+                f"rows added since v{snapshot_version}"
+                if snapshot_version < SCHEMA_VERSION
+                else (
+                    f"would land the DB at v{snapshot_version} under a "
+                    f"v{SCHEMA_VERSION} binary (split-brain)"
+                )
+            )
+            logger.critical(
+                "REFUSING auto-recovery: pre-migrate snapshot %s "
+                "(snapshot v%d, target v%d). Auto-recovery %s. Broken "
+                "DB preserved at %s; broken WAL at %s.wal if it existed. "
+                "To accept the snapshot anyway and discard the broken "
+                "files, manually run: cp %s %s",
+                direction, snapshot_version, SCHEMA_VERSION, risk,
+                broken, broken,
+                snapshot, db_path,
+                exc_info=e,
+            )
+            raise RuntimeError(
+                f"pre-migrate snapshot {direction} "
+                f"(v{snapshot_version} vs target v{SCHEMA_VERSION}); "
+                f"auto-recovery refused. Broken DB at {broken}. "
+                f"Manual recovery: cp {snapshot} {db_path}"
+            )
+
         logger.warning(
             "WAL replay failed (%s) — auto-restoring from pre-migrate "
             "snapshot %s. The migration ladder will re-run on this start.",
@@ -1144,14 +1215,40 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         # mortem if needed. The pre-migrate snapshot becomes the new
         # main DB; the WAL is dropped (its content is what failed to
         # replay).
-        broken = Path(db_path + f".broken.{int(time.time())}")
-        shutil.move(db_path, str(broken))
-        if wal_path.exists():
-            shutil.move(str(wal_path), str(broken) + ".wal")
+        _move_to_broken(db_path, wal_path)
         shutil.copy2(str(snapshot), db_path)
         # Re-open. If THIS also fails, propagate — auto-recovery has
         # exhausted its options.
         return duckdb.connect(db_path)
+
+
+def _move_to_broken(db_path: str, wal_path: Path) -> Path:
+    """Move the broken DB (+ WAL if present) aside to ``.broken.<ts>``.
+
+    Shared by both branches of :func:`_try_open_system_db` (refusal and
+    happy-path recovery). The preserved files are chmod'd to ``0o600``
+    because ``system.duckdb`` holds argon2 password hashes, personal-
+    access-token rows, and the audit log — ``shutil.move`` inherits the
+    source mode (typically ``0o644`` under default umask), so a stale
+    ``.broken.*`` would be world-readable on its way out. The
+    containing ``state/`` directory is usually ``0o700``, but defense
+    in depth matters: backups, container volumes, and tab-completion
+    mistakes can all surface the file. Returns the chosen broken path.
+    """
+    broken = Path(db_path + f".broken.{int(time.time())}")
+    shutil.move(db_path, str(broken))
+    try:
+        os.chmod(broken, 0o600)
+    except OSError:
+        pass  # best-effort; preservation is more important than mode
+    if wal_path.exists():
+        broken_wal = str(broken) + ".wal"
+        shutil.move(str(wal_path), broken_wal)
+        try:
+            os.chmod(broken_wal, 0o600)
+        except OSError:
+            pass
+    return broken
 
 
 def get_system_db() -> duckdb.DuckDBPyConnection:
