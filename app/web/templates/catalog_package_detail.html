@@ -268,10 +268,13 @@
   {% for t in tables %}
   <details class="pkg-table-row" data-table-id="{{ t.id }}">
     <summary>
-      <a class="pkg-table-row__name"
-         href="/catalog/t/{{ t.id }}"
-         onclick="event.stopPropagation();"
-         style="color: var(--primary, var(--primary)); text-decoration: none;">{{ t.name }}</a>
+      <span class="pkg-table-row__name"
+            role="link"
+            tabindex="0"
+            data-href="/catalog/t/{{ t.id }}"
+            onclick="event.stopPropagation(); window.location.href=this.dataset.href;"
+            onkeydown="if(event.key==='Enter'||event.key===' '){event.stopPropagation();event.preventDefault();window.location.href=this.dataset.href;}"
+            style="color: var(--primary); text-decoration: none; cursor: pointer;">{{ t.name }}</span>
       <span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span>
       {% if t.description %}
       <span class="pkg-table-row__desc">{{ t.description }}</span>

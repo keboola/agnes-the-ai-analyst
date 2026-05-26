@@ -42,7 +42,7 @@ jobs:
 
       - name: Set up Node (for agent-browser)
         if: env.SKIP_MATRIX != '1'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
 
@@ -55,27 +55,67 @@ jobs:
       - name: Build + start agnes stack
         if: env.SKIP_MATRIX != '1'
         run: |
-          docker compose up -d --build
-          # Wait for /healthz with a 90s budget — first build pulls + initialises
-          # so the first poll may take a while.
-          for i in $(seq 1 30); do
-            if curl -fsS http://localhost:8000/healthz >/dev/null 2>&1; then
-              echo "agnes is up after ${i}s"; break
-            fi
-            sleep 3
-          done
+          # docker-compose.yml declares `env_file: .env` as required; CI
+          # ships no .env, so create an empty one. Runtime values are
+          # already in the compose `environment:` block.
+          touch .env
+          # --wait + healthcheck (defined in docker-compose.yml, hits
+          # /api/health) is the same pattern as ci.yml; cleaner than
+          # the prior hand-rolled curl loop, which polled the wrong
+          # path (/healthz) and silently passed on timeout.
+          docker compose up -d --build --wait --wait-timeout 120
+
+      - name: Dump docker logs on stack failure
+        if: failure() && env.SKIP_MATRIX != '1'
+        run: docker compose logs app | tail -200
+
+      - name: Seed E2E test user
+        if: env.SKIP_MATRIX != '1'
+        # DuckDB takes an exclusive POSIX lock on /data/state/system.duckdb
+        # for the writer process — running the seed via `docker compose exec`
+        # while uvicorn (PID 1) holds the lock fails with IO Error. Pattern:
+        # let the app boot (schema bootstrap seeds the Admin group); then
+        # stop it (lock released), run the seed in a one-shot container
+        # (`docker compose run --rm`) sharing the data volume, start app
+        # again, and wait for /api/health to recover. Seed is gated on
+        # AGNES_E2E_SEED=1 — defence-in-depth so a stray `docker exec` on
+        # a production image (the seed script is shipped via `COPY . .`)
+        # cannot mint an Admin user without an explicit opt-in.
+        # See docs/superpowers/specs/2026-05-25-smoke-login-flow-design.md.
+        run: |
+          docker compose stop app
+          docker compose run --rm -T -e AGNES_E2E_SEED=1 app python scripts/seed_e2e_user.py
+          docker compose start app
+          # Poll /api/health rather than `compose up --wait` (which only
+          # honours --wait on the up command, not start). 60 s ceiling
+          # mirrors the upstream `--wait-timeout 120` halved — restart
+          # without rebuild is materially faster than initial boot.
+          timeout 60 sh -c 'until curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; do sleep 2; done'
+
+      - name: Export E2E credentials for smoke scripts
+        if: env.SKIP_MATRIX != '1'
+        # Single source of truth: import constants from scripts/seed_e2e_user.py
+        # via the running app container so _login.sh never drifts from the seed.
+        run: |
+          E2E_USER_EMAIL=$(docker compose exec -T app python -c 'from scripts.seed_e2e_user import E2E_USER_EMAIL; print(E2E_USER_EMAIL)')
+          E2E_USER_PASSWORD=$(docker compose exec -T app python -c 'from scripts.seed_e2e_user import E2E_USER_PASSWORD; print(E2E_USER_PASSWORD)')
+          echo "E2E_USER_EMAIL=$E2E_USER_EMAIL" >> $GITHUB_ENV
+          echo "::add-mask::$E2E_USER_PASSWORD"
+          echo "E2E_USER_PASSWORD=$E2E_USER_PASSWORD" >> $GITHUB_ENV
 
       - name: Run smoke ${{ matrix.script }}
         if: env.SKIP_MATRIX != '1'
         env:
           ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts/${{ matrix.script }}
+          E2E_USER_EMAIL: ${{ env.E2E_USER_EMAIL }}
+          E2E_USER_PASSWORD: ${{ env.E2E_USER_PASSWORD }}
         run: |
           mkdir -p "$ARTIFACTS_DIR"
           bash "scripts/e2e/${{ matrix.script }}" http://localhost:8000
 
       - name: Upload screenshots
         if: always() && env.SKIP_MATRIX != '1'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-artifacts-${{ matrix.script }}
           path: e2e-artifacts/${{ matrix.script }}/
@@ -91,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: File a tracking issue
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;

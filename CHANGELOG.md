@@ -10,6 +10,74 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.13] — 2026-05-26
+
+### Internal
+- `.github/workflows/e2e-nightly.yml` GitHub Actions bumped: `actions/setup-node@v4 → v6`, `actions/github-script@v7 → v9`, `actions/upload-artifact@v4 → v7`. Consolidates dependabot PRs #422, #423, #424 into one merge. Standard usage paths unchanged; the bump tracks the Node 24 runtime + ESM upgrades the actions ecosystem moved to since these were last pinned.
+
+## [0.55.12] — 2026-05-26
+
+### Fixed
+- **`src/db.py::_try_open_system_db` no longer silently drops post-migration data on WAL-replay recovery (#379).** The auto-recovery path used to copy `system.duckdb.pre-migrate` over the broken DB and re-run the migration ladder unconditionally — but the snapshot is captured once per migration transition and never refreshed, so any rows added since that transition vanished without warning. The function now opens the snapshot read-only to peek its `schema_version`; if it does not match the current `SCHEMA_VERSION` exactly (either direction — stale OR future, the latter catching the operator-rolled-the-code-back split-brain case), the broken DB + WAL are preserved at `.broken.<ts>` (chmod `0o600` because `system.duckdb` holds argon2 password hashes + PAT rows + audit log) and a `RuntimeError` is raised with the explicit manual-recovery `cp` command operators can run if they choose to accept the snapshot's data state. The happy-path (HEAD-version snapshot) and the "no snapshot file" path are unchanged.
+
+## [0.55.11] — 2026-05-25
+
+### Fixed
+- **`e2e-nightly` smoke scripts now sign the agent-browser session in before navigating to protected pages.** After #389 unblocked the workflow far enough to reach the smoke step, both `smoke_catalog.sh` and `smoke_admin_activity.sh` were redirected to `/login?next=…` by the global 401 handler in `app/main.py:898-907` and asserted against the login snapshot. Fix introduces `scripts/seed_e2e_user.py` (idempotent — creates `e2e@example.com` in Admin group with a hardcoded dev-only password; refuses to seed without Admin group present; rehashes only when verify fails) and `scripts/e2e/_login.sh` (sourced by both smoke scripts; uses agent-browser to POST against `/auth/password/login/web`, selectors scoped to `form[action='/auth/password/login/web']` to disambiguate the tabbed login UI). `.github/workflows/e2e-nightly.yml` orchestrates the seed via a stop-seed-start cycle (uvicorn holds an exclusive DuckDB writer lock on `/data/state/system.duckdb`; `docker compose exec` while the app is running can't open the DB — the new step stops the app, runs the seed in a one-shot `docker compose run --rm` container sharing the data volume, restarts the app, and polls `/api/health` until ready). The seed module is gated on `AGNES_E2E_SEED=1` as defence-in-depth: the script ships in the production image via `COPY . .`, so a stray `docker exec` on a prod box without the opt-in env var refuses to mint an Admin user. `_login.sh` no longer hardcodes credentials — the workflow's "Export E2E credentials" step imports them from `scripts/seed_e2e_user.py` constants and writes them to `$GITHUB_ENV`, so seed and smoke helper share a single source of truth. Closes #417.
+
+### Internal
+- New unit tests in `tests/test_seed_e2e_user.py` covering opt-in-env refusal, fresh-create, idempotency, and Admin-group-missing refusal paths.
+- New regression test `tests/test_login_form_action.py` pins the literal `action="/auth/password/login/web"` in `login_email.html` so the smoke helper's CSS selector and the template can't drift apart silently.
+
+## [0.55.10] — 2026-05-25
+
+### Added
+- `/admin/tables` now warns when a Keboola table exists but Keboola is not the configured data source: an amber "⚠ Keboola not connected" chip appears under the table name in the listing, and a banner at the top of both the Register and Edit Keboola modals links directly to the Data source section in Instance settings (`/admin/server-config#cfg-s-data_source`).
+- `/admin/tables` shows a **Last synced** column (YYYY-MM-DD HH:MM) for every registered table, populated from a single batched `sync_state` read.
+- `/admin/server-config` Data source section has a **Test Keboola connection** button (`POST /api/admin/keboola/test-connection`) that verifies the Storage API token by listing buckets and reports bucket count + elapsed time, mirroring the existing BigQuery probe.
+- `/admin/server-config` `data_source.type` field now renders as a select dropdown (`keboola` / `bigquery` / `local` / `csv`) with an inline hint explaining each option.
+- `/admin/server-config` supports hash-based deep-links — navigating to `#cfg-s-<section>` (e.g. `#cfg-s-data_source`) scrolls to that section after the page renders.
+- SVG favicon served from `/static/favicon.svg`, eliminating the 404 on every page load.
+
+### Fixed
+- `/admin/server-config` save banner is now sticky below the app header — visible regardless of scroll position; auto-dismisses after 4 s on success (errors stay until the next action).
+- `/admin/tables` table name registration now rejects names that produce unsafe DuckDB identifiers (hyphens, dots, special characters) with a 422 and a clear message, preventing silent rebuild failures.
+- `/admin/tables` action buttons: dead `renderRegistryListing` code removed; duplicate DOM IDs fixed; trash icon used for hard-delete, × for soft remove-from-package; CSS tooltips added to all icon buttons.
+- `catalog_package_detail.html`: replaced `<a>` inside `<summary>` with `role=link span` — interactive elements inside `<summary>` are invalid HTML and break keyboard / AT navigation.
+- `/admin/server-config` array and map form inputs now carry `id`, `name`, and `aria-label` attributes; group-header `<label>` elements without a `for` target replaced with `<div class="cfg-field-label">`, resolving browser accessibility warnings.
+- `/admin/server-config` hash deep-link no longer crashes the page render when the hash contains invalid CSS selector characters (e.g. `#:foo`, `#test[bar`) — `querySelector` is now wrapped in try/catch and invalid hashes are silently ignored.
+
+## [0.55.9] — 2026-05-25
+
+### Fixed
+- **`/admin/tables` first-run setup prompt example trimmed.** The verbatim sample
+  for connector verify lines previously hardcoded a personal name + an
+  Asana-specific `2 workspace(s) visible.` tail. Now reads
+  `✅ Asana ready — ...` / `❌ Atlassian setup failed: ...` — the marker shape
+  the assistant actually greps for, with no hardcoded identity or connector-
+  specific texture. Producer side already substitutes the live `$display` name
+  at runtime, so no functional change to real verify lines. (#413 — credit
+  @cvrysanek; CHANGELOG bullet recovered after it was lost during the cross-
+  branch cherry-pick that landed the fix.)
+- **`.github/workflows/e2e-nightly.yml` unblocked.** The agent-browser nightly
+  smoke had been failing every night since it landed in #333 (6 duplicate
+  issues filed in 6 days: #362, #368, #376, #385, #386, #387). Two bugs in the
+  *Build + start agnes stack* step:
+  1. `docker-compose.yml` declares `env_file: .env` as required, but CI never
+     created one — `docker compose up -d --build` aborted with exit 1 before
+     the stack ever started. (Same trap `ci.yml` works around with a plain
+     `touch .env`.)
+  2. The hand-rolled curl loop polled `/healthz`, but the real endpoint is
+     `/api/health` (see `app/api/health.py:331`); on timeout the loop fell
+     through silently — so even past bug 1 the smoke step would have run
+     against a half-dead app and the failure would have pointed at the wrong
+     place.
+  Fix: `touch .env` + `docker compose up -d --build --wait --wait-timeout 120`
+  (relies on compose-defined healthcheck which hits `/api/health`, fails step
+  on timeout, same pattern as `ci.yml`) + `docker compose logs app | tail -200`
+  on failure so triage gets real logs instead of a 404 mystery. Closes #387,
+  #386, #385, #376, #368, #362.
+
 ## [0.55.8] — 2026-05-25
 
 ### Changed
@@ -249,6 +317,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   applies on the redesigned pages.
 
 ### Internal
+- First-run setup prompt — confirm-step bullet's illustrative
+  ✅/❌ example trimmed to the marker shape only
+  (`✅ Asana ready — ...` / `❌ Atlassian setup failed: ...`).
+  Drops a hardcoded personal name (OSS vendor-agnostic rule) and
+  an Asana-specific workspace-count tail that would otherwise
+  imply every connector's verify line shares that shape.
 - New `app/web/static/css/design-tokens.css` declares the `--ds-*`
   design-system token set (green/navy palette, system font stack,
   callout vocabularies, navy-tinted elevation shadows) globally on
