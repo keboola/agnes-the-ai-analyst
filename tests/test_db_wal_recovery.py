@@ -392,12 +392,76 @@ def test_recovery_refuses_when_snapshot_has_no_schema_version_table(
         with pytest.raises(RuntimeError) as excinfo:
             db_module._try_open_system_db(str(db_path))
 
-    # v0 surfaces in the message (the conservative fallback value).
+    # v0 surfaces in the message (the conservative fallback value);
+    # treated as stale since 0 < SCHEMA_VERSION.
     msg = str(excinfo.value)
-    assert "v0 <" in msg
+    assert "v0" in msg
+    assert "stale" in msg
     assert str(db_module.SCHEMA_VERSION) in msg
 
     # Same preservation contract as the stale case.
     assert not db_path.exists()
     assert snapshot_path.exists()
     assert any(tmp_path.glob("system.duckdb.broken.*"))
+
+
+def test_recovery_refuses_when_snapshot_is_from_future_version(
+    tmp_path, make_wal_error
+):
+    """Snapshot at SCHEMA_VERSION + 1 → recovery raises with 'future'
+    direction. Mirror of the stale case: operator rolled the binary
+    back, so auto-recovery would land the DB in the split-brain
+    'current > target' branch. Must refuse symmetrically."""
+    from src import db as db_module
+
+    db_path = tmp_path / "system.duckdb"
+    snapshot_path = tmp_path / "system.duckdb.pre-migrate"
+
+    _make_db_with_schema_version(db_path, db_module.SCHEMA_VERSION)
+    _make_db_with_schema_version(snapshot_path, db_module.SCHEMA_VERSION + 1)
+    _corrupt_wal_so_replay_fails(db_path)
+
+    with make_wal_error(db_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            db_module._try_open_system_db(str(db_path))
+
+    msg = str(excinfo.value)
+    assert "future" in msg
+    assert str(db_module.SCHEMA_VERSION + 1) in msg
+    assert str(db_module.SCHEMA_VERSION) in msg
+
+    # Same preservation contract — broken DB moved aside, snapshot kept.
+    assert not db_path.exists()
+    assert snapshot_path.exists()
+    assert any(tmp_path.glob("system.duckdb.broken.*"))
+
+
+def test_recovery_broken_files_are_chmod_0600(tmp_path, make_wal_error):
+    """``system.duckdb`` holds argon2 password hashes + PAT secrets;
+    the broken-aside files must be chmod 0o600 on the refusal path so
+    they don't outlive the incident with default-umask ``0o644``."""
+    import stat
+
+    from src import db as db_module
+
+    db_path = tmp_path / "system.duckdb"
+    snapshot_path = tmp_path / "system.duckdb.pre-migrate"
+
+    _make_db_with_schema_version(db_path, db_module.SCHEMA_VERSION)
+    _make_db_with_schema_version(snapshot_path, db_module.SCHEMA_VERSION - 1)
+    _corrupt_wal_so_replay_fails(db_path)
+
+    with make_wal_error(db_path):
+        with pytest.raises(RuntimeError):
+            db_module._try_open_system_db(str(db_path))
+
+    broken = list(tmp_path.glob("system.duckdb.broken.*"))
+    assert broken, "no broken-aside files were created"
+    for path in broken:
+        mode = stat.S_IMODE(path.stat().st_mode)
+        # 0o600 owner-only RW. We accept any subset that's ≤ 0o600 in
+        # practice (some filesystems mask group/other bits even on
+        # 0o644 source files), but ANY group/other bit set is a fail.
+        assert mode & 0o077 == 0, (
+            f"{path.name}: mode {oct(mode)} has group/other bits set"
+        )
