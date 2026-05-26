@@ -102,6 +102,17 @@ def _corrupt_wal_so_replay_fails(db_path: Path) -> None:
 
 Tests instantiate the fixtures, invoke the function, assert on the post-state. No mocks for DuckDB — uses real files end-to-end, which exercises the actual `read_only=True` peek path.
 
+**On the "no mocks for DuckDB" intent.** The pre-existing tests in this file
+already use `monkeypatch.setattr(duckdb, "connect", ...)` to inject the
+WAL-replay error class — DuckDB 1.5 is resilient to short garbage WAL
+content, so a file-level corruption alone doesn't reliably trigger the
+recovery branch across DuckDB versions. Following that established pattern,
+the new tests use a `make_wal_error` context-manager fixture that patches
+only the first `duckdb.connect` call against `db_path`; subsequent calls
+(including the read-only peek of the snapshot path the new code exercises)
+hit real DuckDB. The "real files end-to-end" goal is preserved for the
+peek path — only the corruption-trigger is mocked.
+
 ## Failure modes covered by this change
 
 | Today | After this change |
