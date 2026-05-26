@@ -2,6 +2,12 @@
 {% block title %}Profile — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — the 3 section cards (Account, Group
+   memberships, Effective access) render via `ds.panel(tag='section',
+   title=...)` so each stays an aria-labelled landmark. The Session-
+   troubleshooting `<details>` can't go through the macro (no
+   <details>/<summary> support); it carries `.ds-card` explicitly. #}
+{% import "_components.html" as ds %}
 <style>
   /* /me/profile — read-only account view with Google Workspace group list.
      Matches the card/hero vocabulary used by the /me/profile PAT section. */
@@ -22,12 +28,14 @@
      in style-custom.css — markup migrated to use the shared
      `_page_hero.html` include. */
 
+  /* .section-card sits on top of .ds-card (rendered by ds.panel) — base
+     surface/border/shadow comes from .ds-card; this rule overrides only
+     the radius (8 → 12, matches the rest of /me/profile), padding
+     (24 → 20×24), and adds the inter-section margin. */
   .section-card {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    padding: 20px 24px;
-    margin-bottom: 16px;
+    border-radius: var(--radius-xl);
+    padding: var(--space-5) var(--space-6);
+    margin-bottom: var(--space-4);
   }
   .section-card h3 {
     margin: 0 0 14px;
@@ -213,18 +221,20 @@
   {% set page_hero_subtitle = "Account details and your group memberships." %}
   {% include "_page_hero.html" %}
 
-  <section class="section-card" aria-label="Account details">
-    <h3>Account</h3>
+  {% call ds.panel(title='Account', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Account details"') %}
     <div class="account-grid">
       <span class="k">Email</span>
       <span class="v">{{ user.email or "—" }}</span>
       <span class="k">Name</span>
       <span class="v">{{ user.name or "—" }}</span>
     </div>
-  </section>
+  {% endcall %}
 
-  <section class="section-card" aria-label="Group memberships">
-    <h3>Group memberships</h3>
+  {% call ds.panel(title='Group memberships', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Group memberships"') %}
     {% if memberships and memberships | length > 0 %}
     <ul class="groups-list" role="list">
       {% for m in memberships %}
@@ -252,20 +262,24 @@
       <div>You're not a member of any groups yet. Ask an admin to add you, or wait for the next Google Workspace sync if you sign in via Google.</div>
     </div>
     {% endif %}
-  </section>
+  {% endcall %}
 
-  <section class="section-card" aria-label="Effective access">
-    <h3>Effective access</h3>
+  {% call ds.panel(title='Effective access', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Effective access"') %}
     <div id="effective-access-host">
       <div class="empty-state">
         <div class="empty-title">Loading…</div>
       </div>
     </div>
-  </section>
+  {% endcall %}
 
   {% include "_profile_tokens.html" %}
 
-  <details class="section-card" aria-label="Session and troubleshooting">
+  {# `<details>` can't go through `ds.panel` (the macro doesn't render
+     <details>/<summary>); add `.ds-card` explicitly so the same surface
+     treatment applies. `.section-card` rules override radius+padding. #}
+  <details class="ds-card section-card" aria-label="Session and troubleshooting">
     <summary>Session &amp; troubleshooting</summary>
     {% include "_profile_troubleshooting.html" %}
   </details>

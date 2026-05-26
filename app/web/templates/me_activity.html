@@ -16,6 +16,9 @@
 {% endblock %}
 
 {% block content %}
+{# Design-system component macros — the 3 paginator buttons render via
+   `ds.button`. Tab strip below already uses canonical `.tab-strip__item`. #}
+{% import "_components.html" as ds %}
 <style>
 /* Page-specific styles only. Tables use the canonical .data-table, stat
    tiles use .stat-card, paginate buttons use .btn — all from
@@ -120,8 +123,10 @@
                 <tbody data-rows></tbody>
             </table>
             <div class="stats-paginate">
-                <button class="btn btn-secondary btn-sm" type="button" data-action="prev">‹ Prev</button>
-                <button class="btn btn-secondary btn-sm" type="button" data-action="next">Next ›</button>
+                {{ ds.button('‹ Prev', variant='secondary', size='sm',
+                             type='button', attrs='data-action="prev"') }}
+                {{ ds.button('Next ›', variant='secondary', size='sm',
+                             type='button', attrs='data-action="next"') }}
             </div>
         </div>
     </section>
@@ -170,7 +175,8 @@
                 <tbody data-rows></tbody>
             </table>
             <div class="stats-paginate">
-                <button class="btn btn-secondary btn-sm" type="button" data-action="next">Older ›</button>
+                {{ ds.button('Older ›', variant='secondary', size='sm',
+                             type='button', attrs='data-action="next"') }}
             </div>
         </div>
     </section>

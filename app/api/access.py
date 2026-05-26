@@ -449,12 +449,30 @@ async def delete_group(
     _guard_google_managed(g)
     if g.get("is_system"):
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
-    # Cascade members + grants atomically with the group row so a partial
-    # failure cannot leave orphans pointing at a deleted group_id. There are
-    # no FK constraints (group_id is plain VARCHAR), so the application is
-    # responsible for the invariant — wrap in an explicit transaction.
+    # Cascade members + grants BEFORE the parent row. DuckDB enforces the
+    # v14 FK (`user_group_members.group_id`, `resource_grants.group_id`
+    # → `user_groups.id`) but does NOT see same-transaction child DELETEs
+    # when validating the parent DELETE — wrapping the whole sequence in
+    # `BEGIN TRANSACTION` fails on the parent DELETE with
+    # `Violates foreign key constraint because key "group_id: <id>" is
+    # still referenced by a foreign key in a different table.` (This was
+    # the pre-#430 behavior: any group carrying a system-plugin auto-grant
+    # — i.e. every group created after `mark_system` on any plugin —
+    # could not be deleted via API/CLI and the operator was stuck on the
+    # 500 + leaked entity.)
+    #
+    # Each DELETE statement therefore autocommits at the DuckDB layer, so
+    # by the time the parent DELETE runs the children are already
+    # committed-gone and the FK check passes. Atomicity is lost in the
+    # narrow case where the second child DELETE or the parent DELETE
+    # raises after the first child DELETE has committed — but the failure
+    # mode is "a group with no members + no grants survives", which is
+    # cosmetically wrong but functionally identical to a freshly-created
+    # empty group (and can be retried by re-issuing the DELETE). The
+    # alternative — orphan rows pointing at a deleted user_groups.id — is
+    # blocked by the FK regardless, so transactional cleanup wasn't
+    # buying us the invariant the original comment claimed.
     try:
-        conn.execute("BEGIN TRANSACTION")
         conn.execute(
             "DELETE FROM user_group_members WHERE group_id = ?", [group_id]
         )
@@ -462,13 +480,8 @@ async def delete_group(
             "DELETE FROM resource_grants WHERE group_id = ?", [group_id]
         )
         repo.delete(group_id)
-        conn.execute("COMMIT")
     except SystemGroupProtected:
-        conn.execute("ROLLBACK")
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
     _audit(
         conn, user["id"], "user_group.deleted", f"group:{group_id}",
         {"name": g["name"]},

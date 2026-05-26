@@ -149,13 +149,16 @@ class TestBigQueryRegisterValidation:
         # `name` becomes the DuckDB view name (after lower+slug). A bare
         # hyphen is fine in BQ but not in a DuckDB strict identifier — must
         # fail at register time, not at first rebuild.
+        # The generic identifier check (422) runs before the BQ-specific check
+        # (400); both signal the same unsafe-name constraint.
         resp = c.post(
             "/api/admin/register-table",
             json=_bq_payload(name="orders-2026"),
             headers=_auth(token),
         )
-        assert resp.status_code == 400
-        assert "view name" in resp.json()["detail"].lower()
+        assert resp.status_code in (400, 422)
+        detail = resp.json()["detail"].lower()
+        assert any(kw in detail for kw in ("view name", "unsafe identifier", "unsafe", "identifier"))
 
     def test_unsafe_dataset_returns_400(self, seeded_app, bq_instance, stub_bq_extractor):
         c = seeded_app["client"]

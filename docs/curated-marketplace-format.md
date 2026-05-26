@@ -16,6 +16,18 @@ Create a JSON file at this exact path in your repo:
 .claude-plugin/marketplace-metadata.json
 ```
 
+The filename and path are both load-bearing — the parser looks for
+**this exact path** and ignores anything else. Names you might be
+tempted to use that **will not work**:
+
+- `.agnes/agnes-metadata.json` — `.agnes/` is reserved for cover photo
+  assets and per-request diagnostics (`version.json` in the served ZIP);
+  metadata placed here is invisible to the parser.
+- `marketplace-metadata.json` at the repo root — must be under
+  `.claude-plugin/`.
+- Any other directory — only `.claude-plugin/marketplace-metadata.json`
+  is read.
+
 Put the keys you want filled in. **Every key is optional.** Skip a
 field, skip a plugin, skip the entire file — Agnes will render whatever
 you provided and nothing else. Adding the file later (or expanding it)

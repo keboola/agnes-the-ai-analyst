@@ -1757,6 +1757,11 @@ footer {
     border-left: 3px solid var(--error);
 }
 
+.alert-warning-v2 {
+    background: rgba(245, 159, 10, 0.1);
+    border-left: 3px solid var(--warning);
+}
+
 .alert-v2 .alert-icon {
     font-size: var(--text-lg);
 }
@@ -2788,6 +2793,18 @@ a.slack-badge:hover {
     justify-content: center;
 }
 
+/* Navy theme — when the instance opts in via
+   `AGNES_INSTANCE_THEME=navy` / `instance.theme=navy`, the
+   `<html data-theme="navy">` attribute is set by base_login.html and
+   we flip the login-page hero panel from the legacy brand-blue
+   `--primary` to the deep-navy gradient used by the design-system
+   hero so /login matches the rest of the navy-themed app. Only
+   `.login-features` carries a brand colour on the pre-login screens;
+   the rest of the login chrome is theme-neutral. */
+:root[data-theme="navy"] .login-features {
+    background: linear-gradient(135deg, #0f1b3a 0%, #0a1430 100%);
+}
+
 .features-content {
     max-width: 480px;
 }
@@ -2996,6 +3013,21 @@ a.slack-badge:hover {
 .login-page .btn-secondary:hover {
     background-color: var(--background);
     border-color: var(--text-secondary);
+}
+
+/* Login-card width constraints — provider buttons + inline error banner
+   sit centred at 280px max-width so they line up with the card's content
+   column. Previously these widths were carried inline on each element
+   (`style="max-width: 280px"`); pulled into the stylesheet so markup can
+   compose `.btn .btn-primary/secondary .btn-block .login-provider-btn`
+   via `ds.button(klass=...)`. */
+.login-page .login-provider-btn {
+    max-width: 280px;
+}
+.login-page .login-error {
+    max-width: 280px;
+    margin: 0 auto var(--space-4);
+    text-align: left;
 }
 
 /* Responsive: Tablet */
@@ -3892,6 +3924,23 @@ a.news-cta:hover { background: #0056A3; }
     color: var(--text-primary);
 }
 
+/* When the ds.button macro composes variant='ghost' with klass='btn-link'
+ * (the 3 auth pages — login_email, password_reset, password_setup —
+ * use this combo for "Forgot Password?" / "Back to Login" affordances
+ * that should look like links, not buttons), the cascade default would
+ * let .btn-ghost (defined later in this file) override .btn-link's
+ * blue with text-secondary grey. Boost specificity (0,0,3,0 beats the
+ * single-class rules above) to keep the link color in that case.
+ * Devin review on PR #375 flagged this contrast regression. */
+.btn.btn-ghost.btn-link {
+    color: var(--primary);
+}
+.btn.btn-ghost.btn-link:hover {
+    color: var(--primary-dark);
+    text-decoration: underline;
+    background-color: transparent;
+}
+
 .btn-danger {
     background-color: #fff;
     color: var(--error);
@@ -4517,4 +4566,223 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: var(--space-3);
     margin-bottom: var(--space-5);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Design-system additions driven by .interface-design/system.md
+   ─────────────────────────────────────────────────────────────────────
+   Net-new canonical class families consumed by the `ds.button`,
+   `ds.panel`, `ds.tabs`, and `ds.table` macros in _components.html.
+   Append-only; nothing above this block was modified. Order:
+     1. `.btn--icon`           — icon-only square modifier
+     2. `.ds-card` family      — canonical card/panel surface + accent
+     3. `.ds-table` family     — canonical table + 15 legacy aliases
+     4. `.badge--*` modifiers  — accent vocabulary for badges
+     5. `.code-inline`         — mint inline-code chip
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ─── Icon-only button modifier ────────────────────────────────────────
+   Squares the button so an icon glyph (✕, ↡, etc.) sits centred without
+   the default 10×20 padding making it rectangular. Composes with any
+   .btn-* variant: `.btn .btn-ghost .btn--icon .btn-sm`. */
+.btn--icon {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    flex-shrink: 0;
+}
+.btn--icon.btn-sm { width: 28px; height: 28px; }
+
+/* ─── Cards — canonical .ds-card family ───────────────────────────────
+   `.ds-card`            white surface, 1px border, 8px radius, 24px pad,
+                         whisper shadow. The standard admin/data panel.
+   `.ds-card__title`     <h3> styling inside the card.
+   `.ds-card--accent`    adds a 4px solid left border in `--ds-card-accent`,
+                         defaults to `--ds-border`. Pair with an accent
+                         helper modifier (`--info`/`--success`/`--warn`/
+                         `--danger`) for the unified status vocabulary.
+   `.ds-card[data-clickable]`  opt-in hover lift (cards stay still by
+                         default — calm). */
+.ds-card {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-6);
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 0;
+}
+.ds-card > :first-child { margin-top: 0; }
+.ds-card > :last-child  { margin-bottom: 0; }
+
+.ds-card h2,
+.ds-card h3,
+.ds-card__title {
+    margin: 0 0 var(--space-3);
+    font-size: var(--text-md);
+    font-weight: var(--font-semibold);
+    color: var(--ds-text-primary);
+    line-height: 1.3;
+}
+
+.ds-card p,
+.ds-card__body {
+    margin: 0 0 var(--space-3);
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+}
+
+.ds-card--accent {
+    --ds-card-accent: var(--ds-border);
+    border-left: 4px solid var(--ds-card-accent);
+}
+.ds-card--info    { --ds-card-accent: var(--ds-accent-info-line); }
+.ds-card--success { --ds-card-accent: var(--ds-accent-success-line); }
+.ds-card--warn    { --ds-card-accent: var(--ds-accent-warn-line); }
+.ds-card--danger  { --ds-card-accent: var(--ds-accent-danger-line); }
+
+.ds-card[data-clickable] {
+    cursor: pointer;
+    text-decoration: none;
+    color: inherit;
+    transition:
+        border-color var(--transition-fast),
+        box-shadow var(--transition-fast),
+        transform var(--transition-fast);
+}
+.ds-card[data-clickable]:hover {
+    border-color: var(--ds-text-muted);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+.ds-card[data-clickable]:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* ─── Tables — canonical .ds-table family ─────────────────────────────
+   `.ds-table`            border-collapse, 1px row borders, 8px radius
+                          on the wrapping border, sticky header,
+                          `--ds-surface-dim` row hover (matches button
+                          hover), tabular-nums.
+   `.ds-table--dense`     reduced cell padding for reference tables.
+   `.ds-table--zebra`     optional row striping for long lists.
+   `td.num` / `th.num`    right-aligned monospace column.
+   Legacy aliases below   so admin pages can keep their existing class
+                          names while inheriting the canonical look. */
+.ds-table,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+}
+.ds-table thead th,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    text-align: left;
+    padding: var(--space-3) var(--space-4);
+    background: var(--ds-surface-dim);
+    border-bottom: 1px solid var(--ds-border);
+    font-weight: var(--font-semibold);
+    color: var(--ds-text-muted);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+}
+.ds-table tbody td,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) tbody td {
+    padding: var(--space-2) var(--space-4);
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+    color: var(--ds-text-primary);
+}
+.ds-table tbody tr:last-child td,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) tbody tr:last-child td {
+    border-bottom: none;
+}
+.ds-table tbody tr:hover,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) tbody tr:hover {
+    background: var(--ds-surface-dim);
+}
+.ds-table th.num, .ds-table td.num,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) th.num,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) td.num {
+    text-align: right;
+    font-family: var(--ds-font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+.ds-table--dense thead th,
+.data-table--compact thead th { padding: var(--space-1) var(--space-3); }
+.ds-table--dense tbody td,
+.data-table--compact tbody td  { padding: 6px var(--space-3); }
+
+.ds-table--zebra tbody tr:nth-child(even) td {
+    background: var(--ds-surface-dim);
+}
+
+/* ─── Badges — accent vocabulary ──────────────────────────────────────
+   The canonical .badge above gets neutral chrome (chip on
+   `--ds-surface-dim`). These modifiers add the cross-pattern accent
+   vocabulary so a "success" badge reads identically to a
+   `.ds-card--success` accent and a `.flash-success`. */
+.badge--info {
+    background: var(--ds-accent-info-bg);
+    color: var(--ds-accent-info-ink);
+}
+.badge--success {
+    background: var(--ds-accent-success-bg);
+    color: var(--ds-accent-success-ink);
+}
+.badge--warn {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+}
+.badge--danger {
+    background: var(--ds-accent-danger-bg);
+    color: var(--ds-accent-danger-ink);
+}
+
+/* ─── Inline-code chip — `.code-inline` ──────────────────────────────
+   Mint chip applied to `<code>` outside of `<pre>` blocks. Replaces
+   the legacy grey-blue inline-code styling. Used by `ds.code-inline`
+   class callsites; bare `<code>` keeps its existing rules from
+   elsewhere in this stylesheet (those are scoped to specific
+   parents so they don't conflict). */
+.code-inline {
+    display: inline-block;
+    padding: 1px 6px;
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    border-radius: var(--radius-sm);
+    font-family: var(--ds-font-mono);
+    font-size: 0.9em;
 }

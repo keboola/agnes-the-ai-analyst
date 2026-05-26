@@ -298,17 +298,67 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         # `app/instance_config.py::get_instance_theme()`.
         "theme": {
             "kind": "select",
-            "options": ["navy", "blue"],
-            "default": "navy",
+            "options": ["blue", "navy"],
+            "default": "blue",
             "hint": (
-                "Page-hero colour scheme. `navy` (default) uses the "
-                "dark navy hero gradient + mint-green CTAs and "
-                "eyebrow accents. `blue` reverts to the pre-redesign "
-                "brand-blue hero + blue CTAs."
+                "Page-hero colour scheme. `blue` (default) uses the "
+                "brand-blue hero + blue CTAs. `navy` opts into the "
+                "darker palette with the dark navy hero gradient + "
+                "mint-green CTAs and eyebrow accents."
+            ),
+        },
+        # Operator-injected HTML/JS blocks rendered into base.html.
+        # `kind: array` renders as a JSON textarea in the admin UI
+        # (per admin_server_config.html:702-708 — arrays fall back to
+        # the JSON path); the hint documents the per-item shape so the
+        # operator knows what to paste. Resolved by
+        # `app/instance_config.py::get_custom_scripts()`.
+        "custom_scripts": {
+            "kind": "array",
+            "hint": (
+                "Operator-injected HTML/JS blocks rendered into base.html. "
+                "Each entry: {name: str, enabled: bool, placement: "
+                "head_start|head_end|body_end, html: str}. Used for feedback "
+                "widgets (Marker.io), analytics (GTM, PostHog), error capture "
+                "(Sentry). Rendered with | safe — admin trust boundary. Review "
+                "third-party widget privacy posture before enabling (most "
+                "capture session data). Restart required after save."
+            ),
+        },
+        # Operator-authored Support HTML rendered inside the welcome
+        # hero on /home, below the operator-owned Overview footnotes.
+        # Resolved by `app/instance_config.py::get_instance_support()`.
+        # Typical content: a one-line invitation pointing at a chat
+        # space, mailing list, or internal runbook. Empty value =
+        # block hidden (OSS stays vendor-neutral).
+        "support": {
+            "kind": "string",
+            "hint": (
+                "HTML body rendered inside the welcome hero's Support "
+                "block on /home (mint-accent panel below the Overview "
+                "footnotes). Typically a one-line invitation linking to "
+                "a chat space, mailing list, or runbook — e.g. "
+                "'<p><strong>Need help?</strong> Drop into our "
+                "<a href=\"https://chat.example.com/room/xxx\">Support</a> "
+                "chat space.</p>'. Rendered with | safe — admin trust "
+                "boundary (link target is operator-controlled). Empty "
+                "value hides the block."
             ),
         },
     },
     "data_source": {
+        "type": {
+            "kind": "select",
+            "options": ["keboola", "bigquery", "local", "csv"],
+            "default": "local",
+            "hint": (
+                "Active data source connector. "
+                "`keboola` — pulls tables from Keboola Storage API (configure stack_url + token below). "
+                "`bigquery` — queries BigQuery remotely via the DuckDB BQ extension (configure bigquery block below). "
+                "`local` — CSV/parquet files placed directly in the data directory. "
+                "`csv` — alias for local."
+            ),
+        },
         "bigquery": {
             "kind": "object",
             "hint": "BigQuery connection knobs (read more in docs/DEPLOYMENT.md)",
@@ -2230,26 +2280,37 @@ async def list_registry(
     repo = TableRegistryRepository(conn)
     tables = repo.list_all()
 
-    # Single batched read of sync_state errors — avoid N+1 GETs against
+    # Single batched read of sync_state — avoid N+1 GETs against
     # `sync_state` for large registries. The sync_state row is keyed on
     # `table_id` which mirrors `table_registry.name` (see comment in
     # _run_materialized_pass / _build_manifest_for_user about name vs id).
+    # One query covers both error message (only when status='error') and
+    # last_sync timestamp so operators can see both staleness and failure.
     error_by_name: Dict[str, Optional[str]] = {}
+    sync_by_name: Dict[str, Optional[str]] = {}
     try:
         rows = conn.execute(
-            "SELECT table_id, error FROM sync_state "
-            "WHERE status = 'error' AND error IS NOT NULL AND error <> ''"
+            "SELECT table_id, "
+            "  CASE WHEN status = 'error' AND error IS NOT NULL AND error <> '' "
+            "       THEN error ELSE NULL END AS err, "
+            "  last_sync "
+            "FROM sync_state"
         ).fetchall()
-        error_by_name = {r[0]: r[1] for r in rows}
+        for tid, err, ls in rows:
+            if err:
+                error_by_name[tid] = err
+            if ls:
+                sync_by_name[tid] = str(ls)[:16]  # "YYYY-MM-DD HH:MM"
     except Exception:
         # Defensive: if sync_state is unreadable for any reason, the
         # registry response still serializes — operators just lose the
-        # last_sync_error column on this call.
-        logger.exception("Failed to read sync_state errors for registry")
+        # enriched columns on this call.
+        logger.exception("Failed to read sync_state for registry")
 
     for t in tables:
         # Sync_state.table_id == table_registry.name by convention.
         t["last_sync_error"] = error_by_name.get(t.get("name"))
+        t["last_sync_display"] = sync_by_name.get(t.get("name"))
 
     return {"tables": tables, "count": len(tables)}
 
@@ -2458,8 +2519,18 @@ def register_table(
     from fastapi.responses import JSONResponse
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
+    import re as _re
     repo = TableRegistryRepository(conn)
     table_id = request.name.strip().lower().replace(" ", "_")
+
+    if not _re.fullmatch(r"[a-z_][a-z0-9_]*", table_id):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Table name produces unsafe identifier '{table_id}'. "
+                "Use only letters, digits, and underscores — no hyphens or special characters."
+            ),
+        )
 
     if repo.get(table_id):
         raise HTTPException(status_code=409, detail=f"Table '{table_id}' already registered")

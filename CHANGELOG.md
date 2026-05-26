@@ -10,7 +10,150 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`scripts/ops/agnes-auto-upgrade.sh` is now single-instance** via
+  `flock` on `/var/lock/agnes-auto-upgrade.lock`. GCE live migration /
+  clock-jump events make cron deliver several catch-up ticks in a
+  single second (observed 4 ticks in ≤2s on a freshly-migrated VM),
+  and parallel runs of this script raced on `docker compose pull` +
+  `docker images --digest`: different runners saw different digest
+  values for the same tag, the diff tripped the "image digest moved"
+  branch, and a `docker compose up -d` fired for an upgrade that
+  hadn't actually happened — manifesting as ~30s app unreachability
+  every ~20–30 min on VMs caught in a migration window even when no
+  release had landed. Non-blocking `flock -n` means the second runner
+  exits cleanly; the next regular tick handles whatever real change
+  is pending.
+
 ### Added
+- `docs/ecosystem-map.md` — operator-facing bird's-eye view of the 5 repo tiers around an Agnes deployment (OSS app, per-customer infra in two patterns A/B, curated marketplace, initial-workspace template, legacy/glue), with a cross-tier checklist for new customer onboarding. Linked from `docs/README.md` operator index.
+
+### Changed
+- `docs/curated-marketplace-format.md` Quickstart explicitly enumerates filenames the metadata parser will **not** read (`.agnes/agnes-metadata.json`, root-level `marketplace-metadata.json`, other directories) — only `.claude-plugin/marketplace-metadata.json` is loaded. Heads off a footgun seen in the wild where curators copied a legacy filename from older fixture content.
+- `docs/PLATFORM_SETUP.md` first-boot bullet no longer hard-codes a schema version number ("v41") — points readers at `src/db.py` as the live source of truth, matching the convention already established in `CLAUDE.md`.
+- `docs/ONBOARDING.md` step 4 tfvars block no longer scopes optional variables to "module infra-v1.4.0+" (those have been default for several minor versions); step 9 Monitoring & backup reframed from "follow-up — not required" to "module already provisions, wire a notification channel" since `customer-instance` ships uptime checks + daily PD snapshots out of the box.
+
+## [0.55.14] — 2026-05-26
+
+### Changed
+- **`agnes admin grant list` default tabular output now leads with an `ID` column** (first 8 chars of the grant UUID). Pre-fix the table omitted the id entirely, so any operator wanting to `agnes admin grant delete <id>` had to re-run with `--json` and pipe through jq to recover what should be a primary identifier. `--json` output is unchanged (still includes the full uuid).
+- **`agnes admin grant create --help` now leads with a positional-arguments usage example** (`agnes admin grant create <group> <resource_type> <resource_id>`). The previous help body assumed the reader had already inferred argument order from typer's USAGE line; combined with the parent-level `agnes admin grant --help` hinting at flag-style filters on `list`, operators frequently invoked `grant create --group X --resource-type Y --resource-id Z` and were left to discover positional syntax from the typer error.
+- **`agnes admin activity sync` renders `synced_at` as `YYYY-MM-DD HH:MM:SSZ`** (19 chars + Z marker) instead of naively slicing the raw ISO string to 20 chars. Pre-fix the output for any timestamp with sub-second precision ended in a trailing dot (`2026-05-26T12:46:54.`) — meaningless to readers, and broke downstream `awk`/`grep` pipelines that split on whitespace.
+
+### Fixed
+- **`DELETE /api/admin/groups/{id}` no longer 500s for groups carrying auto-materialized system-plugin grants.** The handler explicitly cascade-deletes `user_group_members` + `resource_grants` before the parent `user_groups` row, but did so inside `BEGIN TRANSACTION`. DuckDB enforces the v14 foreign-key constraint at statement time and does NOT see same-transaction child DELETEs when validating the parent — so the parent DELETE raised `_duckdb.ConstraintException: Violates foreign key constraint because key "group_id: <id>" is still referenced by a foreign key in a different table` and bubbled up as HTTP 500. Empirically: any non-system group created AFTER `mark_system` had ever been called on any plugin (the per-group system grant fans out from `UserGroupsRepository.create` → `ResourceGrantsRepository.fanout_system_for_group`) could not be deleted via API or CLI — operator was stuck with a leaked entity until manual DB intervention. Removing the explicit transaction wrapper lets each statement autocommit, so by the time the parent DELETE runs the children are already committed-gone and the FK check passes. Atomicity is lost in the narrow case where the second child DELETE or the parent DELETE raises mid-cascade — but the failure mode is "a group with no members + no grants survives", which the FK already permits and which the operator can resolve by re-issuing DELETE. New regression test `tests/test_marketplace_plugin_system.py::TestGuards::test_group_delete_with_system_grant_returns_clear_error_not_500`.
+- **`agnes status` no longer falsely reports `Initialized: no` in Initial-Workspace-override workspaces.** The check was grepping `CLAUDE.md` for the literal string `"AI Data Analyst"` — but a customer-supplied override template's body may legitimately omit that exact substring (the marker is hardcoded against the default template's `# {{ instance.name }} — AI Data Analyst` heading), so a fully-initialized override workspace would still print `Initialized: no` plus a misleading `Run agnes init …` hint after every command. `agnes status` now mirrors the dual-marker convention already documented in `cli/commands/init.py:283-308`: read `.claude/init-complete` (authoritative sentinel written by every successful default OR override init) first, fall back to the legacy CLAUDE.md substring for pre-#259 workspaces.
+- **`agnes self-upgrade` now upgrades the running binary, not a sibling install.** The routing condition was `shutil.which("uv")` — so any user with `uv` on PATH took the uv install path, even when the active `agnes` came from a project venv (`pip install -e .`). `uv tool install --force` would then rewrite `~/.local/bin/agnes` (a *different* binary entirely) while the user's `.venv/bin/agnes` stayed stale forever, and the `[update] agnes X.Y is out of date …` banner spammed every subsequent command output because self-upgrade reported success but the running binary never changed. New `_python_is_uv_tool_install()` helper resolves `sys.executable` against `uv tool dir`; uv path is taken iff the running interpreter actually belongs to uv's tool root, otherwise pip targets `sys.executable` and the active binary gets upgraded.
+
+- **`agnes admin grant delete` now accepts the 8-char `short_id` from `agnes admin grant list`** (in addition to the full UUID). The previous PR added a `short_id` column to `grant list` and advertised it as input to `grant delete`, but `grant delete` was a thin pass-through to `DELETE /api/admin/grants/{id}` which does exact-match lookup → every short-id paste returned 404. A new `_resolve_grant_id` helper queries the grants API and matches by full id or unique 8-char prefix; ambiguous prefixes abort with a clear error rather than silently picking one. Closes the workflow gap created by the prior commit (caught in self-review).
+
+## [0.55.13] — 2026-05-26
+
+### Internal
+- `.github/workflows/e2e-nightly.yml` GitHub Actions bumped: `actions/setup-node@v4 → v6`, `actions/github-script@v7 → v9`, `actions/upload-artifact@v4 → v7`. Consolidates dependabot PRs #422, #423, #424 into one merge. Standard usage paths unchanged; the bump tracks the Node 24 runtime + ESM upgrades the actions ecosystem moved to since these were last pinned.
+
+## [0.55.12] — 2026-05-26
+
+### Fixed
+- **`src/db.py::_try_open_system_db` no longer silently drops post-migration data on WAL-replay recovery (#379).** The auto-recovery path used to copy `system.duckdb.pre-migrate` over the broken DB and re-run the migration ladder unconditionally — but the snapshot is captured once per migration transition and never refreshed, so any rows added since that transition vanished without warning. The function now opens the snapshot read-only to peek its `schema_version`; if it does not match the current `SCHEMA_VERSION` exactly (either direction — stale OR future, the latter catching the operator-rolled-the-code-back split-brain case), the broken DB + WAL are preserved at `.broken.<ts>` (chmod `0o600` because `system.duckdb` holds argon2 password hashes + PAT rows + audit log) and a `RuntimeError` is raised with the explicit manual-recovery `cp` command operators can run if they choose to accept the snapshot's data state. The happy-path (HEAD-version snapshot) and the "no snapshot file" path are unchanged.
+
+## [0.55.11] — 2026-05-25
+
+### Fixed
+- **`e2e-nightly` smoke scripts now sign the agent-browser session in before navigating to protected pages.** After #389 unblocked the workflow far enough to reach the smoke step, both `smoke_catalog.sh` and `smoke_admin_activity.sh` were redirected to `/login?next=…` by the global 401 handler in `app/main.py:898-907` and asserted against the login snapshot. Fix introduces `scripts/seed_e2e_user.py` (idempotent — creates `e2e@example.com` in Admin group with a hardcoded dev-only password; refuses to seed without Admin group present; rehashes only when verify fails) and `scripts/e2e/_login.sh` (sourced by both smoke scripts; uses agent-browser to POST against `/auth/password/login/web`, selectors scoped to `form[action='/auth/password/login/web']` to disambiguate the tabbed login UI). `.github/workflows/e2e-nightly.yml` orchestrates the seed via a stop-seed-start cycle (uvicorn holds an exclusive DuckDB writer lock on `/data/state/system.duckdb`; `docker compose exec` while the app is running can't open the DB — the new step stops the app, runs the seed in a one-shot `docker compose run --rm` container sharing the data volume, restarts the app, and polls `/api/health` until ready). The seed module is gated on `AGNES_E2E_SEED=1` as defence-in-depth: the script ships in the production image via `COPY . .`, so a stray `docker exec` on a prod box without the opt-in env var refuses to mint an Admin user. `_login.sh` no longer hardcodes credentials — the workflow's "Export E2E credentials" step imports them from `scripts/seed_e2e_user.py` constants and writes them to `$GITHUB_ENV`, so seed and smoke helper share a single source of truth. Closes #417.
+
+### Internal
+- New unit tests in `tests/test_seed_e2e_user.py` covering opt-in-env refusal, fresh-create, idempotency, and Admin-group-missing refusal paths.
+- New regression test `tests/test_login_form_action.py` pins the literal `action="/auth/password/login/web"` in `login_email.html` so the smoke helper's CSS selector and the template can't drift apart silently.
+
+## [0.55.10] — 2026-05-25
+
+### Added
+- `/admin/tables` now warns when a Keboola table exists but Keboola is not the configured data source: an amber "⚠ Keboola not connected" chip appears under the table name in the listing, and a banner at the top of both the Register and Edit Keboola modals links directly to the Data source section in Instance settings (`/admin/server-config#cfg-s-data_source`).
+- `/admin/tables` shows a **Last synced** column (YYYY-MM-DD HH:MM) for every registered table, populated from a single batched `sync_state` read.
+- `/admin/server-config` Data source section has a **Test Keboola connection** button (`POST /api/admin/keboola/test-connection`) that verifies the Storage API token by listing buckets and reports bucket count + elapsed time, mirroring the existing BigQuery probe.
+- `/admin/server-config` `data_source.type` field now renders as a select dropdown (`keboola` / `bigquery` / `local` / `csv`) with an inline hint explaining each option.
+- `/admin/server-config` supports hash-based deep-links — navigating to `#cfg-s-<section>` (e.g. `#cfg-s-data_source`) scrolls to that section after the page renders.
+- SVG favicon served from `/static/favicon.svg`, eliminating the 404 on every page load.
+
+### Fixed
+- `/admin/server-config` save banner is now sticky below the app header — visible regardless of scroll position; auto-dismisses after 4 s on success (errors stay until the next action).
+- `/admin/tables` table name registration now rejects names that produce unsafe DuckDB identifiers (hyphens, dots, special characters) with a 422 and a clear message, preventing silent rebuild failures.
+- `/admin/tables` action buttons: dead `renderRegistryListing` code removed; duplicate DOM IDs fixed; trash icon used for hard-delete, × for soft remove-from-package; CSS tooltips added to all icon buttons.
+- `catalog_package_detail.html`: replaced `<a>` inside `<summary>` with `role=link span` — interactive elements inside `<summary>` are invalid HTML and break keyboard / AT navigation.
+- `/admin/server-config` array and map form inputs now carry `id`, `name`, and `aria-label` attributes; group-header `<label>` elements without a `for` target replaced with `<div class="cfg-field-label">`, resolving browser accessibility warnings.
+- `/admin/server-config` hash deep-link no longer crashes the page render when the hash contains invalid CSS selector characters (e.g. `#:foo`, `#test[bar`) — `querySelector` is now wrapped in try/catch and invalid hashes are silently ignored.
+
+## [0.55.9] — 2026-05-25
+
+### Fixed
+- **`/admin/tables` first-run setup prompt example trimmed.** The verbatim sample
+  for connector verify lines previously hardcoded a personal name + an
+  Asana-specific `2 workspace(s) visible.` tail. Now reads
+  `✅ Asana ready — ...` / `❌ Atlassian setup failed: ...` — the marker shape
+  the assistant actually greps for, with no hardcoded identity or connector-
+  specific texture. Producer side already substitutes the live `$display` name
+  at runtime, so no functional change to real verify lines. (#413 — credit
+  @cvrysanek; CHANGELOG bullet recovered after it was lost during the cross-
+  branch cherry-pick that landed the fix.)
+- **`.github/workflows/e2e-nightly.yml` unblocked.** The agent-browser nightly
+  smoke had been failing every night since it landed in #333 (6 duplicate
+  issues filed in 6 days: #362, #368, #376, #385, #386, #387). Two bugs in the
+  *Build + start agnes stack* step:
+  1. `docker-compose.yml` declares `env_file: .env` as required, but CI never
+     created one — `docker compose up -d --build` aborted with exit 1 before
+     the stack ever started. (Same trap `ci.yml` works around with a plain
+     `touch .env`.)
+  2. The hand-rolled curl loop polled `/healthz`, but the real endpoint is
+     `/api/health` (see `app/api/health.py:331`); on timeout the loop fell
+     through silently — so even past bug 1 the smoke step would have run
+     against a half-dead app and the failure would have pointed at the wrong
+     place.
+  Fix: `touch .env` + `docker compose up -d --build --wait --wait-timeout 120`
+  (relies on compose-defined healthcheck which hits `/api/health`, fails step
+  on timeout, same pattern as `ci.yml`) + `docker compose logs app | tail -200`
+  on failure so triage gets real logs instead of a 404 mystery. Closes #387,
+  #386, #385, #376, #368, #362.
+
+## [0.55.8] — 2026-05-25
+
+### Changed
+- `/admin/server-config` now has a sticky two-column layout: a section-navigation sidebar on the left (jumps to Instance, Data source, Email, Auth, AI, etc.) and scrollable config fields on the right. Page title corrected from "Server config" to "Server configuration".
+- Initial Workspace Template panel moved above the Danger zone section on the server-config page.
+
+### Fixed
+- Second `renderAll()` call on the server-config page no longer destroys the `#iw-section` DOM node; the element is now detached before `wrap.innerHTML` replaces child nodes and re-inserted before the danger zone.
+
+## [0.55.7] — 2026-05-25
+
+### Changed
+- **Design system unification — phase 1 (templates → macros).** New `ds.button` + `ds.panel` macros in `app/web/templates/_components.html` plus a `base_ds.html` shell and `app/web/static/css/design-tokens.css`. 33 templates (admin / home / marketplace / catalog / auth / setup / store / activity / corporate-memory / me-activity / profile / login flows / password reset+setup / error / news editor / sessions / users / tokens / usage / workspace prompt / welcome) refactored to render their buttons + side panels via the new macros — single source of truth for button variants, sizes, icon-only, and panel chrome. Plus 234 new lines in `style-custom.css` (notably `.ds-table` with `:is()` aliases over 15 legacy table class names so existing rules cascade onto the new design) and 40 lines in `design-tokens.css`. Design rationale + per-batch refactor playbook live in `.design/design-system-unification/{DESIGN_BRIEF,DESIGN_REVIEW,REFACTOR_PLAYBOOK}.md` and `.interface-design/system.md`. Credit @davidrybar-grpn (#375).
+
+### Fixed
+- `/login`, `/auth/password/reset`, and `/auth/password/setup` "Forgot Password?" / "Back to Login" buttons now render in the link blue instead of the grey-on-grey ghost color. The new `ds.button` macro composes `variant='ghost'` with `klass='btn-link'`, but `.btn-ghost`'s `color: var(--text-secondary)` rule sits later in `style-custom.css` than `.btn-link`'s `color: var(--primary)`, so the cascade was silently winning for ghost (≈2:1 contrast on the blue auth-page background — fails WCAG AA). Added a 3-class compound selector `.btn.btn-ghost.btn-link` (specificity 0,0,3,0) that restores the link blue + hover underline. Devin review on PR #375.
+
+### Added
+- `instance.support`: operator-authored HTML body rendered in a
+  mint-accent callout panel inside the welcome hero on `/home`,
+  below the Overview footnotes. Designed for a one-line invitation
+  pointing analysts at a chat space, mailing list, or runbook so
+  every user sees where to ask for help. HTML in, HTML out (same
+  `| safe` filter as `instance.overview`); empty default keeps the
+  OSS vendor-neutral. Resolved by
+  `app/instance_config.py::get_instance_support()`; surfaced in
+  `/admin/server-config` via `_KNOWN_FIELDS["instance"]` so it
+  appears as "Available but unset" for operators who haven't
+  populated it yet. Env override: `AGNES_INSTANCE_SUPPORT`.
+- `instance.custom_scripts`: operator-injected HTML/JS blocks rendered
+  into every page that extends `base.html`. Each entry takes `name`,
+  `enabled`, `placement` (`head_start` | `head_end` | `body_end`), and
+  `html`. Use for feedback widgets (Marker.io), analytics (GTM,
+  PostHog), error capture (Sentry). Admin-only; rendered with `| safe`
+  — same trust boundary as `instance.logo_svg` / `instance.overview`.
+  Empty default keeps the OSS vendor-neutral. Resolved by
+  `app/instance_config.py::get_custom_scripts()`; surfaced in
+  `/admin/server-config` via `_KNOWN_FIELDS["instance"]`. Example
+  Marker.io block in `config/instance.yaml.example`.
 - New `marketplace.curators_url` config item (editable via
   `/admin/server-config` → **Marketplace** section). Drives the
   "See all curators →" link on the `/marketplace` curated-tab info
@@ -31,6 +174,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   bar, and per-step number badges next to each install block.
 
 ### Changed
+- `/home` welcome hero gains a *footnotes* row beneath the four
+  pillars: a hairline-separated block rendering operator-authored
+  HTML from `instance.overview` (`AGNES_INSTANCE_OVERVIEW` env
+  override). This is the same `| safe`-filtered body that used to
+  drive the standalone Overview section between the walkthrough
+  and surfaces grid — the rendering contract is unchanged, only
+  the location and styling moved. Empty yaml → footnotes absent
+  (OSS stays vendor-neutral). Renders for both onboarded and
+  not-onboarded users.
+- Welcome hero's *"AI Chief of Staff"* lede gains a trailing
+  sentence ("*You run all your projects inside and it learns
+  from it.*") so the workspace-folder framing lands before the
+  reader scrolls past.
+- Default `instance.theme` flipped from `navy` to `blue`. The brand-blue
+  palette is now the out-of-the-box look; `navy` (dark hero + mint-green
+  CTAs) is the opt-in via `AGNES_INSTANCE_THEME` / `instance.theme`
+  / admin server-config. Existing instances that explicitly set `navy`
+  are unaffected; instances relying on the implicit default will switch
+  to blue.
 - `/home` palette shifted from blue to green/navy: brand accent is now
   `#2ea877` (mint green) on light surfaces, hero card is navy
   `#0f1b3a`, code panels are near-black `#0c1224` with warm-yellow
@@ -71,6 +233,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- Google Workspace connector prompt's Step 8 verify no longer asks
+  Claude to parse a row count out of `gws drive files list` / `gws
+  chat spaces list` JSON. Claude would improvise a `python3 -c 'f"…
+  {len(d.get(\"files\",[]))}…"'` snippet that fails two ways: f-string
+  expressions reject backslashes in Python <3.12 (`SyntaxError`), and
+  `gws` can emit a banner before the JSON body (`json.JSONDecodeError`).
+  Step 8 now treats exit code 0 as success, drops the `<N> drive
+  file(s), <M> chat space(s) visible` counts, and explicitly warns
+  against both anti-patterns. The summary-grep prefix (`✅ Google
+  Workspace ready —`) is preserved.
+- Install-script Step 2 + Step 9 restart cue + post-install `/home` hero
+  now reference `~/Desktop/<workspace_dir>` to match the `/home` "Step 2
+  — pick a folder" recommendation users actually run (`mkdir -p
+  ~/Desktop/<workspace_dir>`). Previously the pasted setup script
+  checked `pwd` against `$HOME/<workspace_dir>` and would warn
+  "Foundry AI is normally installed in ~/FoundryAI" even though the
+  /home page had just sent the user to `~/Desktop/FoundryAI`.
+- Pre-login pages (`/login`, magic-link screens, first-time `/setup`)
+  now honour the configured `instance.theme`. `base_login.html` sets
+  `<html data-theme="...">` from `instance_theme`, additionally loads
+  `design-tokens.css` so the `.btn-primary` Google SSO button gets
+  its `--ds-primary` green fill (previously rendered as invisible
+  white text on a white card because the `--ds-*` tokens weren't
+  defined), and the navy variant flips the `.login-features` hero
+  panel from brand-blue `--primary` to the deep-navy gradient —
+  eliminating the jarring blue → navy flip after sign-in on
+  navy-configured instances.
 - Skill / agent detail pages nested inside a Flea Market plugin
   rendered the parent plugin's title on the hero instead of the
   skill/agent name. The frontend fallback chain branched on
@@ -165,6 +354,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   applies on the redesigned pages.
 
 ### Internal
+- First-run setup prompt — confirm-step bullet's illustrative
+  ✅/❌ example trimmed to the marker shape only
+  (`✅ Asana ready — ...` / `❌ Atlassian setup failed: ...`).
+  Drops a hardcoded personal name (OSS vendor-agnostic rule) and
+  an Asana-specific workspace-count tail that would otherwise
+  imply every connector's verify line shares that shape.
 - New `app/web/static/css/design-tokens.css` declares the `--ds-*`
   design-system token set (green/navy palette, system font stack,
   callout vocabularies, navy-tinted elevation shadows) globally on
@@ -199,12 +394,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   top of `/home` (the in-page anchor it carried — *Setup Agnes in
   your Claude Code* / *Go deeper into your AI workspace* — duplicated
   links already reachable from the install hero and `/setup-advanced`).
+- Operator-owned *Overview* `<section>` on `/home` no longer
+  renders as a standalone block between the first-session
+  walkthrough and the surfaces grid. The same operator-authored
+  HTML body (`instance.overview` / `AGNES_INSTANCE_OVERVIEW`) now
+  renders inside the welcome hero footnotes instead (see *Changed*
+  above) — the rendering contract is unchanged, only the location
+  and styling moved, so existing instances that set the yaml
+  field get the same content in the new home.
 
 ### Removed
 
 ### Internal
 
-## [0.55.6] - 2026-05-20
+## [0.55.6] — 2026-05-20
 
 ### Fixed
 - `agnes query --remote`: SQL using only a full backtick BQ path (`` `<proj>.<dataset>.<table>` ``) no longer fails with `Parser Error: syntax error at or near "``"`. The rewriter now detects backtick-quoted paths and wraps them in `bigquery_query()` before passing to DuckDB, instead of sending the BQ-native backtick syntax to the local DuckDB parser. (#363)

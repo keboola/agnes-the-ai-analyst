@@ -337,19 +337,19 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     """Steps 2-4 — workspace folder check, then `agnes init` + smoke verify.
 
     Step 2 verifies the user is already cd'd into the workspace folder
-    that the /home onboarding page's visible "Step 2 — create your
-    workspace folder" told them to create manually (`mkdir -p
-    ~/{workspace_dir} && cd ~/{workspace_dir}`). The pasted script
-    DOES NOT auto-create the folder — that would silently override an
+    that the /home onboarding page's visible "Step 2 — pick a folder"
+    told them to create manually (`mkdir -p ~/Desktop/{workspace_dir}
+    && cd ~/Desktop/{workspace_dir}`). The pasted script DOES NOT
+    auto-create the folder — that would silently override an
     intentional choice to install at a different path (e.g. the user
     cd'd to `~/work/agnes-prod` on purpose). Instead we `pwd`, compare
-    to `$HOME/{workspace_dir}`, and on mismatch warn loudly and ask the
-    user to either re-paste from the right folder or explicitly confirm
-    "install here" in the current cwd.
+    to `$HOME/Desktop/{workspace_dir}`, and on mismatch warn loudly and
+    ask the user to either re-paste from the right folder or explicitly
+    confirm "install here" in the current cwd.
 
     `{workspace_dir}` and `{instance_brand}` are placeholders pre-substituted
     by :func:`resolve_lines` from the operator-configured brand. Defaults
-    keep `~/Agnes` behavior for instances that don't set the brand knob.
+    keep `~/Desktop/Agnes` behavior for instances that don't set the brand knob.
 
     `agnes init --workspace .` continues to use the current cwd, so once
     step 2 has confirmed (or the user has explicitly accepted) the
@@ -373,24 +373,24 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     return [
         "",
         "2) Verify the user is already in the workspace folder.",
-        "   The /home page's visible \"Step 2 — create your workspace folder\"",
+        "   The /home page's visible \"Step 2 — pick a folder\"",
         "   already asked the user to run",
-        "       mkdir -p ~/{workspace_dir} && cd ~/{workspace_dir}",
+        "       mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
         "   in their terminal BEFORE pasting this script. Do NOT silently",
         "   re-create the folder here — the user may have intentionally cd'd",
         "   to a different location to install {instance_brand} there instead.",
         "",
         "   Run:",
         "       pwd",
-        "   Expected: $HOME/{workspace_dir}  (i.e. ~/{workspace_dir})",
+        "   Expected: $HOME/Desktop/{workspace_dir}  (i.e. ~/Desktop/{workspace_dir})",
         "",
         "   If `pwd` matches the expected path: continue silently to step 3.",
         "",
         "   If `pwd` does NOT match, STOP and tell the user verbatim:",
         "",
         "       \"You are in <current-pwd>, but {instance_brand} is normally",
-        "       installed in ~/{workspace_dir} (see /home Step 2). Either run",
-        "           mkdir -p ~/{workspace_dir} && cd ~/{workspace_dir}",
+        "       installed in ~/Desktop/{workspace_dir} (see /home Step 2). Either run",
+        "           mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
         "       in your terminal now and re-paste this setup script, OR reply",
         "       'install here' to install {instance_brand} in <current-pwd>",
         "       instead. Reply 'abort' to stop.\"",
@@ -549,7 +549,7 @@ def _restart_claude_lines(step_num: str) -> list[str]:
     return [
         "",
         f"{step_num}) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:",
-        "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/{workspace_dir}` on the default path, or whatever cwd the user explicitly accepted with 'install here').",
+        "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/Desktop/{workspace_dir}` on the default path, or whatever cwd the user explicitly accepted with 'install here').",
         "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + refresh-marketplace SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
     ]
 
@@ -578,9 +578,9 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
         "(the marketplace clone) and that any granted plugins installed",
         "   - For each connector (Asana, Google Workspace, Atlassian): "
         "the verbatim ✅ or ❌ line that the connector's verify step "
-        "emitted earlier in this session (e.g. `✅ Asana ready — connected "
-        "as Vojtech Rysanek. 2 workspace(s) visible.` or `❌ Atlassian setup "
-        "failed: ...`). If the user declined a connector, say declined.",
+        "emitted earlier in this session (e.g. `✅ Asana ready — ...` "
+        "or `❌ Atlassian setup failed: ...`). If the user declined "
+        "a connector, say declined.",
     ]
     if has_ca:
         bullets.append(

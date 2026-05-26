@@ -60,26 +60,24 @@
     background: var(--border-light, #f3f4f6);
     border-radius: 6px; font-size: 11px; color: var(--text-primary);
   }
-  .pkg-hero__actions { display: flex; gap: 8px; align-self: flex-start; }
-  .pkg-hero__actions .btn {
-    padding: 8px 16px; border-radius: 8px;
-    font-size: 13px; font-weight: 600; cursor: pointer;
-    border: 1px solid var(--border, #eceff1); background: var(--surface, #fff);
-  }
-  .pkg-hero__actions .btn-primary {
-    background: var(--primary, var(--primary)); color: #fff; border-color: var(--primary, var(--primary));
-  }
-  .pkg-hero__actions .btn-danger { color: #b91c1c; border-color: #fecaca; }
+  .pkg-hero__actions { display: flex; gap: var(--space-2); align-self: flex-start; }
+  /* The Add / Remove / Edit hero buttons render via ds.button, so the
+     canonical .btn .btn-primary / .btn-danger / .btn-secondary classes
+     supply their bg/border/padding/hover treatment. Only `.btn-required`
+     stays as a page-local amber-disabled affordance — no exact match
+     in the .btn family. */
   .pkg-hero__actions .btn-required {
     background: #fef3c7; color: #92400e; border-color: #fde68a; cursor: not-allowed;
   }
 
   /* ── Sections ─────────────────────────────────────────────── */
+  /* .pkg-section sits on top of .ds-card (rendered by ds.panel) — base
+     surface/border/shadow comes from .ds-card; this rule overrides only
+     the radius (8 → 12, matches /catalog) and the 18×20 padding. */
   .pkg-section {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #eceff1);
-    border-radius: 12px;
-    padding: 18px 20px; margin-bottom: 14px;
+    border-radius: var(--radius-xl);
+    padding: 18px var(--space-5);
+    margin-bottom: 14px;
   }
   .pkg-section__title {
     margin: 0 0 10px; font-size: 13px; font-weight: 700;
@@ -168,6 +166,12 @@
 {% endblock %}
 
 {% block content %}
+{# Design-system component macros — 4 `.pkg-section` panels and hero
+   Add/Remove/Edit action buttons render via `ds.panel` and `ds.button`.
+   Bespoke `.pkg-hero` (gradient + icon-block layout), `<details
+   class="pkg-table-row">` accordion, and `.btn-required` amber-disabled
+   state stay page-local. #}
+{% import "_components.html" as ds %}
 <a class="back-link" href="/catalog">← All data packages</a>
 
 {# Initials fallback when no icon set, mirrors the card macro. #}
@@ -209,31 +213,37 @@
   </div>
   <div class="pkg-hero__actions">
     {% if effective_requirement == 'required' %}
+      {# `.btn-required` keeps page-local amber-disabled styling — no
+         exact match in the canonical .btn family. #}
       <button class="btn btn-required" disabled
               title="Required by your organization">In stack (required)</button>
     {% elif in_stack %}
-      <button class="btn btn-danger" id="pkg-remove-btn">Remove from stack</button>
+      {{ ds.button('Remove from stack', variant='danger',
+                   type='button', id='pkg-remove-btn') }}
     {% else %}
-      <button class="btn btn-primary" id="pkg-add-btn">+ Add to stack</button>
+      {{ ds.button('+ Add to stack', variant='primary',
+                   type='button', id='pkg-add-btn') }}
     {% endif %}
     {% if user.is_admin %}
-    <a class="btn" href="/admin/tables?edit_package={{ pkg.id }}" data-section-edit="package"
-       title="Edit package metadata in admin">Edit</a>
+      {{ ds.button('Edit', variant='secondary',
+                   href='/admin/tables?edit_package=' ~ pkg.id,
+                   attrs='data-section-edit="package" title="Edit package metadata in admin"') }}
     {% endif %}
   </div>
 </div>
 
 {# ── What it is ──────────────────────────────────────────── #}
 {% if pkg.long_description %}
-<section class="pkg-section" data-section="long-description">
+{% call ds.panel(tag='section', klass='pkg-section',
+                 attrs='data-section="long-description"') %}
   <h2 class="pkg-section__title">What it is</h2>
   <div class="pkg-prose">{{ pkg.long_description }}</div>
-</section>
+{% endcall %}
 {% endif %}
 
 {# ── Use it when / Skip it when ──────────────────────────── #}
 {% if pkg.when_to_use or pkg.when_not_to_use %}
-<section class="pkg-section">
+{% call ds.panel(tag='section', klass='pkg-section') %}
   <div class="pkg-use-skip">
     {% if pkg.when_to_use %}
     <div data-section="use-it-when">
@@ -248,20 +258,23 @@
     </div>
     {% endif %}
   </div>
-</section>
+{% endcall %}
 {% endif %}
 
 {# ── Tables in this package ─────────────────────────────── #}
-<section class="pkg-section">
+{% call ds.panel(tag='section', klass='pkg-section') %}
   <h2 class="pkg-section__title">Tables in this package</h2>
   {% if tables %}
   {% for t in tables %}
   <details class="pkg-table-row" data-table-id="{{ t.id }}">
     <summary>
-      <a class="pkg-table-row__name"
-         href="/catalog/t/{{ t.id }}"
-         onclick="event.stopPropagation();"
-         style="color: var(--primary, var(--primary)); text-decoration: none;">{{ t.name }}</a>
+      <span class="pkg-table-row__name"
+            role="link"
+            tabindex="0"
+            data-href="/catalog/t/{{ t.id }}"
+            onclick="event.stopPropagation(); window.location.href=this.dataset.href;"
+            onkeydown="if(event.key==='Enter'||event.key===' '){event.stopPropagation();event.preventDefault();window.location.href=this.dataset.href;}"
+            style="color: var(--primary); text-decoration: none; cursor: pointer;">{{ t.name }}</span>
       <span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span>
       {% if t.description %}
       <span class="pkg-table-row__desc">{{ t.description }}</span>
@@ -307,16 +320,16 @@
     No tables in this package yet.
   </div>
   {% endif %}
-</section>
+{% endcall %}
 
 {# ── Example questions you can ask Claude ────────────────── #}
 {% if pkg.example_questions %}
-<section class="pkg-section">
+{% call ds.panel(tag='section', klass='pkg-section') %}
   <h2 class="pkg-section__title">Example questions you can ask Claude</h2>
   <ol class="pkg-questions__panel">
     {% for q in pkg.example_questions %}<li>{{ q }}</li>{% endfor %}
   </ol>
-</section>
+{% endcall %}
 {% endif %}
 
 <script>

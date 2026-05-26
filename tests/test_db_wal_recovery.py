@@ -18,6 +18,11 @@ The fix is two-pronged:
   2. ``_try_open_system_db`` catches the WAL-replay error class and
      falls back to ``system.duckdb.pre-migrate``. That's the path
      this file exercises.
+
+Additional coverage (issue #379): schema-version-aware refusal —
+auto-recovery proceeds when the pre-migrate snapshot is at HEAD, but
+raises RuntimeError when the snapshot is stale (older than
+SCHEMA_VERSION) or unreadable.
 """
 from __future__ import annotations
 
@@ -28,6 +33,10 @@ from unittest.mock import patch
 import duckdb
 import pytest
 
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def state_dir(monkeypatch, tmp_path):
@@ -44,6 +53,93 @@ def state_dir(monkeypatch, tmp_path):
     db_mod._system_db_conn = None
     db_mod._system_db_path = None
 
+
+@pytest.fixture
+def make_wal_error():
+    """Return a context-manager factory that patches ``src.db.duckdb.connect``
+    so the first call to ``db_path`` raises a WAL-replay error (the class
+    ``_try_open_system_db`` specifically handles) and subsequent calls
+    delegate to the real ``duckdb.connect``.
+
+    Usage inside a test::
+
+        def test_foo(tmp_path, make_wal_error):
+            db_path = tmp_path / "system.duckdb"
+            ...
+            with make_wal_error(db_path):
+                conn = db_module._try_open_system_db(str(db_path))
+    """
+    real_connect = duckdb.connect
+
+    def _factory(db_path: Path):
+        call_count = {"n": 0}
+        fake_error = duckdb.Error(
+            "INTERNAL Error: Failure while replaying WAL file: "
+            "Calling DatabaseManager::GetDefaultDatabase with no default "
+            "database set"
+        )
+
+        def flaky_connect(path, *args, **kwargs):
+            if str(path) == str(db_path) and call_count["n"] == 0:
+                call_count["n"] += 1
+                raise fake_error
+            return real_connect(path, *args, **kwargs)
+
+        return patch("src.db.duckdb.connect", side_effect=flaky_connect)
+
+    return _factory
+
+
+# ---------------------------------------------------------------------------
+# Shared test helpers (plain functions reused across tests).
+# ---------------------------------------------------------------------------
+
+def _make_db_with_schema_version(path: Path, version: int) -> None:
+    """Create a fresh DuckDB file containing a ``schema_version`` table
+    with the given version row.  Mirrors the shape ``_peek_schema_version``
+    expects."""
+    conn = duckdb.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP)"
+        )
+        conn.execute(
+            "INSERT INTO schema_version VALUES (?, current_timestamp)", [version]
+        )
+    finally:
+        conn.close()
+
+
+def _make_db_no_schema_version_table(path: Path) -> None:
+    """Create a DuckDB file with some other table but no ``schema_version``
+    — simulates a pre-v1 / structurally-foreign snapshot."""
+    conn = duckdb.connect(str(path))
+    try:
+        conn.execute("CREATE TABLE other (id INTEGER)")
+    finally:
+        conn.close()
+
+
+def _corrupt_wal_so_replay_fails(db_path: Path) -> None:
+    """Write a sentinel .wal file next to *db_path*.
+
+    DuckDB 1.5 is resilient enough to ignore a short garbage WAL, so
+    this helper writes the file as a forensic marker for the recovery
+    path (``_try_open_system_db`` moves it aside when it exists) but
+    does NOT rely on actually triggering a WAL-replay exception from
+    DuckDB itself.  The actual IOError/InternalError that drives
+    recovery is injected via ``patch("src.db.duckdb.connect", ...)``
+    in each test that needs it — keeping the exception injection
+    co-located with the test expectation while still exercising the
+    real ``shutil.move`` / ``shutil.copy2`` file-system operations.
+    """
+    wal = Path(str(db_path) + ".wal")
+    wal.write_bytes(b"\x00" * 64)
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
 def test_recovery_restores_pre_migrate_snapshot_on_wal_replay_error(
     state_dir,
@@ -168,11 +264,13 @@ def test_recovery_propagates_when_no_snapshot_exists(state_dir):
 
 def test_recovery_re_raises_if_snapshot_also_broken(state_dir):
     """Edge case: snapshot exists but is itself corrupted (operator
-    edited it / disk error). The first recovery ``duckdb.connect``
-    succeeds (via the mock) so the function returns, but the second
-    call would still fail. We assert the re-attempted connect's error
-    propagates rather than being swallowed."""
-    from src.db import _try_open_system_db
+    edited it / disk error). ``_peek_schema_version`` catches the
+    ``duckdb.Error`` from the corrupt snapshot and returns 0, which
+    is below ``SCHEMA_VERSION``. The stale-snapshot refusal path fires,
+    preserving the broken DB and raising ``RuntimeError`` so the
+    operator is forced to intervene rather than silently recovering
+    against a snapshot of unknown version."""
+    from src.db import _try_open_system_db, SCHEMA_VERSION
 
     db_path = state_dir / "system.duckdb"
     snapshot_path = state_dir / "system.duckdb.pre-migrate"
@@ -193,5 +291,179 @@ def test_recovery_re_raises_if_snapshot_also_broken(state_dir):
         raise snapshot_error
 
     with patch("src.db.duckdb.connect", side_effect=fake):
-        with pytest.raises(duckdb.Error, match="malformed"):
+        with pytest.raises(RuntimeError) as excinfo:
             _try_open_system_db(str(db_path))
+
+    # Error message must mention the detected version (0), the target,
+    # and the direction (peek=0 < target → stale).
+    msg = str(excinfo.value)
+    assert "v0" in msg
+    assert "stale" in msg
+    assert str(SCHEMA_VERSION) in msg
+
+
+def test_recovery_proceeds_when_snapshot_is_at_head(tmp_path, make_wal_error):
+    """Regression guard: with a HEAD-version snapshot, recovery returns
+    a working connection, preserves the broken DB at .broken.<ts>, and
+    replaces the main DB with the snapshot."""
+    from src import db as db_module
+
+    db_path = tmp_path / "system.duckdb"
+    snapshot_path = tmp_path / "system.duckdb.pre-migrate"
+
+    _make_db_with_schema_version(db_path, db_module.SCHEMA_VERSION)
+    _make_db_with_schema_version(snapshot_path, db_module.SCHEMA_VERSION)
+    _corrupt_wal_so_replay_fails(db_path)
+
+    with make_wal_error(db_path):
+        conn = db_module._try_open_system_db(str(db_path))
+    try:
+        # The recovered DB carries the snapshot's schema_version row.
+        version = conn.execute(
+            "SELECT MAX(version) FROM schema_version"
+        ).fetchone()[0]
+        assert version == db_module.SCHEMA_VERSION
+    finally:
+        conn.close()
+
+    # Both the broken DB and the broken WAL must be preserved.
+    all_broken = sorted(tmp_path.glob("system.duckdb.broken.*"))
+    broken_dbs = [p for p in all_broken if not p.name.endswith(".wal")]
+    broken_wals = [p for p in all_broken if p.name.endswith(".wal")]
+    assert len(broken_dbs) == 1, all_broken
+    assert len(broken_wals) == 1, all_broken
+    # Snapshot was copied into the main DB path.
+    assert db_path.exists()
+    # Snapshot file itself was left in place (not consumed).
+    assert snapshot_path.exists()
+
+
+def test_recovery_refuses_when_snapshot_is_stale(tmp_path, make_wal_error):
+    """Snapshot at SCHEMA_VERSION - 1 → recovery raises RuntimeError,
+    preserves both broken files, leaves snapshot untouched, does NOT
+    create a fresh DB at db_path."""
+    from src import db as db_module
+
+    db_path = tmp_path / "system.duckdb"
+    snapshot_path = tmp_path / "system.duckdb.pre-migrate"
+
+    _make_db_with_schema_version(db_path, db_module.SCHEMA_VERSION)
+    _make_db_with_schema_version(snapshot_path, db_module.SCHEMA_VERSION - 1)
+    _corrupt_wal_so_replay_fails(db_path)
+
+    with make_wal_error(db_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            db_module._try_open_system_db(str(db_path))
+
+    # The error message identifies both versions so the operator can act.
+    msg = str(excinfo.value)
+    assert str(db_module.SCHEMA_VERSION - 1) in msg
+    assert str(db_module.SCHEMA_VERSION) in msg
+
+    # Both broken files preserved (DB + WAL split — same pattern as
+    # the pre-existing test_recovery_restores_... test).
+    all_broken = sorted(tmp_path.glob("system.duckdb.broken.*"))
+    broken_dbs = [p for p in all_broken if not p.name.endswith(".wal")]
+    broken_wals = [p for p in all_broken if p.name.endswith(".wal")]
+    assert len(broken_dbs) == 1, all_broken
+    assert len(broken_wals) == 1, all_broken
+
+    # Snapshot was not consumed.
+    assert snapshot_path.exists()
+
+    # Main DB path no longer exists — moved aside, NOT overwritten.
+    assert not db_path.exists()
+
+
+def test_recovery_refuses_when_snapshot_has_no_schema_version_table(
+    tmp_path, make_wal_error
+):
+    """If the snapshot is a DuckDB file with no `schema_version` table
+    at all (pre-v1 / unrelated DB), _peek_schema_version returns 0;
+    recovery refuses via the same code path as test_..._is_stale."""
+    from src import db as db_module
+
+    db_path = tmp_path / "system.duckdb"
+    snapshot_path = tmp_path / "system.duckdb.pre-migrate"
+
+    _make_db_with_schema_version(db_path, db_module.SCHEMA_VERSION)
+    _make_db_no_schema_version_table(snapshot_path)
+    _corrupt_wal_so_replay_fails(db_path)
+
+    with make_wal_error(db_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            db_module._try_open_system_db(str(db_path))
+
+    # v0 surfaces in the message (the conservative fallback value);
+    # treated as stale since 0 < SCHEMA_VERSION.
+    msg = str(excinfo.value)
+    assert "v0" in msg
+    assert "stale" in msg
+    assert str(db_module.SCHEMA_VERSION) in msg
+
+    # Same preservation contract as the stale case.
+    assert not db_path.exists()
+    assert snapshot_path.exists()
+    assert any(tmp_path.glob("system.duckdb.broken.*"))
+
+
+def test_recovery_refuses_when_snapshot_is_from_future_version(
+    tmp_path, make_wal_error
+):
+    """Snapshot at SCHEMA_VERSION + 1 → recovery raises with 'future'
+    direction. Mirror of the stale case: operator rolled the binary
+    back, so auto-recovery would land the DB in the split-brain
+    'current > target' branch. Must refuse symmetrically."""
+    from src import db as db_module
+
+    db_path = tmp_path / "system.duckdb"
+    snapshot_path = tmp_path / "system.duckdb.pre-migrate"
+
+    _make_db_with_schema_version(db_path, db_module.SCHEMA_VERSION)
+    _make_db_with_schema_version(snapshot_path, db_module.SCHEMA_VERSION + 1)
+    _corrupt_wal_so_replay_fails(db_path)
+
+    with make_wal_error(db_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            db_module._try_open_system_db(str(db_path))
+
+    msg = str(excinfo.value)
+    assert "future" in msg
+    assert str(db_module.SCHEMA_VERSION + 1) in msg
+    assert str(db_module.SCHEMA_VERSION) in msg
+
+    # Same preservation contract — broken DB moved aside, snapshot kept.
+    assert not db_path.exists()
+    assert snapshot_path.exists()
+    assert any(tmp_path.glob("system.duckdb.broken.*"))
+
+
+def test_recovery_broken_files_are_chmod_0600(tmp_path, make_wal_error):
+    """``system.duckdb`` holds argon2 password hashes + PAT secrets;
+    the broken-aside files must be chmod 0o600 on the refusal path so
+    they don't outlive the incident with default-umask ``0o644``."""
+    import stat
+
+    from src import db as db_module
+
+    db_path = tmp_path / "system.duckdb"
+    snapshot_path = tmp_path / "system.duckdb.pre-migrate"
+
+    _make_db_with_schema_version(db_path, db_module.SCHEMA_VERSION)
+    _make_db_with_schema_version(snapshot_path, db_module.SCHEMA_VERSION - 1)
+    _corrupt_wal_so_replay_fails(db_path)
+
+    with make_wal_error(db_path):
+        with pytest.raises(RuntimeError):
+            db_module._try_open_system_db(str(db_path))
+
+    broken = list(tmp_path.glob("system.duckdb.broken.*"))
+    assert broken, "no broken-aside files were created"
+    for path in broken:
+        mode = stat.S_IMODE(path.stat().st_mode)
+        # 0o600 owner-only RW. We accept any subset that's ≤ 0o600 in
+        # practice (some filesystems mask group/other bits even on
+        # 0o644 source files), but ANY group/other bit set is a fail.
+        assert mode & 0o077 == 0, (
+            f"{path.name}: mode {oct(mode)} has group/other bits set"
+        )

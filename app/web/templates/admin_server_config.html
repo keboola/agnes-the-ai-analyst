@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Server config — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block title %}Server configuration — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
 {# Server configuration editor — instance.yaml fields grouped by section.
@@ -11,16 +11,94 @@
    out of scope for #91. #}
 <style>
   .container:has(.cfg-page) { max-width: none; padding: 24px 16px; }
-  .cfg-page { max-width: 1100px; margin: 0 auto; padding: 0; }
-  .cfg-toolbar {
-    display: flex; justify-content: space-between; align-items: center;
-    gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
-  }
+  .cfg-page { max-width: 1260px; margin: 0 auto; padding: 0; }
+  /* Hero subtitle is unconstrained here — page is wide and the text is long */
+  .cfg-page .page-header--hero .page-header__subtitle { max-width: none; }
 
+  /* Two-column layout: sticky sidenav + scrollable content */
+  .cfg-body {
+    display: grid;
+    grid-template-columns: 216px 1fr;
+    gap: 0 24px;
+    align-items: start;
+    margin-top: 24px;
+  }
+  /* Column wrapper — standalone white card, fully rounded */
+  .cfg-sidenav-col {
+    background: #fff;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 0 0 16px;
+    align-self: stretch;
+  }
+  .cfg-sidenav {
+    position: sticky;
+    top: 68px;
+    max-height: calc(100vh - 88px);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 0 8px;
+  }
+  /* Group label — visually non-clickable: all-caps, muted, no cursor affordance */
+  .cfg-sidenav-label {
+    display: block;
+    padding: 16px 16px 5px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted, #9ca3af);
+    cursor: default;
+    user-select: none;
+    line-height: 1;
+  }
+  .cfg-sidenav-label:first-child { padding-top: 4px; }
+  .cfg-sidenav-label.is-danger { color: #dc2626; }
+  /* Nav links — clearly clickable */
+  .cfg-sidenav a {
+    display: block;
+    padding: 7px 16px 7px 14px;
+    border-left: 2px solid transparent;
+    font-size: 13px;
+    font-family: var(--font-primary, 'Inter', system-ui, sans-serif);
+    color: var(--text-primary, #1a253c);
+    text-decoration: none;
+    line-height: 1.5;
+    cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .cfg-sidenav a:hover {
+    background: var(--background, #f5f7fa);
+    color: var(--text-primary, #1a253c);
+  }
+  .cfg-sidenav a.is-active {
+    border-left-color: var(--primary, #0073d1);
+    background: var(--primary-light, rgba(0,115,209,.08));
+    color: var(--primary, #0073d1);
+    font-weight: 500;
+  }
+  /* Danger links: default dark, hover = subtle grey (distinct from active red) */
+  .cfg-sidenav a.sidenav-danger { color: var(--text-primary, #1a253c); }
+  .cfg-sidenav a.sidenav-danger:hover { background: var(--background, #f5f7fa); color: #991b1b; }
+  .cfg-sidenav a.sidenav-danger.is-active {
+    border-left-color: #dc2626;
+    background: #fee2e2;
+    color: #dc2626;
+  }
+  /* main content column */
+  .cfg-main { }
+  /* ensure sections don't hide under the sticky app header on scroll */
+  .cfg-section, #iw-section { scroll-margin-top: 80px; }
   .cfg-banner {
     padding: 12px 16px; border-radius: 8px;
     background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
-    font-size: 13px; margin-bottom: 16px; display: none;
+    font-size: 13px; display: none;
+    /* Sticky just below the app header so save confirmations / errors are
+       always visible regardless of scroll position. z-index stays below
+       modals (1000+) but above section content. */
+    position: sticky; top: 72px; z-index: 90;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   }
   .cfg-banner.is-visible { display: block; }
   .cfg-banner.success { background: #ecfdf5; border-color: #34d399; color: #065f46; }
@@ -65,7 +143,7 @@
 
   .cfg-field { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; margin-bottom: 14px; }
   .cfg-field:last-child { margin-bottom: 0; }
-  .cfg-field label { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; padding-top: 8px; }
+  .cfg-field label, .cfg-field .cfg-field-label { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; padding-top: 8px; }
   .cfg-field .field-help { font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 4px; }
   .cfg-field input[type="text"],
   .cfg-field input[type="password"],
@@ -160,22 +238,20 @@
 
 <div class="cfg-page" data-page="server-config">
   {% set page_hero_eyebrow = "Server" %}
-
   {% set page_hero_title = "Server configuration" %}
-
   {% set page_hero_subtitle = "Edits land in <code style=&quot;color:#fff;background:rgba(255,255,255,0.15);padding:1px 6px;border-radius:4px&quot;>instance.yaml</code>. Save triggers an app restart (~10s downtime). Secret values are masked here — re-enter them to change." %}
-
   {% include "_page_hero.html" %}
-
-  <div class="cfg-toolbar">
-    <div>
-    </div>
-  </div>
 
   <div id="cfg-banner" class="cfg-banner" role="status" aria-live="polite"></div>
 
-  <div id="cfg-loading" class="cfg-loading">Loading current configuration…</div>
-  <div id="cfg-sections" hidden></div>
+  <div class="cfg-body">
+    <div class="cfg-sidenav-col">
+      <nav id="cfg-sidenav" class="cfg-sidenav" aria-label="Section navigation"></nav>
+    </div>
+
+    <div class="cfg-main">
+      <div id="cfg-loading" class="cfg-loading">Loading current configuration…</div>
+      <div id="cfg-sections" hidden></div>
 
   <!--
     Initial Workspace Template — admin-configurable per-instance override
@@ -208,7 +284,9 @@
     </div>
     <div class="section-actions" id="iw-actions" hidden></div>
   </section>
-</div>
+    </div><!-- /.cfg-main -->
+  </div><!-- /.cfg-body -->
+</div><!-- /.cfg-page -->
 
 <!-- Initial Workspace Template — register / edit modal.
 
@@ -342,10 +420,17 @@ const SECTION_META = {
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 
 // ── Banner ─────────────────────────────────────────────────────────────
+let _bannerTimer = null;
 function showBanner(msg, kind) {
   const el = document.getElementById("cfg-banner");
   el.textContent = msg;
   el.className = "cfg-banner is-visible" + (kind ? " " + kind : "");
+  // Auto-dismiss success (and neutral) banners after 4 s; leave errors
+  // visible until the next action so the operator can read them.
+  clearTimeout(_bannerTimer);
+  if (kind !== "error") {
+    _bannerTimer = setTimeout(hideBanner, 4000);
+  }
 }
 function hideBanner() {
   document.getElementById("cfg-banner").className = "cfg-banner";
@@ -495,14 +580,15 @@ function renderArrayField(section, pathSegments, label, value, spec, depth) {
   // `data-array-collect="1"` marks the wrapper so collectSection can pick
   // it up as a single unit (otherwise the per-row inputs would each emit
   // their own patch leaf and clobber each other).
+  const baseId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const rows = items.map((item, idx) => `
     <div class="array-row" data-array-row="${idx}" style="display: flex; gap: 6px; margin-bottom: 4px;">
-      <input type="text" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" style="flex: 1;">
+      <input type="text" id="${baseId}_${idx}" name="${baseId}_${idx}" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" aria-label="${escHtml(label)} item ${idx + 1}" style="flex: 1;">
       <button type="button" class="cfg-btn" data-array-remove="${idx}" title="Remove this item">×</button>
     </div>`).join("");
   return `
     <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
-      <label>${arrow}${escHtml(label)}</label>
+      <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
       <div>
         <div class="array-container"
              data-section="${section}"
@@ -540,6 +626,7 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
   const hintBlock = spec.hint
     ? `<div class="field-help">${escHtml(spec.hint)}</div>`
     : "";
+  const mapBaseId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const renderRow = (k, v, idx) => {
     if (valueKind === "array") {
       // Map<string, array<scalar>> — value column is itself a comma-separated
@@ -549,8 +636,8 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
       const items = Array.isArray(v) ? v.join(", ") : "";
       return `
         <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 2fr auto; gap: 6px; margin-bottom: 4px;">
-          <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
-          <input type="text" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values">
+          <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
+          <input type="text" id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values" aria-label="${escHtml(label)} value ${idx + 1}">
           <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
         </div>`;
     }
@@ -559,15 +646,15 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
     const stepAttr = valueKind === "float" ? ' step="any"' : "";
     return `
       <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 1fr auto; gap: 6px; margin-bottom: 4px;">
-        <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
-        <input type="${inputType}"${stepAttr} class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value">
+        <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
+        <input type="${inputType}"${stepAttr} id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value" aria-label="${escHtml(label)} value ${idx + 1}">
         <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
       </div>`;
   };
   const rows = Object.entries(obj).map(([k, v], idx) => renderRow(k, v, idx)).join("");
   return `
     <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
-      <label>${arrow}${escHtml(label)}</label>
+      <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
       <div>
         <div class="map-container"
              data-section="${section}"
@@ -689,7 +776,7 @@ function renderNestedField(section, pathSegments, label, value, spec, depth) {
 
     return `
       <div class="cfg-field nested-field nested-parent" style="margin-left: ${indent}px;">
-        <label>${arrow}${escHtml(label)}</label>
+        <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
         <div>${hintBlock || `<div class="field-help">Nested structured fields below.</div>`}</div>
       </div>
       ${populatedHtml}${unsetHtml}${fallbackHtml}`;
@@ -821,18 +908,118 @@ function renderSection(section, payload, knownForSection) {
         ${section === "data_source" ? `
         <button class="cfg-btn" data-action="test-bigquery" type="button">Test BigQuery connection</button>
         <span class="bq-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
+        <button class="cfg-btn" data-action="test-keboola" type="button" style="margin-left: 8px;">Test Keboola connection</button>
+        <span class="kbc-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
         ` : ""}
       </div>
     </section>`;
 }
 
+const SECTION_GROUPS = [
+  { label: "General",      sections: ["instance", "data_source", "email", "theme"] },
+  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails"] },
+  { label: "Danger zone",  sections: ["auth", "server"], isDanger: true },
+];
+
+function buildSidenav(sections) {
+  const nav = document.getElementById("cfg-sidenav");
+  if (!nav) return;
+
+  const present = new Set(sections);
+  const html = [];
+
+  // Render grouped sections; Workspace template appended at end of Integrations
+  SECTION_GROUPS.forEach(group => {
+    const groupSections = group.sections.filter(s => present.has(s));
+    if (!groupSections.length && group.label !== "Integrations") return;
+    html.push(`<span class="cfg-sidenav-label${group.isDanger ? " is-danger" : ""}">${group.label}</span>`);
+    groupSections.forEach(s => {
+      const meta = SECTION_META[s] || { title: s };
+      html.push(`<a href="#cfg-s-${s}" class="${group.isDanger ? "sidenav-danger" : ""}" data-nav-section="${s}">${meta.title}</a>`);
+      present.delete(s);
+    });
+    if (group.label === "Integrations") {
+      html.push(`<a href="#iw-section" data-nav-section="iw-section">Workspace template</a>`);
+    }
+  });
+
+  // Any sections not covered by a group (fallback)
+  present.forEach(s => {
+    const meta = SECTION_META[s] || { title: s };
+    html.push(`<a href="#cfg-s-${s}" data-nav-section="${s}">${meta.title}</a>`);
+  });
+
+  nav.innerHTML = html.join("");
+
+  // Build a key→element map. Use the most specific selector possible:
+  // section.cfg-section[data-section="x"] inside #cfg-sections only —
+  // avoids false matches on inputs/buttons/textareas with the same attr.
+  const sectionEls = new Map();
+  const wrap = document.getElementById("cfg-sections");
+  sections.forEach(s => {
+    const el = wrap && wrap.querySelector(`section.cfg-section[data-section="${s}"]`);
+    if (el) { el.id = `cfg-s-${s}`; sectionEls.set(s, el); }
+  });
+  const iwEl = document.getElementById("iw-section");
+  if (iwEl) sectionEls.set("iw-section", iwEl);
+
+  // Active state is set only on explicit nav click — no scroll tracking.
+  nav.querySelectorAll("a").forEach(a => {
+    a.addEventListener("click", e => {
+      e.preventDefault();
+      nav.querySelectorAll("a").forEach(x => x.classList.remove("is-active"));
+      a.classList.add("is-active");
+      const el = sectionEls.get(a.dataset.navSection);
+      if (el) {
+        const top = el.getBoundingClientRect().top + window.scrollY - 80;
+        window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+      }
+    });
+  });
+}
+
 function renderAll(data) {
   const wrap = document.getElementById("cfg-sections");
-  const sections = data.editable_sections || Object.keys(data.sections || {});
+  const apiSections = data.editable_sections || Object.keys(data.sections || {});
+  // Sort sections to match sidebar group order (General → Integrations → Danger zone)
+  const groupOrder = SECTION_GROUPS.flatMap(g => g.sections);
+  const sections = [...apiSections].sort((a, b) => {
+    const ia = groupOrder.indexOf(a), ib = groupOrder.indexOf(b);
+    return (ia === -1 ? 9999 : ia) - (ib === -1 ? 9999 : ib);
+  });
   const known = data.known_fields || {};
   wrap.innerHTML = sections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
+
+  // Move iw-section into cfg-sections, before the first danger zone section,
+  // so the body order matches the sidebar (Integrations → Workspace template → Danger zone).
+  const iwEl = document.getElementById("iw-section");
+  if (iwEl) {
+    const dangerSecs = (SECTION_GROUPS.find(g => g.isDanger) || {}).sections || [];
+    let refEl = null;
+    for (const s of dangerSecs) {
+      const el = wrap.querySelector(`section.cfg-section[data-section="${s}"]`);
+      if (el) { refEl = el; break; }
+    }
+    if (refEl) wrap.insertBefore(iwEl, refEl);
+    else wrap.appendChild(iwEl);
+  }
+
   document.getElementById("cfg-loading").style.display = "none";
   wrap.hidden = false;
+  buildSidenav(sections);
+
+  // Hash-based deep-link: /admin/server-config#cfg-s-data_source scrolls to
+  // that section after sections are rendered (anchors don't exist before this
+  // point so the browser's native scroll-to-hash fires too early). Links from
+  // other pages (e.g. the Keboola not-configured banner) use this.
+  if (window.location.hash) {
+    // Guard against SyntaxError: window.location.hash is user-controlled and
+    // may not be a valid CSS selector (e.g. #:foo or #test[bar).
+    try {
+      const target = document.querySelector(window.location.hash);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (_) { /* invalid hash — ignore */ }
+  }
 
   wrap.querySelectorAll('[data-action="save-section"]').forEach(btn =>
     btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
@@ -842,6 +1029,10 @@ function renderAll(data) {
   // ssh to the VM or wait for an analyst's failed query.
   wrap.querySelectorAll('[data-action="test-bigquery"]').forEach(btn =>
     btn.addEventListener("click", () => onTestBigQuery(btn)));
+
+  // Test Keboola connection — counterpart to BigQuery probe above.
+  wrap.querySelectorAll('[data-action="test-keboola"]').forEach(btn =>
+    btn.addEventListener("click", () => onTestKeboola(btn)));
 
   // Wire array-of-scalars + map-of-scalars add/remove buttons via event
   // delegation on the wrapper. Re-attaching after every renderAll() is
@@ -1137,6 +1328,39 @@ async function onTestBigQuery(btn) {
     if (r.ok) {
       const body = await r.json();
       resultEl.textContent = `✓ ok (${body.elapsed_ms} ms; billing=${body.billing_project}, data=${body.data_project})`;
+      resultEl.style.color = "#2a8c4a";
+    } else {
+      let body;
+      try { body = await r.json(); } catch (_) { body = await r.text(); }
+      const detail = body && typeof body === "object" ? body.detail : body;
+      const kind = detail && typeof detail === "object" ? (detail.kind || "error") : "error";
+      const hint = detail && typeof detail === "object" ? (detail.hint || detail.message || "") : String(detail);
+      resultEl.textContent = `✗ ${kind}${hint ? " — " + hint : ""}`;
+      resultEl.style.color = "#c0392b";
+    }
+  } catch (e) {
+    resultEl.textContent = `✗ network error — ${e.message}`;
+    resultEl.style.color = "#c0392b";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Keboola test connection ────────────────────────────────────────────
+async function onTestKeboola(btn) {
+  const resultEl = btn.parentElement.querySelector(".kbc-test-result");
+  resultEl.hidden = false;
+  resultEl.textContent = "Testing…";
+  resultEl.style.color = "";
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/admin/keboola/test-connection", {
+      method: "POST",
+      credentials: "include",
+    });
+    if (r.ok) {
+      const body = await r.json();
+      resultEl.textContent = `✓ ok (${body.elapsed_ms} ms; ${body.bucket_count} bucket${body.bucket_count !== 1 ? "s" : ""})`;
       resultEl.style.color = "#2a8c4a";
     } else {
       let body;

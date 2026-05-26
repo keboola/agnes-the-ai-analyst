@@ -15,6 +15,10 @@ fi
 SESSION="agnes-e2e-$$"
 trap 'agent-browser --session "$SESSION" close >/dev/null 2>&1 || true' EXIT
 
+# Sign the session in before hitting a protected page — /admin/activity otherwise
+# 401-redirects to /login.
+source "$(dirname "$0")/_login.sh"
+
 echo "→ open ${BASE_URL}/admin/activity"
 agent-browser --session "$SESSION" open "${BASE_URL}/admin/activity"
 agent-browser --session "$SESSION" wait --load networkidle

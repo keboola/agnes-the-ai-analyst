@@ -2,6 +2,11 @@
 {% block title %}{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — owner-actions row (Edit + 7 delete/
+   archive variants) renders via `ds.button`. Hero, panels, JS-generated
+   install/remove buttons, .btn-copy on dark surfaces, and per-kind
+   colour chrome stay page-local. #}
+{% import "_components.html" as ds %}
 <style>
   .item-detail {
     --bg: var(--background);
@@ -705,79 +710,61 @@
 
   {% if entity and (is_owner or is_admin) %}
   <style>
+    /* Container layout only — buttons render via `ds.button(variant=
+       'secondary'|'danger', size='sm')`, so per-button bg/border/
+       padding/disabled styling that lived here is supplied by the
+       canonical .btn family in style-custom.css. */
     .item-detail .owner-actions {
-      display: flex; gap: 10px; margin: 0 0 16px 0; justify-content: flex-end;
-    }
-    .item-detail .owner-actions a,
-    .item-detail .owner-actions button {
-      padding: 6px 14px; border-radius: 8px;
-      font-size: 13px; font-weight: 500; font-family: var(--font-primary);
-      text-decoration: none; border: 1px solid var(--border, #e5e7eb);
-      background: var(--surface, #fff); color: var(--text, #111827);
-      cursor: pointer;
-    }
-    .item-detail .owner-actions .delete { color: #b91c1c; }
-    .item-detail .owner-actions button:disabled,
-    .item-detail .owner-actions a[aria-disabled="true"] {
-      color: #9ca3af !important; border-color: #e5e7eb !important;
-      background: #f3f4f6 !important; cursor: not-allowed;
+      display: flex; gap: var(--space-2); margin: 0 0 var(--space-4) 0;
+      justify-content: flex-end;
     }
   </style>
   <div class="owner-actions">
     {% if edit_in_flight %}
-    <a href="#" aria-disabled="true"
-       title="Wait for the in-flight review to finish before editing.">
-      Edit (review in flight)
-    </a>
+      {{ ds.button('Edit (review in flight)', variant='secondary', size='sm',
+                   href='#', disabled=True,
+                   attrs='title="Wait for the in-flight review to finish before editing."') }}
     {% else %}
-    <a href="/marketplace/flea/{{ entity.id }}/edit"
-       title="Edit metadata or upload a new version.">
-      Edit
-    </a>
+      {{ ds.button('Edit', variant='secondary', size='sm',
+                   href='/marketplace/flea/' ~ entity.id ~ '/edit',
+                   attrs='title="Edit metadata or upload a new version."') }}
     {% endif %}
     {# Same v35 delete UX as the plugin detail page — see comment there. #}
     {% if is_admin %}
       {% if entity.visibility_status == 'approved' %}
-        <button class="delete" id="owner-archive-btn" type="button"
-                title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle.">
-          Archive
-        </button>
+        {{ ds.button('Archive', variant='danger', size='sm', type='button',
+                     id='owner-archive-btn',
+                     attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
       {% elif entity.visibility_status == 'archived' %}
-        <button class="delete" type="button" disabled
-                title="Already archived. Hidden from browse; existing installs still served.">
-          Archived
-        </button>
+        {{ ds.button('Archived', variant='danger', size='sm', type='button',
+                     disabled=True,
+                     attrs='title="Already archived. Hidden from browse; existing installs still served."') }}
       {% else %}
-        <button class="delete" type="button" disabled
-                title="Archive is only available for approved entities. Use Override (in quarantine banner) to publish, Rescan to re-evaluate, or Hard delete to purge.">
-          Archive (not applicable while {{ entity.visibility_status }})
-        </button>
+        {{ ds.button('Archive (not applicable while ' ~ entity.visibility_status ~ ')',
+                     variant='danger', size='sm', type='button', disabled=True,
+                     attrs='title="Archive is only available for approved entities. Use Override (in quarantine banner) to publish, Rescan to re-evaluate, or Hard delete to purge."') }}
       {% endif %}
-      <button class="delete" id="owner-hard-delete-btn" type="button"
-              style="border-color: rgba(185,28,28,0.45);"
-              title="Hard delete: drops the bundle + removes existing installs. Use only for legal / privacy removals. Visible only to admins — analysts won't see this button.">
+      {% call ds.button(variant='danger', size='sm', type='button',
+                        id='owner-hard-delete-btn',
+                        attrs='title="Hard delete: drops the bundle + removes existing installs. Use only for legal / privacy removals. Visible only to admins — analysts won\'t see this button."') %}
         Hard delete <span class="admin-only-hint">admin-only</span>
-      </button>
+      {% endcall %}
     {% elif entity.visibility_status == 'approved' %}
-      <button class="delete" id="owner-archive-btn" type="button"
-              title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle.">
-        Archive
-      </button>
+      {{ ds.button('Archive', variant='danger', size='sm', type='button',
+                   id='owner-archive-btn',
+                   attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
     {% elif entity.visibility_status == 'archived' %}
-      <button class="delete" type="button" disabled
-              title="Already archived. Hidden from browse; existing installs still served.">
-        Archived
-      </button>
+      {{ ds.button('Archived', variant='danger', size='sm', type='button',
+                   disabled=True,
+                   attrs='title="Already archived. Hidden from browse; existing installs still served."') }}
     {% elif entity.visibility_status == 'pending' %}
-      <button class="delete" type="button" disabled
-              title="Submission is under review — Delete is locked until checks finish.">
-        Delete (locked — under review)
-      </button>
+      {{ ds.button('Delete (locked — under review)', variant='danger', size='sm',
+                   type='button', disabled=True,
+                   attrs='title="Submission is under review — Delete is locked until checks finish."') }}
     {% else %}
-      <button class="delete" type="button" disabled
-              title="Submission is quarantined. Only an admin can delete it. Edit + re-upload to fix.">
-        Delete (locked — quarantined)
-      </button>
+      {{ ds.button('Delete (locked — quarantined)', variant='danger', size='sm',
+                   type='button', disabled=True,
+                   attrs='title="Submission is quarantined. Only an admin can delete it. Edit + re-upload to fix."') }}
     {% endif %}
   </div>
 
