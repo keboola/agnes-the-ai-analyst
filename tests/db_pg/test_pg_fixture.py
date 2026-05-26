@@ -65,6 +65,6 @@ def test_backend_env_var_is_respected():
     rather than failing in an opaque way."""
     backend = os.environ.get("AGNES_TEST_PG_BACKEND")
     if backend is not None:
-        assert backend in {"container", "embedded"}, (
-            f"AGNES_TEST_PG_BACKEND must be 'container' or 'embedded' (got {backend!r})"
+        assert backend in {"container", "embedded", "pgserver"}, (
+            f"AGNES_TEST_PG_BACKEND must be one of container|embedded|pgserver (got {backend!r})"
         )
