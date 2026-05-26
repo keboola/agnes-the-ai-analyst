@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- `docs/ecosystem-map.md` — operator-facing bird's-eye view of the 5 repo tiers around an Agnes deployment (OSS app, per-customer infra in two patterns A/B, curated marketplace, initial-workspace template, legacy/glue), with a cross-tier checklist for new customer onboarding. Linked from `docs/README.md` operator index.
+
+### Changed
+- `docs/curated-marketplace-format.md` Quickstart explicitly enumerates filenames the metadata parser will **not** read (`.agnes/agnes-metadata.json`, root-level `marketplace-metadata.json`, other directories) — only `.claude-plugin/marketplace-metadata.json` is loaded. Heads off a footgun seen in the wild where curators copied a legacy filename from older fixture content.
+- `docs/PLATFORM_SETUP.md` first-boot bullet no longer hard-codes a schema version number ("v41") — points readers at `src/db.py` as the live source of truth, matching the convention already established in `CLAUDE.md`.
+- `docs/ONBOARDING.md` step 4 tfvars block no longer scopes optional variables to "module infra-v1.4.0+" (those have been default for several minor versions); step 9 Monitoring & backup reframed from "follow-up — not required" to "module already provisions, wire a notification channel" since `customer-instance` ships uptime checks + daily PD snapshots out of the box.
+
 ## [0.55.14] — 2026-05-26
 
 ### Changed

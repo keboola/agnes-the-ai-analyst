@@ -7,7 +7,7 @@ Operator playbook for bootstrapping and running an Agnes instance with full tele
 - Clone the OSS image (`ghcr.io/keboola/agnes-the-ai-analyst:stable`) or pin a `:keboola-deploy-*` tag (see `docs/DEPLOYMENT.md` for release-train discipline).
 - `config/instance.yaml` — copy from `config/instance.yaml.example`. Required fields: `instance.name`, `instance.url`, `auth.google.domain` (or `auth.email.allowed_domains`).
 - Seed admin: env vars `SEED_ADMIN_EMAIL` + `SEED_ADMIN_PASSWORD` (optional — analyst can also bootstrap via `/auth/bootstrap` on first login).
-- First boot: schema migrates automatically to the current version (v41). With no existing data this is fast — expect < 5 seconds.
+- First boot: schema migrates automatically to the current version (defined in `src/db.py`). With no existing data this is fast — expect < 5 seconds.
 - Register tables via the admin UI or `POST /api/admin/register-table`. Tables store `source_type`, `bucket`, `source_table`, `query_mode` in the `table_registry` DuckDB table.
 
 ## 2. Reverse proxy + TLS
