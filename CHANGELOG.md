@@ -11,6 +11,43 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Fixed
+- **DuckDB consolidation connections in `materialize_query` now cap
+  `memory_limit` + `threads`** (`connectors/keboola/extractor.py`,
+  `connectors/bigquery/extractor.py`). DuckDB's default `memory_limit`
+  is 80 % of system RAM, which on a 4 GiB cgroup container resolves to
+  ~3.2 GiB of process-resident buffer pool. With Python objects +
+  sidecar containers that exceeds the cgroup cap and triggers OOM
+  during slice consolidation of any non-trivial table — observed on
+  the live dev VM with the `gcp_cost` Keboola table: uvicorn anon
+  RSS climbed from ~350 MiB to ~3.5 GiB in minutes, then SIGKILL.
+  New `_open_consolidation_conn()` helper in the Keboola extractor
+  applies `SET memory_limit='2GB'` + `SET threads=2` +
+  `SET preserve_insertion_order=false` immediately after each
+  `duckdb.connect()` on the materialize path; matching inline `SET`s
+  on the BQ side run inside the materialize `bq.duckdb_session()`
+  block. The 2 GiB ceiling leaves headroom for the legacy CSV path
+  (DuckDB pre-allocates a ~1 GiB sliding-window buffer for
+  `read_csv(max_line_size=64MB)`); the parquet path's streaming
+  row-group COPY rarely needs more than ~100 MiB, so the cap binds
+  only when something goes wrong. `preserve_insertion_order=false`
+  matches DuckDB's own out-of-memory hint and is safe here — the
+  materialize output is a single parquet that downstream consumers
+  re-sort however they like.
+- **`connectors/keboola/storage_api.py::_download_single` adds a
+  pre-flight disk-space check.** Storage API signed-URL responses
+  carry `Content-Length` (the compressed transfer size); compare
+  against `shutil.disk_usage(dest.parent).free` and raise
+  `StorageApiError` early when available space is below 5x the
+  payload for `gunzip_on_read=True` (decompressed dest typically
+  3-5x the wire bytes) or 1.25x otherwise. Skipping the check when
+  `Content-Length` is absent leaves mid-write `errno 28 No space
+  left on device` as a possibility; the common case now fails
+  fast with an actionable message instead of triggering the
+  multi-GiB Python traceback retention path that compounded into
+  a cascading cgroup OOM on the live dev VM (the retained `chunk`
+  buffer + response object references in the `_download_single`
+  failure frame multiplied across `download_file_slices`'
+  per-slice loop).
 - **`scripts/ops/agnes-auto-upgrade.sh` is now single-instance** via
   `flock` on `/var/lock/agnes-auto-upgrade.lock`. GCE live migration /
   clock-jump events make cron deliver several catch-up ticks in a

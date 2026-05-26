@@ -412,6 +412,42 @@ class KeboolaStorageClient:
             headers=extra_headers,
         ) as r:
             r.raise_for_status()
+
+            # Pre-flight disk-space check. Storage API's signed-URL
+            # response carries ``Content-Length`` (compressed transfer
+            # size for gzipped exports). Demand 5× headroom for gunzip
+            # cases (decompressed dest typically 3-5× the wire bytes)
+            # and 1.25× otherwise (for the ``.part`` + atomic rename
+            # window). Skipping the check when ``Content-Length`` is
+            # absent (proxies sometimes strip it) means mid-write
+            # ``OSError 28`` is still possible; the common case fails
+            # fast with an actionable message instead of leaving an
+            # orphan ``.part`` + a half-written destination behind
+            # AND triggering the Python traceback retention path that
+            # held a multi-GiB response buffer in every retained frame
+            # on agnes-dev (cascaded into a cgroup OOM via
+            # ``connectors/keboola/extractor.py`` consolidation
+            # connection — see the matching DuckDB-side cap there).
+            content_length = r.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    expected_bytes = int(content_length)
+                except (TypeError, ValueError):
+                    expected_bytes = None
+                if expected_bytes is not None and expected_bytes > 0:
+                    headroom_mult = 5 if gunzip_on_read else 1.25
+                    needed = int(expected_bytes * headroom_mult)
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    free = shutil.disk_usage(dest_path.parent).free
+                    if free < needed:
+                        raise StorageApiError(
+                            f"insufficient disk space at {dest_path.parent}: "
+                            f"have {free:,} B free, need >= {needed:,} B "
+                            f"({headroom_mult}x the {expected_bytes:,} B "
+                            f"download for gunzip_on_read={gunzip_on_read}). "
+                            f"Free space before retrying.",
+                        )
+
             tmp = dest_path.with_suffix(dest_path.suffix + ".part")
             try:
                 with open(tmp, "wb") as fh:
