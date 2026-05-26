@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`scripts/ops/agnes-auto-upgrade.sh` is now single-instance** via
+  `flock` on `/var/lock/agnes-auto-upgrade.lock`. GCE live migration /
+  clock-jump events make cron deliver several catch-up ticks in a
+  single second (observed 4 ticks in ≤2s on a freshly-migrated VM),
+  and parallel runs of this script raced on `docker compose pull` +
+  `docker images --digest`: different runners saw different digest
+  values for the same tag, the diff tripped the "image digest moved"
+  branch, and a `docker compose up -d` fired for an upgrade that
+  hadn't actually happened — manifesting as ~30s app unreachability
+  every ~20–30 min on VMs caught in a migration window even when no
+  release had landed. Non-blocking `flock -n` means the second runner
+  exits cleanly; the next regular tick handles whatever real change
+  is pending.
+
 ### Added
 - `docs/ecosystem-map.md` — operator-facing bird's-eye view of the 5 repo tiers around an Agnes deployment (OSS app, per-customer infra in two patterns A/B, curated marketplace, initial-workspace template, legacy/glue), with a cross-tier checklist for new customer onboarding. Linked from `docs/README.md` operator index.
 
