@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`agnes status` no longer falsely reports `Initialized: no` in Initial-Workspace-override workspaces.** The check was grepping `CLAUDE.md` for the literal string `"AI Data Analyst"` — but a customer-supplied override template's body may legitimately omit that exact substring (the marker is hardcoded against the default template's `# {{ instance.name }} — AI Data Analyst` heading), so a fully-initialized override workspace would still print `Initialized: no` plus a misleading `Run agnes init …` hint after every command. `agnes status` now mirrors the dual-marker convention already documented in `cli/commands/init.py:283-308`: read `.claude/init-complete` (authoritative sentinel written by every successful default OR override init) first, fall back to the legacy CLAUDE.md substring for pre-#259 workspaces.
+- **`agnes self-upgrade` now upgrades the running binary, not a sibling install.** The routing condition was `shutil.which("uv")` — so any user with `uv` on PATH took the uv install path, even when the active `agnes` came from a project venv (`pip install -e .`). `uv tool install --force` would then rewrite `~/.local/bin/agnes` (a *different* binary entirely) while the user's `.venv/bin/agnes` stayed stale forever, and the `[update] agnes X.Y is out of date …` banner spammed every subsequent command output because self-upgrade reported success but the running binary never changed. New `_python_is_uv_tool_install()` helper resolves `sys.executable` against `uv tool dir`; uv path is taken iff the running interpreter actually belongs to uv's tool root, otherwise pip targets `sys.executable` and the active binary gets upgraded.
+
 ## [0.55.13] — 2026-05-26
 
 ### Internal
