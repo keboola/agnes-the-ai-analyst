@@ -52,7 +52,7 @@ def _open_consolidation_conn(db_path: Optional[str] = None):
     it) — for the CSV→parquet path, the default
     insertion-order-preserving execution holds row batches in memory
     until the parent operator can emit them in order, which collides
-    badly with the 1 GiB cap when ``read_csv(max_line_size=64MB)``
+    badly with a 2 GiB cap when ``read_csv(max_line_size=64MB)``
     pre-allocates large sliding-window buffers. The materialize output
     is a single parquet that downstream consumers re-sort however they
     like — preserving the read-order from the input file isn't

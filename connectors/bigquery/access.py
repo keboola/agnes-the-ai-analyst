@@ -484,11 +484,24 @@ def _default_duckdb_session_factory(projects: BqProjects):
 def apply_bq_session_settings(conn) -> None:
     """Apply per-session DuckDB BigQuery-extension settings from instance config.
 
-    Currently sets ``bq_query_timeout_ms`` from
-    ``data_source.bigquery.query_timeout_ms``. The extension default is 90 s,
-    which is too tight for analyst-scale queries against view-backed BQ
-    datasets — bumping the default to 600 s here. Sentinel ``0`` (or a
-    non-numeric / unparseable value) leaves the extension default in place.
+    Two unrelated concerns share this function because both must fire on
+    every BQ session — initial creation AND every pool acquire (see the
+    re-apply call from ``_default_duckdb_session_factory``'s acquire path):
+
+    1. **Core DuckDB resource caps (unconditional)** — ``memory_limit=2GB``,
+       ``threads=2``, ``preserve_insertion_order=false``. The default
+       ``memory_limit`` is 80 % of host RAM, which on a 4 GiB cgroup
+       container resolves to ~3.2 GiB of buffer pool — enough to OOM-kill
+       uvicorn during materialize. See ``connectors/keboola/extractor.py``
+       module-level comment for the empirical trace. These run uniformly,
+       regardless of any opt-out below.
+
+    2. **BQ extension setting (conditional on instance config)** —
+       ``bq_query_timeout_ms`` from ``data_source.bigquery.query_timeout_ms``.
+       The extension default is 90 s, which is too tight for analyst-scale
+       queries against view-backed BQ datasets — bumping the default to
+       600 s here. Sentinel ``0`` (or a non-numeric / unparseable value)
+       leaves the extension default in place.
 
     Call AFTER ``LOAD bigquery`` on every DuckDB session that touches BQ:
     BqAccess's session factory, the standalone extractor in
@@ -502,6 +515,26 @@ def apply_bq_session_settings(conn) -> None:
     intended value was higher. The applied value is verified via
     ``current_setting('bq_query_timeout_ms')``; a mismatch is also logged.
     """
+    # Resource caps run UNCONDITIONALLY, before any early-exit on the
+    # extension-setting branch below — if instance_config is unavailable
+    # or the operator opted out of the BQ timeout, we still need the
+    # memory cap on this pool entry. Otherwise an entry that took the
+    # opt-out path stays at DuckDB's 80%-of-host default and re-opens
+    # the OOM window the cap was supposed to close. See #431 follow-up.
+    for stmt in (
+        "SET memory_limit='2GB'",
+        "SET threads=2",
+        "SET preserve_insertion_order=false",
+    ):
+        try:
+            conn.execute(stmt)
+        except Exception as e:
+            logger.warning(
+                "apply_bq_session_settings: %s failed (%s); pool entry will "
+                "run with DuckDB defaults — re-check pool config",
+                stmt, e,
+            )
+
     try:
         from app.instance_config import get_value
     except Exception as e:
