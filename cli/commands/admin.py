@@ -900,7 +900,16 @@ def grant_list(
     if as_json:
         typer.echo(json.dumps(rows, indent=2)); return
     typer.echo(f"Resource grants: {len(rows)}")
+    # Surface a short id so the default tabular output is usable as
+    # input to `agnes admin grant delete <id>` without first re-running
+    # with --json. First 8 chars of the UUID are unambiguous in practice
+    # (grant ids are random UUIDs; collisions on the 8-char prefix
+    # within a single instance's resource_grants table are astronomically
+    # unlikely).
+    for r in rows:
+        r["short_id"] = (r.get("id") or "")[:8]
     _print_rows(rows, [
+        ("short_id", "ID", 9),
         ("group_name", "GROUP", 20),
         ("resource_type", "RESOURCE TYPE", 22),
         ("resource_id", "RESOURCE ID", 40),
@@ -920,6 +929,19 @@ def grant_create(
     ),
 ):
     """Grant a group access to a specific resource.
+
+    Arguments are positional, not flags — adjust shell completions /
+    scripts accordingly:
+
+    \b
+        agnes admin grant create <group> <resource_type> <resource_id>
+
+    Example:
+
+    \b
+        agnes admin grant create analysts table order_economics
+        agnes admin grant create analysts marketplace_plugin foundry-ai/metrics
+        agnes admin grant create critical-ops data_package weekly-revenue --requirement required
 
     v49: the optional ``--requirement`` flag controls whether the grant
     is opt-in (``available``, default) or always-in-stack (``required``).
