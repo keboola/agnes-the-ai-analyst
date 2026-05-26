@@ -9,6 +9,37 @@ shim mapping the table-grain helpers onto the generic resource_grants check.
 
 from typing import Optional
 
+from fastapi import HTTPException
+
+
+def table_not_in_stack_message(table_id: str) -> str:
+    """Standardized 403 detail string for table-access denial.
+
+    All CLI surfaces (``agnes query``, ``agnes snapshot create``,
+    ``agnes data <id>/download``, ``/api/v2/schema``, ``/api/v2/sample``)
+    funnel through ``can_access_table`` and return this same string so
+    the analyst's mental model stays consistent: "the table I asked
+    about isn't in my stack — admin needs to add it to a Data Package".
+    """
+    return (
+        f"Table '{table_id}' is not in your stack. Ask an admin to add it "
+        f"to a Data Package you have access to (Required or in your stack), "
+        f"then run `agnes pull` to refresh."
+    )
+
+
+def require_table_access(user: dict, table_id: str, conn=None) -> None:
+    """``can_access_table`` or raise 403 with the standard message.
+
+    Centralises the deny path so every CLI surface returns the same
+    actionable error.
+    """
+    if not can_access_table(user, table_id, conn):
+        raise HTTPException(
+            status_code=403,
+            detail=table_not_in_stack_message(table_id),
+        )
+
 
 def can_access_table(user: dict, table_id: str, conn=None) -> bool:
     """True iff the user can read ``table_id``.
