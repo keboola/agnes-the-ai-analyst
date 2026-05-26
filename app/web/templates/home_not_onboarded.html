@@ -21,9 +21,15 @@
        variables below. Hero structure lives in _home_hero_intro.html. #}
     {% set display_name = (user.name or (user.email or "").split("@")[0] or "there") %}
     {% set hero_eyebrow = "Welcome, " ~ display_name %}
-    {% set hero_title_html = instance_brand ~ " is your team's <span class=\"accent\">AI workspace.</span>" %}
+    {# `instance_brand` is operator-controlled (AGNES_INSTANCE_BRAND env or
+       `instance.brand` YAML) and gets spliced into HTML strings the partial
+       renders with `| safe`. Jinja's `~` yields a plain str (not Markup),
+       so escape the value explicitly to preserve the autoescape contract
+       the pre-refactor `{{ instance_brand }}` call gave us. #}
+    {% set _brand = instance_brand | e %}
+    {% set hero_title_html = _brand ~ " is your team's <span class=\"accent\">AI workspace.</span>" %}
     {% set hero_lede = [
-        "One place to reach " ~ instance_brand ~ "'s curated data, plugins, skills, and shared memory &mdash; so your AI agent stops guessing and starts answering. Curated, versioned, kept current. The system learns from every session and extends coverage so the next question doesn't trip on the same gap.",
+        "One place to reach " ~ _brand ~ "'s curated data, plugins, skills, and shared memory &mdash; so your AI agent stops guessing and starts answering. Curated, versioned, kept current. The system learns from every session and extends coverage so the next question doesn't trip on the same gap.",
         "Think of it as your <em>AI Chief of Staff</em> &mdash; it lives in a folder on your computer, gives you access to company data and curated skills, and lets you share your own skills and plugins back to the team. You run all your projects inside and it learns from it."
     ] %}
     {% set hero_pillars = [
