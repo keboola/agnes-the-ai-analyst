@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.15] — 2026-05-26
+
 ### Fixed
 - **DuckDB consolidation connections in `materialize_query` now cap
   `memory_limit` + `threads`** (`connectors/keboola/extractor.py`,
