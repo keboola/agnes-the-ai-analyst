@@ -3952,12 +3952,24 @@ a.news-cta:hover { background: #0056A3; }
     color: #fff;
 }
 
-.btn-warning {
-    background: #f59e0b;
-    color: #fff;
-    border: 1px solid #d97706;
+/* `.btn-warning` removed — the single use in admin_marketplaces.html
+   (system-confirm modal Confirm button) was destructive in spirit (fans
+   out a forced grant to every principal) and now renders via .btn-danger.
+   The 4 canonical variants (primary / secondary / ghost / danger) cover
+   every honest CTA without inventing a 5th amber-fill axis. */
+
+/* `.btn-required` — amber-disabled affordance for the "already in stack,
+   mandated by your org" state on catalog_package_detail + memory_domain_detail.
+   Always paired with the `disabled` attribute, so the base `.btn:disabled`
+   rule below applies its opacity wash on top of the amber accent. Uses the
+   canonical --ds-accent-warn-* vocabulary so a future warn-palette tweak
+   propagates here. */
+.btn-required {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border: 1px solid var(--ds-accent-warn-line);
+    cursor: not-allowed;
 }
-.btn-warning:hover { filter: brightness(1.06); }
 
 .btn-lg { padding: 12px 20px; font-size: var(--text-md); }
 

@@ -94,7 +94,7 @@ def test_canonical_primitives_defined() -> None:
         ".btn-secondary",
         ".btn-ghost",
         ".btn-danger",
-        ".btn-warning",
+        ".btn-required",
         # form controls
         ".search-input",
         ".filter-bar",

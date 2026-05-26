@@ -393,9 +393,10 @@
     <div class="modal-actions">
       {{ ds.button('Cancel', variant='secondary',
                    attrs='data-close-modal="system-confirm-modal"') }}
-      {# `.btn-warning` stays page-local — amber-fill variant outside the
-         canonical 4 (primary/secondary/danger/ghost). #}
-      <button class="btn btn-warning" id="system-confirm-ok-btn">Confirm</button>
+      {# Confirm starts as `.btn-danger` (Mark-as-system is destructive — fans
+         out a forced grant to every principal). JS below toggles between
+         `.btn-danger` (mark) and `.btn-primary` (unmark) on open. #}
+      {{ ds.button('Confirm', variant='danger', id='system-confirm-ok-btn') }}
     </div>
   </div>
 </div>
@@ -653,7 +654,7 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
         <li>Operators can revoke either via <a href="/admin/access" style="color: var(--primary, #6366f1);">/admin/access</a> or by uninstalling on each user's stack.</li>
       </ul>`;
     okBtn.textContent = "Unmark system";
-    okBtn.classList.remove("btn-warning");
+    okBtn.classList.remove("btn-danger");
     okBtn.classList.add("btn-primary");
   } else {
     titleEl.textContent = "Mark as system plugin?";
@@ -673,7 +674,7 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
       </p>`;
     okBtn.textContent = "Mark as system";
     okBtn.classList.remove("btn-primary");
-    okBtn.classList.add("btn-warning");
+    okBtn.classList.add("btn-danger");
   }
 
   // Single-shot handler — re-bind on every open so we don't leak across
