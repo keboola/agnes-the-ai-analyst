@@ -371,3 +371,33 @@ def test_recovery_refuses_when_snapshot_is_stale(tmp_path, make_wal_error):
 
     # Main DB path no longer exists — moved aside, NOT overwritten.
     assert not db_path.exists()
+
+
+def test_recovery_refuses_when_snapshot_has_no_schema_version_table(
+    tmp_path, make_wal_error
+):
+    """If the snapshot is a DuckDB file with no `schema_version` table
+    at all (pre-v1 / unrelated DB), _peek_schema_version returns 0;
+    recovery refuses via the same code path as test_..._is_stale."""
+    from src import db as db_module
+
+    db_path = tmp_path / "system.duckdb"
+    snapshot_path = tmp_path / "system.duckdb.pre-migrate"
+
+    _make_db_with_schema_version(db_path, db_module.SCHEMA_VERSION)
+    _make_db_no_schema_version_table(snapshot_path)
+    _corrupt_wal_so_replay_fails(db_path)
+
+    with make_wal_error(db_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            db_module._try_open_system_db(str(db_path))
+
+    # v0 surfaces in the message (the conservative fallback value).
+    msg = str(excinfo.value)
+    assert "v0 <" in msg
+    assert str(db_module.SCHEMA_VERSION) in msg
+
+    # Same preservation contract as the stale case.
+    assert not db_path.exists()
+    assert snapshot_path.exists()
+    assert any(tmp_path.glob("system.duckdb.broken.*"))
