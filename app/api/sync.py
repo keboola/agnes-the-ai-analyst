@@ -20,13 +20,17 @@ from app.auth.dependencies import get_current_user, _get_db
 from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
-from src.repositories.audit import AuditRepository
-from src.repositories.sync_state import SyncStateRepository
-from src.repositories.sync_settings import SyncSettingsRepository
-from src.repositories.table_registry import TableRegistryRepository
 from src.rbac import can_access_table
 from src.scheduler import filter_due_tables, is_table_due
 
+from src.repositories import (
+    audit_repo,
+    profile_repo,
+    sync_settings_repo,
+    sync_state_repo,
+    table_registry_repo,
+    users_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -91,7 +95,6 @@ def _materialize_table(
 
 
 def _run_materialized_pass(
-    conn: duckdb.DuckDBPyConnection,
     bq,
     tables: Optional[List[str]] = None,
 ) -> dict:
@@ -147,8 +150,8 @@ def _run_materialized_pass(
         n = 0
     bq_max_bytes = n if n > 0 else None
 
-    registry = TableRegistryRepository(conn)
-    state = SyncStateRepository(conn)
+    registry = table_registry_repo()
+    state = sync_state_repo()
 
     summary = {"materialized": [], "skipped": [], "errors": []}
     keboola_access = None  # lazy-init on first Keboola row
@@ -370,48 +373,42 @@ def _run_sync(tables: Optional[List[str]] = None):
 
     try:
         from app.instance_config import get_data_source_type, get_value
-        from src.db import get_system_db
 
         source_type = get_data_source_type()
         data_dir = _get_data_dir()
 
-        # Read table configs in main process (has shared DuckDB connection)
-        sys_conn = get_system_db()
         # Track whether the REGISTRY (not the post-filter list) was empty.
         # Auto-discovery must only fire on a truly empty registry; if the
         # filter returned [] because nothing was due, re-discovering would
         # bypass the schedule entirely on Keboola instances. (Devin BUG_0001
         # on ebb8cc9.)
         registry_has_tables = False
-        try:
-            repo = TableRegistryRepository(sys_conn)
-            if tables:
-                # Manual operator override — bypass schedule filter entirely
-                # so an admin saying "sync these specific tables now" wins.
-                all_configs = [repo.get(t) for t in tables]
-                table_configs = [c for c in all_configs if c is not None]
-                registry_has_tables = bool(table_configs)
-            else:
-                table_configs = repo.list_local(source_type) if source_type else repo.list_local()
-                # Auto-discover gate must consider the WHOLE registry, not
-                # just `local` rows. After the Keboola migration to
-                # materialized (v25→v26), an instance can have 30
-                # materialized Keboola rows and zero local rows — but
-                # `bool(table_configs)` here would be False, and
-                # `not registry_has_tables` would re-trigger
-                # `_discover_and_register_tables` on every scheduler tick,
-                # creating duplicate "auto-discovered" rows with the wrong
-                # bucket prefix every time.
-                # Use list_all (any source, any mode) for the gate.
-                registry_has_tables = bool(repo.list_all())
-                # Without this filter, every scheduler tick would re-sync
-                # every table regardless of its sync_schedule cadence,
-                # making the field a no-op at trigger time. Tables with
-                # no schedule pass through unchanged (opt-in feature).
-                state_repo = SyncStateRepository(sys_conn)
-                table_configs = filter_due_tables(table_configs, state_repo)
-        finally:
-            sys_conn.close()
+        repo = table_registry_repo()
+        if tables:
+            # Manual operator override — bypass schedule filter entirely
+            # so an admin saying "sync these specific tables now" wins.
+            all_configs = [repo.get(t) for t in tables]
+            table_configs = [c for c in all_configs if c is not None]
+            registry_has_tables = bool(table_configs)
+        else:
+            table_configs = repo.list_local(source_type) if source_type else repo.list_local()
+            # Auto-discover gate must consider the WHOLE registry, not
+            # just `local` rows. After the Keboola migration to
+            # materialized (v25→v26), an instance can have 30
+            # materialized Keboola rows and zero local rows — but
+            # `bool(table_configs)` here would be False, and
+            # `not registry_has_tables` would re-trigger
+            # `_discover_and_register_tables` on every scheduler tick,
+            # creating duplicate "auto-discovered" rows with the wrong
+            # bucket prefix every time.
+            # Use list_all (any source, any mode) for the gate.
+            registry_has_tables = bool(repo.list_all())
+            # Without this filter, every scheduler tick would re-sync
+            # every table regardless of its sync_schedule cadence,
+            # making the field a no-op at trigger time. Tables with
+            # no schedule pass through unchanged (opt-in feature).
+            state_repo = sync_state_repo()
+            table_configs = filter_due_tables(table_configs, state_repo)
 
         if not table_configs:
             # Auto-discover tables on first sync when registry is empty.
@@ -423,18 +420,10 @@ def _run_sync(tables: Optional[List[str]] = None):
                 logger.info("No tables registered — running auto-discovery from Keboola")
                 try:
                     from app.api.admin import _discover_and_register_tables
-                    auto_conn = get_system_db()
-                    try:
-                        result = _discover_and_register_tables(auto_conn, "auto-discovery")
-                        logger.info("Auto-discovered %d tables, skipped %d", result["registered"], result["skipped"])
-                    finally:
-                        auto_conn.close()
+                    result = _discover_and_register_tables(None, "auto-discovery")
+                    logger.info("Auto-discovered %d tables, skipped %d", result["registered"], result["skipped"])
                     # Re-read table configs after auto-registration
-                    sys_conn2 = get_system_db()
-                    try:
-                        table_configs = TableRegistryRepository(sys_conn2).list_local(source_type)
-                    finally:
-                        sys_conn2.close()
+                    table_configs = table_registry_repo().list_local(source_type)
                 except Exception as e:
                     logger.warning("Auto-discovery failed: %s", e)
 
@@ -467,18 +456,14 @@ def _run_sync(tables: Optional[List[str]] = None):
             # here and injects them into each table_config under the key
             # `__last_sync__`. extractor.run() picks them up via
             # _read_last_sync's first-check-config-then-fall-back pattern.
-            ws_conn = get_system_db()
-            try:
-                ws_repo = SyncStateRepository(ws_conn)
-                for tc in table_configs:
-                    if tc.get("sync_strategy") in ("incremental", "partitioned"):
-                        state = ws_repo.get_table_state(tc.get("id") or tc.get("name"))
-                        if state and state.get("status") != "error":
-                            ls = state.get("last_sync")
-                            if ls is not None:
-                                tc["__last_sync__"] = ls
-            finally:
-                ws_conn.close()
+            ws_repo = sync_state_repo()
+            for tc in table_configs:
+                if tc.get("sync_strategy") in ("incremental", "partitioned"):
+                    state = ws_repo.get_table_state(tc.get("id") or tc.get("name"))
+                    if state and state.get("status") != "error":
+                        ls = state.get("last_sync")
+                        if ls is not None:
+                            tc["__last_sync__"] = ls
 
             # Serialize configs — strip non-serializable fields
             serializable = []
@@ -642,15 +627,8 @@ sys.exit(compute_exit_code(result, len(configs)))
         # gets recorded against that row only — no cascade.
         try:
             from connectors.bigquery.access import get_bq_access
-            from src.db import get_system_db as _get_system_db
             bq_access = get_bq_access()  # sentinel if no BQ project; OK
-            mat_conn = _get_system_db()
-            try:
-                mat_summary = _run_materialized_pass(
-                    mat_conn, bq_access, tables=tables,
-                )
-            finally:
-                mat_conn.close()
+            mat_summary = _run_materialized_pass(bq_access, tables=tables)
             skipped_count = len(mat_summary["skipped"])
             in_flight_count = sum(
                 1 for s in mat_summary["skipped"] if s.get("reason") == "in_flight"
@@ -682,30 +660,25 @@ sys.exit(compute_exit_code(result, len(configs)))
         # Auto-profile synced tables (best-effort, don't fail sync on profile error)
         try:
             from src.profiler import profile_table, TableInfo
-            from src.repositories.profiles import ProfileRepository
 
             data_dir = Path(os.environ.get("DATA_DIR", "./data"))
             extracts_dir = data_dir / "extracts"
 
-            sys_conn = get_system_db()
-            try:
-                profile_repo = ProfileRepository(sys_conn)
-                profiled = 0
-                for source_name, table_names in views.items():
-                    for table_name in table_names[:10]:  # Limit per sync
-                        pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
-                        if not pq_path.exists():
-                            continue
-                        try:
-                            table_info = TableInfo(name=table_name, table_id=table_name)
-                            profile = profile_table(table_info, pq_path, [], {}, {})
-                            profile_repo.save(table_name, profile)
-                            profiled += 1
-                        except Exception as pe:
-                            print(f"[SYNC] Profile {table_name}: {pe}", file=_sys.stderr, flush=True)
-                print(f"[SYNC] Profiled {profiled} tables", file=_sys.stderr, flush=True)
-            finally:
-                sys_conn.close()
+            profiles = profile_repo()
+            profiled = 0
+            for source_name, table_names in views.items():
+                for table_name in table_names[:10]:  # Limit per sync
+                    pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
+                    if not pq_path.exists():
+                        continue
+                    try:
+                        table_info = TableInfo(name=table_name, table_id=table_name)
+                        profile = profile_table(table_info, pq_path, [], {}, {})
+                        profiles.save(table_name, profile)
+                        profiled += 1
+                    except Exception as pe:
+                        print(f"[SYNC] Profile {table_name}: {pe}", file=_sys.stderr, flush=True)
+            print(f"[SYNC] Profiled {profiled} tables", file=_sys.stderr, flush=True)
         except Exception as e:
             print(f"[SYNC] Profiler skipped: {e}", file=_sys.stderr, flush=True)
 
@@ -724,184 +697,7 @@ sys.exit(compute_exit_code(result, len(configs)))
 
 # ---- Manifest ----
 
-def _table_manifest_entry(state: dict, reg: dict) -> dict:
-    """Shape one ``sync_state`` row + registry metadata into the per-table
-    manifest object used in ``data_packages[].tables`` and ``direct_tables``.
-
-    Tolerant to empty ``state`` (table is registered but never synced) and
-    empty ``reg`` (sync_state row outlives the registry — race on unregister).
-    Both happen in real installs; the manifest is the read path so we must
-    not blow up on a partially-consistent snapshot.
-    """
-    name = state.get("table_id") or reg.get("name") or reg.get("id") or ""
-    return {
-        "id": reg.get("id") or name,
-        "name": name,
-        "hash": state.get("hash", ""),
-        "md5": state.get("hash", ""),
-        "size_bytes": state.get("file_size_bytes", 0),
-        "rows": state.get("rows", 0),
-        "query_mode": reg.get("query_mode") or "local",
-        "source_type": reg.get("source_type") or "",
-        "updated": (
-            state.get("last_sync").isoformat() if state.get("last_sync") else None
-        ),
-    }
-
-
-def _build_data_packages_section(
-    conn, user: dict, registry_by_name: dict, states_by_table_id: dict
-) -> tuple[list, set]:
-    """Build the ``data_packages`` array per Section 5.1 of the design.
-
-    Returns the list plus a set of ``table_registry.id`` values that were
-    surfaced via at least one package — used to subtract from
-    ``direct_tables`` so a table belonging to a package doesn't double-render.
-    """
-    from app.resource_types import ResourceType
-    from app.services.stack_resolver import StackResolver
-    from src.repositories.data_packages import DataPackagesRepository
-
-    resolver = StackResolver(conn)
-    pkg_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
-    if not pkg_entries:
-        return [], set()
-    repo = DataPackagesRepository(conn)
-    packaged_table_ids: set = set()
-    out: list = []
-    for entry in pkg_entries:
-        pkg = repo.get(entry.id)
-        if not pkg:
-            continue
-        table_rows = repo.list_tables(entry.id)
-        tables_payload: list = []
-        total_size_bytes = 0
-        for t in table_rows:
-            packaged_table_ids.add(t["id"])
-            # registry_by_name keys on name; sync_state.table_id mirrors
-            # registry.name today. Cover the id↔name asymmetry.
-            reg = registry_by_name.get(t["name"]) or {}
-            state = (
-                states_by_table_id.get(t["name"])
-                or states_by_table_id.get(t["id"])
-                or {}
-            )
-            entry_obj = _table_manifest_entry(state, reg or {"id": t["id"]})
-            tables_payload.append(entry_obj)
-            total_size_bytes += int(entry_obj.get("size_bytes") or 0)
-        out.append({
-            "id": pkg["id"],
-            "slug": pkg["slug"],
-            "name": pkg["name"],
-            "icon": pkg.get("icon"),
-            "color": pkg.get("color"),
-            "description": pkg.get("description"),
-            "requirement": entry.requirement,
-            "tables": tables_payload,
-            "total_size_bytes": total_size_bytes,
-        })
-    return out, packaged_table_ids
-
-
-def _build_memory_domains_section(conn, user: dict) -> list:
-    """Build the ``memory_domains`` array per Section 5.1.
-
-    Each entry carries a per-domain ``md5`` derived from the concatenated
-    item content/titles inside the domain — when the bundle changes the
-    md5 flips so the CLI knows to re-fetch.
-
-    TODO(phase-7): ``bundle_url`` points at a yet-to-implement per-domain
-    bundle endpoint (``/api/memory/bundle?domain=<slug>``). The CLI in
-    Phase 7 will need it; for now we emit the URL the future endpoint
-    will live at so older clients keep parsing the manifest cleanly.
-    """
-    from app.resource_types import ResourceType
-    from app.services.stack_resolver import StackResolver
-    from src.repositories.memory_domains import MemoryDomainsRepository
-
-    resolver = StackResolver(conn)
-    dom_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
-    if not dom_entries:
-        return []
-    repo = MemoryDomainsRepository(conn)
-    out: list = []
-    for entry in dom_entries:
-        dom = repo.get(entry.id)
-        if not dom:
-            continue
-        items = repo.list_items_of_domain(entry.id, limit=10000)
-        # Per-domain md5 — concatenate sorted item tuples so the hash
-        # is stable under list ordering and flips on any content
-        # mutation. MUST include ``is_required`` and ``content``
-        # because the bundle rendered by ``_build_per_domain_markdown``
-        # routes items between "## Required" and "## Approved" by
-        # ``is_required`` and embeds the full ``content`` body; without
-        # these in the hash, an admin edit of either dimension leaves
-        # the manifest md5 unchanged → ``agnes pull`` skips the
-        # re-fetch → analyst keeps a stale bundle.md.
-        #
-        # Filter to the SAME predicate the renderer uses (any
-        # ``is_required`` item OR ``status='approved' AND not is_required``)
-        # so edits to pending/rejected non-required items don't flip the
-        # md5 against an identical-bytes bundle — the original Devin
-        # review flagged this asymmetry (BUG-0001 fixed the hash inputs;
-        # this commit closes the matching 🚩 ANALYSIS that the SET of
-        # items hashed must also match what the renderer emits).
-        h = hashlib.md5()
-        renderable = [
-            it for it in items
-            if it.get("is_required") or it.get("status") == "approved"
-        ]
-        for it in sorted(renderable, key=lambda r: r["id"]):
-            h.update(
-                f"{it['id']}|{it.get('title','')}|{it.get('status','')}|"
-                f"{it.get('is_required', False)}|{it.get('content','')}|".encode()
-            )
-        required_count = sum(
-            1 for it in items
-            if (it.get("status") == "approved" and it.get("is_required"))
-        )
-        out.append({
-            "id": dom["id"],
-            "slug": dom["slug"],
-            "name": dom["name"],
-            "icon": dom.get("icon"),
-            "color": dom.get("color"),
-            "description": dom.get("description"),
-            "requirement": entry.requirement,
-            "bundle_url": f"/api/memory/bundle?domain={dom['slug']}",
-            "md5": h.hexdigest(),
-            "items_count": len(items),
-            "required_count": required_count,
-        })
-    return out
-
-
-def _build_direct_tables_section(
-    conn, user: dict, registry_by_name: dict, states_by_table_id: dict,
-    packaged_table_ids: set,
-) -> list:
-    """Always returns ``[]`` — per-table grants no longer manifest for
-    analysts.
-
-    The unified-stack design routes all analyst access through data
-    packages: admins manage RBAC by adding tables to a package and
-    granting the package. Ad-hoc ``resource_grants(group, 'table', …)``
-    rows that aren't wrapped in a package used to ship as
-    ``direct_tables[]`` here (for backwards-compat with pre-unified
-    CLIs); that BC is now dropped because it silently leaked
-    individually-granted tables into ``agnes catalog`` and the
-    user-facing manifest, contradicting the "stack is the unit of
-    access" promise of the new design.
-
-    The empty array is kept in the manifest payload (instead of
-    omitting the key) so older CLIs that destructure
-    ``manifest["direct_tables"]`` don't KeyError.
-    """
-    return []
-
-
-def _build_manifest_for_user(conn, user: dict) -> dict:
+def _build_manifest_for_user(user: dict) -> dict:
     """Build manifest dict filtered by user's accessible tables.
 
     Joins ``sync_state`` with ``table_registry`` so each table entry exposes
@@ -911,14 +707,9 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     Defensive defaults: if a sync_state row has no matching registry entry
     (race / manual deletion), fall back to ``query_mode='local'`` and
     ``source_type=''`` so the manifest still serializes cleanly.
-
-    v49: extended with ``data_packages`` / ``memory_domains`` /
-    ``direct_tables`` arrays per Section 5.1 of the unified-stack design.
-    Legacy ``tables`` dict stays in parallel for one release — older CLIs
-    still parse it; newer clients prefer the typed sections.
     """
-    sync_repo = SyncStateRepository(conn)
-    table_repo = TableRegistryRepository(conn)
+    sync_repo = sync_state_repo()
+    table_repo = table_registry_repo()
     all_states = sync_repo.get_all_states()
     # `sync_state.table_id` is sourced from `_meta.table_name` which equals
     # `table_registry.name`, NOT `table_registry.id`. Auto-discovered Keboola
@@ -935,7 +726,7 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     def _id_for(state):
         reg = registry_by_name.get(state["table_id"])
         return reg["id"] if reg else state["table_id"]
-    all_states = [s for s in all_states if can_access_table(user, _id_for(s), conn)]
+    all_states = [s for s in all_states if can_access_table(user, _id_for(s))]
 
     data_dir = _get_data_dir()
     tables = {}
@@ -968,38 +759,10 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
                 )
                 assets[asset_name] = {"hash": str(int(newest))}
 
-    # v49 unified-stack manifest extensions (Section 5.1).
-    # DEPRECATED v49: ``tables`` dict above is kept paralel for one release —
-    # older CLIs depend on it; new clients prefer ``direct_tables`` +
-    # ``data_packages[].tables``.
-    states_by_table_id = {s["table_id"]: s for s in all_states}
-    try:
-        data_packages, packaged_ids = _build_data_packages_section(
-            conn, user, registry_by_name, states_by_table_id,
-        )
-    except Exception:
-        logger.exception("manifest data_packages section build failed")
-        data_packages, packaged_ids = [], set()
-    try:
-        memory_domains = _build_memory_domains_section(conn, user)
-    except Exception:
-        logger.exception("manifest memory_domains section build failed")
-        memory_domains = []
-    try:
-        direct_tables = _build_direct_tables_section(
-            conn, user, registry_by_name, states_by_table_id, packaged_ids,
-        )
-    except Exception:
-        logger.exception("manifest direct_tables section build failed")
-        direct_tables = []
-
     return {
         "tables": tables,
         "assets": assets,
         "server_time": datetime.now(timezone.utc).isoformat(),
-        "data_packages": data_packages,
-        "memory_domains": memory_domains,
-        "direct_tables": direct_tables,
     }
 
 
@@ -1018,16 +781,16 @@ async def sync_manifest(
     homepage card.
     """
     try:
-        conn.execute(
-            "UPDATE users SET last_pull_at = current_timestamp WHERE id = ?",
-            [user["id"]],
+        users_repo().update(
+            id=user["id"],
+            last_pull_at=datetime.now(timezone.utc),
         )
         # Also emit an audit_log row so /me/stats Sync activity has a
         # timeline of pulls (the column UPDATE only retains the most
         # recent one). Action `manifest.fetch` covers both `agnes pull`
         # via PAT and browser-driven manifest peeks; clients can
         # disambiguate via client_kind.
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user["id"],
             action="manifest.fetch",
             resource="manifest",
@@ -1039,82 +802,7 @@ async def sync_manifest(
         # transient issue (locked WAL, partial migration window). The
         # manifest itself is the load-bearing payload.
         pass
-    # v49 Section 9.2 — emit a server-side ``sync.pull_started`` event so
-    # /admin/telemetry can count distinct pulls per user per day. Best-effort.
-    try:
-        from src.repositories.usage import UsageRepository
-        UsageRepository(conn).emit_server_event(
-            event_type="sync.pull_started",
-            user_id=user["id"],
-            username=user.get("email") or user["id"],
-            props={"client_kind": client_kind_from_user(user)},
-        )
-    except Exception:
-        pass
-    return _build_manifest_for_user(conn, user)
-
-
-# ---- Pull confirm (Phase 7, Task 7.6) ----
-
-
-class PullConfirmTypeReport(BaseModel):
-    added: int = 0
-    updated: int = 0
-    removed: int = 0
-
-
-class PullConfirmRequest(BaseModel):
-    """Per-type aggregate the CLI submits after every pull finishes.
-
-    Pairs with the ``sync.pull_started`` event emitted by GET /manifest
-    so admin telemetry can compute pull-success rates + duration
-    distributions. Optional fields fall back to zero counts — older CLI
-    versions that don't track a section emit nothing for it.
-    """
-
-    duration_ms: Optional[int] = None
-    direct_tables: Optional[PullConfirmTypeReport] = None
-    data_packages: Optional[PullConfirmTypeReport] = None
-    memory_domains: Optional[PullConfirmTypeReport] = None
-    errors: int = 0
-
-
-@router.post("/pull-confirm")
-async def pull_confirm(
-    payload: PullConfirmRequest,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Telemetry hook the CLI fires at the end of every ``agnes pull``.
-
-    Best-effort: a telemetry insert failure must NOT bubble up to the
-    CLI (the user already has their parquets, the pull succeeded). The
-    response is a fixed shape ``{"recorded": True}`` so older clients
-    that ignore the body keep working when the field set evolves.
-    """
-    props: dict = {
-        "duration_ms": payload.duration_ms,
-        "errors": payload.errors,
-        "client_kind": client_kind_from_user(user),
-    }
-    for section in ("direct_tables", "data_packages", "memory_domains"):
-        section_payload = getattr(payload, section)
-        if section_payload is not None:
-            props[f"{section}_added"] = section_payload.added
-            props[f"{section}_updated"] = section_payload.updated
-            props[f"{section}_removed"] = section_payload.removed
-
-    try:
-        from src.repositories.usage import UsageRepository
-        UsageRepository(conn).emit_server_event(
-            event_type="sync.pull_completed",
-            user_id=user["id"],
-            username=user.get("email") or user["id"],
-            props=props,
-        )
-    except Exception:
-        logger.warning("usage_events emit failed for sync.pull_completed")
-    return {"recorded": True}
+    return _build_manifest_for_user(user)
 
 
 # ---- Status ----
@@ -1203,9 +891,7 @@ async def trigger_sync(
 
     if _sync_lock.locked():
         try:
-            from src.db import get_system_db
-            _audit_conn = get_system_db()
-            AuditRepository(_audit_conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="sync.trigger",
                 resource=(
@@ -1216,7 +902,6 @@ async def trigger_sync(
                 result="error.in_progress",
                 client_kind=client_kind_from_user(user),
             )
-            _audit_conn.close()
         except Exception:
             logger.exception("audit_log write failed for sync.trigger (in_progress); continuing")
         raise HTTPException(
@@ -1232,9 +917,7 @@ async def trigger_sync(
     _recent_trigger_at = _t0
     background_tasks.add_task(_run_sync, tables)
     try:
-        from src.db import get_system_db
-        _audit_conn = get_system_db()
-        AuditRepository(_audit_conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="sync.trigger",
             resource=(
@@ -1246,7 +929,6 @@ async def trigger_sync(
             duration_ms=int((time.monotonic() - _t0) * 1000),
             client_kind=client_kind_from_user(user),
         )
-        _audit_conn.close()
     except Exception:
         logger.exception("audit_log write failed for sync.trigger; continuing")
     return {
@@ -1268,7 +950,7 @@ async def get_sync_settings(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get user's dataset sync settings."""
-    repo = SyncSettingsRepository(conn)
+    repo = sync_settings_repo()
     settings = repo.get_user_settings(user["id"])
     enabled = repo.get_enabled_datasets(user["id"])
     return {
@@ -1294,7 +976,7 @@ async def update_sync_settings(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
 
-    settings_repo = SyncSettingsRepository(conn)
+    settings_repo = sync_settings_repo()
     results = {}
     for dataset, enabled in request.datasets.items():
         if not can_access(user["id"], ResourceType.TABLE.value, dataset, conn):
@@ -1319,7 +1001,7 @@ async def get_table_subscriptions(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get user's per-table subscription settings."""
-    repo = SyncSettingsRepository(conn)
+    repo = sync_settings_repo()
     settings = repo.get_user_settings(user["id"])
     return {"user_id": user["id"], "subscriptions": settings}
 
@@ -1339,7 +1021,7 @@ async def update_table_subscriptions(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
 
-    repo = SyncSettingsRepository(conn)
+    repo = sync_settings_repo()
     results = {}
     for table_name, enabled in request.tables.items():
         if not can_access(user["id"], ResourceType.TABLE.value, table_name, conn):

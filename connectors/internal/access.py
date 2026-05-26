@@ -200,23 +200,28 @@ def _strip_sql_noise(sql: str) -> str:
 _INTERNAL_ALIAS_NAMES: frozenset[str] = frozenset(t.registry_id.lower() for t in INTERNAL_TABLES)
 
 
-def _sensitive_table_reference(stripped_sql: str, conn) -> str | None:
-    """Return the first non-allowlisted system.duckdb table name that
+def _sensitive_table_reference(stripped_sql: str, conn=None) -> str | None:
+    """Return the first non-allowlisted system-schema table name that
     appears in ``stripped_sql``, or None if clean.
 
     Allowlist = the registered ``agnes_*`` internal-table IDs. The
-    denylist is derived dynamically from ``information_schema.tables``
-    in the system.duckdb main schema, so adding a new sensitive table
-    in a future migration is automatically covered without re-editing
-    this module.
+    denylist is derived dynamically from the Postgres
+    ``information_schema.tables`` in the public schema, so adding a
+    new sensitive table in a future migration is automatically
+    covered without re-editing this module.
 
-    ``stripped_sql`` MUST already have string literals and comments
-    stripped (see ``_strip_sql_noise``). Identifier scan is
-    case-insensitive word-boundary; schema-prefixed (`main.users`) and
-    double-quoted (`"users"`) forms both match because the bare name
-    still sits between word boundaries.
+    ``conn`` is accepted for back-compat and ignored — the engine
+    singleton is the canonical source.
     """
-    rows = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        rows = eng_conn.execute(
+            sa.text(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
+            )
+        ).fetchall()
     for (name,) in rows:
         if name is None:
             continue
@@ -280,26 +285,21 @@ def execute_internal_query(
     if not refs:
         raise InternalAccessError("no internal-table references in SQL")
 
-    # Lazy import to avoid a hard cycle (src.db imports go via repositories
-    # which then end up importing access in some test paths).
-    from src.db import get_system_db
-
-    # Non-admins are NOT allowed to reference any system.duckdb table
+    # Non-admins are NOT allowed to reference any business table
     # outside the registered agnes_* aliases. The CTE wrapper only
     # scopes those aliases; a direct FROM on the base table
-    # (`usage_session_summary`, `audit_log`, `users`,
-    # `personal_access_tokens`, etc.) would bypass row-level RBAC and
+    # (``usage_session_summary``, ``audit_log``, ``users``,
+    # ``personal_access_tokens``, etc.) would bypass row-level RBAC and
     # leak other users' data. Denylist is derived dynamically from
-    # `information_schema.tables` — every table in system.duckdb that
-    # is NOT one of the agnes_* aliases is sensitive. This is
-    # future-proof: new tables added by later migrations are
-    # automatically covered without re-editing this module.
+    # ``information_schema.tables`` — every PG public-schema table
+    # that isn't one of the agnes_* aliases is sensitive. Future
+    # migrations are covered without re-editing this module.
     #
     # Admin path is unaffected — admins have legitimate need to read
     # raw rows, and the filter clause is empty for them anyway.
     if not is_admin:
         stripped = _strip_sql_noise(sql)
-        sensitive = _sensitive_table_reference(stripped, get_system_db())
+        sensitive = _sensitive_table_reference(stripped)
         if sensitive is not None:
             raise InternalAccessError(
                 f"non-admin SQL cannot reference table {sensitive!r}; query one of the agnes_* aliases instead"
@@ -312,18 +312,15 @@ def execute_internal_query(
     cte_prefix = "WITH " + ", ".join(cte_parts)
     wrapped = f"{cte_prefix} SELECT * FROM ({sql}) AS _agnes_user_query"
 
-    conn = get_system_db()
-    cursor = conn.cursor()
-    try:
-        rows = cursor.execute(wrapped).fetchmany(limit + 1)
-        cols = [d[0] for d in cursor.description] if cursor.description else []
-        truncated = len(rows) > limit
-        return cols, rows[:limit], truncated
-    finally:
-        try:
-            cursor.close()
-        except Exception:
-            logger.exception("close() failed on internal-query cursor")
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        result = eng_conn.execute(sa.text(wrapped))
+        cols = list(result.keys())
+        fetched = result.fetchmany(limit + 1)
+    truncated = len(fetched) > limit
+    rows = [tuple(r) for r in fetched[:limit]]
+    return cols, rows, truncated
 
 
 # ---------------------------------------------------------------------------
@@ -335,31 +332,28 @@ def get_schema(system_db_path: str, table_id: str) -> list[dict]:
     """Return the underlying physical schema for an internal table.
 
     Used by ``/api/v2/schema/<id>`` so ``agnes schema <table>`` works
-    against internal sources. Reuses the shared ``system.duckdb``
-    connection — same rationale as ``execute_internal_query``: opening
-    a parallel handle to the same file is process-wide blocked. The
-    information_schema query is read-only and small.
+    against internal sources. Queries ``information_schema.columns``
+    against Postgres — the internal data sources moved with the rest of
+    app state at the v2/PG cutover.
 
-    ``system_db_path`` is kept in the signature for API symmetry with the
-    earlier draft, but is unused — the singleton handle already knows the
-    path.
+    ``system_db_path`` is kept for back-compat signature stability and
+    ignored; the PG engine is the single source of truth.
     """
     if table_id not in INTERNAL_TABLES_BY_ID:
         return []
     table = INTERNAL_TABLES_BY_ID[table_id]
-    from src.db import get_system_db
 
-    cursor = get_system_db().cursor()
-    try:
-        rows = cursor.execute(
-            "SELECT column_name, data_type, is_nullable "
-            "FROM information_schema.columns "
-            "WHERE table_name = ? ORDER BY ordinal_position",
-            [table.source_table],
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            sa.text(
+                "SELECT column_name, data_type, is_nullable "
+                "FROM information_schema.columns "
+                "WHERE table_name = :t "
+                "ORDER BY ordinal_position"
+            ),
+            {"t": table.source_table},
         ).fetchall()
-        return [{"name": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in rows]
-    finally:
-        try:
-            cursor.close()
-        except Exception:
-            pass
+    return [{"name": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in rows]

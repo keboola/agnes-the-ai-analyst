@@ -11,11 +11,19 @@ from cli.commands.admin_data_package import admin_data_package_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.admin_news import admin_news_app
+from cli.commands.admin_registry import registry_app as admin_registry_app
+from cli.commands.admin_seed import seed_app as admin_seed_app
 from cli.commands.admin_sessions import sessions_app as admin_sessions_app
 from cli.commands.admin_store import admin_store_app
 from cli.commands.admin_usage import app as admin_usage_app
 from cli.commands.memory_admin import memory_admin_app
 
+from src.repositories import (
+    column_metadata_repo,
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+)
 admin_app = typer.Typer(help="Admin operations (requires admin role)")
 admin_app.add_typer(activity_app, name="activity", help="Activity Center — audit_log timeline, health pulse, sync history")
 admin_app.add_typer(admin_ask_app, name="ask", help="Ask a natural-language question about telemetry")
@@ -24,6 +32,20 @@ admin_app.add_typer(admin_sessions_app, name="sessions", help="Browse Claude Cod
 admin_app.add_typer(admin_store_app, name="store")
 admin_app.add_typer(admin_news_app, name="news")
 admin_app.add_typer(memory_admin_app, name="memory")
+admin_app.add_typer(
+    admin_registry_app,
+    name="registry",
+    help="Export / import / seed the table_registry (cross-instance mirror).",
+)
+admin_app.add_typer(
+    admin_seed_app,
+    name="seed",
+    help=(
+        "Export / import operator state across data tables, curated "
+        "marketplace, and flea market. Bundled JSON; superset of "
+        "`admin registry` which stays as a focused single-table cmd."
+    ),
+)
 # Telemetry subcommand: primary name is "telemetry", "usage" kept as an
 # alias so existing operator scripts that call `agnes admin usage export …`
 # keep working through this release. Drop the alias in a future cleanup
@@ -637,16 +659,8 @@ def metadata_apply(
                 )
         return
 
-    from src.repositories.column_metadata import ColumnMetadataRepository
-    from src.db import get_system_db
-
-    conn = get_system_db()
-    try:
-        repo = ColumnMetadataRepository(conn)
-        count = repo.import_proposal(proposal_path)
-        typer.echo(f"Imported {count} column(s) from proposal.")
-    finally:
-        conn.close()
+    count = column_metadata_repo().import_proposal(proposal_path)
+    typer.echo(f"Imported {count} column(s) from proposal.")
 
     if push_to_source:
         for table_id in tables:
@@ -1124,10 +1138,7 @@ def break_glass_grant_admin(
     """
     import uuid as _uuid
 
-    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-    from src.repositories.user_groups import UserGroupsRepository
-    from src.repositories.user_group_members import UserGroupMembersRepository
-    from src.repositories.users import UserRepository
+    from src.db import SYSTEM_ADMIN_GROUP
 
     if not yes:
         confirm = typer.confirm(
@@ -1138,50 +1149,43 @@ def break_glass_grant_admin(
             typer.echo("Aborted.")
             raise typer.Exit(1)
 
-    conn = get_system_db()
-    try:
-        users = UserRepository(conn)
-        groups = UserGroupsRepository(conn)
-        members = UserGroupMembersRepository(conn)
+    users = users_repo()
+    groups = user_groups_repo()
+    members = user_group_members_repo()
 
-        admin_group = groups.get_by_name(SYSTEM_ADMIN_GROUP)
-        if admin_group is None:
-            typer.echo(
-                f"FATAL: '{SYSTEM_ADMIN_GROUP}' group missing. Start the app "
-                "once so _seed_system_groups can recreate it, then retry.",
-                err=True,
-            )
-            raise typer.Exit(2)
-
-        existing = users.get_by_email(email)
-        if existing is None:
-            user_id = _uuid.uuid4().hex
-            users.create(
-                id=user_id,
-                email=email,
-                name=email.split("@", 1)[0],
-            )
-            typer.echo(f"Created user {email} (id={user_id[:8]}…)")
-        else:
-            user_id = existing["id"]
-
-        if members.has_membership(user_id, admin_group["id"]):
-            typer.echo(
-                f"{email} is already a member of '{SYSTEM_ADMIN_GROUP}'."
-            )
-            return
-
-        members.add_member(
-            user_id=user_id,
-            group_id=admin_group["id"],
-            source="cli_break_glass",
-            added_by="cli:break-glass",
-        )
+    admin_group = groups.get_by_name(SYSTEM_ADMIN_GROUP)
+    if admin_group is None:
         typer.echo(
-            f"Granted Admin to {email}. Audit source='cli_break_glass'."
+            f"FATAL: '{SYSTEM_ADMIN_GROUP}' group missing. Start the app "
+            "once so _seed_system_groups can recreate it, then retry.",
+            err=True,
         )
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        raise typer.Exit(2)
+
+    existing = users.get_by_email(email)
+    if existing is None:
+        user_id = _uuid.uuid4().hex
+        users.create(
+            id=user_id,
+            email=email,
+            name=email.split("@", 1)[0],
+        )
+        typer.echo(f"Created user {email} (id={user_id[:8]}…)")
+    else:
+        user_id = existing["id"]
+
+    if members.has_membership(user_id, admin_group["id"]):
+        typer.echo(
+            f"{email} is already a member of '{SYSTEM_ADMIN_GROUP}'."
+        )
+        return
+
+    members.add_member(
+        user_id=user_id,
+        group_id=admin_group["id"],
+        source="cli_break_glass",
+        added_by="cli:break-glass",
+    )
+    typer.echo(
+        f"Granted Admin to {email}. Audit source='cli_break_glass'."
+    )

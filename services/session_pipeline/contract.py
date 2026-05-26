@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Optional, Protocol, runtime_checkable
 
 import duckdb
 
@@ -43,10 +43,17 @@ class SessionProcessor(Protocol):
         session_path: Path,
         username: str,
         session_key: str,
-        conn: duckdb.DuckDBPyConnection,
+        *,
+        user_id: Optional[str] = None,
     ) -> ProcessorResult:
         """Process exactly one session jsonl. Idempotent per
         (name, session_key, file_hash).
+
+        ``user_id`` is the resolved canonical id from ``users.id`` —
+        populated by the runner via username-to-id lookup. Optional for
+        back-compat with processors that key only on ``username``;
+        processors that write to FK-constrained tables (e.g.
+        ``usage_events.user_id``) should consume this when present.
 
         Raise = the runner will NOT mark this session as processed for this
         processor → it will be retried on the next scheduler tick. Return =

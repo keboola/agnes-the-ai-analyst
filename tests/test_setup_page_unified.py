@@ -24,12 +24,9 @@ def client(tmp_path, monkeypatch):
     (tmp_path / "state").mkdir()
     (tmp_path / "analytics").mkdir()
     (tmp_path / "extracts").mkdir()
-    from src.db import close_system_db
-    close_system_db()
     from app.main import create_app
     app = create_app()
     yield TestClient(app)
-    close_system_db()
 
 
 def test_setup_page_renders_unified_layout(client):
@@ -96,7 +93,7 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
     monkeypatch.setattr(
         marketplace_filter,
         "resolve_user_marketplace",
-        lambda conn, user: [{"manifest_name": "demo-plugin"}],
+        lambda user: [{"manifest_name": "demo-plugin"}],
     )
 
     client.app.dependency_overrides[get_optional_user] = _admin_user

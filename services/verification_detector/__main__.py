@@ -1,14 +1,9 @@
-"""CLI entry point for ad-hoc local runs of the verification processor.
+"""Verification detector standalone runner.
 
-Usage:
-    python -m services.verification_detector [--verbose] [--reset]
-
-After the session-pipeline refactor the canonical execution path is the
-admin endpoint POST /api/admin/run-session-processor?processor=verification
-driven by the scheduler. This CLI shim is kept as a developer convenience
-for running the verification flow against a local instance without going
-through HTTP — it constructs the VerificationProcessor and runs it through
-the shared runner.
+Used by ``docker compose run verification-detector`` and by the
+scheduler entry that fires the verification processor outside of the
+HTTP path. Constructs the VerificationProcessor and runs it through
+the shared session-pipeline runner.
 """
 
 import argparse
@@ -18,7 +13,6 @@ import sys
 from app.logging_config import setup_logging
 from services.session_pipeline.runner import run_processor
 from services.session_processors.verification import build_verification_processor
-from src.db import get_system_db
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +45,13 @@ def main() -> None:
         )
         sys.exit(1)
 
-    conn = get_system_db()
-
     if args.reset:
+        from src.repositories import session_processor_state_repo
         logger.info("Resetting verification processor state...")
-        conn.execute(
-            "DELETE FROM session_processor_state WHERE processor_name = ?",
-            [processor.name],
-        )
+        deleted = session_processor_state_repo().reset_processor(processor.name)
+        logger.info("Cleared %d state rows", deleted)
 
-    stats = run_processor(conn, processor)
+    stats = run_processor(processor)
 
     print("\n--- Verification Processor Summary ---")
     print(f"Sessions scanned:        {stats['scanned']}")

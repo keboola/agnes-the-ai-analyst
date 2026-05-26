@@ -14,8 +14,6 @@ import duckdb
 from fastapi import Depends, HTTPException, Header, Request, status
 
 from app.auth.jwt import verify_token
-from src.db import get_system_db
-from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
 
@@ -106,11 +104,17 @@ def _parse_local_dev_groups(raw: str) -> list[dict]:
 
 
 def _get_db():
-    conn = get_system_db()
-    try:
-        yield conn
-    finally:
-        conn.close()
+    """Legacy FastAPI dependency. Kept as a shim for the ~247 endpoints
+    that still declare ``conn: duckdb.DuckDBPyConnection = Depends(_get_db)``.
+
+    Post-PG cutover the system DB is Postgres (see ``src.db_pg``) and the
+    repos are looked up via factory functions inside each endpoint —
+    nothing meaningful uses the yielded value. We yield ``None`` here so
+    importing this dep doesn't open a DuckDB handle on every request.
+
+    A future pass will delete the ``conn=Depends(_get_db)`` declarations.
+    """
+    yield None
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
@@ -133,10 +137,13 @@ def _client_ip(request: Optional[Request]) -> Optional[str]:
     return getattr(client, "host", None) if client else None
 
 
-def _get_local_dev_user(conn: duckdb.DuckDBPyConnection) -> Optional[dict]:
-    """Return the seeded dev user when LOCAL_DEV_MODE is on, else None."""
-    repo = UserRepository(conn)
-    user = repo.get_by_email(get_local_dev_email())
+def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Optional[dict]:
+    """Return the seeded dev user when LOCAL_DEV_MODE is on, else None.
+
+    ``conn`` retained for signature compat; ignored — uses the factory.
+    """
+    from src.repositories import users_repo
+    user = users_repo().get_by_email(get_local_dev_email())
     if not user:
         logger.error(
             "LOCAL_DEV_MODE is on but dev user %s is not seeded; expected app startup to seed it",

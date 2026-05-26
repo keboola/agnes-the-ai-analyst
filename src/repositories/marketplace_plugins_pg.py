@@ -1,0 +1,273 @@
+"""Postgres-backed marketplace_plugins repository.
+
+Mirrors ``src/repositories/marketplace_plugins.py``.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import sqlalchemy as sa
+from sqlalchemy.engine import Engine
+
+def _classify_source(source: Optional[Any]) -> Optional[str]:
+    """Coarse label for the ``source`` field of a plugin entry.
+
+    Matches the Claude Code marketplace spec
+    (code.claude.com/docs/plugin-marketplaces): relative-path string,
+    or one of {github, url, git-subdir, npm}.
+    """
+    if source is None:
+        return None
+    if isinstance(source, str):
+        return "path"
+    if isinstance(source, dict):
+        t = source.get("source")
+        if isinstance(t, str):
+            return t
+    return "unknown"
+
+
+class MarketplacePluginsPgRepository:
+    def __init__(self, engine: Engine):
+        self._engine = engine
+
+    @staticmethod
+    def _normalize_row(d: Dict[str, Any]) -> Dict[str, Any]:
+        for k in ("source_spec", "raw", "doc_links"):
+            v = d.get(k)
+            if isinstance(v, str):
+                try:
+                    d[k] = json.loads(v)
+                except (ValueError, TypeError):
+                    pass
+        return d
+
+    def list_for_marketplace(self, marketplace_id: str) -> List[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT * FROM marketplace_plugins WHERE marketplace_id = :m ORDER BY name"
+                ),
+                {"m": marketplace_id},
+            ).mappings().all()
+        return [self._normalize_row(dict(r)) for r in rows]
+
+    def list_all(self) -> List[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text("SELECT * FROM marketplace_plugins ORDER BY marketplace_id, name")
+            ).mappings().all()
+        return [self._normalize_row(dict(r)) for r in rows]
+
+    def count_by_marketplace(self) -> Dict[str, int]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT marketplace_id, COUNT(*) FROM marketplace_plugins GROUP BY marketplace_id"
+                )
+            ).all()
+        return {r[0]: int(r[1]) for r in rows}
+
+    def list_with_filters(
+        self,
+        *,
+        group_ids: Iterable[str],
+        search: Optional[str] = None,
+        category: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 24,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        gids = list(group_ids)
+        if not gids:
+            return ([], 0)
+
+        gid_keys: List[str] = []
+        params: Dict[str, Any] = {}
+        for i, gid in enumerate(gids):
+            k = f"g_{i}"
+            gid_keys.append(f":{k}")
+            params[k] = gid
+
+        where = [
+            f"rg.group_id IN ({','.join(gid_keys)})",
+            "rg.resource_type = 'marketplace_plugin'",
+            "rg.resource_id = mp.marketplace_id || '/' || mp.name",
+        ]
+        if search:
+            from src.sql_safe import pg_like_escape
+            where.append(
+                "(LOWER(mp.name) LIKE :needle ESCAPE '\\' "
+                "OR LOWER(COALESCE(mp.description,'')) LIKE :needle ESCAPE '\\' "
+                "OR LOWER(COALESCE(mp.author_name,'')) LIKE :needle ESCAPE '\\' "
+                "OR LOWER(COALESCE(mp.category,'')) LIKE :needle ESCAPE '\\')"
+            )
+            params["needle"] = f"%{pg_like_escape(search.lower())}%"
+        if category:
+            if category == "Other":
+                where.append(
+                    "(mp.category IS NULL OR TRIM(mp.category) = '' OR mp.category = :cat)"
+                )
+            else:
+                where.append("mp.category = :cat")
+            params["cat"] = category
+
+        where_sql = " AND ".join(where)
+
+        with self._engine.connect() as conn:
+            total_row = conn.execute(
+                sa.text(
+                    f"SELECT COUNT(DISTINCT (mp.marketplace_id, mp.name)) "
+                    f"FROM marketplace_plugins mp "
+                    f"JOIN resource_grants rg ON TRUE "
+                    f"WHERE {where_sql}"
+                ),
+                params,
+            ).first()
+            total = int(total_row[0]) if total_row else 0
+            if total == 0:
+                return ([], 0)
+
+            list_params = {**params, "limit": int(limit), "offset": int(skip)}
+            rows = conn.execute(
+                sa.text(
+                    f"SELECT DISTINCT mp.marketplace_id, mp.name, mp.description, mp.version, "
+                    f"       mp.author_name, mp.homepage, mp.category, mp.source_type, "
+                    f"       mp.source_spec, mp.raw, mp.cover_photo_url, mp.video_url, "
+                    f"       mp.doc_links, mp.created_at, mp.updated_at, mp.is_system "
+                    f"FROM marketplace_plugins mp "
+                    f"JOIN resource_grants rg ON TRUE "
+                    f"WHERE {where_sql} "
+                    f"ORDER BY mp.created_at DESC NULLS LAST, mp.name "
+                    f"LIMIT :limit OFFSET :offset"
+                ),
+                list_params,
+            ).mappings().all()
+        return ([self._normalize_row(dict(r)) for r in rows], total)
+
+    def category_counts(
+        self,
+        *,
+        group_ids: Iterable[str],
+    ) -> Dict[str, int]:
+        gids = list(group_ids)
+        if not gids:
+            return {}
+        gid_keys: List[str] = []
+        params: Dict[str, Any] = {}
+        for i, gid in enumerate(gids):
+            k = f"g_{i}"
+            gid_keys.append(f":{k}")
+            params[k] = gid
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    f"SELECT COALESCE(NULLIF(TRIM(mp.category),''), 'Other') AS cat, "
+                    f"       COUNT(DISTINCT (mp.marketplace_id, mp.name)) "
+                    f"FROM marketplace_plugins mp "
+                    f"JOIN resource_grants rg "
+                    f"  ON rg.resource_id = mp.marketplace_id || '/' || mp.name "
+                    f"WHERE rg.group_id IN ({','.join(gid_keys)}) "
+                    f"  AND rg.resource_type = 'marketplace_plugin' "
+                    f"GROUP BY cat"
+                ),
+                params,
+            ).all()
+        return {str(r[0]): int(r[1]) for r in rows}
+
+    def replace_for_marketplace(
+        self,
+        marketplace_id: str,
+        plugins: Iterable[Dict[str, Any]],
+    ) -> int:
+        plugins_list = list(plugins)
+        now = datetime.now(timezone.utc)
+        valid_names = {
+            (p.get("name") or "").strip()
+            for p in plugins_list
+            if (p.get("name") or "").strip()
+        }
+
+        with self._engine.begin() as conn:
+            if valid_names:
+                vn_keys = [f":vn_{i}" for i in range(len(valid_names))]
+                params: Dict[str, Any] = {"mid": marketplace_id}
+                for i, name in enumerate(valid_names):
+                    params[f"vn_{i}"] = name
+                conn.execute(
+                    sa.text(
+                        f"DELETE FROM marketplace_plugins "
+                        f"WHERE marketplace_id = :mid AND name NOT IN ({','.join(vn_keys)})"
+                    ),
+                    params,
+                )
+            else:
+                conn.execute(
+                    sa.text(
+                        "DELETE FROM marketplace_plugins WHERE marketplace_id = :mid"
+                    ),
+                    {"mid": marketplace_id},
+                )
+
+            for p in plugins_list:
+                name = (p.get("name") or "").strip()
+                if not name:
+                    continue
+                source_spec = p.get("source")
+                source_type = _classify_source(source_spec)
+                author = p.get("author") or {}
+                author_name = author.get("name") if isinstance(author, dict) else None
+                source_spec_json = (
+                    json.dumps(source_spec) if source_spec is not None else None
+                )
+                raw_payload = {
+                    k: v for k, v in p.items()
+                    if k not in ("cover_photo_url", "video_url", "doc_links")
+                }
+                raw_json = json.dumps(raw_payload)
+                doc_links = p.get("doc_links")
+                doc_links_json = (
+                    json.dumps(doc_links) if isinstance(doc_links, list) else None
+                )
+                conn.execute(
+                    sa.text(
+                        """INSERT INTO marketplace_plugins
+                            (marketplace_id, name, description, version, author_name,
+                             homepage, category, source_type, source_spec, raw,
+                             cover_photo_url, video_url, doc_links, updated_at)
+                        VALUES (:mid, :name, :desc, :ver, :an, :hp, :cat, :st,
+                                CAST(:ss AS JSONB), CAST(:raw AS JSONB),
+                                :cpu, :vu, CAST(:dl AS JSONB), :now)
+                        ON CONFLICT (marketplace_id, name) DO UPDATE SET
+                            description     = EXCLUDED.description,
+                            version         = EXCLUDED.version,
+                            author_name     = EXCLUDED.author_name,
+                            homepage        = EXCLUDED.homepage,
+                            category        = EXCLUDED.category,
+                            source_type     = EXCLUDED.source_type,
+                            source_spec     = EXCLUDED.source_spec,
+                            raw             = EXCLUDED.raw,
+                            cover_photo_url = EXCLUDED.cover_photo_url,
+                            video_url       = EXCLUDED.video_url,
+                            doc_links       = EXCLUDED.doc_links,
+                            updated_at      = EXCLUDED.updated_at"""
+                    ),
+                    {
+                        "mid": marketplace_id, "name": name,
+                        "desc": p.get("description"), "ver": p.get("version"),
+                        "an": author_name, "hp": p.get("homepage"),
+                        "cat": p.get("category"), "st": source_type,
+                        "ss": source_spec_json, "raw": raw_json,
+                        "cpu": p.get("cover_photo_url"), "vu": p.get("video_url"),
+                        "dl": doc_links_json, "now": now,
+                    },
+                )
+        return sum(1 for p in plugins_list if (p.get("name") or "").strip())
+
+    def clear_for_marketplace(self, marketplace_id: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("DELETE FROM marketplace_plugins WHERE marketplace_id = :m"),
+                {"m": marketplace_id},
+            )

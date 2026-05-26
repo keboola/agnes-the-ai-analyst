@@ -17,6 +17,11 @@ from app.auth.jwt import create_access_token
 from app.auth._common import safe_next_path
 from app.instance_config import get_allowed_domains
 
+from src.repositories import (
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth/google", tags=["auth"])
@@ -92,13 +97,9 @@ async def google_callback(request: Request):
         # Find or create user, sync Workspace group memberships into
         # user_group_members.
         from src.db import (
-            get_system_db,
             SYSTEM_ADMIN_GROUP,
             SYSTEM_EVERYONE_GROUP,
         )
-        from src.repositories.users import UserRepository
-        from src.repositories.user_groups import UserGroupsRepository
-        from src.repositories.user_group_members import UserGroupMembersRepository
         from app.auth.group_sync import fetch_user_groups
         import uuid
 
@@ -115,119 +116,109 @@ async def google_callback(request: Request):
             "AGNES_GROUP_EVERYONE_EMAIL", ""
         ).strip().lower()
 
-        conn = get_system_db()
-        try:
-            repo = UserRepository(conn)
-            user = repo.get_by_email(email)
-            if not user:
-                user_id = str(uuid.uuid4())
-                repo.create(id=user_id, email=email, name=name)
-                # v39: subscribe new user to every system plugin so the
-                # mandatory tier reaches them on their first session
-                # without an admin reconcile. Fail-soft — the import +
-                # fanout sit inside the same conn used for repo.create
-                # above, so a transient marketplace_plugins read failure
-                # doesn't block sign-in.
-                try:
-                    from src.repositories.user_curated_subscriptions import (
-                        UserCuratedSubscriptionsRepository,
-                    )
-                    UserCuratedSubscriptionsRepository(
-                        conn
-                    ).fanout_system_for_user(user_id)
-                except Exception:
-                    logger.exception(
-                        "system-plugin fanout failed for new user %s",
-                        email,
-                    )
-                user = repo.get_by_email(email)
-            if not bool(user.get("active", True)):
-                return RedirectResponse(url="/login?error=deactivated")
-
-            # Sync Workspace groups → user_group_members (source='google_sync').
-            # Fail-soft: any error leaves the previous membership snapshot in
-            # place; admin-added rows survive regardless.
-            members_repo = UserGroupMembersRepository(conn)
+        repo = users_repo()
+        user = repo.get_by_email(email)
+        if not user:
+            user_id = str(uuid.uuid4())
+            repo.create(id=user_id, email=email, name=name)
+            # v39: subscribe new user to every system plugin so the
+            # mandatory tier reaches them on their first session
+            # without an admin reconcile. Fail-soft — a transient
+            # marketplace_plugins read failure doesn't block sign-in.
             try:
-                group_names = fetch_user_groups(email)
-                # `fetch_user_groups` is fail-soft and returns [] for both
-                # "user genuinely has no groups" and "transient API failure".
-                # Empty result is treated as "no change": preserve the
-                # previous snapshot rather than wiping it on a transient
-                # hiccup. Admin-added rows survive regardless.
-                if not group_names:
-                    logger.info(
-                        "Google group sync for %s: empty result, "
-                        "preserving existing memberships",
-                        email,
-                    )
-                else:
-                    # Lower-cased Workspace email of each group; comparisons
-                    # against admin_email/everyone_email/prefix are all
-                    # case-insensitive.
-                    fetched = [g.lower() for g in group_names]
-
-                    if prefix:
-                        relevant = [g for g in fetched if g.startswith(prefix)]
-                    else:
-                        relevant = list(fetched)
-
-                    # Login gate: prefix is set AND fetch returned a
-                    # non-empty list AND none of those groups match the
-                    # prefix → user is signed into Google but is not a
-                    # member of any group permitted to use this Agnes
-                    # instance. Pass-through-on-empty-fetch is preserved
-                    # above (transient API failures must not lock users
-                    # out), so this branch fires only when we got a real
-                    # answer that excluded them.
-                    if prefix and not relevant:
-                        logger.info(
-                            "Google login denied for %s: no group with "
-                            "prefix %r in %s",
-                            email, prefix, fetched,
-                        )
-                        return RedirectResponse(
-                            url="/login?error=not_in_allowed_group"
-                        )
-
-                    ug_repo = UserGroupsRepository(conn)
-                    group_ids: list[str] = []
-                    for email_addr in relevant:
-                        if admin_email and email_addr == admin_email:
-                            sys_admin = ug_repo.get_by_name(
-                                SYSTEM_ADMIN_GROUP
-                            )
-                            if sys_admin:
-                                group_ids.append(sys_admin["id"])
-                            continue
-                        if everyone_email and email_addr == everyone_email:
-                            sys_everyone = ug_repo.get_by_name(
-                                SYSTEM_EVERYONE_GROUP
-                            )
-                            if sys_everyone:
-                                group_ids.append(sys_everyone["id"])
-                            continue
-                        # Regular synced group: name = full email. ensure()
-                        # is get-or-create-by-name and stamps
-                        # created_by='system:google-sync' on first create.
-                        g = ug_repo.ensure(email_addr)
-                        group_ids.append(g["id"])
-
-                    members_repo.replace_google_sync_groups(
-                        user["id"], group_ids, added_by="system:google-sync",
-                    )
-                    logger.info(
-                        "Google group sync for %s: %d group(s) "
-                        "(filtered from %d fetched, prefix=%r) [%s]",
-                        email, len(group_ids), len(fetched), prefix,
-                        ", ".join(relevant),
-                    )
-            except Exception as sync_err:  # noqa: BLE001 - fail-soft by design
-                logger.warning(
-                    "Google group sync failed for %s: %s", email, sync_err
+                from src.repositories import user_curated_subscriptions_repo
+                user_curated_subscriptions_repo().fanout_system_for_user(user_id)
+            except Exception:
+                logger.exception(
+                    "system-plugin fanout failed for new user %s",
+                    email,
                 )
-        finally:
-            conn.close()
+            user = repo.get_by_email(email)
+        if not bool(user.get("active", True)):
+            return RedirectResponse(url="/login?error=deactivated")
+
+        # Sync Workspace groups → user_group_members (source='google_sync').
+        # Fail-soft: any error leaves the previous membership snapshot in
+        # place; admin-added rows survive regardless.
+        members_repo = user_group_members_repo()
+        try:
+            group_names = fetch_user_groups(email)
+            # `fetch_user_groups` is fail-soft and returns [] for both
+            # "user genuinely has no groups" and "transient API failure".
+            # Empty result is treated as "no change": preserve the
+            # previous snapshot rather than wiping it on a transient
+            # hiccup. Admin-added rows survive regardless.
+            if not group_names:
+                logger.info(
+                    "Google group sync for %s: empty result, "
+                    "preserving existing memberships",
+                    email,
+                )
+            else:
+                # Lower-cased Workspace email of each group; comparisons
+                # against admin_email/everyone_email/prefix are all
+                # case-insensitive.
+                fetched = [g.lower() for g in group_names]
+
+                if prefix:
+                    relevant = [g for g in fetched if g.startswith(prefix)]
+                else:
+                    relevant = list(fetched)
+
+                # Login gate: prefix is set AND fetch returned a
+                # non-empty list AND none of those groups match the
+                # prefix → user is signed into Google but is not a
+                # member of any group permitted to use this Agnes
+                # instance. Pass-through-on-empty-fetch is preserved
+                # above (transient API failures must not lock users
+                # out), so this branch fires only when we got a real
+                # answer that excluded them.
+                if prefix and not relevant:
+                    logger.info(
+                        "Google login denied for %s: no group with "
+                        "prefix %r in %s",
+                        email, prefix, fetched,
+                    )
+                    return RedirectResponse(
+                        url="/login?error=not_in_allowed_group"
+                    )
+
+                ug_repo = user_groups_repo()
+                group_ids: list[str] = []
+                for email_addr in relevant:
+                    if admin_email and email_addr == admin_email:
+                        sys_admin = ug_repo.get_by_name(
+                            SYSTEM_ADMIN_GROUP
+                        )
+                        if sys_admin:
+                            group_ids.append(sys_admin["id"])
+                        continue
+                    if everyone_email and email_addr == everyone_email:
+                        sys_everyone = ug_repo.get_by_name(
+                            SYSTEM_EVERYONE_GROUP
+                        )
+                        if sys_everyone:
+                            group_ids.append(sys_everyone["id"])
+                        continue
+                    # Regular synced group: name = full email. ensure()
+                    # is get-or-create-by-name and stamps
+                    # created_by='system:google-sync' on first create.
+                    g = ug_repo.ensure(email_addr)
+                    group_ids.append(g["id"])
+
+                members_repo.replace_google_sync_groups(
+                    user["id"], group_ids, added_by="system:google-sync",
+                )
+                logger.info(
+                    "Google group sync for %s: %d group(s) "
+                    "(filtered from %d fetched, prefix=%r) [%s]",
+                    email, len(group_ids), len(fetched), prefix,
+                    ", ".join(relevant),
+                )
+        except Exception as sync_err:  # noqa: BLE001 - fail-soft by design
+            logger.warning(
+                "Google group sync failed for %s: %s", email, sync_err
+            )
 
         # Issue JWT — identity-only, authorization derives from
         # user_group_members at request time (see app.auth.access).

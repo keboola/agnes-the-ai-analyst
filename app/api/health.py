@@ -24,14 +24,15 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.repositories import (
+    sync_state_repo,
+)
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, Query
 import duckdb
 
 from app.auth.dependencies import _get_db, get_current_user
-from src.db import SCHEMA_VERSION, get_system_db
-from src.repositories.sync_state import SyncStateRepository
 
 router = APIRouter(tags=["health"])
 
@@ -174,10 +175,16 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
 
     # Look up the most recent processed_at for the verification processor.
     try:
-        row = conn.execute(
-            "SELECT MAX(processed_at) FROM session_processor_state WHERE processor_name = ?",
-            ["verification"],
-        ).fetchone()
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as eng_conn:
+            row = eng_conn.execute(
+                sa.text(
+                    "SELECT MAX(processed_at) FROM session_processor_state "
+                    "WHERE processor_name = :p"
+                ),
+                {"p": "verification"},
+            ).first()
     except Exception as e:
         return {"status": "unknown", "detail": f"could not query session_processor_state: {e}"}
 
@@ -231,13 +238,17 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
     # (for processor_name='verification') and surfacing it once it's older
     # than _stuck_file_grace_seconds.
     try:
-        processed = {
-            row[0]
-            for row in conn.execute(
-                "SELECT session_file FROM session_processor_state WHERE processor_name = ?",
-                ["verification"],
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as eng_conn:
+            processed_rows = eng_conn.execute(
+                sa.text(
+                    "SELECT session_file FROM session_processor_state "
+                    "WHERE processor_name = :p"
+                ),
+                {"p": "verification"},
             ).fetchall()
-        }
+        processed = {row[0] for row in processed_rows}
     except Exception as e:
         # Don't fail the health check on this enrichment.
         logger.debug("FIFO check: could not read session_processor_state: %s", e)
@@ -308,22 +319,39 @@ def _verification_detector_grace_seconds() -> int:
 
 
 def _check_db_schema() -> dict:
-    """Check DB schema version against expected SCHEMA_VERSION.
+    """Check Alembic schema head against the migrations directory.
 
     Returns a dict with 'db_schema' key and optional 'detail' key.
     """
     try:
-        conn = get_system_db()
-        row = conn.execute(
-            "SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1"
-        ).fetchone()
+        import sqlalchemy as sa
+        from pathlib import Path
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        from src.db_pg import get_engine
+
+        # Resolve ``alembic.ini`` relative to the package root, not the
+        # process cwd. Operators launching uvicorn from outside the repo
+        # root (custom ENTRYPOINT, systemd unit without
+        # ``WorkingDirectory=``, sidecar with ``--chdir``) would
+        # otherwise see ``alembic.ini`` not found here → ``db_schema:
+        # unreachable`` → ``/api/health`` returns ``unhealthy`` → docker
+        # / k8s healthcheck restart loop.
+        _repo_root = Path(__file__).resolve().parents[2]
+        cfg = Config(str(_repo_root / "alembic.ini"))
+        cfg.set_main_option("script_location", str(_repo_root / "migrations"))
+        expected = ScriptDirectory.from_config(cfg).get_current_head()
+
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT version_num FROM alembic_version LIMIT 1")
+            ).fetchone()
         if row is None:
-            return {"db_schema": "mismatch", "detail": "no schema_version row found"}
-        current_version = row[0]
-        if current_version == SCHEMA_VERSION:
-            return {"db_schema": "ok", "current": current_version, "expected": SCHEMA_VERSION}
-        else:
-            return {"db_schema": "mismatch", "current": current_version, "expected": SCHEMA_VERSION}
+            return {"db_schema": "mismatch", "detail": "alembic_version table is empty"}
+        current = row[0]
+        if current == expected:
+            return {"db_schema": "ok", "current": current, "expected": expected}
+        return {"db_schema": "mismatch", "current": current, "expected": expected}
     except Exception as e:
         return {"db_schema": "unreachable", "detail": str(e)}
 
@@ -358,12 +386,15 @@ async def health_check_detailed(
     checks = {}
     include_set = {p.strip() for p in include.split(",") if p.strip()}
 
-    # DuckDB state
+    # Postgres state — simple SELECT 1 round-trip
     try:
-        conn.execute("SELECT 1").fetchone()
-        checks["duckdb_state"] = {"status": "ok"}
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as eng_conn:
+            eng_conn.execute(sa.text("SELECT 1")).first()
+        checks["postgres_state"] = {"status": "ok"}
     except Exception as e:
-        checks["duckdb_state"] = {"status": "error", "detail": str(e)}
+        checks["postgres_state"] = {"status": "error", "detail": str(e)}
 
     # DB schema version check — opt-in (issue #204). Operators who run a
     # fresh release pinned to the same image as the running schema rarely
@@ -376,7 +407,7 @@ async def health_check_detailed(
 
     # Sync state summary
     try:
-        repo = SyncStateRepository(conn)
+        repo = sync_state_repo()
         all_states = repo.get_all_states()
         total_tables = len(all_states)
         total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
@@ -405,7 +436,12 @@ async def health_check_detailed(
 
     # User count
     try:
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as eng_conn:
+            user_count = eng_conn.execute(
+                sa.text("SELECT COUNT(*) FROM users")
+            ).scalar()
         checks["users"] = {"status": "ok", "count": user_count}
     except Exception as e:
         checks["users"] = {"status": "error", "detail": str(e)}
@@ -475,7 +511,7 @@ async def health_check_detailed(
         "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
         "image_tag": os.environ.get("AGNES_TAG", "unknown"),
         "commit_sha": os.environ.get("AGNES_COMMIT_SHA", "unknown"),
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": _check_db_schema().get("current") or "unknown",
         "deployed_at": _DEPLOYED_AT,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": checks,

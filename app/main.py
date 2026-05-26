@@ -10,6 +10,11 @@
 # (before authlib gets imported transitively) keeps `make local-dev`
 # stdout clean without hiding warnings from any other package.
 import warnings as _warnings
+from src.repositories import (
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+)
 try:
     from authlib.deprecate import AuthlibDeprecationWarning as _AuthlibDepr
     _warnings.filterwarnings("ignore", category=_AuthlibDepr)
@@ -99,7 +104,6 @@ from app.api.me import router as me_router
 from app.api.me_stats import router as me_stats_router
 from app.api.admin import router as admin_router
 from app.api.admin_bigquery_test import router as admin_bigquery_test_router
-from app.api.admin_keboola_test import router as admin_keboola_test_router
 from app.api.jira_webhooks import router as jira_webhooks_router
 from app.api.metrics import router as metrics_router
 from app.api.metadata import router as metadata_router
@@ -111,19 +115,6 @@ from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
 from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
-from app.api.data_packages import router as data_packages_router
-from app.api.memory_domains import router as memory_domains_router
-from app.api.recipes import (
-    public_router as recipes_public_router,
-    admin_router as recipes_admin_router,
-)
-from app.api.memory_domain_suggestions import (
-    public_router as memory_domain_suggestions_public_router,
-    admin_router as memory_domain_suggestions_admin_router,
-)
-from app.api.uploads import router as admin_uploads_router
-from app.api.stack import router as stack_router
-from app.api.stack_views import router as stack_views_router
 from app.api.initial_workspace import router as initial_workspace_router
 from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
@@ -194,57 +185,31 @@ async def lifespan(app):
     # name + description on every boot so operators can't drift them
     # away from the seed.
     try:
-        from src.db import get_system_db
         from connectors.internal.registry import ensure_internal_tables_registered
-        ensure_internal_tables_registered(get_system_db())
+        ensure_internal_tables_registered()
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
 
-    # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
-    # The migration to schema v47 already does this on first upgrade, but
-    # for instances that have been on v47 across restarts the boot-time
-    # rebuild guarantees the index reflects whatever mutations landed via
-    # the BG-task / scheduler paths that bypass the per-mutation hook.
-    # Soft-failure — logs WARNING and the repo falls back to ILIKE.
-    try:
-        from src.db import get_system_db
-        from src.fts import ensure_knowledge_fts_index
-        ensure_knowledge_fts_index(get_system_db())
-    except Exception:
-        logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
-
-    # Surface BQ config gaps at startup so the operator sees them in
-    # the boot log instead of as cryptic "provider returned no data" /
-    # "403 serviceusage" later. Issue #343 — these are the same gaps
-    # that silently failed every remote BQ query on a customer prod
-    # instance for several days in mid-May 2026 before the cause was
-    # traced. Non-fatal: warnings only, no startup abort.
-    try:
-        from connectors.bigquery.access import validate_bigquery_startup_config
-        for warning in validate_bigquery_startup_config():
-            logger.warning("BQ config check: %s", warning)
-    except Exception:
-        logger.exception("BQ startup config validation crashed (non-fatal)")
+    # Post-PG-cutover (issue #121 / 0010_knowledge): full-text search uses
+    # Postgres' GIN index on ``to_tsvector``, owned by the alembic chain.
+    # The DuckDB BM25 boot-time rebuild that lived here is no longer
+    # needed — there is no per-tick index drift to repair.
 
     # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
     # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
     # without going through bootstrap; never overwritten if already set.
-    # The Admin/Everyone user_groups themselves are seeded inside
-    # _ensure_schema (src.db._seed_system_groups), so this hook only has to
-    # handle membership for the seed admin.
-    # Lives in lifespan (worker-only), NOT create_app(): the latter runs
-    # in the uvicorn --reload master too, and duckdb >=1.5 holds an
-    # exclusive per-process file lock on system.duckdb that would then
-    # block the worker.
+    # The Admin/Everyone user_groups themselves are seeded by alembic
+    # migration 0003_rbac during ``alembic upgrade head`` — first-boot
+    # ordering MUST run migrations before this lifespan. If the Admin
+    # group is missing here, we fail loud rather than silently creating
+    # an admin user with no admin group membership (which would lock
+    # everyone out of the admin UI until someone hand-wires the row).
     from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
     seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
     if seed_email:
         try:
-            from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-            from src.repositories.user_group_members import UserGroupMembersRepository
-            from src.repositories.users import UserRepository
-            conn = get_system_db()
-            repo = UserRepository(conn)
+            from src.db import SYSTEM_ADMIN_GROUP
+            repo = users_repo()
             seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
             password_hash = None
             if seed_password:
@@ -268,34 +233,24 @@ async def lifespan(app):
                     logger.info("Set password on existing seed admin: %s", seed_email)
             # Make sure the seed admin is actually in the Admin group — this
             # is what gives them admin access in v12. Idempotent.
-            from src.db import SYSTEM_EVERYONE_GROUP
-            admin_group = conn.execute(
-                "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
-            ).fetchone()
-            if admin_group:
-                UserGroupMembersRepository(conn).add_member(
+            admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
+            if not admin_group:
+                # Loud signal: migrations didn't run, or the Admin group
+                # was deleted by hand. Operator must run ``alembic upgrade
+                # head`` before the next boot.
+                logger.error(
+                    "Admin user_group missing — alembic upgrade head not run yet? "
+                    "Seeded admin user %s has NO admin group membership; "
+                    "they cannot access admin endpoints until the group is restored "
+                    "and add_member runs.", seed_email,
+                )
+            else:
+                user_group_members_repo().add_member(
                     user_id=user_id,
-                    group_id=admin_group[0],
+                    group_id=admin_group["id"],
                     source="system_seed",
                     added_by="app.main:seed_admin",
                 )
-            # Also seed Everyone membership — Everyone-scoped grants are the
-            # canonical "every-user-sees-this" pattern (Required onboarding,
-            # default reference packages). The seed admin not being in
-            # Everyone meant their own Required grants didn't surface on
-            # /catalog as Required for them, which read as a bug.
-            everyone_group = conn.execute(
-                "SELECT id FROM user_groups WHERE name = ?",
-                [SYSTEM_EVERYONE_GROUP],
-            ).fetchone()
-            if everyone_group:
-                UserGroupMembersRepository(conn).add_member(
-                    user_id=user_id,
-                    group_id=everyone_group[0],
-                    source="system_seed",
-                    added_by="app.main:seed_admin",
-                )
-            conn.close()
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
 
@@ -311,7 +266,6 @@ async def lifespan(app):
                 SCHEDULER_TOKEN_MIN_LENGTH,
                 ensure_scheduler_user,
             )
-            from src.db import get_system_db
             secret = get_scheduler_secret()
             if len(secret) < SCHEDULER_TOKEN_MIN_LENGTH:
                 logger.warning(
@@ -320,11 +274,7 @@ async def lifespan(app):
                     len(secret), SCHEDULER_TOKEN_MIN_LENGTH,
                 )
             else:
-                conn = get_system_db()
-                try:
-                    ensure_scheduler_user(conn)
-                finally:
-                    conn.close()
+                ensure_scheduler_user()
         except Exception as e:
             logger.warning(f"Could not seed scheduler user: {e}")
 
@@ -333,18 +283,13 @@ async def lifespan(app):
     # window should be visible in startup logs so it's not forgotten.
     if not is_local_dev_mode():
         try:
-            from src.db import get_system_db
-            from src.repositories.users import UserRepository
-            conn = get_system_db()
-            repo = UserRepository(conn)
-            all_users = repo.list_all()
+            all_users = users_repo().list_all()
             has_password = any(u.get("password_hash") for u in all_users)
             if not has_password:
                 logger.warning(
                     "No user has a password set — /auth/bootstrap is reachable. "
                     "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
                 )
-            conn.close()
         except Exception:
             pass  # never block startup on a logging convenience
 
@@ -365,8 +310,7 @@ async def lifespan(app):
         get_posthog().shutdown()
     except Exception:
         logger.exception("PostHog shutdown failed")
-    from src.db import close_analytics_db, close_system_db
-    close_system_db()
+    from src.db import close_analytics_db
     close_analytics_db()
 
 
@@ -388,7 +332,13 @@ def _toolbar_show_callback(request, settings) -> bool:
     Starlette's debug-only ServerErrorMiddleware, but we still want the
     toolbar mounted. Read DEBUG / LOCAL_DEV_MODE env directly so operators who
     flip the env at runtime (rare) see the change without re-import.
+
+    ``AGNES_DISABLE_DEBUG_TOOLBAR=1`` overrides both. E2E tests spawn a real
+    uvicorn under ``LOCAL_DEV_MODE=1`` (auto-auth) but don't want the
+    toolbar's fixed-position overlay intercepting Playwright clicks.
     """
+    if _is_truthy_env("AGNES_DISABLE_DEBUG_TOOLBAR"):
+        return False
     return _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
 
 
@@ -609,13 +559,19 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not configure corporate memory confidence: {e}")
 
-    # Startup banner
-    from src.db import SCHEMA_VERSION
+    # Startup banner — schema revision from alembic head, not the
+    # retired DuckDB SCHEMA_VERSION constant.
+    try:
+        from alembic.config import Config as _AC
+        from alembic.script import ScriptDirectory as _SD
+        _schema_rev = _SD.from_config(_AC("alembic.ini")).get_current_head() or "unknown"
+    except Exception:
+        _schema_rev = "unknown"
     logger.info(
-        "Agnes %s | channel: %s | schema v%s",
+        "Agnes %s | channel: %s | schema %s",
         os.environ.get("AGNES_VERSION", "dev"),
         os.environ.get("RELEASE_CHANNEL", "dev"),
-        SCHEMA_VERSION,
+        _schema_rev,
     )
 
     # LOCAL_DEV_MODE: bypass authentication for local development. DO NOT enable in prod.
@@ -680,21 +636,6 @@ def create_app() -> FastAPI:
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-    # v50 admin-uploaded cover images. Lives under ${DATA_DIR}/uploads so
-    # it survives across deploys (the app/web/static dir gets bundled into
-    # the container image and is treated as read-only). The directory is
-    # lazily created by app/api/uploads.py — we mkdir here too so the
-    # StaticFiles mount has a real directory on boot even before the first
-    # upload (avoids the "directory does not exist" 500 on cold systems).
-    from src.db import _get_data_dir as _ddir_uploads
-    uploads_dir = _ddir_uploads() / "uploads"
-    uploads_dir.mkdir(parents=True, exist_ok=True)
-    app.mount(
-        "/uploads",
-        StaticFiles(directory=str(uploads_dir)),
-        name="uploads",
-    )
-
     # Auth providers (conditional registration)
     from app.auth.providers.google import router as google_auth_router, is_available as google_available
     from app.auth.providers.password import router as password_auth_router
@@ -718,7 +659,6 @@ def create_app() -> FastAPI:
     app.include_router(telegram_router)
     app.include_router(admin_router)
     app.include_router(admin_bigquery_test_router)
-    app.include_router(admin_keboola_test_router)
     app.include_router(access_router)
     app.include_router(me_access_router)
     app.include_router(me_router)
@@ -735,15 +675,6 @@ def create_app() -> FastAPI:
     app.include_router(v2_sample_router)
     app.include_router(v2_scan_router)
     app.include_router(marketplaces_router)
-    app.include_router(data_packages_router)
-    app.include_router(memory_domains_router)
-    app.include_router(recipes_public_router)
-    app.include_router(recipes_admin_router)
-    app.include_router(memory_domain_suggestions_public_router)
-    app.include_router(memory_domain_suggestions_admin_router)
-    app.include_router(admin_uploads_router)
-    app.include_router(stack_router)
-    app.include_router(stack_views_router)
     app.include_router(initial_workspace_router)
     app.include_router(store_router)
     app.include_router(my_stack_router)
@@ -846,19 +777,11 @@ def create_app() -> FastAPI:
         """
         try:
             from app.auth.dependencies import get_current_user
-            from src.db import get_system_db
 
-            conn = get_system_db()
-            try:
-                authorization = request.headers.get("authorization")
-                return await get_current_user(
-                    request=request, authorization=authorization, conn=conn
-                )
-            finally:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+            authorization = request.headers.get("authorization")
+            return await get_current_user(
+                request=request, authorization=authorization, conn=None,
+            )
         except Exception:
             return None
 
@@ -963,53 +886,7 @@ def create_app() -> FastAPI:
             body["error"] = str(exc)
         return JSONResponse(body, status_code=500)
 
-    _patch_openapi_auth_errors(app)
-
     return app
-
-
-# ---------------------------------------------------------------------------
-# OpenAPI schema post-processing
-# ---------------------------------------------------------------------------
-
-#: Paths that are intentionally unauthenticated. Every other /api/* route
-#: gets 401 and 403 injected into its declared responses so the spec truthfully
-#: reflects that auth errors are possible. FastAPI cannot derive these from
-#: Depends() chains automatically.
-_PUBLIC_API_PATHS = frozenset({
-    "/api/health",
-    "/api/health/detailed",
-    "/api/version",
-})
-
-_HTTP_METHODS = frozenset({"get", "post", "put", "delete", "patch"})
-
-
-def _add_auth_error_responses(schema: dict) -> dict:
-    """Inject 401/403 into every protected /api/* operation."""
-    _401 = {"description": "Not authenticated"}
-    _403 = {"description": "Insufficient permissions"}
-    for path, methods in schema.get("paths", {}).items():
-        if not path.startswith("/api/") or path in _PUBLIC_API_PATHS:
-            continue
-        for method, op in methods.items():
-            if method not in _HTTP_METHODS:
-                continue
-            responses = op.setdefault("responses", {})
-            responses.setdefault("401", _401)
-            responses.setdefault("403", _403)
-    return schema
-
-
-def _patch_openapi_auth_errors(app: "FastAPI") -> None:
-    """Wrap app.openapi() to call _add_auth_error_responses on every generation."""
-    original = app.openapi
-
-    def patched() -> dict:
-        schema = original()
-        return _add_auth_error_responses(schema)
-
-    app.openapi = patched  # type: ignore[method-assign]
 
 
 app = create_app()

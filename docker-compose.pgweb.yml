@@ -1,0 +1,42 @@
+# pgweb — lightweight web-based Postgres browser for local dev.
+#
+# Use ON TOP OF docker-compose.yml + docker-compose.postgres.yml when running
+# the full stack inside Docker:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
+#                  -f docker-compose.pgweb.yml up
+#
+# Or — for the more common dev path where uvicorn runs natively and ONLY the
+# Postgres container is in Docker — start pgweb standalone with:
+#
+#   docker compose -f docker-compose.pgweb.yml up pgweb
+#
+# Then open http://127.0.0.1:8081 . Credentials are inherited from the
+# default dev creds (agnes / agnes / agnes).
+#
+# pgweb is ~17MB (Go single binary). Use adminer if you want a more
+# feature-rich UI; this overlay favours startup speed + memory footprint.
+
+services:
+  pgweb:
+    image: sosedoff/pgweb:latest
+    # ``--bind=0.0.0.0`` so the bound port is reachable from the host, not
+    # only the container's loopback. ``--listen 8081`` keeps the UI off
+    # the common dev ports (uvicorn on 8000/8001, Vite on 5173) so it
+    # doesn't fight for the slot.
+    command: >-
+      pgweb
+      --bind=0.0.0.0
+      --listen=8081
+      --url=postgresql://agnes:${POSTGRES_PASSWORD:-agnes}@host.docker.internal:5432/agnes?sslmode=disable
+    # pgweb reads the connection string from --url above. When run inside
+    # the same compose project as the ``postgres`` service, swap the
+    # host to ``postgres`` instead of ``host.docker.internal``.
+    ports:
+      - "127.0.0.1:8081:8081"
+    extra_hosts:
+      # Lets pgweb reach the host's Docker daemon (where the standalone
+      # ``agnes-pg-vrpg`` container exposes 5432 on 127.0.0.1). Required
+      # on colima + Linux; macOS Docker Desktop auto-provides this.
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

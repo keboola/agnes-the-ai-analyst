@@ -126,22 +126,11 @@ def test_list_remote_rows_filters_to_bigquery_source_type(monkeypatch):
     ]
 
     class FakeRepo:
-        def __init__(self, conn):
-            pass
-
         def list_all(self):
             return fake_rows
 
-    class FakeConn:
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        "src.repositories.table_registry.TableRegistryRepository", FakeRepo,
-    )
-    monkeypatch.setattr(
-        "src.db.get_system_db", lambda: FakeConn(),
-    )
+    fake = FakeRepo()
+    monkeypatch.setattr("app.api.cache_warmup.table_registry_repo", lambda: fake)
 
     result = cache_warmup._list_remote_rows()
     ids = sorted(r["id"] for r in result)

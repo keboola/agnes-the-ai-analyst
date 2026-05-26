@@ -36,8 +36,11 @@ def fake_registry_with_one_materialized(monkeypatch, tmp_path):
         def update_sync(self, **kw): self.update_sync_calls.append(kw)
 
     state = _State(None)
-    monkeypatch.setattr("app.api.sync.TableRegistryRepository", _Repo)
-    monkeypatch.setattr("app.api.sync.SyncStateRepository", lambda c: state)
+    # Factory swap: api module imports table_registry_repo / sync_state_repo
+    # from src.repositories and calls them with no args.
+    fake_registry = _Repo(None)
+    monkeypatch.setattr("app.api.sync.table_registry_repo", lambda: fake_registry)
+    monkeypatch.setattr("app.api.sync.sync_state_repo", lambda: state)
     return state
 
 
@@ -66,12 +69,12 @@ def test_default_schedule_falls_through_env_then_every_1h(
 
     # Case 3: env unset, per-table None → "every 1h"
     monkeypatch.delenv("AGNES_DEFAULT_SYNC_SCHEDULE", raising=False)
-    _run_materialized_pass(MagicMock(), MagicMock())
+    _run_materialized_pass(MagicMock())
     assert captured["schedule"] == "every 1h", captured
 
     # Case 2: env set, per-table None → env value
     monkeypatch.setenv("AGNES_DEFAULT_SYNC_SCHEDULE", "daily 03:00")
-    _run_materialized_pass(MagicMock(), MagicMock())
+    _run_materialized_pass(MagicMock())
     assert captured["schedule"] == "daily 03:00", captured
 
     # Case 1: per-table schedule wins over env. (Mutate fixture's row.)
@@ -90,8 +93,8 @@ def test_default_schedule_falls_through_env_then_every_1h(
         def __init__(self, conn): pass
         def list_all(self): return pinned_rows
 
-    monkeypatch.setattr(_sm, "TableRegistryRepository", _RepoWithSched)
-    _run_materialized_pass(MagicMock(), MagicMock())
+    monkeypatch.setattr(_sm, "table_registry_repo", lambda: _RepoWithSched(None))
+    _run_materialized_pass(MagicMock())
     assert captured["schedule"] == "every 30m", captured
 
 
@@ -102,7 +105,7 @@ def test_in_flight_recorded_as_skipped_not_error(fake_registry_with_one_material
         "app.api.sync._materialize_table",
         side_effect=MaterializeInFlightError("in_flight_t", layer="process"),
     ):
-        summary = _run_materialized_pass(MagicMock(), MagicMock())
+        summary = _run_materialized_pass(MagicMock())
 
     assert summary["materialized"] == []
     assert summary["errors"] == []
@@ -116,7 +119,7 @@ def test_in_flight_recorded_as_skipped_not_error(fake_registry_with_one_material
 def test_due_check_skipped_uses_due_check_reason(fake_registry_with_one_materialized, monkeypatch):
     monkeypatch.setattr("app.api.sync.is_table_due", lambda *a, **k: False)
 
-    summary = _run_materialized_pass(MagicMock(), MagicMock())
+    summary = _run_materialized_pass(MagicMock())
     assert summary["skipped"] == [{"table": "in_flight_t", "reason": "due_check"}]
 
 
@@ -146,8 +149,8 @@ def fake_registry_with_three_materialized(monkeypatch, tmp_path):
         def set_error(self, *a, **kw): pass
         def update_sync(self, **kw): pass
 
-    monkeypatch.setattr("app.api.sync.TableRegistryRepository", _Repo)
-    monkeypatch.setattr("app.api.sync.SyncStateRepository", _State)
+    monkeypatch.setattr("app.api.sync.table_registry_repo", lambda: _Repo(None))
+    monkeypatch.setattr("app.api.sync.sync_state_repo", lambda: _State(None))
     return rows
 
 
@@ -165,7 +168,7 @@ def test_targeted_trigger_only_processes_listed_tables(
         return {"rows": 1, "size_bytes": 100, "hash": "abc"}
 
     with patch("app.api.sync._materialize_table", side_effect=fake_mat):
-        summary = _run_materialized_pass(MagicMock(), MagicMock(), tables=["orders"])
+        summary = _run_materialized_pass(MagicMock(), tables=["orders"])
 
     assert materialized_calls == ["orders"]
     assert summary["materialized"] == ["orders"]
@@ -183,11 +186,11 @@ def test_targeted_trigger_matches_id_or_name(
                         lambda **kw: {"rows": 0, "size_bytes": 0, "hash": "x"})
 
     # By id
-    s1 = _run_materialized_pass(MagicMock(), MagicMock(), tables=["orders"])
+    s1 = _run_materialized_pass(MagicMock(), tables=["orders"])
     assert s1["materialized"] == ["orders"]
 
     # By name (same value here, but the lookup logic checks both columns)
-    s2 = _run_materialized_pass(MagicMock(), MagicMock(), tables=["events"])
+    s2 = _run_materialized_pass(MagicMock(), tables=["events"])
     assert s2["materialized"] == ["events"]
 
 
@@ -196,7 +199,7 @@ def test_no_target_processes_all_due_rows(fake_registry_with_three_materialized)
     behavior — process every due materialized row."""
     with patch("app.api.sync._materialize_table",
                return_value={"rows": 0, "size_bytes": 0, "hash": "x"}):
-        summary = _run_materialized_pass(MagicMock(), MagicMock(), tables=None)
+        summary = _run_materialized_pass(MagicMock(), tables=None)
 
     assert sorted(summary["materialized"]) == ["customers", "events", "orders"]
     assert summary["skipped"] == []

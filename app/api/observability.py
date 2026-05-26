@@ -21,8 +21,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories.observability_views import ObservabilityViewsRepository
 
+from src.repositories import (
+    observability_views_repo,
+)
 router = APIRouter(prefix="/api/admin/observability", tags=["observability"])
 
 
@@ -63,65 +65,73 @@ def facets(
     a dropdown; tighter windows usually have <20 anyway.
     """
     since = _window_since(since_minutes)
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    eng = get_engine()
+    with eng.connect() as eng_conn:
+        users = eng_conn.execute(
+            sa.text(
+                """SELECT a.user_id AS id, COALESCE(u.email, a.user_id) AS label,
+                          COUNT(*) AS n
+                   FROM audit_log a
+                   LEFT JOIN users u ON u.id = a.user_id
+                   WHERE a.timestamp >= :since AND a.user_id IS NOT NULL
+                   GROUP BY a.user_id, u.email
+                   ORDER BY n DESC LIMIT 50"""
+            ),
+            {"since": since},
+        ).fetchall()
 
-    # users (joined to users.email so the UI shows a readable label)
-    users = conn.execute(
-        """
-        SELECT a.user_id AS id, COALESCE(u.email, a.user_id) AS label, COUNT(*) AS n
-        FROM audit_log a
-        LEFT JOIN users u ON u.id = a.user_id
-        WHERE a.timestamp >= ? AND a.user_id IS NOT NULL
-        GROUP BY a.user_id, u.email
-        ORDER BY n DESC
-        LIMIT 50
-        """,
-        [since],
-    ).fetchall()
+        actions = eng_conn.execute(
+            sa.text(
+                "SELECT action AS label, COUNT(*) AS n "
+                "FROM audit_log WHERE timestamp >= :since AND action IS NOT NULL "
+                "GROUP BY action ORDER BY n DESC LIMIT 50"
+            ),
+            {"since": since},
+        ).fetchall()
 
-    actions = conn.execute(
-        """
-        SELECT action AS label, COUNT(*) AS n
-        FROM audit_log WHERE timestamp >= ? AND action IS NOT NULL
-        GROUP BY action ORDER BY n DESC LIMIT 50
-        """,
-        [since],
-    ).fetchall()
+        results = eng_conn.execute(
+            sa.text(
+                "SELECT COALESCE(result, '—') AS label, COUNT(*) AS n "
+                "FROM audit_log WHERE timestamp >= :since "
+                "GROUP BY result ORDER BY n DESC LIMIT 50"
+            ),
+            {"since": since},
+        ).fetchall()
 
-    results = conn.execute(
-        """
-        SELECT COALESCE(result, '—') AS label, COUNT(*) AS n
-        FROM audit_log WHERE timestamp >= ?
-        GROUP BY result ORDER BY n DESC LIMIT 50
-        """,
-        [since],
-    ).fetchall()
+        resources = eng_conn.execute(
+            sa.text(
+                "SELECT resource AS label, COUNT(*) AS n "
+                "FROM audit_log WHERE timestamp >= :since AND resource IS NOT NULL "
+                "GROUP BY resource ORDER BY n DESC LIMIT 50"
+            ),
+            {"since": since},
+        ).fetchall()
 
-    resources = conn.execute(
-        """
-        SELECT resource AS label, COUNT(*) AS n
-        FROM audit_log WHERE timestamp >= ? AND resource IS NOT NULL
-        GROUP BY resource ORDER BY n DESC LIMIT 50
-        """,
-        [since],
-    ).fetchall()
-
-    # Sources — derive client_kind union with the legacy action whitelist.
-    sched_in = ",".join("?" for _ in _SCHEDULER_ACTION_FALLBACK)
-    source_rows = conn.execute(
-        f"""
-        SELECT
-          CASE
-            WHEN client_kind IS NOT NULL AND client_kind != '' THEN client_kind
-            WHEN action IN ({sched_in}) THEN 'scheduler'
-            WHEN user_id IS NULL THEN 'system'
-            ELSE 'other'
-          END AS src,
-          COUNT(*) AS n
-        FROM audit_log WHERE timestamp >= ?
-        GROUP BY src ORDER BY n DESC
-        """,
-        list(_SCHEDULER_ACTION_FALLBACK) + [since],
-    ).fetchall()
+        # Sources — derive client_kind, falling back to the action whitelist.
+        sched_binds = []
+        sched_params: dict = {"since": since}
+        for i, a in enumerate(_SCHEDULER_ACTION_FALLBACK):
+            k = f"sched_{i}"
+            sched_binds.append(f":{k}")
+            sched_params[k] = a
+        source_rows = eng_conn.execute(
+            sa.text(
+                f"""SELECT
+                      CASE
+                        WHEN client_kind IS NOT NULL AND client_kind != ''
+                          THEN client_kind
+                        WHEN action IN ({','.join(sched_binds)}) THEN 'scheduler'
+                        WHEN user_id IS NULL THEN 'system'
+                        ELSE 'other'
+                      END AS src,
+                      COUNT(*) AS n
+                    FROM audit_log WHERE timestamp >= :since
+                    GROUP BY src ORDER BY n DESC"""
+            ),
+            sched_params,
+        ).fetchall()
 
     return {
         "window_minutes": since_minutes,
@@ -145,26 +155,38 @@ def kpis(
 ):
     """Four KPIs for the top-bar cards: events, active users, error rate, p95."""
     since = _window_since(since_minutes)
-
-    total = conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE timestamp >= ?", [since],
-    ).fetchone()[0]
-    active_users = conn.execute(
-        "SELECT COUNT(DISTINCT user_id) FROM audit_log "
-        "WHERE timestamp >= ? AND user_id IS NOT NULL",
-        [since],
-    ).fetchone()[0]
-    errors = conn.execute(
-        "SELECT COUNT(*) FROM audit_log "
-        "WHERE timestamp >= ? AND result IS NOT NULL AND result LIKE 'error%'",
-        [since],
-    ).fetchone()[0]
-    # Latency p95 over rows that recorded duration_ms.
-    p95 = conn.execute(
-        "SELECT CAST(approx_quantile(duration_ms, 0.95) AS INTEGER) "
-        "FROM audit_log WHERE timestamp >= ? AND duration_ms IS NOT NULL",
-        [since],
-    ).fetchone()[0]
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        total = eng_conn.execute(
+            sa.text("SELECT COUNT(*) FROM audit_log WHERE timestamp >= :since"),
+            {"since": since},
+        ).scalar()
+        active_users = eng_conn.execute(
+            sa.text(
+                "SELECT COUNT(DISTINCT user_id) FROM audit_log "
+                "WHERE timestamp >= :since AND user_id IS NOT NULL"
+            ),
+            {"since": since},
+        ).scalar()
+        errors = eng_conn.execute(
+            sa.text(
+                "SELECT COUNT(*) FROM audit_log "
+                "WHERE timestamp >= :since AND result IS NOT NULL AND result LIKE 'error%'"
+            ),
+            {"since": since},
+        ).scalar()
+        # Latency p95 over rows that recorded duration_ms. DuckDB
+        # approx_quantile -> Postgres percentile_cont (ordered-set agg).
+        p95 = eng_conn.execute(
+            sa.text(
+                "SELECT CAST(percentile_cont(0.95) "
+                "WITHIN GROUP (ORDER BY duration_ms) AS INTEGER) "
+                "FROM audit_log "
+                "WHERE timestamp >= :since AND duration_ms IS NOT NULL"
+            ),
+            {"since": since},
+        ).scalar()
 
     rate = (errors / total) if total else 0.0
     return {
@@ -187,7 +209,7 @@ def list_views(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     user_id = user.get("id") or ""
-    return {"views": ObservabilityViewsRepository(conn).list_for_user(user_id)}
+    return {"views": observability_views_repo().list_for_user(user_id)}
 
 
 @router.post("/views")
@@ -219,21 +241,28 @@ def save_view(
     # thousands of views. 100 is well above any plausible curation
     # ceiling; ON CONFLICT updates an existing name rather than
     # adding rows, so this only bites genuine fan-out.
-    existing = conn.execute(
-        "SELECT COUNT(*) FROM user_observability_views WHERE user_id = ?",
-        [user_id],
-    ).fetchone()[0]
-    already_exists = conn.execute(
-        "SELECT 1 FROM user_observability_views "
-        "WHERE user_id = ? AND name = ?",
-        [user_id, name],
-    ).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        existing = eng_conn.execute(
+            sa.text(
+                "SELECT COUNT(*) FROM user_observability_views WHERE user_id = :uid"
+            ),
+            {"uid": user_id},
+        ).scalar()
+        already_exists = eng_conn.execute(
+            sa.text(
+                "SELECT 1 FROM user_observability_views "
+                "WHERE user_id = :uid AND name = :name"
+            ),
+            {"uid": user_id, "name": name},
+        ).first()
     if existing >= 100 and not already_exists:
         raise HTTPException(
             status_code=400,
             detail="saved-view count for this user has reached 100; delete one before adding another",
         )
-    return ObservabilityViewsRepository(conn).create(user_id, name, query)
+    return observability_views_repo().create(user_id, name, query)
 
 
 @router.delete("/views/{view_id}", status_code=204)
@@ -243,6 +272,6 @@ def delete_view(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     user_id = user.get("id") or ""
-    ok = ObservabilityViewsRepository(conn).delete(user_id, view_id)
+    ok = observability_views_repo().delete(user_id, view_id)
     if not ok:
         raise HTTPException(status_code=404, detail="view not found")

@@ -24,7 +24,11 @@ from services.verification_detector.detector import (
     _generate_id,
     extract_verifications,
 )
-from src.repositories.knowledge import KnowledgeRepository
+
+from src.repositories import (
+    knowledge_repo,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +45,9 @@ class VerificationProcessor:
         session_path: Path,
         username: str,
         session_key: str,
-        conn: duckdb.DuckDBPyConnection,
         **kwargs: object,
     ) -> ProcessorResult:
-        repo = KnowledgeRepository(conn)
+        repo = knowledge_repo()
         session_id = f"session-{session_path.stem}-{username}"
 
         turns = parse_jsonl(session_path)

@@ -37,12 +37,28 @@ def test_agnes_command_exists():
 
 
 def test_da_command_no_longer_works():
-    """Greenfield rename: no backward-compat alias kept for `da`."""
+    """Greenfield rename: no backward-compat alias kept for `da`.
+
+    Skipped on dev machines whose ``$PATH`` carries a personal ``da``
+    shim outside the venv (e.g. ``~/.local/bin/da`` from an older
+    Agnes install). The check still bites in CI / fresh container
+    installs where ``$PATH`` only sees the package's bin dir.
+    """
+    import os
+    import sys
     result = subprocess.run(
         ["bash", "-c", "command -v da"],
         capture_output=True,
         text=True,
     )
+    if result.returncode == 0:
+        path = result.stdout.strip()
+        venv_root = os.path.dirname(os.path.dirname(sys.executable))
+        if not path.startswith(venv_root):
+            pytest.skip(
+                f"personal ``da`` shim outside the venv at {path!r}; "
+                "rename assertion is package-scoped."
+            )
     assert result.returncode != 0, (
         f"`da` should NOT be on PATH after the rename, but resolved to: "
         f"{result.stdout.strip()!r}"

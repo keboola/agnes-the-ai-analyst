@@ -52,3 +52,29 @@ def validate_project_id(project_id: str) -> bool:
         logger.warning("Rejected unsafe project_id: %r", project_id)
         return False
     return True
+
+
+def pg_like_escape(value: str) -> str:
+    """Escape ``%``, ``_``, and ``\\`` for safe use inside a Postgres
+    ``LIKE`` / ``ILIKE`` pattern.
+
+    The matching SQL must declare the escape character explicitly via
+    ``LIKE :pattern ESCAPE '\\'`` (or use a different escape character —
+    keep the call sides in sync). Returns the input with each special
+    character prefixed by a backslash.
+
+    Without this, free-text search bound parameters like
+    ``f"%{user_input}%"`` turn the user's literal ``_`` or ``%`` into a
+    wildcard — typing ``100_5`` matches ``1005x``, typing ``corp_memory.``
+    widens an audit-log prefix filter to every action starting with
+    ``corp`` and any character. This is at best a UX bug and at worst
+    an RBAC / privacy leak (search results returning rows the caller
+    shouldn't have matched).
+    """
+    if not isinstance(value, str):
+        return value
+    return (
+        value.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )

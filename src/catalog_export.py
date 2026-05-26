@@ -31,8 +31,7 @@ from connectors.openmetadata.transformer import (
     metric_to_yaml_dict,
     table_to_yaml_dict,
 )
-from src.db import get_system_db
-from src.repositories.table_registry import TableRegistryRepository
+from src.repositories import table_registry_repo
 
 logger = logging.getLogger(__name__)
 
@@ -350,21 +349,28 @@ def _cleanup_stale_files(
         current_files: Set of file paths written in this export run
         glob_pattern: Glob pattern to match (e.g., "*.yml")
     """
-    for file_path in directory.rglob(glob_pattern):
+    # Collect candidates up front: rmdir() called inside the loop body
+    # invalidates rglob's directory iterator and surfaces as
+    # FileNotFoundError on the next pathlib scan_dir() call.
+    candidates = list(directory.rglob(glob_pattern))
+    for file_path in candidates:
         if file_path in current_files:
             continue
         if file_path.name == "metrics.yml" and file_path.parent == directory:
-            # Index file managed separately
             continue
         if _is_auto_generated(file_path):
             logger.info(f"Removing stale auto-generated file: {file_path}")
             file_path.unlink()
 
-            # Remove empty parent directory (category dir)
             parent = file_path.parent
-            if parent != directory and not any(parent.iterdir()):
-                parent.rmdir()
-                logger.debug(f"Removed empty directory: {parent}")
+            try:
+                if parent != directory and not any(parent.iterdir()):
+                    parent.rmdir()
+                    logger.debug(f"Removed empty directory: {parent}")
+            except FileNotFoundError:
+                # Parent was already removed in a prior iteration —
+                # benign race with the same cleanup pass.
+                pass
 
 
 def _write_sync_state(docs_dir: Path, metrics_count: int, tables_count: int) -> None:
@@ -440,9 +446,7 @@ def main() -> None:
 
         # Export tables
         try:
-            conn = get_system_db()
-            repo = TableRegistryRepository(conn)
-            registered_tables = repo.list_all()
+            registered_tables = table_registry_repo().list_all()
             tables_count = export_tables(client, registered_tables, docs_dir, catalog_url)
         except Exception as e:
             logger.warning(f"Table export skipped (registry error): {e}")

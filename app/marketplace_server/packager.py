@@ -105,7 +105,7 @@ def build_info(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, Any]:
     by ``source`` so operators can tell at a glance whether a user's
     marketplace view is admin-curated, Store-installed, or both.
     """
-    plugins = marketplace_filter.resolve_user_marketplace(conn, user)
+    plugins = marketplace_filter.resolve_user_marketplace(user)
     etag = marketplace_filter.compute_etag(plugins)
 
     def _entry(p: dict) -> Dict[str, Any]:
@@ -222,7 +222,7 @@ def compute_etag_for_user(
     Returns (etag, plugins) so callers that proceed to build_zip can reuse
     the resolved plugin set and skip the second DB query.
     """
-    plugins = marketplace_filter.resolve_user_marketplace(conn, user)
+    plugins = marketplace_filter.resolve_user_marketplace(user)
     if _ETAG_CACHE is None:
         return marketplace_filter.compute_etag(plugins), plugins
     cache_key = _etag_cache_key(plugins)

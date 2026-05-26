@@ -17,7 +17,11 @@ from services.session_processors.usage_lib import (
     compute_summary,
     iter_events,
 )
-from src.repositories.usage import UsageRepository
+
+from src.repositories import (
+    usage_repo,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +35,6 @@ class UsageProcessor:
         session_path: Path,
         username: str,
         session_key: str,
-        conn: duckdb.DuckDBPyConnection,
         *,
         user_id: str | None = None,
     ) -> ProcessorResult:
@@ -46,7 +49,7 @@ class UsageProcessor:
                 session_id = sid
                 break
 
-        lookup = MarketplaceItemLookup(conn)
+        lookup = MarketplaceItemLookup()
         rows = []
         for e in events:
             source, parent_plugin, _local, _type = lookup.resolve(e)
@@ -96,7 +99,7 @@ class UsageProcessor:
         if not summary.get("session_id"):
             summary["session_id"] = session_id
 
-        repo = UsageRepository(conn)
+        repo = usage_repo()
         n_written = repo.upsert_events(rows, processor_version=USAGE_PROCESSOR_VERSION)
         repo.upsert_summary(summary, processor_version=USAGE_PROCESSOR_VERSION)
 

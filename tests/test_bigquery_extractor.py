@@ -528,12 +528,8 @@ class TestExtractorMainModule:
             {"name": "t1", "bucket": "ds", "source_table": "t1", "description": ""},
         ]
         monkeypatch.setattr(
-            "src.repositories.table_registry.TableRegistryRepository",
-            lambda c: fake_repo,
-        )
-        monkeypatch.setattr(
-            "src.db.get_system_db",
-            lambda: MagicMock(close=lambda: None),
+            "src.repositories.table_registry_repo",
+            lambda: fake_repo,
         )
         # __main__ looks up init_extract via the cached connectors.bigquery.extractor
         # module (sys.modules), so patching its attribute survives runpy's reimport.

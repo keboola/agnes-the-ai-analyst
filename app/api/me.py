@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_current_user
-from src.repositories.audit import AuditRepository
+from src.repositories import audit_repo, users_repo
 
 router = APIRouter(prefix="/api/me", tags=["me"])
 
@@ -43,14 +43,10 @@ class OnboardedRequest(BaseModel):
 async def post_onboarded(
     body: OnboardedRequest = OnboardedRequest(),
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     target = bool(body.onboarded)
-    conn.execute(
-        "UPDATE users SET onboarded = ? WHERE id = ?",
-        [target, user["id"]],
-    )
-    AuditRepository(conn).log(
+    users_repo().update(user["id"], onboarded=target)
+    audit_repo().log(
         user_id=user["id"],
         action="user_onboarded" if target else "user_offboarded",
         params={"source": body.source},
@@ -65,8 +61,8 @@ async def post_onboarded(
 
 
 _WINDOW_INTERVALS = {
-    "24h": "INTERVAL 24 HOUR",
-    "7d": "INTERVAL 7 DAY",
+    "24h": "INTERVAL '24 hours'",
+    "7d": "INTERVAL '7 days'",
 }
 
 
@@ -119,18 +115,18 @@ def compute_home_stats(conn: duckdb.DuckDBPyConnection, user: dict, window: str 
                 COALESCE(SUM(cache_read_tokens), 0)      AS cache_read,
                 COALESCE(SUM(cache_creation_tokens), 0)  AS cache_creation
             FROM usage_session_summary, win
-            WHERE (user_id = ? OR username = ?)
+            WHERE (user_id = :uid OR username = :uname)
               AND started_at >= win.since
         ),
         proj AS (
             SELECT COUNT(DISTINCT cwd) AS projects
             FROM usage_events, win
-            WHERE (user_id = ? OR username = ?)
+            WHERE (user_id = :uid OR username = :uname)
               AND cwd IS NOT NULL
               AND occurred_at >= win.since
         ),
         u AS (
-            SELECT last_pull_at FROM users WHERE id = ?
+            SELECT last_pull_at FROM users WHERE id = :uid
         )
         SELECT
             u.last_pull_at,
@@ -140,7 +136,12 @@ def compute_home_stats(conn: duckdb.DuckDBPyConnection, user: dict, window: str 
             proj.projects
         FROM u, sess, proj
     """
-    row = conn.execute(sql, [uid, username, uid, username, uid]).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text(sql), {"uid": uid, "uname": username}
+        ).first()
 
     if row is None:
         return {

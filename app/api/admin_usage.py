@@ -33,13 +33,17 @@ from connectors.llm.exceptions import (
     LLMRefusalError,
     LLMTimeoutError,
 )
-from src.repositories.audit import AuditRepository
+
+from src.repositories import (
+    audit_repo,
+)
 from src.usage_ask import (
     RESPONSE_SCHEMA,
     SYSTEM_PROMPT,
     build_prompt,
     validate_select_only,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -64,32 +68,34 @@ def export_usage(
     JSON: streaming NDJSON (one JSON object per line) — easier to pipe + tail.
     Parquet: DuckDB `COPY (SELECT ...) TO '<tmp>.parquet'` then stream the file.
     """
-    where, params = ["1=1"], []
+    where, params = ["1=1"], {}
     if since:
         try:
             since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=400, detail=f"invalid since: {since}")
-        where.append("occurred_at >= ?")
-        params.append(since_dt)
+        where.append("occurred_at >= :since")
+        params["since"] = since_dt
     if until:
         try:
             until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=400, detail=f"invalid until: {until}")
-        where.append("occurred_at < ?")
-        params.append(until_dt)
+        where.append("occurred_at < :until")
+        params["until"] = until_dt
     if user_id:
-        where.append("username = ?")
-        params.append(user_id)
+        where.append("username = :uname")
+        params["uname"] = user_id
     if source:
-        where.append("source = ?")
-        params.append(source)
+        where.append("source = :source")
+        params["source"] = source
 
     sql = f"SELECT * FROM usage_events WHERE {' AND '.join(where)} ORDER BY occurred_at"
-    # Row count for audit (one extra query — acceptable for audit fidelity)
     cnt_sql = f"SELECT COUNT(*) FROM usage_events WHERE {' AND '.join(where)}"
-    row_count = int(conn.execute(cnt_sql, params).fetchone()[0])
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        row_count = int(eng_conn.execute(sa.text(cnt_sql), params).scalar() or 0)
 
     audit_params = {
         "format": format,
@@ -100,7 +106,7 @@ def export_usage(
         "row_count": row_count,
     }
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="usage.export",
             params=audit_params,
@@ -111,28 +117,32 @@ def export_usage(
         logger.exception("audit_log write failed for usage.export; continuing")
 
     if format == "csv":
-        return _stream_csv(conn, sql, params)
+        return _stream_csv(sql, params)
     elif format == "json":
-        return _stream_ndjson(conn, sql, params)
+        return _stream_ndjson(sql, params)
     else:
-        return _stream_parquet(conn, sql, params)
+        return _stream_parquet(sql, params)
 
 
-def _stream_csv(conn, sql, params):
+def _stream_csv(sql, params):
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+
     def gen():
-        rel = conn.execute(sql, params)
-        cols = [d[0] for d in rel.description]
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(cols)
-        yield buf.getvalue()
-        buf.seek(0)
-        buf.truncate(0)
-        for row in rel.fetchall():
-            w.writerow(row)
+        with get_engine().connect() as eng_conn:
+            result = eng_conn.execute(sa.text(sql), params)
+            cols = list(result.keys())
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(cols)
             yield buf.getvalue()
             buf.seek(0)
             buf.truncate(0)
+            for row in result:
+                w.writerow(row)
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate(0)
 
     return StreamingResponse(
         gen(),
@@ -141,18 +151,22 @@ def _stream_csv(conn, sql, params):
     )
 
 
-def _stream_ndjson(conn, sql, params):
+def _stream_ndjson(sql, params):
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+
     def gen():
-        rel = conn.execute(sql, params)
-        cols = [d[0] for d in rel.description]
-        for row in rel.fetchall():
-            d = {}
-            for k, v in zip(cols, row):
-                if isinstance(v, datetime):
-                    d[k] = v.isoformat()
-                else:
-                    d[k] = v
-            yield json.dumps(d) + "\n"
+        with get_engine().connect() as eng_conn:
+            result = eng_conn.execute(sa.text(sql), params)
+            cols = list(result.keys())
+            for row in result:
+                d = {}
+                for k, v in zip(cols, row):
+                    if isinstance(v, datetime):
+                        d[k] = v.isoformat()
+                    else:
+                        d[k] = v
+                yield json.dumps(d) + "\n"
 
     return StreamingResponse(
         gen(),
@@ -161,18 +175,40 @@ def _stream_ndjson(conn, sql, params):
     )
 
 
-def _stream_parquet(conn, sql, params):
+def _stream_parquet(sql, params):
+    """Stream a parquet file built via PyArrow from PG rows.
+
+    DuckDB's ``COPY (SELECT ...) TO '<path>' (FORMAT PARQUET)`` doesn't
+    exist in PG; the equivalent is to fetch the result set into an
+    Arrow table and write it via pyarrow.parquet.write_table. Holds
+    the whole result in memory — acceptable for the admin export use
+    case (audit-logged, filter-scoped, typically tens of thousands of
+    rows at most).
+    """
     import tempfile
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
 
     tmp = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
     tmp.close()
     out_path = Path(tmp.name)
-    # DuckDB COPY embeds the filter directly — use the same params
-    copy_sql = f"COPY ({sql}) TO '{out_path}' (FORMAT PARQUET)"
     try:
-        conn.execute(copy_sql, params)
+        with get_engine().connect() as eng_conn:
+            result = eng_conn.execute(sa.text(sql), params)
+            cols = list(result.keys())
+            rows = result.fetchall()
+        # Transpose to column-major for Arrow. Empty result set still
+        # produces a schemaless Arrow table — Arrow can't infer column
+        # types from zero rows, so fall back to all-string in that case.
+        if rows:
+            data = {c: [r[i] for r in rows] for i, c in enumerate(cols)}
+            table = pa.table(data)
+        else:
+            table = pa.table({c: pa.array([], type=pa.string()) for c in cols})
+        pq.write_table(table, str(out_path))
     except Exception:
-        # Ensure the temp file is cleaned up if COPY fails before we hand off to StreamingResponse
         out_path.unlink(missing_ok=True)
         raise
 
@@ -258,7 +294,7 @@ def ask_usage(
     except ValueError as e:
         # Return 200 with rejection details so admin sees what the LLM tried.
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="usage.ask",
                 params={"question": question, "sql": sql, "rejected": str(e), "llm_ms": llm_ms},
@@ -279,9 +315,12 @@ def ask_usage(
     # Execute the validated SQL with a row cap (defense in depth even though prompt asks for LIMIT)
     exec_t0 = time.monotonic()
     try:
-        rel = conn.execute(validated_sql)
-        cols = [d[0] for d in rel.description]
-        rows = rel.fetchall()
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as eng_conn:
+            result = eng_conn.execute(sa.text(validated_sql))
+            cols = list(result.keys())
+            rows = result.fetchall()
         if len(rows) > 1000:
             rows = rows[:1000]
             truncated = True
@@ -294,7 +333,7 @@ def ask_usage(
     except Exception as e:
         logger.exception("usage.ask SQL execution failed")
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="usage.ask",
                 params={"question": question, "sql": validated_sql, "error": str(e), "llm_ms": llm_ms},
@@ -306,7 +345,7 @@ def ask_usage(
     exec_ms = int((time.monotonic() - exec_t0) * 1000)
 
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="usage.ask",
             params={
@@ -361,37 +400,30 @@ def reprocess_usage(
     """
     counts = {}
     try:
-        conn.execute("BEGIN")
-        n_state = conn.execute(
-            "DELETE FROM session_processor_state "
-            "WHERE processor_name IN ('usage', 'marketplace_rollup_30d') RETURNING 1"
-        ).fetchall()
-        counts["state_rows"] = len(n_state)
-        n_events = conn.execute("DELETE FROM usage_events RETURNING 1").fetchall()
-        counts["events"] = len(n_events)
-        n_sum = conn.execute("DELETE FROM usage_session_summary RETURNING 1").fetchall()
-        counts["summaries"] = len(n_sum)
-        n_tool = conn.execute("DELETE FROM usage_tool_daily RETURNING 1").fetchall()
-        counts["tool_daily"] = len(n_tool)
-        n_mp_daily = conn.execute(
-            "DELETE FROM usage_marketplace_item_daily RETURNING 1"
-        ).fetchall()
-        counts["marketplace_item_daily"] = len(n_mp_daily)
-        n_mp_window = conn.execute(
-            "DELETE FROM usage_marketplace_item_window RETURNING 1"
-        ).fetchall()
-        counts["marketplace_item_window"] = len(n_mp_window)
-        conn.execute("COMMIT")
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().begin() as eng_conn:
+            r = eng_conn.execute(sa.text(
+                "DELETE FROM session_processor_state "
+                "WHERE processor_name IN ('usage', 'marketplace_rollup_30d')"
+            ))
+            counts["state_rows"] = r.rowcount or 0
+            r = eng_conn.execute(sa.text("DELETE FROM usage_events"))
+            counts["events"] = r.rowcount or 0
+            r = eng_conn.execute(sa.text("DELETE FROM usage_session_summary"))
+            counts["summaries"] = r.rowcount or 0
+            r = eng_conn.execute(sa.text("DELETE FROM usage_tool_daily"))
+            counts["tool_daily"] = r.rowcount or 0
+            r = eng_conn.execute(sa.text("DELETE FROM usage_marketplace_item_daily"))
+            counts["marketplace_item_daily"] = r.rowcount or 0
+            r = eng_conn.execute(sa.text("DELETE FROM usage_marketplace_item_window"))
+            counts["marketplace_item_window"] = r.rowcount or 0
     except Exception as e:
-        try:
-            conn.execute("ROLLBACK")
-        except Exception:
-            pass
         logger.exception("reprocess failed")
         raise HTTPException(status_code=500, detail=f"reprocess failed: {e}")
 
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="usage.reprocess",
             params=counts,
@@ -422,19 +454,33 @@ def prune_usage(
     if retention <= 0:
         return {"status": "skipped", "reason": "USAGE_EVENTS_RETENTION_DAYS unset or 0"}
     try:
-        before = conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]
-        conn.execute(
-            "DELETE FROM usage_events WHERE occurred_at < CURRENT_DATE - INTERVAL (?) DAY",
-            [retention],
-        )
-        after = conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]
-        deleted = before - after
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        # Interval value interpolated as a Python int — retention is the
+        # post-parsed integer (positive after the >0 guard above), not
+        # operator-supplied; PG's parametriser refuses to type-coerce an
+        # interval through a positional placeholder.
+        days = int(retention)
+        with get_engine().begin() as eng_conn:
+            before = eng_conn.execute(
+                sa.text("SELECT COUNT(*) FROM usage_events")
+            ).scalar()
+            eng_conn.execute(
+                sa.text(
+                    f"DELETE FROM usage_events "
+                    f"WHERE occurred_at < CURRENT_DATE - INTERVAL '{days} days'"
+                )
+            )
+            after = eng_conn.execute(
+                sa.text("SELECT COUNT(*) FROM usage_events")
+            ).scalar()
+        deleted = (before or 0) - (after or 0)
     except Exception as e:
         logger.exception("prune failed")
         raise HTTPException(status_code=500, detail=f"prune failed: {e}")
 
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="usage.prune",
             params={"retention_days": retention, "deleted": deleted, "remaining": after},

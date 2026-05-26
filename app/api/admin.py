@@ -18,11 +18,20 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories.table_registry import TableRegistryRepository
-from src.repositories.audit import AuditRepository
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
+)
+
+from src.repositories import (
+    audit_repo,
+    bq_metadata_cache_repo,
+    column_metadata_repo,
+    store_entities_repo,
+    store_submissions_repo,
+    sync_state_repo,
+    table_registry_repo,
+    user_store_installs_repo,
 )
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
@@ -167,7 +176,6 @@ def _normalize_primary_key(v):
 # Devin ANALYSIS_0001 on PR #141 5f649a4 review.
 _URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
     ("data_source", "keboola", "stack_url"),
-    ("marketplace", "curators_url"),
 )
 
 
@@ -258,7 +266,6 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "corporate_memory",
     "materialize",
     "guardrails",
-    "marketplace",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -292,73 +299,11 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # don't need to touch admin_server_config.html.
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     "instance": {
-        # UI theme — flips `<html data-theme="...">` so the
-        # design-system tokens (`--ds-*`) switch palettes via CSS
-        # without any markup change. Resolved by
-        # `app/instance_config.py::get_instance_theme()`.
-        "theme": {
-            "kind": "select",
-            "options": ["blue", "navy"],
-            "default": "blue",
-            "hint": (
-                "Page-hero colour scheme. `blue` (default) uses the "
-                "brand-blue hero + blue CTAs. `navy` opts into the "
-                "darker palette with the dark navy hero gradient + "
-                "mint-green CTAs and eyebrow accents."
-            ),
-        },
-        # Operator-injected HTML/JS blocks rendered into base.html.
-        # `kind: array` renders as a JSON textarea in the admin UI
-        # (per admin_server_config.html:702-708 — arrays fall back to
-        # the JSON path); the hint documents the per-item shape so the
-        # operator knows what to paste. Resolved by
-        # `app/instance_config.py::get_custom_scripts()`.
-        "custom_scripts": {
-            "kind": "array",
-            "hint": (
-                "Operator-injected HTML/JS blocks rendered into base.html. "
-                "Each entry: {name: str, enabled: bool, placement: "
-                "head_start|head_end|body_end, html: str}. Used for feedback "
-                "widgets (Marker.io), analytics (GTM, PostHog), error capture "
-                "(Sentry). Rendered with | safe — admin trust boundary. Review "
-                "third-party widget privacy posture before enabling (most "
-                "capture session data). Restart required after save."
-            ),
-        },
-        # Operator-authored Support HTML rendered inside the welcome
-        # hero on /home, below the operator-owned Overview footnotes.
-        # Resolved by `app/instance_config.py::get_instance_support()`.
-        # Typical content: a one-line invitation pointing at a chat
-        # space, mailing list, or internal runbook. Empty value =
-        # block hidden (OSS stays vendor-neutral).
-        "support": {
-            "kind": "string",
-            "hint": (
-                "HTML body rendered inside the welcome hero's Support "
-                "block on /home (mint-accent panel below the Overview "
-                "footnotes). Typically a one-line invitation linking to "
-                "a chat space, mailing list, or runbook — e.g. "
-                "'<p><strong>Need help?</strong> Drop into our "
-                "<a href=\"https://chat.example.com/room/xxx\">Support</a> "
-                "chat space.</p>'. Rendered with | safe — admin trust "
-                "boundary (link target is operator-controlled). Empty "
-                "value hides the block."
-            ),
-        },
+        # No commonly-missing instance-level fields. The example YAML's
+        # `name`/`subtitle` are always populated by `agnes setup` so they
+        # render via the populated path; nothing to surface here.
     },
     "data_source": {
-        "type": {
-            "kind": "select",
-            "options": ["keboola", "bigquery", "local", "csv"],
-            "default": "local",
-            "hint": (
-                "Active data source connector. "
-                "`keboola` — pulls tables from Keboola Storage API (configure stack_url + token below). "
-                "`bigquery` — queries BigQuery remotely via the DuckDB BQ extension (configure bigquery block below). "
-                "`local` — CSV/parquet files placed directly in the data directory. "
-                "`csv` — alias for local."
-            ),
-        },
         "bigquery": {
             "kind": "object",
             "hint": "BigQuery connection knobs (read more in docs/DEPLOYMENT.md)",
@@ -863,17 +808,6 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             ),
         },
     },
-    "marketplace": {
-        "curators_url": {
-            "kind": "string",
-            "hint": (
-                "URL the 'See all curators →' link on /marketplace points to "
-                "(e.g. an internal wiki page listing curators accountable for "
-                "the curated marketplace). Empty → the link is hidden. "
-                "Validated against private-IP allowlist on save (SSRF guard)."
-            ),
-        },
-    },
 }
 
 # Keys whose values must be redacted from the audit diff. We match
@@ -1313,7 +1247,7 @@ async def update_server_config(
     # fields changed so the operator's intent (touched the page, hit
     # save) is auditable.
     diff = _diff_dicts(before, after)
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="instance_config.update",
         resource="instance.yaml",
@@ -1472,22 +1406,6 @@ class RegisterTableRequest(BaseModel):
     partition_by: Optional[str] = None
     partition_granularity: Optional[str] = None
     initial_load_chunk_days: Optional[int] = None
-    # v51 — fully-qualified BigQuery path. When set on a BigQuery row,
-    # the extractor uses ``project.dataset.table`` from this field instead
-    # of constructing the path from ``bucket`` + ``source_table`` against
-    # the globally-attached project. Decouples UX/RBAC ``bucket`` label
-    # from physical BQ dataset (issue #343). Format ``project.dataset.table``;
-    # validated by ``connectors.bigquery.extractor.parse_bq_fqn``.
-    bq_fqn: Optional[str] = Field(
-        default=None,
-        description=(
-            "Fully-qualified BigQuery path (``project.dataset.table``). "
-            "Only applies to source_type='bigquery'. When set, overrides "
-            "the legacy bucket+source_table path construction. Use this "
-            "to register a table whose BQ dataset name differs from the "
-            "Agnes ``bucket`` label (issue #343)."
-        ),
-    )
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -2002,10 +1920,6 @@ class UpdateTableRequest(BaseModel):
     partition_by: Optional[str] = None
     partition_granularity: Optional[str] = None
     initial_load_chunk_days: Optional[int] = None
-    # v51 — see RegisterTableRequest.bq_fqn. PUT lets an admin add or
-    # clear bq_fqn on an existing row (cleared via explicit `null`,
-    # per the PUT shape contract documented on the handler below).
-    bq_fqn: Optional[str] = None
 
     @field_validator("sync_strategy", mode="before")
     @classmethod
@@ -2277,40 +2191,27 @@ async def list_registry(
     scheduler logs. None for rows that have never errored or have already
     recovered (status='ok'); the per-row error message string otherwise.
     """
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     tables = repo.list_all()
 
-    # Single batched read of sync_state — avoid N+1 GETs against
+    # Single batched read of sync_state errors — avoid N+1 GETs against
     # `sync_state` for large registries. The sync_state row is keyed on
     # `table_id` which mirrors `table_registry.name` (see comment in
     # _run_materialized_pass / _build_manifest_for_user about name vs id).
-    # One query covers both error message (only when status='error') and
-    # last_sync timestamp so operators can see both staleness and failure.
     error_by_name: Dict[str, Optional[str]] = {}
-    sync_by_name: Dict[str, Optional[str]] = {}
     try:
-        rows = conn.execute(
-            "SELECT table_id, "
-            "  CASE WHEN status = 'error' AND error IS NOT NULL AND error <> '' "
-            "       THEN error ELSE NULL END AS err, "
-            "  last_sync "
-            "FROM sync_state"
-        ).fetchall()
-        for tid, err, ls in rows:
-            if err:
-                error_by_name[tid] = err
-            if ls:
-                sync_by_name[tid] = str(ls)[:16]  # "YYYY-MM-DD HH:MM"
+        for s in sync_state_repo().get_all_states():
+            if s.get("status") == "error" and s.get("error"):
+                error_by_name[s["table_id"]] = s["error"]
     except Exception:
         # Defensive: if sync_state is unreadable for any reason, the
         # registry response still serializes — operators just lose the
-        # enriched columns on this call.
-        logger.exception("Failed to read sync_state for registry")
+        # last_sync_error column on this call.
+        logger.exception("Failed to read sync_state errors for registry")
 
     for t in tables:
         # Sync_state.table_id == table_registry.name by convention.
         t["last_sync_error"] = error_by_name.get(t.get("name"))
-        t["last_sync_display"] = sync_by_name.get(t.get("name"))
 
     return {"tables": tables, "count": len(tables)}
 
@@ -2344,19 +2245,11 @@ def _materialize_bigquery_extract() -> Dict[str, Any]:
     log inside ``_run_bigquery_materialize_with_timeout`` covers that path.
     """
     from connectors.bigquery import extractor as _bq_extractor
-    from src.db import get_system_db
     from src.orchestrator import SyncOrchestrator
 
-    fresh_conn = get_system_db()
-    try:
-        result = _bq_extractor.rebuild_from_registry(conn=fresh_conn)
-        SyncOrchestrator().rebuild()
-        return result or {}
-    finally:
-        try:
-            fresh_conn.close()
-        except Exception:
-            pass
+    result = _bq_extractor.rebuild_from_registry()
+    SyncOrchestrator().rebuild()
+    return result or {}
 
 
 def _materialize_bigquery_extract_bg() -> None:
@@ -2519,18 +2412,8 @@ def register_table(
     from fastapi.responses import JSONResponse
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
-    import re as _re
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     table_id = request.name.strip().lower().replace(" ", "_")
-
-    if not _re.fullmatch(r"[a-z_][a-z0-9_]*", table_id):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Table name produces unsafe identifier '{table_id}'. "
-                "Use only letters, digits, and underscores — no hyphens or special characters."
-            ),
-        )
 
     if repo.get(table_id):
         raise HTTPException(status_code=409, detail=f"Table '{table_id}' already registered")
@@ -2570,22 +2453,6 @@ def register_table(
     # deprecated and inert at the runtime layer. The DB column keeps its
     # schema default; the registry response no longer reflects request
     # values for this flag.
-    # v51 — validate bq_fqn upfront. The extractor would catch a malformed
-    # value at next rebuild and skip the row, but failing at register time
-    # gives the admin a clean 422 with the specific complaint instead of
-    # a silent "table registered but never materialized" state.
-    if request.bq_fqn is not None and request.source_type != "bigquery":
-        raise HTTPException(
-            status_code=422,
-            detail="bq_fqn only applies to source_type='bigquery'",
-        )
-    if request.bq_fqn is not None:
-        from connectors.bigquery.extractor import parse_bq_fqn
-        try:
-            parse_bq_fqn(request.bq_fqn)
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-
     repo.register(
         id=table_id,
         name=request.name,
@@ -2609,11 +2476,10 @@ def register_table(
         partition_by=request.partition_by,
         partition_granularity=request.partition_granularity,
         initial_load_chunk_days=request.initial_load_chunk_days,
-        bq_fqn=request.bq_fqn,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="register_table",
         resource=table_id,
@@ -2858,7 +2724,7 @@ async def update_table(
     up changes (e.g. a renamed dataset) without waiting for the next
     scheduled sync.
     """
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     existing = repo.get(table_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -2896,20 +2762,6 @@ async def update_table(
         merged = dict(existing)
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
-
-        # v52 + v56: per-table docs fields (sample_questions /
-        # things_to_know / pairs_well_with + grain / platforms /
-        # partition_col / history / gotchas) live on table_registry
-        # but have their own PATCH /registry/{id}/docs endpoint.
-        # ``repo.register()`` doesn't know them; stripping here keeps
-        # the read-modify-write loop the PUT handler relies on
-        # (existing → merged → register) from blowing up with
-        # TypeError when the docs columns are populated.
-        for _docs_key in (
-            "sample_questions", "things_to_know", "pairs_well_with",
-            "grain", "platforms", "partition_col", "history", "gotchas",
-        ):
-            merged.pop(_docs_key, None)
 
         # When switching the merged record away from materialized mode, drop
         # the stale source_query — the request validator can't clear it via
@@ -2971,28 +2823,9 @@ async def update_table(
             merged["profile_after_sync"] = synthetic.profile_after_sync
             merged["source_query"] = synthetic.source_query
 
-            # v51 — same bq_fqn validation as register-table. PUT can both
-            # add a fresh bq_fqn or update an existing one; in either case
-            # malformed values should reject at PUT time, not silently
-            # land in the DB and break the next rebuild.
-            if merged.get("bq_fqn"):
-                from connectors.bigquery.extractor import parse_bq_fqn
-                try:
-                    parse_bq_fqn(merged["bq_fqn"])
-                except ValueError as e:
-                    raise HTTPException(status_code=422, detail=str(e))
-        else:
-            # Non-BQ row carrying bq_fqn is nonsensical — reject the same
-            # way register-table does.
-            if merged.get("bq_fqn"):
-                raise HTTPException(
-                    status_code=422,
-                    detail="bq_fqn only applies to source_type='bigquery'",
-                )
-
         repo.register(id=table_id, **merged)
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="update_table",
         resource=table_id,
@@ -3012,116 +2845,6 @@ async def update_table(
     invalidate_for_table(table_id)
 
     return {"id": table_id, "updated": list(updates.keys())}
-
-
-class _GotchaItem(BaseModel):
-    """v56: a single gotcha entry. ``key=True`` marks the first one as
-    the "Key gotcha" rendered distinctly by the package detail page."""
-    key: bool = False
-    body: str
-
-
-class TableDocsRequest(BaseModel):
-    """Per-table docs surface — v52 (sample_questions / things_to_know /
-    pairs_well_with) extended in v56 with structured fields (grain /
-    platforms / partition_col / history / gotchas) for the
-    /catalog/p/<slug> package detail page rewrite.
-
-    All fields optional. Sending `[]` for a list clears it; sending
-    `""` for a scalar clears it; omitting leaves it untouched
-    (Optional-is-no-op contract).
-    """
-    # v52 fields.
-    sample_questions: Optional[List[str]] = None
-    things_to_know: Optional[str] = None
-    pairs_well_with: Optional[List[str]] = None
-    # v56 fields.
-    grain: Optional[str] = None
-    platforms: Optional[List[str]] = None
-    partition_col: Optional[str] = None
-    history: Optional[str] = None
-    gotchas: Optional[List[_GotchaItem]] = None
-
-    @field_validator("platforms")
-    @classmethod
-    def _check_platforms(cls, v: Optional[List[str]]) -> Optional[List[str]]:
-        if v is None:
-            return None
-        if len(v) > 8:
-            raise ValueError("platforms: max 8 entries")
-        return v
-
-    @field_validator("gotchas")
-    @classmethod
-    def _check_gotchas(cls, v):
-        if v is None:
-            return None
-        if len(v) > 8:
-            raise ValueError("gotchas: max 8 entries")
-        return v
-
-
-@router.patch("/registry/{table_id}/docs")
-async def update_table_docs(
-    table_id: str,
-    payload: TableDocsRequest,
-    user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Write the admin-authored per-table docs read by /catalog/t/<id>
-    and (for the v56 structured fields) by the per-table extended
-    section on /catalog/p/<slug>. Separated from PUT /registry/{id} so
-    admins can flip these fields without re-submitting the whole big
-    registration payload."""
-    repo = TableRegistryRepository(conn)
-    if not repo.get(table_id):
-        raise HTTPException(status_code=404, detail="table_not_found")
-    # Empty-string ``things_to_know`` clears; explicit `[]` clears lists.
-    clear_things = payload.things_to_know == ""
-    clear_questions = payload.sample_questions == []
-    clear_pairs = payload.pairs_well_with == []
-    # v56 ``gotchas`` Pydantic models → list of dicts for the repo (JSON
-    # serializer handles plain dicts; we'd lose the validator if we
-    # passed _GotchaItem instances through).
-    gotchas_payload = (
-        [g.model_dump() for g in payload.gotchas]
-        if payload.gotchas is not None
-        else None
-    )
-    repo.update_docs(
-        table_id,
-        sample_questions=(
-            None if clear_questions else payload.sample_questions
-        ),
-        things_to_know=(None if clear_things else payload.things_to_know),
-        pairs_well_with=(
-            None if clear_pairs else payload.pairs_well_with
-        ),
-        clear_sample_questions=clear_questions,
-        clear_things_to_know=clear_things,
-        clear_pairs_well_with=clear_pairs,
-        # v56 — same Optional-is-no-op contract.
-        grain=payload.grain,
-        platforms=payload.platforms,
-        partition_col=payload.partition_col,
-        history=payload.history,
-        gotchas=gotchas_payload,
-    )
-    # Echo the fresh state so the admin client can re-render without a
-    # second GET. Lets the test suite (and the eventual admin UI) inspect
-    # what landed in DB.
-    fresh = repo.get(table_id) or {}
-    return {
-        "id": table_id,
-        "sample_questions": fresh.get("sample_questions") or [],
-        "things_to_know": fresh.get("things_to_know"),
-        "pairs_well_with": fresh.get("pairs_well_with") or [],
-        "grain": fresh.get("grain"),
-        "platforms": fresh.get("platforms") or [],
-        "partition_col": fresh.get("partition_col"),
-        "history": fresh.get("history"),
-        "gotchas": fresh.get("gotchas") or [],
-    }
 
 
 @router.delete("/registry/{table_id}", status_code=204)
@@ -3145,7 +2868,7 @@ async def unregister_table(
     resurrect a master view from the leftover parquet (E2E sub-agent
     finding 2026-05-01).
     """
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     existing = repo.get(table_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -3195,8 +2918,7 @@ async def unregister_table(
     # advertised the dropped table to `agnes pull` because sync_state was
     # never cleaned up, and analysts kept getting it through the manifest.
     try:
-        conn.execute("DELETE FROM sync_state WHERE table_id = ?", [name])
-        conn.execute("DELETE FROM sync_history WHERE table_id = ?", [name])
+        sync_state_repo().delete_for_table(name)
     except Exception as e:
         logger.warning(
             "Failed to clear sync_state for unregistered table %s: %s — "
@@ -3204,7 +2926,7 @@ async def unregister_table(
             table_id, e,
         )
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="unregister_table",
         resource=table_id,
@@ -3442,7 +3164,7 @@ def _build_keboola_discovery_plan(
     in ``_discover_and_register_tables`` and there was no way to see
     what would change without writing.
     """
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     # Pre-load all keboola rows once so the name-collision lookup
     # below is O(1) per discovered entry. Falls back to per-id
     # `repo.get(...)` calls when list_all isn't available — keeps
@@ -3592,7 +3314,7 @@ def _discover_and_register_tables(
             "dry_run": True,
         }
 
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     registered = 0
     errors = 0
     table_names = []
@@ -3720,7 +3442,7 @@ def run_session_collector(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="run_session_collector",
         resource="job:session-collector",
@@ -3753,7 +3475,6 @@ def run_session_processor(
     """
     from services.session_pipeline.runner import run_processor as _run_processor
     from services.session_processors import get_processor, list_processor_names
-    from src.db import get_system_db
 
     proc = get_processor(processor)
     if proc is None:
@@ -3775,20 +3496,20 @@ def run_session_processor(
             detail=f"Processor '{processor}' is already running",
         )
 
-    job_conn = get_system_db()
     stats: dict = {}
     job_error: Optional[Exception] = None
     try:
-        stats = _run_processor(job_conn, proc)
+        stats = _run_processor(proc)
         # Rebuild daily rollups after a successful usage run so the
-        # marketplace / admin dashboards see fresh aggregates. Runs on the
-        # same connection while it's still open; incremental (last-7-days)
-        # so it's cheap. Kept here (not in runner.py) to stay
-        # processor-agnostic at the framework level.
+        # marketplace / admin dashboards see fresh aggregates. The
+        # rollup helper now runs against Postgres (engine.begin()
+        # transaction internally); incremental last-7-days is cheap
+        # enough to fire on every processor tick. Kept here (not in
+        # runner.py) so the framework stays processor-agnostic.
         if processor == "usage" and stats.get("errors", 0) == 0:
             from services.session_processors.usage_lib import rebuild_rollups
             try:
-                rebuild_rollups(job_conn)
+                rebuild_rollups()
             except Exception as rollup_exc:
                 logger.warning("usage rollup rebuild failed: %s", rollup_exc)
     except Exception as e:
@@ -3798,10 +3519,6 @@ def run_session_processor(
         # operator's only signal beyond docker logs.
         job_error = e
     finally:
-        try:
-            job_conn.close()
-        except Exception:
-            pass
         # Always release, even if the runner raised. A leaked lock would
         # wedge the processor permanently until process restart.
         proc_lock.release()
@@ -3817,7 +3534,7 @@ def run_session_processor(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action=f"run_session_processor:{processor}",
         resource=f"job:session-processor:{processor}",
@@ -3868,7 +3585,7 @@ def run_corporate_memory(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="run_corporate_memory",
         resource="job:corporate-memory",
@@ -3916,7 +3633,6 @@ async def admin_list_store_submissions(
     ``plugin``. ``name`` and ``version`` are case-insensitive substrings.
     ``limit`` clamped to [1, 500].
     """
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     statuses = None
     if status:
@@ -3940,7 +3656,7 @@ async def admin_list_store_submissions(
         statuses = None
 
     try:
-        items, total = StoreSubmissionsRepository(conn).list_for_admin(
+        items, total = store_submissions_repo().list_for_admin(
             status=statuses,
             submitter_id=submitter or None,
             type_=type or None,
@@ -3967,9 +3683,8 @@ async def admin_get_store_submission(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    sub = store_submissions_repo().get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
     return sub
@@ -3993,10 +3708,8 @@ async def admin_override_store_submission(
     captures who, why, and the verdict that was overridden so the next
     time this submission shows up, the trail is intact.
     """
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    subs = StoreSubmissionsRepository(conn)
+    subs = store_submissions_repo()
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
@@ -4018,7 +3731,7 @@ async def admin_override_store_submission(
         )
 
     subs.set_override(submission_id, admin_user_id=user["id"], reason=body.reason)
-    ents_repo = StoreEntitiesRepository(conn)
+    ents_repo = store_entities_repo()
     ents_repo.set_visibility(entity_id, "approved")
 
     # Mirror the runner's deferred-promotion path. An override on a
@@ -4068,7 +3781,7 @@ async def admin_override_store_submission(
     # v46: attribution lookup is live — the next UsageProcessor tick
     # preloads the newly-approved entity by name.
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.overridden",
         resource=f"store_submission:{submission_id}",
@@ -4118,9 +3831,6 @@ async def admin_rescan_store_submission(
         _submission_plugin_dir,
         _version_no_for_submission,
     )
-    from src.db import get_system_db
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails import run_inline_checks
     from src.store_guardrails.runner import (
         default_api_key_loader,
@@ -4132,7 +3842,7 @@ async def admin_rescan_store_submission(
         get_guardrails_llm_provider_ready,
     )
 
-    subs = StoreSubmissionsRepository(conn)
+    subs = store_submissions_repo()
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
@@ -4140,7 +3850,7 @@ async def admin_rescan_store_submission(
     if not entity_id:
         raise HTTPException(status_code=409, detail="cannot_rescan_without_entity")
 
-    ents = StoreEntitiesRepository(conn)
+    ents = store_entities_repo()
     entity = ents.get(entity_id)
     # Rescan the bundle this submission represents — not live. See the
     # equivalent fix in /retry for the full reasoning. Same fall-back
@@ -4164,14 +3874,13 @@ async def admin_rescan_store_submission(
     if not inline.passed:
         # Re-failed inline. Hide the entity (was approved or pending);
         # admin can either fix the bundle (PUT to recreate) or override.
-        subs.conn.execute(
-            "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
-            "status = 'blocked_inline', updated_at = current_timestamp "
-            "WHERE id = ?",
-            [__import__("json").dumps(inline.to_response_dict()), submission_id],
+        subs.update_inline_review(
+            submission_id,
+            status="blocked_inline",
+            inline_checks=inline.to_response_dict(),
         )
         ents.set_visibility(entity_id, "hidden")
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user["id"],
             action="store.submission.rescan",
             resource=f"store_submission:{submission_id}",
@@ -4190,11 +3899,10 @@ async def admin_rescan_store_submission(
     schedule_async_llm = guardrails_enabled and provider_ready
     guardrails_on = hold_for_review  # retained for audit-log compat
     new_status = "pending_llm" if hold_for_review else "approved"
-    subs.conn.execute(
-        "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
-        "status = ?, updated_at = current_timestamp "
-        "WHERE id = ?",
-        [__import__("json").dumps(inline.to_response_dict()), new_status, submission_id],
+    subs.update_inline_review(
+        submission_id,
+        status=new_status,
+        inline_checks=inline.to_response_dict(),
     )
     if hold_for_review:
         ents.set_visibility(entity_id, "pending")
@@ -4212,7 +3920,7 @@ async def admin_rescan_store_submission(
         if target_n is not None and target_n > int(entity_row.get("version_no") or 0):
             promote_to_version(entity_id, target_n, ents)
         # v46: attribution lookup is live — no explicit refresh needed.
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.rescan",
         resource=f"store_submission:{submission_id}",
@@ -4225,7 +3933,6 @@ async def admin_rescan_store_submission(
             run_llm_review,
             submission_id,
             plugin_dir=plugin_dir,
-            conn_factory=get_system_db,
             api_key_loader=default_api_key_loader,
             model_loader=default_model_loader,
         )
@@ -4258,16 +3965,13 @@ async def admin_retry_store_submission(
         _submission_plugin_dir,
         _version_no_for_submission,
     )
-    from src.db import get_system_db
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails.runner import (
         default_api_key_loader,
         default_model_loader,
         run_llm_review,
     )
 
-    subs = StoreSubmissionsRepository(conn)
+    subs = store_submissions_repo()
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
@@ -4287,7 +3991,7 @@ async def admin_retry_store_submission(
     # verdict against the wrong bytes; the runner's hash-match
     # promotion would then advance the entity to staged bytes that
     # were never actually reviewed.
-    ent = StoreEntitiesRepository(conn).get(entity_id) or {}
+    ent = store_entities_repo().get(entity_id) or {}
     target_n = _version_no_for_submission(ent, submission_id)
     if target_n is not None:
         plugin_dir = _submission_plugin_dir(entity_id, target_n)
@@ -4301,7 +4005,7 @@ async def admin_retry_store_submission(
         raise HTTPException(status_code=410, detail="bundle_missing")
 
     subs.update_status(submission_id, status="pending_llm")
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.retry",
         resource=f"store_submission:{submission_id}",
@@ -4311,14 +4015,13 @@ async def admin_retry_store_submission(
         run_llm_review,
         submission_id,
         plugin_dir=plugin_dir,
-        conn_factory=get_system_db,
         api_key_loader=default_api_key_loader,
         model_loader=default_model_loader,
     )
     return {"ok": True, "submission_id": submission_id, "status": "pending_llm"}
 
 
-@router.delete("/store/submissions/{submission_id}", status_code=204)
+@router.delete("/store/submissions/{submission_id}")
 async def admin_delete_store_submission(
     submission_id: str,
     user: dict = Depends(require_admin),
@@ -4331,23 +4034,20 @@ async def admin_delete_store_submission(
     triage needs the evidence trail later.
     """
     from app.api.store import _entity_dir
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
-    from src.repositories.user_store_installs import UserStoreInstallsRepository
 
-    subs = StoreSubmissionsRepository(conn)
+    subs = store_submissions_repo()
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
 
     entity_id = sub.get("entity_id")
     if entity_id:
-        UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
-        StoreEntitiesRepository(conn).delete(entity_id)
+        user_store_installs_repo().delete_all_for_entity(entity_id)
+        store_entities_repo().delete(entity_id)
         _shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
-    conn.execute("DELETE FROM store_submissions WHERE id = ?", [submission_id])
+    subs.delete(submission_id)
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.deleted",
         resource=f"store_submission:{submission_id}",
@@ -4358,6 +4058,7 @@ async def admin_delete_store_submission(
             "status": sub.get("status"),
         },
     )
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -4389,10 +4090,8 @@ async def admin_download_store_submission_bundle(
         _version_no_for_submission,
     )
 
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    sub = store_submissions_repo().get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
     entity_id = sub.get("entity_id")
@@ -4405,7 +4104,7 @@ async def admin_download_store_submission_bundle(
     # while the staged v2 bytes (the actual risky upload the admin is
     # reviewing) sit in `versions/v2/plugin/`. Falls back to live for
     # legacy rows that never seeded a versions/ dir.
-    ent = StoreEntitiesRepository(conn).get(entity_id) or {}
+    ent = store_entities_repo().get(entity_id) or {}
     target_n = _version_no_for_submission(ent, submission_id)
     if target_n is not None:
         plugin_dir = _submission_plugin_dir(entity_id, target_n)
@@ -4416,7 +4115,7 @@ async def admin_download_store_submission_bundle(
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.bundle_downloaded",
         resource=f"store_submission:{submission_id}",
@@ -4464,7 +4163,7 @@ async def run_blocked_purge(
     ttl = get_guardrails_blocked_bundle_ttl_days()
     result = purge_blocked_bundles(conn, ttl_days=ttl)
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="run_blocked_purge",
         resource="job:store-blocked-purge",
@@ -4493,7 +4192,7 @@ async def run_reap_stuck_reviews(
     grace = get_guardrails_stuck_review_grace_seconds()
     result = reap_stuck_llm_reviews(conn, grace_seconds=grace)
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="run_reap_stuck_reviews",
         resource="job:store-reap-stuck-reviews",

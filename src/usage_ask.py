@@ -89,7 +89,7 @@ TABLE usage_marketplace_item_window
     PRIMARY KEY (period_label, source, type, parent_plugin, name)
 """
 
-SYSTEM_PROMPT = """You translate natural-language questions into DuckDB SELECT statements over a telemetry schema.
+SYSTEM_PROMPT = """You translate natural-language questions into PostgreSQL SELECT statements over a telemetry schema.
 
 Rules:
 1. Output a single SQL statement only.
@@ -97,7 +97,17 @@ Rules:
 3. No semicolons except optionally one at the end.
 4. No CTE that contains a write.
 5. Prefer rollup tables for date-range aggregations: `usage_tool_daily` (per-tool), `usage_marketplace_item_daily` (per marketplace item — plugin / skill / agent / command keyed by source + type + parent_plugin + name), and `usage_marketplace_item_window` (true-distinct counts across `last_7d` / `last_30d` snapshots). Use `usage_events` for forensic detail. The pre-v48 `usage_plugin_daily` and `usage_attribution_*` tables are gone — do not reference them.
-6. Use DuckDB-flavor SQL: `CURRENT_DATE`, `INTERVAL 7 DAY`, `DATE_TRUNC('week', ...)`, `EPOCH`, etc.
+6. Use PostgreSQL-flavor SQL:
+   - Date literal: `DATE '2026-01-01'`
+   - Now: `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `NOW()`
+   - Interval: `INTERVAL '7 days'` (quoted string, plural unit). NEVER `INTERVAL 7 DAY` — that is DuckDB / MySQL syntax and is a syntax error in Postgres.
+   - Date arithmetic: `CURRENT_DATE - INTERVAL '30 days'`, `occurred_at - INTERVAL '1 hour'`
+   - Truncation: `DATE_TRUNC('week', occurred_at)`
+   - Epoch: `EXTRACT(EPOCH FROM occurred_at)` (NOT `EPOCH(occurred_at)`)
+   - Quantile: `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col)` (NOT `approx_quantile`)
+   - Prefix match: `col LIKE 'prefix%'` (NOT `starts_with(col, 'prefix')`)
+   - Cast: `CAST(x AS INTEGER)` or `x::INTEGER`
+   - String coalesce on JSONB: `params->>'key'` for text, `(params->>'key')::INTEGER` for cast.
 7. Limit large result sets — default `LIMIT 100` unless the question asks for ALL rows.
 
 Schema:
@@ -112,7 +122,7 @@ Return JSON with:
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "sql": {"type": "string", "description": "DuckDB SELECT statement"},
+        "sql": {"type": "string", "description": "PostgreSQL SELECT statement"},
         "rationale": {"type": "string", "description": "1-2 sentence explanation"},
     },
     "required": ["sql", "rationale"],
@@ -125,22 +135,28 @@ _FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 
-# DuckDB table-valued / scalar functions that can read arbitrary files,
-# make network calls, or expose internal secrets.  We match only when
-# the name is immediately followed by optional whitespace + "(" so that
-# benign column names like "read_count" or "shell_name" are not rejected.
+# Postgres-side functions that can read arbitrary files, expose internal
+# secrets, or escape the SELECT-only sandbox. We match only when the name
+# is immediately followed by optional whitespace + "(" so that benign
+# column names ("read_count", "shell_name") are not rejected. The
+# DuckDB-side scanners (``read_csv`` / ``read_parquet`` / ``glob`` /
+# ``http_get`` / ``duckdb_*`` reflection) are kept as defence in depth in
+# case a future operator points usage_ask at a DuckDB analytics engine —
+# they're a no-op on Postgres.
 _FORBIDDEN_FUNCS = re.compile(
     r"\b("
+    # Postgres file / RPC / inspection surface
+    r"pg_read_file|pg_read_binary_file|pg_ls_dir|pg_ls_logdir|pg_stat_file|"
+    r"pg_read_server_files|lo_import|lo_export|"
+    r"dblink|dblink_connect|dblink_exec|dblink_open|"
+    r"pg_sleep|pg_sleep_for|pg_sleep_until|pg_terminate_backend|pg_cancel_backend|"
+    r"current_setting|set_config|"
+    # DuckDB-side scanners (defence in depth)
     r"read_csv|read_json|read_json_auto|read_parquet|read_text|read_file|read_blob|"
     r"parquet_scan|json_scan|"
     r"glob|"
     r"http_get|http_post|http_head|"
     r"aws_secret|azure|gcs|iceberg_scan|delta_scan|hudi_scan|"
-    # `pragma_*` table-valued forms expose schema / storage metadata —
-    # `\bPRAGMA\b` in `_FORBIDDEN` doesn't match `pragma_table_info` because
-    # the word boundary between `A` and `_` fails (both word chars). Cover
-    # the function-call variant here. Same shape for `duckdb_*` reflection
-    # functions which can leak table / view inventory.
     r"pragma_table_info|pragma_storage_info|pragma_database_size|pragma_database_list|"
     r"duckdb_tables|duckdb_columns|duckdb_views|duckdb_indexes|duckdb_schemas|"
     r"duckdb_extensions|duckdb_functions|duckdb_settings|duckdb_databases|duckdb_secrets|"

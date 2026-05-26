@@ -1026,7 +1026,6 @@ def _resolve_bq_project_id() -> str:
 
 
 def rebuild_from_registry(
-    conn: duckdb.DuckDBPyConnection | None = None,
     output_dir: str | None = None,
 ) -> Dict[str, Any]:
     """Re-materialize the BigQuery extract.duckdb from the current registry.
@@ -1039,11 +1038,6 @@ def rebuild_from_registry(
     in seconds without waiting for the next scheduled sync.
 
     Args:
-        conn: System DuckDB connection (already open). If None, a new one
-            is opened and closed inside this call — convenient for the
-            standalone __main__ entrypoint, but the API path always passes
-            its request-scoped connection so we don't open a second handle
-            on the same file.
         output_dir: Override for the extract directory. Defaults to
             ``${DATA_DIR}/extracts/bigquery`` to match the orchestrator's
             scan path.
@@ -1063,8 +1057,7 @@ def rebuild_from_registry(
     while validation passed (the validator already used the merged view).
     See review BLOCKER 2 in PR #119.
     """
-    from src.db import get_system_db
-    from src.repositories.table_registry import TableRegistryRepository
+    from src.repositories import table_registry_repo
 
     project_id = _resolve_bq_project_id()
 
@@ -1078,17 +1071,7 @@ def rebuild_from_registry(
             "skipped": False,
         }
 
-    owns_conn = conn is None
-    sys_conn = conn if conn is not None else get_system_db()
-    try:
-        repo = TableRegistryRepository(sys_conn)
-        tables = repo.list_by_source("bigquery")
-    finally:
-        if owns_conn:
-            try:
-                sys_conn.close()
-            except Exception:
-                pass
+    tables = table_registry_repo().list_by_source("bigquery")
 
     if not tables:
         logger.warning("No BigQuery tables registered in table_registry")

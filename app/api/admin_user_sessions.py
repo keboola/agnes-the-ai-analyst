@@ -26,9 +26,11 @@ from fastapi.responses import StreamingResponse
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories.audit import AuditRepository
-from src.repositories.users import UserRepository
 
+from src.repositories import (
+    audit_repo,
+    users_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -44,8 +46,9 @@ def _session_data_dir() -> Path:
     return Path(os.environ.get("SESSION_DATA_DIR", "/data/user_sessions"))
 
 
-def _resolve_user(user_id: str, conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
-    repo = UserRepository(conn)
+def _resolve_user(user_id: str, conn=None) -> dict[str, Any]:
+    """``conn`` ignored — kept for back-compat with existing callsites."""
+    repo = users_repo()
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -100,18 +103,20 @@ def list_user_sessions(
     # Match on both user_id (stable, v45+) and username (legacy) so the
     # admin view shows sessions from both ingestion paths and pre-v45 rows.
     try:
-        rows_db = conn.execute(
-            """
-            SELECT
-                session_file, session_id, started_at, ended_at,
-                active_seconds, wall_seconds,
-                tool_calls, tool_errors, primary_model
-            FROM usage_session_summary
-            WHERE user_id = ? OR username = ?
-            ORDER BY started_at DESC NULLS LAST
-            """,
-            [user_id, username],
-        ).fetchall()
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as eng_conn:
+            rows_db = eng_conn.execute(
+                sa.text(
+                    """SELECT session_file, session_id, started_at, ended_at,
+                              active_seconds, wall_seconds,
+                              tool_calls, tool_errors, primary_model
+                       FROM usage_session_summary
+                       WHERE user_id = :uid OR username = :uname
+                       ORDER BY started_at DESC NULLS LAST"""
+                ),
+                {"uid": user_id, "uname": username},
+            ).fetchall()
     except Exception:
         rows_db = []
 
@@ -242,7 +247,7 @@ def download_all_sessions(
             file_count += 1
     zip_bytes = buf.getvalue()
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="session_bulk_download",
         resource=f"users/{user_id}/sessions",
@@ -311,7 +316,7 @@ def download_session(
 
     size = path.stat().st_size
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="session_download",
         resource=f"users/{user_id}/sessions/{safe_name}",
@@ -354,14 +359,19 @@ def list_user_activity(
     Resolves user_id to the user record (404 if not found), filters audit_log
     on the user_id field, returns paginated rows newest first.
     """
-    from src.repositories.audit import AuditRepository
 
-    row = conn.execute("SELECT id, email FROM users WHERE id = ?", [user_id]).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text("SELECT id, email FROM users WHERE id = :uid"),
+            {"uid": user_id},
+        ).first()
     if row is None:
         raise HTTPException(status_code=404, detail="user not found")
 
-    audit_repo = AuditRepository(conn)
-    rows, _ = audit_repo.query(user_id=user_id, limit=limit + offset)
+    audit = audit_repo()
+    rows, _ = audit.query(user_id=user_id, limit=limit + offset)
     # Apply offset via slicing — cursor-based pagination is per-page only
     rows = rows[offset : offset + limit]
 
@@ -378,10 +388,16 @@ def list_user_activity(
             except (ValueError, TypeError):
                 pass
 
-    total = conn.execute("SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]).fetchone()[0]
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        total = eng_conn.execute(
+            sa.text("SELECT COUNT(*) FROM audit_log WHERE user_id = :uid"),
+            {"uid": user_id},
+        ).scalar()
 
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="admin.user_activity_read",
             resource=f"users/{user_id}/activity"[:256],

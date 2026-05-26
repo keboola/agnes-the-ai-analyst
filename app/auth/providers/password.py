@@ -17,9 +17,11 @@ from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
 from app.auth.rate_limit import limiter as _rate_limiter
-from src.repositories.users import UserRepository
 
 
+from src.repositories import (
+    users_repo,
+)
 def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
     """Display label for the response payload only — `admin` for Admin
     group members, `user` otherwise. Authorization at runtime checks
@@ -38,16 +40,12 @@ MIN_PASSWORD_LEN = 8
 def _audit(user_id: str, action: str, result: str | None = None) -> None:
     """Fire-and-forget audit log entry. Swallows all errors."""
     try:
-        from src.db import get_system_db
-        from src.repositories.audit import AuditRepository
-        audit_conn = get_system_db()
-        AuditRepository(audit_conn).log(
+        audit_repo().log(
             user_id=user_id,
             action=action,
             resource="auth",
             result=result,
         )
-        audit_conn.close()
     except Exception:
         pass  # Audit failure must not block auth
 
@@ -205,7 +203,7 @@ async def password_login(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Login with email + password."""
-    repo = UserRepository(conn)
+    repo = users_repo()
     user = repo.get_by_email(body.email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -236,7 +234,7 @@ async def password_login_web(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Web form login — sets cookie and redirects to `next` (or /dashboard)."""
-    repo = UserRepository(conn)
+    repo = users_repo()
     user = repo.get_by_email(email)
     if not user or not user.get("password_hash"):
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
@@ -280,7 +278,7 @@ async def password_setup(
     bypassable: an attacker brute-forcing the ``setup_token`` just
     switches to this JSON path and resumes at unbounded RPS.
     """
-    repo = UserRepository(conn)
+    repo = users_repo()
     user = repo.get_by_email(request_body.email)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -336,7 +334,7 @@ async def reset_request(
     # for mixed-case emails the admin stored as-is.
     email = (email or "").strip()
     if email:
-        repo = UserRepository(conn)
+        repo = users_repo()
         user = repo.get_by_email(email)
         if user and bool(user.get("active", True)):
             token = secrets.token_urlsafe(32)
@@ -387,13 +385,23 @@ async def reset_confirm(
     # token AND to race the legitimate user) but closes the asymmetry.
     cutoff = datetime.now(timezone.utc) - RESET_TOKEN_TTL
     consume_id = f"CONSUMED:{secrets.token_hex(16)}"
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    eng = get_engine()
     try:
-        conn.execute(
-            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
-            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
-            "AND reset_token_created >= ? AND active = TRUE",
-            [consume_id, email, token, cutoff],
-        )
+        with eng.begin() as eng_conn:
+            eng_conn.execute(
+                sa.text(
+                    "UPDATE users SET reset_token = :cid, reset_token_created = NULL "
+                    "WHERE email = :email AND reset_token = :token "
+                    "AND reset_token_created IS NOT NULL "
+                    "AND reset_token_created >= :cutoff AND active = TRUE"
+                ),
+                {
+                    "cid": consume_id, "email": email,
+                    "token": token, "cutoff": cutoff,
+                },
+            )
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
@@ -402,10 +410,11 @@ async def reset_confirm(
 
     # Verify OUR marker won the race. A concurrent winner will have a
     # different consume_id (or NULL if they already cleared it).
-    row = conn.execute(
-        "SELECT reset_token FROM users WHERE email = ?",
-        [email],
-    ).fetchone()
+    with eng.connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text("SELECT reset_token FROM users WHERE email = :email"),
+            {"email": email},
+        ).first()
     if not row or row[0] != consume_id:
         # Could be: token never matched, expired, account deactivated, or
         # the race was lost. Single error keeps the UX simple and avoids
@@ -415,7 +424,7 @@ async def reset_confirm(
     # Won the race — fetch the user (we need id/email for the response)
     # and apply the password change. Clearing the marker happens as part
     # of the same UPDATE.
-    repo = UserRepository(conn)
+    repo = users_repo()
     user = repo.get_by_email(email)
     if not user:
         return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
@@ -469,7 +478,7 @@ async def setup_request(
     # for mixed-case emails the admin stored as-is.
     email = (email or "").strip()
     if email:
-        repo = UserRepository(conn)
+        repo = users_repo()
         user = repo.get_by_email(email)
         # Only issue setup token if user exists, has no password yet, and is active.
         if user and not user.get("password_hash") and bool(user.get("active", True)):
@@ -513,7 +522,7 @@ async def setup_confirm(
             error=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
         )
 
-    repo = UserRepository(conn)
+    repo = users_repo()
     user = repo.get_by_email(email)
     if not user or user.get("setup_token") != token:
         return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")

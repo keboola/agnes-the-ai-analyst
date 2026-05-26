@@ -26,15 +26,15 @@ from pydantic import BaseModel
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import RESOURCE_TYPES, ResourceType, list_resource_types
-from src.repositories.audit import AuditRepository
-from src.repositories.user_groups import (
-    SystemGroupProtected,
-    UserGroupsRepository,
-)
-from src.repositories.resource_grants import ResourceGrantsRepository
-from src.repositories.user_group_members import UserGroupMembersRepository
-from src.repositories.users import UserRepository
+from src.repositories.user_groups_pg import SystemGroupProtected
 
+from src.repositories import (
+    audit_repo,
+    resource_grants_repo,
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["access"])
@@ -59,7 +59,7 @@ def _audit(
                 k: (v.isoformat() if isinstance(v, datetime) else v)
                 for k, v in params.items()
             }
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id, action=action, resource=resource, params=safe
         )
     except Exception:
@@ -173,9 +173,9 @@ async def access_overview(
     the left, resources tree on the right with per-item checkboxes whose
     state derives from ``grants``.
     """
-    groups_rows = UserGroupsRepository(conn).list_all()
-    members_repo = UserGroupMembersRepository(conn)
-    grants_repo = ResourceGrantsRepository(conn)
+    groups_rows = user_groups_repo().list_all()
+    members_repo = user_group_members_repo()
+    grants_repo = resource_grants_repo()
 
     groups = []
     for g in groups_rows:
@@ -324,8 +324,8 @@ def _mapped_email(g: dict) -> Optional[str]:
 
 def _group_to_response(
     g: dict,
-    members_repo: UserGroupMembersRepository,
-    grants_repo: ResourceGrantsRepository,
+    members_repo,
+    grants_repo,
 ) -> GroupResponse:
     return GroupResponse(
         id=g["id"],
@@ -347,9 +347,9 @@ async def list_groups(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    groups = UserGroupsRepository(conn).list_all()
-    members_repo = UserGroupMembersRepository(conn)
-    grants_repo = ResourceGrantsRepository(conn)
+    groups = user_groups_repo().list_all()
+    members_repo = user_group_members_repo()
+    grants_repo = resource_grants_repo()
     return [_group_to_response(g, members_repo, grants_repo) for g in groups]
 
 
@@ -360,11 +360,11 @@ async def get_group(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Single-group payload for the /admin/groups/{id} detail page header."""
-    g = UserGroupsRepository(conn).get(group_id)
+    g = user_groups_repo().get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
-    members_repo = UserGroupMembersRepository(conn)
-    grants_repo = ResourceGrantsRepository(conn)
+    members_repo = user_group_members_repo()
+    grants_repo = resource_grants_repo()
     return _group_to_response(g, members_repo, grants_repo)
 
 
@@ -377,7 +377,7 @@ async def create_group(
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Group name is required")
-    repo = UserGroupsRepository(conn)
+    repo = user_groups_repo()
     if repo.get_by_name(name):
         raise HTTPException(status_code=409, detail=f"Group {name!r} already exists")
     g = repo.create(
@@ -389,8 +389,8 @@ async def create_group(
         conn, user["id"], "user_group.created", f"group:{g['id']}",
         {"name": name},
     )
-    members_repo = UserGroupMembersRepository(conn)
-    grants_repo = ResourceGrantsRepository(conn)
+    members_repo = user_group_members_repo()
+    grants_repo = resource_grants_repo()
     return _group_to_response(g, members_repo, grants_repo)
 
 
@@ -401,7 +401,7 @@ async def update_group(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = UserGroupsRepository(conn)
+    repo = user_groups_repo()
     g = repo.get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -431,8 +431,8 @@ async def update_group(
             )
         _audit(conn, user["id"], "user_group.updated", f"group:{group_id}", updates)
     g = repo.get(group_id)
-    members_repo = UserGroupMembersRepository(conn)
-    grants_repo = ResourceGrantsRepository(conn)
+    members_repo = user_group_members_repo()
+    grants_repo = resource_grants_repo()
     return _group_to_response(g, members_repo, grants_repo)
 
 
@@ -442,43 +442,22 @@ async def delete_group(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = UserGroupsRepository(conn)
+    repo = user_groups_repo()
     g = repo.get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
     _guard_google_managed(g)
     if g.get("is_system"):
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
-    # Cascade members + grants BEFORE the parent row. DuckDB enforces the
-    # v14 FK (`user_group_members.group_id`, `resource_grants.group_id`
-    # → `user_groups.id`) but does NOT see same-transaction child DELETEs
-    # when validating the parent DELETE — wrapping the whole sequence in
-    # `BEGIN TRANSACTION` fails on the parent DELETE with
-    # `Violates foreign key constraint because key "group_id: <id>" is
-    # still referenced by a foreign key in a different table.` (This was
-    # the pre-#430 behavior: any group carrying a system-plugin auto-grant
-    # — i.e. every group created after `mark_system` on any plugin —
-    # could not be deleted via API/CLI and the operator was stuck on the
-    # 500 + leaked entity.)
-    #
-    # Each DELETE statement therefore autocommits at the DuckDB layer, so
-    # by the time the parent DELETE runs the children are already
-    # committed-gone and the FK check passes. Atomicity is lost in the
-    # narrow case where the second child DELETE or the parent DELETE
-    # raises after the first child DELETE has committed — but the failure
-    # mode is "a group with no members + no grants survives", which is
-    # cosmetically wrong but functionally identical to a freshly-created
-    # empty group (and can be retried by re-issuing the DELETE). The
-    # alternative — orphan rows pointing at a deleted user_groups.id — is
-    # blocked by the FK regardless, so transactional cleanup wasn't
-    # buying us the invariant the original comment claimed.
+    # Cascade members + grants alongside the group row so a delete doesn't
+    # leave orphans pointing at the missing group_id. Each repo call is
+    # autocommit (DuckDB single-statement, PG per-call transaction); the
+    # cascade is intentionally not wrapped in a cross-table transaction
+    # because the PG layer can't span repos. A partial failure (rare) is
+    # recoverable by re-running the delete since each step is idempotent.
     try:
-        conn.execute(
-            "DELETE FROM user_group_members WHERE group_id = ?", [group_id]
-        )
-        conn.execute(
-            "DELETE FROM resource_grants WHERE group_id = ?", [group_id]
-        )
+        user_group_members_repo().delete_all_for_group(group_id)
+        resource_grants_repo().delete_all_for_group(group_id)
         repo.delete(group_id)
     except SystemGroupProtected:
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
@@ -513,9 +492,9 @@ async def list_members(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    if not UserGroupsRepository(conn).get(group_id):
+    if not user_groups_repo().get(group_id):
         raise HTTPException(status_code=404, detail="Group not found")
-    rows = UserGroupMembersRepository(conn).list_members_for_group(group_id)
+    rows = user_group_members_repo().list_members_for_group(group_id)
     return [
         MemberResponse(
             user_id=r["id"],
@@ -537,14 +516,14 @@ async def add_member(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    g = UserGroupsRepository(conn).get(group_id)
+    g = user_groups_repo().get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
     _guard_google_managed(g)
-    target = UserRepository(conn).get_by_email(payload.email)
+    target = users_repo().get_by_email(payload.email)
     if not target:
         raise HTTPException(status_code=404, detail=f"User {payload.email!r} not found")
-    members = UserGroupMembersRepository(conn)
+    members = user_group_members_repo()
     if members.has_membership(target["id"], group_id):
         raise HTTPException(status_code=409, detail="User already a member")
     members.add_member(
@@ -576,19 +555,19 @@ async def remove_member(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    members = UserGroupMembersRepository(conn)
+    members = user_group_members_repo()
     # Last-admin guard: refuse to remove anyone from the seeded Admin group
     # when they are the only active admin — recovery from zero admins
     # requires direct DB access. Same protection as delete_user / update_user
     # (active=False) in app/api/users.py.
-    group = UserGroupsRepository(conn).get(group_id)
+    group = user_groups_repo().get(group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     _guard_google_managed(group)
     if (
         group["name"] == "Admin"
         and is_user_admin(user_id, conn)
-        and UserRepository(conn).count_admins(active_only=True) <= 1
+        and users_repo().count_admins(active_only=True) <= 1
     ):
         raise HTTPException(
             status_code=409,
@@ -622,25 +601,12 @@ class GrantResponse(BaseModel):
     resource_id: str
     assigned_at: Optional[str] = None
     assigned_by: Optional[str] = None
-    # v49: 'available' | 'required' — Required tier is in-stack by default
-    # for every group member without an explicit subscription.
-    requirement: str = "available"
 
 
 class CreateGrantRequest(BaseModel):
     group_id: str
     resource_type: str
     resource_id: str
-    # v49 added the ``requirement`` enum on ``resource_grants``; the POST
-    # endpoint must accept it so clients can create a grant at the
-    # ``required`` tier in one round-trip. Without this, /admin/access
-    # + the inline RBAC matrices (Edit Data Package / Edit Memory Domain
-    # / Edit Recipe) silently fell through to the column default
-    # (``available``), and a re-open of the same modal showed the
-    # admin's "required" pick as "available" — looks like the save
-    # silently failed. Default kept at None so callers that don't
-    # explicitly pass a value still land at DB's column default.
-    requirement: Optional[str] = None
 
 
 def _grant_to_response(g: dict) -> GrantResponse:
@@ -652,7 +618,6 @@ def _grant_to_response(g: dict) -> GrantResponse:
         resource_id=g["resource_id"],
         assigned_at=str(g["assigned_at"]) if g.get("assigned_at") else None,
         assigned_by=g.get("assigned_by"),
-        requirement=g.get("requirement") or "available",
     )
 
 
@@ -665,7 +630,7 @@ async def list_grants(
 ):
     if resource_type:
         _validate_resource_type(resource_type)
-    rows = ResourceGrantsRepository(conn).list_all(
+    rows = resource_grants_repo().list_all(
         resource_type=resource_type, group_id=group_id,
     )
     return [_grant_to_response(r) for r in rows]
@@ -694,26 +659,15 @@ async def create_grant(
         )
     if not payload.resource_id.strip():
         raise HTTPException(status_code=400, detail="resource_id is required")
-    if not UserGroupsRepository(conn).get(payload.group_id):
+    if not user_groups_repo().get(payload.group_id):
         raise HTTPException(status_code=404, detail="Group not found")
-    grants = ResourceGrantsRepository(conn)
-    # v49 ``requirement`` is part of the create-grant contract. Validate
-    # the enum here so the 422 message matches the endpoint contract
-    # rather than leaking a ValueError from the repo layer.
-    if payload.requirement is not None and payload.requirement not in (
-        "available", "required",
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="requirement must be 'available' or 'required'",
-        )
+    grants = resource_grants_repo()
     try:
         grant_id = grants.create(
             group_id=payload.group_id,
             resource_type=rt.value,
             resource_id=payload.resource_id,
             assigned_by=user.get("email"),
-            requirement=payload.requirement,
         )
     except duckdb.ConstraintException:
         raise HTTPException(
@@ -737,93 +691,13 @@ async def create_grant(
     return _grant_to_response(fresh)
 
 
-class UpdateGrantRequirementRequest(BaseModel):
-    requirement: str  # 'available' | 'required'
-
-
-@router.put("/grants/{grant_id}", response_model=GrantResponse)
-async def update_grant_requirement(
-    grant_id: str,
-    payload: UpdateGrantRequirementRequest,
-    user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Update the ``requirement`` enum on an existing grant.
-
-    v49 — Section 4.5 of the unified-stack design (soft downgrade): when
-    transitioning ``required → available`` we eagerly materialize a
-    ``user_stack_subscriptions`` row for every user currently in the
-    granted group, so the resource stays in their stack instead of
-    silently disappearing on the next refresh. The two writes happen
-    inside a single DuckDB transaction.
-
-    Going the other direction (``available → required``) is a no-op for
-    subscriptions — required is the always-in-stack tier and the
-    StackResolver treats required ids as in_stack regardless of any
-    subscription row.
-    """
-    if payload.requirement not in ("available", "required"):
-        raise HTTPException(
-            status_code=400,
-            detail="requirement must be 'available' or 'required'",
-        )
-    grants = ResourceGrantsRepository(conn)
-    existing = grants.get(grant_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Grant not found")
-
-    # All-or-nothing transition under one transaction so a fan-out failure
-    # doesn't leave the requirement flipped without the materialized
-    # subscriptions in place.
-    conn.execute("BEGIN")
-    try:
-        prior = grants.update_requirement(grant_id, payload.requirement)
-        # Soft-downgrade: required → available eagerly subscribes every
-        # group member to preserve continuity. ON CONFLICT DO NOTHING
-        # makes this idempotent if any subscription already exists.
-        if prior == "required" and payload.requirement == "available":
-            conn.execute(
-                """INSERT INTO user_stack_subscriptions
-                   (user_id, resource_type, resource_id)
-                   SELECT m.user_id, ?, ?
-                     FROM user_group_members m
-                    WHERE m.group_id = ?
-                   ON CONFLICT DO NOTHING""",
-                [existing["resource_type"], existing["resource_id"],
-                 existing["group_id"]],
-            )
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-
-    _audit(
-        conn, user["id"], "resource_grant.requirement_updated",
-        f"grant:{grant_id}",
-        {
-            "prior": prior,
-            "new": payload.requirement,
-            "resource_type": existing["resource_type"],
-            "resource_id": existing["resource_id"],
-            "group_id": existing["group_id"],
-        },
-    )
-
-    # Re-read with the group name joined for the response.
-    rows = grants.list_all()
-    fresh = next((r for r in rows if r["id"] == grant_id), None)
-    if not fresh:
-        raise HTTPException(status_code=500, detail="Grant updated but lookup failed")
-    return _grant_to_response(fresh)
-
-
 @router.delete("/grants/{grant_id}", status_code=204)
 async def delete_grant(
     grant_id: str,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    grants = ResourceGrantsRepository(conn)
+    grants = resource_grants_repo()
     existing = grants.get(grant_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Grant not found")
@@ -837,12 +711,13 @@ async def delete_grant(
         rid = existing["resource_id"] or ""
         if "/" in rid:
             mp_id, plugin_name = rid.split("/", 1)
-            sys_row = conn.execute(
-                "SELECT is_system FROM marketplace_plugins "
-                "WHERE marketplace_id = ? AND name = ?",
-                [mp_id, plugin_name],
-            ).fetchone()
-            if sys_row and bool(sys_row[0]):
+            from src.repositories import marketplace_plugins_repo
+            plugin_rows = marketplace_plugins_repo().list_for_marketplace(mp_id)
+            sys_plugin = next(
+                (p for p in plugin_rows if p["name"] == plugin_name and p.get("is_system")),
+                None,
+            )
+            if sys_plugin is not None:
                 raise HTTPException(
                     status_code=409,
                     detail="cannot_revoke_system_grant",
@@ -859,12 +734,10 @@ async def delete_grant(
         rid = existing["resource_id"] or ""
         if "/" in rid:
             mp_id, plugin_name = rid.split("/", 1)
-            from src.repositories.user_curated_subscriptions import (
-                UserCuratedSubscriptionsRepository,
+            from src.repositories import user_curated_subscriptions_repo
+            optouts_dropped = user_curated_subscriptions_repo().delete_for_plugin(
+                mp_id, plugin_name,
             )
-            optouts_dropped = UserCuratedSubscriptionsRepository(
-                conn
-            ).delete_for_plugin(mp_id, plugin_name)
         try:
             from app.marketplace_server import packager
             packager.invalidate_etag_cache()
@@ -919,28 +792,20 @@ async def list_user_memberships(
     (deletable from this page) from Google-synced or system-seeded ones
     (read-only — managed by their own writer).
     """
-    if not UserRepository(conn).get_by_id(user_id):
+    if not users_repo().get_by_id(user_id):
         raise HTTPException(status_code=404, detail="User not found")
-    rows = conn.execute(
-        """SELECT m.group_id, g.name AS group_name, g.is_system,
-                  g.created_by, m.source, m.added_at, m.added_by
-           FROM user_group_members m
-           JOIN user_groups g ON g.id = m.group_id
-           WHERE m.user_id = ?
-           ORDER BY g.is_system DESC, g.name""",
-        [user_id],
-    ).fetchall()
+    rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
     return [
         UserMembershipResponse(
-            group_id=r[0],
-            group_name=r[1],
-            is_system=bool(r[2]),
+            group_id=r["group_id"],
+            group_name=r["name"],
+            is_system=bool(r["is_system"]),
             origin=_derive_origin(
-                {"is_system": bool(r[2]), "name": r[1], "created_by": r[3]}
+                {"is_system": bool(r["is_system"]), "name": r["name"], "created_by": r["created_by"]}
             ),
-            source=r[4],
-            added_at=str(r[5]) if r[5] else None,
-            added_by=r[6],
+            source=r["source"],
+            added_at=None,
+            added_by=None,
         )
         for r in rows
     ]
@@ -962,13 +827,13 @@ async def add_user_to_group(
     Mirror of POST /api/admin/groups/{id}/members but keyed on the user.
     Always writes ``source='admin'`` so the row survives Google sync.
     """
-    if not UserRepository(conn).get_by_id(user_id):
+    if not users_repo().get_by_id(user_id):
         raise HTTPException(status_code=404, detail="User not found")
-    group = UserGroupsRepository(conn).get(payload.group_id)
+    group = user_groups_repo().get(payload.group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     _guard_google_managed(group)
-    members = UserGroupMembersRepository(conn)
+    members = user_group_members_repo()
     if members.has_membership(user_id, payload.group_id):
         raise HTTPException(status_code=409, detail="Already a member")
     members.add_member(
@@ -1016,20 +881,20 @@ async def remove_user_from_group(
     when they are the only active admin — recovery from zero admins
     requires direct DB access.
     """
-    group = UserGroupsRepository(conn).get(group_id)
+    group = user_groups_repo().get(group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     _guard_google_managed(group)
     if (
         group["name"] == "Admin"
         and is_user_admin(user_id, conn)
-        and UserRepository(conn).count_admins(active_only=True) <= 1
+        and users_repo().count_admins(active_only=True) <= 1
     ):
         raise HTTPException(
             status_code=409,
             detail="Cannot remove the last admin — at least one user must remain in the Admin group",
         )
-    members = UserGroupMembersRepository(conn)
+    members = user_group_members_repo()
     removed = members.remove_member(user_id, group_id, require_source="admin")
     if not removed:
         raise HTTPException(
@@ -1075,25 +940,25 @@ async def user_effective_access(
     debugging/audit view of the explicit grant graph, not the enforcement
     surface.
     """
-    if not UserRepository(conn).get_by_id(user_id):
+    if not users_repo().get_by_id(user_id):
         raise HTTPException(status_code=404, detail="User not found")
 
-    # JOIN user's group memberships with their grants. group_concat-style
-    # aggregation isn't worth it — render side-by-side rows and let the UI
-    # collapse same (resource_type, resource_id) into a single line.
-    rows = conn.execute(
-        """SELECT rg.resource_type, rg.resource_id,
-                  g.id AS group_id, g.name AS group_name
-           FROM user_group_members m
-           JOIN user_groups g ON g.id = m.group_id
-           JOIN resource_grants rg ON rg.group_id = m.group_id
-           WHERE m.user_id = ?
-           ORDER BY rg.resource_type, rg.resource_id, g.name""",
-        [user_id],
-    ).fetchall()
+    # Compose the effective-access view from the factory-backed repos so the
+    # endpoint stays backend-agnostic. Per-row JOIN isn't necessary — we have
+    # all the data via list_groups_with_meta_for_user + list_for_groups.
+    membership_rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
+    if not membership_rows:
+        return EffectiveAccessResponse(is_admin=is_user_admin(user_id), items=[])
+
+    by_gid = {m["group_id"]: m["name"] for m in membership_rows}
+    grants_rows = resource_grants_repo().list_for_groups(list(by_gid.keys()))
 
     grouped: dict[tuple[str, str], EffectiveAccessItem] = {}
-    for rt, rid, gid, gname in rows:
+    for gr in sorted(
+        grants_rows, key=lambda r: (r["resource_type"], r["resource_id"], by_gid.get(r["group_id"], ""))
+    ):
+        rt, rid, gid = gr["resource_type"], gr["resource_id"], gr["group_id"]
+        gname = by_gid.get(gid, gid)
         key = (rt, rid)
         if key not in grouped:
             grouped[key] = EffectiveAccessItem(
@@ -1102,7 +967,7 @@ async def user_effective_access(
         grouped[key].via_groups.append({"group_id": gid, "group_name": gname})
 
     return EffectiveAccessResponse(
-        is_admin=is_user_admin(user_id, conn),
+        is_admin=is_user_admin(user_id),
         items=list(grouped.values()),
     )
 
@@ -1130,19 +995,19 @@ async def my_effective_access(
     the profile page audits the actual grant graph; runtime authorization
     still gives Admin god-mode regardless of this list."""
     user_id = user["id"]
-    rows = conn.execute(
-        """SELECT rg.resource_type, rg.resource_id,
-                  g.id AS group_id, g.name AS group_name
-           FROM user_group_members m
-           JOIN user_groups g ON g.id = m.group_id
-           JOIN resource_grants rg ON rg.group_id = m.group_id
-           WHERE m.user_id = ?
-           ORDER BY rg.resource_type, rg.resource_id, g.name""",
-        [user_id],
-    ).fetchall()
+    membership_rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
+    if not membership_rows:
+        return EffectiveAccessResponse(is_admin=is_user_admin(user_id), items=[])
+
+    by_gid = {m["group_id"]: m["name"] for m in membership_rows}
+    grants_rows = resource_grants_repo().list_for_groups(list(by_gid.keys()))
 
     grouped: dict[tuple[str, str], EffectiveAccessItem] = {}
-    for rt, rid, gid, gname in rows:
+    for gr in sorted(
+        grants_rows, key=lambda r: (r["resource_type"], r["resource_id"], by_gid.get(r["group_id"], ""))
+    ):
+        rt, rid, gid = gr["resource_type"], gr["resource_id"], gr["group_id"]
+        gname = by_gid.get(gid, gid)
         key = (rt, rid)
         if key not in grouped:
             grouped[key] = EffectiveAccessItem(
@@ -1151,6 +1016,6 @@ async def my_effective_access(
         grouped[key].via_groups.append({"group_id": gid, "group_name": gname})
 
     return EffectiveAccessResponse(
-        is_admin=is_user_admin(user_id, conn),
+        is_admin=is_user_admin(user_id),
         items=list(grouped.values()),
     )

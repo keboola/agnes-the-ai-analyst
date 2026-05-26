@@ -27,6 +27,9 @@ from app.auth.dependencies import _get_db
 from app.api.admin_user_sessions import _SESSION_FILE_RE, _session_data_dir
 from services.session_pipeline.lib import parse_jsonl
 
+from src.repositories import (
+    audit_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/sessions", tags=["admin-sessions"])
@@ -46,19 +49,21 @@ def _build_where(
     model: Optional[str],
     only_errors: bool,
     q: Optional[str],
-) -> tuple[str, list[Any]]:
-    where = ["started_at >= ?"]
-    params: list[Any] = [since]
+) -> tuple[str, dict]:
+    where = ["started_at >= :since"]
+    params: dict = {"since": since}
     if username:
-        where.append("username = ?"); params.append(username)
+        where.append("username = :username"); params["username"] = username
     if model:
-        where.append("primary_model = ?"); params.append(model)
+        where.append("primary_model = :model"); params["model"] = model
     if only_errors:
         where.append("tool_errors > 0")
     if q:
-        where.append("(session_id LIKE ? OR session_file LIKE ?)")
-        like = f"%{q}%"
-        params.extend([like, like])
+        from src.sql_safe import pg_like_escape
+        where.append(
+            "(session_id LIKE :q ESCAPE '\\' OR session_file LIKE :q ESCAPE '\\')"
+        )
+        params["q"] = f"%{pg_like_escape(q)}%"
     return " AND ".join(where), params
 
 
@@ -97,23 +102,29 @@ def list_sessions(
     col = _VALID_SORT_KEYS.get(sort_col, "started_at")
     direction = "ASC" if (sort_dir or "desc").lower() == "asc" else "DESC"
 
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM usage_session_summary WHERE {where_sql}",
-        params,
-    ).fetchone()[0]
-    rows = conn.execute(
-        f"""SELECT session_file, session_id, username,
-                  started_at, ended_at, active_seconds, wall_seconds,
-                  user_messages, assistant_messages,
-                  tool_calls, tool_errors,
-                  skill_invocations, subagent_dispatches,
-                  mcp_calls, slash_commands,
-                  distinct_tools, distinct_skills, primary_model
-           FROM usage_session_summary WHERE {where_sql}
-           ORDER BY {col} {direction}
-           LIMIT ? OFFSET ?""",
-        params + [limit, offset],
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    lim_params = {**params, "lim": limit, "off": offset}
+    with get_engine().connect() as eng_conn:
+        total = eng_conn.execute(
+            sa.text(f"SELECT COUNT(*) FROM usage_session_summary WHERE {where_sql}"),
+            params,
+        ).scalar()
+        rows = eng_conn.execute(
+            sa.text(
+                f"""SELECT session_file, session_id, username,
+                          started_at, ended_at, active_seconds, wall_seconds,
+                          user_messages, assistant_messages,
+                          tool_calls, tool_errors,
+                          skill_invocations, subagent_dispatches,
+                          mcp_calls, slash_commands,
+                          distinct_tools, distinct_skills, primary_model
+                   FROM usage_session_summary WHERE {where_sql}
+                   ORDER BY {col} {direction}
+                   LIMIT :lim OFFSET :off"""
+            ),
+            lim_params,
+        ).fetchall()
     cols = [
         "session_file","session_id","username",
         "started_at","ended_at","active_seconds","wall_seconds",
@@ -156,15 +167,20 @@ def kpis(
 ):
     since = _window_since(since_minutes)
     where_sql, params = _build_where(since, username, model, only_errors, q)
-    row = conn.execute(
-        f"""SELECT COUNT(*),
-                  COUNT(DISTINCT username),
-                  SUM(CASE WHEN tool_errors > 0 THEN 1 ELSE 0 END),
-                  SUM(tool_calls),
-                  SUM(tool_errors)
-           FROM usage_session_summary WHERE {where_sql}""",
-        params,
-    ).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text(
+                f"""SELECT COUNT(*),
+                          COUNT(DISTINCT username),
+                          SUM(CASE WHEN tool_errors > 0 THEN 1 ELSE 0 END),
+                          SUM(tool_calls),
+                          SUM(tool_errors)
+                   FROM usage_session_summary WHERE {where_sql}"""
+            ),
+            params,
+        ).first()
     sessions_total, users, error_sessions, tool_calls_total, tool_errors_total = (
         int(x or 0) for x in row
     )
@@ -186,18 +202,25 @@ def facets(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     since = _window_since(since_minutes)
-    users = conn.execute(
-        "SELECT username, COUNT(*) AS n FROM usage_session_summary "
-        "WHERE started_at >= ? AND username IS NOT NULL "
-        "GROUP BY username ORDER BY n DESC LIMIT 50",
-        [since],
-    ).fetchall()
-    models = conn.execute(
-        "SELECT primary_model, COUNT(*) AS n FROM usage_session_summary "
-        "WHERE started_at >= ? AND primary_model IS NOT NULL "
-        "GROUP BY primary_model ORDER BY n DESC LIMIT 30",
-        [since],
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        users = eng_conn.execute(
+            sa.text(
+                "SELECT username, COUNT(*) AS n FROM usage_session_summary "
+                "WHERE started_at >= :since AND username IS NOT NULL "
+                "GROUP BY username ORDER BY n DESC LIMIT 50"
+            ),
+            {"since": since},
+        ).fetchall()
+        models = eng_conn.execute(
+            sa.text(
+                "SELECT primary_model, COUNT(*) AS n FROM usage_session_summary "
+                "WHERE started_at >= :since AND primary_model IS NOT NULL "
+                "GROUP BY primary_model ORDER BY n DESC LIMIT 30"
+            ),
+            {"since": since},
+        ).fetchall()
     return {
         "users":  [{"value": r[0], "count": r[1]} for r in users],
         "models": [{"value": r[0], "count": r[1]} for r in models],
@@ -334,8 +357,7 @@ def download(
                 yield chunk
 
     try:
-        from src.repositories.audit import AuditRepository
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="session_download",
             resource=f"{username}/{session_file}",
@@ -364,12 +386,18 @@ def transcript(
     turns = parse_jsonl(path)
     events = _render_transcript(turns)
 
-    summary_row = conn.execute(
-        "SELECT session_id, started_at, ended_at, active_seconds, wall_seconds, "
-        "user_messages, assistant_messages, tool_calls, tool_errors, "
-        "primary_model FROM usage_session_summary WHERE session_file = ?",
-        [f"{username}/{session_file}"],
-    ).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        summary_row = eng_conn.execute(
+            sa.text(
+                "SELECT session_id, started_at, ended_at, active_seconds, "
+                "wall_seconds, user_messages, assistant_messages, tool_calls, "
+                "tool_errors, primary_model FROM usage_session_summary "
+                "WHERE session_file = :sf"
+            ),
+            {"sf": f"{username}/{session_file}"},
+        ).first()
     summary: dict[str, Any] = {}
     if summary_row:
         keys = (
@@ -386,8 +414,7 @@ def transcript(
     # Audit: looking at someone else's transcript is a privacy-sensitive
     # operation; record actor + target + bytes scanned for traceability.
     try:
-        from src.repositories.audit import AuditRepository
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="session.transcript_view",
             resource=f"{username}/{session_file}",

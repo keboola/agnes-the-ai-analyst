@@ -48,6 +48,9 @@ def server(tmp_path_factory):
     env["LOCAL_DEV_MODE"] = "1"
     env["DATA_DIR"] = str(tmp)
     env["TESTING"] = "1"
+    # Toolbar overlay intercepts Playwright clicks; LOCAL_DEV_MODE is
+    # set for the auth bypass only, not for chrome.
+    env["AGNES_DISABLE_DEBUG_TOOLBAR"] = "1"
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port)],
@@ -83,8 +86,33 @@ def server(tmp_path_factory):
 
 @pytest.fixture
 def api(server):
-    """HTTP client for API calls to seed data."""
+    """HTTP client for API calls to seed data.
+
+    Resets the knowledge_items table before each test so module-scoped
+    server state (the same Postgres backs every test in this file) doesn't
+    accumulate. Without this, ``_seed_items`` keeps re-INSERTing across
+    47 tests and the page eventually serves hundreds of duplicates,
+    blowing past pagination + Playwright timeouts on later tests.
+    """
     import httpx
+    import sqlalchemy as sa
+    # Dispose the cached engine before reading the URL again — earlier
+    # tests in the suite (tests/db_pg/* fixtures) monkeypatch
+    # ``AGNES_DB_URL`` at a private pgserver and stash the engine; the
+    # monkeypatch teardown reverts the env but leaves the singleton
+    # pointing at the dead pgserver. Without this dispose the TRUNCATE
+    # below targets the wrong DB and the subprocess's PG accumulates
+    # rows undisturbed.
+    import src.db_pg as db_pg
+    db_pg.dispose()
+    from src.db_pg import get_engine
+    with get_engine().begin() as conn:
+        conn.execute(
+            sa.text(
+                "TRUNCATE TABLE knowledge_items, knowledge_votes, "
+                "knowledge_item_user_dismissed, audit_log RESTART IDENTITY CASCADE"
+            )
+        )
     return httpx.Client(base_url=server["url"], timeout=10)
 
 
@@ -467,7 +495,7 @@ class TestCorporateMemoryFilters:
         clicked = False
         for i in range(buttons.count()):
             cat = buttons.nth(i).get_attribute("data-category")
-            if cat and cat not in ("", "my_rules"):
+            if cat and cat not in ("", "my_rules", "my_upvotes"):
                 buttons.nth(i).click()
                 clicked = True
                 break
@@ -512,60 +540,49 @@ class TestCorporateMemoryFilters:
         )
 
 
-    def test_domain_change_resets_category_filter(self, server, api, page):
-        """Changing domain dropdown must reset category to All so items always show."""
+    def test_domain_and_category_compose(self, server, api, page):
+        """Domain + category filters compose without resetting each other.
+
+        Tracks the #62 contract change (see ``setFilter`` / ``onDomainChange``
+        in ``corporate_memory.html``): the older "reset the other axis"
+        semantic silently dropped operator filters and was removed in #126.
+        This test pins the new behavior — both filters stay live, and the
+        intersection shows items that satisfy *both*.
+        """
         _seed_items(api)
         page.goto(f"{server['url']}/corporate-memory")
         page.wait_for_timeout(1000)
 
-        # Click a category button first (e.g., the first non-All one)
+        # Click the `business_logic` category button (seeded category).
         buttons = page.locator(".filter-btn")
+        clicked = False
         for i in range(buttons.count()):
             cat = buttons.nth(i).get_attribute("data-category")
-            if cat and cat not in ("", "my_rules"):
+            if cat == "business_logic":
                 buttons.nth(i).click()
+                clicked = True
                 break
+        assert clicked, "expected a `business_logic` category button to be rendered"
         page.wait_for_timeout(500)
 
-        # Now change domain to finance
+        # Now layer the `finance` domain. Compose semantic → both stay set.
         page.select_option("#domainFilter", "finance")
         page.wait_for_timeout(1500)
 
-        # "All" category button should be active again
-        all_btn = page.locator('.filter-btn[data-category=""]')
-        assert "active" in (all_btn.get_attribute("class") or ""), (
-            "Category filter did not reset to 'All' when domain changed"
+        # The selected category button must still be active.
+        bl_btn = page.locator('.filter-btn[data-category="business_logic"]')
+        assert "active" in (bl_btn.get_attribute("class") or ""), (
+            "Category filter unexpectedly reset when domain changed — "
+            "compose semantic (issue #62) regressed"
         )
+        # Domain stays at finance, not reset.
+        assert page.locator("#domainFilter").input_value() == "finance"
 
-        # Should show finance items (not empty)
+        # Seeded data: 2 items match business_logic ∩ finance
+        # ("Churn is MRR-based", "CAC excludes organic").
         items = page.locator("#knowledgeList .knowledge-item")
         assert items.count() >= 1, (
-            f"Domain 'finance' returned no items after domain change (category should have reset)"
-        )
-
-    def test_category_change_resets_domain_filter(self, server, api, page):
-        """Clicking a category button must reset domain to All Domains."""
-        _seed_items(api)
-        page.goto(f"{server['url']}/corporate-memory")
-        page.wait_for_timeout(1000)
-
-        # Set domain filter first
-        page.select_option("#domainFilter", "finance")
-        page.wait_for_timeout(500)
-
-        # Now click a category button that has items
-        buttons = page.locator(".filter-btn")
-        for i in range(buttons.count()):
-            cat = buttons.nth(i).get_attribute("data-category")
-            if cat and cat not in ("", "my_rules"):
-                buttons.nth(i).click()
-                break
-        page.wait_for_timeout(1500)
-
-        # Domain dropdown should be reset to "" (All Domains)
-        domain_val = page.locator("#domainFilter").input_value()
-        assert domain_val == "", (
-            f"Domain filter did not reset to 'All Domains' when category changed, got '{domain_val}'"
+            "business_logic ∩ finance must show at least one item"
         )
 
 

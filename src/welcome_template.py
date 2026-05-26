@@ -33,7 +33,7 @@ from app.instance_config import (
     get_instance_name,
     get_instance_subtitle,
 )
-from src.repositories.welcome_template import WelcomeTemplateRepository
+from src.repositories import welcome_template_repo
 
 logger = logging.getLogger(__name__)
 
@@ -169,11 +169,11 @@ def compute_default_agent_prompt(
         # name; a second `claude plugin install <name>@agnes` would be
         # a no-op anyway.
         plugin_install_names: list[str] = []
-        if user and conn is not None:
+        if user:
             try:
                 from src import marketplace_filter
                 seen: set[str] = set()
-                for p in marketplace_filter.resolve_user_marketplace(conn, user):
+                for p in marketplace_filter.resolve_user_marketplace(user):
                     name = p["manifest_name"]
                     if name in seen:
                         continue
@@ -257,7 +257,7 @@ def render_agent_prompt_banner(
     Render failures on the override path are swallowed (logged) and fall back
     to the live default so a broken template never blocks /setup.
     """
-    row = WelcomeTemplateRepository(conn).get()
+    row = welcome_template_repo().get() or {}
     content = row.get("content")
 
     if content:

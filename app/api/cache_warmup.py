@@ -24,6 +24,9 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.auth.access import require_admin
 
+from src.repositories import (
+    table_registry_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -122,10 +125,7 @@ async def _warm_catalog_caches_bg(
 
 def _list_remote_rows() -> list[dict]:
     """Snapshot of registry rows that need a warmup pass."""
-    from src.db import get_system_db
-    from src.repositories.table_registry import TableRegistryRepository
-    conn = get_system_db()
-    rows = TableRegistryRepository(conn).list_all()
+    rows = table_registry_repo().list_all()
     return [
         r for r in rows
         if r.get("query_mode") == "remote" and r.get("source_type") == "bigquery"
@@ -167,27 +167,27 @@ def _warm_metadata_sync(row: dict) -> None:
     (the same primitive the scheduler-driven refresh uses).
     """
     from app.api.bq_metadata_refresh import refresh_one
-    from src.db import get_system_db
-    refresh_one(get_system_db(), row)
+    refresh_one(row)
 
 
 def _warm_schema_sync(row: dict) -> None:
-    """Trigger schema cache populate via build_schema_uncached."""
+    """Trigger schema cache populate via build_schema_uncached.
+
+    Passes ``None`` for the conn arg — build_schema_uncached only consults
+    it inside the internal-source branch, which is not exercised by the
+    remote-BQ warmup path here. Internal tables don't reach this function.
+    """
     from app.api.v2_schema import build_schema_uncached
     from connectors.bigquery.access import get_bq_access
-    from src.db import get_system_db
     bq = get_bq_access()
-    build_schema_uncached(get_system_db(), row["id"], bq=bq, row=row)
+    build_schema_uncached(None, row["id"], bq=bq, row=row)
 
 
 async def warm_one_table(table_id: str) -> None:
     """Single-row re-warm — invoked by `invalidate_for_table` after a
     registry change. Does NOT update WARMUP_STATE (small change shouldn't
     overwrite the last full run's status); just refreshes the caches."""
-    from src.db import get_system_db
-    from src.repositories.table_registry import TableRegistryRepository
-    conn = get_system_db()
-    row = TableRegistryRepository(conn).get(table_id)
+    row = table_registry_repo().get(table_id)
     if not row or row.get("query_mode") != "remote":
         return
     try:

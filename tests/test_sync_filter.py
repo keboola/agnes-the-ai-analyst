@@ -178,13 +178,7 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
         def get(self, table_id):
             return next((c for c in fake_configs if c["id"] == table_id), None)
 
-    monkeypatch.setattr(sync_module, "TableRegistryRepository", _StubRegistry)
-
-    # Stub get_system_db (imported locally inside _run_sync from src.db).
-    class _FakeConn:
-        def close(self): pass
-    import src.db as _db_mod
-    monkeypatch.setattr(_db_mod, "get_system_db", lambda: _FakeConn())
+    monkeypatch.setattr(sync_module, "table_registry_repo", lambda: _StubRegistry(None))
 
     # Fake sync_state: 'due' last synced 60m ago, 'skipped' 10m ago.
     from datetime import datetime, timezone
@@ -197,7 +191,7 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
         def __init__(self, conn): pass
         def get_last_sync(self, table_id): return last_syncs.get(table_id)
 
-    monkeypatch.setattr(sync_module, "SyncStateRepository", _StubState)
+    monkeypatch.setattr(sync_module, "sync_state_repo", lambda: _StubState(None))
 
     # Freeze 'now' inside src.scheduler.filter_due_tables. We do this by
     # monkeypatching filter_due_tables itself to inject `now=`.
@@ -279,12 +273,7 @@ def test_run_sync_does_not_auto_discover_when_filter_returns_empty(monkeypatch, 
         def get(self, table_id):
             return next((c for c in fake_configs if c["id"] == table_id), None)
 
-    monkeypatch.setattr(sync_module, "TableRegistryRepository", _StubRegistry)
-
-    class _FakeConn:
-        def close(self): pass
-    import src.db as _db_mod
-    monkeypatch.setattr(_db_mod, "get_system_db", lambda: _FakeConn())
+    monkeypatch.setattr(sync_module, "table_registry_repo", lambda: _StubRegistry(None))
 
     # 5m ago → not due under "every 1h"
     from datetime import datetime, timezone
@@ -292,7 +281,7 @@ def test_run_sync_does_not_auto_discover_when_filter_returns_empty(monkeypatch, 
         def __init__(self, conn): pass
         def get_last_sync(self, table_id):
             return datetime(2026, 5, 1, 9, 55, tzinfo=timezone.utc)
-    monkeypatch.setattr(sync_module, "SyncStateRepository", _StubState)
+    monkeypatch.setattr(sync_module, "sync_state_repo", lambda: _StubState(None))
 
     from src import scheduler as _sched
     real_filter = _sched.filter_due_tables

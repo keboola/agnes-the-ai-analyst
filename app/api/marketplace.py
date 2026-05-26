@@ -22,7 +22,7 @@ import logging
 import re
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -34,6 +34,16 @@ from app.auth.access import (
     is_user_admin,
     require_resource_access,
 )
+
+from src.repositories import (
+    audit_repo,
+    marketplace_plugins_repo,
+    marketplace_registry_repo,
+    store_entities_repo,
+    store_submissions_repo,
+    user_curated_subscriptions_repo,
+    user_store_installs_repo,
+)
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
@@ -43,15 +53,8 @@ from src.marketplace_filter import (
 )
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
 from src.marketplace_urls import internal_asset_url, mirrored_url
-from src.repositories.audit import AuditRepository
-from src.repositories.marketplace_plugins import MarketplacePluginsRepository
-from src.repositories.marketplace_registry import MarketplaceRegistryRepository
-from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.user_curated_subscriptions import (
-    UserCuratedSubscriptionsRepository,
-)
-from src.repositories.user_store_installs import UserStoreInstallsRepository
 from src.store_categories import STORE_CATEGORIES
+from src.store_naming import suffixed_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
@@ -407,34 +410,38 @@ def _load_invocation_stats(
 
     # 30d + 7d invocations + true distinct users from the window snapshot.
     # Both labels live in the same table; one query pulls both.
-    win_rows = conn.execute(
-        f"""
-        SELECT period_label, name, invocations, distinct_users
-        FROM usage_marketplace_item_window
-        WHERE period_label IN ('last_30d', 'last_7d')
-          AND source = ?
-          {type_filter}
-        """,
-        [source],
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    eng = get_engine()
+    with eng.connect() as eng_conn:
+        win_rows = eng_conn.execute(
+            sa.text(
+                f"""SELECT period_label, name, invocations, distinct_users
+                    FROM usage_marketplace_item_window
+                    WHERE period_label IN ('last_30d', 'last_7d')
+                      AND source = :source
+                      {type_filter}"""
+            ),
+            {"source": source},
+        ).fetchall()
 
-    # 7d / prior-7d for trend calc — derived from the daily fact table.
-    trend_rows = conn.execute(
-        f"""
-        SELECT
-            name,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
-                      AND day <  CURRENT_DATE - INTERVAL 7  DAY
-                     THEN count ELSE 0 END) AS inv_prior
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          {type_filter}
-          AND day >= CURRENT_DATE - INTERVAL 14 DAY
-        GROUP BY name
-        """,
-        [source],
-    ).fetchall()
+        trend_rows = eng_conn.execute(
+            sa.text(
+                f"""SELECT
+                        name,
+                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '7 days'
+                                 THEN count ELSE 0 END) AS inv_recent,
+                        SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '14 days'
+                                  AND day <  CURRENT_DATE - INTERVAL '7 days'
+                                 THEN count ELSE 0 END) AS inv_prior
+                    FROM usage_marketplace_item_daily
+                    WHERE source = :source
+                      {type_filter}
+                      AND day >= CURRENT_DATE - INTERVAL '14 days'
+                    GROUP BY name"""
+            ),
+            {"source": source},
+        ).fetchall()
     trend_by_name = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in trend_rows}
 
     out: Dict[str, Dict] = {}
@@ -479,18 +486,21 @@ def _load_plugin_daily_series(
     ``type='plugin' AND name=<plugin_name>`` so the series matches the
     plugin-level 30d total shown on the card / detail page.
     """
-    rows = conn.execute(
-        """
-        SELECT day, count
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          AND type = 'plugin'
-          AND name = ?
-          AND day >= CURRENT_DATE - INTERVAL 30 DAY
-        ORDER BY day
-        """,
-        [source, plugin_name],
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        rows = eng_conn.execute(
+            sa.text(
+                """SELECT day, count
+                   FROM usage_marketplace_item_daily
+                   WHERE source = :source
+                     AND type = 'plugin'
+                     AND name = :name
+                     AND day >= CURRENT_DATE - INTERVAL '30 days'
+                   ORDER BY day"""
+            ),
+            {"source": source, "name": plugin_name},
+        ).fetchall()
     by_day = {str(r[0]): int(r[1] or 0) for r in rows}
 
     import datetime as _dt
@@ -528,55 +538,57 @@ def _load_inner_item_stats(
       * daily_series — 30-entry zero-padded list of {day, invocations}
         the sidebar uses to derive Active days + Last used
     """
-    row = conn.execute(
-        """
-        SELECT invocations, distinct_users
-        FROM usage_marketplace_item_window
-        WHERE period_label = 'last_30d'
-          AND source = ?
-          AND type = ?
-          AND parent_plugin = ?
-          AND name = ?
-        """,
-        [source, item_type, parent_plugin, name],
-    ).fetchone()
-    inv30 = int(row[0]) if row and row[0] else 0
-    du30 = int(row[1]) if row and row[1] else 0
-    # Trend — recent_7 vs prior_7 from the daily fact for this specific
-    # skill/agent (mirrors the plugin-level _load_invocation_stats math).
-    trend_row = conn.execute(
-        """
-        SELECT
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
-                      AND day <  CURRENT_DATE - INTERVAL 7  DAY
-                     THEN count ELSE 0 END) AS inv_prior
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          AND type = ?
-          AND parent_plugin = ?
-          AND name = ?
-          AND day >= CURRENT_DATE - INTERVAL 14 DAY
-        """,
-        [source, item_type, parent_plugin, name],
-    ).fetchone()
-    recent = int(trend_row[0]) if trend_row and trend_row[0] else 0
-    prior = int(trend_row[1]) if trend_row and trend_row[1] else 0
-    trend_pct = (recent - prior) / prior * 100.0 if prior >= 3 else None
-    # Daily series — 30 entries, zero-padded for days without activity.
-    daily_rows = conn.execute(
-        """
-        SELECT day, count
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          AND type = ?
-          AND parent_plugin = ?
-          AND name = ?
-          AND day >= CURRENT_DATE - INTERVAL 30 DAY
-        ORDER BY day
-        """,
-        [source, item_type, parent_plugin, name],
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    eng = get_engine()
+    p = {
+        "source": source, "type": item_type,
+        "parent": parent_plugin, "name": name,
+    }
+    with eng.connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text(
+                """SELECT invocations, distinct_users
+                   FROM usage_marketplace_item_window
+                   WHERE period_label = 'last_30d'
+                     AND source = :source AND type = :type
+                     AND parent_plugin = :parent AND name = :name"""
+            ),
+            p,
+        ).first()
+        inv30 = int(row[0]) if row and row[0] else 0
+        du30 = int(row[1]) if row and row[1] else 0
+
+        trend_row = eng_conn.execute(
+            sa.text(
+                """SELECT
+                       SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '7 days'
+                                THEN count ELSE 0 END) AS inv_recent,
+                       SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '14 days'
+                                 AND day <  CURRENT_DATE - INTERVAL '7 days'
+                                THEN count ELSE 0 END) AS inv_prior
+                   FROM usage_marketplace_item_daily
+                   WHERE source = :source AND type = :type
+                     AND parent_plugin = :parent AND name = :name
+                     AND day >= CURRENT_DATE - INTERVAL '14 days'"""
+            ),
+            p,
+        ).first()
+        recent = int(trend_row[0]) if trend_row and trend_row[0] else 0
+        prior = int(trend_row[1]) if trend_row and trend_row[1] else 0
+        trend_pct = (recent - prior) / prior * 100.0 if prior >= 3 else None
+
+        daily_rows = eng_conn.execute(
+            sa.text(
+                """SELECT day, count
+                   FROM usage_marketplace_item_daily
+                   WHERE source = :source AND type = :type
+                     AND parent_plugin = :parent AND name = :name
+                     AND day >= CURRENT_DATE - INTERVAL '30 days'
+                   ORDER BY day"""
+            ),
+            p,
+        ).fetchall()
     by_day = {str(r[0]): int(r[1] or 0) for r in daily_rows}
     import datetime as _dt
     today = _dt.date.today()
@@ -609,32 +621,37 @@ def _load_inner_items_stats_by_parent(
     ``skills`` / ``agents`` lists they return, so the plugin detail page
     can render the listing-card-style funnel chip on every inner card.
     """
-    win_rows = conn.execute(
-        """
-        SELECT name, type, invocations, distinct_users
-        FROM usage_marketplace_item_window
-        WHERE period_label = 'last_30d'
-          AND source = ?
-          AND parent_plugin = ?
-        """,
-        [source, parent_plugin],
-    ).fetchall()
-    trend_rows = conn.execute(
-        """
-        SELECT
-            name, type,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 7 DAY THEN count ELSE 0 END) AS inv_recent,
-            SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL 14 DAY
-                      AND day <  CURRENT_DATE - INTERVAL 7 DAY
-                     THEN count ELSE 0 END) AS inv_prior
-        FROM usage_marketplace_item_daily
-        WHERE source = ?
-          AND parent_plugin = ?
-          AND day >= CURRENT_DATE - INTERVAL 14 DAY
-        GROUP BY name, type
-        """,
-        [source, parent_plugin],
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    p = {"source": source, "parent": parent_plugin}
+    with get_engine().connect() as eng_conn:
+        win_rows = eng_conn.execute(
+            sa.text(
+                """SELECT name, type, invocations, distinct_users
+                   FROM usage_marketplace_item_window
+                   WHERE period_label = 'last_30d'
+                     AND source = :source
+                     AND parent_plugin = :parent"""
+            ),
+            p,
+        ).fetchall()
+        trend_rows = eng_conn.execute(
+            sa.text(
+                """SELECT
+                       name, type,
+                       SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '7 days'
+                                THEN count ELSE 0 END) AS inv_recent,
+                       SUM(CASE WHEN day >= CURRENT_DATE - INTERVAL '14 days'
+                                 AND day <  CURRENT_DATE - INTERVAL '7 days'
+                                THEN count ELSE 0 END) AS inv_prior
+                   FROM usage_marketplace_item_daily
+                   WHERE source = :source
+                     AND parent_plugin = :parent
+                     AND day >= CURRENT_DATE - INTERVAL '14 days'
+                   GROUP BY name, type"""
+            ),
+            p,
+        ).fetchall()
     out: Dict[Tuple[str, str], Dict[str, object]] = {}
     for name, item_type, inv, du in win_rows:
         out[(name, item_type)] = {
@@ -666,7 +683,7 @@ def _audit(
     params: Optional[dict] = None,
 ) -> None:
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id, action=action, resource=target, params=params
         )
     except Exception:
@@ -719,7 +736,7 @@ def _resolve_marketplace_meta(
     for the curator fields. Caller decides what to do with the absence
     (typically: surface the ``OWNER_TODO_PLACEHOLDER``).
     """
-    row = MarketplaceRegistryRepository(conn).get(marketplace_id)
+    row = marketplace_registry_repo().get(marketplace_id)
     if not row:
         return {
             "name": marketplace_id,
@@ -798,7 +815,6 @@ def _flea_to_item(
     entity: dict,
     *,
     installed_set: set,
-    users_display: Dict[str, Tuple[Optional[str], Optional[str]]],
     viewer_id: Optional[str] = None,
     stats: Optional[Dict[str, Dict]] = None,
 ) -> MarketplaceItem:
@@ -815,33 +831,13 @@ def _flea_to_item(
     # (Claude Code's `/plugin` resolution) uses the renamed slug — we
     # don't strip there.
     from src.store_naming import strip_archive_suffix
-    display_name_raw = strip_archive_suffix(entity["name"])
-    # v49 phase-3: invocation is the stored synthetic_name. The column is
-    # NOT NULL (phase 1 migration + repo create/update/archive write
-    # paths keep it in sync), so reading it directly is safe and a
-    # missing value would be a real bug worth surfacing as KeyError
-    # rather than masking with a recompute.
-    invocation = entity["synthetic_name"]
+    display_name = strip_archive_suffix(entity["name"])
+    invocation = suffixed_name(display_name, entity.get("owner_username") or "")
     is_viewer_owner = bool(viewer_id and entity.get("owner_user_id") == viewer_id)
-    # v49 phase-5: rollup `name` column carries the synthetic_name (the
-    # post-rename keyspace used by `MarketplaceItemLookup`). Stats dict
-    # built by `_load_invocation_stats` is keyed by that same value, so
-    # the lookup uses `entity["synthetic_name"]`.
-    stat = (stats or {}).get(entity["synthetic_name"], {})
-    # v49 phase-2: front the card with the user-friendly `title` (humanized,
-    # acronym-aware) via the existing `display_name` field — JS already
-    # has the chain `it.display_name || it.name` on cards. `tagline`
-    # rides the same chain JS uses for curated. Owner display resolves
-    # `users.name → users.email → owner_username` so cards no longer
-    # leak the kebab-case username (e.g. `c-marustamyan`) when the user
-    # has a real name on their account. Reads from a prefetched
-    # ``users_display`` map (one IN-query per page) — see
-    # ``_load_users_display`` callers in ``list_items``.
-    owner_display = _owner_display_from_map(
-        users_display,
-        entity["owner_user_id"],
-        entity.get("owner_username") or "",
-    )
+    # v46: flea stats keyed by store_entities.name (rollup `name` column).
+    # The display name is post-archive-strip; use the raw row name to match
+    # what the lookup preload sees.
+    stat = (stats or {}).get(entity["name"], {})
     return MarketplaceItem(
         id=f"flea-{entity['id']}",
         source="flea",
@@ -849,9 +845,7 @@ def _flea_to_item(
         type=entity["type"],
         category=entity.get("category") or None,
         description=entity.get("description"),
-        owner=owner_display,
-        display_name=entity.get("title"),
-        tagline=entity.get("tagline"),
+        owner=entity.get("owner_username"),
         version=entity.get("version"),
         photo_url=photo_url,
         added=_to_iso(entity.get("created_at")),
@@ -917,13 +911,16 @@ def _load_curated_stack_counts(conn: duckdb.DuckDBPyConnection) -> Dict[Tuple[st
     COUNT naturally includes system plugins without a separate code path.
     One query per page render — avoids N+1.
     """
-    rows = conn.execute(
-        """
-        SELECT marketplace_id, plugin_name, COUNT(DISTINCT user_id)
-        FROM user_plugin_optouts
-        GROUP BY marketplace_id, plugin_name
-        """
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        rows = eng_conn.execute(
+            sa.text(
+                "SELECT marketplace_id, plugin_name, COUNT(DISTINCT user_id) "
+                "FROM user_plugin_optouts "
+                "GROUP BY marketplace_id, plugin_name"
+            )
+        ).fetchall()
     return {(r[0], r[1]): int(r[2]) for r in rows}
 
 
@@ -1018,10 +1015,10 @@ async def list_items(
 
     if tab == "curated":
         group_ids = _user_group_ids(user["id"], conn) or set()
-        subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
+        subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
         # When sorting, we need all rows to sort before paginating.
         if needs_sort:
-            all_rows, total = MarketplacePluginsRepository(conn).list_with_filters(
+            all_rows, total = marketplace_plugins_repo().list_with_filters(
                 group_ids=group_ids,
                 search=q or None,
                 category=category or None,
@@ -1029,7 +1026,7 @@ async def list_items(
                 limit=10000,
             )
         else:
-            all_rows, total = MarketplacePluginsRepository(conn).list_with_filters(
+            all_rows, total = marketplace_plugins_repo().list_with_filters(
                 group_ids=group_ids,
                 search=q or None,
                 category=category or None,
@@ -1064,7 +1061,7 @@ async def list_items(
     if tab == "flea":
         installed_set = {
             row["id"]
-            for row in UserStoreInstallsRepository(conn).list_for_user(user["id"])
+            for row in user_store_installs_repo().list_for_user(user["id"])
         }
         # Visibility filter: non-admin sees approved + their own
         # non-approved (so submitters spot what's still under review
@@ -1077,27 +1074,23 @@ async def list_items(
             visibility_filter = ["approved"]
             include_owner = user["id"]
         if needs_sort:
-            all_flea_rows, total = StoreEntitiesRepository(conn).list(
+            all_flea_rows, total = store_entities_repo().list(
                 skip=0, limit=10000,
                 type=type, category=category, search=q or None,
                 visibility_status=visibility_filter,
                 include_owner_id=include_owner,
             )
         else:
-            all_flea_rows, total = StoreEntitiesRepository(conn).list(
+            all_flea_rows, total = store_entities_repo().list(
                 skip=skip, limit=page_size,
                 type=type, category=category, search=q or None,
                 visibility_status=visibility_filter,
                 include_owner_id=include_owner,
             )
         flea_stats = _load_invocation_stats(conn, "flea")
-        flea_users_display = _load_users_display(
-            conn, (r["owner_user_id"] for r in all_flea_rows),
-        )
         items = [
             _flea_to_item(
                 r, installed_set=installed_set,
-                users_display=flea_users_display,
                 viewer_id=user["id"],
                 stats=flea_stats,
             )
@@ -1116,7 +1109,7 @@ async def list_items(
     items: List[MarketplaceItem] = []
 
     granted = resolve_allowed_plugins(conn, user)
-    subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
+    subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
     marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
 
     # Pull the enriched rows the Curated tab uses (cover_photo_url, video_url,
@@ -1126,7 +1119,7 @@ async def list_items(
     # upstream marketplace.json, which doesn't carry those columns; without
     # this lookup the same plugin renders with its cover photo on
     # ``?tab=curated`` and with a gradient placeholder on ``?tab=my``.
-    plugin_repo = MarketplacePluginsRepository(conn)
+    plugin_repo = marketplace_plugins_repo()
     subscribed_mp_ids = {mp_id for (mp_id, _) in subs}
     enriched_lookup: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for mp_id in subscribed_mp_ids:
@@ -1169,15 +1162,11 @@ async def list_items(
             stats=curated_stats, stack_counts=curated_stack_counts,
         ))
 
-    flea_installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
+    flea_installs = user_store_installs_repo().list_for_user(user["id"])
     flea_installed_set = {row["id"] for row in flea_installs}
-    flea_users_display = _load_users_display(
-        conn, (row["owner_user_id"] for row in flea_installs),
-    )
     for entity in flea_installs:
         items.append(_flea_to_item(
-            entity, installed_set=flea_installed_set,
-            users_display=flea_users_display, stats=flea_stats,
+            entity, installed_set=flea_installed_set, stats=flea_stats,
         ))
 
     # Apply optional filters client-server-style for `my` tab (small N):
@@ -1228,13 +1217,13 @@ async def list_categories(
         group_ids = _user_group_ids(user["id"], conn) or set()
         if tab == "curated":
             counts.update(
-                MarketplacePluginsRepository(conn).category_counts(
+                marketplace_plugins_repo().category_counts(
                     group_ids=group_ids
                 )
             )
         else:  # my — direct read mirroring the items endpoint's `my` branch.
             granted = resolve_allowed_plugins(conn, user)
-            subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
+            subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
             # Curated plugins are always type='plugin'. When the type filter
             # is set to skill/agent, those rows won't show in the items grid
             # (filtered out by the items endpoint at line 579), so they must
@@ -1246,7 +1235,7 @@ async def list_categories(
                         continue
                     cat = (p["raw"].get("category") or "").strip() or "Other"
                     counts[cat] = counts.get(cat, 0) + 1
-            for row in UserStoreInstallsRepository(conn).list_for_user(user["id"]):
+            for row in user_store_installs_repo().list_for_user(user["id"]):
                 if type and row.get("type") != type:
                     continue
                 cat = (row.get("category") or "").strip() or "Other"
@@ -1259,21 +1248,26 @@ async def list_categories(
         # grid). Admin counts everything.
         from app.auth.access import is_user_admin
         clauses: List[str] = []
-        sql_params: List[Any] = []
+        sql_params: dict = {}
         if type:
-            clauses.append("type = ?"); sql_params.append(type)
-        if not is_user_admin(user["id"], conn):
+            clauses.append("type = :type"); sql_params["type"] = type
+        if not is_user_admin(user["id"]):
             clauses.append(
                 "(visibility_status = 'approved' "
-                "OR (owner_user_id = ? AND visibility_status != 'archived'))"
+                "OR (owner_user_id = :uid AND visibility_status != 'archived'))"
             )
-            sql_params.append(user["id"])
+            sql_params["uid"] = user["id"]
         where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        rows = conn.execute(
-            f"SELECT COALESCE(NULLIF(TRIM(category),''), 'Other') AS cat, COUNT(*) "
-            f"FROM store_entities {where_sql} GROUP BY cat",
-            sql_params,
-        ).fetchall()
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as eng_conn:
+            rows = eng_conn.execute(
+                sa.text(
+                    f"SELECT COALESCE(NULLIF(TRIM(category),''), 'Other') AS cat, "
+                    f"COUNT(*) FROM store_entities {where_sql} GROUP BY cat"
+                ),
+                sql_params,
+            ).fetchall()
         for r in rows:
             counts[str(r[0])] = counts.get(str(r[0]), 0) + int(r[1])
 
@@ -1519,76 +1513,41 @@ def _walk_files(root: Path) -> List[FileEntry]:
 
 
 def _resolve_owner_display(
-    conn: duckdb.DuckDBPyConnection,
+    conn,
     owner_user_id: str,
     fallback: str,
 ) -> str:
     """Friendly owner display name — ``users.name → users.email → fallback``.
 
-    Mirrors the inline lookup ``app/web/router.py::store_detail`` already does
-    so the marketplace API surfaces the same string the Store page shows.
-
-    Single-row variant for detail endpoints. List endpoints must use
-    ``_load_users_display`` to avoid an N+1 against ``users``.
+    ``conn`` is accepted for back-compat and ignored.
     """
-    row = conn.execute(
-        "SELECT name, email FROM users WHERE id = ?", [owner_user_id]
-    ).fetchone()
-    if not row:
-        return fallback
-    return row[0] or row[1] or fallback
-
-
-def _load_users_display(
-    conn: duckdb.DuckDBPyConnection,
-    user_ids: Iterable[str],
-) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
-    """Batch-fetch ``(name, email)`` for a set of user_ids — single round-trip.
-
-    Returns a dict keyed by user_id. Use with ``_owner_display_from_map``
-    inside list comprehensions to compose the same
-    ``users.name → users.email → fallback`` resolution that
-    ``_resolve_owner_display`` does per-row.
-    """
-    ids = [u for u in {uid for uid in user_ids if uid}]
-    if not ids:
-        return {}
-    placeholders = ",".join("?" * len(ids))
-    rows = conn.execute(
-        f"SELECT id, name, email FROM users WHERE id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    return {r[0]: (r[1], r[2]) for r in rows}
-
-
-def _owner_display_from_map(
-    users_display: Dict[str, Tuple[Optional[str], Optional[str]]],
-    owner_user_id: str,
-    fallback: str,
-) -> str:
-    """Resolve owner display from a prefetched map, mirroring
-    ``_resolve_owner_display`` semantics."""
-    row = users_display.get(owner_user_id)
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text("SELECT name, email FROM users WHERE id = :uid"),
+            {"uid": owner_user_id},
+        ).first()
     if not row:
         return fallback
     return row[0] or row[1] or fallback
 
 
 def _get_plugin_row(
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection],
     marketplace_id: str,
     plugin_name: str,
 ) -> Optional[dict]:
-    """Fetch a single ``marketplace_plugins`` row as a dict, or ``None``."""
-    rows = conn.execute(
-        "SELECT * FROM marketplace_plugins "
-        "WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchall()
-    if not rows:
-        return None
-    columns = [d[0] for d in conn.description]
-    return MarketplacePluginsRepository._row_to_dict(columns, rows[0])
+    """Fetch a single ``marketplace_plugins`` row as a dict, or ``None``.
+
+    ``conn`` retained for signature stability; ignored. Looks up via the
+    factory so DuckDB and PG paths share the same code.
+    """
+    rows = marketplace_plugins_repo().list_for_marketplace(marketplace_id)
+    for row in rows:
+        if row.get("name") == plugin_name:
+            return row
+    return None
 
 
 @router.get(
@@ -1673,7 +1632,7 @@ async def curated_detail(
     hooks = _list_hooks(plugin_root)
     mcps = _list_mcps(plugin_root)
 
-    subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
+    subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
     raw = plugin_row.get("raw") or {}
     if isinstance(raw, str):
         try:
@@ -1758,7 +1717,7 @@ async def flea_detail(
     """
     from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     # Same gate as /api/store/entities/{id}: non-owner non-admin gets
@@ -1779,11 +1738,9 @@ async def flea_detail(
             a.detail_url = f"/marketplace/flea/{entity_id}/agent/{a.name}"
         # Per-item telemetry — same shape as curated_detail. Adoption
         # inherits from the parent flea plugin's install_count (no
-        # standalone install on inner items). v49 phase-5: rollup
-        # `parent_plugin` for flea-plugin children carries the parent's
-        # synthetic_name (= what Claude Code writes in the JSONL prefix).
+        # standalone install on inner items).
         inner_stats = _load_inner_items_stats_by_parent(
-            conn, "flea", entity["synthetic_name"],
+            conn, "flea", entity["name"],
         )
         flea_parent_stack = int(entity.get("install_count") or 0)
         for s in skills:
@@ -1811,7 +1768,7 @@ async def flea_detail(
         hooks = []
         mcps = []
 
-    is_installed = UserStoreInstallsRepository(conn).is_installed(
+    is_installed = user_store_installs_repo().is_installed(
         user["id"], entity_id,
     )
 
@@ -1829,8 +1786,7 @@ async def flea_detail(
     # the renamed-on-archive slug since that's what Claude Code resolves.
     from src.store_naming import strip_archive_suffix
     _flea_display_name = strip_archive_suffix(entity["name"])
-    # v49 phase-3: read the stored synthetic_name (NOT NULL invariant).
-    invocation = entity["synthetic_name"]
+    invocation = suffixed_name(_flea_display_name, entity.get("owner_username") or "")
 
     # doc_paths is a JSON array of relative paths the uploader picked at upload
     # time; `app/api/store.py` serves them by basename via /api/store/.../docs/{filename}.
@@ -1860,8 +1816,7 @@ async def flea_detail(
     is_owner = entity.get("owner_user_id") == user.get("id")
     is_admin_user = is_user_admin(user["id"], conn)
     if is_owner or is_admin_user:
-        from src.repositories.store_submissions import StoreSubmissionsRepository
-        latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        latest_sub = store_submissions_repo().latest_for_entity(entity_id)
         if latest_sub:
             submission_status = latest_sub.get("status")
 
@@ -1870,13 +1825,6 @@ async def flea_detail(
         entity_id=entity_id,
         plugin_name=_flea_display_name,
         manifest_name=invocation,
-        # v49 phase-2: surface the user-friendly title + short description
-        # via the existing curated-side fields. JS heroTitle chain already
-        # prefers `display_name`, and the hero-tagline element already
-        # reads `d.tagline` — flea now feeds the same chain instead of
-        # falling through to plugin_name (= kebab-case entity name).
-        display_name=entity.get("title"),
-        tagline=entity.get("tagline"),
         description=entity.get("description"),
         version=entity.get("version"),
         category=entity.get("category"),
@@ -1903,10 +1851,9 @@ async def flea_detail(
         docs=docs,
         visibility_status=entity.get("visibility_status") or "approved",
         submission_status=submission_status,
-        # v49 phase-5: flea telemetry keyed by entity.synthetic_name
-        # (rollup `name` column carries the post-rename keyspace, which
-        # is the same string Claude Code writes in the JSONL local-part).
-        telemetry=_build_telemetry(conn, "flea", entity["synthetic_name"]),
+        # v46: flea telemetry keyed by entity.name (rollup `name` column),
+        # not entity_id — JSONL identifiers carry the entity name, not its UUID.
+        telemetry=_build_telemetry(conn, "flea", entity["name"]),
     )
 
 
@@ -1929,13 +1876,19 @@ async def curated_install(
     ``marketplace_plugins``; otherwise 404. The RBAC guard already ensured
     the caller is allowed to install.
     """
-    exists = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        exists = eng_conn.execute(
+            sa.text(
+                "SELECT 1 FROM marketplace_plugins "
+                "WHERE marketplace_id = :mid AND name = :name"
+            ),
+            {"mid": marketplace_id, "name": plugin_name},
+        ).first()
     if not exists:
         raise HTTPException(status_code=404, detail="plugin_not_found")
-    inserted = UserCuratedSubscriptionsRepository(conn).subscribe(
+    inserted = user_curated_subscriptions_repo().subscribe(
         user["id"], marketplace_id, plugin_name,
     )
     if inserted:
@@ -1949,7 +1902,7 @@ async def curated_install(
 
 @router.delete(
     "/curated/{marketplace_id}/{plugin_name}/install",
-    status_code=204,
+    response_model=InstallActionResponse,
 )
 async def curated_uninstall(
     marketplace_id: str,
@@ -1961,18 +1914,23 @@ async def curated_uninstall(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     # v39: system plugins are mandatory for every user — refuse uninstall.
-    sys_row = conn.execute(
-        "SELECT is_system FROM marketplace_plugins "
-        "WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        sys_row = eng_conn.execute(
+            sa.text(
+                "SELECT is_system FROM marketplace_plugins "
+                "WHERE marketplace_id = :mid AND name = :name"
+            ),
+            {"mid": marketplace_id, "name": plugin_name},
+        ).first()
     if sys_row and bool(sys_row[0]):
         raise HTTPException(
             status_code=409,
             detail="cannot_uninstall_system_plugin",
         )
 
-    deleted = UserCuratedSubscriptionsRepository(conn).unsubscribe(
+    deleted = user_curated_subscriptions_repo().unsubscribe(
         user["id"], marketplace_id, plugin_name,
     )
     if deleted:
@@ -1981,6 +1939,7 @@ async def curated_uninstall(
             f"plugin:{marketplace_id}/{plugin_name}",
         )
         _invalidate_etag()
+    return InstallActionResponse(installed=False)
 
 
 # ---------------------------------------------------------------------------
@@ -2075,12 +2034,6 @@ def _flea_inner_parent_fields(
     enrichment file convention exists for flea bundles yet, so the same
     fallbacks the flea plugin detail hero uses (strip_archive_suffix on
     entity.name, owner display, entity.updated_at) populate the response.
-
-    v49 phase-3: ``parent_display_name`` prefers the user-set ``title``
-    column over the kebab-case ``name``. The frontend chain (breadcrumb,
-    hero "part of …", sidebar "Parent plugin", helper "This skill is part
-    of …") all read ``d.parent_display_name`` first, so a single source
-    swap drives every surface to the friendly form.
     """
     from src.store_naming import strip_archive_suffix
     owner_display = _resolve_owner_display(
@@ -2092,7 +2045,7 @@ def _flea_inner_parent_fields(
         "parent_author_name": owner_display or OWNER_TODO_PLACEHOLDER,
         "parent_updated_at": _to_iso(entity.get("updated_at")),
         "manifest_name": entity["name"],
-        "parent_display_name": entity.get("title") or strip_archive_suffix(entity["name"]),
+        "parent_display_name": strip_archive_suffix(entity["name"]),
     }
 
 
@@ -2151,7 +2104,7 @@ def _marketplace_asset_version(
     for the grid, so request-time + sync-time URLs match for unchanged
     repos.
     """
-    row = MarketplaceRegistryRepository(conn).get(marketplace_id)
+    row = marketplace_registry_repo().get(marketplace_id)
     if not row:
         return None
     sha = (row.get("last_commit_sha") or "")[:8]
@@ -2604,7 +2557,7 @@ async def flea_skill_detail(
     """
     from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -2616,9 +2569,8 @@ async def flea_skill_detail(
     text, relpath = res
     fm = _parse_frontmatter(text)
     parent = _flea_inner_parent_fields(conn, entity)
-    # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = _load_inner_item_stats(
-        conn, "flea", parent_plugin=entity["synthetic_name"], name=skill_name, item_type="skill",
+        conn, "flea", parent_plugin=entity["name"], name=skill_name, item_type="skill",
     )
     return InnerDetailResponse(
         marketplace_id="",
@@ -2653,7 +2605,7 @@ async def flea_agent_detail(
     """
     from app.api.store import _enforce_visibility
     from app.utils import get_store_dir
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -2669,9 +2621,8 @@ async def flea_agent_detail(
     except OSError:
         agent_size = 0
     parent = _flea_inner_parent_fields(conn, entity)
-    # v49 phase-5: rollup `parent_plugin` carries the parent's synthetic_name.
     telemetry = _load_inner_item_stats(
-        conn, "flea", parent_plugin=entity["synthetic_name"], name=agent_name, item_type="agent",
+        conn, "flea", parent_plugin=entity["name"], name=agent_name, item_type="agent",
     )
     return InnerDetailResponse(
         marketplace_id="",

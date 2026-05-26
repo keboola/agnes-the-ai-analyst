@@ -18,11 +18,8 @@ def isolated_client(tmp_path, monkeypatch):
     (tmp_path / "state").mkdir()
     (tmp_path / "analytics").mkdir()
     (tmp_path / "extracts").mkdir()
-    from src.db import close_system_db
-    close_system_db()
     from app.main import create_app
     yield TestClient(create_app())
-    close_system_db()
 
 
 def test_parquet_path_is_not_gzipped(isolated_client, tmp_path, monkeypatch):
@@ -76,12 +73,40 @@ def test_selective_gzip_wrapper_dispatches_on_prefix():
     wrapper._gzip = stub_gzip
 
     import asyncio
+    import threading
+
+    def _run(coro):
+        """``asyncio.run()`` refuses to run when another loop is already
+        running on the current thread. Earlier tests in the full suite
+        (pytest-anyio, pytest-asyncio) can leave a running loop on the
+        main thread; running our coroutine on a fresh thread sidesteps
+        that constraint entirely.
+        """
+        result: list = []
+        exc: list = []
+
+        def _target():
+            loop = asyncio.new_event_loop()
+            try:
+                result.append(loop.run_until_complete(coro))
+            except BaseException as e:  # noqa: BLE001
+                exc.append(e)
+            finally:
+                loop.close()
+
+        t = threading.Thread(target=_target)
+        t.start()
+        t.join()
+        if exc:
+            raise exc[0]
+        return result[0]
+
     # Path that matches the skip prefix → raw app
-    asyncio.run(wrapper({"type": "http", "path": "/api/data/orders/download"}, None, None))
+    _run(wrapper({"type": "http", "path": "/api/data/orders/download"}, None, None))
     assert calls == {"raw": 1, "gzip": 0}
     # Path that does not → gzip app
-    asyncio.run(wrapper({"type": "http", "path": "/api/sync/manifest"}, None, None))
+    _run(wrapper({"type": "http", "path": "/api/sync/manifest"}, None, None))
     assert calls == {"raw": 1, "gzip": 1}
     # Non-http scope (websocket, lifespan) → gzip app (it handles lifespan as pass-through)
-    asyncio.run(wrapper({"type": "lifespan"}, None, None))
+    _run(wrapper({"type": "lifespan"}, None, None))
     assert calls == {"raw": 1, "gzip": 2}

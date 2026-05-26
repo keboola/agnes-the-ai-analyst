@@ -229,15 +229,9 @@ def test_preview_uses_live_context(seeded_app):
 # Validation stub vs. build_claude_md_context shape alignment
 # ---------------------------------------------------------------------------
 
-def test_validation_stub_matches_build_context_shape(seeded_app, tmp_path, monkeypatch):
+def test_validation_stub_matches_build_context_shape(seeded_app):
     """_VALIDATION_STUB_CONTEXT top-level keys must match build_claude_md_context() output."""
     from app.api.claude_md import _VALIDATION_STUB_CONTEXT
-    from src.db import _ensure_schema, get_system_db
-    import duckdb
-
-    db_path = tmp_path / "system.duckdb"
-    c = duckdb.connect(str(db_path))
-    _ensure_schema(c)
 
     user = {
         "id": "u1",
@@ -247,11 +241,10 @@ def test_validation_stub_matches_build_context_shape(seeded_app, tmp_path, monke
         "groups": ["Admin"],
     }
     from src.claude_md import build_claude_md_context
-    real_ctx = build_claude_md_context(c, user=user, server_url="https://example.com")
+    real_ctx = build_claude_md_context(None, user=user, server_url="https://example.com")
 
     assert set(_VALIDATION_STUB_CONTEXT.keys()) == set(real_ctx.keys()), (
         f"_VALIDATION_STUB_CONTEXT top-level keys differ from build_claude_md_context output. "
         f"Stub: {set(_VALIDATION_STUB_CONTEXT.keys())}, "
         f"real: {set(real_ctx.keys())}"
     )
-    c.close()

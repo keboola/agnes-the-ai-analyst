@@ -21,11 +21,14 @@ from connectors.internal.access import (
     find_internal_refs,
     is_internal_table,
 )
+
+from src.repositories import (
+    audit_repo,
+    table_registry_repo,
+)
 from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.rbac import get_accessible_tables
-from src.repositories.table_registry import TableRegistryRepository
-from src.repositories.audit import AuditRepository
 
 # Imported at module level so tests can monkeypatch via
 # `app.api.query._bq_dry_run_bytes` without resolving lazy imports inside
@@ -208,14 +211,10 @@ def _run_internal_query(
     user SQL, and writes an audit row. Errors are converted to 400 with
     a hint that points at ``agnes catalog`` for the registered ids.
     """
-    from src.db import _get_state_dir
-    system_db_path = str(_get_state_dir() / "system.duckdb")
-    # is_user_admin takes (user_id, conn) — passing the dict raises
-    # TypeError, which is exactly the regression review #278/1 caught.
-    is_admin = is_user_admin(user.get("id"), conn) if user.get("id") else False
+    is_admin = is_user_admin(user.get("id")) if user.get("id") else False
     try:
         columns, rows, truncated = execute_internal_query(
-            system_db_path=system_db_path,
+            system_db_path="",
             user=user,
             is_admin=is_admin,
             sql=request.sql,
@@ -223,8 +222,8 @@ def _run_internal_query(
         )
     except InternalAccessError as exc:
         raise HTTPException(status_code=400, detail=f"Internal query rejected: {exc}")
-    except duckdb.Error as exc:
-        raise HTTPException(status_code=400, detail=f"DuckDB error: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Query error: {exc}")
 
     serializable = [
         [str(v) if v is not None and not isinstance(v, (int, float, bool, str)) else v
@@ -232,7 +231,7 @@ def _run_internal_query(
         for row in rows
     ]
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="query.internal",
             resource=("table:" + ",".join(internal_refs))[:256],
@@ -347,7 +346,7 @@ def execute_query(
             )
         # Reject if user SQL also mentions any non-internal registry id —
         # that would be a mixed query against analytics.duckdb views.
-        registry_rows = TableRegistryRepository(conn).list_all()
+        registry_rows = table_registry_repo().list_all()
         for r in registry_rows:
             rid = r.get("id") or ""
             if not rid or is_internal_table(rid):
@@ -382,7 +381,7 @@ def execute_query(
             # pre-existing class of name/id mismatch flagged across this
             # PR's BQ guardrail too).
             allowed_ids = set(allowed)
-            registry_rows = TableRegistryRepository(conn).list_all()
+            registry_rows = table_registry_repo().list_all()
             allowed_view_names = {
                 r["name"] for r in registry_rows
                 if r.get("name") and r.get("id") in allowed_ids
@@ -536,7 +535,7 @@ def execute_query(
         # bytes_scanned from _dry_run_set (pinned to entry 0 after _bq_quota_and_cap_guard).
         _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action=_action,
                 resource=_resource,
@@ -563,7 +562,7 @@ def execute_query(
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         _action_err = "query.remote" if _dry_run_set else "query.local"
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action=_action_err,
                 resource=_resource,
@@ -593,7 +592,7 @@ def execute_query(
         _first_table = _first_table_from_sql(request.sql)
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="query.local",
                 resource=_resource,
@@ -634,7 +633,7 @@ def _materialized_hint_for_query_error(
     if "does not exist" not in el and "table with name" not in el:
         return None
     try:
-        repo = TableRegistryRepository(conn)
+        repo = table_registry_repo()
         rows = repo.list_all()
     except Exception:
         # Registry read failed for whatever reason — don't compound the
@@ -713,7 +712,7 @@ def _bq_guardrail_inputs(
       grant on the registered name (`bq_path_access_denied`). None when the
       RBAC check passes.
     """
-    repo = TableRegistryRepository(sys_conn)
+    repo = table_registry_repo()
 
     # 1. Bare-name pass: look up registered remote-BQ names that appear in
     # the user SQL as word-boundary tokens. Reuses the same regex shape as
@@ -1036,7 +1035,7 @@ def _rewrite_user_sql_for_bigquery_query(
     seen_paths: set = set()
 
     try:
-        repo = TableRegistryRepository(conn)
+        repo = table_registry_repo()
         bq_rows = repo.list_by_source("bigquery")
         all_rows = repo.list_all()
     except Exception:
@@ -1193,30 +1192,27 @@ def _view_targets_in(dry_run_set: list) -> list[str]:
     if not dry_run_set:
         return []
     try:
-        from src.db import get_system_db
-        conn = get_system_db()
-        try:
-            pairs = [(b, t) for b, t, _ in dry_run_set]
-            # Build a parameterized OR of (bucket, source_table) pairs.
-            # DuckDB supports row-tuple IN but keeping it explicit OR
-            # avoids any version-specific syntax surprises.
-            where = " OR ".join(
-                "(tr.bucket = ? AND tr.source_table = ?)" for _ in pairs
-            )
-            params: list = []
-            for b, t in pairs:
-                params.extend([b, t])
-            sql_ = (
-                f"SELECT mc.table_id "
-                f"FROM bq_metadata_cache mc "
-                f"JOIN table_registry tr ON tr.id = mc.table_id "
-                f"WHERE mc.entity_type IN ('VIEW', 'MATERIALIZED VIEW') "
-                f"AND ({where})"
-            )
-            rows = conn.execute(sql_, params).fetchall()
-            return [r[0] for r in rows]
-        finally:
-            conn.close()
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+
+        pairs = [(b, t) for b, t, _ in dry_run_set]
+        # Parameterised OR of (bucket, source_table) pairs.
+        clauses: list[str] = []
+        params: dict[str, str] = {}
+        for i, (b, t) in enumerate(pairs):
+            clauses.append(f"(tr.bucket = :b_{i} AND tr.source_table = :t_{i})")
+            params[f"b_{i}"] = b
+            params[f"t_{i}"] = t
+        sql_ = (
+            "SELECT mc.table_id "
+            "FROM bq_metadata_cache mc "
+            "JOIN table_registry tr ON tr.id = mc.table_id "
+            "WHERE mc.entity_type IN ('VIEW', 'MATERIALIZED VIEW') "
+            f"AND ({' OR '.join(clauses)})"
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(sa.text(sql_), params).fetchall()
+        return [r[0] for r in rows]
     except Exception:
         return []
 

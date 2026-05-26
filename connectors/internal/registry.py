@@ -1,30 +1,21 @@
-"""Seed the internal-source rows into ``table_registry`` at startup.
+"""Seed the internal-source rows in ``table_registry``.
 
-The internal connector has no extraction step (data lives in
-``system.duckdb``), so the rows can't be created via the usual admin
-``POST /api/admin/register-table`` flow. Instead, we idempotently insert
-them on app boot — same pattern Agnes uses for the seeded ``Admin`` /
-``Everyone`` groups.
-
-Idempotency: ``TableRegistryRepository.register`` uses
-``ON CONFLICT (id) DO UPDATE`` so re-running this on every startup just
-re-applies the canonical description / display name (operators can't
-accidentally edit the rows away).
+Idempotent — re-applies on every boot so operators can't accidentally
+drift the canonical name/description, and stale rows are evicted when an
+internal table is renamed (e.g. agnes_usage → agnes_telemetry).
 """
 
 from __future__ import annotations
 
 import logging
 
-import duckdb
-
 from connectors.internal.access import INTERNAL_TABLES
-from src.repositories.table_registry import TableRegistryRepository
+from src.repositories import table_registry_repo
 
 logger = logging.getLogger(__name__)
 
 
-def ensure_internal_tables_registered(conn: duckdb.DuckDBPyConnection) -> None:
+def ensure_internal_tables_registered() -> None:
     """Insert / refresh the internal-source rows in ``table_registry``.
 
     Safe to call on every boot. Operators see these in /admin/tables
@@ -32,24 +23,24 @@ def ensure_internal_tables_registered(conn: duckdb.DuckDBPyConnection) -> None:
     them without an explicit admin action; the next boot puts them back.
 
     Also evicts stale internal-source rows whose id no longer matches
-    ``INTERNAL_TABLES`` — used when an internal table is renamed
-    (e.g. agnes_usage → agnes_telemetry). Without this the old row
-    would linger in /catalog forever.
+    ``INTERNAL_TABLES`` — used when an internal table is renamed.
+    Without this the old row would linger in /catalog forever.
     """
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     canonical_ids = {t.registry_id for t in INTERNAL_TABLES}
-    placeholders = ",".join("?" for _ in canonical_ids) if canonical_ids else "''"
+
     try:
-        conn.execute(
-            f"DELETE FROM table_registry "
-            f"WHERE source_type = 'internal' AND id NOT IN ({placeholders})",
-            list(canonical_ids),
-        )
+        existing_internal = repo.list_by_source("internal")
+        for row in existing_internal:
+            rid = row.get("id")
+            if rid and rid not in canonical_ids:
+                repo.unregister(rid)
     except Exception:
         logger.exception(
             "ensure_internal_tables_registered: stale-row cleanup failed; "
             "renamed internal tables may still appear under their old ids"
         )
+
     for table in INTERNAL_TABLES:
         try:
             repo.register(
@@ -70,8 +61,6 @@ def ensure_internal_tables_registered(conn: duckdb.DuckDBPyConnection) -> None:
                 registered_by="system_seed",
             )
         except Exception:
-            # Logged but not fatal — startup must continue even if the
-            # registry insert glitches (e.g. on a half-migrated DB).
             logger.exception(
                 "ensure_internal_tables_registered: failed to register %s",
                 table.registry_id,

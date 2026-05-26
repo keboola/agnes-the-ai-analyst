@@ -85,19 +85,21 @@ def _decoded_claims(token: Optional[str]) -> Optional[Dict[str, Any]]:
     return verify_token(token)
 
 
-def _last_sync_summary(
-    user_id: str, conn: duckdb.DuckDBPyConnection
-) -> Dict[str, Any]:
+def _last_sync_summary(user_id: str, conn=None) -> Dict[str, Any]:
     """Summary of the most recent google_sync run for this user, drawn from
-    user_group_members. Not authoritative timestamps (Google sync writes
-    DELETE+INSERT every login, so all rows share the same added_at), but
-    sufficient to answer "when did Agnes last hear from Google about me?"."""
-    row = conn.execute(
-        """SELECT COUNT(*) AS n, MAX(added_at) AS last_at
-             FROM user_group_members
-            WHERE user_id = ? AND source = 'google_sync'""",
-        [user_id],
-    ).fetchone()
+    user_group_members. ``conn`` ignored — routes through the PG engine.
+    """
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text(
+                """SELECT COUNT(*) AS n, MAX(added_at) AS last_at
+                     FROM user_group_members
+                    WHERE user_id = :uid AND source = 'google_sync'"""
+            ),
+            {"uid": user_id},
+        ).first()
     n, last_at = row if row else (0, None)
     return {
         "google_sync_count": int(n or 0),

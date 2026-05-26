@@ -43,6 +43,14 @@ from fastapi import (
     Query,
     UploadFile,
 )
+
+from src.repositories import (
+    audit_repo,
+    store_entities_repo,
+    store_submissions_repo,
+    user_store_installs_repo,
+    users_repo,
+)
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -54,12 +62,6 @@ from app.instance_config import (
     get_guardrails_review_model,
 )
 from app.utils import get_store_dir
-from src.db import get_system_db
-from src.repositories.audit import AuditRepository
-from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.store_submissions import StoreSubmissionsRepository
-from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.repositories.users import UserRepository
 from src.store_categories import STORE_CATEGORIES, is_valid_category
 from src.store_guardrails import InlineResult, run_inline_checks, run_llm_review
 from src.store_guardrails.runner import (
@@ -71,6 +73,7 @@ from src.store_naming import (
     sanitize_username,
     suffixed_name,
 )
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/store", tags=["store"])
 
@@ -104,7 +107,7 @@ def _suffixed_already_taken(
     The Store namespace is **flat** in Claude Code — two plugins/skills/agents
     that share a ``name`` collide in the served marketplace catalog (the
     ``manifest_name`` is unique-key for ``/plugin`` lookup) and on-disk inside
-    the ``flea`` bundle (skills/<suffixed>/SKILL.md is the dir name).
+    the ``agnes-store-bundle`` (skills/<suffixed>/SKILL.md is the dir name).
 
     ``sanitize_username`` is many-to-one (``alice.smith`` and ``alice_smith``
     both → ``alice-smith``), so the per-owner UNIQUE on
@@ -117,22 +120,21 @@ def _suffixed_already_taken(
     check so the same owner can re-upload under the original name after
     archive. The archive path renames the row to free the slug, so this
     flag is belt-and-braces.
-
-    v49 phase-3: query the stored ``synthetic_name`` column instead of
-    the inline concat ``name || '-by-' || owner_username``. Phase 1's
-    migration backfilled the column for every row and the repo write
-    paths keep it in sync, so both expressions return the same set —
-    but querying the column is indexable and avoids divergence if the
-    naming formula ever changes (single source of truth).
     """
-    sql = "SELECT id FROM store_entities WHERE synthetic_name = ?"
-    params: List[Any] = [suffixed]
+    sql = (
+        "SELECT id FROM store_entities "
+        "WHERE name || '-by-' || owner_username = :suffixed"
+    )
+    params: dict = {"suffixed": suffixed}
     if exclude_entity_id:
-        sql += " AND id != ?"
-        params.append(exclude_entity_id)
+        sql += " AND id != :eid"
+        params["eid"] = exclude_entity_id
     if exclude_archived:
         sql += " AND visibility_status != 'archived'"
-    return bool(conn.execute(sql, params).fetchone())
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        return bool(eng_conn.execute(sa.text(sql), params).first())
 
 
 def _validate_video_url(value: Optional[str]) -> Optional[str]:
@@ -181,14 +183,6 @@ class StoreEntityResponse(BaseModel):
     # v32+ quarantine: surface visibility so /store browse can render
     # the corner badge on the submitter's own non-approved cards.
     visibility_status: Optional[str] = None
-    # v49 phase-1 Flea refactor — user-facing metadata. `title` is a
-    # humanized display name (acronym-aware), `tagline` is an optional
-    # 200-char short description, `synthetic_name` is the deterministic
-    # <name>-by-<owner> baked into served bundles. Phase 1 only writes
-    # them; consuming surfaces (cards, detail, Claude Code) come later.
-    title: Optional[str] = None
-    tagline: Optional[str] = None
-    synthetic_name: Optional[str] = None
 
 
 class StoreEntityListResponse(BaseModel):
@@ -216,10 +210,6 @@ class PreviewResponse(BaseModel):
     type: str
     name: Optional[str] = None
     description: Optional[str] = None
-    # v49: humanized form of `name` for pre-filling the Title input on
-    # the upload form. Computed server-side so the acronym dict has a
-    # single source of truth (src/store_naming.py:TITLE_ACRONYMS).
-    title: Optional[str] = None
     components: list[PreviewComponent] = []
 
 
@@ -240,7 +230,7 @@ def _audit(
     params: Optional[dict] = None,
 ) -> None:
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=f"store_entity:{entity_id}",
@@ -317,7 +307,7 @@ def _reject_inline_or_continue(
         bundle_meta = compute_bundle_meta(plugin_dir)
         findings = inline.static_security.get("findings") or []
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user["id"],
                 action="store.upload.security_blocked",
                 resource=f"store_upload:{bundle_meta.sha256}",
@@ -373,7 +363,6 @@ def _schedule_llm_review(
         run_llm_review,
         submission_id,
         plugin_dir=plugin_dir,
-        conn_factory=get_system_db,
         api_key_loader=default_api_key_loader,
         model_loader=default_model_loader,
     )
@@ -527,12 +516,15 @@ def _to_iso(value: Any) -> Optional[str]:
     return str(value)
 
 
-def _resolve_owner_display(
-    conn: duckdb.DuckDBPyConnection, user_id: str
-) -> Optional[str]:
-    row = conn.execute(
-        "SELECT name, email FROM users WHERE id = ?", [user_id]
-    ).fetchone()
+def _resolve_owner_display(conn, user_id: str) -> Optional[str]:
+    """``conn`` ignored — routes through the PG engine."""
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text("SELECT name, email FROM users WHERE id = :uid"),
+            {"uid": user_id},
+        ).first()
     if not row:
         return None
     name, email = row
@@ -569,15 +561,8 @@ def _entity_to_response(
         doc_paths=entity.get("doc_paths") or [],
         created_at=_to_iso(entity.get("created_at")),
         updated_at=_to_iso(entity.get("updated_at")),
-        # v49 phase-3: invocation_name comes from the stored
-        # synthetic_name column (single source of truth). The column is
-        # NOT NULL and the repo write paths keep it in lockstep with
-        # name + owner_username — any missing value is a real bug.
-        invocation_name=entity["synthetic_name"],
+        invocation_name=suffixed_name(entity["name"], entity["owner_username"]),
         visibility_status=entity.get("visibility_status") or "approved",
-        title=entity.get("title"),
-        tagline=entity.get("tagline"),
-        synthetic_name=entity.get("synthetic_name"),
     )
 
 
@@ -900,7 +885,7 @@ def _write_synth_plugin_json(
 def promote_to_version(
     entity_id: str,
     target_version_no: int,
-    repo: StoreEntitiesRepository,
+    repo,
 ) -> Optional[int]:
     """Atomic-ish promotion: swap live bundle FIRST, then update DB.
 
@@ -1110,27 +1095,29 @@ async def list_owners(
     the public dropdown until at least one is approved). Admin sees
     every owner regardless of state.
     """
-    if is_user_admin(user["id"], conn):
+    if is_user_admin(user["id"]):
         where_sql = ""
-        params: list = []
     else:
         # 'approved' is the public set. Owners of only-archived /
         # only-pending / only-blocked entries don't appear in the
         # public dropdown — they have nothing to filter to.
         where_sql = "WHERE se.visibility_status = 'approved'"
-        params = []
-    rows = conn.execute(
-        f"""SELECT
-               se.owner_user_id,
-               COALESCE(NULLIF(TRIM(u.name), ''), u.email, se.owner_username) AS display_name,
-               COUNT(*) AS entity_count
-           FROM store_entities se
-           LEFT JOIN users u ON u.id = se.owner_user_id
-           {where_sql}
-           GROUP BY se.owner_user_id, display_name
-           ORDER BY display_name""",
-        params,
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        rows = eng_conn.execute(
+            sa.text(
+                f"""SELECT
+                       se.owner_user_id,
+                       COALESCE(NULLIF(TRIM(u.name), ''), u.email, se.owner_username) AS display_name,
+                       COUNT(*) AS entity_count
+                   FROM store_entities se
+                   LEFT JOIN users u ON u.id = se.owner_user_id
+                   {where_sql}
+                   GROUP BY se.owner_user_id, u.name, u.email, se.owner_username
+                   ORDER BY display_name"""
+            )
+        ).fetchall()
     return [
         OwnerOption(
             user_id=r[0],
@@ -1154,7 +1141,7 @@ async def list_entities(
 ):
     if type and type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     # Visibility filter: hide pending/blocked from the public flea browse.
     # An owner viewing their own uploads (`owner=<self_id>`) sees their
     # whole catalogue regardless of guardrail status — same goes for
@@ -1212,7 +1199,7 @@ async def get_entity(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -1225,7 +1212,7 @@ async def list_entity_files(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -1264,7 +1251,7 @@ async def get_entity_photo(
     so a 30-day ``immutable`` cache is safe — a re-upload generates a
     new URL fingerprint that the browser refetches.
     """
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity or not entity.get("photo_path"):
         raise HTTPException(status_code=404, detail="photo_not_found")
     abs_path = _entity_dir(entity_id) / entity["photo_path"]
@@ -1284,7 +1271,7 @@ async def get_entity_doc(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Stream an attached doc — directory-traversal-guarded."""
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -1336,13 +1323,10 @@ async def preview_entity(
     finally:
         Path(tmp.name).unlink(missing_ok=True)
 
-    from src.store_naming import humanize_name
-    extracted_name = meta.get("name")
     return PreviewResponse(
         type=type,
-        name=extracted_name,
+        name=meta.get("name"),
         description=meta.get("description"),
-        title=humanize_name(extracted_name) if extracted_name else None,
         components=[
             PreviewComponent(
                 type=row["type"],
@@ -1371,10 +1355,6 @@ async def create_entity(
     description: Optional[str] = Form(None),
     category: Optional[str] = Form(None),
     video_url: Optional[str] = Form(None),
-    # v49 phase-1: user-facing metadata fields. Upload form pre-fills
-    # `title` from a humanizer over `name`; `tagline` is optional.
-    title: Optional[str] = Form(None),
-    tagline: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
     docs: List[UploadFile] = File(default=[]),
     user: dict = Depends(get_current_user),
@@ -1416,7 +1396,7 @@ async def create_entity(
     quota = get_guardrails_blocked_quota_per_day()
     if quota > 0:
         since = _dt.now(_tz.utc) - _td(hours=24)
-        recent_blocked = StoreSubmissionsRepository(conn) \
+        recent_blocked = store_submissions_repo() \
             .count_blocked_for_submitter_since(user["id"], since)
         if recent_blocked >= quota:
             raise HTTPException(
@@ -1458,19 +1438,7 @@ async def create_entity(
             raise HTTPException(status_code=400, detail="invalid_name_format")
         final_description = description or meta.get("description")
 
-        # v49: Title is user-supplied; pre-filled in the upload form by
-        # JS humanize_name() with the same acronym dict the server uses,
-        # but always editable. Fall back to server-side humanize when the
-        # client omits the field (e.g. legacy uploaders, API integrations).
-        from src.store_naming import humanize_name
-        final_title = (title or "").strip() or humanize_name(final_name) or final_name
-        if len(final_title) > 100:
-            raise HTTPException(status_code=400, detail="title_too_long")
-        final_tagline = (tagline or "").strip() or None
-        if final_tagline is not None and len(final_tagline) > 200:
-            raise HTTPException(status_code=400, detail="tagline_too_long")
-
-        repo = StoreEntitiesRepository(conn)
+        repo = store_entities_repo()
         # Skip archived rows: archive renames the row to free the slot,
         # so a same-name re-upload after archive succeeds. Active rows
         # (approved / pending / hidden) still 409 on collision.
@@ -1534,7 +1502,7 @@ async def create_entity(
         # persisted (as a submission row).
         from src.store_guardrails.bundle_meta import compute_bundle_meta
         bundle_meta = compute_bundle_meta(plugin_dir)
-        subs_repo = StoreSubmissionsRepository(conn)
+        subs_repo = store_submissions_repo()
 
         # Three-state matrix (fail-CLOSED on misconfig):
         #   - intent False           → auto-approve (operator opt-out, e.g. local dev)
@@ -1561,8 +1529,6 @@ async def create_entity(
             owner_username=username,
             type=type,
             name=final_name,
-            title=final_title,
-            synthetic_name=suffixed,
             description=final_description,
             category=category,
             version=version,
@@ -1571,7 +1537,6 @@ async def create_entity(
             doc_paths=doc_rels,
             file_size=file_size,
             visibility_status=initial_visibility,
-            tagline=final_tagline,
         )
         _audit(
             conn,
@@ -1622,7 +1587,7 @@ async def create_entity(
         shutil.rmtree(scratch, ignore_errors=True)
 
     _invalidate_etag()
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     return _entity_to_response(conn, entity)  # type: ignore[arg-type]
 
 
@@ -1641,11 +1606,6 @@ async def update_entity(
     description: Optional[str] = Form(None),
     category: Optional[str] = Form(None),
     video_url: Optional[str] = Form(None),
-    # v49 phase-1 metadata. ``title`` and ``tagline`` are partial-update
-    # fields: omit to leave unchanged, send empty string to clear (only
-    # meaningful for ``tagline``; empty ``title`` is rejected).
-    title: Optional[str] = Form(None),
-    tagline: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1684,7 +1644,6 @@ async def update_entity(
             background_tasks=background_tasks,
             file=file, name=name, type=type, description=description,
             category=category, video_url=video_url, photo=photo,
-            title=title, tagline=tagline,
             user=user, conn=conn,
         )
 
@@ -1700,12 +1659,10 @@ async def _update_entity_locked(
     category: Optional[str],
     video_url: Optional[str],
     photo: Optional[UploadFile],
-    title: Optional[str],
-    tagline: Optional[str],
     user: dict,
     conn: duckdb.DuckDBPyConnection,
 ):
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -1736,7 +1693,7 @@ async def _update_entity_locked(
     # (each baking its own versions/v<N+1>/plugin/ which the runner
     # would then sequentially promote — violates the "single in-flight
     # version per entity" invariant).
-    latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+    latest_sub = store_submissions_repo().latest_for_entity(entity_id)
     if latest_sub and latest_sub.get("status") in (
         "pending_inline", "pending_llm",
     ):
@@ -1755,24 +1712,6 @@ async def _update_entity_locked(
         raise HTTPException(status_code=400, detail="invalid_category")
 
     video_url = _validate_video_url(video_url)
-
-    # v49 phase-1: validate metadata fields. ``title`` left None means "no
-    # change"; empty string is rejected (title is NOT NULL). ``tagline``
-    # supports empty-string clear via the repository sentinel.
-    new_title: Optional[str] = None
-    if title is not None:
-        stripped = title.strip()
-        if not stripped:
-            raise HTTPException(status_code=400, detail="title_required")
-        if len(stripped) > 100:
-            raise HTTPException(status_code=400, detail="title_too_long")
-        new_title = stripped
-    new_tagline: Optional[str] = None
-    if tagline is not None:
-        stripped_tagline = tagline.strip()
-        if len(stripped_tagline) > 200:
-            raise HTTPException(status_code=400, detail="tagline_too_long")
-        new_tagline = stripped_tagline  # "" clears (repo treats falsy as NULL)
 
     # Display-name change handled at the end (after bundle bake) so the
     # rename can target the version-bumped or current bundle dir.
@@ -1837,11 +1776,7 @@ async def _update_entity_locked(
                 Path(tmp.name).unlink(missing_ok=True)
 
             _validate_and_extract_metadata(entity["type"], scratch)
-            # v49 phase-3: read the stored synthetic_name. Entity row was
-            # loaded before any rename — `synthetic_name` is the OLD value
-            # baked-tree code expects (rename, when present, is applied
-            # below via _rename_baked_tree with NEW suffix).
-            suffixed = entity["synthetic_name"]
+            suffixed = suffixed_name(entity["name"], entity["owner_username"])
             # Bake into the staging dir — _bake_plugin_tree creates the
             # target if missing and does its own rmtree on existing
             # children, so the staging path being fresh is fine.
@@ -1934,10 +1869,7 @@ async def _update_entity_locked(
     #    keep serving the prior bundle under the prior slug.
     if rename_to is not None:
         owner_username = entity["owner_username"]
-        # v49 phase-3: old_suffix reads the stored synthetic_name (entity
-        # was loaded before any rename was applied). new_suffix MUST be
-        # freshly computed — rename_to is a proposed value not yet in DB.
-        old_suffix = entity["synthetic_name"]
+        old_suffix = suffixed_name(entity["name"], owner_username)
         new_suffix = suffixed_name(rename_to, owner_username)
 
         if file is None:
@@ -1985,13 +1917,6 @@ async def _update_entity_locked(
     # Metadata-only column updates (name, description, category, photo,
     # video) — never bundle-derived (version / file_size) because the
     # new version isn't promoted to current until the LLM approves.
-    # v49: when ``rename_to`` is set, synthetic_name must move in lockstep
-    # so attribution lookups + the global suffix-uniqueness check stay
-    # accurate. owner_username is immutable, so the new synthetic is a
-    # pure function of the new name.
-    new_synthetic: Optional[str] = None
-    if rename_to is not None:
-        new_synthetic = suffixed_name(rename_to, entity["owner_username"])
     repo.update(
         entity_id,
         name=rename_to,
@@ -1999,9 +1924,6 @@ async def _update_entity_locked(
         category=category,
         photo_path=photo_rel,
         video_url=video_url,
-        title=new_title,
-        tagline=new_tagline,
-        synthetic_name=new_synthetic,
     )
 
     # v46: rename no longer needs an explicit attribution refresh — the
@@ -2030,7 +1952,7 @@ async def _update_entity_locked(
         hold_for_review = guardrails_enabled
         schedule_async_llm = guardrails_enabled and provider_ready
         guardrails_on = hold_for_review
-        subs_repo = StoreSubmissionsRepository(conn)
+        subs_repo = store_submissions_repo()
         from src.store_guardrails.bundle_meta import compute_bundle_meta
         # Hash the NEW version dir, not live (which still holds the
         # prior approved bytes during a guardrails-on edit).
@@ -2169,7 +2091,7 @@ async def _restore_version_locked(
     user: dict,
     conn: duckdb.DuckDBPyConnection,
 ):
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -2179,7 +2101,7 @@ async def _restore_version_locked(
     # Block while pending — same gate as PUT. Gate on submission
     # status directly so v2+ deferred-promotion edits don't slip
     # through the visibility check.
-    latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+    latest_sub = store_submissions_repo().latest_for_entity(entity_id)
     if latest_sub and latest_sub.get("status") in (
         "pending_inline", "pending_llm",
     ):
@@ -2206,7 +2128,7 @@ async def _restore_version_locked(
         None,
     )
     if src_sub_id:
-        src_sub = StoreSubmissionsRepository(conn).get(src_sub_id)
+        src_sub = store_submissions_repo().get(src_sub_id)
         if src_sub and src_sub.get("status") not in ("approved",):
             raise HTTPException(
                 status_code=400,
@@ -2285,7 +2207,7 @@ async def _restore_version_locked(
     provider_ready = get_guardrails_llm_provider_ready()
     hold_for_review = guardrails_enabled
     schedule_async_llm = guardrails_enabled and provider_ready
-    subs_repo = StoreSubmissionsRepository(conn)
+    subs_repo = store_submissions_repo()
 
     # Idempotent restore: when the restored bundle is byte-identical
     # to a prior `approved` submission reviewed by the SAME model,
@@ -2421,7 +2343,7 @@ async def _restore_version_locked(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/entities/{entity_id}", status_code=204)
+@router.delete("/entities/{entity_id}", response_model=OkResponse)
 async def delete_entity(
     entity_id: str,
     hard: bool = False,
@@ -2445,7 +2367,7 @@ async def delete_entity(
     archive or hard-delete; owner is refused so they can't erase the
     evidence of a flagged upload before triage.
     """
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     is_admin_caller = is_user_admin(user["id"], conn)
@@ -2485,9 +2407,9 @@ async def delete_entity(
     if hard:
         # Mark linked submissions before dropping the entity row so
         # mark_deleted_for_entity can find them by entity_id.
-        StoreSubmissionsRepository(conn).mark_deleted_for_entity(entity_id)
-        UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
-        StoreEntitiesRepository(conn).delete(entity_id)
+        store_submissions_repo().mark_deleted_for_entity(entity_id)
+        user_store_installs_repo().delete_all_for_entity(entity_id)
+        store_entities_repo().delete(entity_id)
         shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
         # v46: attribution lookup is live — the next UsageProcessor tick
         # rebuilds its in-memory cache without the deleted entity.
@@ -2500,7 +2422,7 @@ async def delete_entity(
              "owner_user_id": entity.get("owner_user_id")},
         )
         _invalidate_etag()
-        return
+        return OkResponse()
 
     # Soft archive — preserves disk + installs + audit chain.
     # v36+: archive renames the entity row's `name` (appends
@@ -2509,7 +2431,7 @@ async def delete_entity(
     # re-upload. The on-disk skill/agent/plugin subdir is renamed
     # in lockstep + frontmatter rewritten so consumers see the
     # plugin under the new slug on their next sync.
-    rename_info = StoreEntitiesRepository(conn).archive(
+    rename_info = store_entities_repo().archive(
         entity_id, by_user_id=user["id"],
     )
     original_name = rename_info["original_name"]
@@ -2535,16 +2457,25 @@ async def delete_entity(
                 "reverting DB",
                 entity_id,
             )
-            conn.execute(
-                """UPDATE store_entities
-                      SET visibility_status = 'approved',
-                          name = ?,
-                          archived_at = NULL,
-                          archived_by = NULL,
-                          updated_at = ?
-                    WHERE id = ?""",
-                [original_name, datetime.now(timezone.utc), entity_id],
-            )
+            import sqlalchemy as sa
+            from src.db_pg import get_engine
+            with get_engine().begin() as eng_conn:
+                eng_conn.execute(
+                    sa.text(
+                        """UPDATE store_entities
+                              SET visibility_status = 'approved',
+                                  name = :name,
+                                  archived_at = NULL,
+                                  archived_by = NULL,
+                                  updated_at = :now
+                            WHERE id = :eid"""
+                    ),
+                    {
+                        "name": original_name,
+                        "now": datetime.now(timezone.utc),
+                        "eid": entity_id,
+                    },
+                )
             raise HTTPException(
                 status_code=500, detail="archive_rename_failed",
             )
@@ -2561,6 +2492,7 @@ async def delete_entity(
          "by_admin": is_admin_caller and entity["owner_user_id"] != user["id"]},
     )
     _invalidate_etag()
+    return OkResponse()
 
 
 # ---------------------------------------------------------------------------
@@ -2574,7 +2506,7 @@ async def install_entity(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -2586,7 +2518,7 @@ async def install_entity(
     # or wait for approval.
     if entity.get("visibility_status") != "approved" and not is_user_admin(user["id"], conn):
         raise HTTPException(status_code=409, detail="entity_not_approved")
-    installs = UserStoreInstallsRepository(conn)
+    installs = user_store_installs_repo()
     inserted = installs.install(user["id"], entity_id)
     if inserted:
         repo.bump_install_count(entity_id, +1)
@@ -2595,18 +2527,19 @@ async def install_entity(
     return InstallResponse(entity_id=entity_id, installed=True)
 
 
-@router.delete("/entities/{entity_id}/install", status_code=204)
+@router.delete("/entities/{entity_id}/install", response_model=InstallResponse)
 async def uninstall_entity(
     entity_id: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    installs = UserStoreInstallsRepository(conn)
+    installs = user_store_installs_repo()
     deleted = installs.uninstall(user["id"], entity_id)
     if deleted:
-        StoreEntitiesRepository(conn).bump_install_count(entity_id, -1)
+        store_entities_repo().bump_install_count(entity_id, -1)
         _audit(conn, user["id"], "store.entity.uninstall", entity_id)
         _invalidate_etag()
+    return InstallResponse(entity_id=entity_id, installed=False)
 
 
 # ---------------------------------------------------------------------------
@@ -2617,7 +2550,7 @@ async def uninstall_entity(
 # `agnes admin store {pull,push}` CLI commands which back up the Store to a
 # git repo (or restore from one). Bundle format:
 #
-#     flea.zip
+#     agnes-store-bundle.zip
 #     ├── manifest.json                 ← {"format":1,"generated_at":..., "entries":[...]}
 #     └── entities/<entity_id>/
 #         ├── plugin/...                ← canonical Claude Code plugin tree
@@ -2683,11 +2616,21 @@ def _resolve_owner_emails(
     """
     if not owner_ids:
         return {}
-    placeholders = ",".join(["?"] * len(owner_ids))
-    rows = conn.execute(
-        f"SELECT id, email FROM users WHERE id IN ({placeholders})",
-        list(owner_ids),
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    keys = []
+    params: dict = {}
+    for i, oid in enumerate(owner_ids):
+        k = f"o_{i}"
+        keys.append(f":{k}")
+        params[k] = oid
+    with get_engine().connect() as eng_conn:
+        rows = eng_conn.execute(
+            sa.text(
+                f"SELECT id, email FROM users WHERE id IN ({','.join(keys)})"
+            ),
+            params,
+        ).fetchall()
     return {r[0]: r[1] for r in rows}
 
 
@@ -2800,7 +2743,7 @@ async def export_bundle(
     # uploads without needing to look up their own user_id first.
     if owner == "me":
         owner = user["id"]
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     # Visibility filter mirrors the marketplace browse query: only
     # `approved` is visible to non-admin non-owner callers. Without
     # this filter, an authenticated non-admin could pull the entire
@@ -2844,7 +2787,7 @@ async def export_bundle(
         content=payload,
         media_type="application/zip",
         headers={
-            "Content-Disposition": 'attachment; filename="flea.zip"',
+            "Content-Disposition": 'attachment; filename="agnes-store-bundle.zip"',
             "X-Bundle-Entry-Count": str(len(items)),
         },
     )
@@ -2868,7 +2811,7 @@ def _import_one_entry(
     sha256(email)[:12]`` to make it idempotent across repeated imports.
     """
     entity_id = entry["entity_id"]
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     existing = repo.get(entity_id)
 
     if existing:
@@ -2881,7 +2824,7 @@ def _import_one_entry(
         # mode='replace' OR mode='merge' with newer version → fall through.
 
     # Resolve owner.
-    user_repo = UserRepository(conn)
+    user_repo = users_repo()
     owner_email = (entry.get("owner_email") or "").strip().lower()
     stub_created = 0
     owner_user_id: Optional[str] = None

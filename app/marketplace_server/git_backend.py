@@ -95,7 +95,7 @@ def file_set_for_user(
     pass them through to avoid doubling the DB + disk-hash work).
     """
     if plugins is None:
-        plugins = marketplace_filter.resolve_user_marketplace(conn, user)
+        plugins = marketplace_filter.resolve_user_marketplace(user)
     if etag is None:
         etag = marketplace_filter.compute_etag(plugins)
 
@@ -173,7 +173,7 @@ def ensure_repo_for_user(conn: duckdb.DuckDBPyConnection, user: dict) -> Path:
     lazily if needed. Safe under concurrent identical-etag requests: each
     builder uses a unique tmp dir and atomic rename; loser deletes its tmp.
     """
-    plugins = marketplace_filter.resolve_user_marketplace(conn, user)
+    plugins = marketplace_filter.resolve_user_marketplace(user)
     etag = marketplace_filter.compute_etag(plugins)
 
     root = cache_dir()

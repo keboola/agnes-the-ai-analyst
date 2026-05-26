@@ -18,13 +18,9 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories.audit import AuditRepository
-from src.repositories.news_template import (
-    AlreadyDraftError,
-    NewsTemplateRepository,
-    NoDraftError,
-    NotFoundError,
-    VersionConflictError,
+from src.repositories import (
+    audit_repo,
+    news_template_repo,
 )
 from src.sanitize_news import sanitize
 
@@ -57,7 +53,7 @@ def _serialize(row: dict | None) -> dict | None:
 @router.get("/current", dependencies=[Depends(require_admin)])
 def get_current(conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
     """Latest published version (or {published: false} if none)."""
-    row = NewsTemplateRepository(conn).get_current_published()
+    row = news_template_repo().get_current_published()
     if row is None:
         return {"published": False}
     return _serialize(row)
@@ -66,7 +62,7 @@ def get_current(conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
 @router.get("/draft", dependencies=[Depends(require_admin)])
 def get_draft(conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
     """Active draft. 404 if none — UI shows 'create new draft' button."""
-    row = NewsTemplateRepository(conn).get_active_draft()
+    row = news_template_repo().get_active_draft()
     if row is None:
         raise HTTPException(status_code=404, detail="no_draft")
     return _serialize(row)
@@ -78,7 +74,7 @@ def list_versions(
     offset: int = 0,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    rows = NewsTemplateRepository(conn).list_versions(limit=limit, offset=offset)
+    rows = news_template_repo().list_versions(limit=limit, offset=offset)
     return {"versions": [_serialize(r) for r in rows]}
 
 
@@ -87,7 +83,7 @@ def get_version(
     version: int,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    row = NewsTemplateRepository(conn).get_version(version)
+    row = news_template_repo().get_version(version)
     if row is None:
         raise HTTPException(status_code=404, detail="version_not_found")
     return _serialize(row)
@@ -111,7 +107,7 @@ def put_draft(
     first draft and want the call to fail if another admin already
     started one.
     """
-    repo = NewsTemplateRepository(conn)
+    repo = news_template_repo()
     try:
         row = repo.save_draft(
             intro=body.intro,
@@ -129,7 +125,7 @@ def put_draft(
                 "actual_by": e.actual_by,
             },
         ) from e
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="news_draft_saved",
         params={"version": row["version"], "by": user["email"]},
@@ -151,7 +147,7 @@ def post_publish(
     this when reviewing a specific draft before flipping it live so
     a concurrent admin's edit doesn't slip through under your name.
     """
-    repo = NewsTemplateRepository(conn)
+    repo = news_template_repo()
     try:
         row = repo.publish_draft(by=user["email"], expected_version=expected_version)
     except NoDraftError as e:
@@ -166,7 +162,7 @@ def post_publish(
                 "actual_by": e.actual_by,
             },
         ) from e
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="news_published",
         params={"version": row["version"], "by": user["email"]},
@@ -181,14 +177,14 @@ def post_unpublish(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = NewsTemplateRepository(conn)
+    repo = news_template_repo()
     try:
         row = repo.unpublish(version=version, by=user["email"])
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail="version_not_found") from e
     except AlreadyDraftError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="news_unpublished",
         params={"version": row["version"], "by": user["email"]},

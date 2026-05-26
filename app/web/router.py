@@ -25,8 +25,24 @@ from app.instance_config import (
     get_gws_oauth_credentials, get_home_automode_visibility,
     get_instance_admin_email, get_atlassian_base_url,
     get_instance_brand, get_workspace_dir_name,
-    get_instance_logo_svg, get_instance_overview, get_instance_support,
-    get_instance_theme, get_custom_scripts,
+    get_instance_logo_svg, get_instance_overview,
+)
+
+from src.repositories import (
+    audit_repo,
+    claude_md_template_repo,
+    knowledge_repo,
+    news_template_repo,
+    profile_repo,
+    store_entities_repo,
+    store_submissions_repo,
+    sync_settings_repo,
+    sync_state_repo,
+    table_registry_repo,
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+    welcome_template_repo,
 )
 from app.web.connector_prompts import all_connector_prompts
 from app.api.me_debug import (
@@ -36,11 +52,6 @@ from app.api.me_debug import (
     _token_fingerprint,
     _last_sync_summary,
 )
-from src.repositories.sync_state import SyncStateRepository
-from src.repositories.sync_settings import SyncSettingsRepository
-from src.repositories.knowledge import KnowledgeRepository
-from src.repositories.users import UserRepository
-from src.repositories.profiles import ProfileRepository
 
 
 def _resolved_home_route() -> str:
@@ -378,7 +389,6 @@ def _build_context(
         INSTANCE_COPYRIGHT = ""
         LOGO_SVG = get_instance_logo_svg()
         INSTANCE_OVERVIEW = get_instance_overview()
-        INSTANCE_SUPPORT = get_instance_support()
         TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "")
         SSH_ALIAS = "data-analyst"
         SERVER_HOST = os.environ.get("SERVER_HOST", "")
@@ -490,22 +500,10 @@ def _build_context(
         "instance_name": get_instance_name(),
         "instance_brand": get_instance_brand(),
         "workspace_dir": get_workspace_dir_name(),
-        # Active palette — drives `<html data-theme="...">` in
-        # base.html so `--ds-*` tokens flip via CSS without
-        # touching markup. "blue" (default) = brand-blue palette;
-        # "navy" = darker opt-in palette. Admin toggles via
-        # /admin/server-config.
-        "instance_theme": get_instance_theme(),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.
         "home_automode": {"show": get_home_automode_visibility()},
-        # Operator-injected HTML/JS blocks rendered into base.html at
-        # head_start / head_end / body_end. Admin-only (instance.yaml,
-        # gated by require_admin) — used for feedback widgets
-        # (Marker.io), analytics, error capture. Empty default keeps
-        # the OSS vendor-neutral.
-        "custom_scripts": get_custom_scripts(),
     }
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
@@ -528,7 +526,12 @@ async def index(request: Request, user: Optional[dict] = Depends(get_optional_us
 async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
     """First-time setup wizard. Redirects to login if users already exist."""
     try:
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as eng_conn:
+            user_count = eng_conn.execute(
+                sa.text("SELECT COUNT(*) FROM users")
+            ).scalar() or 0
         if user_count > 0:
             return RedirectResponse(url="/login", status_code=302)
     except Exception:
@@ -542,13 +545,8 @@ async def login_page(request: Request):
     if is_local_dev_mode():
         # Only short-circuit to the home route if the dev user is actually
         # seeded. Otherwise a 401 there would bounce back to /login and loop.
-        from src.db import get_system_db
-        conn = get_system_db()
-        try:
-            if _get_local_dev_user(conn):
-                return RedirectResponse(url=get_home_route(), status_code=302)
-        finally:
-            conn.close()
+        if _get_local_dev_user():
+            return RedirectResponse(url=get_home_route(), status_code=302)
         # Fall through to the normal login form so the missing-seed error is visible.
 
     next_path = request.query_params.get("next", "")
@@ -631,9 +629,9 @@ async def dashboard(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    sync_repo = SyncStateRepository(conn)
-    settings_repo = SyncSettingsRepository(conn)
-    profile_repo = ProfileRepository(conn)
+    sync_repo = sync_state_repo()
+    settings_repo = sync_settings_repo()
+    profiles = profile_repo()
 
     all_states = sync_repo.get_all_states()
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
@@ -645,9 +643,10 @@ async def dashboard(
     # /catalog and are excluded from the headline counter. Columns + size
     # come from sync_state, which is the canonical source for "what's
     # actually on disk locally".
-    total_tables = conn.execute(
-        "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
-    ).fetchone()[0]
+    total_tables = sum(
+        1 for r in table_registry_repo().list_all()
+        if (r.get("source_type") or "") != "internal"
+    )
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
     total_columns = sum(s.get("columns", 0) or 0 for s in all_states)
     total_size_bytes = sum(s.get("file_size_bytes", 0) or 0 for s in all_states)
@@ -717,16 +716,19 @@ async def home_page(
 
     See origin: docs/brainstorms/home-page-requirements.md.
     """
-    row = conn.execute(
-        "SELECT onboarded FROM users WHERE id = ?", [user["id"]]
-    ).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text("SELECT onboarded FROM users WHERE id = :uid"),
+            {"uid": user["id"]},
+        ).first()
     onboarded = bool(row[0]) if row else False
 
     # Pull the latest published news intro for the bottom-of-page section.
     # Template renders the section only when intro is non-empty, so an
     # instance that has never published news shows nothing extra.
-    from src.repositories.news_template import NewsTemplateRepository
-    news = NewsTemplateRepository(conn).get_current_published()
+    news = news_template_repo().get_current_published()
     news_intro = news["intro"] if (news and news.get("intro")) else ""
 
     # Homepage status frame (Last sync, Sessions, Prompts, Tokens, Projects).
@@ -798,8 +800,7 @@ async def news_page(
     """Permalink page for the latest published news. Renders empty-state
     copy when no version is published. Authed-only (same as /home).
     """
-    from src.repositories.news_template import NewsTemplateRepository
-    news = NewsTemplateRepository(conn).get_current_published()
+    news = news_template_repo().get_current_published()
     ctx = _build_context(
         request,
         user=user,
@@ -819,8 +820,7 @@ async def admin_news_editor(
     """Admin authoring surface — current published banner, draft editor,
     versions table. JS hits the /api/admin/news/* endpoints for the
     write paths."""
-    from src.repositories.news_template import NewsTemplateRepository
-    repo = NewsTemplateRepository(conn)
+    repo = news_template_repo()
     ctx = _build_context(
         request,
         user=user,
@@ -857,531 +857,120 @@ async def setup_advanced_page(
     return templates.TemplateResponse(request, "setup_advanced.html", ctx)
 
 
-def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
-                              source_types: Optional[list] = None,
-                              is_admin_view: bool = False) -> dict:
-    """Adapt a ResourceEntry → template entry dict for the _stack_card macro.
-
-    Always renders a meta line (`N tables` — even `0 tables`) and a
-    description fallback so packages without an admin-authored
-    description don't render as half-empty cards.
-
-    Empty-package CTA: when ``table_count == 0`` AND the viewer is admin,
-    the meta line becomes an inline link to ``/admin/tables?assign_to=<id>``
-    so admins can jump straight into the bulk-assign flow without first
-    having to discover the chip-input hidden in each table's edit modal.
-    """
-    description = entry.description or (
-        f"Bundle of {table_count} table{'s' if table_count != 1 else ''}. "
-        f"Add to your stack so `agnes pull` syncs the data locally."
-    )
-    out = {
-        "id": entry.id,
-        "name": entry.name,
-        "description": description,
-        "icon": entry.icon or "📦",
-        "color": entry.color or "#e0f2fe",
-        # v50: cover image (admin-uploaded JPG/PNG/WebP). _stack_card.html
-        # renders it as <img> when set, falling back to the flat-color +
-        # initials banner when None. Closes the visual gap with
-        # /marketplace cards that have always shown real cover photos.
-        "cover_image_url": getattr(entry, "cover_image_url", None),
-        # v51: lifecycle status + classification category. Drive the
-        # cover-corner status pill and the eyebrow line above the title.
-        "status": getattr(entry, "status", None) or "prod",
-        "category": getattr(entry, "category", None),
-        "requirement": entry.requirement,
-        "in_stack": entry.in_stack,
-        "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
-        # v56: source-type pills (auto-derived) come first per the spec
-        # convention; admin-authored category tags follow. Concatenated
-        # into the single ``tags`` field the macro renders. Duplicates
-        # collapsed via dict-order-preserving filter.
-        "tags": list(dict.fromkeys(
-            list(source_types or []) + list(getattr(entry, "tags", None) or [])
-        )),
-        # v56: extended attribution + derived badges. Macro reads these
-        # via class hooks (data-card-owner, data-badge="...").
-        "owner_name": getattr(entry, "owner_name", None),
-        "owner_team": getattr(entry, "owner_team", None),
-        "badges": getattr(entry, "badges", None) or [],
-        "drilldown_url": drilldown_url,
-        "footer_left": (
-            f"View {table_count} table{'s' if table_count != 1 else ''} →"
-            if table_count else "Open →"
-        ),
-    }
-    if table_count == 0 and is_admin_view:
-        # `entry.id` is a server-generated uuid (data_packages.id), safe to
-        # inline. `assign_to` is read by admin_tables.html on load to auto-
-        # open the Bulk Assign modal with this package pre-selected.
-        out["meta_html"] = (
-            f'0 tables — <a href="/admin/tables?assign_to={entry.id}" '
-            f'style="color:#0073D1;">assign some →</a>'
-        )
-    return out
-
-
 @router.get("/catalog", response_class=HTMLResponse)
 async def catalog(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    # v49 — unified Browse + My Stack tabs (Task 8.2). The old per-source
-    # source-card / per-table list moved into /catalog/p/<slug> (Task 8.3).
-    from app.services.stack_resolver import StackResolver
-    from app.resource_types import ResourceType
-    from src.repositories.data_packages import DataPackagesRepository
+    sync_repo = sync_state_repo()
+    settings_repo = sync_settings_repo()
+    profiles = profile_repo()
 
-    resolver = StackResolver(conn)
-    pkg_repo = DataPackagesRepository(conn)
+    all_states = sync_repo.get_all_states()
+    all_profiles = profiles.get_all()
+    enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
+    datasets = get_datasets()
 
-    # Pre-compute per-package table counts + source-type tag set in one pass
-    # so we don't repeat the join per card.
-    pkg_meta: dict[str, dict] = {}
+    # Build catalog data from table_registry in DuckDB. Filter pre-render so
+    # the page only lists tables the user actually has access to — Admin
+    # group members see everything (can_access shortcut), other users see
+    # only entries with a matching resource_grants(group, "table", id) row.
     try:
-        for pkg in pkg_repo.list():
-            tables = pkg_repo.list_tables(pkg["id"])
-            source_types = sorted({(t.get("source_type") or "") for t in tables if t.get("source_type")})
-            pkg_meta[pkg["id"]] = {
-                "table_count": len(tables),
-                "source_types": source_types,
+        from app.auth.access import can_access
+        from app.resource_types import ResourceType
+        table_repo = table_registry_repo()
+        registered = table_repo.list_all()
+
+        user_id = user.get("id", "")
+        tables = []
+        internal_tables = []
+        for tc in registered:
+            table_id = tc.get("id", "")
+            if not can_access(user_id, ResourceType.TABLE.value, table_id, conn):
+                continue
+            table_data = {
+                "id": table_id,
+                "name": tc.get("name", ""),
+                "description": tc.get("description", ""),
+                "dataset": tc.get("bucket"),
+                "source_type": tc.get("source_type") or "",
+                "sync_strategy": tc.get("sync_strategy", "full_refresh"),
+                "query_mode": tc.get("query_mode", "local"),
+                "profile": all_profiles.get(table_id),
             }
+            # Add sync state
+            for state in all_states:
+                if state["table_id"] == table_id:
+                    table_data["last_sync"] = state.get("last_sync")
+                    table_data["rows"] = state.get("rows")
+                    break
+            # Agnes internal tables (agnes_sessions / agnes_telemetry /
+            # agnes_audit) render in a dedicated card on /catalog rather
+            # than under "Core Business Data" — they're system tables,
+            # not business data, but analysts should still discover them
+            # for `agnes query` so they need to live on the catalog page.
+            if tc.get("source_type") == "internal":
+                internal_tables.append(table_data)
+            else:
+                tables.append(table_data)
     except Exception as e:
-        logger.warning("could not enumerate data_packages: %s", e)
+        tables = []
+        internal_tables = []
+        logger.warning(f"Could not load catalog: {e}")
 
-    is_admin_view = is_user_admin(user["id"], conn)
-    if is_admin_view:
-        # Admin god-mode for BROWSE only: surface every package regardless
-        # of group grants so admins can audit the full set. ``browse_admin``
-        # runs the same v51/v56 enrichment pass as ``browse`` (status,
-        # category, owner_name, tags, derived badges) — re-implementing
-        # it inline silently dropped those fields, leaving admin cards
-        # empty of v56 chrome. For MY STACK we still call the resolver —
-        # admins legitimately subscribe to packages and expect to see them
-        # in their stack tab.
-        browse_entries = resolver.browse_admin(user["id"], ResourceType.DATA_PACKAGE)
-        stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
-    else:
-        browse_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
-        stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
+    # Build data_stats for catalog template (business-data card header).
+    # `total_tables` must count REGISTERED business tables, not just
+    # synced ones — a registry of 30 tables with 0 ever synced would
+    # otherwise render as "0 tables" on the Core Business Data card.
+    # `internal` source_type tables render in their own card; exclude
+    # them here so the Core counter doesn't double-count system tables.
+    total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
+    data_stats = {
+        "total_tables": len(tables),
+        "total_rows": total_rows,
+        "total_columns": 0,
+        "total_size": sum(s.get("file_size_bytes", 0) or 0 for s in all_states),
+        "last_updated": max((s.get("last_sync") for s in all_states if s.get("last_sync")), default=None),
+    }
 
-    # Group ``required`` packages first so they cluster together at the
-    # top of the Browse grid instead of being scattered by creation
-    # order — first-demo feedback (2026-05-19): "bylo by dobre ty
-    # required mit vzdy nekde seskupene spolu na jedne strane".
-    # Secondary order falls back to the resolver's name-ordered output.
-    browse_entries = sorted(
-        browse_entries,
-        key=lambda e: (0 if e.requirement == "required" else 1, e.name or ""),
-    )
+    # Build business-data categories from `tables` (excludes internal).
+    categories = {}
+    for t in tables:
+        ds = t.get("dataset") or "default"
+        if ds not in categories:
+            categories[ds] = {"name": ds, "tables": []}
+        categories[ds]["tables"].append(t)
+    catalog_data = []
+    for cat in categories.values():
+        cat["count"] = len(cat["tables"])
+        catalog_data.append(cat)
 
-    def _adapt(e):
-        slug = None
-        try:
-            full = pkg_repo.get(e.id)
-            if full:
-                slug = full.get("slug")
-        except Exception:
-            slug = None
-        meta = pkg_meta.get(e.id, {})
-        return _data_package_entry_dict(
-            e,
-            drilldown_url=f"/catalog/p/{slug}" if slug else f"/catalog#{e.id}",
-            table_count=meta.get("table_count", 0),
-            source_types=meta.get("source_types", []),
-            is_admin_view=is_admin_view,
-        )
-
-    entries = [_adapt(e) for e in browse_entries]
-    stack_entries_adapted = [_adapt(e) for e in stack_entries]
-
-    # Aggregate distinct source types across the user's visible packages —
-    # drives the per-source chip row in catalog.html.
-    source_type_chips = sorted({st for e in entries for st in (e.get("tags") or [])})
-
-    # Empty-state hint: when no packages exist, the page tells admins how
-    # many tables are already registered (so the CTA "go to /admin/tables
-    # and group them" lands with concrete context). Non-internal tables
-    # only — the agnes_* internal rows aren't analyst-facing.
-    total_registered_tables = 0
-    try:
-        total_registered_tables = conn.execute(
-            "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
-        ).fetchone()[0]
-    except Exception:
-        total_registered_tables = 0
-
-    # Direct (unbundled) tables on /catalog were dropped per user feedback:
-    # "nemít Direct Tables zvlášť. Potřebujeme to mít celé v nějaké
-    # skupině v těch data packages." Everything an analyst sees here must
-    # belong to a Data Package — admin's job is to package unbundled
-    # tables via Group-by-bucket (one-click) or Bulk-assign on
-    # /admin/tables. The manifest endpoint at /api/sync/manifest still
-    # emits `direct_tables[]` so existing CLI clients with `table`-typed
-    # RBAC grants keep working (BC, not a web surface).
+    # Internal-tables card. Single flat list — the three rows already
+    # share one category ("Agnes Internal"), so no accordion grouping is
+    # useful. Template renders them as a plain list under their own card.
+    internal_card = None
+    if internal_tables:
+        internal_card = {
+            "name": "Agnes Internal",
+            "count": len(internal_tables),
+            "tables": internal_tables,
+        }
 
     ctx = _build_context(
         request, user=user,
-        entries=entries,
-        stack_entries=stack_entries_adapted,
-        source_type_chips=source_type_chips,
-        total_registered_tables=total_registered_tables,
+        tables=tables,
+        datasets=datasets,
+        enabled_datasets=enabled_datasets,
+        data_stats=data_stats,
+        categories=catalog_data,
+        catalog_data=catalog_data,
+        internal_card=internal_card,
+        metrics_data=[],
+        sync_states=all_states,
+        folder_mapping={},
     )
     return templates.TemplateResponse(request, "catalog.html", ctx)
-
-
-@router.get("/catalog/p/{slug}", response_class=HTMLResponse)
-async def catalog_package_detail(
-    slug: str,
-    request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Per-package drill-down — header + table list (Task 8.3 of v49 plan).
-
-    RBAC: admin god-mode or grant on this package. The page mirrors the
-    surface of ``GET /api/data-packages/{slug}`` (which carries the
-    telemetry emit + audit-log path) — the JS side also issues GET on
-    that endpoint so behavior is identical regardless of entry point.
-    """
-    from app.auth.access import can_access
-    from app.resource_types import ResourceType
-    from app.services.stack_resolver import StackResolver
-    from src.repositories.data_packages import DataPackagesRepository
-    from src.repositories.sync_state import SyncStateRepository
-    from src.repositories.table_registry import TableRegistryRepository
-    from src.repositories.usage import UsageRepository
-
-    pkg_repo = DataPackagesRepository(conn)
-    pkg = pkg_repo.get_by_slug(slug)
-    if not pkg:
-        raise HTTPException(status_code=404, detail="data_package_not_found")
-
-    # Admin bypass via is_user_admin; otherwise require a grant (any tier).
-    if not (is_user_admin(user["id"], conn) or
-            can_access(user["id"], ResourceType.DATA_PACKAGE.value, pkg["id"], conn)):
-        raise HTTPException(status_code=403, detail="access_denied")
-
-    # Telemetry: emit data_package.view (Section 9.2). source=browse|my-stack
-    # passed as ?source=…; default 'direct' for typed/bookmarked navigation.
-    source_hint = request.query_params.get("source", "direct")
-    try:
-        UsageRepository(conn).emit_server_event(
-            event_type="data_package.view",
-            user_id=user["id"],
-            username=user.get("email") or user["id"],
-            props={"slug": slug, "source": source_hint},
-        )
-    except Exception:
-        logger.warning("usage_events emit failed for data_package.view")
-
-    resolver = StackResolver(conn)
-    effective_required = resolver.is_required(
-        user["id"], ResourceType.DATA_PACKAGE, pkg["id"]
-    )
-    # In-stack iff required OR a subscription row exists.
-    in_stack = effective_required or bool(conn.execute(
-        "SELECT 1 FROM user_stack_subscriptions "
-        "WHERE user_id = ? AND resource_type = 'data_package' AND resource_id = ?",
-        [user["id"], pkg["id"]],
-    ).fetchone())
-
-    # Hydrate tables with query_mode + last_sync + v56 extended docs.
-    # The extended fields (grain, platforms, partition_col, history,
-    # gotchas) feed the collapsible per-table extended-detail section
-    # on the package page; description carries the ≤200 char card-line.
-    table_rows = pkg_repo.list_tables(pkg["id"])
-    table_repo = TableRegistryRepository(conn)
-    sync_states = {s["table_id"]: s for s in SyncStateRepository(conn).get_all_states()}
-    tables = []
-    for tr in table_rows:
-        full = table_repo.get(tr["id"]) or {}
-        st = sync_states.get(tr["id"]) or {}
-        size = st.get("file_size_bytes") or 0
-        tables.append({
-            "id": tr["id"],
-            "name": tr["name"],
-            "description": full.get("description"),
-            "query_mode": full.get("query_mode") or "local",
-            "source_type": full.get("source_type"),
-            "last_sync_display": (str(st.get("last_sync"))[:19] if st.get("last_sync") else None),
-            "size_display": _human_size(size) if size else None,
-            "size_bytes": size,
-            # v56 extended per-table docs for the package-detail expand.
-            "grain": full.get("grain"),
-            "platforms": full.get("platforms") or [],
-            "partition_col": full.get("partition_col"),
-            "history": full.get("history"),
-            "gotchas": full.get("gotchas") or [],
-            "sample_questions": full.get("sample_questions") or [],
-        })
-
-    # v56 virtual badges. Derived in-template-aware here so the router
-    # owns the policy (creator-in-admin + 30-day window) and the
-    # template stays presentational.
-    from datetime import datetime, timedelta, timezone as _tz
-    badges: list[str] = []
-    created_by = pkg.get("created_by")
-    if created_by:
-        admin_match = conn.execute(
-            "SELECT 1 FROM user_group_members ugm "
-            "JOIN user_groups ug ON ug.id = ugm.group_id "
-            "JOIN users u ON u.id = ugm.user_id "
-            "WHERE ug.name = 'Admin' AND (u.email = ? OR u.id = ?) LIMIT 1",
-            [created_by, created_by],
-        ).fetchone()
-        if admin_match:
-            badges.append("curated")
-    created_at = pkg.get("created_at")
-    if isinstance(created_at, datetime):
-        ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=_tz.utc)
-        if (datetime.now(_tz.utc) - ts) < timedelta(days=30):
-            badges.append("new")
-
-    total_size = sum(t["size_bytes"] for t in tables)
-    ctx = _build_context(
-        request, user=user,
-        pkg=pkg,
-        tables=tables,
-        effective_requirement="required" if effective_required else "available",
-        in_stack=in_stack,
-        total_size_bytes=total_size,
-        total_size_display=_human_size(total_size) if total_size else None,
-        badges=badges,
-    )
-    return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
-
-
-@router.get("/catalog/t/{table_id}", response_class=HTMLResponse)
-async def catalog_table_detail(
-    table_id: str,
-    request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Per-table drill-down — sample questions, columns, things to know,
-    pairs-well-with. Closes the "/catalog detail bounces into /admin"
-    UX gap: this is the user-facing surface for table docs, and admins
-    edit those docs inline on the same page instead of round-tripping
-    through /admin/tables.
-
-    RBAC: admin god-mode or grant on ANY data package containing this
-    table. Falls back to 403 otherwise — analysts only see tables that
-    belong to packages they're granted on.
-    """
-    from app.auth.access import can_access
-    from app.resource_types import ResourceType
-    from src.repositories.data_packages import DataPackagesRepository
-    from src.repositories.sync_state import SyncStateRepository
-    from src.repositories.table_registry import TableRegistryRepository
-
-    table_repo = TableRegistryRepository(conn)
-    table = table_repo.get(table_id)
-    if not table:
-        raise HTTPException(status_code=404, detail="table_not_found")
-
-    # Find every package that includes this table; gate access on
-    # admin god-mode OR a grant on ANY of those packages.
-    pkg_repo = DataPackagesRepository(conn)
-    parent_packages = []
-    is_admin = is_user_admin(user["id"], conn)
-    has_grant = False
-    try:
-        # Walk packages (instances are small enough that this is fine).
-        for p in pkg_repo.list(limit=10000):
-            mem_ids = {t["id"] for t in pkg_repo.list_tables(p["id"])}
-            if table_id not in mem_ids:
-                continue
-            parent_packages.append({"slug": p["slug"], "name": p["name"]})
-            if not has_grant and not is_admin:
-                if can_access(user["id"], ResourceType.DATA_PACKAGE.value,
-                              p["id"], conn):
-                    has_grant = True
-    except Exception:
-        logger.warning("could not enumerate parent packages for %s", table_id)
-    if not (is_admin or has_grant):
-        raise HTTPException(status_code=403, detail="access_denied")
-
-    # Resolve any pairs_well_with ids to (id, name) pairs the template
-    # can render as links. Unknown ids (deleted tables) silently dropped.
-    pairs = []
-    for related_id in (table.get("pairs_well_with") or []):
-        related = table_repo.get(related_id)
-        if related:
-            pairs.append({"id": related["id"], "name": related["name"]})
-
-    # Columns from /api/admin/tables/{id}/profile if it exists in
-    # table_profiles, else empty. Cheap read; non-admin doesn't need
-    # the full profile, just the column list.
-    columns = []
-    try:
-        prof_row = conn.execute(
-            "SELECT profile FROM table_profiles WHERE table_id = ?",
-            [table_id],
-        ).fetchone()
-        if prof_row and prof_row[0]:
-            import json as _json
-            prof = _json.loads(prof_row[0]) if isinstance(prof_row[0], str) else prof_row[0]
-            for col in (prof.get("columns") or []):
-                columns.append({
-                    "name": col.get("name"),
-                    "type": col.get("type"),
-                    "nullable": col.get("nullable", True),
-                })
-    except Exception:
-        logger.warning("could not load profile for %s", table_id)
-
-    # Fallback: when table_profiles has no row (table never synced, or
-    # profile was wiped), introspect schema via the same code path the
-    # /api/v2/schema endpoint uses. Handles every source type — internal
-    # via connectors.internal, BigQuery remote via the BQ extension,
-    # local + materialized via DESCRIBE on the parquet. Best-effort —
-    # any failure (parquet missing, BQ creds absent, etc.) leaves the
-    # columns section in its "run a sync" empty state.
-    if not columns:
-        try:
-            from app.api.v2_schema import build_schema_uncached
-            from connectors.bigquery.access import BqAccess
-            sch = build_schema_uncached(conn, table_id, bq=BqAccess(), row=table)
-            for col in (sch.get("columns") or []):
-                columns.append({
-                    "name": col.get("name"),
-                    "type": col.get("type"),
-                    "nullable": col.get("nullable", True),
-                })
-        except Exception:
-            logger.warning("schema introspection fallback failed for %s", table_id)
-
-    last_sync_state = SyncStateRepository(conn).get_table_state(table_id) or {}
-
-    def _fmt_bytes(n):
-        if n is None or n <= 0:
-            return None
-        for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-            if n < 1024:
-                return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} {unit}"
-            n /= 1024
-        return f"{n:.1f} PiB"
-
-    rows_count = last_sync_state.get("rows")
-    size_bytes = (
-        last_sync_state.get("file_size_bytes")
-        or last_sync_state.get("uncompressed_size_bytes")
-    )
-
-    ctx = _build_context(
-        request, user=user,
-        table=table,
-        parent_packages=parent_packages,
-        pairs_well_with=pairs,
-        columns=columns,
-        last_sync_display=(
-            str(last_sync_state.get("last_sync"))[:19]
-            if last_sync_state.get("last_sync") else None
-        ),
-        rows_display=(f"{rows_count:,}" if rows_count else None),
-        size_display=_fmt_bytes(size_bytes),
-        sample_questions=(table.get("sample_questions") or []),
-        things_to_know=table.get("things_to_know") or "",
-    )
-    return templates.TemplateResponse(request, "catalog_table_detail.html", ctx)
-
-
-@router.get("/catalog/r/{slug}", response_class=HTMLResponse)
-async def catalog_recipe_detail(
-    slug: str,
-    request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Per-recipe drill-down — title, description, SQL template, related
-    tables. Admins see every recipe (incl. drafts); non-admins see only
-    ``prod`` recipes their groups have a ``resource_grants`` row for.
-    Returns 404 (not 403) so unprivileged callers can't probe for the
-    existence of a recipe they aren't allowed to know about.
-    """
-    from app.auth.access import can_access
-    from app.resource_types import ResourceType
-    from src.repositories.recipes import RecipesRepository
-    from src.repositories.table_registry import TableRegistryRepository
-
-    recipe = RecipesRepository(conn).get_by_slug(slug)
-    if not recipe:
-        raise HTTPException(status_code=404, detail="recipe_not_found")
-    is_admin = is_user_admin(user["id"], conn)
-    if not is_admin:
-        if (recipe.get("status") or "prod") != "prod":
-            raise HTTPException(status_code=404, detail="recipe_not_found")
-        if not can_access(user["id"], ResourceType.RECIPE.value, recipe["id"], conn):
-            raise HTTPException(status_code=404, detail="recipe_not_found")
-
-    table_repo = TableRegistryRepository(conn)
-    related_tables = []
-    for tid in (recipe.get("related_table_ids") or []):
-        full = table_repo.get(tid)
-        if full:
-            related_tables.append({"id": full["id"], "name": full["name"]})
-
-    ctx = _build_context(
-        request, user=user,
-        recipe=recipe,
-        related_tables=related_tables,
-    )
-    return templates.TemplateResponse(request, "catalog_recipe_detail.html", ctx)
-
-
-def _human_size(n: int) -> str:
-    """Format bytes as a short human string. Mirrors the format used on
-    the marketplace card meta line."""
-    if not n:
-        return "0 B"
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}".replace(".0 ", " ")
-        n /= 1024
-    return f"{n:.1f} PB"
-
-
-def _memory_domain_entry_dict(entry, drilldown_url: str,
-                               items_count: int = 0,
-                               required_count: int = 0) -> dict:
-    """Adapt a ResourceEntry (memory_domain) → template entry dict.
-
-    Always renders a meta line (`N items · K required` — even `0 items`)
-    and a description fallback so seeded canonical domains without an
-    admin-authored description don't render as half-empty cards.
-    """
-    meta = f"{items_count} item{'s' if items_count != 1 else ''}"
-    if required_count:
-        meta += f" · {required_count} required"
-    description = entry.description or (
-        f"Curated knowledge for the {entry.name} domain. "
-        f"Add to your stack to include items in agnes pull."
-    )
-    return {
-        "id": entry.id,
-        "name": entry.name,
-        "description": description,
-        "icon": entry.icon or "🎯",
-        "color": entry.color or "#e0f2fe",
-        # v50: see _data_package_entry_dict for the cover_image_url contract.
-        "cover_image_url": getattr(entry, "cover_image_url", None),
-        # v51: status surfaces as the cover-corner pill. Memory Domains
-        # have no per-card category (the domain IS the category).
-        "status": getattr(entry, "status", None) or "prod",
-        "category": None,
-        "requirement": entry.requirement,
-        "in_stack": entry.in_stack,
-        "meta": meta,
-        "tags": [],
-        "drilldown_url": drilldown_url,
-        "footer_left": (
-            f"View {items_count} item{'s' if items_count != 1 else ''} →"
-            if items_count else "Open →"
-        ),
-    }
 
 
 @router.get("/corporate-memory", response_class=HTMLResponse)
@@ -1392,11 +981,12 @@ async def corporate_memory(
 ):
     """Curated Memory web view — any authenticated user.
 
-    v49 (Task 8.4): the top-level page is a Browse of memory domains
-    using the shared `_stack_card.html` macro; the per-item richness
-    (votes, contributors, tags, edit, dismiss) moves to /memory/d/<slug>
-    (Task 8.5). The admin review queue lives separately at
-    /admin/corporate-memory behind require_admin.
+    This is the analyst-facing read surface for shared organizational
+    knowledge: it lists ``approved`` / ``mandatory`` items plus the
+    caller's own contributions, and sits in the primary nav next to
+    Data Packages. The admin review queue (pending items, contradictions,
+    duplicates) lives separately at ``/admin/corporate-memory`` behind
+    ``require_admin``.
 
     Gating matches the underlying ``/api/memory/*`` endpoints, which
     already run on ``get_current_user`` — CLI / agent flows that POST a
@@ -1405,197 +995,114 @@ async def corporate_memory(
     (the pending-review banner) stay gated server-side: ``is_admin_view``
     zeroes ``pending_review_count`` for non-admins.
     """
-    from app.services.stack_resolver import StackResolver
-    from app.resource_types import ResourceType
-    from src.repositories.memory_domains import MemoryDomainsRepository
+    repo = knowledge_repo()
+    # v46: server-side initial render mirrors the JS fetch contract — items
+    # are annotated with `dismissed_by_me` so the template can gray out the
+    # ones the caller dismissed without a second round-trip. The full list
+    # (incl. dismissed) is rendered; the toolbar "Hide dismissed" toggle
+    # client-side filters via FilterState (or a server refetch with
+    # hide_dismissed=true — both supported, JS uses fetch).
+    items = repo.list_items(statuses=["approved", "mandatory"], limit=100)
+    dismissed_set = set(repo.list_dismissed_ids(user["id"])) if user.get("id") else set()
 
-    resolver = StackResolver(conn)
-    domains_repo = MemoryDomainsRepository(conn)
-    repo = KnowledgeRepository(conn)
+    def _build_source_users_display(it: dict) -> list[dict]:
+        """Derive ``[{name, initials}]`` from the stored ``source_user`` email.
 
-    # Per-domain counts (items + required) computed once and indexed by id.
-    dom_meta: dict[str, dict] = {}
-    try:
-        for d in domains_repo.list(limit=10000):
-            summaries = domains_repo.list_items_of_domain(d["id"], limit=10000)
-            item_ids = [s["id"] for s in summaries]
-            required = 0
-            if item_ids:
-                placeholders = ",".join(["?"] * len(item_ids))
-                required = conn.execute(
-                    f"SELECT COUNT(*) FROM knowledge_items "
-                    f"WHERE id IN ({placeholders}) AND is_required = TRUE",
-                    item_ids,
-                ).fetchone()[0]
-            dom_meta[d["id"]] = {
-                "items_count": len(summaries),
-                "required_count": required,
-                "slug": d["slug"],
-            }
-    except Exception as e:
-        logger.warning("could not enumerate memory_domains: %s", e)
+        The template (and the in-template JS) iterate `item.source_users_display`
+        to render contributor avatars; the repo only stores a single
+        `source_user` email. Building the list here (singleton today) keeps the
+        page from crashing with ``KeyError: slice(None, 3, None)`` when items
+        exist, and gives the design room for multi-contributor aggregation
+        later without another template churn.
+        """
+        su = (it.get("source_user") or "").strip()
+        if not su:
+            return []
+        name = su.split("@", 1)[0]
+        parts = [p for p in name.replace(".", " ").replace("_", " ").split() if p]
+        if len(parts) >= 2:
+            initials = (parts[0][0] + parts[1][0]).upper()
+        elif parts:
+            initials = parts[0][:2].upper()
+        else:
+            initials = name[:2].upper()
+        return [{"name": name, "initials": initials}]
+
+    # Enrich with votes + derived contributor-avatar list + per-item
+    # dismissed-by-me flag (used to gray the row out + flip the action button).
+    for item in items:
+        votes = repo.get_votes(item["id"])
+        item["upvotes"] = votes["upvotes"]
+        item["downvotes"] = votes["downvotes"]
+        item["source_users_display"] = _build_source_users_display(item)
+        item["dismissed_by_me"] = item["id"] in dismissed_set
+
+    cm_config = get_corporate_memory_config()
+    governance_mode = cm_config.get("distribution_mode")
+
+    # Build stats + filter dropdowns from the full item set so the dropdowns
+    # match the data the page is rendering. `categories` is derived from
+    # what's actually in the store (free-text enum, grows over time).
+    # `domains` is a CLOSED enum on the backend (VALID_DOMAINS in
+    # app/api/memory.py), so we always offer the full list — earlier we
+    # filtered to only domains with ≥1 item, which made the dropdown
+    # collapse to a single "engineering" option on instances where only
+    # one domain had been used. Operators should be able to pick any
+    # valid domain even when the current store has none of it.
+    from app.api.memory import VALID_DOMAINS
+    all_items = repo.list_items(limit=10000)
+    categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
+    domains = list(VALID_DOMAINS)
+
+    # #176: surface the pending review queue to admins. Without this the
+    # main page silently filtered status='pending' items and operators had
+    # no breadcrumb to /admin/corporate-memory.
+    pending_count = sum(1 for i in all_items if i.get("status") == "pending")
+
+    # "My contributions" — items the caller authored. Personal items are
+    # always visible to their author regardless of audience filtering;
+    # this is the surface the user uses to mark/unmark `is_personal`.
+    user_email = user.get("email") or ""
+    user_contributions = repo.get_user_contributions(user_email) if user_email else []
+    for item in user_contributions:
+        votes = repo.get_votes(item["id"])
+        item["upvotes"] = votes["upvotes"]
+        item["downvotes"] = votes["downvotes"]
+        item["source_users_display"] = _build_source_users_display(item)
+        item["dismissed_by_me"] = item["id"] in dismissed_set
 
     is_admin_view = is_user_admin(user["id"], conn)
-
-    # Admin god-mode for BROWSE only: surface every domain regardless of
-    # group grants so admins can audit the full set. ``browse_admin`` runs
-    # the v51 enrichment pass (status) plus v56 derived badges so admin
-    # cards stay visually consistent with non-admin browse. For MY STACK
-    # we still call the resolver — admins who POST /api/stack/subscribe
-    # expect to see those subscriptions in their stack tab.
-    if is_admin_view:
-        browse_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
-        stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
-    else:
-        browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
-        stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
-
-    # Required-first grouping mirrors /catalog (first-demo feedback).
-    browse_entries = sorted(
-        browse_entries,
-        key=lambda e: (0 if e.requirement == "required" else 1, e.name or ""),
-    )
-
-    def _adapt(e):
-        meta = dom_meta.get(e.id, {})
-        slug = meta.get("slug")
-        return _memory_domain_entry_dict(
-            e,
-            drilldown_url=f"/memory/d/{slug}" if slug else f"/corporate-memory#{e.id}",
-            items_count=meta.get("items_count", 0),
-            required_count=meta.get("required_count", 0),
-        )
-
-    # Hide empty domains from the user-facing browse list — a domain with
-    # zero items has nothing for an analyst to opt-into. Admins manage
-    # empty placeholders from /admin/corporate-memory#domains. Required
-    # domains (items_count == 0 but still mandated) stay visible so the
-    # mandate is honored even if the items were just deleted.
-    def _has_content(e):
-        meta = dom_meta.get(e.id, {})
-        return meta.get("items_count", 0) > 0 or e.requirement == "required"
-
-    entries = [_adapt(e) for e in browse_entries if _has_content(e)]
-    stack_entries_adapted = [_adapt(e) for e in stack_entries if _has_content(e)]
-
-    # Pending banner contract (issue #176) — admin-only, counts items in
-    # status='pending'. Kept identical to the legacy route so the page test
-    # (test_corporate_memory_page.py) keeps passing.
-    pending_count = 0
-    if is_admin_view:
-        try:
-            pending_count = conn.execute(
-                "SELECT COUNT(*) FROM knowledge_items WHERE status = 'pending'"
-            ).fetchone()[0]
-        except Exception:
-            pending_count = 0
-
     ctx = _build_context(
         request, user=user,
-        entries=entries,
-        stack_entries=stack_entries_adapted,
-        pending_review_count=pending_count,
+        knowledge_items=items,
+        governance_mode=governance_mode,
+        governance={"mode": governance_mode, "groups": cm_config.get("groups", {})},
+        categories=categories,
+        domains=domains,
+        stats={
+            "total": len(all_items),
+            "approved": len([i for i in all_items if i.get("status") == "approved"]),
+            # Template-facing aliases. Without these, the stats bar at the
+            # top of /corporate-memory renders blank `value` divs ("Contributors"
+            # / "Knowledge Items" with no number under them) because Jinja's
+            # Undefined silently coerces to empty string.
+            "contributors": len({i.get("source_user") for i in all_items if i.get("source_user")}),
+            "knowledge_count": len([i for i in all_items if i.get("status") in ("approved", "mandatory")]),
+        },
+        user_votes={},
         is_km_admin=is_admin_view,
+        user_contributions=user_contributions,
+        user_stats={"authored": len(user_contributions), "votes_given": 0},
+        # Template expects knowledge as object with .items and .total_pages
+        knowledge={"items": items, "total_pages": 1, "page": 1, "per_page": 100, "total": len(items)},
+        total_pages=1,
+        current_page=1,
+        page=1,
+        per_page=100,
+        # #176: pending banner is admin-only.
+        pending_review_count=pending_count if is_admin_view else 0,
     )
     return templates.TemplateResponse(request, "corporate_memory.html", ctx)
-
-
-@router.get("/memory/d/{slug}", response_class=HTMLResponse)
-async def memory_domain_detail(
-    slug: str,
-    request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Per-domain drill-down — header + per-item richness (Task 8.5).
-
-    Preserves the full per-item affordance set from the legacy /corporate-
-    memory page: votes, contributors, tags, category/source/required
-    badges, dismiss/undismiss, mark-personal toggle, admin edit link.
-    """
-    from app.auth.access import can_access
-    from app.resource_types import ResourceType
-    from app.services.stack_resolver import StackResolver
-    from src.repositories.memory_domains import MemoryDomainsRepository
-    from src.repositories.usage import UsageRepository
-
-    domains_repo = MemoryDomainsRepository(conn)
-    repo = KnowledgeRepository(conn)
-    domain = domains_repo.get_by_slug(slug)
-    if not domain:
-        raise HTTPException(status_code=404, detail="memory_domain_not_found")
-    if not (is_user_admin(user["id"], conn) or
-            can_access(user["id"], ResourceType.MEMORY_DOMAIN.value, domain["id"], conn)):
-        raise HTTPException(status_code=403, detail="access_denied")
-
-    source_hint = request.query_params.get("source", "direct")
-    try:
-        UsageRepository(conn).emit_server_event(
-            event_type="memory_domain.view",
-            user_id=user["id"],
-            username=user.get("email") or user["id"],
-            props={"slug": slug, "source": source_hint},
-        )
-    except Exception:
-        logger.warning("usage_events emit failed for memory_domain.view")
-
-    resolver = StackResolver(conn)
-    effective_required = resolver.is_required(
-        user["id"], ResourceType.MEMORY_DOMAIN, domain["id"]
-    )
-    in_stack = effective_required or bool(conn.execute(
-        "SELECT 1 FROM user_stack_subscriptions "
-        "WHERE user_id = ? AND resource_type = 'memory_domain' AND resource_id = ?",
-        [user["id"], domain["id"]],
-    ).fetchone())
-
-    # Hydrate items with votes + contributors + dismissed-by-me + tags.
-    summaries = domains_repo.list_items_of_domain(domain["id"], limit=10000)
-    dismissed_set = set(repo.list_dismissed_ids(user["id"])) if user.get("id") else set()
-    items: list[dict] = []
-    required_count = 0
-    for s in summaries:
-        it = repo.get_by_id(s["id"])
-        if not it:
-            continue
-        if it.get("is_required"):
-            required_count += 1
-        votes = repo.get_votes(it["id"])
-        it["upvotes"] = votes["upvotes"]
-        it["downvotes"] = votes["downvotes"]
-        it["dismissed_by_me"] = it["id"] in dismissed_set
-        # Contributor avatars from source_user (single contributor today).
-        su = (it.get("source_user") or "").strip()
-        if su:
-            name = su.split("@", 1)[0]
-            parts = [p for p in name.replace(".", " ").replace("_", " ").split() if p]
-            if len(parts) >= 2:
-                initials = (parts[0][0] + parts[1][0]).upper()
-            elif parts:
-                initials = parts[0][:2].upper()
-            else:
-                initials = name[:2].upper()
-            it["contributors_display"] = [{"name": name, "initials": initials}]
-        else:
-            it["contributors_display"] = []
-        items.append(it)
-
-    # Sort: required first, then by created_at desc (stable + predictable).
-    items.sort(key=lambda r: (not r.get("is_required"), -((r.get("created_at") or 0).timestamp() if hasattr(r.get("created_at") or 0, "timestamp") else 0)))
-
-    # Tag user with is_admin flag for template-side admin affordances.
-    user_render = dict(user)
-    user_render["is_admin"] = is_user_admin(user["id"], conn)
-
-    ctx = _build_context(
-        request, user=user_render,
-        domain=domain,
-        items=items,
-        required_count=required_count,
-        effective_requirement="required" if effective_required else "available",
-        in_stack=in_stack,
-    )
-    return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
 
 @router.get("/admin/corporate-memory", response_class=HTMLResponse)
@@ -1610,7 +1117,7 @@ async def corporate_memory_admin(
     page: pending items awaiting review, contradictions, duplicate
     candidates, and the audit trail. Reached from the Admin nav dropdown.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     pending = repo.list_items(statuses=["pending"], limit=100)
     all_items = repo.list_items(limit=10000)
     status_counts = {}
@@ -1638,10 +1145,15 @@ async def corporate_memory_admin(
             }
 
     # Duplicate-candidate badge count (issue #62) — unresolved relations only.
-    duplicates_count = conn.execute(
-        "SELECT COUNT(*) FROM knowledge_item_relations "
-        "WHERE relation_type = 'likely_duplicate' AND resolved = FALSE"
-    ).fetchone()[0]
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        duplicates_count = eng_conn.execute(
+            sa.text(
+                "SELECT COUNT(*) FROM knowledge_item_relations "
+                "WHERE relation_type = 'likely_duplicate' AND resolved = FALSE"
+            )
+        ).scalar() or 0
 
     # Mandate-form audience picker needs RBAC user_groups, not the
     # `corporate_memory.groups` YAML section — those are unrelated.
@@ -1649,10 +1161,8 @@ async def corporate_memory_admin(
     # `<option value="group:<name>">` rows in the per-item mandate form;
     # the previous shape (`{}` from the YAML config) crashed renderItemCard
     # with "GROUPS.map is not a function" the moment any pending item rendered.
-    from src.repositories.user_groups import UserGroupsRepository as _UserGroupsRepo
-    from src.repositories.user_group_members import UserGroupMembersRepository as _UserGroupMembersRepo
-    _groups_repo = _UserGroupsRepo(conn)
-    _members_repo = _UserGroupMembersRepo(conn)
+    _groups_repo = user_groups_repo()
+    _members_repo = user_group_members_repo()
     user_groups_for_ui = [
         {"name": g["name"], "members_count": _members_repo.count_members(g["id"])}
         for g in _groups_repo.list_all()
@@ -1676,13 +1186,7 @@ async def corporate_memory_admin(
             "pending": len(pending),
             "pending_count": status_counts.get("pending", 0),
             "approved_count": status_counts.get("approved", 0),
-            # v49: 'mandatory' as a status is gone — count items with the
-            # ``is_required`` flag set instead. ``status_counts`` is built off
-            # the status column so it can never produce a 'mandatory' bucket
-            # again; project from the items list directly.
-            "mandatory_count": sum(
-                1 for i in all_items if i.get("is_required") is True
-            ),
+            "mandatory_count": status_counts.get("mandatory", 0),
             "knowledge_count": len(all_items),
             "contradictions": len(contradictions),
             "duplicates": duplicates_count,
@@ -1734,7 +1238,6 @@ async def setup_page(
     override is set, the live default from
     setup_instructions.resolve_lines() is used.
     """
-    from src.repositories.welcome_template import WelcomeTemplateRepository
     from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
     from jinja2 import Environment, StrictUndefined, TemplateError
 
@@ -1743,7 +1246,7 @@ async def setup_page(
     # Determine the script text: override (Jinja2-rendered) or live default.
     # The override is per-instance, applies to every caller — admins who set
     # an override are opting into the exact text they wrote.
-    row = WelcomeTemplateRepository(conn).get()
+    row = welcome_template_repo().get()
     override_content = row.get("content")
     if override_content:
         # Admin override — render Jinja2 placeholders server-side.
@@ -1827,17 +1330,10 @@ async def store_new(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from src.store_categories import STORE_CATEGORIES
-    from src.store_naming import TITLE_ACRONYMS, sanitize_username
-    try:
-        owner_username = sanitize_username(user.get("email") or "")
-    except ValueError:
-        owner_username = ""
     ctx = _build_context(
         request, user=user,
         categories=list(STORE_CATEGORIES),
         guardrail=_guardrail_thresholds(),
-        title_acronyms=TITLE_ACRONYMS,
-        owner_username=owner_username,
     )
     return templates.TemplateResponse(request, "store_upload.html", ctx)
 
@@ -1875,11 +1371,9 @@ async def store_edit(
     server-side).
     """
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_categories import STORE_CATEGORIES
 
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     is_admin = is_user_admin(user["id"], conn)
@@ -1890,11 +1384,10 @@ async def store_edit(
 
     pending_sub = None
     if entity.get("visibility_status") == "pending":
-        latest = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        latest = store_submissions_repo().latest_for_entity(entity_id)
         if latest and latest.get("status") in ("pending_inline", "pending_llm"):
             pending_sub = latest
 
-    from src.store_naming import TITLE_ACRONYMS
     ctx = _build_context(
         request, user=user,
         entity=entity,
@@ -1902,8 +1395,6 @@ async def store_edit(
         is_owner=entity["owner_user_id"] == user["id"],
         categories=list(STORE_CATEGORIES),
         pending_sub=pending_sub,
-        title_acronyms=TITLE_ACRONYMS,
-        owner_username=entity.get("owner_username") or "",
     )
     return templates.TemplateResponse(request, "store_edit.html", ctx)
 
@@ -1928,12 +1419,9 @@ async def marketplace_listing(
 ):
     import json as _json
     from src.category_icons import all_paths
-    from app.instance_config import get_value
-    curators_url = (get_value("marketplace", "curators_url") or "").strip()
     ctx = _build_context(
         request, user=user,
         category_icons_json=_json.dumps(all_paths()),
-        curators_url=curators_url,
     )
     return templates.TemplateResponse(request, "marketplace.html", ctx)
 
@@ -1955,10 +1443,8 @@ async def marketplace_flea_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     # Owner/admin get a version-status decorated entity so the versions
     # card can gate the Restore button on past-version approval state
     # (#316). Plain viewers don't see the versions card at all, so the
@@ -1991,7 +1477,7 @@ async def marketplace_flea_detail(
     # failure from the owner — that was the regression #316 fixed.
     quarantine_sub = None
     if is_owner or is_admin:
-        quarantine_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        quarantine_sub = store_submissions_repo().latest_for_entity(entity_id)
 
     # v37: the Edit button locks while a submission is under review.
     edit_in_flight = bool(
@@ -2128,8 +1614,7 @@ async def marketplace_flea_skill_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
     _enforce_visibility(entity, user, conn)
@@ -2167,8 +1652,7 @@ async def marketplace_flea_agent_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
     _enforce_visibility(entity, user, conn)
@@ -2267,9 +1751,8 @@ async def admin_tables(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.table_registry import TableRegistryRepository
     from app.instance_config import get_data_source_type
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     tables = repo.list_all()
     # Branch the register-modal layout server-side so the JS doesn't have
     # to round-trip /api/admin/server-config to learn the source type.
@@ -2328,7 +1811,7 @@ async def admin_user_detail_page(
     admin reload picks up state changes from a sibling tab without a
     full-page reload elsewhere.
     """
-    repo = UserRepository(conn)
+    repo = users_repo()
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -2406,9 +1889,8 @@ async def admin_group_detail_page(
 ):
     """Single-group detail page — header + members table. Resource grants
     live on /admin/grants (deep-linked from here)."""
-    from src.repositories.user_groups import UserGroupsRepository
     from app.api.access import _is_google_managed, _mapped_email
-    g = UserGroupsRepository(conn).get(group_id)
+    g = user_groups_repo().get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
     # Project the same flags the API derives so the template avoids env
@@ -2501,7 +1983,6 @@ async def admin_store_submissions_page(
     ``limit`` (default 50, clamped to [1, 200] for the UI page-size
     selector).
     """
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     statuses = None
     if status:
@@ -2524,7 +2005,7 @@ async def admin_store_submissions_page(
 
     valid_sort = sort if sort in {"created_at", "file_size", "status", "name"} else None
     valid_order = order if order in {"asc", "desc"} else None
-    items, total = StoreSubmissionsRepository(conn).list_for_admin(
+    items, total = store_submissions_repo().list_for_admin(
         status=statuses,
         submitter_id=submitter or None,
         type_=valid_type,
@@ -2540,8 +2021,7 @@ async def admin_store_submissions_page(
     # (The submitter id is opaque to admins; show the human label instead.)
     submitter_email = ""
     if submitter:
-        from src.repositories.users import UserRepository
-        urow = UserRepository(conn).get_by_id(submitter)
+        urow = users_repo().get_by_id(submitter)
         if urow:
             submitter_email = urow.get("email") or submitter
 
@@ -2573,12 +2053,8 @@ async def admin_store_submission_detail_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Per-submission detail with full verdict + override + retry actions."""
-    from src.repositories.audit import AuditRepository
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
-    from src.repositories.users import UserRepository
 
-    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    sub = store_submissions_repo().get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
 
@@ -2597,7 +2073,7 @@ async def admin_store_submission_detail_page(
     submission_version_no = None
     sibling_submissions: list = []
     if sub.get("entity_id"):
-        ent = StoreEntitiesRepository(conn).get(sub["entity_id"])
+        ent = store_entities_repo().get(sub["entity_id"])
         if ent:
             entity_visibility_status = ent.get("visibility_status")
             entity_version_no = ent.get("version_no")
@@ -2624,16 +2100,21 @@ async def admin_store_submission_detail_page(
             # and we don't want to add a parameter for this one display
             # need. Order by created_at DESC so newest is first in the
             # switcher.
-            ent_sub_rows = [
-                dict(zip(["id", "status", "version", "created_at", "reviewed_by_model"], row))
-                for row in conn.execute(
-                    "SELECT id, status, version, created_at, reviewed_by_model "
-                    "FROM store_submissions "
-                    "WHERE entity_id = ? "
-                    "ORDER BY created_at DESC",
-                    [sub["entity_id"]],
-                ).fetchall()
-            ]
+            import sqlalchemy as sa
+            from src.db_pg import get_engine
+            with get_engine().connect() as eng_conn:
+                ent_sub_rows = [
+                    dict(zip(["id", "status", "version", "created_at", "reviewed_by_model"], row))
+                    for row in eng_conn.execute(
+                        sa.text(
+                            "SELECT id, status, version, created_at, reviewed_by_model "
+                            "FROM store_submissions "
+                            "WHERE entity_id = :eid "
+                            "ORDER BY created_at DESC"
+                        ),
+                        {"eid": sub["entity_id"]},
+                    ).fetchall()
+                ]
             for row in ent_sub_rows:
                 sibling_submissions.append({
                     "id": row["id"],
@@ -2645,11 +2126,11 @@ async def admin_store_submission_detail_page(
                     "is_current": row["id"] == submission_id,
                 })
 
-    other_count = StoreSubmissionsRepository(conn).count_for_submitter(
+    other_count = store_submissions_repo().count_for_submitter(
         sub["submitter_id"], exclude_id=submission_id,
     )
 
-    user_repo = UserRepository(conn)
+    user_repo = users_repo()
     override_email = ""
     if sub.get("override_by"):
         urow = user_repo.get_by_id(sub["override_by"])
@@ -2680,12 +2161,12 @@ async def admin_store_submission_detail_page(
         f"store_entity:{submission_id}",
         submission_id,
     ]
-    submission_audit_rows = AuditRepository(conn).query_for_resources(
+    submission_audit_rows = audit_repo().query_for_resources(
         submission_resources, limit=100,
     )
     entity_audit_rows: list = []
     if sub.get("entity_id"):
-        entity_audit_rows = AuditRepository(conn).query_for_resources(
+        entity_audit_rows = audit_repo().query_for_resources(
             [f"store_entity:{sub['entity_id']}"], limit=100,
         )
         # Drop entity-scoped rows that are actually submission audits for
@@ -2746,10 +2227,9 @@ async def admin_agent_prompt_page(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.welcome_template import WelcomeTemplateRepository
     from src.welcome_template import compute_default_agent_prompt
 
-    row = WelcomeTemplateRepository(conn).get()
+    row = welcome_template_repo().get()
     base_url = str(request.base_url).rstrip("/")
     default_template = compute_default_agent_prompt(conn, user=user, server_url=base_url)
     ctx = _build_context(
@@ -2770,11 +2250,10 @@ async def admin_workspace_prompt_page(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.claude_md_template import ClaudeMdTemplateRepository
     from src.claude_md import compute_default_claude_md
     from app.api.claude_md import _scan_legacy_strings
 
-    row = ClaudeMdTemplateRepository(conn).get()
+    row = claude_md_template_repo().get()
     server_url = str(request.base_url).rstrip("/")
     default_template = compute_default_claude_md(conn, user=user, server_url=server_url)
     ctx = _build_context(
@@ -2818,16 +2297,22 @@ async def profile_page(
     against ``user_groups`` (with the source label so users can tell which
     were added by an admin, by Google sync, or seeded at deploy).
     """
-    rows = conn.execute(
-        """SELECT g.id, g.name, g.description, g.is_system, g.created_by,
-                  m.source, m.added_at
-           FROM user_group_members m
-           JOIN user_groups g ON g.id = m.group_id
-           WHERE m.user_id = ?
-           ORDER BY g.is_system DESC, g.name""",
-        [user["id"]],
-    ).fetchall()
-    cols = [d[0] for d in conn.description]
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        result = eng_conn.execute(
+            sa.text(
+                """SELECT g.id, g.name, g.description, g.is_system, g.created_by,
+                          m.source, m.added_at
+                   FROM user_group_members m
+                   JOIN user_groups g ON g.id = m.group_id
+                   WHERE m.user_id = :uid
+                   ORDER BY g.is_system DESC, g.name"""
+            ),
+            {"uid": user["id"]},
+        )
+        cols = list(result.keys())
+        rows = result.fetchall()
     memberships = [dict(zip(cols, r)) for r in rows]
     # Project the same chip metadata the /admin/users/{id} page derives:
     # origin (single source of truth via app.api.access._derive_origin),
@@ -2862,11 +2347,11 @@ async def profile_page(
         request,
         user=user,
         memberships=memberships,
-        is_admin=is_user_admin(user["id"], conn),
+        is_admin=is_user_admin(user["id"]),
         user_record=user_record_safe,
         claims=_decoded_claims(raw_token),
         token_fingerprint=_token_fingerprint(raw_token),
-        sync_summary=_last_sync_summary(user["id"], conn),
+        sync_summary=_last_sync_summary(user["id"]),
         # Display-only — keep original case (no .lower()), unlike the
         # refetch-groups handler below which lowercases for set comparison.
         google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),
@@ -2896,19 +2381,26 @@ async def me_profile_refetch_groups(
     else:
         relevant = [g.lower() for g in fetched_list]
 
-    has_ext = conn.execute(
-        "SELECT 1 FROM information_schema.columns "
-        "WHERE table_name = 'user_groups' AND column_name = 'external_id'"
-    ).fetchone()
-    select_ext = "g.external_id" if has_ext else "NULL"
-    current_rows = conn.execute(
-        f"""SELECT g.name, {select_ext} AS external_id
-              FROM user_group_members m
-              JOIN user_groups g ON g.id = m.group_id
-             WHERE m.user_id = ? AND m.source = 'google_sync'
-             ORDER BY g.name""",
-        [user["id"]],
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        has_ext = eng_conn.execute(
+            sa.text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'user_groups' AND column_name = 'external_id'"
+            )
+        ).first()
+        select_ext = "g.external_id" if has_ext else "NULL"
+        current_rows = eng_conn.execute(
+            sa.text(
+                f"""SELECT g.name, {select_ext} AS external_id
+                      FROM user_group_members m
+                      JOIN user_groups g ON g.id = m.group_id
+                     WHERE m.user_id = :uid AND m.source = 'google_sync'
+                     ORDER BY g.name"""
+            ),
+            {"uid": user["id"]},
+        ).fetchall()
     current_external_ids = {r[1].lower() for r in current_rows if r[1]}
     current_names = [r[0] for r in current_rows]
 

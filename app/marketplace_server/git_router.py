@@ -28,7 +28,6 @@ from dulwich.web import HTTPGitApplication
 
 from app.auth.pat_resolver import resolve_token_to_user
 from app.marketplace_server import git_backend
-from src.db import get_system_db
 
 logger = logging.getLogger(__name__)
 
@@ -80,51 +79,38 @@ def make_git_wsgi_app() -> Callable:
     def app(environ: dict, start_response: Callable) -> Iterable[bytes]:
         token = token_from_basic_auth(environ.get("HTTP_AUTHORIZATION", ""))
 
-        conn = None
+        # Git channel doesn't need the reason — just auth yes/no.
+        # resolve_token_to_user / ensure_repo_for_user both consult the
+        # singleton Postgres engine via the factory; the legacy ``conn``
+        # arg is back-compat and ignored.
+        if token:
+            user, _reason = resolve_token_to_user(None, token)
+        else:
+            user = None
+        if not user:
+            return _unauthorized(start_response)
+
         try:
-            conn = get_system_db()
+            repo_path = git_backend.ensure_repo_for_user(None, user)
+            # Use string key "/" — url_prefix() returns a str and
+            # DictBackend resolves str keys directly.
+            repo = Repo(str(repo_path))
         except Exception:
-            logger.exception("get_system_db() failed")
+            logger.exception(
+                "Failed to open repo for user %r", user.get("email") or user.get("id")
+            )
             return _server_error(start_response)
 
         try:
-            # Git channel doesn't need the reason — just auth yes/no.
-            if token:
-                user, _reason = resolve_token_to_user(conn, token)
-            else:
-                user = None
-            if not user:
-                return _unauthorized(start_response)
+            backend = DictBackend({"/": repo})
+            git_app = HTTPGitApplication(backend)
+            inner = git_app(environ, start_response)
+        except Exception:
+            repo.close()
+            logger.exception("dulwich failed for user %r", user.get("id"))
+            return _server_error(start_response)
 
-            try:
-                repo_path = git_backend.ensure_repo_for_user(conn, user)
-                # Use string key "/" — url_prefix() returns a str and
-                # DictBackend resolves str keys directly.
-                repo = Repo(str(repo_path))
-            except Exception:
-                logger.exception(
-                    "Failed to open repo for user %r", user.get("email") or user.get("id")
-                )
-                return _server_error(start_response)
-
-            try:
-                backend = DictBackend({"/": repo})
-                git_app = HTTPGitApplication(backend)
-                inner = git_app(environ, start_response)
-            except Exception:
-                repo.close()
-                logger.exception("dulwich failed for user %r", user.get("id"))
-                return _server_error(start_response)
-
-            return _CloseOnExhaust(inner, repo)
-        finally:
-            # The DB cursor can be closed early — ensure_repo_for_user and
-            # resolve_token_to_user are done with it by now.
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+        return _CloseOnExhaust(inner, repo)
 
     return app
 

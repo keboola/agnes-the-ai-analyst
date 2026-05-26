@@ -18,10 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import duckdb
-
-from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.store_submissions import StoreSubmissionsRepository
+from src.repositories import store_entities_repo, store_submissions_repo
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +43,7 @@ TERMINAL_BLOCKED_STATUSES = (
 
 
 def purge_blocked_bundles(
-    conn: duckdb.DuckDBPyConnection,
+    conn=None,  # back-compat; ignored — repos hit the singleton engine
     *,
     ttl_days: int,
     store_dir_resolver=None,
@@ -77,20 +74,32 @@ def purge_blocked_bundles(
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=int(ttl_days))
 
-    placeholders = ",".join("?" for _ in TERMINAL_BLOCKED_STATUSES)
-    rows = conn.execute(
-        f"""SELECT id, entity_id FROM store_submissions
-            WHERE status IN ({placeholders})
-              AND bundle_purged_at IS NULL
-              AND created_at < ?""",
-        list(TERMINAL_BLOCKED_STATUSES) + [cutoff],
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+
+    status_keys: List[str] = []
+    params: dict = {"cutoff": cutoff}
+    for i, st in enumerate(TERMINAL_BLOCKED_STATUSES):
+        k = f"st_{i}"
+        status_keys.append(f":{k}")
+        params[k] = st
+
+    with get_engine().connect() as eng_conn:
+        rows = eng_conn.execute(
+            sa.text(
+                f"""SELECT id, entity_id FROM store_submissions
+                    WHERE status IN ({','.join(status_keys)})
+                      AND bundle_purged_at IS NULL
+                      AND created_at < :cutoff"""
+            ),
+            params,
+        ).fetchall()
 
     if not rows:
         return {"purged": 0, "ids": []}
 
-    subs = StoreSubmissionsRepository(conn)
-    ents = StoreEntitiesRepository(conn)
+    subs = store_submissions_repo()
+    ents = store_entities_repo()
     store_root: Path = store_dir_resolver()
 
     purged_ids: List[str] = []

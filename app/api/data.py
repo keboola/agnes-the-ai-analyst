@@ -12,8 +12,10 @@ from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
 from src.identifier_validation import _SAFE_QUOTED_IDENTIFIER
 from src.rbac import can_access_table
-from src.repositories.audit import AuditRepository
 
+from src.repositories import (
+    audit_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
@@ -46,7 +48,7 @@ async def check_access(
     resource = f"table:{table_id}"[:256]
     if not _SAFE_QUOTED_IDENTIFIER.match(table_id):
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="data.access_check",
                 resource=resource,
@@ -61,7 +63,7 @@ async def check_access(
         raise HTTPException(status_code=404, detail="Table not found")
     granted = can_access_table(user, table_id, conn)
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="data.access_check",
             resource=resource,
@@ -138,7 +140,7 @@ async def download_table(
         return Response(status_code=304)
 
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="data.download",
             resource=f"table:{table_id}"[:256],

@@ -27,9 +27,14 @@ from src.marketplace import (
     sync_marketplaces,
     sync_one,
 )
-from src.repositories.audit import AuditRepository
-from src.repositories.marketplace_plugins import MarketplacePluginsRepository
-from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+from src.repositories import (
+    audit_repo,
+    marketplace_plugins_repo,
+    marketplace_registry_repo,
+    resource_grants_repo,
+    user_curated_subscriptions_repo,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/marketplaces", tags=["marketplaces"])
@@ -56,7 +61,7 @@ def _audit(
                     safe_params[k] = v.isoformat()
                 else:
                     safe_params[k] = v
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=f"marketplace:{target_id}",
@@ -198,10 +203,10 @@ async def list_marketplaces(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    counts = MarketplacePluginsRepository(conn).count_by_marketplace()
+    counts = marketplace_plugins_repo().count_by_marketplace()
     return [
         _to_response(row, counts.get(row["id"], 0))
-        for row in MarketplaceRegistryRepository(conn).list_all()
+        for row in marketplace_registry_repo().list_all()
     ]
 
 
@@ -217,9 +222,9 @@ async def list_plugins(
     `.claude-plugin/marketplace.json` on every successful sync. An
     unsynced marketplace will return an empty list.
     """
-    if not MarketplaceRegistryRepository(conn).get(marketplace_id):
+    if not marketplace_registry_repo().get(marketplace_id):
         raise HTTPException(status_code=404, detail="marketplace not found")
-    rows = MarketplacePluginsRepository(conn).list_for_marketplace(marketplace_id)
+    rows = marketplace_plugins_repo().list_for_marketplace(marketplace_id)
     return [
         PluginResponse(
             name=r["name"],
@@ -272,7 +277,7 @@ async def create_marketplace(
             status_code=400, detail="curator_email is not a valid email address",
         )
 
-    repo = MarketplaceRegistryRepository(conn)
+    repo = marketplace_registry_repo()
     if repo.get(slug):
         raise HTTPException(status_code=409, detail=f"marketplace '{slug}' already exists")
 
@@ -309,7 +314,7 @@ async def update_marketplace(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = MarketplaceRegistryRepository(conn)
+    repo = marketplace_registry_repo()
     existing = repo.get(marketplace_id)
     if not existing:
         raise HTTPException(status_code=404, detail="marketplace not found")
@@ -399,7 +404,7 @@ async def update_marketplace(
         curator_email=updated["curator_email"],
     )
     _audit(conn, user["id"], "marketplace.update", marketplace_id, changed)
-    counts = MarketplacePluginsRepository(conn).count_by_marketplace()
+    counts = marketplace_plugins_repo().count_by_marketplace()
     return _to_response(repo.get(marketplace_id), counts.get(marketplace_id, 0))
 
 
@@ -410,7 +415,7 @@ async def delete_marketplace(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = MarketplaceRegistryRepository(conn)
+    repo = marketplace_registry_repo()
     existing = repo.get(marketplace_id)
     if not existing:
         raise HTTPException(status_code=404, detail="marketplace not found")
@@ -429,21 +434,39 @@ async def delete_marketplace(
     # single-char wildcard, silently dropping grants from sibling
     # marketplaces whose slug differs by exactly one character.
     try:
-        conn.execute(
-            "DELETE FROM marketplace_plugins WHERE marketplace_id = ?",
-            [marketplace_id],
-        )
-        conn.execute(
-            "DELETE FROM resource_grants "
-            "WHERE resource_type = ? AND starts_with(resource_id, ? || '/')",
-            [ResourceType.MARKETPLACE_PLUGIN.value, marketplace_id],
-        )
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().begin() as eng_conn:
+            eng_conn.execute(
+                sa.text(
+                    "DELETE FROM marketplace_plugins WHERE marketplace_id = :mid"
+                ),
+                {"mid": marketplace_id},
+            )
+            # ``starts_with`` is DuckDB-flavoured; PG uses LIKE. Slug
+            # grammar ``[a-z0-9][a-z0-9_-]{0,63}`` admits ``_``, which
+            # PG ``LIKE`` interprets as a single-character wildcard —
+            # so the naive ``f"{slug}/%"`` would let a delete of slug
+            # ``foo_bar`` also wipe grants on the unrelated ``fooxbar``
+            # marketplace. Use ``LEFT(...) =`` instead (no wildcards,
+            # no escape dance) — the ``/`` separator after the slug
+            # body still terminates the prefix cleanly.
+            prefix = f"{marketplace_id}/"
+            eng_conn.execute(
+                sa.text(
+                    "DELETE FROM resource_grants "
+                    "WHERE resource_type = :rtype "
+                    "  AND LEFT(resource_id, :plen) = :prefix"
+                ),
+                {
+                    "rtype": ResourceType.MARKETPLACE_PLUGIN.value,
+                    "prefix": prefix,
+                    "plen": len(prefix),
+                },
+            )
         # Drop user subscriptions to plugins from this marketplace so a
         # re-registered slug doesn't inherit stale subscribe state.
-        from src.repositories.user_curated_subscriptions import (
-            UserCuratedSubscriptionsRepository,
-        )
-        UserCuratedSubscriptionsRepository(conn).delete_for_marketplace(
+        user_curated_subscriptions_repo().delete_for_marketplace(
             marketplace_id
         )
     except Exception as e:
@@ -572,15 +595,18 @@ def mark_plugin_system(
     runs the fanout (cheap; ON CONFLICT DO NOTHING) so any user/group
     that slipped past the creation hooks gets caught up.
     """
-    from src.repositories.resource_grants import ResourceGrantsRepository
-    from src.repositories.user_curated_subscriptions import (
-        UserCuratedSubscriptionsRepository,
-    )
 
-    plugin_row = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    eng = get_engine()
+    with eng.connect() as eng_conn:
+        plugin_row = eng_conn.execute(
+            sa.text(
+                "SELECT 1 FROM marketplace_plugins "
+                "WHERE marketplace_id = :mid AND name = :name"
+            ),
+            {"mid": marketplace_id, "name": plugin_name},
+        ).first()
     if not plugin_row:
         raise HTTPException(status_code=404, detail="plugin not found")
 
@@ -588,26 +614,27 @@ def mark_plugin_system(
     affected_groups = 0
     affected_users = 0
 
-    conn.execute(
-        "UPDATE marketplace_plugins SET is_system = TRUE "
-        "WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    )
+    with eng.begin() as eng_conn:
+        eng_conn.execute(
+            sa.text(
+                "UPDATE marketplace_plugins SET is_system = TRUE "
+                "WHERE marketplace_id = :mid AND name = :name"
+            ),
+            {"mid": marketplace_id, "name": plugin_name},
+        )
 
-    # Pivot fanout: this plugin × every group / every user. We
-    # intentionally do NOT wrap the loop in a single BEGIN/COMMIT —
-    # DuckDB aborts the whole transaction on a ConstraintException, so
-    # an idempotent re-run (where most rows are duplicates) would die
-    # on the very first existing grant. Each row stands alone here:
-    # duplicate grants raise ConstraintException which we swallow
-    # (mirrors ``ON CONFLICT DO NOTHING`` semantics without DuckDB
-    # multi-target conflict resolution); duplicate subscriptions go
-    # through DuckDB's ON CONFLICT on the PK, which is well-supported.
-    # Partial-application is safe: a re-run completes the remainder.
-    groups = conn.execute("SELECT id FROM user_groups").fetchall()
-    grants_repo = ResourceGrantsRepository(conn)
+    # Pivot fanout: this plugin × every group / every user. Duplicate
+    # grants raise IntegrityError which we swallow (mirrors ON CONFLICT
+    # DO NOTHING); duplicate subscriptions go through the repo's
+    # ON CONFLICT semantics. Partial-application is safe — a re-run
+    # completes the remainder.
+    with eng.connect() as eng_conn:
+        group_rows = eng_conn.execute(
+            sa.text("SELECT id FROM user_groups")
+        ).fetchall()
+    grants_repo = resource_grants_repo()
     actor_email = user.get("email") or user.get("id")
-    for (group_id,) in groups:
+    for (group_id,) in group_rows:
         try:
             grants_repo.create(
                 group_id=group_id,
@@ -616,12 +643,12 @@ def mark_plugin_system(
                 assigned_by=actor_email,
             )
             affected_groups += 1
-        except duckdb.ConstraintException:
+        except sa.exc.IntegrityError:
             continue
 
-    affected_users = UserCuratedSubscriptionsRepository(
-        conn,
-    ).fanout_system_for_plugin(marketplace_id, plugin_name)
+    affected_users = user_curated_subscriptions_repo().fanout_system_for_plugin(
+        marketplace_id, plugin_name,
+    )
 
     _audit(
         conn,
@@ -656,18 +683,27 @@ def unmark_plugin_system(
     (which immediately unlocks the checkboxes for this plugin) and
     users can unsubscribe normally on /marketplace?tab=my.
     """
-    plugin_row = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        plugin_row = eng_conn.execute(
+            sa.text(
+                "SELECT 1 FROM marketplace_plugins "
+                "WHERE marketplace_id = :mid AND name = :name"
+            ),
+            {"mid": marketplace_id, "name": plugin_name},
+        ).first()
     if not plugin_row:
         raise HTTPException(status_code=404, detail="plugin not found")
 
-    conn.execute(
-        "UPDATE marketplace_plugins SET is_system = FALSE "
-        "WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    )
+    with get_engine().begin() as eng_conn:
+        eng_conn.execute(
+            sa.text(
+                "UPDATE marketplace_plugins SET is_system = FALSE "
+                "WHERE marketplace_id = :mid AND name = :name"
+            ),
+            {"mid": marketplace_id, "name": plugin_name},
+        )
     _audit(
         conn,
         user["id"],

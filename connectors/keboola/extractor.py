@@ -355,20 +355,17 @@ def _read_last_sync_for_tc(tc: Dict[str, Any]):
                 return None
         return injected
 
-    # Direct DB read — same-process fallback only.
+    # Direct DB read — same-process fallback only. Post-PG cutover this
+    # goes through the repository factory instead of the deleted
+    # ``src.db.get_system_db`` + legacy ``SyncStateRepository`` shim.
     try:
-        from src.db import get_system_db
-        from src.repositories.sync_state import SyncStateRepository
+        from src.repositories import sync_state_repo
 
-        conn = get_system_db()
-        try:
-            repo = SyncStateRepository(conn)
-            state = repo.get_table_state(tc.get("id") or tc.get("name"))
-            if not state or state.get("status") == "error":
-                return None
-            return state.get("last_sync")
-        finally:
-            conn.close()
+        repo = sync_state_repo()
+        state = repo.get_table_state(tc.get("id") or tc.get("name"))
+        if not state or state.get("status") == "error":
+            return None
+        return state.get("last_sync")
     except Exception as e:
         logger.warning(
             "_read_last_sync_for_tc fallback failed for %s (%s); "
@@ -961,16 +958,12 @@ if __name__ == "__main__":
         logger.error("Missing KEBOOLA_STACK_URL or KEBOOLA_STORAGE_TOKEN")
         exit(1)
 
-    # Read table list from registry
-    from src.db import get_system_db
-    from src.repositories.table_registry import TableRegistryRepository
+    # Read table list from registry. Post-PG cutover this routes through
+    # the repository factory (``src.db.get_system_db`` and the legacy
+    # ``TableRegistryRepository`` shim are gone).
+    from src.repositories import table_registry_repo
 
-    sys_conn = get_system_db()
-    try:
-        repo = TableRegistryRepository(sys_conn)
-        tables = repo.list_by_source("keboola")
-    finally:
-        sys_conn.close()
+    tables = table_registry_repo().list_by_source("keboola")
 
     if not tables:
         logger.warning("No Keboola tables registered in table_registry")

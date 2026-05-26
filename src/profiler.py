@@ -92,18 +92,13 @@ DATA_DESCRIPTION_PATH = DOCS_DIR / "data_description.md"
 
 
 def _load_metrics_from_db() -> Dict[str, List[str]]:
-    """Load metrics table map from DuckDB. Returns empty dict on failure."""
+    """Load metrics table map from the metric_definitions repo. Returns empty dict on failure."""
     try:
-        from src.db import get_system_db
-        from src.repositories.metrics import MetricRepository
+        from src.repositories import metric_repo
 
-        conn = get_system_db()
-        repo = MetricRepository(conn)
-        table_map = repo.get_table_map()
-        conn.close()
-        return table_map
+        return metric_repo().get_table_map()
     except Exception as exc:
-        logger.debug("Could not load metrics from DuckDB: %s", exc)
+        logger.debug("Could not load metrics from repo: %s", exc)
         return {}
 
 

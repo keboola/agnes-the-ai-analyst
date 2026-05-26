@@ -15,9 +15,11 @@ from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
 from app.auth.rate_limit import limiter as _rate_limiter
-from src.repositories.users import UserRepository
 
 
+from src.repositories import (
+    users_repo,
+)
 def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
     """Display label for the response payload only — `admin` if the user is
     in the Admin system group, otherwise `user`. Authorization at runtime
@@ -72,7 +74,7 @@ async def send_magic_link(
     logged to stderr and returned in the response body so a developer can
     click it without an email transport.
     """
-    repo = UserRepository(conn)
+    repo = users_repo()
     user = repo.get_by_email(body.email)
 
     # Always return success to prevent email enumeration
@@ -140,13 +142,23 @@ def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> d
     # OUR consume_id instead of NULL so we can verify ownership.
     # DuckDB raises TransactionContext Error on concurrent row conflicts —
     # catch and treat as "someone else won the race."
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    eng = get_engine()
     try:
-        conn.execute(
-            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
-            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
-            "AND reset_token_created >= ?",
-            [consume_id, email, token, cutoff],
-        )
+        with eng.begin() as eng_conn:
+            eng_conn.execute(
+                sa.text(
+                    "UPDATE users SET reset_token = :cid, reset_token_created = NULL "
+                    "WHERE email = :email AND reset_token = :token "
+                    "AND reset_token_created IS NOT NULL "
+                    "AND reset_token_created >= :cutoff"
+                ),
+                {
+                    "cid": consume_id, "email": email,
+                    "token": token, "cutoff": cutoff,
+                },
+            )
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
@@ -156,22 +168,24 @@ def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> d
     # Step 2: Verify that OUR consume_id was written. If a concurrent
     # request won the race, we'll see THEIR consume_id (or NULL if they
     # already cleared it in step 3) — either way, we fail.
-    row = conn.execute(
-        "SELECT reset_token FROM users WHERE email = ?",
-        [email],
-    ).fetchone()
+    with eng.connect() as eng_conn:
+        row = eng_conn.execute(
+            sa.text("SELECT reset_token FROM users WHERE email = :email"),
+            {"email": email},
+        ).first()
     if not row or row[0] != consume_id:
         raise HTTPException(status_code=401, detail="Invalid or expired link")
 
-    # Step 3: Clear the consumed marker. Safe to do unconditionally —
-    # only the winner reaches here, and the marker is transient.
-    # If this UPDATE fails (DB error), the marker persists but the user
-    # can still request a new magic link — not a lockout.
+    # Step 3: Clear the consumed marker.
     try:
-        conn.execute(
-            "UPDATE users SET reset_token = NULL WHERE email = ? AND reset_token = ?",
-            [email, consume_id],
-        )
+        with eng.begin() as eng_conn:
+            eng_conn.execute(
+                sa.text(
+                    "UPDATE users SET reset_token = NULL "
+                    "WHERE email = :email AND reset_token = :cid"
+                ),
+                {"email": email, "cid": consume_id},
+            )
     except Exception:
         logger.warning("Failed to clear CONSUMED marker for %s — marker will persist", email)
 
@@ -179,7 +193,7 @@ def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> d
     # CAS already validated token + expiry atomically, so no further checks
     # needed — re-running them now would always fail because reset_token was
     # NULL'd in step 3.
-    repo = UserRepository(conn)
+    repo = users_repo()
     user = repo.get_by_email(email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid link")

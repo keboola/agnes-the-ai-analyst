@@ -9,11 +9,13 @@ import duckdb
 from app.auth.dependencies import get_current_user, _get_db
 from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
-from src.repositories.table_registry import TableRegistryRepository
-from src.repositories.audit import AuditRepository
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
+from src.repositories import (
+    audit_repo,
+    table_registry_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
@@ -101,7 +103,7 @@ def build_schema(
 ) -> dict:
     # RBAC + existence check MUST run before cache lookup — otherwise an
     # unauthorized user can read cached schema fetched by an authorized one.
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     row = repo.get(table_id)
     if not row:
         raise NotFound(table_id)
@@ -133,7 +135,7 @@ def build_schema_uncached(
     fetches it itself (the warmup-direct call site).
     """
     if row is None:
-        repo = TableRegistryRepository(conn)
+        repo = table_registry_repo()
         row = repo.get(table_id)
         if not row:
             raise NotFound(table_id)
@@ -141,18 +143,15 @@ def build_schema_uncached(
     source_type = row.get("source_type") or ""
     query_mode = row.get("query_mode") or ""
     if source_type == "internal":
-        # Internal data source — schema lives in system.duckdb, not in the
-        # parquet/BQ paths the other branches use. Delegate to the
-        # connector's own introspector so /api/v2/schema/agnes_sessions
-        # returns the same shape as /api/v2/schema/<keboola-table>.
+        # Internal data sources live in Postgres post-cutover; the
+        # connector introspector takes a ``system_db_path`` for
+        # signature back-compat and ignores it.
         from connectors.internal.access import get_schema as _get_internal_schema
-        from src.db import _get_state_dir
-        system_db_path = str(_get_state_dir() / "system.duckdb")
-        cols = _get_internal_schema(system_db_path, table_id)
+        cols = _get_internal_schema("", table_id)
         payload = {
             "table_id": table_id,
             "source_type": source_type,
-            "sql_flavor": "duckdb",
+            "sql_flavor": "postgres",
             "columns": [
                 {"name": c["name"], "type": c["type"], "nullable": c["nullable"], "description": ""}
                 for c in cols
@@ -226,7 +225,7 @@ def schema(
     try:
         result = build_schema(conn, user, table_id, bq=bq)
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="catalog.schema",
                 resource=resource,
@@ -247,7 +246,7 @@ def schema(
                 status_code = 400
             else:
                 status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="catalog.schema",
                 resource=resource,

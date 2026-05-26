@@ -35,8 +35,10 @@ import duckdb
 from fastapi import APIRouter, Depends, Query
 
 from app.auth.dependencies import _get_db, get_current_user
-from src.repositories.audit import AuditRepository
 
+from src.repositories import (
+    audit_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/me/stats", tags=["me"])
@@ -104,21 +106,23 @@ def list_self_sessions(
     user_dir = _session_data_dir() / username
 
     try:
-        rows_db = conn.execute(
-            """
-            SELECT
-                session_file, session_id, started_at, ended_at,
-                active_seconds, wall_seconds,
-                user_messages, tool_calls, tool_errors,
-                input_tokens, output_tokens,
-                cache_read_tokens, cache_creation_tokens,
-                primary_model
-            FROM usage_session_summary
-            WHERE username = ?
-            ORDER BY started_at DESC NULLS LAST
-            """,
-            [username],
-        ).fetchall()
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        with get_engine().connect() as eng_conn:
+            rows_db = eng_conn.execute(
+                sa.text(
+                    """SELECT session_file, session_id, started_at, ended_at,
+                              active_seconds, wall_seconds,
+                              user_messages, tool_calls, tool_errors,
+                              input_tokens, output_tokens,
+                              cache_read_tokens, cache_creation_tokens,
+                              primary_model
+                       FROM usage_session_summary
+                       WHERE username = :uname
+                       ORDER BY started_at DESC NULLS LAST"""
+                ),
+                {"uname": username},
+            ).fetchall()
     except Exception:
         rows_db = []
 
@@ -223,15 +227,26 @@ def _enrich_pipeline_status(
     keys = [f"{user_id}/{r['session_file']}" for r in rows]
     state_map: dict[str, dict] = {}
     try:
-        placeholders = ",".join("?" for _ in keys)
-        db_rows = conn.execute(
-            f"""SELECT session_file, processed_at, items_extracted
-                FROM session_processor_state
-                WHERE processor_name = 'verification'
-                  AND session_file IN ({placeholders})""",
-            keys,
-        ).fetchall()
-        state_cols = [d[0] for d in conn.description]
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        key_binds: list[str] = []
+        params: dict = {}
+        for i, k in enumerate(keys):
+            kn = f"k_{i}"
+            key_binds.append(f":{kn}")
+            params[kn] = k
+        with get_engine().connect() as eng_conn:
+            result = eng_conn.execute(
+                sa.text(
+                    f"""SELECT session_file, processed_at, items_extracted
+                        FROM session_processor_state
+                        WHERE processor_name = 'verification'
+                          AND session_file IN ({','.join(key_binds)})"""
+                ),
+                params,
+            )
+            state_cols = list(result.keys())
+            db_rows = result.fetchall()
         for row in db_rows:
             d = dict(zip(state_cols, row))
             state_map[d["session_file"]] = d
@@ -273,24 +288,28 @@ def get_tokens(
     """
     username = _username_for_stats(user)
 
-    # Daily series — interval literal interpolated from validated `days`.
-    daily = conn.execute(
-        f"""
-        SELECT
-            CAST(started_at AS DATE) AS day,
-            COALESCE(SUM(input_tokens), 0)          AS input_tokens,
-            COALESCE(SUM(output_tokens), 0)         AS output_tokens,
-            COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
-            COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
-            COUNT(*) AS sessions
-        FROM usage_session_summary
-        WHERE username = ?
-          AND started_at >= current_timestamp - INTERVAL {int(days)} DAY
-        GROUP BY 1
-        ORDER BY 1
-        """,
-        [username],
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    eng = get_engine()
+    days_int = int(days)
+    with eng.connect() as eng_conn:
+        daily = eng_conn.execute(
+            sa.text(
+                f"""SELECT
+                        CAST(started_at AS DATE) AS day,
+                        COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
+                        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
+                        COUNT(*) AS sessions
+                    FROM usage_session_summary
+                    WHERE username = :uname
+                      AND started_at >= current_timestamp - INTERVAL '{days_int} days'
+                    GROUP BY 1
+                    ORDER BY 1"""
+            ),
+            {"uname": username},
+        ).fetchall()
     daily_series = [
         {
             "day": d.isoformat() if hasattr(d, "isoformat") else str(d),
@@ -304,27 +323,28 @@ def get_tokens(
         for (d, i, o, cr, cc, s) in daily
     ]
 
-    by_model = conn.execute(
-        """
-        SELECT
-            COALESCE(primary_model, '(unknown)') AS model,
-            COALESCE(SUM(input_tokens), 0)          AS input_tokens,
-            COALESCE(SUM(output_tokens), 0)         AS output_tokens,
-            COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
-            COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
-            COUNT(*) AS sessions
-        FROM usage_session_summary
-        WHERE username = ?
-        GROUP BY 1
-        ORDER BY (
-            COALESCE(SUM(input_tokens), 0)
-            + COALESCE(SUM(output_tokens), 0)
-            + COALESCE(SUM(cache_read_tokens), 0)
-            + COALESCE(SUM(cache_creation_tokens), 0)
-        ) DESC
-        """,
-        [username],
-    ).fetchall()
+    with eng.connect() as eng_conn:
+        by_model = eng_conn.execute(
+            sa.text(
+                """SELECT
+                       COALESCE(primary_model, '(unknown)') AS model,
+                       COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                       COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                       COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
+                       COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
+                       COUNT(*) AS sessions
+                   FROM usage_session_summary
+                   WHERE username = :uname
+                   GROUP BY 1
+                   ORDER BY (
+                       COALESCE(SUM(input_tokens), 0)
+                       + COALESCE(SUM(output_tokens), 0)
+                       + COALESCE(SUM(cache_read_tokens), 0)
+                       + COALESCE(SUM(cache_creation_tokens), 0)
+                   ) DESC"""
+            ),
+            {"uname": username},
+        ).fetchall()
     model_breakdown = [
         {
             "model": m, "input": int(i or 0), "output": int(o or 0),
@@ -335,22 +355,23 @@ def get_tokens(
         for (m, i, o, cr, cc, s) in by_model
     ]
 
-    top_sessions = conn.execute(
-        """
-        SELECT
-            session_file, session_id, started_at, primary_model,
-            input_tokens, output_tokens,
-            cache_read_tokens, cache_creation_tokens,
-            (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
-             + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0))
-            AS tokens_total
-        FROM usage_session_summary
-        WHERE username = ?
-        ORDER BY tokens_total DESC
-        LIMIT 10
-        """,
-        [username],
-    ).fetchall()
+    with eng.connect() as eng_conn:
+        top_sessions = eng_conn.execute(
+            sa.text(
+                """SELECT
+                       session_file, session_id, started_at, primary_model,
+                       input_tokens, output_tokens,
+                       cache_read_tokens, cache_creation_tokens,
+                       (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                        + COALESCE(cache_read_tokens, 0)
+                        + COALESCE(cache_creation_tokens, 0)) AS tokens_total
+                   FROM usage_session_summary
+                   WHERE username = :uname
+                   ORDER BY tokens_total DESC
+                   LIMIT 10"""
+            ),
+            {"uname": username},
+        ).fetchall()
     top = [
         {
             "session_file": sf,
@@ -364,19 +385,20 @@ def get_tokens(
         for (sf, sid, st, pm, i, o, cr, cc, tt) in top_sessions
     ]
 
-    totals_row = conn.execute(
-        """
-        SELECT
-            COALESCE(SUM(input_tokens), 0),
-            COALESCE(SUM(output_tokens), 0),
-            COALESCE(SUM(cache_read_tokens), 0),
-            COALESCE(SUM(cache_creation_tokens), 0),
-            COUNT(*)
-        FROM usage_session_summary
-        WHERE username = ?
-        """,
-        [username],
-    ).fetchone()
+    with eng.connect() as eng_conn:
+        totals_row = eng_conn.execute(
+            sa.text(
+                """SELECT
+                       COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0),
+                       COALESCE(SUM(cache_read_tokens), 0),
+                       COALESCE(SUM(cache_creation_tokens), 0),
+                       COUNT(*)
+                   FROM usage_session_summary
+                   WHERE username = :uname"""
+            ),
+            {"uname": username},
+        ).first()
     ti, to, tcr, tcc, tses = totals_row or (0, 0, 0, 0, 0)
     totals = {
         "input": int(ti or 0),
@@ -418,7 +440,7 @@ def list_self_queries(
     writes don't double-render rows.
     """
     cursor = (cursor_ts, cursor_id) if cursor_ts and cursor_id else None
-    rows, next_cursor = AuditRepository(conn).query(
+    rows, next_cursor = audit_repo().query(
         user_id=user["id"],
         action_prefix="query.",
         cursor=cursor,
@@ -453,16 +475,20 @@ def list_self_sync_activity(
     the cursor is single-stream (start over to page back; first page
     is what matters for the dashboard).
     """
-    actions_seen = AuditRepository(conn).query_actions(
+    actions_seen = audit_repo().query_actions(
         actions=_sync_action_list(),
         limit=limit,
     )
     # Filter to this user — query_actions doesn't take user_id.
     user_rows = [r for r in actions_seen if r.get("user_id") == user["id"]]
 
-    last_pull_row = conn.execute(
-        "SELECT last_pull_at FROM users WHERE id = ?", [user["id"]]
-    ).fetchone()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        last_pull_row = eng_conn.execute(
+            sa.text("SELECT last_pull_at FROM users WHERE id = :uid"),
+            {"uid": user["id"]},
+        ).first()
     last_pull_at = last_pull_row[0] if last_pull_row else None
 
     return {

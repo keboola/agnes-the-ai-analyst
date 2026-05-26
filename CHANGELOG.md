@@ -25,6 +25,54 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   row-group scans + in-memory `SAMPLE`); the cap binds only when
   something goes wrong.
 
+### Removed
+- **BREAKING** All app-state DuckDB code paths. ``src/repositories/
+  __init__.py`` factories now return Postgres-only impls;
+  ``AGNES_DB_URL`` (or ``DATABASE_URL``) is required at boot. The 28
+  legacy ``src/repositories/<name>.py`` modules are gone; ``src/db.py``
+  is scrubbed from 3 637 lines to 301 (analytics half only —
+  ``get_analytics_db`` / ``get_analytics_db_readonly`` /
+  ``_reattach_remote_extensions`` / ``close_analytics_db`` plus the
+  ``_get_data_dir`` / ``_get_state_dir`` / ``SYSTEM_ADMIN_GROUP`` /
+  ``SYSTEM_EVERYONE_GROUP`` constants). The DuckDB ``SCHEMA_VERSION``
+  ladder, ``_ensure_schema``, every ``_v*_to_v*_finalize`` migration,
+  and the ``schema_version`` table are all retired — schema management
+  belongs to alembic now (``/api/health`` reports the alembic head
+  revision). Operators upgrading from a pre-cutover deploy run
+  ``python -m scripts.migrate_duckdb_to_pg`` once against the existing
+  ``system.duckdb`` to seed the PG instance; the script remains
+  shipped and idempotent.
+- The DuckDB-fixture test suite (~129 files under ``tests/``) that
+  exercised the deleted repository modules, the ``SCHEMA_VERSION``
+  ladder, and ``system.duckdb``-shaped fixtures. PG-side coverage
+  under ``tests/db_pg/`` (round-trip + drift + per-cluster CRUD)
+  remains.
+
+### Internal
+- Postgres app-state foundation: Alembic + SQLAlchemy 2.0 +
+  ``psycopg[binary]`` as core deps; pytest infrastructure adds
+  ``testcontainers[postgres]``, ``pytest-postgresql``, and
+  ``pgserver``. Ships the migration chain (``migrations/`` with
+  revisions 0001-0012 covering every table in ``system.duckdb``
+  plus the v49 catalog cluster), matching SQLAlchemy 2.0 models
+  under ``src/models/``, all 28 repository modules mirrored at
+  ``src/repositories/*_pg.py``, a round-trip + drift test harness
+  under ``tests/db_pg/``, and a one-shot DuckDB → Postgres data
+  migration framework at ``scripts/migrate_duckdb_to_pg/``
+  (idempotent on re-run via ``ON CONFLICT DO NOTHING``, with
+  row-count and PK-checksum validation). The ``knowledge`` repo's
+  full-text search ports from DuckDB BM25 to Postgres
+  ``to_tsvector`` + ``ts_rank``.
+- Dev tooling: ``scripts/dev_pg_up.sh`` (named-volume PG +
+  pgweb dev stack), ``scripts/sync_from_prod.sh`` (gcloud IAP
+  snapshot → alembic → migrate, scoped), ``scripts/dev_pg_migrate_volume.sh``
+  (anonymous → named volume swap with row-count verification),
+  ``docker-compose.pgweb.yml`` overlay.
+- New CLI surface: ``agnes admin seed export | import | seed-from``
+  and ``agnes admin registry export | import | seed-from`` for
+  cross-instance state mirror across data tables + curated
+  marketplace + flea market.
+
 ## [0.55.15] — 2026-05-26
 
 ### Fixed

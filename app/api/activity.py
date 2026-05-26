@@ -24,10 +24,12 @@ from fastapi import APIRouter, Depends, Query
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db   # NOTE: lives in app.auth.dependencies, not app.dependencies
-from src.repositories.audit import AuditRepository
-from src.repositories.sync_state import SyncStateRepository
 from src.observability.posthog_client import get_posthog
 
+from src.repositories import (
+    audit_repo,
+    sync_state_repo,
+)
 router = APIRouter(prefix="/api/admin/activity", tags=["activity"])
 
 _HEALTH_CACHE: dict = {"data": None, "expires_at": None}
@@ -61,7 +63,7 @@ def _audit_read(conn, user: dict, endpoint: str, filter_payload: dict) -> None:
     actor_id = (user or {}).get("id") or "anonymous"
     if not _should_audit(actor_id, {"endpoint": endpoint, **filter_payload}):
         return
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=actor_id,
         action="activity.read",
         params={"endpoint": endpoint, **filter_payload},
@@ -96,7 +98,7 @@ def activity_timeline(
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
     cursor = (cursor_ts, cursor_id) if cursor_ts and cursor_id else None
 
-    rows, next_cursor = AuditRepository(conn).query(
+    rows, next_cursor = audit_repo().query(
         since=since,
         user_id=user_id,
         action_prefix=action_prefix,
@@ -114,11 +116,21 @@ def activity_timeline(
     # carries no audit rows that reference a user.
     user_ids = list({r["user_id"] for r in rows if r.get("user_id")})
     if user_ids:
-        placeholders = ",".join("?" for _ in user_ids)
-        rows_lookup = conn.execute(
-            f"SELECT id, email, name FROM users WHERE id IN ({placeholders})",
-            user_ids,
-        ).fetchall()
+        import sqlalchemy as sa
+        from src.db_pg import get_engine
+        keys = []
+        params: dict = {}
+        for i, uid in enumerate(user_ids):
+            k = f"u_{i}"
+            keys.append(f":{k}")
+            params[k] = uid
+        with get_engine().connect() as eng_conn:
+            rows_lookup = eng_conn.execute(
+                sa.text(
+                    f"SELECT id, email, name FROM users WHERE id IN ({','.join(keys)})"
+                ),
+                params,
+            ).fetchall()
         info = {row[0]: {"email": row[1], "name": row[2]} for row in rows_lookup}
         for r in rows:
             extra = info.get(r.get("user_id")) or {}
@@ -172,7 +184,7 @@ def activity_sync(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
-    rows = SyncStateRepository(conn).list_recent(since=since, limit=limit)
+    rows = sync_state_repo().list_recent(since=since, limit=limit)
     _audit_read(conn, user, "sync", {"since_minutes": since_minutes})
     return {"rows": rows}
 
@@ -188,10 +200,16 @@ def _compute_health(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict:
         memory_pipeline: latest verification processor run state.
         diagnose_warnings: count of active diagnose warnings (placeholder 0 in MVP).
     """
-    # 1) scheduler freshness
-    last_tick = conn.execute(
-        "SELECT MAX(timestamp) FROM audit_log WHERE action LIKE 'run_%' OR action='marketplace.sync_all'"
-    ).fetchone()[0]
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    eng = get_engine()
+    with eng.connect() as eng_conn:
+        last_tick = eng_conn.execute(
+            sa.text(
+                "SELECT MAX(timestamp) FROM audit_log "
+                "WHERE action LIKE 'run_%' OR action = 'marketplace.sync_all'"
+            )
+        ).scalar()
     if last_tick is None:
         scheduler_age_s = None
         scheduler_color = "yellow"
@@ -209,10 +227,14 @@ def _compute_health(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict:
         scheduler_value = _format_age(scheduler_age_s)
 
     # 2) sync 24h
-    sync_rows = conn.execute(
-        "SELECT status, COUNT(*) FROM sync_history WHERE synced_at >= ? GROUP BY status",
-        [now - timedelta(hours=24)]
-    ).fetchall()
+    with eng.connect() as eng_conn:
+        sync_rows = eng_conn.execute(
+            sa.text(
+                "SELECT status, COUNT(*) FROM sync_history "
+                "WHERE synced_at >= :since GROUP BY status"
+            ),
+            {"since": now - timedelta(hours=24)},
+        ).fetchall()
     ok = next((c for s, c in sync_rows if s == "ok"), 0)
     fail = sum(c for s, c in sync_rows if s and s != "ok")
     total = ok + fail
@@ -228,16 +250,24 @@ def _compute_health(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict:
 
     # 3) active users today
     midnight = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    active = conn.execute(
-        "SELECT COUNT(DISTINCT user_id) FROM audit_log WHERE timestamp >= ? AND user_id IS NOT NULL",
-        [midnight]
-    ).fetchone()[0]
+    with eng.connect() as eng_conn:
+        active = eng_conn.execute(
+            sa.text(
+                "SELECT COUNT(DISTINCT user_id) FROM audit_log "
+                "WHERE timestamp >= :midnight AND user_id IS NOT NULL"
+            ),
+            {"midnight": midnight},
+        ).scalar()
 
-    # 4) memory pipeline
-    mem_row = conn.execute(
-        "SELECT MAX(processed_at), SUM(items_extracted) FROM session_processor_state WHERE processor_name='verification' AND processed_at >= ?",
-        [now - timedelta(hours=1)]
-    ).fetchone()
+        # 4) memory pipeline
+        mem_row = eng_conn.execute(
+            sa.text(
+                "SELECT MAX(processed_at), SUM(items_extracted) "
+                "FROM session_processor_state "
+                "WHERE processor_name = 'verification' AND processed_at >= :since"
+            ),
+            {"since": now - timedelta(hours=1)},
+        ).first()
     if mem_row and mem_row[0]:
         mem_color = "green"
         mem_value = f"ok ({mem_row[1] or 0} items 1h)"

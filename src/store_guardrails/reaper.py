@@ -23,15 +23,13 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
-import duckdb
-
-from src.repositories.audit import AuditRepository
+from src.repositories import audit_repo, store_submissions_repo
 
 logger = logging.getLogger(__name__)
 
 
 def reap_stuck_llm_reviews(
-    conn: duckdb.DuckDBPyConnection,
+    conn=None,  # back-compat; ignored — repos hit the singleton engine
     *,
     grace_seconds: int = 1800,
 ) -> Dict[str, Any]:
@@ -46,18 +44,26 @@ def reap_stuck_llm_reviews(
         return {"skipped": True, "reaped": 0, "grace_seconds": grace_seconds}
 
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=grace_seconds)
-    rows = conn.execute(
-        """SELECT id, submitter_id, entity_id
-             FROM store_submissions
-            WHERE status = 'pending_llm'
-              AND created_at < ?""",
-        [cutoff],
-    ).fetchall()
+
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+
+    with get_engine().connect() as eng_conn:
+        rows = eng_conn.execute(
+            sa.text(
+                """SELECT id, submitter_id, entity_id
+                     FROM store_submissions
+                    WHERE status = 'pending_llm'
+                      AND created_at < :cutoff"""
+            ),
+            {"cutoff": cutoff},
+        ).fetchall()
 
     if not rows:
         return {"skipped": False, "reaped": 0, "grace_seconds": grace_seconds}
 
-    audit = AuditRepository(conn)
+    audit = audit_repo()
+    subs = store_submissions_repo()
     error_payload = {
         "risk_level": None,
         "summary": None,
@@ -66,19 +72,16 @@ def reap_stuck_llm_reviews(
         "reviewed_by_model": None,
         "error": "timeout_or_crash",
     }
-    now = datetime.now(timezone.utc)
 
     reaped = 0
     for sub_id, submitter_id, _entity_id in rows:
-        conn.execute(
-            """UPDATE store_submissions
-                  SET status = 'review_error',
-                      llm_findings = ?,
-                      updated_at = ?
-                WHERE id = ?
-                  AND status = 'pending_llm'""",
-            [json.dumps(error_payload), now, sub_id],
+        flipped = subs.update_status(
+            sub_id,
+            status="review_error",
+            llm_findings=error_payload,
         )
+        if not flipped:
+            continue
         audit.log(
             user_id=submitter_id,
             action="store.submission.review_error",

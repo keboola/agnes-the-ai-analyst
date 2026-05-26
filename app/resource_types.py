@@ -99,14 +99,19 @@ def _marketplace_plugin_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]
     ``<marketplace_slug>/<plugin_name>`` that ``resource_grants.resource_id``
     matches against.
     """
-    rows = conn.execute(
-        """SELECT mr.id, mr.name, mr.registered_at,
-                  mp.name AS plugin_name, mp.version, mp.category,
-                  mp.description, mp.source_type, mp.is_system
-           FROM marketplace_registry mr
-           LEFT JOIN marketplace_plugins mp ON mp.marketplace_id = mr.id
-           ORDER BY mr.registered_at, mr.id, mp.name"""
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        rows = eng_conn.execute(
+            sa.text(
+                """SELECT mr.id, mr.name, mr.registered_at,
+                          mp.name AS plugin_name, mp.version, mp.category,
+                          mp.description, mp.source_type, mp.is_system
+                   FROM marketplace_registry mr
+                   LEFT JOIN marketplace_plugins mp ON mp.marketplace_id = mr.id
+                   ORDER BY mr.registered_at, mr.id, mp.name"""
+            )
+        ).fetchall()
     blocks: dict[str, Block] = {}
     for mr_id, mr_name, _, p_name, p_ver, p_cat, p_desc, p_src, p_sys in rows:
         block = blocks.setdefault(mr_id, {
@@ -156,12 +161,17 @@ def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     # bypassed for them (see can_access). Surfacing them on
     # /admin/access would let admins assign grants that do nothing,
     # which is exactly the confusion this filter prevents.
-    rows = conn.execute(
-        """SELECT id, name, bucket, source_type, query_mode, description
-           FROM table_registry
-           WHERE source_type IS DISTINCT FROM 'internal'
-           ORDER BY COALESCE(bucket, ''), name"""
-    ).fetchall()
+    import sqlalchemy as sa
+    from src.db_pg import get_engine
+    with get_engine().connect() as eng_conn:
+        rows = eng_conn.execute(
+            sa.text(
+                """SELECT id, name, bucket, source_type, query_mode, description
+                   FROM table_registry
+                   WHERE source_type IS DISTINCT FROM 'internal'
+                   ORDER BY COALESCE(bucket, ''), name"""
+            )
+        ).fetchall()
     blocks: dict[str, Block] = {}
     for tbl_id, name, bucket, source_type, query_mode, description in rows:
         block_key = bucket if bucket else "(no bucket)"
