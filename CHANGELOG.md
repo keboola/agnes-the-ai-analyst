@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.11] — 2026-05-26
+
+### Fixed
+- **`src/db.py::_try_open_system_db` no longer silently drops post-migration data on WAL-replay recovery (#379).** The auto-recovery path used to copy `system.duckdb.pre-migrate` over the broken DB and re-run the migration ladder unconditionally — but the snapshot is captured once per migration transition and never refreshed, so any rows added since that transition vanished without warning. The function now opens the snapshot read-only to peek its `schema_version`; if it is older than the current `SCHEMA_VERSION`, the broken DB + WAL are preserved at `.broken.<ts>` (forensic artifact) and a `RuntimeError` is raised so operators see the failure instead of an empty DB. The happy-path (HEAD-version snapshot) and the "no snapshot file" path are unchanged.
+
 ## [0.55.10] — 2026-05-25
 
 ### Added
