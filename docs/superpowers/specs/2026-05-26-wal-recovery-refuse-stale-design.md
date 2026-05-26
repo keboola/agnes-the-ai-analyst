@@ -140,3 +140,55 @@ peek path — only the corruption-trigger is mocked.
 2. With a v(N-1) snapshot, the recovery refuses, preserves both broken files, and surfaces both version numbers in the log (Test 2).
 3. With an unreadable snapshot, behavior collapses to the refusal path (Test 3).
 4. Full pytest suite green on this branch.
+
+---
+
+## Amendment 2026-05-26 — review pass: symmetric refusal + mode 0o600 + manual-recovery hint
+
+Three review findings addressed during the release-cut pass for `0.55.12`:
+
+1. **Symmetric refusal (architecture review).** Original check was
+   `peek_version < SCHEMA_VERSION`. The mirror case — operator rolls
+   the binary back from v60 to v59, snapshot was captured at the
+   v59→v60 transition (so snapshot.peek = v60) — would pass the
+   one-sided check and let `shutil.copy2(snapshot, db_path)` land a
+   v60-schema DB under a v59 binary. The next start's `_ensure_schema`
+   would then hit the split-brain `current > target` branch (which is
+   itself a no-op per `src/db.py:4251`, leaving the DB in an unsupported
+   state). Both directions mean corruption; the check is now `peek_version
+   != SCHEMA_VERSION` with a `direction` ("stale" / "future") tag in
+   both the log line and the `RuntimeError` message so operators can
+   tell which incident class they hit.
+
+2. **`os.chmod(0o600)` on `.broken.<ts>` artifacts (RBAC review).**
+   `system.duckdb` holds argon2 password hashes (`users.password_hash`),
+   personal-access-token rows (`personal_access_tokens`), and the audit
+   log. `shutil.move` inherits the source mode (typically `0o644` under
+   default umask), so the preserved broken file was world-readable on
+   its way out. The new `_move_to_broken(db_path, wal_path)` helper
+   (extracted from the inline duplication of the same move pattern in
+   the refusal path and the happy auto-recovery path) chmods both the
+   `.broken.<ts>` and `.broken.<ts>.wal` to `0o600` via best-effort
+   `try/except OSError: pass`. The containing `state/` directory is
+   typically `0o700` already, but defense in depth matters because
+   backups, container volumes, and tab-completion mistakes can all
+   surface the file. The helper is exercised by a new test
+   `test_recovery_broken_files_are_chmod_0600`.
+
+3. **Manual-recovery escape hatch (architecture review).** Original
+   `RuntimeError` named the broken-DB path but not the recovery
+   action; an operator had to read the source to figure out the manual
+   `cp` step. Both the `logger.critical` message and the
+   `RuntimeError` text now include `cp {snapshot} {db_path}` verbatim
+   so the operator's runbook is in the failure itself.
+
+The new `test_recovery_refuses_when_snapshot_is_from_future_version`
+test locks in the symmetric-refusal contract; the existing
+`test_recovery_refuses_when_snapshot_has_no_schema_version_table` test
+assertion was tightened from `"v0 <"` (no longer matches the new
+direction-tagged format) to `"v0" + "stale"` checks on the message.
+
+A separate follow-up is worth filing for `.broken.<ts>` retention
+policy: argon2 hashes don't expire, so indefinite retention of broken
+artifacts becomes a long-lived credential archive. Currently undocumented;
+likely future issue.
