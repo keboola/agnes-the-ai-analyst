@@ -264,11 +264,13 @@ def test_recovery_propagates_when_no_snapshot_exists(state_dir):
 
 def test_recovery_re_raises_if_snapshot_also_broken(state_dir):
     """Edge case: snapshot exists but is itself corrupted (operator
-    edited it / disk error). The first recovery ``duckdb.connect``
-    succeeds (via the mock) so the function returns, but the second
-    call would still fail. We assert the re-attempted connect's error
-    propagates rather than being swallowed."""
-    from src.db import _try_open_system_db
+    edited it / disk error). ``_peek_schema_version`` catches the
+    ``duckdb.Error`` from the corrupt snapshot and returns 0, which
+    is below ``SCHEMA_VERSION``. The stale-snapshot refusal path fires,
+    preserving the broken DB and raising ``RuntimeError`` so the
+    operator is forced to intervene rather than silently recovering
+    against a snapshot of unknown version."""
+    from src.db import _try_open_system_db, SCHEMA_VERSION
 
     db_path = state_dir / "system.duckdb"
     snapshot_path = state_dir / "system.duckdb.pre-migrate"
@@ -289,8 +291,13 @@ def test_recovery_re_raises_if_snapshot_also_broken(state_dir):
         raise snapshot_error
 
     with patch("src.db.duckdb.connect", side_effect=fake):
-        with pytest.raises(duckdb.Error, match="malformed"):
+        with pytest.raises(RuntimeError) as excinfo:
             _try_open_system_db(str(db_path))
+
+    # Error message must mention the detected version (0) and the target.
+    msg = str(excinfo.value)
+    assert "v0 <" in msg
+    assert str(SCHEMA_VERSION) in msg
 
 
 def test_recovery_proceeds_when_snapshot_is_at_head(tmp_path, make_wal_error):
@@ -327,3 +334,40 @@ def test_recovery_proceeds_when_snapshot_is_at_head(tmp_path, make_wal_error):
     assert db_path.exists()
     # Snapshot file itself was left in place (not consumed).
     assert snapshot_path.exists()
+
+
+def test_recovery_refuses_when_snapshot_is_stale(tmp_path, make_wal_error):
+    """Snapshot at SCHEMA_VERSION - 1 → recovery raises RuntimeError,
+    preserves both broken files, leaves snapshot untouched, does NOT
+    create a fresh DB at db_path."""
+    from src import db as db_module
+
+    db_path = tmp_path / "system.duckdb"
+    snapshot_path = tmp_path / "system.duckdb.pre-migrate"
+
+    _make_db_with_schema_version(db_path, db_module.SCHEMA_VERSION)
+    _make_db_with_schema_version(snapshot_path, db_module.SCHEMA_VERSION - 1)
+    _corrupt_wal_so_replay_fails(db_path)
+
+    with make_wal_error(db_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            db_module._try_open_system_db(str(db_path))
+
+    # The error message identifies both versions so the operator can act.
+    msg = str(excinfo.value)
+    assert str(db_module.SCHEMA_VERSION - 1) in msg
+    assert str(db_module.SCHEMA_VERSION) in msg
+
+    # Both broken files preserved (DB + WAL split — same pattern as
+    # the pre-existing test_recovery_restores_... test).
+    all_broken = sorted(tmp_path.glob("system.duckdb.broken.*"))
+    broken_dbs = [p for p in all_broken if not p.name.endswith(".wal")]
+    broken_wals = [p for p in all_broken if p.name.endswith(".wal")]
+    assert len(broken_dbs) == 1, all_broken
+    assert len(broken_wals) == 1, all_broken
+
+    # Snapshot was not consumed.
+    assert snapshot_path.exists()
+
+    # Main DB path no longer exists — moved aside, NOT overwritten.
+    assert not db_path.exists()
