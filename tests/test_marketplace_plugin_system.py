@@ -321,6 +321,55 @@ class TestGuards:
         assert r.status_code == 409
         assert r.json()["detail"] == "cannot_revoke_system_grant"
 
+    def test_group_delete_with_system_grant_returns_clear_error_not_500(
+        self, web_client,
+    ):
+        """A custom group with an auto-materialized system-plugin grant must
+        be deletable (or at least fail with a clear 4xx, not 500). Empirical:
+        DELETE /api/admin/groups/<id> returns 500 — the in-handler cascade
+        deletes resource_grants explicitly first, but the system grant for
+        marketplace_plugin/<marketplace>/<plugin> survives or the server
+        rejects elsewhere, and the operator is stuck with a group that
+        cannot be removed via the CLI or API."""
+        _seed_marketplace_with_plugin()
+        _, admin_cookies = _create_user(
+            web_client, "admin@x.com", admin=True,
+        )
+        web_client.post(
+            "/api/marketplaces/mkt-x/plugins/alpha/system",
+            cookies=admin_cookies,
+        )
+        gid = _add_group("doomed-by-system-grant")
+
+        # Sanity-check the auto-grant landed.
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            grants = conn.execute(
+                "SELECT id, resource_type, resource_id FROM resource_grants "
+                "WHERE group_id = ?",
+                [gid],
+            ).fetchall()
+        finally:
+            conn.close()
+        assert any(
+            g[1] == "marketplace_plugin" and g[2] == "mkt-x/alpha"
+            for g in grants
+        ), f"system grant didn't auto-materialize for new group: {grants}"
+
+        r = web_client.delete(
+            f"/api/admin/groups/{gid}", cookies=admin_cookies,
+        )
+        # The point: the handler MUST not 500. Either it succeeds (cascade
+        # took care of the system grant — per-group rows are safe to drop,
+        # and the next group to be created will re-materialize) or it
+        # refuses with a 4xx + actionable detail. 500 leaves the operator
+        # stuck with an undeletable group on shared dev.
+        assert r.status_code != 500, (
+            f"group delete returned 500 for a group with a system grant; "
+            f"body={r.text}"
+        )
+
     def test_subscribe_via_my_stack_still_allowed(self, web_client):
         """The guard refuses unsubscribe only — explicit subscribe must
         keep working since the row already exists (idempotent)."""
