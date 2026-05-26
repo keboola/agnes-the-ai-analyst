@@ -45,79 +45,72 @@ def seed() -> None:
         )
         raise SystemExit(1)
 
-    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-    from src.repositories.user_group_members import UserGroupMembersRepository
-    from src.repositories.users import UserRepository
+    from src.db import SYSTEM_ADMIN_GROUP
+    from src.repositories import (
+        user_group_members_repo,
+        user_groups_repo,
+        users_repo,
+    )
 
-    conn = get_system_db()
-    try:
-        admin_row = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()
-        if not admin_row:
-            print(
-                f"error: {SYSTEM_ADMIN_GROUP!r} group not seeded -- refusing to "
-                "create orphan e2e user. Run the app once so the bootstrap "
-                "seeds the system groups, then re-run this script.",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
-        admin_gid = admin_row[0]
-
-        users = UserRepository(conn)
-        memberships = UserGroupMembersRepository(conn)
-        existing = users.get_by_email(E2E_USER_EMAIL)
-        now = datetime.now(timezone.utc)
-
-        # Single PasswordHasher instance — argon2-cffi reuses the same
-        # defaults (time_cost / memory_cost / parallelism) across calls,
-        # so the hasher is effectively stateless. Matches the pattern in
-        # app/auth/providers/password.py.
-        hasher = PasswordHasher()
-
-        if existing is None:
-            password_hash = hasher.hash(E2E_USER_PASSWORD)
-            # `users.active` is not passed explicitly — UserRepository.create
-            # relies on the column's DEFAULT TRUE. Mirrors the seed_admin
-            # bootstrap in app/main.py; if active ever loses its default
-            # (NOT NULL with no DEFAULT) both seeds break together and the
-            # fix is a one-liner here, not a silent semantic drift.
-            users.create(
-                id=E2E_USER_ID,
-                email=E2E_USER_EMAIL,
-                name=E2E_USER_NAME,
-                password_hash=password_hash,
-            )
-            user_id = E2E_USER_ID
-        else:
-            user_id = existing["id"]
-            # Verify the stored hash. Skip the UPDATE on the common case
-            # (hash already matches) to avoid a needless ~100 ms re-hash +
-            # DB write. Only catch argon2 verifier failures — any other
-            # exception (DuckDB lock timeout, disk I/O, library version
-            # mismatch surfacing as a non-argon2 error) propagates so a
-            # real bug surfaces instead of silently re-hashing on every
-            # subsequent run.
-            try:
-                hasher.verify(existing["password_hash"], E2E_USER_PASSWORD)
-            except VerifyMismatchError:
-                password_hash = hasher.hash(E2E_USER_PASSWORD)
-                conn.execute(
-                    "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-                    [password_hash, now, user_id],
-                )
-
-        # Re-assert Admin membership. add_member is idempotent on
-        # (user_id, group_id) per the repository contract. `added_by` tags
-        # the row so the cleanup query in src/db.py that excludes
-        # `app.main:seed_admin` can apply the same rule to scripts.* seeds.
-        memberships.add_member(
-            user_id, admin_gid, source="system_seed", added_by="scripts.seed_e2e_user"
+    # Post-PG cutover the seed talks to repositories through the
+    # factory; no per-call ``get_system_db()`` handle. Each repo holds
+    # the SA engine singleton internally.
+    groups = user_groups_repo()
+    admin_row = groups.get_by_name(SYSTEM_ADMIN_GROUP)
+    if not admin_row:
+        print(
+            f"error: {SYSTEM_ADMIN_GROUP!r} group not seeded -- refusing to "
+            "create orphan e2e user. Run ``alembic upgrade head`` so the "
+            "bootstrap seeds the system groups, then re-run this script.",
+            file=sys.stderr,
         )
+        raise SystemExit(1)
+    admin_gid = admin_row["id"]
 
-        print(f"seeded: {E2E_USER_EMAIL} (id={user_id}) in Admin group")
-    finally:
-        conn.close()
+    users = users_repo()
+    memberships = user_group_members_repo()
+    existing = users.get_by_email(E2E_USER_EMAIL)
+    now = datetime.now(timezone.utc)
+
+    # Single PasswordHasher instance — argon2-cffi reuses the same
+    # defaults (time_cost / memory_cost / parallelism) across calls,
+    # so the hasher is effectively stateless. Matches the pattern in
+    # app/auth/providers/password.py.
+    hasher = PasswordHasher()
+
+    if existing is None:
+        password_hash = hasher.hash(E2E_USER_PASSWORD)
+        users.create(
+            id=E2E_USER_ID,
+            email=E2E_USER_EMAIL,
+            name=E2E_USER_NAME,
+            password_hash=password_hash,
+        )
+        user_id = E2E_USER_ID
+    else:
+        user_id = existing["id"]
+        # Verify the stored hash. Skip the UPDATE on the common case
+        # (hash already matches) to avoid a needless ~100 ms re-hash +
+        # DB write. Only catch argon2 verifier failures — any other
+        # exception (lock timeout, disk I/O, library version mismatch
+        # surfacing as a non-argon2 error) propagates so a real bug
+        # surfaces instead of silently re-hashing on every subsequent
+        # run.
+        try:
+            hasher.verify(existing["password_hash"], E2E_USER_PASSWORD)
+        except VerifyMismatchError:
+            password_hash = hasher.hash(E2E_USER_PASSWORD)
+            users.update(id=user_id, password_hash=password_hash, updated_at=now)
+
+    # Re-assert Admin membership. add_member is idempotent on
+    # (user_id, group_id) per the repository contract. ``added_by``
+    # tags the row so the cleanup query that excludes
+    # ``app.main:seed_admin`` can apply the same rule to scripts.* seeds.
+    memberships.add_member(
+        user_id, admin_gid, source="system_seed", added_by="scripts.seed_e2e_user"
+    )
+
+    print(f"seeded: {E2E_USER_EMAIL} (id={user_id}) in Admin group")
 
 
 if __name__ == "__main__":

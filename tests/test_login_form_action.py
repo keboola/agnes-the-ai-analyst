@@ -26,14 +26,13 @@ def web_client(tmp_path, monkeypatch):
     (tmp_path / "state").mkdir()
     (tmp_path / "analytics").mkdir()
     (tmp_path / "extracts").mkdir()
-    from src.db import close_system_db
-
-    close_system_db()
+    # Post-PG cutover: there is no DuckDB system handle to close; the
+    # SA engine singleton stays attached to the shared dev/test PG for
+    # the whole test session. Just stand the app up.
     from app.main import create_app
 
     app = create_app()
     yield TestClient(app)
-    close_system_db()
 
 
 def test_password_login_form_action_pinned(web_client):

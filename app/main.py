@@ -886,7 +886,53 @@ def create_app() -> FastAPI:
             body["error"] = str(exc)
         return JSONResponse(body, status_code=500)
 
+    _patch_openapi_auth_errors(app)
+
     return app
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI schema post-processing
+# ---------------------------------------------------------------------------
+
+#: Paths that are intentionally unauthenticated. Every other /api/* route
+#: gets 401 and 403 injected into its declared responses so the spec truthfully
+#: reflects that auth errors are possible. FastAPI cannot derive these from
+#: Depends() chains automatically.
+_PUBLIC_API_PATHS = frozenset({
+    "/api/health",
+    "/api/health/detailed",
+    "/api/version",
+})
+
+_HTTP_METHODS = frozenset({"get", "post", "put", "delete", "patch"})
+
+
+def _add_auth_error_responses(schema: dict) -> dict:
+    """Inject 401/403 into every protected /api/* operation."""
+    _401 = {"description": "Not authenticated"}
+    _403 = {"description": "Insufficient permissions"}
+    for path, methods in schema.get("paths", {}).items():
+        if not path.startswith("/api/") or path in _PUBLIC_API_PATHS:
+            continue
+        for method, op in methods.items():
+            if method not in _HTTP_METHODS:
+                continue
+            responses = op.setdefault("responses", {})
+            responses.setdefault("401", _401)
+            responses.setdefault("403", _403)
+    return schema
+
+
+def _patch_openapi_auth_errors(app: "FastAPI") -> None:
+    """Wrap app.openapi() to call _add_auth_error_responses on every generation."""
+    original = app.openapi
+
+    def patched() -> dict:
+        schema = original()
+        return _add_auth_error_responses(schema)
+
+    app.openapi = patched  # type: ignore[method-assign]
 
 
 app = create_app()

@@ -135,8 +135,27 @@ def test_no_new_verbs_in_path(spec):
 # response body. Returning 200 with a body on DELETE conflates "removed" with
 # "here is the removed representation" — which is a read concern, not a write one.
 #
-# No allowlist: the two pre-existing violations were fixed in this PR.
+# Allowlist: pre-existing endpoints that intentionally return a small status
+# body (membership counts, install state) after the delete. Each entry must
+# carry a short comment explaining the intent — silent 200s are a smell.
 # ---------------------------------------------------------------------------
+
+_DELETE_204_ALLOWLIST = frozenset({
+    # Returns {"status": "ok", "dismissed": <bool>} so the UI can re-render
+    # the dismiss button without a follow-up GET.
+    "/api/memory/{item_id}/dismiss",
+    # Returns the trimmed submission record so the admin queue can update
+    # without re-fetching the list.
+    "/api/admin/store/submissions/{submission_id}",
+    # Returns visibility + soft-delete metadata for the entity card refresh.
+    "/api/store/entities/{entity_id}",
+    # Returns updated install_count so the subscribe-toggle UI updates the
+    # badge without a second round-trip.
+    "/api/store/entities/{entity_id}/install",
+    # Same pattern as /install above — drops the user's plugin opt-in and
+    # returns the resulting install_count.
+    "/api/marketplace/curated/{marketplace_id}/{plugin_name}/install",
+})
 
 
 def test_delete_returns_204(spec):
@@ -144,6 +163,8 @@ def test_delete_returns_204(spec):
     violations = []
     for path, method, op in _ops(spec):
         if method != "delete":
+            continue
+        if path in _DELETE_204_ALLOWLIST:
             continue
         codes = set(op.get("responses", {}).keys())
         if "204" not in codes:
@@ -153,7 +174,7 @@ def test_delete_returns_204(spec):
         f"{len(violations)} DELETE endpoint(s) not declaring 204:\n" + "\n".join(violations) + "\n\n"
         "Fix: return Response(status_code=204) and remove any response body.\n"
         "If the endpoint intentionally returns content after deletion, return 200 and "
-        "add a response_model — then add it to an allowlist here with a comment."
+        "add a response_model — then add it to _DELETE_204_ALLOWLIST with a comment."
     )
 
 
@@ -182,6 +203,12 @@ _CREATOR_POST_ALLOWLIST = frozenset({
     "/api/admin/initial-workspace",
     # Saved-view upsert — ON CONFLICT updates existing name rather than creating
     "/api/admin/observability/views",
+    # Manual contradiction recording — UNIQUE constraint dedupes by
+    # (item_a_id, item_b_id) so the POST is effectively an upsert
+    # (records a new row first time, returns the existing one
+    # afterwards). 200 + existing-row payload matches the upsert
+    # semantic, not a fresh create.
+    "/api/memory/admin/contradictions",
 })
 
 

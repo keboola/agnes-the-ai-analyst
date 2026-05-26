@@ -1406,6 +1406,11 @@ class RegisterTableRequest(BaseModel):
     partition_by: Optional[str] = None
     partition_granularity: Optional[str] = None
     initial_load_chunk_days: Optional[int] = None
+    # Operator-provided fully-qualified name for BigQuery materialized
+    # rows that don't have a clean (bucket, source_table) projection —
+    # e.g. virtualised tables under a different dataset. Persisted on
+    # the row when accepted; surfaced via /api/admin/registry and /admin/tables.
+    bq_fqn: Optional[str] = None
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -1920,6 +1925,7 @@ class UpdateTableRequest(BaseModel):
     partition_by: Optional[str] = None
     partition_granularity: Optional[str] = None
     initial_load_chunk_days: Optional[int] = None
+    bq_fqn: Optional[str] = None
 
     @field_validator("sync_strategy", mode="before")
     @classmethod
@@ -2412,6 +2418,23 @@ def register_table(
     from fastapi.responses import JSONResponse
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
+    # Reject hyphens / dots / special chars / leading whitespace at the
+    # endpoint boundary. The downstream DuckDB view-creation step double-
+    # quotes the name, but identifiers that don't satisfy the safe
+    # grammar still break admin tooling that binds the name unquoted
+    # (catalog browser, materialized SQL generation). Return a single
+    # string ``detail`` (not the list-shape pydantic produces for
+    # field-level validators) so the operator-facing error stays
+    # ergonomic across the admin UI + CLI.
+    if request.name.strip() != request.name or not _is_safe_identifier(request.name.strip()):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"unsafe identifier {request.name!r} — must match "
+                "^[a-zA-Z_][a-zA-Z0-9_]{0,63}$ "
+                "(no hyphens, dots, spaces, or leading digits)"
+            ),
+        )
     repo = table_registry_repo()
     table_id = request.name.strip().lower().replace(" ", "_")
 

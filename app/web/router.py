@@ -26,6 +26,7 @@ from app.instance_config import (
     get_instance_admin_email, get_atlassian_base_url,
     get_instance_brand, get_workspace_dir_name,
     get_instance_logo_svg, get_instance_overview,
+    get_custom_scripts,
 )
 
 from src.repositories import (
@@ -504,6 +505,12 @@ def _build_context(
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
         # for cautious rollouts; same content stays on /setup-advanced.
         "home_automode": {"show": get_home_automode_visibility()},
+        # Custom analytics / pixel snippets the operator authored in
+        # ``instance.yaml`` (``instance.custom_scripts``). Each entry is
+        # a dict ``{name, enabled, placement, html}``; base.html iterates
+        # this list and renders only enabled entries at the matching
+        # placement slot.
+        "custom_scripts": get_custom_scripts(),
     }
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
