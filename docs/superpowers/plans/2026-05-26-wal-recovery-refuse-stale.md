@@ -25,7 +25,7 @@
 
 ## Conventions used across multiple tasks
 
-- pytest invocation: `/Users/zdeneksrotyr/Sources/VsCode/component_factory/tmp_oss/.venv/bin/pytest` (the worktree has no `.venv` of its own; use the parent checkout's).
+- pytest invocation: `.venv/bin/pytest` (the worktree has no `.venv` of its own; use the parent checkout's).
 - The test file uses `tmp_path` (built-in pytest fixture) for DB-on-disk fixtures. No mocks for DuckDB — real files end-to-end so the read-only peek path is actually exercised.
 - The `_try_open_system_db` function lives at `src/db.py:1103-1154` today; current `SCHEMA_VERSION` is `59` (`src/db.py:43`).
 
@@ -127,7 +127,7 @@ def test_recovery_proceeds_when_snapshot_is_at_head(tmp_path, monkeypatch):
 - [ ] **Step 1.2: Run test and confirm it passes against current code**
 
 ```bash
-/Users/zdeneksrotyr/Sources/VsCode/component_factory/tmp_oss/.venv/bin/pytest tests/test_db_wal_recovery.py::test_recovery_proceeds_when_snapshot_is_at_head -v
+.venv/bin/pytest tests/test_db_wal_recovery.py::test_recovery_proceeds_when_snapshot_is_at_head -v
 ```
 
 Expected: PASS. If it fails, that's a real defect in current behavior — surface it before continuing.
@@ -193,7 +193,7 @@ def test_recovery_refuses_when_snapshot_is_stale(tmp_path, monkeypatch):
 - [ ] **Step 2.2: Run the test and confirm it fails**
 
 ```bash
-/Users/zdeneksrotyr/Sources/VsCode/component_factory/tmp_oss/.venv/bin/pytest tests/test_db_wal_recovery.py::test_recovery_refuses_when_snapshot_is_stale -v
+.venv/bin/pytest tests/test_db_wal_recovery.py::test_recovery_refuses_when_snapshot_is_stale -v
 ```
 
 Expected: FAIL. Current code copies the snapshot over `db_path` and returns a connection — no RuntimeError. The assertion either `pytest.raises(RuntimeError)` fails or `assert not db_path.exists()` fails depending on which check fires first.
@@ -302,7 +302,7 @@ Insert the freshness gate immediately AFTER `wal_path = Path(db_path + ".wal")` 
 - [ ] **Step 2.5: Run both tests and confirm both pass**
 
 ```bash
-/Users/zdeneksrotyr/Sources/VsCode/component_factory/tmp_oss/.venv/bin/pytest tests/test_db_wal_recovery.py -v
+.venv/bin/pytest tests/test_db_wal_recovery.py -v
 ```
 
 Expected: 2 passed.
@@ -358,7 +358,7 @@ def test_recovery_refuses_when_snapshot_has_no_schema_version_table(
 - [ ] **Step 3.2: Run all three tests**
 
 ```bash
-/Users/zdeneksrotyr/Sources/VsCode/component_factory/tmp_oss/.venv/bin/pytest tests/test_db_wal_recovery.py -v
+.venv/bin/pytest tests/test_db_wal_recovery.py -v
 ```
 
 Expected: 3 passed.
@@ -381,7 +381,7 @@ git commit -m "test(db): lock contract — corrupt snapshot treated as stale (#3
 - [ ] **Step 4.1: Run the full pytest suite**
 
 ```bash
-/Users/zdeneksrotyr/Sources/VsCode/component_factory/tmp_oss/.venv/bin/pytest tests/ --tb=short -n auto -q
+.venv/bin/pytest tests/ --tb=short -n auto -q
 ```
 
 Expected: full suite green. Should be 5252 baseline + 3 new tests = 5255 passed (give or take if other changes have landed in main since). Failures in code you touched: fix before moving on. Failures unrelated to your diff: confirm with `git stash` they reproduce on a clean branch.
@@ -426,7 +426,7 @@ version = "0.55.11"
 - [ ] **Step 4.4: Re-run the full suite as a final sanity check**
 
 ```bash
-/Users/zdeneksrotyr/Sources/VsCode/component_factory/tmp_oss/.venv/bin/pytest tests/ --tb=short -n auto -q
+.venv/bin/pytest tests/ --tb=short -n auto -q
 ```
 
 Expected: still green.
