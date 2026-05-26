@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.14] — 2026-05-26
+
 ### Changed
 - **`agnes admin grant list` default tabular output now leads with an `ID` column** (first 8 chars of the grant UUID). Pre-fix the table omitted the id entirely, so any operator wanting to `agnes admin grant delete <id>` had to re-run with `--json` and pipe through jq to recover what should be a primary identifier. `--json` output is unchanged (still includes the full uuid).
 - **`agnes admin grant create --help` now leads with a positional-arguments usage example** (`agnes admin grant create <group> <resource_type> <resource_id>`). The previous help body assumed the reader had already inferred argument order from typer's USAGE line; combined with the parent-level `agnes admin grant --help` hinting at flag-style filters on `list`, operators frequently invoked `grant create --group X --resource-type Y --resource-id Z` and were left to discover positional syntax from the typer error.
