@@ -130,6 +130,26 @@ from app.api.admin_user_sessions import router as admin_user_sessions_router
 from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
+# v49+ catalog cluster — admin-curated data packages, memory domains,
+# recipes, plus the per-user stack-subscription read surface.
+#
+# The router modules + alembic schema + SA models all exist, but the
+# router files themselves still import the deleted DuckDB-flavour
+# repositories (``src.repositories.audit`` / ``data_packages`` /
+# ``memory_domains`` / ``recipes`` — all gone since the PG cutover
+# squash). Wiring them via ``include_router`` here raises
+# ``ModuleNotFoundError`` at import time, taking the whole app down.
+#
+# Until each router is ported to the PG factory (and a PG repo for
+# each entity lands at ``src/repositories/<name>_pg.py``), these
+# routes stay unreachable — every ``/api/admin/data-packages`` etc.
+# call returns 404. Tracking issue: the codex test-quality review
+# logged "0% coverage on v49+ surfaces"; the wire-up gap is the
+# proximate cause + the port is the real follow-up.
+#
+# Do not uncomment the include_router lines until each module no
+# longer imports from a deleted ``src.repositories.<name>`` (vs
+# ``<name>_pg``).
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
@@ -690,6 +710,11 @@ def create_app() -> FastAPI:
     app.include_router(admin_sessions_router)
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
+    # v49+ catalog cluster routers (data_packages, memory_domains,
+    # recipes, memory_domain_suggestions, stack, stack_views, uploads)
+    # intentionally NOT wired here — they still import deleted DuckDB
+    # repos and would crash at app import. See the comment block on
+    # the corresponding imports above for the porting checklist.
     app.include_router(marketplace_server_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
