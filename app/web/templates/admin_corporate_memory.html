@@ -1048,7 +1048,7 @@
                 <span class="tab-badge" id="domainsBadge" style="display:none;"></span>
             </button>
             <div style="flex:1;"></div>
-            <button class="btn"
+            <button class="btn btn-secondary"
                     onclick="openCreateMemoryItemModal()"
                     style="margin-left:auto;">+ New Item</button>
             <button class="btn btn-primary"
@@ -1079,11 +1079,11 @@
                         Reject Selected
                     </button>
                     <!-- Bulk-edit affordances (issue #62) -->
-                    <button class="btn" id="batchMoveCategoryBtn" disabled onclick="openBulkEditModal('category')">Move to category…</button>
-                    <button class="btn" id="batchMoveDomainBtn" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
-                    <button class="btn" id="batchAddTagBtn" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
-                    <button class="btn" id="batchRemoveTagBtn" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
-                    <button class="btn" id="batchSetAudienceBtn" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
+                    <button class="btn btn-secondary" id="batchMoveCategoryBtn" disabled onclick="openBulkEditModal('category')">Move to category…</button>
+                    <button class="btn btn-secondary" id="batchMoveDomainBtn" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
+                    <button class="btn btn-secondary" id="batchAddTagBtn" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
+                    <button class="btn btn-secondary" id="batchRemoveTagBtn" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
+                    <button class="btn btn-secondary" id="batchSetAudienceBtn" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
                 </div>
             </div>
             <div id="reviewList" class="knowledge-list">
@@ -1106,11 +1106,11 @@
                 </label>
                 <span class="selected-count" id="selectedCountAll"></span>
                 <div class="batch-actions">
-                    <button class="btn" id="batchMoveCategoryBtnAll" disabled onclick="openBulkEditModal('category')">Move to category…</button>
-                    <button class="btn" id="batchMoveDomainBtnAll" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
-                    <button class="btn" id="batchAddTagBtnAll" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
-                    <button class="btn" id="batchRemoveTagBtnAll" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
-                    <button class="btn" id="batchSetAudienceBtnAll" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
+                    <button class="btn btn-secondary" id="batchMoveCategoryBtnAll" disabled onclick="openBulkEditModal('category')">Move to category…</button>
+                    <button class="btn btn-secondary" id="batchMoveDomainBtnAll" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
+                    <button class="btn btn-secondary" id="batchAddTagBtnAll" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
+                    <button class="btn btn-secondary" id="batchRemoveTagBtnAll" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
+                    <button class="btn btn-secondary" id="batchSetAudienceBtnAll" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
                 </div>
             </div>
             <div class="filter-bar">
@@ -1184,8 +1184,8 @@
                     <div style="display: flex; gap: var(--space-2);">
                         <button class="btn btn-secondary" onclick="resolveContradiction('{{ c.id }}', 'kept_a')" style="font-size: var(--text-xs);">Keep Item A</button>
                         <button class="btn btn-secondary" onclick="resolveContradiction('{{ c.id }}', 'kept_b')" style="font-size: var(--text-xs);">Keep Item B</button>
-                        <button class="btn" onclick="resolveContradiction('{{ c.id }}', 'merged')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Merge</button>
-                        <button class="btn" onclick="resolveContradiction('{{ c.id }}', 'both_valid')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Both Valid</button>
+                        <button class="btn btn-secondary" onclick="resolveContradiction('{{ c.id }}', 'merged')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Merge</button>
+                        <button class="btn btn-secondary" onclick="resolveContradiction('{{ c.id }}', 'both_valid')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Both Valid</button>
                     </div>
                 </div>
                 {% endfor %}
@@ -1252,7 +1252,7 @@
                 <h3 id="bulkEditTitle" style="margin-bottom: var(--space-3);">Bulk edit</h3>
                 <div id="bulkEditBody"></div>
                 <div style="display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-4);">
-                    <button class="btn" onclick="closeBulkEditModal()">Cancel</button>
+                    <button class="btn btn-secondary" onclick="closeBulkEditModal()">Cancel</button>
                     <button class="btn btn-primary" onclick="submitBulkEdit()">Apply</button>
                 </div>
             </div>
@@ -1348,7 +1348,7 @@
                     </div>
                 </div>
                 <div style="display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-4);">
-                    <button class="btn" onclick="closeEditItemModal()">Cancel</button>
+                    <button class="btn btn-secondary" onclick="closeEditItemModal()">Cancel</button>
                     <button class="btn btn-primary" onclick="submitEditItem()">Save</button>
                 </div>
             </div>
@@ -1491,7 +1491,7 @@
         </div>
         <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
                     margin-top:var(--space-4);">
-          <button class="btn" onclick="closeEditMemoryDomainModal()">Cancel</button>
+          <button class="btn btn-secondary" onclick="closeEditMemoryDomainModal()">Cancel</button>
           <button class="btn btn-primary" id="emd-submit-btn"
                   onclick="submitEditMemoryDomain()">Save</button>
         </div>
@@ -1631,7 +1631,7 @@
         </div>
         <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
                     margin-top:var(--space-4);">
-          <button class="btn" onclick="closeCreateMemoryDomainModal()">Cancel</button>
+          <button class="btn btn-secondary" onclick="closeCreateMemoryDomainModal()">Cancel</button>
           <button class="btn btn-primary" id="cmd-submit-btn"
                   onclick="submitCreateMemoryDomain()">Create &amp; assign</button>
         </div>
@@ -1714,7 +1714,7 @@
         </div>
         <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
                     margin-top:var(--space-4);">
-          <button class="btn" onclick="closeCreateMemoryItemModal()">Cancel</button>
+          <button class="btn btn-secondary" onclick="closeCreateMemoryItemModal()">Cancel</button>
           <button class="btn btn-primary" id="cmi-submit-btn"
                   onclick="submitCreateMemoryItem()">Create</button>
         </div>
@@ -2179,8 +2179,8 @@
                         ? '    <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">' + desc + '</div>'
                         : '')
                     + '  </div>'
-                    + '  <a class="btn" href="/memory/d/' + slug + '" target="_blank" style="font-size:12px;">Open →</a>'
-                    + '  <button class="btn" onclick="openEditMemoryDomainModal(\'' + esc(d.id) + '\')" style="font-size:12px;">Edit</button>'
+                    + '  <a class="btn btn-secondary" href="/memory/d/' + slug + '" target="_blank" style="font-size:12px;">Open →</a>'
+                    + '  <button class="btn btn-secondary" onclick="openEditMemoryDomainModal(\'' + esc(d.id) + '\')" style="font-size:12px;">Edit</button>'
                     + '  <button class="btn btn-danger" onclick="deleteMemoryDomain(\'' + esc(d.id) + '\', \'' + name.replace(/\'/g, "\\'") + '\')" style="font-size:12px;">Delete</button>'
                     + '</div>';
             }).join('');
@@ -3295,7 +3295,7 @@
                     </svg>
                     Reject <span class="shortcut-hint">R</span>
                 </button>
-                <button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`;
+                <button class="btn btn-secondary" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`;
         } else {
             // Reuse the status-aware button set; strip the wrapping
             // .item-actions div — admin-actions row provides its own
@@ -3314,7 +3314,7 @@
                 </select>
                 <div class="mandate-form-actions">
                     <button class="btn btn-primary" onclick="submitMandate('${esc(item.id)}')">Confirm</button>
-                    <button class="btn" onclick="hideMandateForm('${esc(item.id)}')">Cancel</button>
+                    <button class="btn btn-secondary" onclick="hideMandateForm('${esc(item.id)}')">Cancel</button>
                 </div>
             </div>`;
 
@@ -3415,7 +3415,7 @@
 
         // Edit is always available regardless of status — admins fix
         // category/domain/tags/audience/title/content via PATCH /admin/{id}.
-        buttons.push(`<button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`);
+        buttons.push(`<button class="btn btn-secondary" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`);
 
         if (buttons.length === 0) return '';
         return wrapped ? `<div class="item-actions">${buttons.join('')}</div>` : buttons.join('');
