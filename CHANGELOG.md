@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.17] — 2026-05-27
+
 ### Fixed
 - `scripts/generate_sample_data.py` size `l` preset went from
   unfinishable (>2h wall-clock, ~30 min on `_generate_orders_and_items`
