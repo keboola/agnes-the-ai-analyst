@@ -11,7 +11,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- **`agnes admin db state` CLI command.** Read-only inspector for the app-state DB backend state machine — prints current backend (`duckdb` / `side_car` / `cloud` / `*_in_progress`), redacted URL, allowed next transitions, and any in-progress migration job id. Talks to `GET /api/admin/db/state` through the standard PAT-authed `cli.client.api_get` path (same contract as `agnes admin news`). `--json` flag for scripting. Migrate / job / cancel subcommands land in later phases.
+- **Admin-controlled DB backend state machine.** Replaces ad-hoc `.env` editing with a guarded workflow for migrating Agnes app-state between DuckDB, side-car Postgres, and managed cloud Postgres. Spec at `docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md`; operator playbook in `docs/postgres-cutover-runbook.md` (new "Admin UI / CLI" section). The machine records `target_state` intent + a `db_migration_job` row; a host-side `agnes-state-applier.timer` runs the data-migrate subprocess, then rewrites `/opt/agnes/.env` and `docker compose up -d` once verification passes. Pre-flip DuckDB snapshots land gzipped under `/data/state/backups/duckdb-pre-<target>-<ts>.duckdb.gz`.
+- **`/admin/server-config` — Database backend section.** UI card showing current backend, redacted connection URL, allowed transitions, and a live progress panel that polls the running migration job. Confirmation modal + cloud-URL input for the `cloud` transition.
+- **`agnes admin db` CLI.** `state` (inspect current backend + transitions), `migrate <target>` (kick off a migration; `--cloud-url` flag for non-interactive cloud targets), `job <id>` (poll status), `cancel <id>` (abort pre-flip). All subcommands hit the PAT-authed admin endpoints; `--json` available for scripting.
+- **`agnes-state-applier` systemd unit + timer.** Host-side daemon installed by the customer-instance startup-script that watches for pending state-machine jobs and applies them (compose lifecycle + `.env` rewrite). Idempotent; ticks every 30 s.
 
 ## [0.55.20] — 2026-05-27
 
