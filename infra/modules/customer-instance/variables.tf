@@ -69,6 +69,42 @@ variable "dev_instances" {
   default = []
 }
 
+variable "oauth_secret_name_template" {
+  description = <<-EOT
+    Template for per-VM OAuth client (Sign-in with Google) Secret Manager
+    secret names. Supports placeholders:
+      {kind} -> "id" or "secret" (REQUIRED — otherwise both fetches resolve
+                to the same secret, which is broken)
+      {role} -> "prod" or "dev" (groups multiple dev VMs under one client)
+      {name} -> the VM name from prod_instance.name / dev_instances[*].name
+                (one OAuth client per VM)
+
+    Empty (default) -> legacy shared `google-oauth-client-{id,secret}`
+    (v1.x default — same OAuth client across every VM in the module call).
+
+    Examples:
+      "agnes-google-oauth-client-{kind}-{role}"  -> one client per role
+                                                    (prod, dev share across
+                                                    multiple dev VMs)
+      "agnes-oauth-{kind}-{name}"                -> one client per VM
+                                                    (every VM isolated; needed
+                                                    for per-engineer dev VMs
+                                                    on shared OAuth domain)
+
+    Resolved names must already exist in Secret Manager — the module grants
+    the VM SA secretAccessor on the resolved set; it does NOT create the
+    secret rows themselves (those carry the OAuth credentials issued in
+    Cloud Console, which has no public API).
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.oauth_secret_name_template == "" || strcontains(var.oauth_secret_name_template, "{kind}")
+    error_message = "oauth_secret_name_template must contain the {kind} placeholder when non-empty (otherwise id and secret resolve to the same Secret Manager name)."
+  }
+}
+
 variable "seed_admin_email" {
   description = "Email of the initial admin user."
   type        = string

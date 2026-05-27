@@ -10,6 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- **`customer-instance` module: per-VM OAuth client secrets via naming
+  template.** New module-level variable `oauth_secret_name_template` lets
+  callers declare a single convention (e.g.
+  `"agnes-google-oauth-client-{kind}-{role}"`) that the module expands across
+  every VM in the call to derive Secret Manager secret names. Placeholders:
+  `{kind}` (id|secret — REQUIRED), `{role}` (prod|dev), `{name}` (VM name).
+  Empty default (`""`) keeps the legacy shared `google-oauth-client-{id,secret}`
+  behavior, so existing callers see zero plan changes. Set the template once
+  to give prod and dev their own OAuth clients (recommended for prod
+  isolation — different redirect URIs, separate blast radius from Google's
+  end); the per-role grouping means a new env (`stage`, `perf`) lands by
+  creating Secret Manager entries that match the template, with no Terraform
+  diff in the module surface. Resolved names get `secretAccessor` IAM via
+  the new `google_secret_manager_secret_iam_member.vm_oauth` resource
+  (de-duplicated across colliding `{role}` expansions). All VMs share one SA,
+  so this buys isolation at Google's OAuth client layer but not at-rest in
+  Secret Manager — a per-VM SA refactor is tracked for a future cut. Bump
+  to `infra-v1.10.0`.
+
 ## [0.55.20] — 2026-05-27
 
 ### Added
