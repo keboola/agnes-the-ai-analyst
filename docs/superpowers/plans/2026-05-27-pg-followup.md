@@ -773,7 +773,7 @@ from src.repositories.data_packages_pg import DataPackagesPgRepository
 
 
 @pytest.fixture
-def repo(pg_engine, _alembic_upgrade_to_head):
+def repo(pg_engine):
     return DataPackagesPgRepository(pg_engine)
 
 
@@ -848,7 +848,29 @@ def test_update_partial_fields(repo):
     assert row["name"] == "A"  # untouched
 ```
 
-The `pg_engine` and `_alembic_upgrade_to_head` fixtures already exist from PR #388 (`tests/db_pg/conftest.py`).
+**Test fixture pattern (verified by Task 1B.1):** The conftest at `tests/db_pg/conftest.py` exposes only `pg_engine`. There is **NO `_alembic_upgrade_to_head` fixture** — the established convention (see `tests/db_pg/test_store_pg.py`) is to inline the alembic upgrade inside a per-file `repo` fixture:
+
+```python
+from pathlib import Path
+from alembic import command
+from alembic.config import Config
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture
+def repo(pg_engine):
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = str(pg_engine.url)
+    command.upgrade(cfg, "head")
+    # ... seed any FK-target tables (table_registry, knowledge_items, users)
+    #     that the repo's queries JOIN against — Task 1B.1 seeds three
+    #     table_registry rows for data_packages_pg's list_tables JOIN.
+    return XYZPgRepository(pg_engine)
+```
+
+**Sibling = contract truth.** If the plan template's test or method signature disagrees with the DuckDB sibling in `src/repositories/<table>.py`, follow the sibling — Task 1D's cross-engine contract tests will assert it.
 
 - [ ] **Step 3: Run tests — expect failure (module doesn't exist)**
 
@@ -1117,7 +1139,7 @@ from src.repositories.memory_domains_pg import MemoryDomainsPgRepository
 
 
 @pytest.fixture
-def repo(pg_engine, _alembic_upgrade_to_head):
+def repo(pg_engine):
     return MemoryDomainsPgRepository(pg_engine)
 
 
@@ -1233,7 +1255,7 @@ from src.repositories.memory_domain_suggestions_pg import MemoryDomainSuggestion
 
 
 @pytest.fixture
-def repo(pg_engine, _alembic_upgrade_to_head):
+def repo(pg_engine):
     return MemoryDomainSuggestionsPgRepository(pg_engine)
 
 
@@ -1314,7 +1336,7 @@ from src.repositories.recipes_pg import RecipesPgRepository
 
 
 @pytest.fixture
-def repo(pg_engine, _alembic_upgrade_to_head):
+def repo(pg_engine):
     return RecipesPgRepository(pg_engine)
 
 
@@ -1415,7 +1437,7 @@ from src.repositories.user_stack_subscriptions_pg import UserStackSubscriptionsP
 
 
 @pytest.fixture
-def repo(pg_engine, _alembic_upgrade_to_head):
+def repo(pg_engine):
     return UserStackSubscriptionsPgRepository(pg_engine)
 
 
@@ -1698,20 +1720,20 @@ def _make_duckdb_repo(tmp_path: Path):
     return DataPackagesRepository(conn), conn
 
 
-def _make_pg_repo(pg_engine, _alembic_upgrade_to_head):
+def _make_pg_repo(pg_engine):
     from src.repositories.data_packages_pg import DataPackagesPgRepository
     return DataPackagesPgRepository(pg_engine), None
 
 
 @pytest.fixture(params=["duckdb", "pg"])
-def repo(request, pg_engine, _alembic_upgrade_to_head, tmp_path):
+def repo(request, pg_engine, tmp_path):
     if request.param == "duckdb":
         repo, conn = _make_duckdb_repo(tmp_path)
         yield repo
         if conn is not None:
             conn.close()
     else:
-        repo, _ = _make_pg_repo(pg_engine, _alembic_upgrade_to_head)
+        repo, _ = _make_pg_repo(pg_engine)
         yield repo
 
 
@@ -2578,7 +2600,7 @@ Self-grepped the plan for `TBD`, `TODO`, `fill in`, `add appropriate`, `similar 
 - `_PK_COLUMNS` tuple shape — matches existing format from PR #388 cleanup pass
 - Alembic revision id `0011_data_packages_and_memory_extensions` — same across spec + plan
 - `JSONB` column allowlist — `_JSON_COLUMNS = {"tags", "when_to_use", "when_not_to_use", "example_questions"}` consistent across Task 1B.1 and the existing `scripts/migrate_duckdb_to_pg/tasks.py` from PR #388 cleanup
-- Test fixture names (`pg_engine`, `_alembic_upgrade_to_head`) — consistent with PR #388 conftest.py
+- Test fixture: `pg_engine` only (no `_alembic_upgrade_to_head` — that fixture doesn't exist in conftest.py; the inline alembic-upgrade pattern is documented in the "Test fixture pattern" callout under Phase 1B)
 
 ---
 
