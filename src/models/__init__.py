@@ -33,6 +33,7 @@ from src.models.misc import (
     TelegramLink,
 )
 from src.models.ops import SyncHistory, SyncState, TableRegistry
+from src.models.recipes import Recipe
 from src.models.store import (
     MarketplacePlugin,
     MarketplaceRegistry,
@@ -76,6 +77,7 @@ __all__ = [
     "NewsTemplate",
     "PendingCode",
     "PersonalAccessToken",
+    "Recipe",
     "ResourceGrant",
     "ScriptRegistry",
     "SessionProcessorState",
