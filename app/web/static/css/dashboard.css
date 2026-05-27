@@ -1120,3 +1120,40 @@
             }
         }
     
+/* ── #392: live sync-status indicator ──
+   Small pill between the env-setup-cta and stats-row. The dot pulses
+   blue when a sync is in flight (polled from /api/sync/status). The
+   text shows the server-rendered last-sync time at load; flips to
+   "Sync running…" while locked. */
+.dashboard-mock .sync-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 6px 12px;
+    margin-bottom: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+}
+.dashboard-mock .sync-status__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+    transition: background 0.15s;
+}
+.dashboard-mock .sync-status.is-running .sync-status__dot {
+    background: var(--primary);
+    animation: sync-status-pulse 1.5s ease-in-out infinite;
+}
+.dashboard-mock .sync-status.is-running .sync-status__text {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+@keyframes sync-status-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.55; transform: scale(1.4); }
+}
