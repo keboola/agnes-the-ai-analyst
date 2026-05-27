@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **`/admin/server-config` button family migrated to the canonical `.btn-*` vocabulary.** The 21 page-local `.cfg-btn` / `.cfg-btn.primary` / `.cfg-btn.danger` instances (5 static modal buttons + 16 buttons emitted from `<script>` template literals — array/map remove + add, per-section Save, BigQuery / Keboola connection-test, initial-workspace Sync / Edit / Delete / Download / Register) now route through `.btn .btn-primary` / `.btn-secondary` / `.btn-danger`, matching the rest of the admin UI. Small "×" remove buttons compose `.btn-sm .btn--icon` for tightness. The page-local `.cfg-btn` CSS block is gone. Static modal buttons render via `ds.button`; JS-string buttons emit canonical class names directly (macros can't reach inside `<script>` literals).
+
 ### Fixed
 - **`src/profiler.py::profile_table` lowers DuckDB `memory_limit` from
   `4GB` to `2GB` + adds `preserve_insertion_order=false`.** The prior
