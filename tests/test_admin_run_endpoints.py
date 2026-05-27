@@ -419,3 +419,205 @@ class TestSchedulerJobsWireUp:
                    )}
         # All three present.
         assert len(targets) == 3
+
+
+class TestRunJiraSlaPoll:
+    """POST /api/admin/run-jira-sla-poll — scheduler-driven SLA refresh.
+
+    Three contracts pinned here:
+    1. Happy path: 200 + audit row with stat fields.
+    2. Config-missing skip: ValueError from load_config() -> 200 skip + audit
+       row with status=skipped (operator sees the no-op without alert noise).
+    3. Unhandled exception: any other Exception -> 500 + audit row with
+       `unhandled_error` (so /admin/scheduler-runs sees the failure).
+
+    The third contract was the Devin BUG on the original commit — the
+    endpoint called `audit_repo()` which is undefined; both the happy and
+    error paths would NameError. Locking in the audit_log assertion here
+    catches a regression to that shape.
+    """
+
+    def test_admin_can_trigger_jira_sla_poll(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_stats = {
+            "open_issues": 12, "updated": 3, "healed": 1,
+            "skipped": 0, "failed": 0, "elapsed_sec": 4.21,
+        }
+        with patch(
+            "connectors.jira.scripts.poll_sla.run",
+            return_value=fake_stats,
+        ) as m:
+            resp = c.post("/api/admin/run-jira-sla-poll", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["details"]["updated"] == 3
+        m.assert_called_once_with(dry_run=False)
+
+    def test_skipped_when_jira_not_configured(self, seeded_app):
+        """ValueError from load_config() must yield 200 skip, not 500."""
+        from src.db import get_system_db
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch(
+            "connectors.jira.scripts.poll_sla.run",
+            side_effect=ValueError("JIRA_SLA_BASE_URL not set"),
+        ):
+            resp = c.post("/api/admin/run-jira-sla-poll", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "skipped"
+        assert body["reason"] == "jira_not_configured"
+
+        # Skip path must also write an audit row so /admin/scheduler-runs
+        # shows the no-op decision.
+        conn = get_system_db()
+        try:
+            rows = conn.execute(
+                "SELECT params FROM audit_log WHERE action = 'run_jira_sla_poll' "
+                "ORDER BY timestamp DESC LIMIT 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "audit row missing on skip path"
+        assert "skipped" in rows[0][0]
+
+    def test_unhandled_exception_still_audits(self, seeded_app):
+        """Devin BUG repro: the original endpoint called `audit_repo()`
+        which is undefined — happy AND error paths NameError'd at
+        runtime. After fix (AuditRepository(conn).log + except Exception
+        wrapper), unhandled errors must land in audit_log."""
+        from src.db import get_system_db
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch(
+            "connectors.jira.scripts.poll_sla.run",
+            side_effect=ConnectionError("simulated Jira API timeout"),
+        ):
+            resp = c.post("/api/admin/run-jira-sla-poll", headers=_auth(token))
+        assert resp.status_code == 500
+        assert "ConnectionError" in resp.json()["detail"]
+
+        conn = get_system_db()
+        try:
+            rows = conn.execute(
+                "SELECT params FROM audit_log WHERE action = 'run_jira_sla_poll' "
+                "ORDER BY timestamp DESC LIMIT 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "audit row missing on unhandled exception"
+        params_json = rows[0][0]
+        assert "unhandled_error" in params_json
+        assert "ConnectionError" in params_json
+
+    def test_non_admin_blocked(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.post("/api/admin/run-jira-sla-poll", headers=_auth(token))
+        assert resp.status_code == 403
+
+
+class TestRunJiraConsistencyCheck:
+    """POST /api/admin/run-jira-consistency-check — scheduler-driven
+    parquet-vs-API parity check with auto-fix for small webhook-loss gaps.
+
+    Same three contracts pinned here as TestRunJiraSlaPoll, mirrored
+    against the consistency-check entry point.
+    """
+
+    def test_admin_can_trigger_consistency_check(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_report = {"status": "success", "alert_level": "INFO", "checked": 42}
+
+        mock_checker = type("MockChecker", (), {
+            "run_check": lambda self, **kw: fake_report,
+        })()
+
+        with patch(
+            "connectors.jira.scripts.consistency_check.Config.from_env",
+            return_value=object(),
+        ), patch(
+            "connectors.jira.scripts.consistency_check.JiraConsistencyChecker",
+            return_value=mock_checker,
+        ):
+            resp = c.post("/api/admin/run-jira-consistency-check", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["details"]["status"] == "success"
+
+    def test_skipped_when_jira_not_configured(self, seeded_app):
+        from src.db import get_system_db
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch(
+            "connectors.jira.scripts.consistency_check.Config.from_env",
+            side_effect=KeyError("JIRA_CONSISTENCY_BASE_URL"),
+        ):
+            resp = c.post("/api/admin/run-jira-consistency-check", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "skipped"
+        assert body["reason"] == "jira_not_configured"
+
+        conn = get_system_db()
+        try:
+            rows = conn.execute(
+                "SELECT params FROM audit_log WHERE action = 'run_jira_consistency_check' "
+                "ORDER BY timestamp DESC LIMIT 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "audit row missing on skip path"
+        assert "skipped" in rows[0][0]
+
+    def test_unhandled_exception_still_audits(self, seeded_app):
+        """Same Devin BUG repro as TestRunJiraSlaPoll. Locks the audit-on-
+        unhandled-error contract for the consistency-check endpoint too."""
+        from src.db import get_system_db
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        class _RaisingChecker:
+            def __init__(self, config):
+                pass
+
+            def run_check(self, **_):
+                raise RuntimeError("simulated DuckDB lock contention")
+
+        with patch(
+            "connectors.jira.scripts.consistency_check.Config.from_env",
+            return_value=object(),
+        ), patch(
+            "connectors.jira.scripts.consistency_check.JiraConsistencyChecker",
+            _RaisingChecker,
+        ):
+            resp = c.post("/api/admin/run-jira-consistency-check", headers=_auth(token))
+        assert resp.status_code == 500
+        assert "RuntimeError" in resp.json()["detail"]
+
+        conn = get_system_db()
+        try:
+            rows = conn.execute(
+                "SELECT params FROM audit_log WHERE action = 'run_jira_consistency_check' "
+                "ORDER BY timestamp DESC LIMIT 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "audit row missing on unhandled exception"
+        params_json = rows[0][0]
+        assert "unhandled_error" in params_json
+        assert "RuntimeError" in params_json
+
+    def test_non_admin_blocked(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.post("/api/admin/run-jira-consistency-check", headers=_auth(token))
+        assert resp.status_code == 403
