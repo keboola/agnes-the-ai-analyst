@@ -1303,6 +1303,27 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             _analytics_db_conn = duckdb.connect(db_path)
+            # Defensive memory cap. Default ``memory_limit`` is 80% of
+            # system RAM, which on a 4 GiB cgroup container resolves to
+            # ~3.2 GiB — leaves no headroom for the host process + the
+            # short-lived consolidation / profiler connections that
+            # share the container. 2 GiB matches the cap applied in
+            # ``connectors/{keboola,bigquery}/extractor.py`` and
+            # ``src/profiler.py``. Analyst-facing queries that hit
+            # the cap surface a clear DuckDB OOM exception which
+            # the caller can present (vs. a silent process-wide
+            # OOM-kill). preserve_insertion_order=false matches the
+            # other capped paths.
+            try:
+                _analytics_db_conn.execute("SET memory_limit='2GB'")
+                _analytics_db_conn.execute("SET threads=2")
+                _analytics_db_conn.execute("SET preserve_insertion_order=false")
+            except Exception as e:
+                logger.warning(
+                    "get_analytics_db: SET memory/threads failed (%s); "
+                    "extension defaults remain in place",
+                    e,
+                )
             _analytics_db_path = db_path
         return _maybe_instrument(_analytics_db_conn.cursor(), "analytics")
 
@@ -1471,8 +1492,26 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
             conn.execute("SET enable_external_access = false")
         except Exception:
             pass
+        # Memory cap — see get_analytics_db above for rationale.
+        try:
+            conn.execute("SET memory_limit='2GB'")
+            conn.execute("SET threads=2")
+            conn.execute("SET preserve_insertion_order=false")
+        except Exception:
+            pass
         return _maybe_instrument(conn, "analytics_ro")
     conn = duckdb.connect(str(db_path), read_only=True)
+    # Memory cap (see get_analytics_db rationale). Read-only conns can
+    # still buffer significant memory for analyst queries that hit
+    # ``CREATE TEMP TABLE`` over read_parquet — capping keeps a single
+    # analyst's heavy query from process-wide OOM-killing all other
+    # in-flight requests.
+    try:
+        conn.execute("SET memory_limit='2GB'")
+        conn.execute("SET threads=2")
+        conn.execute("SET preserve_insertion_order=false")
+    except Exception:
+        pass
     # ATTACH extract.duckdb files FIRST so views referencing them work
     extracts_dir = _get_data_dir() / "extracts"
     if extracts_dir.exists():
