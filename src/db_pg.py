@@ -11,8 +11,8 @@ calls reuse it. ``dispose()`` tears it down — used by tests for
 per-test isolation.
 
 URL resolution priority:
-  1. ``AGNES_DB_URL`` environment variable
-  2. ``DATABASE_URL`` environment variable (12-factor fallback)
+  1. ``DATABASE_URL`` environment variable (preferred; 12-factor convention)
+  2. ``AGNES_DB_URL`` environment variable (deprecated alias — logs a warning)
 
 No defaulting to ``sqlite:///./tmp.db`` or similar — a missing URL is a
 configuration error, not something to paper over.
@@ -43,12 +43,29 @@ _lock = threading.Lock()
 
 
 def _resolve_url() -> str:
-    url = os.environ.get("AGNES_DB_URL") or os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "Postgres URL is unset: set AGNES_DB_URL (preferred) or DATABASE_URL"
+    """Return the PG connection URL.
+
+    Resolution priority:
+      1. ``DATABASE_URL`` env var (preferred; 12-factor convention).
+      2. ``AGNES_DB_URL`` env var (deprecated alias — logs a warning).
+
+    Either is fine for local dev. For prod, set DATABASE_URL; the
+    AGNES_DB_URL alias exists so existing .env files in deployments
+    don't break on upgrade.
+    """
+    import logging
+    db_url = os.environ.get("DATABASE_URL")
+    if db_url:
+        return db_url
+    legacy = os.environ.get("AGNES_DB_URL")
+    if legacy:
+        logging.getLogger(__name__).warning(
+            "AGNES_DB_URL is deprecated — rename to DATABASE_URL (12-factor convention)"
         )
-    return url
+        return legacy
+    raise RuntimeError(
+        "Postgres URL is unset: set DATABASE_URL (preferred) or AGNES_DB_URL (legacy alias)"
+    )
 
 
 def get_engine() -> sa.Engine:
