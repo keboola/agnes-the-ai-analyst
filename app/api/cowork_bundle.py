@@ -221,9 +221,16 @@ def _bundle_setup_py(server_url: str) -> str:
 
         print(f"Setting up Agnes Cowork for {{user_email or server_url}} ...")
 
-        # 2. Save credentials — pure file I/O, no network needed
+        # 2. Save credentials — pure file I/O, no network needed.
+        #    The Agnes CLI reads server URL from config.yaml (YAML, not JSON)
+        #    and the token from token.json.  We write both formats for
+        #    compatibility but config.yaml is authoritative for the CLI.
         config_dir = pathlib.Path.home() / ".config" / "agnes"
         config_dir.mkdir(parents=True, exist_ok=True)
+        # config.yaml — read by the CLI (pyyaml); simple single-key YAML
+        # written without the yaml library (stdlib-only constraint).
+        (config_dir / "config.yaml").write_text(f"server: {{server_url}}\\n")
+        # config.json — read by setup.py itself and some older tooling
         (config_dir / "config.json").write_text(
             json.dumps({{"server": server_url}}, indent=2)
         )
