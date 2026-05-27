@@ -79,3 +79,41 @@ class TestDbState:
         ):
             result = runner.invoke(app, ["admin", "db", "state"])
         assert result.exit_code != 0
+
+
+class TestDbMigrate:
+    def test_db_migrate_starts_job(self):
+        """migrate side_car --detach returns immediately with job_id."""
+        payload = {"job_id": "abc-123", "status": "running"}
+        with patch(
+            "cli.commands.db.api_post",
+            return_value=_resp(202, payload),
+        ):
+            result = runner.invoke(
+                app, ["admin", "db", "migrate", "side_car", "--detach"]
+            )
+        assert result.exit_code == 0, result.output
+        assert "abc-123" in result.output
+
+    def test_db_migrate_cloud_with_url(self):
+        """migrate cloud with --cloud-url --detach succeeds without prompting."""
+        payload = {"job_id": "cloud-1", "status": "running"}
+        with patch(
+            "cli.commands.db.api_post",
+            return_value=_resp(202, payload),
+        ) as mock_post:
+            result = runner.invoke(
+                app,
+                [
+                    "admin", "db", "migrate", "cloud",
+                    "--cloud-url", "postgresql://test",
+                    "--detach",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert "cloud-1" in result.output
+        # Verify cloud_url was forwarded in the JSON body.
+        _, kwargs = mock_post.call_args
+        body = kwargs.get("json") or {}
+        assert body.get("target") == "cloud"
+        assert body.get("cloud_url") == "postgresql://test"
