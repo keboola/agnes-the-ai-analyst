@@ -88,3 +88,96 @@ def test_get_db_state_surfaces_running_job(seeded_app, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert r.json()["current_job_id"] == "abc123"
+
+
+def _patch_state_paths(monkeypatch, data_dir):
+    """Point the state-machine module's overlay + lock paths at the test DATA_DIR.
+
+    Module-level constants are computed at import time from DATA_DIR — tests
+    that switch DATA_DIR per-fixture must patch them explicitly.
+    """
+    monkeypatch.setattr(
+        "src.db_state_machine._OVERLAY_PATH",
+        data_dir / "state" / "instance.yaml",
+    )
+    monkeypatch.setattr(
+        "src.db_state_machine._LOCK_PATH",
+        data_dir / "state" / "db-migration.lock",
+    )
+
+
+def test_post_migrate_starts_job(seeded_app, monkeypatch):
+    """POST /migrate returns 202 + job_id, spawns the migrator subprocess."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    spawned: list[list[str]] = []
+
+    def fake_popen(cmd, *args, **kwargs):
+        spawned.append(cmd)
+
+        class FakeProc:
+            pid = 12345
+
+        return FakeProc()
+
+    monkeypatch.setattr("app.api.db_state.subprocess.Popen", fake_popen)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "side_car"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert "job_id" in body
+    assert body["status"] == "running"
+    # Subprocess invoked exactly once, target on the command line.
+    assert len(spawned) == 1
+    assert "side_car" in spawned[0]
+
+
+def test_post_migrate_rejects_invalid_transition(seeded_app, monkeypatch):
+    """duckdb → cloud (skipping side-car) rejected with 400."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "cloud", "cloud_url": "postgresql://u:p@h/d"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 400, r.text
+    assert "not allowed" in r.json()["detail"].lower()
+
+
+def test_post_migrate_409_when_in_progress(seeded_app, monkeypatch):
+    """Migrate attempt while the migration flock is held returns 409.
+
+    Held manually rather than via a prior POST: the first POST would write
+    ``database.backend = side_car_in_progress`` to instance.yaml, which
+    flips the repository factory to PG mode → ``get_current_user`` on the
+    second request fails with a missing-URL RuntimeError before the lock
+    check runs. Acquiring the lock directly exercises the 409 path without
+    touching the overlay.
+    """
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    from src.db_state_machine import MigrationLock
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    with MigrationLock():
+        r = client.post(
+            "/api/admin/db/migrate",
+            json={"target": "side_car"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 409, r.text
+        assert "in progress" in r.json()["detail"].lower()

@@ -6,9 +6,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
+import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from src.db_state_machine import (
@@ -60,3 +64,101 @@ def get_db_state() -> dict:
         "allowed_transitions": [t.value for t in allowed_transitions(state)],
         "current_job_id": _current_job_id(),
     }
+
+
+class MigrateRequest(BaseModel):
+    """Body for ``POST /api/admin/db/migrate``."""
+    target: str  # "side_car" or "cloud"
+    cloud_url: str | None = None  # required when target=cloud
+
+
+@router.post("/migrate", status_code=202, dependencies=[Depends(require_admin)])
+def start_migration(payload: MigrateRequest) -> dict:
+    """Start a backend migration job (async; poll /job/{id} for status).
+
+    Validates the requested transition against the current state, acquires
+    the non-blocking migration flock (409 if already held), writes the
+    initial job file and overlay state, then spawns the migrator
+    subprocess in a new session and returns 202.
+    """
+    from src.db_state_machine import (
+        BackendState,
+        InvalidTransitionError,
+        MigrationInProgressError,
+        MigrationLock,
+        validate_transition,
+        write_backend_state,
+    )
+
+    current_state, _ = read_backend_state()
+    try:
+        target_state = BackendState(payload.target)
+    except ValueError:
+        raise HTTPException(400, detail=f"Unknown target: {payload.target}")
+
+    try:
+        validate_transition(current_state, target_state)
+    except InvalidTransitionError as e:
+        raise HTTPException(400, detail=str(e))
+
+    if payload.target == "cloud" and not payload.cloud_url:
+        raise HTTPException(400, detail="cloud_url required for target=cloud")
+
+    # Resolve target URL.
+    if payload.target == "side_car":
+        password = os.environ.get("POSTGRES_PASSWORD", "agnes")
+        target_url = f"postgresql+psycopg://agnes:{password}@postgres:5432/agnes"
+    else:
+        target_url = payload.cloud_url
+
+    job_id = str(uuid.uuid4())
+
+    # Acquire lock — non-blocking; 409 if a peer already holds it.
+    try:
+        lock = MigrationLock()
+        lock.__enter__()
+    except MigrationInProgressError:
+        existing = _current_job_id()
+        raise HTTPException(
+            409,
+            detail=f"Migration already in progress: job {existing}",
+        )
+
+    try:
+        in_progress = (
+            BackendState.SIDE_CAR_IN_PROGRESS if payload.target == "side_car"
+            else BackendState.CLOUD_IN_PROGRESS
+        )
+        write_backend_state(in_progress)
+
+        data_dir = Path(os.environ.get("DATA_DIR", "/data"))
+        # Write initial job status BEFORE spawning so the lock state is
+        # observable by /api/admin/db/job/{id} polling even if subprocess
+        # takes a moment to start.
+        from scripts.db_state_migrator import JobWriter
+        writer = JobWriter(
+            job_id=job_id,
+            jobs_dir=data_dir / "state" / "db-jobs",
+            source=current_state.value,
+            target=payload.target,
+        )
+        writer.write_initial()
+
+        subprocess.Popen(
+            [
+                sys.executable, "-m", "scripts.db_state_migrator",
+                "--job-id", job_id,
+                "--to", payload.target,
+                "--target-url", target_url,
+                "--duckdb-path", str(data_dir / "state" / "system.duckdb"),
+                "--jobs-dir", str(data_dir / "state" / "db-jobs"),
+                "--backups-dir", str(data_dir / "state" / "backups"),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    finally:
+        lock.__exit__(None, None, None)
+
+    return {"job_id": job_id, "status": "running"}
