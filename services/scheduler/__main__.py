@@ -104,6 +104,13 @@ _DEFAULTS = {
     # Daily prune of usage_events older than USAGE_EVENTS_RETENTION_DAYS
     # (default 0 = forever). Rollups are not pruned.
     "SCHEDULER_USAGE_PRUNE_INTERVAL":           86400,
+    # Jira self-healing pair (parity with the legacy Data Broker
+    # jira-sla-poll.timer / jira-consistency.timer). Defaults match the
+    # systemd-unit cadence from connectors/jira/systemd/. Both endpoints
+    # short-circuit when JIRA_* env vars are unset, so customers without
+    # Jira ingest pay no cost for these jobs running on the default schedule.
+    "SCHEDULER_JIRA_SLA_POLL_INTERVAL":          15 * 60,
+    "SCHEDULER_JIRA_CONSISTENCY_INTERVAL":       30 * 60,
 }
 
 
@@ -227,8 +234,11 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     corpmem    = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
     bqmeta     = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
     usageprune = _read_positive_int("SCHEDULER_USAGE_PRUNE_INTERVAL")
+    jirasla    = _read_positive_int("SCHEDULER_JIRA_SLA_POLL_INTERVAL")
+    jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
     tick       = _read_positive_int("SCHEDULER_TICK_SECONDS")
-    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem, bqmeta, usageprune)
+    smallest = min(refresh, health, scripts, sess, verify, usage,
+                   corpmem, bqmeta, usageprune, jirasla, jiraconsis)
     if tick > smallest:
         raise ValueError(
             f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
@@ -278,6 +288,21 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # on the server side; short-circuits when unset or 0. Runs daily
         # (default 86400s). Rollup tables untouched.
         ("usage-prune",           _seconds_to_schedule(usageprune), "/api/admin/usage/prune",            "POST", 60),
+        # Jira self-healing pair (parity with the legacy Data Broker
+        # ``jira-sla-poll.timer`` and ``jira-consistency.timer`` systemd
+        # units). Both endpoints short-circuit when the JIRA_* env vars
+        # are not set, so a customer without Jira ingest pays nothing
+        # for these scheduler entries.
+        #
+        # poll-sla: refreshes elapsed_millis + status on open tickets
+        # whose snapshot would otherwise stagnate between webhooks.
+        # consistency-check: compares Jira API ↔ raw JSON ↔ parquet and
+        # backfills small gaps left behind by missed webhooks. The
+        # ``--max-age-days 30`` default in the endpoint matches the
+        # cadence: 30 min cadence × 30-day window keeps the cost
+        # bounded while catching realistic drift.
+        ("jira-sla-poll",         _seconds_to_schedule(jirasla),    "/api/admin/run-jira-sla-poll",         "POST", 900),
+        ("jira-consistency-check", _seconds_to_schedule(jiraconsis), "/api/admin/run-jira-consistency-check", "POST", 1800),
     ]
 
 _running = True
