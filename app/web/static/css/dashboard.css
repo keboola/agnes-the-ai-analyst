@@ -4,6 +4,38 @@
  * Loaded via {% block head_extra %} using static_url() cache-busting.
  * All selectors are scoped under .dashboard-mock to prevent leakage
  * to other pages. Shared tokens come from design-tokens.css.
+ *
+ * ── Button vocabulary (post #427) ──
+ * The canonical `.btn .btn-*` family in style-custom.css covers
+ * primary / secondary / ghost / danger / required across the rest of
+ * the admin UI. This file deliberately keeps four families page-local
+ * because each carries page-specific semantics canonical doesn't
+ * cover:
+ *
+ *   .btn-setup, .btn-setup-secondary   Hero CTA in the navy `.env-setup-cta`
+ *                                       card. Uses the `--ds-hero-cta-*` token
+ *                                       vocabulary so the button reads
+ *                                       correctly against the navy gradient
+ *                                       (canonical .btn-primary is brand-fill,
+ *                                       wrong for navy hero).
+ *
+ *   .notif-link, .notif-unlink         Soft-pill micro-actions inside the
+ *                                       notification card, hidden by default
+ *                                       and shown only in `.notif-managing`
+ *                                       mode. Canonical .btn-primary /
+ *                                       .btn-danger would be too solid for
+ *                                       these subordinate controls.
+ *
+ *   .btn-copy-term                     Dark-surface copy button on the
+ *                                       Catppuccin-themed terminal mock.
+ *                                       system.md explicitly carves out
+ *                                       dark-surface copy buttons as
+ *                                       page-local — canonical .btn-* is
+ *                                       light-surface only.
+ *
+ * The one truly-generic primary submit on this page (`.btn-register`,
+ * the "Create Account" button in the Telegram verify form) now renders
+ * via canonical `.btn .btn-primary`; its page-local rule was removed.
  */
 
         /* ── Header ── */
@@ -842,23 +874,8 @@
             border-radius: 4px;
         }
 
-        .dashboard-mock .reg-inline .btn-register {
-            padding: 8px 20px;
-            background: var(--primary);
-            color: white;
-            font-size: 13px;
-            font-weight: 600;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.15s;
-            white-space: nowrap;
-            flex-shrink: 0;
-        }
-
-        .dashboard-mock .reg-inline .btn-register:hover {
-            background: var(--primary-dark);
-        }
+        /* `.btn-register` rule removed — the "Create Account" submit button
+           now renders via canonical `.btn .btn-primary` from style-custom.css. */
 
         /* ── Claude Code section (step 5) ── */
         .dashboard-mock .claude-section {
