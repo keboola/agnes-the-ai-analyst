@@ -85,14 +85,23 @@ class MemoryDomainSuggestionsRepository:
     ) -> bool:
         if status not in ("approved", "rejected"):
             raise ValueError("status must be 'approved' or 'rejected'")
-        cur = self.conn.execute(
+        # DuckDB's Python API returns ``-1`` from ``cur.rowcount`` for UPDATE
+        # statements regardless of whether any row matched, so we can't use
+        # rowcount to detect the guard miss. Instead, pre-check that the row
+        # is still ``pending`` inside the same statement window.
+        was_pending = self.conn.execute(
+            "SELECT 1 FROM memory_domain_suggestions "
+            "WHERE id = ? AND status = 'pending'",
+            [sid],
+        ).fetchone() is not None
+        self.conn.execute(
             "UPDATE memory_domain_suggestions "
             "SET status = ?, resolved_at = CURRENT_TIMESTAMP, "
             "    resolved_by = ?, resolution_note = ?, created_domain_id = ? "
             "WHERE id = ? AND status = 'pending'",
             [status, resolved_by, resolution_note, created_domain_id, sid],
         )
-        return cur.rowcount > 0
+        return was_pending
 
     @staticmethod
     def _row_to_dict(row) -> Dict[str, Any]:

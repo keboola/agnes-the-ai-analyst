@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_current_user
-from src.repositories.audit import AuditRepository
+from src.repositories import audit_repo, users_repo
 
 router = APIRouter(prefix="/api/me", tags=["me"])
 
@@ -43,14 +43,10 @@ class OnboardedRequest(BaseModel):
 async def post_onboarded(
     body: OnboardedRequest = OnboardedRequest(),
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     target = bool(body.onboarded)
-    conn.execute(
-        "UPDATE users SET onboarded = ? WHERE id = ?",
-        [target, user["id"]],
-    )
-    AuditRepository(conn).log(
+    users_repo().update(user["id"], onboarded=target)
+    audit_repo().log(
         user_id=user["id"],
         action="user_onboarded" if target else "user_offboarded",
         params={"source": body.source},

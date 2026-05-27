@@ -16,21 +16,36 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`/admin/tables` Keboola smart-paste — split `bucket.table_name` on paste/blur.** Keboola Storage's "COPY TO CLIPBOARD" yields the full table id `{bucket}.{table_name}` (e.g. `out.c-crm-tr-RdC3aX4M.account`). The Register Keboola modal has two separate inputs (Bucket + Source Table), so pasting the full id used to fail silently. The modal now has a dedicated `#kbTableIdPaste` input above the existing fields; pasting or blurring with a value containing a `.` splits on the LAST dot and fills both downstream inputs. Downstream fields get a synthetic `input` event so any datalist-refresh / discover hooks treat it as user-typed; manual entry through Bucket + Source Table still works as before. Closes #401.
 - **`/dashboard` live sync-status pill.** Small horizontal pill between the env-setup-cta and the stats-row. Initial state is server-rendered from the existing `data_stats.last_updated` (MAX `last_sync` across all `sync_state` rows): "Last sync: <iso>" or "No sync recorded yet". A JS poller hits `GET /api/sync/status` every 30 s and flips the pill to `is-running` (brand-primary pulsing dot, "Sync running…" text) when the `locked` flag is true. The `/api/sync/status` endpoint is intentionally tiny (`{locked: bool}`, public/no-auth for the host-side auto-upgrade cron), so the timestamp comes from server-render rather than live fetch; extending the endpoint to return last-run pass/fail status is a follow-up. Closes #392.
 - **`/catalog/t/<table_id>` data-preview button + modal.** Hero card on the table-detail page now has a "Preview data" button that opens a modal showing the first 10 rows via `GET /api/v2/sample/{table_id}`. The endpoint already enforces `can_access_table` per user, so a 403 lands as a clear inline error inside the modal body. Columns are derived dynamically from the first row's keys; states for Loading / Empty / Error are friendly text. Esc, Close, and backdrop click all dismiss. The issue text said "in catalog.html", but `/catalog` lists Data Packages (not tables) — the natural per-table affordance lives on the table-detail page. Closes #396.
+- **Five new Postgres repository ports closing the DuckDB-only gap left by PR #388.**
+  `src/repositories/{data_packages,memory_domains,memory_domain_suggestions,recipes,user_stack_subscriptions}_pg.py` mirror their DuckDB siblings method-for-method via SQLAlchemy core + psycopg. Alembic revision `0011_data_packages` covers the seven new PG tables (5 + 2 bridges: `data_package_tables`, `knowledge_item_domains`) with full downgrade and round-trip test coverage. Factory entries in `src/repositories/__init__.py` route to either backend based on `use_pg()`; ten callsites across `app/web/router.py`, `app/api/{data_packages,memory,memory_domain_suggestions,memory_domains,recipes,stack_views,sync}.py` swapped from direct `XYZRepository(conn)` instantiation to the factory layer. **Fifty-four parametrized cross-engine contract tests** (14+12+8+10+10 across the 5 clusters) prove DuckDB ↔ PG parity for every public method. Full `tests/db_pg/` suite now 322 passed, 1 skipped.
+- **`docker-compose.postgres.yml` gains a `data-migrate` one-shot service.**
+  Runs `python -m scripts.migrate_duckdb_to_pg --duckdb-path
+  /data/state/system.duckdb` on every `compose up`; `app` and `scheduler`
+  block on it exiting 0 so neither serves traffic against a partially
+  populated PG. The underlying script is idempotent (ON CONFLICT DO
+  NOTHING + per-row SHA-256 checksums) so re-runs against an
+  already-migrated PG are near-instant no-ops.
+- **`postgres_data` named volume now binds to `/data/postgres`.** Lives on
+  the customer-instance config disk that's already covered by the daily
+  snapshot policy; the startup-script pre-creates `/data/postgres` with
+  uid 70 ownership (the Alpine `postgres` user) before the side-car boots.
+  Local-dev users without `/data/postgres` can override this overlay via
+  `docker-compose.override.yml`.
 
 ### Changed
 - **Admin nav: "Server config" → "Instance settings".** `_app_header.html` nav item label, `admin_server_config.html` page `<title>`, and the page-hero title now read "Instance settings" instead of "Server config" — less developer-centric and consistent with the already-shipped phrasing in the Keboola not-connected banners on `/admin/tables` (which deep-link with "Set your token in **Instance settings**"). Route `/admin/server-config` unchanged. Eyebrow "Server" kept as the category label (shared with `admin_scheduler_runs.html` under the same nav group). Closes #403.
-
-### Reverted
-- **PR #388 (Postgres app-state layer + PG follow-up + CI fixes) reverted.**
-  Reverts merge commit `40ddd34f` after `agnes-auto-upgrade.service` on
-  the `foundryai-development` VM started failing every 5 minutes
-  beginning ~16:06 UTC (immediately after the post-merge `:stable`
-  image landed). The 3-commit squashed PR (`814e3d16` Postgres
-  foundation + `9f4267de` PG follow-up + `b1d816ff` CI fixes) is
-  removed from `main` pending root-cause investigation of the
-  auto-upgrade failure. The OSS test suite passes; the regression is
-  deploy-side. Original commits remain reachable via PR #388's
-  history on GitHub.
+- **`startup-script.sh.tpl` + `scripts/ops/agnes-auto-upgrade.sh` honor
+  `COMPOSE_FILE` from `/opt/agnes/.env`.** Replaces the hard-coded
+  `-f docker-compose.yml -f docker-compose.prod.yml
+  -f docker-compose.host-mount.yml` arrays. Default falls back to the
+  prior baseline so deploys without the `.env` line are unchanged. The
+  customer-instance `.env` now writes
+  `COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml`
+  so the prod + postgres + host-mount overlays engage automatically.
+  Host-mount loads LAST so its `volumes: !override` on `data-migrate`
+  (added here) replaces the named-volume mount with the host `/data:/data:ro`
+  bind — without that override the migration script would read an empty
+  named volume and exit 2.
 
 ## [0.55.19] — 2026-05-27
 
