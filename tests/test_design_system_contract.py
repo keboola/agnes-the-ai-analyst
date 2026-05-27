@@ -138,6 +138,40 @@ def test_no_deprecated_class_in_templates() -> None:
     )
 
 
+_LEGACY_TOKEN_FALLBACK_ALLOWLIST = {
+    # Not yet converted — tracked as follow-up PRs. Remove each entry as the
+    # template is converted (replace var(--primary, #NNN) → var(--ds-primary)).
+    "admin_groups.html",
+    "admin_group_detail.html",
+    "admin_marketplaces.html",
+    "admin_server_config.html",
+    "admin_user_detail.html",
+    "admin_users.html",
+    "setup.html",
+}
+
+
+def test_no_legacy_primary_token_with_hex_fallback() -> None:
+    """var(--primary, #XXXXXX) encodes the old blue colour as a fallback.
+    If the compat shim in design-tokens.css is ever removed the fallback
+    fires and the element reverts to blue. Use var(--ds-primary) instead.
+
+    Files in _LEGACY_TOKEN_FALLBACK_ALLOWLIST are known-unconverted templates
+    tracked for cleanup in dedicated follow-up PRs — remove from the list
+    as each template is converted."""
+    pattern = re.compile(r"var\(--primary\s*,\s*#")
+    offenders: list[str] = []
+    for path in _all_html():
+        if path.name in _LEGACY_TOKEN_FALLBACK_ALLOWLIST:
+            continue
+        if pattern.search(path.read_text(encoding="utf-8")):
+            offenders.append(str(path))
+    assert not offenders, (
+        "var(--primary, #<hex>) found — use var(--ds-primary) instead:\n"
+        + "\n".join(f"  {p}" for p in offenders)
+    )
+
+
 def test_app_js_referenced_by_base_only() -> None:
     """app.js carries dropdown wiring scoped to the authed nav. base_login.html
     has no nav, so it must NOT load app.js — that would let login pages call
