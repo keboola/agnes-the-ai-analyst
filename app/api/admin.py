@@ -3888,6 +3888,124 @@ def run_corporate_memory(
 
 
 # ---------------------------------------------------------------------------
+# Jira self-healing endpoints — driven by the scheduler
+#
+# Parity with the legacy Data Broker ``jira-sla-poll.timer`` /
+# ``jira-consistency.timer`` systemd units, but invoked from the in-cluster
+# scheduler container instead of host systemd. Both endpoints
+# short-circuit with ``{"status": "skipped", "reason":
+# "jira_not_configured"}`` when the ``JIRA_*`` env vars are unset — a
+# customer without Jira ingest pays nothing for the default scheduler
+# entries.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/run-jira-sla-poll")
+def run_jira_sla_poll(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Refresh SLA + status fields for open Jira tickets.
+
+    Webhooks update tickets on activity. Tickets that sit idle for hours
+    don't fire webhooks; their ``elapsed_millis`` ages out, and SLA
+    breaches go undetected. This job polls every open ticket with SLA
+    data and re-fetches the live values from the Jira API. Self-heals
+    stale ``status`` / ``resolution`` fields on the same pass — tickets
+    closed during a webhook outage get corrected.
+
+    Cadence: every 15 min by default (SCHEDULER_JIRA_SLA_POLL_INTERVAL).
+    Skipped gracefully when JIRA_SLA_* env vars aren't set.
+    """
+    from connectors.jira.scripts.poll_sla import run as _run_poll_sla
+
+    try:
+        stats = _run_poll_sla(dry_run=False)
+    except ValueError as e:
+        # Raised by load_config() when JIRA_SLA_* env vars are missing.
+        # Scheduler-driven endpoints prefer a 200 skip over a 500 — the
+        # operator sees the no-op in audit_log without alert noise.
+        audit_repo().log(
+            user_id=user.get("id"),
+            action="run_jira_sla_poll",
+            resource="job:jira-sla-poll",
+            params={"status": "skipped", "reason": str(e)[:200]},
+        )
+        return {"status": "skipped", "reason": "jira_not_configured", "detail": str(e)}
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="run_jira_sla_poll",
+        resource="job:jira-sla-poll",
+        params={
+            "open_issues": stats.get("open_issues", 0),
+            "updated": stats.get("updated", 0),
+            "healed": stats.get("healed", 0),
+            "skipped": stats.get("skipped", 0),
+            "failed": stats.get("failed", 0),
+            "elapsed_sec": round(float(stats.get("elapsed_sec", 0.0)), 2),
+        },
+    )
+    return {"ok": stats.get("failed", 0) == 0, "details": stats}
+
+
+@router.post("/run-jira-consistency-check")
+def run_jira_consistency_check(
+    max_age_days: int = 30,
+    auto_fix: bool = True,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Validate Jira parquet against the Jira API and backfill small gaps.
+
+    Compares three sources: Jira API (ground truth), raw JSON, and
+    parquet. Auto-fixes small webhook-loss gaps (≤10 issues); larger
+    gaps are reported and require manual review.
+
+    Cadence: every 30 min by default (SCHEDULER_JIRA_CONSISTENCY_INTERVAL).
+    Default ``max_age_days=30`` keeps the routine cost bounded; an
+    operator triggering a deeper validation passes a larger value.
+    """
+    from connectors.jira.scripts.consistency_check import (
+        Config,
+        JiraConsistencyChecker,
+    )
+
+    try:
+        config = Config.from_env()
+    except (ValueError, KeyError) as e:
+        audit_repo().log(
+            user_id=user.get("id"),
+            action="run_jira_consistency_check",
+            resource="job:jira-consistency-check",
+            params={"status": "skipped", "reason": str(e)[:200]},
+        )
+        return {"status": "skipped", "reason": "jira_not_configured", "detail": str(e)}
+
+    checker = JiraConsistencyChecker(config)
+    report = checker.run_check(
+        max_age_days=max_age_days,
+        auto_fix=auto_fix,
+        dry_run=False,
+    )
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="run_jira_consistency_check",
+        resource="job:jira-consistency-check",
+        params={
+            "max_age_days": max_age_days,
+            "auto_fix": auto_fix,
+            "status": report.get("status"),
+            "alert_level": report.get("alert_level"),
+        },
+    )
+
+    ok = report.get("status") == "success" and report.get("alert_level") != "ERROR"
+    return {"ok": ok, "details": report}
+
+
+# ---------------------------------------------------------------------------
 # Flea-market guardrails — admin endpoints
 #
 # Backs /admin/store/submissions (the human triage page) and the override /
