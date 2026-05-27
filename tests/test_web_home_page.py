@@ -15,6 +15,8 @@ import uuid
 
 import pytest
 
+from tests._template_assertions import assert_element, ElementNotFound
+
 
 @pytest.fixture
 def fresh_db(monkeypatch):
@@ -97,9 +99,10 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
     assert resp.status_code == 200
     body = resp.text
     # Install hero entirely absent for onboarded users.
-    assert '<div class="install-hero">' not in body
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "div", class_="install-hero")
     # Offboard escape strip + its button replace the in-hero self-mark control.
-    assert '<div class="offboard-strip">' in body
+    assert_element(body, "div", class_="offboard-strip")
     assert "Mark me as offboarded" in body
     # All six inline install-blocks are hidden post-onboarding — the
     # labels rendered inside the install-block divs go away. Labels
@@ -151,6 +154,7 @@ def test_connectors_section_removed_from_home(fresh_db):
     # Server-rendered HTML never carries the data-setup-minimized
     # attribute on the .home-mock root — that's a client-side
     # localStorage decision applied via JS on load.
+    # attribute-presence semantics — not class-equality
     assert '<div class="home-mock" data-setup-minimized' not in body
     assert 'class="home-mock"\n' in body or '<div class="home-mock">' in body
 
@@ -195,7 +199,8 @@ def test_minimize_toggle_no_longer_rendered(fresh_db):
         c = _client()
         resp = c.get("/home", cookies={"access_token": sess})
         assert resp.status_code == 200
-        assert '<button id="setupMinimizeToggle"' not in resp.text
+        with pytest.raises(ElementNotFound):
+            assert_element(resp.text, "button", attrs={"id": "setupMinimizeToggle"})
         assert 'class="setup-minimize"' not in resp.text
 
 
@@ -229,7 +234,7 @@ def test_home_no_auto_transition_after_post_until_reload(fresh_db):
     post = c.get("/home", cookies={"access_token": sess})
     # PR #289: hero disappears entirely; offboard strip is the
     # only setup-flow remnant. Use either as the nav-hub view marker.
-    assert '<div class="offboard-strip">' in post.text
+    assert_element(post.text, "div", class_="offboard-strip")
     assert 'class="install-block"' not in post.text
 
 
@@ -336,11 +341,11 @@ def test_setup_section_renders_for_not_onboarded(fresh_db):
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
     # Header floats above the card with the design spec eyebrow + h2.
-    assert '<div class="setup-section-header"' in body
+    assert_element(body, "div", class_="setup-section-header")
     assert ">First time here<" in body
     assert "Set up" in body and "on your machine" in body
     # Install hero card sits below the header.
-    assert '<div class="install-hero">' in body
+    assert_element(body, "div", class_="install-hero")
     # Getting Started shortcut block is gone.
     assert "home-getting-started" not in body
     assert "agnes_home_gs_dismissed" not in body
@@ -355,8 +360,10 @@ def test_setup_section_renders_for_not_onboarded(fresh_db):
         conn.close()
         close_system_db()
     body2 = _client().get("/home", cookies={"access_token": sess2}).text
-    assert '<div class="install-hero"' not in body2
-    assert '<div class="setup-section-header"' not in body2
+    with pytest.raises(ElementNotFound):
+        assert_element(body2, "div", class_="install-hero")
+    with pytest.raises(ElementNotFound):
+        assert_element(body2, "div", class_="setup-section-header")
 
 
 def test_welcome_footnotes_render_overview_when_set(fresh_db, monkeypatch):
@@ -378,8 +385,9 @@ def test_welcome_footnotes_render_overview_when_set(fresh_db, monkeypatch):
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert '<section class="home-overview">' not in body
-    assert '<div class="home-hero-footnotes">' in body
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "section", class_="home-overview")
+    assert_element(body, "div", class_="home-hero-footnotes")
     assert "OVERVIEW_TEST_MARKER" in body
 
 
@@ -397,7 +405,8 @@ def test_welcome_footnotes_hidden_when_overview_unset(fresh_db, monkeypatch):
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert '<div class="home-hero-footnotes">' not in body
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "div", class_="home-hero-footnotes")
 
 
 def test_welcome_support_renders_when_set(fresh_db, monkeypatch):
@@ -417,7 +426,7 @@ def test_welcome_support_renders_when_set(fresh_db, monkeypatch):
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert '<div class="home-hero-support"' in body
+    assert_element(body, "div", class_="home-hero-support")
     assert "SUPPORT_TEST_MARKER" in body
 
 
@@ -435,7 +444,8 @@ def test_welcome_support_hidden_when_unset(fresh_db, monkeypatch):
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert '<div class="home-hero-support"' not in body
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "div", class_="home-hero-support")
 
 
 def test_welcome_support_independent_of_overview(fresh_db, monkeypatch):
@@ -454,6 +464,7 @@ def test_welcome_support_independent_of_overview(fresh_db, monkeypatch):
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert '<div class="home-hero-footnotes">' not in body
-    assert '<div class="home-hero-support"' in body
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "div", class_="home-hero-footnotes")
+    assert_element(body, "div", class_="home-hero-support")
     assert "SUPPORT_ONLY_MARKER" in body
