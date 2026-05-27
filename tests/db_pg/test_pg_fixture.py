@@ -68,3 +68,10 @@ def test_backend_env_var_is_respected():
         assert backend in {"container", "embedded", "pgserver"}, (
             f"AGNES_TEST_PG_BACKEND must be one of container|embedded|pgserver (got {backend!r})"
         )
+
+
+def test_default_backend_is_pgserver(monkeypatch):
+    """When AGNES_TEST_PG_BACKEND is unset, pgserver is the default — not autodetect."""
+    monkeypatch.delenv("AGNES_TEST_PG_BACKEND", raising=False)
+    from tests.db_pg.conftest import _resolve_backend
+    assert _resolve_backend() == "pgserver"

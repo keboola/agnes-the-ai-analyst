@@ -240,16 +240,24 @@ mismatch or PK-set checksum diverged).
 
 ## Backend choice for tests
 
-`tests/db_pg/conftest.py` auto-detects which backend to use:
+### Local testing
+
+The PG test suite (`tests/db_pg/`) runs against `pgserver` by default — that
+ships a Postgres 16 binary inside its wheel, so no Docker or system PG is
+required. To run against a real container instead:
+
+```bash
+AGNES_TEST_PG_BACKEND=container .venv/bin/pytest tests/db_pg/  # needs Docker
+AGNES_TEST_PG_BACKEND=embedded  .venv/bin/pytest tests/db_pg/  # needs system postgres
+```
+
+CI matrices that want higher fidelity should set `container` explicitly.
 
 | `AGNES_TEST_PG_BACKEND=` | Where it gets PG | When to use |
 |---|---|---|
-| `container` | testcontainers boots `postgres:16-alpine` via Docker | CI with Docker socket access |
+| _(unset)_ / `pgserver` | userland-bundled Postgres 16 from the `pgserver` PyPI package | default — works on any dev box, no install needed |
+| `container` | testcontainers boots `postgres:16-alpine` via Docker | CI or local fidelity runs with Docker |
 | `embedded` | pytest-postgresql + system `postgres` binary | dev laptop with Postgres installed |
-| `pgserver` (default fallback) | userland-bundled Postgres 16 from the `pgserver` PyPI package | dev/sandbox machines with no system PG and no Docker — works out of the box |
-
-Order: explicit env var → Docker socket reachable → system `postgres`
-binary → `pgserver` (always available).
 
 ## Future improvements
 

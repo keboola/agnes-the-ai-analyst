@@ -3,17 +3,13 @@
 Three backends, selected at fixture-resolution time via the
 ``AGNES_TEST_PG_BACKEND`` environment variable:
 
+  - ``pgserver`` (default) — uses the ``pgserver`` package's bundled
+    Postgres 16 binary. No system install, no Docker. Works on any dev
+    box out of the box.
   - ``container`` — testcontainers boots ``postgres:16-alpine`` once per
-    pytest session. Highest fidelity; requires a working Docker socket.
+    pytest session. Opt-in; requires a working Docker socket.
   - ``embedded`` — pytest-postgresql boots a system ``postgres`` binary
-    (initdb on tmpfs). Fast (~0.5s); requires the binary on PATH.
-  - ``pgserver`` — uses the ``pgserver`` package's bundled Postgres 16
-    binary. No system install, no Docker. The universal fallback.
-
-If the env var is unset, autodetect picks the first that's actually
-usable, in priority order: container → embedded → pgserver. Pgserver
-always works (it ships its own binary), so downstream tests never silent-
-skip; they always run against a real PG.
+    (initdb on tmpfs). Opt-in; requires the binary on PATH.
 
 Per-test isolation: the session-scoped engine boots PG once; each test
 function gets a freshly DROP/CREATE'd ``public`` schema so a previous
@@ -35,27 +31,12 @@ from sqlalchemy.orm import Session
 _VALID_BACKENDS = {"container", "embedded", "pgserver"}
 
 
-def _docker_usable() -> bool:
-    """Cheaply check whether the Docker socket is reachable.
-
-    We don't shell out to ``docker info`` — too slow. Instead, try to
-    connect to ``/var/run/docker.sock`` directly. Equivalent fidelity
-    for our purpose (autodetection); the real verification happens
-    when testcontainers actually tries to start a container.
-    """
-    if not shutil.which("docker"):
-        return False
-    sock = "/var/run/docker.sock"
-    if not os.path.exists(sock):
-        return False
-    return os.access(sock, os.R_OK | os.W_OK)
-
-
 def _resolve_backend() -> str:
-    """Return ``"container"`` | ``"embedded"`` | ``"pgserver"``.
+    """Return ``"pgserver"`` by default; honor ``AGNES_TEST_PG_BACKEND`` override.
 
-    Order: explicit env var → working Docker → system postgres → pgserver
-    (always works).
+    pgserver ships a Postgres 16 binary in its wheel — works on any dev box
+    without Docker or system PG. container/embedded backends remain available
+    as explicit opt-ins for fidelity testing or CI matrix runs.
     """
     explicit = os.environ.get("AGNES_TEST_PG_BACKEND")
     if explicit:
@@ -64,10 +45,6 @@ def _resolve_backend() -> str:
                 f"AGNES_TEST_PG_BACKEND={explicit!r} not in {_VALID_BACKENDS}"
             )
         return explicit
-    if _docker_usable():
-        return "container"
-    if shutil.which("postgres"):
-        return "embedded"
     return "pgserver"
 
 
