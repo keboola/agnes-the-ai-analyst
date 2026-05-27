@@ -86,7 +86,31 @@ __all__ = [
 
 
 def use_pg() -> bool:
-    """True when Postgres is configured (``DATABASE_URL`` or legacy ``AGNES_DB_URL``)."""
+    """Return True when the active backend is Postgres (side-car or cloud).
+
+    Precedence:
+      1. ``instance.yaml::database.backend`` (admin-controlled).
+      2. ``DATABASE_URL`` env var presence (12-factor convention).
+      3. ``AGNES_DB_URL`` env var presence (legacy alias).
+    """
+    try:
+        from src.db_state_machine import BackendState, _OVERLAY_PATH, read_backend_state
+        state, _ = read_backend_state()
+        if state in (
+            BackendState.SIDE_CAR,
+            BackendState.CLOUD,
+            BackendState.SIDE_CAR_IN_PROGRESS,
+            BackendState.CLOUD_IN_PROGRESS,
+        ):
+            return True
+        # Only treat DUCKDB as authoritative when the overlay actually exists;
+        # otherwise fall through to the env-var fallback (fresh-install default).
+        if state == BackendState.DUCKDB and _OVERLAY_PATH.exists():
+            return False
+    except Exception:
+        pass
+
+    # Env-var fallback
     return bool(os.environ.get("DATABASE_URL") or os.environ.get("AGNES_DB_URL"))
 
 
