@@ -168,6 +168,31 @@ def test_no_legacy_primary_token_with_hex_fallback() -> None:
     )
 
 
+_NO_RAW_HEX_TEMPLATES = (
+    "profile.html",
+    "setup.html",
+    "me_activity.html",
+)
+
+
+def test_swept_templates_use_no_raw_hex() -> None:
+    """The #419 follow-up sweep targets three templates that previously
+    inlined raw `#RRGGBB` color literals. After conversion every colour
+    must reference a `--ds-*` token instead — adding a new raw hex regress
+    the sweep silently otherwise."""
+    pattern = re.compile(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b")
+    offenders: dict[str, list[str]] = {}
+    for name in _NO_RAW_HEX_TEMPLATES:
+        text = (TEMPLATES / name).read_text(encoding="utf-8")
+        hexes = pattern.findall(text)
+        if hexes:
+            offenders[name] = hexes
+    assert not offenders, (
+        "raw hex literals found in swept templates:\n"
+        + "\n".join(f"  {n}: {hs}" for n, hs in offenders.items())
+    )
+
+
 def test_no_unprefixed_primary_token_in_templates() -> None:
     """`var(--primary)` (no `--ds-` prefix) rides the legacy blue token via
     the compat shim in design-tokens.css. Explicit `var(--ds-primary)`

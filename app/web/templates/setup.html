@@ -18,10 +18,10 @@
 
             <!-- Progress -->
             <div style="display: flex; gap: 8px; margin-bottom: 24px;">
-                <div id="step-dot-1" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-primary, #2563eb);"></div>
-                <div id="step-dot-2" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
-                <div id="step-dot-3" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
-                <div id="step-dot-4" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
+                <div id="step-dot-1" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-primary);"></div>
+                <div id="step-dot-2" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
+                <div id="step-dot-3" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
+                <div id="step-dot-4" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
             </div>
 
             <!-- Status message -->
@@ -32,11 +32,11 @@
                 <form id="admin-form" onsubmit="return createAdmin(event)">
                     <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Email</label>
                     <input type="email" id="admin-email" required placeholder="admin@company.com"
-                        style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+                        style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
 
                     <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Password</label>
                     <input type="password" id="admin-password" required minlength="8" placeholder="Min. 8 characters"
-                        style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
+                        style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
 
                     {{ ds.button('Create Admin Account', variant='primary',
                                  type='submit', id='btn-admin',
@@ -49,7 +49,7 @@
                 <form id="source-form" onsubmit="return configureSource(event)">
                     <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Data Source</label>
                     <select id="data-source" onchange="toggleSourceFields()"
-                        style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+                        style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
                         <option value="keboola">Keboola</option>
                         <option value="bigquery">BigQuery</option>
                         <option value="local">Local / CSV</option>
@@ -58,21 +58,21 @@
                     <div id="keboola-fields">
                         <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Keboola URL</label>
                         <input type="url" id="keboola-url" placeholder="https://connection.keboola.com"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
 
                         <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Storage API Token</label>
                         <input type="password" id="keboola-token" placeholder="Your Keboola storage token"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
                     </div>
 
                     <div id="bigquery-fields" style="display: none;">
                         <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">GCP Project</label>
                         <input type="text" id="bq-project" placeholder="my-gcp-project"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
 
                         <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Location</label>
                         <input type="text" id="bq-location" value="us" placeholder="us"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
                     </div>
 
                     {{ ds.button('Configure Data Source', variant='primary',
@@ -87,14 +87,14 @@
 
             <!-- Step 3: Discover Tables -->
             <div id="step-3" style="display: none;">
-                <p style="font-size: 14px; color: #6b7280; margin-bottom: 16px;">
+                <p style="font-size: 14px; color: var(--ds-text-muted); margin-bottom: 16px;">
                     Discover and register tables from your data source.
                 </p>
                 {{ ds.button('Discover Tables', variant='primary',
                              type='button', id='btn-discover',
                              klass='btn-block',
                              attrs='onclick="discoverTables()"') }}
-                <div id="discover-result" style="display: none; margin-top: 12px; padding: 12px; background: #f0fdf4; border-radius: 6px; font-size: 14px;"></div>
+                <div id="discover-result" style="display: none; margin-top: 12px; padding: 12px; background: var(--ds-accent-success-bg); border-radius: 6px; font-size: 14px;"></div>
                 {{ ds.button('Continue', variant='primary',
                              type='button', id='btn-next-sync',
                              klass='btn-block',
@@ -103,7 +103,7 @@
 
             <!-- Step 4: First Sync & Done -->
             <div id="step-4" style="display: none;">
-                <p style="font-size: 14px; color: #6b7280; margin-bottom: 16px;">
+                <p style="font-size: 14px; color: var(--ds-text-muted); margin-bottom: 16px;">
                     Start the first data sync and go to your dashboard.
                 </p>
                 {{ ds.button('Start First Sync', variant='primary',
@@ -132,8 +132,8 @@ function showStatus(msg, type) {
     const el = document.getElementById('status-msg');
     el.textContent = msg;
     el.style.display = 'block';
-    el.style.background = type === 'error' ? '#fef2f2' : '#f0fdf4';
-    el.style.color = type === 'error' ? '#dc2626' : '#16a34a';
+    el.style.background = type === 'error' ? 'var(--ds-accent-danger-bg)' : 'var(--ds-accent-success-bg)';
+    el.style.color = type === 'error' ? 'var(--ds-accent-danger-line)' : 'var(--ds-accent-success-line)';
 }
 
 function hideStatus() {
@@ -144,7 +144,7 @@ function goToStep(n) {
     hideStatus();
     for (let i = 1; i <= 4; i++) {
         document.getElementById('step-' + i).style.display = i === n ? 'block' : 'none';
-        document.getElementById('step-dot-' + i).style.background = i <= n ? 'var(--ds-primary, #2563eb)' : '#e5e7eb';
+        document.getElementById('step-dot-' + i).style.background = i <= n ? 'var(--ds-primary)' : 'var(--ds-border)';
     }
     document.getElementById('wizard-title').textContent = steps[n].title;
     document.getElementById('wizard-description').textContent = steps[n].desc;
