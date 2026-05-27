@@ -332,3 +332,53 @@ class TestMetadataApply:
         result = runner.invoke(app, ["admin", "metadata-apply", "/nonexistent/proposal.json"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
+
+
+class TestResolveGrantId:
+    """Pin the grant_list short_id -> grant_delete workflow contract.
+
+    Operators read the 8-char ``short_id`` column from ``agnes admin grant list``
+    and pass it to ``agnes admin grant delete``. The CLI resolves the prefix
+    to a full UUID before hitting the API so the workflow doesn't 404.
+    """
+
+    def test_grant_delete_accepts_full_uuid(self):
+        grants = [{"id": "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"}]
+        with patch("cli.commands.admin.api_get", return_value=_resp(200, grants)), \
+             patch("cli.commands.admin.api_delete", return_value=_resp(204)) as mock_del:
+            result = runner.invoke(
+                app, ["admin", "grant", "delete", "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"],
+            )
+        assert result.exit_code == 0, result.output
+        mock_del.assert_called_once_with("/api/admin/grants/aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+    def test_grant_delete_accepts_8char_prefix(self):
+        """Bug repro: pre-fix this would 404."""
+        grants = [{"id": "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"}]
+        with patch("cli.commands.admin.api_get", return_value=_resp(200, grants)), \
+             patch("cli.commands.admin.api_delete", return_value=_resp(204)) as mock_del:
+            result = runner.invoke(app, ["admin", "grant", "delete", "aaaa1111"])
+        assert result.exit_code == 0, result.output
+        # API received the FULL uuid, not the prefix
+        mock_del.assert_called_once_with("/api/admin/grants/aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+    def test_grant_delete_ambiguous_prefix_aborts(self):
+        grants = [
+            {"id": "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"},
+            {"id": "aaaa1111-zzzz-yyyy-xxxx-wwwwwwwwwwww"},  # same 8-char prefix
+        ]
+        with patch("cli.commands.admin.api_get", return_value=_resp(200, grants)), \
+             patch("cli.commands.admin.api_delete") as mock_del:
+            result = runner.invoke(app, ["admin", "grant", "delete", "aaaa1111"])
+        assert result.exit_code == 1, result.output
+        assert "Ambiguous" in result.output or "ambiguous" in result.output
+        mock_del.assert_not_called()
+
+    def test_grant_delete_unknown_ref_aborts(self):
+        grants = [{"id": "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"}]
+        with patch("cli.commands.admin.api_get", return_value=_resp(200, grants)), \
+             patch("cli.commands.admin.api_delete") as mock_del:
+            result = runner.invoke(app, ["admin", "grant", "delete", "deadbeef"])
+        assert result.exit_code == 1, result.output
+        assert "not found" in result.output.lower()
+        mock_del.assert_not_called()

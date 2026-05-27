@@ -796,6 +796,37 @@ def _resolve_group_id(ref: str) -> str:
     raise typer.Exit(1)
 
 
+def _resolve_grant_id(ref: str) -> str:
+    """Accept full grant UUID or 8-char prefix (as printed by ``grant list``).
+
+    Grants have no human-readable name — the only identifier is the UUID
+    that gets generated at create time. The default tabular output of
+    ``agnes admin grant list`` shows the first 8 chars under the ``short_id``
+    column so an operator can eyeball-copy it into ``grant delete``; this
+    helper bridges that workflow by listing all grants and matching the ref
+    against either the full id or the 8-char prefix. Ambiguous prefix
+    matches abort with a clear error rather than picking one silently.
+    """
+    resp = api_get("/api/admin/grants")
+    if resp.status_code != 200:
+        _fail(resp, prefix="Could not list grants")
+    matches = [
+        g for g in resp.json()
+        if g.get("id") == ref or (g.get("id") or "").startswith(ref)
+    ]
+    if not matches:
+        typer.echo(f"Grant not found: {ref}", err=True)
+        raise typer.Exit(1)
+    if len(matches) > 1:
+        typer.echo(
+            f"Ambiguous grant prefix {ref!r} matches {len(matches)} grants: "
+            + ", ".join(m["id"][:8] for m in matches),
+            err=True,
+        )
+        raise typer.Exit(1)
+    return matches[0]["id"]
+
+
 @group_app.command("list")
 def group_list(as_json: bool = typer.Option(False, "--json")):
     """List all user groups."""
@@ -900,7 +931,18 @@ def grant_list(
     if as_json:
         typer.echo(json.dumps(rows, indent=2)); return
     typer.echo(f"Resource grants: {len(rows)}")
+    # Surface a short id so the default tabular output is usable as
+    # input to `agnes admin grant delete <id>` without first re-running
+    # with --json. First 8 chars of the UUID are unambiguous in practice
+    # (grant ids are random UUIDs; collisions on the 8-char prefix
+    # within a single instance's resource_grants table are astronomically
+    # unlikely). The matching bridge lives in `_resolve_grant_id` so
+    # `grant delete` accepts either the full UUID or the 8-char short_id
+    # printed here — and aborts loudly on the rare ambiguous prefix.
+    for r in rows:
+        r["short_id"] = (r.get("id") or "")[:8]
     _print_rows(rows, [
+        ("short_id", "ID", 9),
         ("group_name", "GROUP", 20),
         ("resource_type", "RESOURCE TYPE", 22),
         ("resource_id", "RESOURCE ID", 40),
@@ -920,6 +962,19 @@ def grant_create(
     ),
 ):
     """Grant a group access to a specific resource.
+
+    Arguments are positional, not flags — adjust shell completions /
+    scripts accordingly:
+
+    \b
+        agnes admin grant create <group> <resource_type> <resource_id>
+
+    Example:
+
+    \b
+        agnes admin grant create analysts table order_economics
+        agnes admin grant create analysts marketplace_plugin foundry-ai/metrics
+        agnes admin grant create critical-ops data_package weekly-revenue --requirement required
 
     v49: the optional ``--requirement`` flag controls whether the grant
     is opt-in (``available``, default) or always-in-stack (``required``).
@@ -1002,8 +1057,14 @@ def grant_create(
 
 
 @grant_app.command("delete")
-def grant_delete(grant_id: str = typer.Argument(..., help="Grant id")):
-    """Delete a grant by id."""
+def grant_delete(grant_ref: str = typer.Argument(..., help="Grant id (full UUID or 8-char short_id from `grant list`)")):
+    """Delete a grant by id.
+
+    Accepts either the full UUID or the 8-char short_id printed by
+    ``agnes admin grant list``. See :func:`_resolve_grant_id` for the
+    matching rules (exact match preferred; otherwise unique prefix match).
+    """
+    grant_id = _resolve_grant_id(grant_ref)
     resp = api_delete(f"/api/admin/grants/{grant_id}")
     if resp.status_code in (200, 204):
         typer.echo(f"Deleted grant {grant_id}"); return

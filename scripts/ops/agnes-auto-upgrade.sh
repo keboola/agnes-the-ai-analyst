@@ -14,6 +14,25 @@
 # (sdb at /data, sdc parallel at /data-state) — see docs/state-dir.md.
 set -euo pipefail
 cd /opt/agnes
+
+# Single-instance guard. GCE live migration / clock-jump events make
+# cron deliver several catch-up ticks in a single second (saw 4 ticks
+# in ≤2s on a freshly-migrated VM), and parallel runs of this script
+# race on `docker compose pull` + `docker images --digest` — different
+# runners observe different digest values for the same tag, the diff
+# trips the "image digest moved" branch, and a `docker compose up -d`
+# fires for an upgrade that hasn't actually happened. flock with -n
+# (non-blocking) means the second runner exits cleanly without
+# log-spamming; the next regular 5-min tick handles whatever real
+# change is pending. /var/lock survives reboots on Ubuntu (tmpfs is
+# recreated at boot, but that's fine — the lock only needs to be
+# unique among concurrently-running processes).
+exec 9>/var/lock/agnes-auto-upgrade.lock
+flock -n 9 || {
+  logger -t agnes-auto-upgrade "another instance holds the lock — exiting"
+  exit 0
+}
+
 # shellcheck disable=SC1091
 set -a; . /opt/agnes/.env; set +a
 
