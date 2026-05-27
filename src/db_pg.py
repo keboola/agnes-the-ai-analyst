@@ -106,6 +106,23 @@ def get_engine() -> sa.Engine:
         return _engine
 
 
+def dispose_engine() -> None:
+    """Dispose the singleton engine + clear the cache.
+
+    Next ``get_engine()`` call will re-resolve the URL and rebuild the
+    engine. Called by ``POST /api/admin/db/migrate`` after a successful
+    backend flip to make new repository operations land on the new
+    backend without an app restart (though the app DOES restart on
+    most migrations — this is a defence-in-depth runtime path).
+    """
+    global _engine, _session_factory
+    with _lock:
+        if _engine is not None:
+            _engine.dispose()
+            _engine = None
+        _session_factory = None
+
+
 @contextlib.contextmanager
 def get_session() -> Iterator[Session]:
     """Yield a Session bound to the singleton engine.

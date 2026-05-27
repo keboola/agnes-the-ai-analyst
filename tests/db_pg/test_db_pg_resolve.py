@@ -45,3 +45,22 @@ def test_resolve_raises_when_all_missing(tmp_path, monkeypatch):
     from src.db_pg import _resolve_url
     with pytest.raises(RuntimeError, match="Postgres URL is unset"):
         _resolve_url()
+
+
+def test_dispose_engine_clears_singleton(pg_engine, monkeypatch):
+    """After dispose_engine(), next get_engine() re-resolves URL."""
+    # Point the singleton's URL resolver at the per-test pg_engine
+    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+
+    import src.db_pg as db_pg
+    db_pg.dispose()  # ensure clean starting state
+
+    first = db_pg.get_engine()
+    db_pg.dispose_engine()
+    # Internal singleton should be None now; get_engine recreates
+    second = db_pg.get_engine()
+    # Different engine instances (re-resolution happened)
+    assert first is not second
+
+    # Cleanup so following tests start with no singleton bound to this URL
+    db_pg.dispose()
