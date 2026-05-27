@@ -63,7 +63,9 @@ from pathlib import Path
 
 # Substrings that identify "our" hook commands. Includes legacy `da sync`
 # so a workspace bootstrapped by an older CLI gets cleanly upgraded on the
-# next `agnes init` run.
+# next `agnes init` run. `agnes init` is listed so the one-time setup hook
+# written into Cowork bundles is replaced by the proper pull/push hooks the
+# first time `agnes init` calls `install_claude_hooks`.
 _OUR_COMMAND_MARKERS = (
     "agnes self-upgrade",
     "agnes pull",
@@ -72,6 +74,7 @@ _OUR_COMMAND_MARKERS = (
     "agnes capture-session",
     "agnes mark-private",
     "agnes statusline",
+    "agnes init",
     "da sync",
 )
 
