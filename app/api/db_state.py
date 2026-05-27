@@ -162,3 +162,12 @@ def start_migration(payload: MigrateRequest) -> dict:
         lock.__exit__(None, None, None)
 
     return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/job/{job_id}", dependencies=[Depends(require_admin)])
+def get_job(job_id: str) -> dict:
+    """Return migration job status (poll target for POST /migrate clients)."""
+    path = _jobs_dir() / f"{job_id}.json"
+    if not path.exists():
+        raise HTTPException(404, detail=f"Unknown job_id: {job_id}")
+    return json.loads(path.read_text())

@@ -181,3 +181,46 @@ def test_post_migrate_409_when_in_progress(seeded_app, monkeypatch):
         )
         assert r.status_code == 409, r.text
         assert "in progress" in r.json()["detail"].lower()
+
+
+def test_get_job_returns_status(seeded_app, monkeypatch):
+    """GET /job/{id} returns persisted JSON shape."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    (jobs_dir / "abc.json").write_text(json.dumps({
+        "schema_version": 1, "job_id": "abc", "status": "success",
+        "source_backend": "duckdb", "target_backend": "side_car",
+        "started_at": "2026-05-27T16:00:00+00:00",
+        "completed_at": "2026-05-27T16:02:00+00:00",
+        "current_step": "flip_backend", "progress_pct": 100,
+        "summary": {"tables_migrated": 28, "rows_total": 1234},
+        "error": None,
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.get(
+        "/api/admin/db/job/abc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "success"
+    assert data["summary"]["tables_migrated"] == 28
+
+
+def test_get_job_404_unknown(seeded_app, monkeypatch):
+    """Unknown job_id returns 404."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.get(
+        "/api/admin/db/job/nonexistent",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 404, r.text
