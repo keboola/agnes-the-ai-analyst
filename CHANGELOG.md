@@ -10,6 +10,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- **`customer-instance` module: per-VM OAuth client secrets.** New optional
+  fields `oauth_client_id_secret_name` + `oauth_client_secret_secret_name` on
+  `prod_instance` and `dev_instances` items override the legacy shared
+  `google-oauth-client-{id,secret}` Secret Manager names (v1.x default —
+  identical OAuth client across every VM in the module call). Empty fields
+  fall back to the legacy names, so existing callers see no plan changes; set
+  per VM to point each instance at its own OAuth client (recommended for
+  prod isolation — different redirect URIs, separate blast radius from
+  Google's end). The IAM binding fans out via the new
+  `google_secret_manager_secret_iam_member.vm_oauth` resource keyed on the
+  union of all non-empty per-instance names. All VMs share one SA, so this
+  buys isolation at Google's OAuth client layer but not at-rest in Secret
+  Manager — a per-VM SA refactor is tracked for a future cut. Bump to
+  `infra-v1.10.0`.
+
 ## [0.55.20] — 2026-05-27
 
 ### Added
