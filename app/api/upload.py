@@ -16,10 +16,8 @@ from app.auth.dependencies import get_current_user
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
 from src.db import get_system_db
+from src.repositories.audit import AuditRepository
 
-from src.repositories import (
-    audit_repo,
-)
 logger = logging.getLogger(__name__)
 
 _FILENAME_RE = re.compile(r"^[A-Za-z0-9._\-]{1,200}$")
@@ -93,7 +91,7 @@ async def upload_session(
 
     conn = get_system_db()
     try:
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=user_id,
             action="session.upload",
             params={"filename": filename[:256], "bytes": size},

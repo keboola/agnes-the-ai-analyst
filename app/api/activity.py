@@ -24,12 +24,10 @@ from fastapi import APIRouter, Depends, Query
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db   # NOTE: lives in app.auth.dependencies, not app.dependencies
+from src.repositories.audit import AuditRepository
+from src.repositories.sync_state import SyncStateRepository
 from src.observability.posthog_client import get_posthog
 
-from src.repositories import (
-    audit_repo,
-    sync_state_repo,
-)
 router = APIRouter(prefix="/api/admin/activity", tags=["activity"])
 
 _HEALTH_CACHE: dict = {"data": None, "expires_at": None}
@@ -63,7 +61,7 @@ def _audit_read(conn, user: dict, endpoint: str, filter_payload: dict) -> None:
     actor_id = (user or {}).get("id") or "anonymous"
     if not _should_audit(actor_id, {"endpoint": endpoint, **filter_payload}):
         return
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=actor_id,
         action="activity.read",
         params={"endpoint": endpoint, **filter_payload},
@@ -98,7 +96,7 @@ def activity_timeline(
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
     cursor = (cursor_ts, cursor_id) if cursor_ts and cursor_id else None
 
-    rows, next_cursor = audit_repo().query(
+    rows, next_cursor = AuditRepository(conn).query(
         since=since,
         user_id=user_id,
         action_prefix=action_prefix,
@@ -174,7 +172,7 @@ def activity_sync(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
-    rows = sync_state_repo().list_recent(since=since, limit=limit)
+    rows = SyncStateRepository(conn).list_recent(since=since, limit=limit)
     _audit_read(conn, user, "sync", {"since_minutes": since_minutes})
     return {"rows": rows}
 

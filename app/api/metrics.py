@@ -9,10 +9,8 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
+from src.repositories.metrics import MetricRepository
 
-from src.repositories import (
-    metric_repo,
-)
 router = APIRouter(tags=["metrics"])
 
 
@@ -46,7 +44,7 @@ async def list_metrics(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all metric definitions, optionally filtered by category."""
-    repo = metric_repo()
+    repo = MetricRepository(conn)
     metrics = repo.list(category=category)
     return {"metrics": metrics, "count": len(metrics)}
 
@@ -58,7 +56,7 @@ async def get_metric(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get a single metric definition by ID."""
-    repo = metric_repo()
+    repo = MetricRepository(conn)
     metric = repo.get(metric_id)
     if metric is None:
         raise HTTPException(status_code=404, detail=f"Metric '{metric_id}' not found")
@@ -72,7 +70,7 @@ async def create_or_update_metric(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Create or update a metric definition (admin only)."""
-    repo = metric_repo()
+    repo = MetricRepository(conn)
     metric = repo.create(
         id=body.id,
         name=body.name,
@@ -105,7 +103,7 @@ async def delete_metric(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Delete a metric definition by ID (admin only)."""
-    repo = metric_repo()
+    repo = MetricRepository(conn)
     deleted = repo.delete(metric_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Metric '{metric_id}' not found")
@@ -128,7 +126,7 @@ async def import_metrics(
         raise HTTPException(status_code=400, detail="Empty YAML file")
 
     metric_list = data if isinstance(data, list) else [data]
-    repo = metric_repo()
+    repo = MetricRepository(conn)
     count = 0
 
     for metric in metric_list:

@@ -15,11 +15,9 @@ from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
 from app.auth.rate_limit import limiter as _rate_limiter
+from src.repositories.users import UserRepository
 
 
-from src.repositories import (
-    users_repo,
-)
 def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
     """Display label for the response payload only — `admin` if the user is
     in the Admin system group, otherwise `user`. Authorization at runtime
@@ -74,7 +72,7 @@ async def send_magic_link(
     logged to stderr and returned in the response body so a developer can
     click it without an email transport.
     """
-    repo = users_repo()
+    repo = UserRepository(conn)
     user = repo.get_by_email(body.email)
 
     # Always return success to prevent email enumeration
@@ -181,7 +179,7 @@ def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> d
     # CAS already validated token + expiry atomically, so no further checks
     # needed — re-running them now would always fail because reset_token was
     # NULL'd in step 3.
-    repo = users_repo()
+    repo = UserRepository(conn)
     user = repo.get_by_email(email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid link")

@@ -21,9 +21,7 @@ accidentally bypass it.
 import logging
 from typing import Optional
 
-# ``repo`` is duck-typed — accepts both the DuckDB ``KnowledgeRepository``
-# and the Postgres ``KnowledgePgRepository`` via the factory in
-# ``src.repositories.knowledge_repo()``.
+from src.repositories.knowledge import KnowledgeRepository
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +34,7 @@ RELATION_TYPE = "likely_duplicate"
 
 
 def _record_duplicate_candidates(
-    repo,
+    repo: KnowledgeRepository,
     new_item: dict,
 ) -> int:
     """Record duplicate-candidate relations for ``new_item``.

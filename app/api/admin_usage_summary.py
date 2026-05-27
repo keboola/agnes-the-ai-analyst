@@ -19,10 +19,8 @@ from fastapi import APIRouter, Depends, Query
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.api.activity import _should_audit
+from src.repositories.audit import AuditRepository
 
-from src.repositories import (
-    audit_repo,
-)
 router = APIRouter(prefix="/api/admin/telemetry", tags=["admin-telemetry"])
 logger = logging.getLogger(__name__)
 
@@ -171,7 +169,7 @@ def usage_summary(
     actor_id = user.get("id") or "anonymous"
     if _should_audit(actor_id, {"endpoint": "usage.summary", "window": window}):
         try:
-            audit_repo().log(
+            AuditRepository(conn).log(
                 user_id=actor_id,
                 action="usage.summary",
                 params={"window": window},

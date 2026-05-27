@@ -33,17 +33,13 @@ from connectors.llm.exceptions import (
     LLMRefusalError,
     LLMTimeoutError,
 )
-
-from src.repositories import (
-    audit_repo,
-)
+from src.repositories.audit import AuditRepository
 from src.usage_ask import (
     RESPONSE_SCHEMA,
     SYSTEM_PROMPT,
     build_prompt,
     validate_select_only,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +100,7 @@ def export_usage(
         "row_count": row_count,
     }
     try:
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=user.get("id"),
             action="usage.export",
             params=audit_params,
@@ -262,7 +258,7 @@ def ask_usage(
     except ValueError as e:
         # Return 200 with rejection details so admin sees what the LLM tried.
         try:
-            audit_repo().log(
+            AuditRepository(conn).log(
                 user_id=user.get("id"),
                 action="usage.ask",
                 params={"question": question, "sql": sql, "rejected": str(e), "llm_ms": llm_ms},
@@ -298,7 +294,7 @@ def ask_usage(
     except Exception as e:
         logger.exception("usage.ask SQL execution failed")
         try:
-            audit_repo().log(
+            AuditRepository(conn).log(
                 user_id=user.get("id"),
                 action="usage.ask",
                 params={"question": question, "sql": validated_sql, "error": str(e), "llm_ms": llm_ms},
@@ -310,7 +306,7 @@ def ask_usage(
     exec_ms = int((time.monotonic() - exec_t0) * 1000)
 
     try:
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=user.get("id"),
             action="usage.ask",
             params={
@@ -395,7 +391,7 @@ def reprocess_usage(
         raise HTTPException(status_code=500, detail=f"reprocess failed: {e}")
 
     try:
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=user.get("id"),
             action="usage.reprocess",
             params=counts,
@@ -438,7 +434,7 @@ def prune_usage(
         raise HTTPException(status_code=500, detail=f"prune failed: {e}")
 
     try:
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=user.get("id"),
             action="usage.prune",
             params={"retention_days": retention, "deleted": deleted, "remaining": after},

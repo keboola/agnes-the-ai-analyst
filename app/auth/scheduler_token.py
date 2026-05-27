@@ -72,50 +72,58 @@ def is_scheduler_token(token: str) -> bool:
     return hmac.compare_digest(token, secret)
 
 
-def ensure_scheduler_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> dict:
+def ensure_scheduler_user(conn: duckdb.DuckDBPyConnection) -> dict:
     """Idempotently provision the scheduler user + Admin group membership.
 
     Called both from the app's startup hook (so the user exists from the
     very first boot) and lazily from :func:`get_scheduler_user` so a token
     presented before the next restart of the app still resolves.
 
-    ``conn`` retained for signature stability — actual repo lookups go
-    through the factory in ``src.repositories``.
+    Returns the user dict in the same shape ``UserRepository.get_by_email``
+    yields elsewhere — the caller treats it as any other authenticated user.
     """
     from src.db import SYSTEM_ADMIN_GROUP
-    from src.repositories import (
-        users_repo,
-        user_groups_repo,
-        user_group_members_repo,
-        user_curated_subscriptions_repo,
-    )
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.users import UserRepository
 
-    users = users_repo()
-    user = users.get_by_email(SCHEDULER_USER_EMAIL)
+    repo = UserRepository(conn)
+    user = repo.get_by_email(SCHEDULER_USER_EMAIL)
     if not user:
         user_id = str(uuid.uuid4())
-        users.create(
+        repo.create(
             id=user_id,
             email=SCHEDULER_USER_EMAIL,
             name=SCHEDULER_USER_NAME,
+            # No password_hash — this user authenticates via the shared
+            # secret only, never via /auth/login. Keeps the bootstrap
+            # check ("any user has a password?") accurate.
             password_hash=None,
         )
         # v39: scheduler service user gets the same mandatory tier as
-        # human users. Soft-fail to mirror the original try/except.
+        # human users. The scheduler's plugin set is rarely consumed
+        # interactively, but keeping the fanout symmetric prevents
+        # surprising drift when an operator inspects this user's stack.
         try:
-            user_curated_subscriptions_repo().fanout_system_for_user(user_id)
+            from src.repositories.user_curated_subscriptions import (
+                UserCuratedSubscriptionsRepository,
+            )
+            UserCuratedSubscriptionsRepository(
+                conn
+            ).fanout_system_for_user(user_id)
         except Exception:
             logger.exception(
                 "system-plugin fanout failed for scheduler user",
             )
-        user = users.get_by_email(SCHEDULER_USER_EMAIL)
+        user = repo.get_by_email(SCHEDULER_USER_EMAIL)
         logger.info("Seeded scheduler service user: %s", SCHEDULER_USER_EMAIL)
 
-    admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
+    admin_group = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
+    ).fetchone()
     if admin_group:
-        user_group_members_repo().add_member(
+        UserGroupMembersRepository(conn).add_member(
             user_id=user["id"],
-            group_id=admin_group["id"],
+            group_id=admin_group[0],
             source="system_seed",
             added_by="app.auth.scheduler_token:ensure_scheduler_user",
         )
@@ -123,23 +131,20 @@ def ensure_scheduler_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> d
     return user
 
 
-def get_scheduler_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Optional[dict]:
+def get_scheduler_user(conn: duckdb.DuckDBPyConnection) -> Optional[dict]:
     """Look up the scheduler user, seeding it on demand if absent.
 
     Returns None only when seeding fails — typically a malformed schema or
     an out-of-band DB error. The caller (``get_current_user``) maps None
     to a normal 401 so the failure is observable but does not crash.
-
-    ``conn`` retained for signature stability; actual lookup is through
-    the factory in ``src.repositories``.
     """
-    from src.repositories import users_repo
+    from src.repositories.users import UserRepository
 
-    user = users_repo().get_by_email(SCHEDULER_USER_EMAIL)
+    user = UserRepository(conn).get_by_email(SCHEDULER_USER_EMAIL)
     if user:
         return user
     try:
-        return ensure_scheduler_user()
+        return ensure_scheduler_user(conn)
     except Exception as e:  # noqa: BLE001
         logger.error("Failed to provision scheduler user on demand: %s", e)
         return None

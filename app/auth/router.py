@@ -15,13 +15,9 @@ from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db
 from app.auth.rate_limit import limiter as _rate_limiter
 from src.db import SYSTEM_ADMIN_GROUP
+from src.repositories.users import UserRepository
+from src.repositories.user_group_members import UserGroupMembersRepository
 
-from src.repositories import (
-    audit_repo,
-    user_curated_subscriptions_repo,
-    user_group_members_repo,
-    users_repo,
-)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -50,8 +46,9 @@ def _audit(user_id: str, action: str, result: str | None = None) -> None:
     """Fire-and-forget audit log entry. Swallows all errors."""
     try:
         from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
         audit_conn = get_system_db()
-        audit_repo().log(
+        AuditRepository(audit_conn).log(
             user_id=user_id,
             action=action,
             resource="auth",
@@ -70,7 +67,7 @@ async def create_token(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Issue a JWT token. Requires password authentication."""
-    repo = users_repo()
+    repo = UserRepository(conn)
     user = repo.get_by_email(body.email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -133,7 +130,7 @@ async def bootstrap(
 
     Deactivates as soon as any user has a password_hash.
     """
-    repo = users_repo()
+    repo = UserRepository(conn)
     existing = repo.list_all()
 
     # Bootstrap is locked once anyone has a password set.
@@ -165,7 +162,12 @@ async def bootstrap(
         # it anyway so the later bootstrap-of-rebuilt-instance path (rare
         # but supported) inherits the existing mandatory tier.
         try:
-            user_curated_subscriptions_repo().fanout_system_for_user(user_id)
+            from src.repositories.user_curated_subscriptions import (
+                UserCuratedSubscriptionsRepository,
+            )
+            UserCuratedSubscriptionsRepository(
+                conn
+            ).fanout_system_for_user(user_id)
         except Exception:
             logger.exception(
                 "system-plugin fanout failed for bootstrap user %s",
@@ -179,7 +181,7 @@ async def bootstrap(
         "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
     ).fetchone()
     if admin_group:
-        user_group_members_repo().add_member(
+        UserGroupMembersRepository(conn).add_member(
             user_id=user_id,
             group_id=admin_group[0],
             source="system_seed",

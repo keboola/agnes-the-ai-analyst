@@ -36,11 +36,8 @@ def fake_registry_with_one_materialized(monkeypatch, tmp_path):
         def update_sync(self, **kw): self.update_sync_calls.append(kw)
 
     state = _State(None)
-    # Factory swap: api module imports table_registry_repo / sync_state_repo
-    # from src.repositories and calls them with no args.
-    fake_registry = _Repo(None)
-    monkeypatch.setattr("app.api.sync.table_registry_repo", lambda: fake_registry)
-    monkeypatch.setattr("app.api.sync.sync_state_repo", lambda: state)
+    monkeypatch.setattr("app.api.sync.TableRegistryRepository", _Repo)
+    monkeypatch.setattr("app.api.sync.SyncStateRepository", lambda c: state)
     return state
 
 
@@ -93,7 +90,7 @@ def test_default_schedule_falls_through_env_then_every_1h(
         def __init__(self, conn): pass
         def list_all(self): return pinned_rows
 
-    monkeypatch.setattr(_sm, "table_registry_repo", lambda: _RepoWithSched(None))
+    monkeypatch.setattr(_sm, "TableRegistryRepository", _RepoWithSched)
     _run_materialized_pass(MagicMock(), MagicMock())
     assert captured["schedule"] == "every 30m", captured
 
@@ -149,8 +146,8 @@ def fake_registry_with_three_materialized(monkeypatch, tmp_path):
         def set_error(self, *a, **kw): pass
         def update_sync(self, **kw): pass
 
-    monkeypatch.setattr("app.api.sync.table_registry_repo", lambda: _Repo(None))
-    monkeypatch.setattr("app.api.sync.sync_state_repo", lambda: _State(None))
+    monkeypatch.setattr("app.api.sync.TableRegistryRepository", _Repo)
+    monkeypatch.setattr("app.api.sync.SyncStateRepository", _State)
     return rows
 
 

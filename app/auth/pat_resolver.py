@@ -28,6 +28,8 @@ import duckdb
 from fastapi import Request
 
 from app.auth.jwt import verify_token
+from src.repositories.access_tokens import AccessTokenRepository
+from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ def _client_ip(request: Optional[Request]) -> Optional[str]:
 
 
 def resolve_token_to_user(
-    conn: Optional[duckdb.DuckDBPyConnection],
+    conn: duckdb.DuckDBPyConnection,
     token: str,
     request: Optional[Request] = None,
 ) -> Tuple[Optional[dict], Optional[ResolutionReason]]:
@@ -65,10 +67,6 @@ def resolve_token_to_user(
     failed so callers can map to a specific HTTP 401 detail. Side effects
     (last_used_at update, first-use-from-new-ip audit) are best-effort and
     never block authentication.
-
-    ``conn`` is retained for signature stability — repositories are looked
-    up via the factory in ``src.repositories`` (DuckDB or Postgres per
-    ``AGNES_DB_URL``), so this argument is ignored.
     """
     if not token:
         return None, "no_token"
@@ -77,8 +75,7 @@ def resolve_token_to_user(
     if not payload:
         return None, "invalid_token"
 
-    from src.repositories import users_repo, access_token_repo
-    user = users_repo().get_by_id(payload.get("sub", ""))
+    user = UserRepository(conn).get_by_id(payload.get("sub", ""))
     if not user:
         return None, "user_not_found"
     if not bool(user.get("active", True)):
@@ -88,7 +85,7 @@ def resolve_token_to_user(
         return user, None
 
     # PAT: extra DB-backed validation (revoked/expired/unknown/hash).
-    tokens_repo = access_token_repo()
+    tokens_repo = AccessTokenRepository(conn)
     record = tokens_repo.get_by_id(payload.get("jti", ""))
     if not record:
         return None, "pat_unknown"
@@ -120,8 +117,8 @@ def resolve_token_to_user(
     already_used = record.get("last_used_at") is not None
     if already_used and current_ip and current_ip != previous_ip:
         try:
-            from src.repositories import audit_repo
-            audit_repo().log(
+            from src.repositories.audit import AuditRepository
+            AuditRepository(conn).log(
                 user_id=user["id"],
                 action="token.first_use_new_ip",
                 resource=f"token:{payload['jti']}",

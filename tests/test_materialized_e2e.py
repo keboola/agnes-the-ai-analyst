@@ -117,12 +117,10 @@ def test_e2e_register_then_materialize_then_manifest_via_repo(
     `_build_manifest_for_user` admin path. Catches integration breakage
     that unit tests miss because each only sees one layer."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
-    (tmp_path / "data" / "state").mkdir(parents=True, exist_ok=True)
-    # Use the singleton so both the test setup and the
-    # endpoint-internal factory observe the same DB.
-    from src.db import close_system_db, get_system_db
-    close_system_db()
-    conn = get_system_db()
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    from src.db import _ensure_schema
+    _ensure_schema(conn)
 
     table_id = "orders_summary_e2e"
     repo = TableRegistryRepository(conn)
