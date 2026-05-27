@@ -136,3 +136,24 @@ def test_migrate_users_round_trip(tmp_path, pg_with_schema):
     assert report["pg_rows"] == 2
     assert report["checksum_match"] is True
     duck_conn.close()
+
+
+def test_non_id_pk_tables_are_in_pk_columns_map():
+    """Tables whose primary key isn't a single column named 'id' must be
+    registered in _PK_COLUMNS so the generic copy loop knows what to
+    ON CONFLICT on. Catches the regression where a new model with a
+    composite or renamed PK is added without updating _PK_COLUMNS."""
+    from src import models  # noqa: F401 — ensure all models register
+    from src.db_pg import Base
+    from scripts.migrate_duckdb_to_pg import _PK_COLUMNS
+
+    missing: list[str] = []
+    for table in Base.metadata.sorted_tables:
+        pk_cols = [c.name for c in table.primary_key.columns]
+        if pk_cols != ["id"] and table.name not in _PK_COLUMNS:
+            missing.append(f"{table.name} (PK={pk_cols})")
+    assert not missing, (
+        "Tables with non-id primary keys must be registered in _PK_COLUMNS:\n  - "
+        + "\n  - ".join(missing)
+        + "\nAdd them to scripts/migrate_duckdb_to_pg/__init__.py._PK_COLUMNS."
+    )
