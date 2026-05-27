@@ -40,6 +40,7 @@ def _classes_in_template(text: str) -> set[str]:
 DEPRECATED_CLASSES = {
     "btn-primary-v2": "btn-primary",
     "btn-secondary-v2": "btn-secondary",
+    "btn-warning": "btn-danger",
     "modal-btn": "btn + .btn-primary / .btn-secondary",
     "users-table": "data-table",
     "gp-table": "data-table",
@@ -94,7 +95,7 @@ def test_canonical_primitives_defined() -> None:
         ".btn-secondary",
         ".btn-ghost",
         ".btn-danger",
-        ".btn-warning",
+        ".btn-required",
         # form controls
         ".search-input",
         ".filter-bar",
@@ -134,6 +135,40 @@ def test_no_deprecated_class_in_templates() -> None:
             f"  .{cls} → use {DEPRECATED_CLASSES[cls]} ({sorted(files)})"
             for cls, files in offenders.items()
         )
+    )
+
+
+_LEGACY_TOKEN_FALLBACK_ALLOWLIST = {
+    # Not yet converted — tracked as follow-up PRs. Remove each entry as the
+    # template is converted (replace var(--primary, #NNN) → var(--ds-primary)).
+    "admin_groups.html",
+    "admin_group_detail.html",
+    "admin_marketplaces.html",
+    "admin_server_config.html",
+    "admin_user_detail.html",
+    "admin_users.html",
+    "setup.html",
+}
+
+
+def test_no_legacy_primary_token_with_hex_fallback() -> None:
+    """var(--primary, #XXXXXX) encodes the old blue colour as a fallback.
+    If the compat shim in design-tokens.css is ever removed the fallback
+    fires and the element reverts to blue. Use var(--ds-primary) instead.
+
+    Files in _LEGACY_TOKEN_FALLBACK_ALLOWLIST are known-unconverted templates
+    tracked for cleanup in dedicated follow-up PRs — remove from the list
+    as each template is converted."""
+    pattern = re.compile(r"var\(--primary\s*,\s*#")
+    offenders: list[str] = []
+    for path in _all_html():
+        if path.name in _LEGACY_TOKEN_FALLBACK_ALLOWLIST:
+            continue
+        if pattern.search(path.read_text(encoding="utf-8")):
+            offenders.append(str(path))
+    assert not offenders, (
+        "var(--primary, #<hex>) found — use var(--ds-primary) instead:\n"
+        + "\n".join(f"  {p}" for p in offenders)
     )
 
 

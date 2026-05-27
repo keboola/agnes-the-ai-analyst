@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Profile — {{ config.INSTANCE_NAME }}{% endblock %}
 
+{% block head_extra %}
+<style>
+.group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
+.group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
+.group-chip.is-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
+</style>
+{% endblock %}
+
 {% block content %}
 {# Design-system component macros — the 3 section cards (Account, Group
    memberships, Effective access) render via `ds.panel(tag='section',
@@ -8,212 +17,6 @@
    troubleshooting `<details>` can't go through the macro (no
    <details>/<summary> support); it carries `.ds-card` explicitly. #}
 {% import "_components.html" as ds %}
-<style>
-  /* /me/profile — read-only account view with Google Workspace group list.
-     Matches the card/hero vocabulary used by the /me/profile PAT section. */
-  body > .container { max-width: 1100px; }
-  .profile-page {
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 28px 8px 48px;
-    box-sizing: border-box;
-    font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
-  }
-  @media (max-width: 720px) {
-    .profile-page { padding: 20px 0 32px; }
-  }
-
-  /* Hero box (gradient, padding, radius, max-width, shadow,
-     typography) comes from the canonical `.page-header--hero` rule
-     in style-custom.css — markup migrated to use the shared
-     `_page_hero.html` include. */
-
-  /* .section-card sits on top of .ds-card (rendered by ds.panel) — base
-     surface/border/shadow comes from .ds-card; this rule overrides only
-     the radius (8 → 12, matches the rest of /me/profile), padding
-     (24 → 20×24), and adds the inter-section margin. */
-  .section-card {
-    border-radius: var(--radius-xl);
-    padding: var(--space-5) var(--space-6);
-    margin-bottom: var(--space-4);
-  }
-  .section-card h3 {
-    margin: 0 0 14px;
-    font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    color: var(--text-secondary, #6b7280);
-  }
-  /* <details>-based section header: <summary> is phrasing-only, so the
-     header text sits directly in it (no nested <h3>). Mirror the
-     .section-card h3 look. */
-  details.section-card > summary {
-    font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    color: var(--text-secondary, #6b7280);
-    cursor: pointer;
-  }
-
-  .account-grid {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 10px 18px;
-    font-size: 14px;
-  }
-  .account-grid .k {
-    color: var(--text-secondary, #6b7280);
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    font-weight: 600;
-    align-self: center;
-  }
-  .account-grid .v {
-    color: var(--text-primary, #1A253C);
-    font-weight: 500;
-    word-break: break-word;
-  }
-
-  .groups-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .group-row {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 10px 14px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 10px;
-    background: var(--background, #f9fafb);
-  }
-  .group-row .group-name {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-primary, #1A253C);
-    min-width: 0;
-    flex: 0 1 auto;
-  }
-  .group-row .group-id {
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 12px;
-    color: var(--text-secondary, #6b7280);
-    word-break: break-all;
-    flex: 1 1 auto;
-  }
-  /* Same chip vocabulary as /admin/users + /admin/users/{id}. Name match
-     wins over origin so an env-mapped Admin/Everyone keeps the canonical
-     color even when their server-side origin is google_sync. */
-  .group-chip {
-    display: inline-block;
-    padding: 3px 10px; border-radius: 999px;
-    font-size: 12px; font-weight: 500;
-    background: #ede9fe; color: #6d28d9;  /* default = custom (purple) */
-  }
-  .group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
-  .group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
-  .group-chip.is-google_sync { background: #dcfce7; color: #166534; }
-  .group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
-
-  .empty-state {
-    padding: 20px 0 4px;
-    color: var(--text-secondary, #6b7280);
-    font-size: 14px;
-    line-height: 1.55;
-  }
-  .empty-state .empty-title {
-    font-weight: 600;
-    color: var(--text-primary, #1A253C);
-    margin-bottom: 4px;
-  }
-
-  /* Effective roles section: chip cloud + grouped breakdown */
-  .role-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin: 0 0 4px;
-  }
-  .role-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 12px;
-    font-weight: 600;
-    background: rgba(46, 168, 119, 0.10);
-    color: var(--primary);
-    border: 1px solid rgba(46, 168, 119, 0.25);
-  }
-  .role-chip.is-core { background: rgba(16, 185, 129, 0.10); color: #047857; border-color: rgba(16, 185, 129, 0.25); }
-
-  .grant-list, .group-roles-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .grant-row, .group-roles-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 10px;
-    background: var(--background, #f9fafb);
-    flex-wrap: wrap;
-  }
-  .grant-row .grant-key, .group-roles-row .group-roles-name {
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-primary, #1A253C);
-  }
-  .group-roles-row .group-roles-name {
-    font-family: var(--font-primary, 'Inter', system-ui, sans-serif);
-  }
-  .grant-row .grant-source {
-    font-size: 11.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: rgba(107, 114, 128, 0.12);
-    color: var(--text-secondary, #6b7280);
-    font-weight: 600;
-  }
-  .grant-row .grant-source.source-direct { background: rgba(46, 168, 119, 0.12); color: var(--primary); }
-  .grant-row .grant-source.source-auto { background: rgba(245, 158, 11, 0.12); color: #b45309; }
-  .grant-row .grant-meta {
-    font-size: 12px;
-    color: var(--text-secondary, #6b7280);
-    margin-left: auto;
-  }
-
-  .group-roles-row .group-roles-arrow {
-    color: var(--text-secondary, #9ca3af);
-    font-weight: 400;
-  }
-  .group-roles-row .role-chips { margin: 0; }
-
-  .effective-help {
-    margin-top: 12px;
-    font-size: 12.5px;
-    color: var(--text-secondary, #6b7280);
-    line-height: 1.55;
-  }
-</style>
 
 <div class="profile-page">
   {% set page_hero_eyebrow = "Your account" %}

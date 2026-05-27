@@ -5,10 +5,9 @@
 {% block content %}
 {# Design-system component macros — the 3 hero action buttons
    (Add/Remove from stack + the required-state placeholder) render via
-   `ds.button`. `.btn-required` stays as a page-local amber-disabled
-   exception (no canonical match in the .btn family yet — flagged in
-   system.md follow-ups). Per-item vote/dismiss buttons are styled
-   via page-local selectors and stay as-is. #}
+   `ds.button`. `.btn-required` is canonical (style-custom.css) — the
+   amber-disabled mandated state. Per-item vote/dismiss buttons are
+   styled via page-local selectors and stay as-is. #}
 {% import "_components.html" as ds %}
 <style>
   .dom-detail-header {
@@ -34,21 +33,9 @@
     color: var(--text-secondary, #5f6368);
   }
   .dom-detail-actions { display: flex; gap: 8px; }
-  .dom-detail-actions .btn {
-    padding: 8px 16px; border-radius: 8px;
-    font-size: 13px; font-weight: 600; cursor: pointer;
-    border: 1px solid var(--border, #eceff1);
-    background: var(--surface, #fff);
-  }
-  .dom-detail-actions .btn-primary {
-    background: var(--primary, var(--primary)); color: #fff;
-    border-color: var(--primary, var(--primary));
-  }
-  .dom-detail-actions .btn-danger { color: #b91c1c; border-color: #fecaca; }
-  .dom-detail-actions .btn-required {
-    background: #fef3c7; color: #92400e; border-color: #fde68a;
-    cursor: not-allowed;
-  }
+  /* Hero action buttons render via ds.button → canonical .btn family in
+     style-custom.css supplies bg/border/color/padding for primary, danger,
+     and required (amber-disabled). No page-local overrides needed. */
 
   .memory-item {
     background: var(--surface, #fff);
@@ -109,8 +96,8 @@
     transition: all 0.15s ease;
   }
   .memory-item__votes button:hover {
-    border-color: var(--primary, var(--primary));
-    color: var(--primary, var(--primary));
+    border-color: var(--ds-primary);
+    color: var(--ds-primary);
     background: rgba(46, 168, 119, 0.06);
   }
   .memory-item__votes button[data-vote="down"]:hover {
@@ -150,7 +137,7 @@
     color: var(--text-secondary, #5f6368); text-decoration: none;
     font-size: 13px; margin-bottom: 12px;
   }
-  .back-link:hover { color: var(--primary, var(--primary)); }
+  .back-link:hover { color: var(--ds-primary); }
 </style>
 
 <a class="back-link" href="/corporate-memory">← All memory domains</a>
@@ -169,8 +156,6 @@
   </div>
   <div class="dom-detail-actions">
     {% if effective_requirement == 'required' %}
-      {# `.btn-required` keeps page-local amber-disabled style — no
-         exact match in the canonical .btn family. #}
       <button class="btn btn-required" disabled>In stack (required)</button>
     {% elif in_stack %}
       {{ ds.button('Remove from stack', variant='danger',

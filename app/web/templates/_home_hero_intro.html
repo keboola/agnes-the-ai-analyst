@@ -1,0 +1,60 @@
+{#
+  Parametric home intro hero.
+  All content is driven by variables — set them with {% set %} before
+  {% include %} in the calling template. No hardcoded strings here.
+
+  Required variables:
+    hero_eyebrow         — eyebrow label (plain text)
+    hero_title_html      — h1 inner HTML; may contain <span class="accent">
+    hero_lede            — list of HTML paragraph strings
+    hero_pillars         — list of dicts {title: str, desc: str (HTML)}
+    hero_show_setup_cta  — bool: render primary "Set up" CTA
+    hero_setup_cta_href  — href for primary CTA
+    hero_setup_cta_label — label for primary CTA
+    hero_show_browse_cta — bool: render secondary "Just browse" CTA
+    hero_browse_cta_href — href for secondary CTA
+    hero_browse_cta_label — label for secondary CTA
+
+  Optional variables (empty string / falsy = hidden):
+    hero_instance_overview — operator HTML rendered in .home-hero-footnotes
+    hero_instance_support  — operator HTML rendered in .home-hero-support
+#}
+<section class="home-hero-intro">
+    <div class="eyebrow">{{ hero_eyebrow }}</div>
+    <h1>{{ hero_title_html | safe }}</h1>
+
+    {% for para in hero_lede %}
+    <p class="lede">{{ para | safe }}</p>
+    {% endfor %}
+
+    <div class="home-hero-cta">
+        {% if hero_show_setup_cta %}
+        <a class="btn-intro btn-intro-primary" href="{{ hero_setup_cta_href }}">{{ hero_setup_cta_label | safe }}</a>
+        {% endif %}
+        {% if hero_show_browse_cta %}
+        <a class="btn-intro btn-intro-secondary" href="{{ hero_browse_cta_href }}">{{ hero_browse_cta_label | safe }}</a>
+        {% endif %}
+    </div>
+
+    {% if hero_pillars %}
+    <div class="home-hero-pillars">
+        {% for pillar in hero_pillars %}
+        <div class="pillar">
+            <div class="pillar-h">{{ pillar.title }}</div>
+            <p>{{ pillar.desc | safe }}</p>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if hero_instance_overview %}
+    <div class="home-hero-footnotes">{{ hero_instance_overview | safe }}</div>
+    {% endif %}
+
+    {% if hero_instance_support %}
+    <div class="home-hero-support" role="note" aria-label="Support">
+        <div class="home-hero-support-icon" aria-hidden="true">&#x1F4AC;</div>
+        <div class="home-hero-support-body">{{ hero_instance_support | safe }}</div>
+    </div>
+    {% endif %}
+</section>
