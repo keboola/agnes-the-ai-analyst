@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **`/admin/tables` shadowing `.btn` CSS deleted; buttons inherit canonical visual contract.** The markup on this page already used canonical `.btn` / `.btn-primary` / `.btn-secondary` / `.btn-sm` class names (migrated piecemeal across prior commits), but the template carried its own `.btn` family rules that shadowed canonical — most visibly, `.btn-secondary` rendered with a filled grey background (`var(--border-light)`) rather than the canonical white-bg + grey-border outline. Those page-local rules are gone (`.btn`, `.btn-primary`, `.btn-primary:hover`, `.btn-primary:disabled`, `.btn-secondary`, `.btn-secondary:hover`, `.btn-danger`, `.btn-danger:hover`, `.btn-sm`); buttons now match the unified admin look. Two surviving bare `<button class="btn">` sites (Remove-from-package + Delete-package destructive actions, which had inline `color:#b91c1c` overrides) were upgraded to canonical `.btn-danger` (the second commit on #437 fixed the same hazard there). `.btn-icon` (28×28 icon-only button family with `[data-tooltip]:hover::after` chip styling) stays page-local because canonical `.btn--icon` is just a size modifier with no tooltip behavior — flagged for a later pass once a canonical tooltip primitive exists. Visible delta: toolbar + modal secondary buttons shift from filled-grey to outlined-white; destructive buttons shift from filled-red to outlined-red (canonical "calm — committed to by hover" treatment).
+
 ## [0.55.16] — 2026-05-27
 
 ### Changed
