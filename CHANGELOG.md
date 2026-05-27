@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Profile pass in `_run_sync` now runs each `profile_table` call in a
+  fresh Python subprocess** (`src/_profiler_worker.py`, new generic
+  helper `src/_subprocess_runner.py`). Running the profile loop in-
+  process drifted resident memory by ~100-300 MiB per iteration even
+  though each `profile_table` cleaned up its DuckDB session correctly
+  — Python's allocator keeps freed anon mmap arenas in its free-list
+  and libc's heap doesn't return them to the OS. After ~10-30 iterations
+  the cgroup OOM killer reaped uvicorn at ~4.18 GiB anon-rss (observed
+  on dev with the materialize-cap fixes from PR #431/#433/#434/#436
+  already in place; smaller caps shipped but the leak path was the
+  loop itself, not any individual call). Process exit guarantees full
+  memory return to the OS, so the per-iteration accumulation pattern
+  is broken regardless of how many tables are in scope. The parent
+  still owns the `ProfileRepository.save(...)` write so system.duckdb
+  stays single-writer.
+
 ## [0.55.18] — 2026-05-27
 
 ### Changed
