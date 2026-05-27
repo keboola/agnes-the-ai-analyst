@@ -52,6 +52,28 @@
         </div>
         {% endif %}
 
+        {# ── #392: live sync-status indicator ──
+           Initial state is server-rendered from `data_stats.last_updated`
+           (the MAX `last_sync` across all sync_states, computed by the
+           dashboard route). On page load the JS at the bottom of this
+           template polls `GET /api/sync/status` every 30s; when
+           `locked=true` the dot pulses and the text flips to "Sync
+           running…". The endpoint returns just `{locked: bool}` (it's
+           public/no-auth, designed for the host-side auto-upgrade cron),
+           so pass/fail / last-run timestamp aren't fetched live — a
+           future endpoint extension could enable that. #}
+        <div class="sync-status" id="syncStatus"
+             data-last-sync="{{ data_stats.last_updated or '' }}">
+            <span class="sync-status__dot" aria-hidden="true"></span>
+            <span class="sync-status__text">
+                {% if data_stats.last_updated %}
+                Last sync: {{ data_stats.last_updated }}
+                {% else %}
+                No sync recorded yet
+                {% endif %}
+            </span>
+        </div>
+
         <!-- ═══════════════ STATS ROW ═══════════════ -->
         <div class="stats-row">
             <div class="stat-card">
@@ -424,6 +446,34 @@
             alert('Failed to unlink. Please try again.');
         }
     }
+
+    // ── #392: poll /api/sync/status every 30s to drive the .sync-status pill.
+    //   The endpoint is intentionally tiny — `{locked: bool}` only — so this
+    //   shows the LIVE running indicator, while the static text reflects the
+    //   server-rendered `data_stats.last_updated` from page load. Errors are
+    //   swallowed so a brief network blip doesn't clutter the console.
+    (function setupSyncStatusPoll() {
+        const el = document.getElementById('syncStatus');
+        if (!el) return;
+        const textEl = el.querySelector('.sync-status__text');
+        const lastSyncText = el.dataset.lastSync
+            ? `Last sync: ${el.dataset.lastSync}`
+            : 'No sync recorded yet';
+        async function poll() {
+            try {
+                const res = await fetch('/api/sync/status', { credentials: 'same-origin' });
+                if (!res.ok) return;
+                const { locked } = await res.json();
+                el.classList.toggle('is-running', !!locked);
+                if (textEl) {
+                    textEl.textContent = locked ? 'Sync running…' : lastSyncText;
+                }
+            } catch (_e) { /* network blip — try again next tick */ }
+        }
+        // Poll once now, then every 30s.
+        poll();
+        setInterval(poll, 30000);
+    })();
     </script>
 </div>{# /.dashboard-mock #}
 {% endblock %}
