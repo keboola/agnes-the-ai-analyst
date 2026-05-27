@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.22] — 2026-05-27
+
 ### Added
 - **`customer-instance` module: per-VM OAuth client secrets via naming
   template.** New module-level variable `oauth_secret_name_template` lets
