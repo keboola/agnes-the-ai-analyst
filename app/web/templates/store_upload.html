@@ -134,7 +134,14 @@
   .file-drop .file-info .label .filename { color: var(--primary, var(--primary)); margin-left: 6px; }
   .file-drop.has-file .file-info .label { color: #047857; }
   .file-drop .file-info .meta { font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 2px; }
-  .file-drop input[type=file] { display: none; }
+  /* Visually hide the file input without ``display: none``. Chrome
+     blocks ``.click()`` on display-none inputs from triggering the
+     OS file dialog (the input never receives a real DOM event); a
+     visually-hidden positioned input still fires the dialog. */
+  .file-drop input[type=file] {
+    position: absolute; left: -9999px; width: 1px; height: 1px;
+    opacity: 0; pointer-events: none;
+  }
   .file-drop button {
     appearance: none; padding: 7px 14px;
     border: 1px solid var(--border, #d1d5db); background: #fff;
@@ -621,9 +628,12 @@ const nameInput = document.getElementById('name');
 const syntheticText = document.getElementById('synthetic-text');
 
 // Acronym dict + owner username injected from the route handler so JS
-// humanize stays in sync with the Python TITLE_ACRONYMS source.
-const TITLE_ACRONYMS = {{ title_acronyms|tojson if title_acronyms else "{}" }};
-const OWNER_USERNAME = {{ owner_username|tojson if owner_username else '""' }};
+// humanize stays in sync with the Python TITLE_ACRONYMS source. Always
+// route through ``tojson`` (with an ``or`` fallback) so Jinja's HTML
+// autoescape doesn't turn the literal-string fallback into ``&#34;...&#34;``
+// inside the <script>, which breaks the parser with "Unexpected token '&'".
+const TITLE_ACRONYMS = {{ (title_acronyms or {})|tojson }};
+const OWNER_USERNAME = {{ (owner_username or "")|tojson }};
 
 let zipFile = null;
 let docs = [];

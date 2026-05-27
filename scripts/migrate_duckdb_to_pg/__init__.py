@@ -358,6 +358,44 @@ TASKS: List[MigrationTask] = [
         target_table="knowledge_item_user_dismissed",
         pk_columns=["user_id", "item_id"],
     ),
+    # v49+ catalog cluster — data packages, memory domains, recipes,
+    # per-user stack subscriptions, and the memory-domain suggestion
+    # queue. Schema added by alembic 0012_data_packages.
+    MigrationTask(
+        source_table="data_packages",
+        target_table="data_packages",
+        pk_columns=["id"],
+    ),
+    MigrationTask(
+        source_table="data_package_tables",
+        target_table="data_package_tables",
+        pk_columns=["package_id", "table_id"],
+    ),
+    MigrationTask(
+        source_table="memory_domains",
+        target_table="memory_domains",
+        pk_columns=["id"],
+    ),
+    MigrationTask(
+        source_table="knowledge_item_domains",
+        target_table="knowledge_item_domains",
+        pk_columns=["item_id", "domain_id"],
+    ),
+    MigrationTask(
+        source_table="memory_domain_suggestions",
+        target_table="memory_domain_suggestions",
+        pk_columns=["id"],
+    ),
+    MigrationTask(
+        source_table="recipes",
+        target_table="recipes",
+        pk_columns=["id"],
+    ),
+    MigrationTask(
+        source_table="user_stack_subscriptions",
+        target_table="user_stack_subscriptions",
+        pk_columns=["user_id", "resource_type", "resource_id"],
+    ),
 ]
 
 
@@ -383,6 +421,7 @@ _JSON_COLUMNS = {
     ("knowledge_items", "tags"),
     ("knowledge_items", "contributors"),
     ("knowledge_items", "entities"),
+    ("recipes", "related_table_ids"),
 }
 
 
