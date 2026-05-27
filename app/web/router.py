@@ -2976,6 +2976,16 @@ async def profile_session_download(
     )
 
 
+@router.get("/help/cowork", response_class=HTMLResponse)
+async def cowork_help(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Step-by-step guide for the Connect Claude Code (Agnes Cowork) setup flow."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "cowork_help.html", ctx)
+
+
 @router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)
 async def _debug_throw_http(request: Request, code: int):
     """Dev helper — raise an HTTPException with the given status code.
