@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **Admin nav: "Server config" → "Instance settings".** `_app_header.html` nav item label, `admin_server_config.html` page `<title>`, and the page-hero title now read "Instance settings" instead of "Server config" — less developer-centric and consistent with the already-shipped phrasing in the Keboola not-connected banners on `/admin/tables` (which deep-link with "Set your token in **Instance settings**"). Route `/admin/server-config` unchanged. Eyebrow "Server" kept as the category label (shared with `admin_scheduler_runs.html` under the same nav group). Closes #403.
+
 ## [0.55.17] — 2026-05-27
 
 ### Fixed
