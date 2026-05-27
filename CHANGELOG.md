@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **`/admin/corporate-memory` button family migrated to the canonical `.btn-*` vocabulary.** The bespoke moderation-specific variants (`.btn-mandate`, `.btn-approve`, `.btn-reject`, `.btn-revoke`) are retired in favor of the canonical four — `.btn-mandate` → `.btn-primary` (Save / Apply / Confirm / Mark-as-Required / Mark-as-duplicate), `.btn-approve` → `.btn-secondary` (Approve / Keep / Different), `.btn-reject` → `.btn-danger` (Reject / Delete), `.btn-revoke` → `.btn-ghost` (Dismiss). The variant-choice hierarchy (primary > secondary > danger > ghost) continues to encode the semantic priority; the green-on-approve / red-on-reject solid color cues from the bespoke palette are lost but visual hierarchy is preserved. Page-local `.btn` base rule deleted — the canonical `.btn` family in `style-custom.css` supplies the same contract. 29 button class-name swaps across Jinja static markup + JS template-literal contexts. Closes one of the four dedicated follow-up PRs called out by #427.
+
 ### Fixed
 - **`src/profiler.py::profile_table` lowers DuckDB `memory_limit` from
   `4GB` to `2GB` + adds `preserve_insertion_order=false`.** The prior
