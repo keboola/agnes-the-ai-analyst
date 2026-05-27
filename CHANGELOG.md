@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`/admin/tables` Keboola smart-paste — split `bucket.table_name` on paste/blur.** Keboola Storage's "COPY TO CLIPBOARD" yields the full table id `{bucket}.{table_name}` (e.g. `out.c-crm-tr-RdC3aX4M.account`). The Register Keboola modal has two separate inputs (Bucket + Source Table), so pasting the full id used to fail silently. The modal now has a dedicated `#kbTableIdPaste` input above the existing fields; pasting or blurring with a value containing a `.` splits on the LAST dot and fills both downstream inputs. Downstream fields get a synthetic `input` event so any datalist-refresh / discover hooks treat it as user-typed; manual entry through Bucket + Source Table still works as before. Closes #401.
+- **`/dashboard` live sync-status pill.** Small horizontal pill between the env-setup-cta and the stats-row. Initial state is server-rendered from the existing `data_stats.last_updated` (MAX `last_sync` across all `sync_state` rows): "Last sync: <iso>" or "No sync recorded yet". A JS poller hits `GET /api/sync/status` every 30 s and flips the pill to `is-running` (brand-primary pulsing dot, "Sync running…" text) when the `locked` flag is true. The `/api/sync/status` endpoint is intentionally tiny (`{locked: bool}`, public/no-auth for the host-side auto-upgrade cron), so the timestamp comes from server-render rather than live fetch; extending the endpoint to return last-run pass/fail status is a follow-up. Closes #392.
+- **`/catalog/t/<table_id>` data-preview button + modal.** Hero card on the table-detail page now has a "Preview data" button that opens a modal showing the first 10 rows via `GET /api/v2/sample/{table_id}`. The endpoint already enforces `can_access_table` per user, so a 403 lands as a clear inline error inside the modal body. Columns are derived dynamically from the first row's keys; states for Loading / Empty / Error are friendly text. Esc, Close, and backdrop click all dismiss. The issue text said "in catalog.html", but `/catalog` lists Data Packages (not tables) — the natural per-table affordance lives on the table-detail page. Closes #396.
+
+### Changed
+- **Admin nav: "Server config" → "Instance settings".** `_app_header.html` nav item label, `admin_server_config.html` page `<title>`, and the page-hero title now read "Instance settings" instead of "Server config" — less developer-centric and consistent with the already-shipped phrasing in the Keboola not-connected banners on `/admin/tables` (which deep-link with "Set your token in **Instance settings**"). Route `/admin/server-config` unchanged. Eyebrow "Server" kept as the category label (shared with `admin_scheduler_runs.html` under the same nav group). Closes #403.
+
 ## [0.55.19] — 2026-05-27
 
 ### Fixed
