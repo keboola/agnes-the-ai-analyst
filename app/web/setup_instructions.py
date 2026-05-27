@@ -334,28 +334,48 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
 
 
 def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
-    """Steps 2-4 — workspace folder check, then `agnes init` + smoke verify.
+    """Steps 2-4 — install-location decision, then `agnes init` + smoke verify.
 
-    Step 2 verifies the user is already cd'd into the workspace folder
-    that the /home onboarding page's visible "Step 2 — pick a folder"
-    told them to create manually (`mkdir -p ~/Desktop/{workspace_dir}
-    && cd ~/Desktop/{workspace_dir}`). The pasted script DOES NOT
-    auto-create the folder — that would silently override an
-    intentional choice to install at a different path (e.g. the user
-    cd'd to `~/work/agnes-prod` on purpose). Instead we `pwd`, compare
-    to `$HOME/Desktop/{workspace_dir}`, and on mismatch warn loudly and
-    ask the user to either re-paste from the right folder or explicitly
-    confirm "install here" in the current cwd.
+    Step 2 picks the install directory using a three-way decision tree on
+    the user's current cwd instead of demanding a specific "expected"
+    path. Earlier flows hard-coded `~/Desktop/{workspace_dir}` as the
+    Right Answer and treated every other cwd as a recoverable mistake —
+    which scolded users who intentionally `cd`'d into a project folder
+    (e.g. `~/Devel/acme-data-app/`) before pasting the script.
+
+    The new tree:
+
+    - **REFUSE** if cwd is `$HOME` exactly, or a system path (`/`,
+      `/tmp`, `/etc`, `/usr`, `/var`, `/opt`, `/root`, `/bin`, `/sbin`,
+      `/boot`, `/sys`, `/proc`). Installing into any of these dumps
+      `.claude/`, `.agnes/`, `AGNES_WORKSPACE.md`, marketplace clones,
+      etc. into a directory that already has unrelated meaning. The old
+      flow's `'install here'` keyword silently accepted `$HOME` — this
+      one refuses.
+    - **PROCEED SILENTLY** if cwd is empty, or contains only the
+      whitelisted artefacts a prepared workspace might already hold
+      (`.git`, `.claude`, `.agnes`, `AGNES_WORKSPACE.md`, `README.md`).
+      The user clearly created+cd'd into a workspace folder before
+      pasting; no need to interrupt them.
+    - **CONFIRM ONCE** for anything else (cwd has unrelated content).
+      Neutral framing: *"I'll install {brand} in <pwd>. Reply 'ok' to
+      continue here, 'default' to install in ~/Desktop/{workspace_dir}
+      instead, or 'abort'."* The 'default' branch runs the `mkdir + cd`
+      itself so the user doesn't have to re-paste. Anything else stops
+      cleanly without touching the filesystem. Users who want a
+      different custom path /exit, `cd` to their preferred location,
+      restart `claude`, and re-paste — Claude Code can't change the
+      parent shell's cwd from inside a session anyway.
 
     `{workspace_dir}` and `{instance_brand}` are placeholders pre-substituted
     by :func:`resolve_lines` from the operator-configured brand. Defaults
     keep `~/Desktop/Agnes` behavior for instances that don't set the brand knob.
 
     `agnes init --workspace .` continues to use the current cwd, so once
-    step 2 has confirmed (or the user has explicitly accepted) the
-    install dir, step 3 lands in the right place. Step 9's restart-claude
-    cue references "this same directory" so users on a custom path see
-    accurate guidance.
+    step 2 has confirmed (or auto-accepted) the install dir, step 3
+    lands in the right place. Step 9's restart-claude cue references
+    "this same directory" so users on a custom path see accurate
+    guidance.
 
     `agnes init` is the workspace-rails delivery mechanism for everyone:
     it authenticates with the PAT, fetches CLAUDE.md (RBAC-filtered),
@@ -372,36 +392,64 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     """
     return [
         "",
-        "2) Verify the user is already in the workspace folder.",
-        "   The /home page's visible \"Step 2 — pick a folder\"",
-        "   already asked the user to run",
+        "2) Confirm the install location.",
+        "   The /home page's \"Step 2 — pick a folder\" recommended",
         "       mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
-        "   in their terminal BEFORE pasting this script. Do NOT silently",
-        "   re-create the folder here — the user may have intentionally cd'd",
-        "   to a different location to install {instance_brand} there instead.",
+        "   but the install works in any workspace folder the user prepared.",
+        "   Decide where to install using the three branches below — do NOT",
+        "   silently `mkdir`/`cd` anywhere, and do NOT treat the user's current",
+        "   cwd as a mistake unless it lands in the REFUSE list.",
         "",
         "   Run:",
         "       pwd",
-        "   Expected: $HOME/Desktop/{workspace_dir}  (i.e. ~/Desktop/{workspace_dir})",
         "",
-        "   If `pwd` matches the expected path: continue silently to step 3.",
+        "   2a) REFUSE — these paths are never safe to install into. STOP and",
+        "       tell the user verbatim:",
         "",
-        "   If `pwd` does NOT match, STOP and tell the user verbatim:",
+        "           \"I won't install {instance_brand} into <pwd> — it's a home or",
+        "           system directory and the install would scatter .claude/,",
+        "           .agnes/, AGNES_WORKSPACE.md and marketplace clones across",
+        "           it. Please pick a workspace folder (e.g. ~/Desktop/{workspace_dir}",
+        "           or ~/work/{workspace_dir}), cd into it, and re-paste this",
+        "           script from there.\"",
         "",
-        "       \"You are in <current-pwd>, but {instance_brand} is normally",
-        "       installed in ~/Desktop/{workspace_dir} (see /home Step 2). Either run",
-        "           mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
-        "       in your terminal now and re-paste this setup script, OR reply",
-        "       'install here' to install {instance_brand} in <current-pwd>",
-        "       instead. Reply 'abort' to stop.\"",
+        "       Then stop — no `mkdir`, no `cd`, no further steps. The refuse",
+        "       list is exact match on:",
+        "           $HOME    /    /tmp    /etc    /usr    /var    /opt",
+        "           /root    /bin    /sbin    /boot    /sys    /proc",
         "",
-        "   Wait for the user's reply.",
-        "     - 'install here'  → continue to step 3 in the current cwd.",
-        "                         The cwd you saw from `pwd` is the install",
-        "                         directory; remember it for step 9.",
-        "     - 'abort' / anything else → stop without making any changes.",
-        "                         Do NOT run `mkdir`, do NOT `cd`, do NOT",
-        "                         continue to step 3.",
+        "   2b) PROCEED SILENTLY — if the cwd is a prepared workspace, just",
+        "       continue to step 3 without prompting. The whitelisted artefacts",
+        "       a prepared workspace may already hold are:",
+        "           .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md",
+        "       To check, run (fixed-string match, no regex):",
+        "",
+        "           ls -A | grep -Fxv -e .git -e .claude -e .agnes -e AGNES_WORKSPACE.md -e README.md | head -1",
+        "",
+        "       If the output is empty (cwd is empty OR contains only the",
+        "       whitelisted artefacts above) → the user clearly prepared this",
+        "       folder; continue to step 3 in <pwd>. Remember <pwd> as the",
+        "       install dir for step 9.",
+        "",
+        "   2c) CONFIRM — for any other cwd (unrelated content present), tell",
+        "       the user verbatim, exactly once:",
+        "",
+        "           \"I'll install {instance_brand} in <pwd>. Reply 'ok' to",
+        "           continue here, 'default' to install in ~/Desktop/{workspace_dir}",
+        "           instead, or 'abort' to stop. (For a different custom path:",
+        "           type /exit, `cd` to where you want it, then run `claude`",
+        "           again and re-paste this script.)\"",
+        "",
+        "       Wait for the user's reply.",
+        "         - 'ok' / 'yes' / 'install here' / Enter → continue to step 3",
+        "                       in <pwd>. Remember <pwd> as the install dir.",
+        "         - 'default' → run:",
+        "                       mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
+        "                       Then continue to step 3 in the new cwd.",
+        "                       Remember ~/Desktop/{workspace_dir} as the install",
+        "                       dir for step 9.",
+        "         - 'abort' / anything else → stop without making any changes.",
+        "                       Do NOT run `mkdir`, do NOT `cd`, do NOT continue.",
         "",
         "3) Bootstrap your {instance_brand} workspace in this directory.",
         "   Write the PAT to a file FIRST, then run `agnes init` with",
