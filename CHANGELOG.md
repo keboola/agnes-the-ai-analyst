@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.19] — 2026-05-27
+
 ### Fixed
 - **Profile pass in `_run_sync` now runs each `profile_table` call in a
   fresh Python subprocess** (`src/_profiler_worker.py`, new generic
