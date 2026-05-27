@@ -25,6 +25,8 @@ from src.scheduler import filter_due_tables, is_table_due
 
 from src.repositories import (
     audit_repo,
+    data_packages_repo,
+    memory_domains_repo,
     sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
@@ -761,13 +763,12 @@ def _build_data_packages_section(
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.data_packages import DataPackagesRepository
 
     resolver = StackResolver(conn)
     pkg_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
     if not pkg_entries:
         return [], set()
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     packaged_table_ids: set = set()
     out: list = []
     for entry in pkg_entries:
@@ -818,13 +819,12 @@ def _build_memory_domains_section(conn, user: dict) -> list:
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.memory_domains import MemoryDomainsRepository
 
     resolver = StackResolver(conn)
     dom_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
     if not dom_entries:
         return []
-    repo = MemoryDomainsRepository(conn)
+    repo = memory_domains_repo()
     out: list = []
     for entry in dom_entries:
         dom = repo.get(entry.id)
