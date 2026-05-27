@@ -1333,6 +1333,24 @@
                                    placeholder="e.g. orders_recent">
                         </div>
 
+                        {# Smart-paste shortcut for Keboola's "COPY TO CLIPBOARD" output,
+                           which yields the full table id `{bucket}.{table_name}` (e.g.
+                           `out.c-crm-tr-RdC3aX4M.account`). On paste or blur the JS at
+                           the bottom of this template splits on the LAST dot and fills
+                           the Bucket + Source Table fields below. The user can still
+                           type either field directly — this is a paste affordance, not
+                           a required input. Closes #401. #}
+                        <div class="form-group kb-source-table">
+                            <label class="form-label" for="kbTableIdPaste">
+                                Table ID
+                                <span style="font-weight:400; color:var(--text-secondary); font-size:12px;">(paste here, or fill Bucket + Source Table below)</span>
+                            </label>
+                            <input type="text" class="form-input" id="kbTableIdPaste"
+                                   placeholder="e.g. out.c-crm-tr-RdC3aX4M.account"
+                                   autocomplete="off">
+                            <div class="form-hint">Split on the last <code>.</code> into Bucket + Source Table.</div>
+                        </div>
+
                         {# Discover/List tables backend currently routes by instance's data_source.type
                            ignoring the `source` query param. Hiding the buttons on non-Keboola instances
                            prevents wrong-shape responses; inputs stay for manual entry. Future fix: make
@@ -3534,6 +3552,9 @@
         if (radio) radio.checked = true;
         ['kbViewName', 'kbBucket', 'kbSourceTable', 'kbSourceQuery',
          'kbSyncSchedule', 'kbDescription', 'kbFolder', 'kbPrimaryKey',
+         // Smart-paste source field — reset so a stale value doesn't blur-fire
+         // splitAndFill() and clobber the freshly-reset Bucket/Source Table.
+         'kbTableIdPaste',
          // v26 Direct-extract fields — reset so a stale value from a prior
          // open doesn't leak into the next registration.
          'kbIncrementalWindowDays', 'kbMaxHistoryDays', 'kbPartitionBy',
@@ -5617,6 +5638,43 @@
     window.filterAdminTablesLayout = filterAdminTablesLayout;
 
     document.addEventListener('DOMContentLoaded', loadAdminTablesLayout);
+
+    // ── #401: Keboola smart-paste — split `{bucket}.{table_name}` into the
+    //   Bucket + Source Table inputs in the Register Keboola modal.
+    //   Keboola's "COPY TO CLIPBOARD" yields the full table id; pasting it
+    //   straight into a single field used to fail silently because the form
+    //   has two fields. Now: paste/blur on the dedicated #kbTableIdPaste
+    //   field splits on the LAST `.` and fills both downstream inputs. The
+    //   user can still edit either field directly.
+    document.addEventListener('DOMContentLoaded', function() {
+      var pasteInput = document.getElementById('kbTableIdPaste');
+      var bucketField = document.getElementById('kbBucket');
+      var tableField = document.getElementById('kbSourceTable');
+      if (!pasteInput || !bucketField || !tableField) return;
+      function splitAndFill(raw) {
+        var val = (raw || '').trim();
+        if (!val) return false;
+        var lastDot = val.lastIndexOf('.');
+        if (lastDot <= 0 || lastDot >= val.length - 1) return false;
+        bucketField.value = val.slice(0, lastDot);
+        tableField.value = val.slice(lastDot + 1);
+        // Fire `input` so any listeners on the downstream fields (e.g.
+        // discover-tables autocomplete refresh) pick up the new value.
+        bucketField.dispatchEvent(new Event('input', { bubbles: true }));
+        tableField.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }
+      pasteInput.addEventListener('paste', function(e) {
+        var val = (e.clipboardData || window.clipboardData).getData('text');
+        // Let the default paste populate the visible field too; the split
+        // happens in parallel so the user sees Bucket + Source Table fill
+        // immediately while the paste field also reflects what was pasted.
+        splitAndFill(val);
+      });
+      pasteInput.addEventListener('blur', function() {
+        splitAndFill(pasteInput.value);
+      });
+    });
 
     // Auto-open the Create Data Package modal when the page is opened with
     // `?new_package=1` — drives the /catalog right-of-tabs admin action
