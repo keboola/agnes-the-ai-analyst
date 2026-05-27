@@ -9,6 +9,15 @@
    "danger-zone" sections (auth, server) get a confirmation dialog before
    the request is sent. Saves trigger the restart banner — hot-reload is
    out of scope for #91. #}
+{# Design-system component macros — the 5 static modal action buttons
+   (Cancel/Save/Close/Cancel/Yes-save) render via `ds.button`. The
+   JS-string-template buttons further down (array/map remove/add,
+   section save, BigQuery/Keboola test, sync/edit/delete) use the
+   canonical `.btn .btn-*` class names directly because Jinja macros
+   can't reach inside `<script>` template literals. All buttons across
+   the page now route through the canonical `.btn-*` family in
+   style-custom.css; the page-local `.cfg-btn` rule is gone. #}
+{% import "_components.html" as ds %}
 <style>
   .container:has(.cfg-page) { max-width: none; padding: 24px 16px; }
   .cfg-page { max-width: 1260px; margin: 0 auto; padding: 0; }
@@ -170,17 +179,12 @@
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
   }
 
-  .cfg-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; transition: all 0.15s;
-  }
-  .cfg-btn:hover { background: var(--border-light, #f9fafb); }
-  .cfg-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .cfg-btn.primary:hover { filter: brightness(1.05); }
-  .cfg-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
-  .cfg-btn.danger:hover { filter: brightness(1.05); }
-  .cfg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  /* `.cfg-btn` family removed — all buttons on this page now render through
+     the canonical `.btn` / `.btn-primary` / `.btn-secondary` / `.btn-danger`
+     rules in style-custom.css. Static modal buttons use the `ds.button`
+     macro; JS-string-template buttons emit the canonical class names
+     directly (`btn btn-secondary`, `btn btn-primary`, `btn btn-danger`,
+     plus `btn-sm btn--icon` for the small × array/map remove buttons). */
 
   .cfg-loading { padding: 32px 16px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
 
@@ -347,8 +351,9 @@
     </div>
 
     <div class="modal-actions">
-      <button class="cfg-btn" data-close-modal="iw-modal">Cancel</button>
-      <button class="cfg-btn primary" id="iw-modal-save">Save</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="iw-modal"') }}
+      {{ ds.button('Save', variant='primary', id='iw-modal-save') }}
     </div>
   </div>
 </div>
@@ -359,7 +364,8 @@
     <h3 id="iw-sync-title">Sync result</h3>
     <div id="iw-sync-body" class="diff-list" style="background: var(--border-light, #f9fafb);"></div>
     <div class="modal-actions">
-      <button class="cfg-btn primary" data-close-modal="iw-sync-modal">Close</button>
+      {{ ds.button('Close', variant='primary',
+                   attrs='data-close-modal="iw-sync-modal"') }}
     </div>
   </div>
 </div>
@@ -372,8 +378,9 @@
     <div class="diff-list" id="danger-diff"></div>
     <p class="sub"><strong>Save anyway?</strong> An app restart is required for the change to take effect.</p>
     <div class="modal-actions">
-      <button class="cfg-btn" data-close-modal="danger-modal">Cancel</button>
-      <button class="cfg-btn danger" id="danger-confirm-btn">Yes, save</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="danger-modal"') }}
+      {{ ds.button('Yes, save', variant='danger', id='danger-confirm-btn') }}
     </div>
   </div>
 </div>
@@ -584,7 +591,7 @@ function renderArrayField(section, pathSegments, label, value, spec, depth) {
   const rows = items.map((item, idx) => `
     <div class="array-row" data-array-row="${idx}" style="display: flex; gap: 6px; margin-bottom: 4px;">
       <input type="text" id="${baseId}_${idx}" name="${baseId}_${idx}" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" aria-label="${escHtml(label)} item ${idx + 1}" style="flex: 1;">
-      <button type="button" class="cfg-btn" data-array-remove="${idx}" title="Remove this item">×</button>
+      <button type="button" class="btn btn-secondary btn-sm btn--icon" data-array-remove="${idx}" title="Remove this item">×</button>
     </div>`).join("");
   return `
     <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
@@ -597,7 +604,7 @@ function renderArrayField(section, pathSegments, label, value, spec, depth) {
              data-array-collect="1"
              data-item-kind="${escHtml(itemKind)}">
           <div class="array-rows">${rows}</div>
-          <button type="button" class="cfg-btn" data-array-add="1" data-item-kind="${escHtml(itemKind)}">+ Add item</button>
+          <button type="button" class="btn btn-secondary" data-array-add="1" data-item-kind="${escHtml(itemKind)}">+ Add item</button>
         </div>
         ${hintBlock}
       </div>
@@ -638,7 +645,7 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
         <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 2fr auto; gap: 6px; margin-bottom: 4px;">
           <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
           <input type="text" id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values" aria-label="${escHtml(label)} value ${idx + 1}">
-          <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
+          <button type="button" class="btn btn-secondary btn-sm btn--icon" data-map-remove="${idx}" title="Remove this row">×</button>
         </div>`;
     }
     // Scalar value column.
@@ -648,7 +655,7 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
       <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 1fr auto; gap: 6px; margin-bottom: 4px;">
         <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
         <input type="${inputType}"${stepAttr} id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value" aria-label="${escHtml(label)} value ${idx + 1}">
-        <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
+        <button type="button" class="btn btn-secondary btn-sm btn--icon" data-map-remove="${idx}" title="Remove this row">×</button>
       </div>`;
   };
   const rows = Object.entries(obj).map(([k, v], idx) => renderRow(k, v, idx)).join("");
@@ -664,7 +671,7 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
              data-value-kind="${escHtml(valueKind)}"
              data-value-item-kind="${escHtml(valueItemKind)}">
           <div class="map-rows">${rows}</div>
-          <button type="button" class="cfg-btn" data-map-add="1" data-value-kind="${escHtml(valueKind)}">+ Add row</button>
+          <button type="button" class="btn btn-secondary" data-map-add="1" data-value-kind="${escHtml(valueKind)}">+ Add row</button>
         </div>
         ${hintBlock}
       </div>
@@ -904,11 +911,11 @@ function renderSection(section, payload, knownForSection) {
         ${bootstrap}
       </div>
       <div class="section-actions">
-        <button class="cfg-btn primary" data-action="save-section" data-section="${section}">Save ${escHtml(meta.title.toLowerCase())}</button>
+        <button class="btn btn-primary" data-action="save-section" data-section="${section}">Save ${escHtml(meta.title.toLowerCase())}</button>
         ${section === "data_source" ? `
-        <button class="cfg-btn" data-action="test-bigquery" type="button">Test BigQuery connection</button>
+        <button class="btn btn-secondary" data-action="test-bigquery" type="button">Test BigQuery connection</button>
         <span class="bq-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
-        <button class="cfg-btn" data-action="test-keboola" type="button" style="margin-left: 8px;">Test Keboola connection</button>
+        <button class="btn btn-secondary" data-action="test-keboola" type="button" style="margin-left: 8px;">Test Keboola connection</button>
         <span class="kbc-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
         ` : ""}
       </div>
@@ -1053,7 +1060,7 @@ function renderAll(data) {
       div.style.gap = "6px";
       div.style.marginBottom = "4px";
       div.innerHTML = `<input type="text" class="array-item-input" data-array-item="${idx}" value="" style="flex: 1;">
-        <button type="button" class="cfg-btn" data-array-remove="${idx}" title="Remove this item">×</button>`;
+        <button type="button" class="btn btn-secondary btn-sm btn--icon" data-array-remove="${idx}" title="Remove this item">×</button>`;
       rows.appendChild(div);
       const inp = div.querySelector('input');
       if (inp) inp.focus();
@@ -1086,7 +1093,7 @@ function renderAll(data) {
       const stepAttr = valueKind === "float" ? ' step="any"' : "";
       div.innerHTML = `<input type="text" class="map-key-input" data-map-key="${idx}" value="" placeholder="key">
         <input type="${inputType}"${stepAttr} class="map-value-input" data-map-value="${idx}" value="" placeholder="${valuePlaceholder}">
-        <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>`;
+        <button type="button" class="btn btn-secondary btn-sm btn--icon" data-map-remove="${idx}" title="Remove this row">×</button>`;
       rows.appendChild(div);
       const inp = div.querySelector('input');
       if (inp) inp.focus();
@@ -1520,7 +1527,7 @@ function iwRender(data) {
         <code>agnes init</code> workspace skeleton for every analyst on this instance.
       </div>
     `;
-    actions.innerHTML = `<button class="cfg-btn primary" id="iw-register-btn">Link to Template Repository</button>`;
+    actions.innerHTML = `<button class="btn btn-primary" id="iw-register-btn">Link to Template Repository</button>`;
     actions.hidden = false;
     document.getElementById("iw-register-btn").addEventListener("click", () => {
       iwOpenModal(/* editing */ false, null);
@@ -1566,13 +1573,13 @@ function iwRender(data) {
   // synced — endpoint would return 503. Browser session cookie carries
   // auth (get_current_user accepts cookie + Bearer).
   const downloadBtn = data.last_commit_sha
-    ? `<a class="cfg-btn" id="iw-download-btn" href="/api/initial-workspace.zip" download="initial-workspace.zip">Download zip</a>`
-    : `<button class="cfg-btn" disabled title="No synced commit yet — click Sync now first">Download zip</button>`;
+    ? `<a class="btn btn-secondary" id="iw-download-btn" href="/api/initial-workspace.zip" download="initial-workspace.zip">Download zip</a>`
+    : `<button class="btn btn-secondary" disabled title="No synced commit yet — click Sync now first">Download zip</button>`;
   actions.innerHTML = `
-    <button class="cfg-btn primary" id="iw-sync-btn">Sync now</button>
+    <button class="btn btn-primary" id="iw-sync-btn">Sync now</button>
     ${downloadBtn}
-    <button class="cfg-btn" id="iw-edit-btn">Edit</button>
-    <button class="cfg-btn danger" id="iw-delete-btn">Delete</button>
+    <button class="btn btn-secondary" id="iw-edit-btn">Edit</button>
+    <button class="btn btn-danger" id="iw-delete-btn">Delete</button>
   `;
   actions.hidden = false;
   document.getElementById("iw-sync-btn").addEventListener("click", iwSync);

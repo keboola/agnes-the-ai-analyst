@@ -18,6 +18,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 - **Admin nav: "Server config" → "Instance settings".** `_app_header.html` nav item label, `admin_server_config.html` page `<title>`, and the page-hero title now read "Instance settings" instead of "Server config" — less developer-centric and consistent with the already-shipped phrasing in the Keboola not-connected banners on `/admin/tables` (which deep-link with "Set your token in **Instance settings**"). Route `/admin/server-config` unchanged. Eyebrow "Server" kept as the category label (shared with `admin_scheduler_runs.html` under the same nav group). Closes #403.
 
+### Fixed
+- **Profile pass in `_run_sync` now runs each `profile_table` call in a
+  fresh Python subprocess** (`src/_profiler_worker.py`, new generic
+  helper `src/_subprocess_runner.py`). Running the profile loop in-
+  process drifted resident memory by ~100-300 MiB per iteration even
+  though each `profile_table` cleaned up its DuckDB session correctly
+  — Python's allocator keeps freed anon mmap arenas in its free-list
+  and libc's heap doesn't return them to the OS. After ~10-30 iterations
+  the cgroup OOM killer reaped uvicorn at ~4.18 GiB anon-rss (observed
+  on dev with the materialize-cap fixes from PR #431/#433/#434/#436
+  already in place; smaller caps shipped but the leak path was the
+  loop itself, not any individual call). Process exit guarantees full
+  memory return to the OS, so the per-iteration accumulation pattern
+  is broken regardless of how many tables are in scope. The parent
+  still owns the `ProfileRepository.save(...)` write so system.duckdb
+  stays single-writer.
+
+## [0.55.18] — 2026-05-27
+
+### Changed
+- **`/admin/server-config` button family migrated to the canonical `.btn-*` vocabulary.** The 21 page-local `.cfg-btn` / `.cfg-btn.primary` / `.cfg-btn.danger` instances (5 static modal buttons + 16 buttons emitted from `<script>` template literals — array/map remove + add, per-section Save, BigQuery / Keboola connection-test, initial-workspace Sync / Edit / Delete / Download / Register) now route through `.btn .btn-primary` / `.btn-secondary` / `.btn-danger`, matching the rest of the admin UI. Small "×" remove buttons compose `.btn-sm .btn--icon` for tightness. The page-local `.cfg-btn` CSS block is gone. Static modal buttons render via `ds.button`; JS-string buttons emit canonical class names directly (macros can't reach inside `<script>` literals).
+- **`/admin/corporate-memory` button family migrated to the canonical `.btn-*` vocabulary.** The bespoke moderation-specific variants (`.btn-mandate`, `.btn-approve`, `.btn-reject`, `.btn-revoke`) are retired in favor of the canonical four — `.btn-mandate` → `.btn-primary` (Save / Apply / Confirm / Mark-as-Required / Mark-as-duplicate), `.btn-approve` → `.btn-secondary` (Approve / Keep / Different), `.btn-reject` → `.btn-danger` (Reject / Delete), `.btn-revoke` → `.btn-ghost` (Dismiss). The variant-choice hierarchy (primary > secondary > danger > ghost) continues to encode the semantic priority; the green-on-approve / red-on-reject solid color cues from the bespoke palette are lost but visual hierarchy is preserved. Page-local `.btn` base rule deleted — the canonical `.btn` family in `style-custom.css` supplies the same contract. 29 button class-name swaps across Jinja static markup + JS template-literal contexts. Closes one of the four dedicated follow-up PRs called out by #427.
+- **`/admin/tables` shadowing `.btn` CSS deleted; buttons inherit canonical visual contract.** The markup on this page already used canonical `.btn` / `.btn-primary` / `.btn-secondary` / `.btn-sm` class names (migrated piecemeal across prior commits), but the template carried its own `.btn` family rules that shadowed canonical — most visibly, `.btn-secondary` rendered with a filled grey background (`var(--border-light)`) rather than the canonical white-bg + grey-border outline. Those page-local rules are gone (`.btn`, `.btn-primary`, `.btn-primary:hover`, `.btn-primary:disabled`, `.btn-secondary`, `.btn-secondary:hover`, `.btn-danger`, `.btn-danger:hover`, `.btn-sm`); buttons now match the unified admin look. Two surviving bare `<button class="btn">` sites (Remove-from-package + Delete-package destructive actions, which had inline `color:#b91c1c` overrides) were upgraded to canonical `.btn-danger` (the second commit on #437 fixed the same hazard there). `.btn-icon` (28×28 icon-only button family with `[data-tooltip]:hover::after` chip styling) stays page-local because canonical `.btn--icon` is just a size modifier with no tooltip behavior — flagged for a later pass once a canonical tooltip primitive exists. Visible delta: toolbar + modal secondary buttons shift from filled-grey to outlined-white; destructive buttons shift from filled-red to outlined-red (canonical "calm — committed to by hover" treatment).
+- **`/dashboard` page-local `.btn-register` rule retired; the four other bespoke button families stay page-local with documented rationale.** The "Create Account" submit button on the Telegram verify form (`<button class="btn-register">`) now renders via canonical `.btn .btn-primary`; its page-local rule and `:hover` variant are gone. The remaining bespoke button classes on this page — `.btn-setup` / `.btn-setup-secondary` (hero CTA using `--ds-hero-cta-*` tokens for the navy-hero context), `.notif-link` / `.notif-unlink` (soft-pill micro-actions inside the notification card's `.notif-managing` mode), and `.btn-copy-term` (dark-surface terminal-mock copy buttons; `system.md`-explicit carve-out for Catppuccin-themed dark-surface copy buttons) — stay page-local because each carries page-specific semantics canonical doesn't model. The decision matrix is documented at the top of `app/web/static/css/dashboard.css`. Closes the last of the four dedicated follow-up PRs from #427.
+
 ## [0.55.17] — 2026-05-27
 
 ### Fixed
