@@ -409,6 +409,8 @@ _LLM_PIPELINE_ENV = (
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL",
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL",
     "SCHEDULER_USAGE_PRUNE_INTERVAL",
+    "SCHEDULER_JIRA_SLA_POLL_INTERVAL",
+    "SCHEDULER_JIRA_CONSISTENCY_INTERVAL",
 )
 
 
@@ -654,6 +656,63 @@ class TestUsagePruneJob:
     def test_usage_prune_invalid_env_rejected(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
         monkeypatch.setenv("SCHEDULER_USAGE_PRUNE_INTERVAL", "0")
+        from services.scheduler.__main__ import build_jobs
+
+        with pytest.raises(ValueError):
+            build_jobs()
+
+
+class TestJiraSelfHealingJobs:
+    """SCHEDULER_JIRA_SLA_POLL_INTERVAL + SCHEDULER_JIRA_CONSISTENCY_INTERVAL
+    drive the two Jira maintenance jobs that bring Agnes back to parity with
+    the legacy Data Broker systemd timers."""
+
+    def test_jira_jobs_present_in_defaults(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: (schedule, endpoint) for name, schedule, endpoint, *_ in build_jobs()}
+        assert "jira-sla-poll" in jobs
+        assert "jira-consistency-check" in jobs
+        assert jobs["jira-sla-poll"][1] == "/api/admin/run-jira-sla-poll"
+        assert jobs["jira-consistency-check"][1] == "/api/admin/run-jira-consistency-check"
+
+    def test_jira_default_cadences_match_legacy_systemd_units(self, monkeypatch) -> None:
+        """Defaults match connectors/jira/systemd/{jira-sla-poll,jira-consistency}.timer."""
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["jira-sla-poll"] == "every 15m"
+        assert jobs["jira-consistency-check"] == "every 30m"
+
+    def test_jira_sla_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_JIRA_SLA_POLL_INTERVAL", "300")  # 5m
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["jira-sla-poll"] == "every 5m"
+        # Other Jira job unaffected.
+        assert jobs["jira-consistency-check"] == "every 30m"
+
+    def test_jira_consistency_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_JIRA_CONSISTENCY_INTERVAL", "3600")  # 1h
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["jira-consistency-check"] == "every 1h"
+        assert jobs["jira-sla-poll"] == "every 15m"
+
+    @pytest.mark.parametrize("var", [
+        "SCHEDULER_JIRA_SLA_POLL_INTERVAL",
+        "SCHEDULER_JIRA_CONSISTENCY_INTERVAL",
+    ])
+    @pytest.mark.parametrize("bad", ["0", "-5", "abc", ""])
+    def test_invalid_jira_env_rejected(self, monkeypatch, var, bad) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv(var, bad)
         from services.scheduler.__main__ import build_jobs
 
         with pytest.raises(ValueError):

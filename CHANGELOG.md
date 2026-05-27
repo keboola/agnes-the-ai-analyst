@@ -10,6 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.21] — 2026-05-27
+
+### Added
+- **Scheduler-driven Jira self-healing pair: SLA poll + consistency check.** Brings Agnes back to parity with the legacy Data Broker `jira-sla-poll.timer` / `jira-consistency.timer` systemd units, but invoked from the in-cluster scheduler container instead of host systemd. Two new entries in `services/scheduler/__main__.py` (`jira-sla-poll`, `jira-consistency-check`) target the new endpoints `POST /api/admin/run-jira-sla-poll` and `POST /api/admin/run-jira-consistency-check`. Defaults match the systemd unit cadence — 15 min for SLA poll, 30 min for consistency — and are tunable via two new env vars: `SCHEDULER_JIRA_SLA_POLL_INTERVAL`, `SCHEDULER_JIRA_CONSISTENCY_INTERVAL`. The SLA poll re-fetches `elapsed_millis` + `status` for open tickets whose snapshot would otherwise stagnate between webhooks (and self-heals stale status/resolution on the same pass); the consistency check compares Jira API ↔ raw JSON ↔ parquet and auto-backfills small webhook-loss gaps (`max_age_days=30` default, tunable per call). Both endpoints short-circuit with `{"status": "skipped", "reason": "jira_not_configured"}` when the `JIRA_*` env vars are unset, so a customer without Jira ingest pays nothing for the default scheduler entries. `connectors/jira/scripts/poll_sla.py` `main()` was split into a programmatic `run(dry_run, verbose) -> dict` plus a thin CLI wrapper so the endpoint can call it in-process (the `consistency_check.py` `Config` + `JiraConsistencyChecker` factoring was already endpoint-shaped). The pre-existing systemd units in `connectors/jira/systemd/` are left in place for customers who prefer host-side scheduling. Twelve new parametrized tests cover defaults, env-var overrides, and rejection of invalid values for both intervals.
+
+### Removed
+- **Postgres app-state layer (PR #388) reverted in PR #451.** Shipped briefly in
+  v0.55.20; rolled back the same day for infra reasons. DuckDB remains the
+  single source of truth for system state; no operator-visible behavior change
+  if you stayed on v0.55.19 or upgraded straight to v0.55.21.
+
 ## [0.55.20] — 2026-05-27
 
 ### Added
