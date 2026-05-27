@@ -1,0 +1,306 @@
+{# ──────────────────────────────────────────────────────────────────────────
+   _profile_cowork.html — "Connect Claude Code" section on /me/profile.
+   Included by profile.html after the PAT section.
+   ────────────────────────────────────────────────────────────────────────── #}
+<style>
+  #cowork { scroll-margin-top: 80px; }
+
+  .cowork-intro {
+    font-size: 13px;
+    color: var(--text-secondary, #6b7280);
+    margin: 0 0 18px;
+    line-height: 1.55;
+  }
+
+  .cowork-steps {
+    list-style: none;
+    margin: 0 0 20px;
+    padding: 0;
+    counter-reset: cowork-step;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .cowork-steps li {
+    counter-increment: cowork-step;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-primary, #1A253C);
+  }
+  .cowork-steps li::before {
+    content: counter(cowork-step);
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--primary, #2563eb);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1px;
+  }
+
+  .cowork-action-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .cowork-download-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 16px;
+    border-radius: 8px;
+    background: var(--primary, #2563eb);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: background 0.15s;
+    text-decoration: none;
+  }
+  .cowork-download-btn:hover:not(:disabled) {
+    background: var(--primary-hover, #1d4ed8);
+  }
+  .cowork-download-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .cowork-status {
+    font-size: 12.5px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .cowork-status.is-error {
+    color: var(--danger, #dc2626);
+  }
+  .cowork-status.is-success {
+    color: var(--success, #16a34a);
+  }
+
+  .cowork-prereq {
+    background: var(--surface-secondary, #f3f4f6);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 12.5px;
+    margin-bottom: 16px;
+    color: var(--text-secondary, #4b5563);
+    line-height: 1.5;
+  }
+  .cowork-prereq code {
+    font-family: var(--font-mono, monospace);
+    font-size: 11.5px;
+    background: rgba(0,0,0,.06);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+
+  .cowork-token-limit-warn {
+    display: none;
+    font-size: 12px;
+    color: var(--warning-text, #92400e);
+    background: var(--warning-bg, #fef3c7);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-top: 10px;
+  }
+  .cowork-token-limit-warn.visible { display: block; }
+</style>
+
+<section class="cowork-section" id="cowork" aria-label="Connect Claude Code">
+  <div class="tokens-section-header">
+    <div class="tokens-section-title-block">
+      <h3>Connect Claude Code</h3>
+      <p class="tokens-section-subtitle">
+        Work with your Agnes data directly in Claude Code — no manual setup required.
+      </p>
+    </div>
+  </div>
+
+  <p class="cowork-intro">
+    Download a one-time setup bundle. Unzip it and open the folder in Claude Code —
+    everything configures automatically, no terminal needed.
+  </p>
+
+  <div class="cowork-prereq">
+    Requires <a href="https://claude.ai/download" target="_blank" rel="noopener">Claude Desktop</a>.
+    The bundle expires in 24 hours.
+    <a href="/help/cowork" style="margin-left:8px; color:var(--primary);">📖 Setup guide</a>
+  </div>
+
+  <ol class="cowork-steps">
+    <li>Click <strong>Download Setup Bundle</strong> below</li>
+    <li>Unzip the downloaded file</li>
+    <li>Open <strong>Claude Desktop</strong> → <strong>Cowork</strong> → <strong>New project</strong> → <strong>Use an existing folder</strong> → select the unzipped folder</li>
+    <li>Agnes connects automatically when the session starts ✓</li>
+  </ol>
+
+  <div class="cowork-action-row">
+    <button id="cowork-download-btn" class="cowork-download-btn" type="button">
+      <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 2a1 1 0 011 1v9.586l2.293-2.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 12.586V3a1 1 0 011-1z"/>
+        <path d="M3 15a1 1 0 011 1h12a1 1 0 110 2H4a1 1 0 01-1-1v-1a1 1 0 011-1z"/>
+      </svg>
+      Download Setup Bundle
+    </button>
+    <span id="cowork-status" class="cowork-status" aria-live="polite"></span>
+  </div>
+
+  <div id="cowork-token-limit-warn" class="cowork-token-limit-warn">
+    You have reached the limit of active setup bundles. Old bundles expire after 24 hours,
+    or you can revoke them below.
+  </div>
+
+  <div id="cowork-active-tokens" style="margin-top: 16px; display: none;">
+    <details>
+      <summary style="font-size: 12.5px; color: var(--text-secondary); cursor: pointer;">
+        Active setup bundles
+      </summary>
+      <ul id="cowork-token-list" style="list-style: none; padding: 0; margin: 8px 0 0; font-size: 12px; display: flex; flex-direction: column; gap: 6px;"></ul>
+    </details>
+  </div>
+
+  <div style="margin-top: 20px; padding: 12px 14px; background: var(--surface-secondary, #f3f4f6); border-radius: 8px; font-size: 12.5px; color: var(--text-secondary, #4b5563);">
+    After setup, start with:
+    <span style="display: inline-block; margin-top: 6px; font-style: italic; color: var(--text-primary, #1A253C); font-size: 13px;">
+      "What data do I have access to?"
+    </span>
+  </div>
+</section>
+
+<script>
+(function () {
+  const btn = document.getElementById("cowork-download-btn");
+  const status = document.getElementById("cowork-status");
+  const limitWarn = document.getElementById("cowork-token-limit-warn");
+  const activeSection = document.getElementById("cowork-active-tokens");
+  const tokenList = document.getElementById("cowork-token-list");
+
+  function setStatus(msg, type) {
+    status.textContent = msg;
+    status.className = "cowork-status" + (type ? " is-" + type : "");
+  }
+
+  function renderTokens(tokens) {
+    if (!tokens || tokens.length === 0) {
+      activeSection.style.display = "none";
+      limitWarn.classList.remove("visible");
+      return;
+    }
+    activeSection.style.display = "";
+    if (tokens.length >= 5) limitWarn.classList.add("visible");
+    else limitWarn.classList.remove("visible");
+
+    tokenList.innerHTML = "";
+    tokens.forEach(function (t) {
+      const li = document.createElement("li");
+      li.style.cssText = "display:flex;align-items:center;gap:8px;";
+      const exp = new Date(t.expires_at).toLocaleString();
+      li.innerHTML = `
+        <span style="color:var(--text-secondary)">Expires ${exp}</span>
+        <button data-id="${t.id}"
+          style="margin-left:auto;font-size:11px;color:var(--danger,#dc2626);background:none;border:none;cursor:pointer;padding:2px 6px;"
+          type="button">Revoke</button>`;
+      li.querySelector("button").addEventListener("click", function () {
+        revokeToken(t.id, li);
+      });
+      tokenList.appendChild(li);
+    });
+  }
+
+  function revokeToken(id, li) {
+    fetch("/api/user/setup-tokens/" + id, { method: "DELETE", credentials: "include" })
+      .then(function (r) {
+        if (r.ok || r.status === 204) {
+          li.remove();
+          if (tokenList.children.length === 0) activeSection.style.display = "none";
+          limitWarn.classList.remove("visible");
+        }
+      })
+      .catch(function () {});
+  }
+
+  function loadTokens() {
+    fetch("/api/user/setup-tokens", { credentials: "include" })
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(renderTokens)
+      .catch(function () {});
+  }
+
+  btn.addEventListener("click", function () {
+    btn.disabled = true;
+    setStatus("Generating bundle…", "");
+
+    fetch("/api/user/cowork-bundle", {
+      method: "POST",
+      credentials: "include",
+    })
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().then(function (data) {
+            var hint = (data && data.detail && data.detail.hint) || ("Error " + resp.status);
+            throw new Error(hint);
+          });
+        }
+        var cd = resp.headers.get("Content-Disposition") || "";
+        var match = cd.match(/filename="([^"]+)"/);
+        var filename = match ? match[1] : "agnes-cowork-setup.zip";
+        return resp.blob().then(function (blob) {
+          return _saveBlob(blob, filename);
+        }).then(function (saved) {
+          setStatus(saved ? "Bundle saved — expires in 24 h." : "Bundle downloaded — expires in 24 h.", "success");
+          loadTokens();
+        });
+      })
+      .catch(function (err) {
+        if (err && err.name === "AbortError") {
+          setStatus("", "");  // user cancelled save dialog — silent
+        } else {
+          setStatus(err.message || "Failed to generate bundle.", "error");
+        }
+      })
+      .finally(function () {
+        btn.disabled = false;
+      });
+
+  // Try File System Access API (save dialog) first; fall back to <a> download.
+  // showSaveFilePicker is available in Chrome/Edge/Electron (= Claude Desktop).
+  // Safari and Firefox fall through to the standard download attribute.
+  function _saveBlob(blob, filename) {
+    if (typeof window.showSaveFilePicker === "function") {
+      return window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{ description: "ZIP archive", accept: { "application/zip": [".zip"] } }],
+      }).then(function (handle) {
+        return handle.createWritable();
+      }).then(function (writable) {
+        return writable.write(blob).then(function () { return writable.close(); });
+      }).then(function () {
+        return true;  // saved via picker
+      });
+    }
+    // Fallback: trigger <a download> — file lands in default Downloads folder
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return Promise.resolve(false);  // downloaded without picker
+  }
+  });
+
+  loadTokens();
+})();
+</script>

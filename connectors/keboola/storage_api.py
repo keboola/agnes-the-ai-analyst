@@ -344,9 +344,11 @@ class KeboolaStorageClient:
         """Download a Storage API file (single or sliced) to `dest_path`.
 
         Backend variants:
-        - **AWS / Azure**: signed HTTPS URL in `file_info["url"]` (S3
-          presigned / SAS). Sliced manifest entries are signed HTTPS too.
-          Plain HTTP GET works.
+        - **AWS**: signed HTTPS URL in `file_info["url"]` (S3 presigned).
+          Sliced manifest entries are signed HTTPS too. Plain HTTP GET works.
+        - **Azure**: ``file_info["url"]`` is a signed HTTPS manifest URL.
+          Per-slice URLs in the manifest use the ``azure://`` scheme and
+          require a SAS token from ``file_info["absCredentials"]``.
         - **GCP**: `file_info["url"]` is a signed HTTPS URL for the
           single-file case. For sliced exports, the manifest at `url`
           lists per-slice paths as `gs://<bucket>/<key>` (NOT signed) —
@@ -383,11 +385,16 @@ class KeboolaStorageClient:
 
         if is_sliced:
             # GCP sliced manifests carry `gs://` URIs that need an OAuth
-            # bearer; AWS / Azure carry signed HTTPS URLs that work
-            # without auth. The presence of `gcsCredentials` in the file
-            # detail signals a GCP backend.
+            # bearer; Azure carry `azure://` URIs that need a SAS token
+            # from absCredentials; AWS carry signed HTTPS URLs that need
+            # no extra auth.
             gcs_token = (file_info.get("gcsCredentials") or {}).get("access_token")
-            self._download_sliced(url, dest_path, gcs_token=gcs_token)
+            abs_credentials = file_info.get("absCredentials") or {}
+            self._download_sliced(
+                url, dest_path,
+                gcs_token=gcs_token,
+                abs_credentials=abs_credentials,
+            )
         else:
             self._download_single(url, dest_path, gunzip_on_read=is_gzipped)
         return dest_path
@@ -449,8 +456,48 @@ class KeboolaStorageClient:
             f"/o/{quote(key, safe='')}?alt=media"
         )
 
+    @staticmethod
+    def _azure_to_https(azure_url: str, abs_credentials: dict) -> str:
+        """Rewrite ``azure://<account>.blob.core.windows.net/<container>/<blob>``
+        to an HTTPS URL with the SAS token from ``absCredentials`` appended.
+
+        Keboola's Azure-backed projects return ``azure://`` scheme URIs in
+        sliced-export manifests instead of pre-signed HTTPS SAS URLs.
+        ``absCredentials.SASConnectionString`` carries the SAS token needed
+        to authenticate the download — parse it out and append as a query
+        string so the standard ``requests`` session can handle the download
+        without an Azure SDK dependency.
+
+        If ``absCredentials`` is absent or empty the HTTPS URL is returned
+        without a SAS token; the download will likely fail with 403, but the
+        schema error is avoided and the caller can surface a cleaner message.
+        """
+        if not azure_url.startswith("azure://"):
+            raise ValueError(f"_azure_to_https expects azure://; got {azure_url!r}")
+        https_url = "https://" + azure_url[len("azure://"):]
+
+        # Extract SAS token from SASConnectionString.
+        # Format: "BlobEndpoint=https://...;SharedAccessSignature=sv=2020-..."
+        sas_connection = abs_credentials.get("SASConnectionString", "") or ""
+        sas_token = ""
+        for part in sas_connection.split(";"):
+            if part.startswith("SharedAccessSignature="):
+                sas_token = part[len("SharedAccessSignature="):]
+                break
+
+        if sas_token:
+            sep = "&" if "?" in https_url else "?"
+            https_url = f"{https_url}{sep}{sas_token}"
+
+        return https_url
+
     def _download_sliced(
-        self, manifest_url: str, dest_path: Path, *, gcs_token: Optional[str] = None
+        self,
+        manifest_url: str,
+        dest_path: Path,
+        *,
+        gcs_token: Optional[str] = None,
+        abs_credentials: Optional[dict] = None,
     ) -> None:
         """Sliced exports: the file detail's `url` points at a JSON manifest
         whose `entries[].url` lists per-slice locations. Download each slice
@@ -487,10 +534,10 @@ class KeboolaStorageClient:
                         body=entry,
                     )
                 sp = Path(tmpdir) / f"slice-{i:05d}"
-                # GCP backend: rewrite gs:// to GCS REST + bearer auth.
-                # The OAuth token comes from the file_detail's
-                # `gcsCredentials.access_token` (passed as `gcs_token`
-                # arg).
+                # Backend-specific URL rewriting:
+                # - GCP: gs:// → GCS REST + OAuth bearer from gcsCredentials
+                # - Azure: azure:// → HTTPS + SAS token from absCredentials
+                # - AWS: signed HTTPS already — no rewrite needed
                 if surl.startswith("gs://"):
                     if not gcs_token:
                         raise StorageApiError(
@@ -499,6 +546,9 @@ class KeboolaStorageClient:
                         )
                     surl = self._gs_to_https(surl)
                     extra_headers = {"Authorization": f"Bearer {gcs_token}"}
+                elif surl.startswith("azure://"):
+                    surl = self._azure_to_https(surl, abs_credentials)
+                    extra_headers = None
                 else:
                     extra_headers = None
                 # Slices may individually be gzipped — same heuristic as
@@ -593,6 +643,7 @@ class KeboolaStorageClient:
                 "use download_file for the single-file case"
             )
         gcs_token = (file_info.get("gcsCredentials") or {}).get("access_token")
+        abs_credentials = file_info.get("absCredentials") or {}
         m = self.session.get(url, timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC)
         m.raise_for_status()
         manifest = m.json()
@@ -611,8 +662,10 @@ class KeboolaStorageClient:
                     f"slice {i} missing 'url': {str(entry)[:200]}",
                     body=entry,
                 )
-            # Reuse the same gs:// rewrite + bearer + per-slice gz
-            # heuristics used by the concat path.
+            # Backend-specific URL rewriting:
+            # - GCP: gs:// → GCS REST + OAuth bearer from gcsCredentials
+            # - Azure: azure:// → HTTPS + SAS token from absCredentials
+            # - AWS: signed HTTPS already — no rewrite needed
             if surl.startswith("gs://"):
                 if not gcs_token:
                     raise StorageApiError(
@@ -621,6 +674,9 @@ class KeboolaStorageClient:
                     )
                 surl = self._gs_to_https(surl)
                 extra_headers = {"Authorization": f"Bearer {gcs_token}"}
+            elif surl.startswith("azure://"):
+                surl = self._azure_to_https(surl, abs_credentials)
+                extra_headers = None
             else:
                 extra_headers = None
             gz = ".gz" in surl.split("?")[0].rsplit("/", 1)[-1]
