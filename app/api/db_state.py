@@ -171,3 +171,41 @@ def get_job(job_id: str) -> dict:
     if not path.exists():
         raise HTTPException(404, detail=f"Unknown job_id: {job_id}")
     return json.loads(path.read_text())
+
+
+@router.post("/cancel/{job_id}", dependencies=[Depends(require_admin)])
+def cancel_job(job_id: str) -> dict:
+    """Cancel a running migration before point-of-no-return."""
+    path = _jobs_dir() / f"{job_id}.json"
+    if not path.exists():
+        raise HTTPException(404, detail=f"Unknown job_id: {job_id}")
+
+    data = json.loads(path.read_text())
+    if data["status"] != "running":
+        raise HTTPException(
+            400, detail=f"Job is {data['status']}; cannot cancel non-running job"
+        )
+    if data["current_step"] in ("flip_backend", "app_restart", "verify_health"):
+        raise HTTPException(
+            409,
+            detail="Past point-of-no-return (step >= flip_backend); manual recovery required"
+        )
+
+    from datetime import datetime, timezone
+    data["status"] = "cancelled"
+    data["completed_at"] = datetime.now(timezone.utc).isoformat()
+    data["error"] = {
+        "step": data["current_step"],
+        "class": "Cancelled",
+        "message": "Admin cancelled migration",
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
+    os.replace(tmp, path)
+
+    # Revert state machine
+    from src.db_state_machine import BackendState, write_backend_state
+    revert = BackendState.DUCKDB if data["target_backend"] == "side_car" else BackendState.SIDE_CAR
+    write_backend_state(revert)
+
+    return {"cancelled": True}

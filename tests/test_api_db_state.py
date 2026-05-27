@@ -224,3 +224,55 @@ def test_get_job_404_unknown(seeded_app, monkeypatch):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 404, r.text
+
+
+def test_post_cancel_marks_job_cancelled(seeded_app, monkeypatch):
+    """Cancel a running job — status → cancelled, state reverted."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    (jobs_dir / "abc.json").write_text(json.dumps({
+        "schema_version": 1, "job_id": "abc", "status": "running",
+        "source_backend": "duckdb", "target_backend": "side_car",
+        "started_at": "2026-05-27T16:00:00+00:00", "completed_at": None,
+        "current_step": "data_copy", "progress_pct": 50,
+        "summary": None, "error": None,
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.post(
+        "/api/admin/db/cancel/abc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] is True
+
+    data = json.loads((jobs_dir / "abc.json").read_text())
+    assert data["status"] == "cancelled"
+
+
+def test_post_cancel_409_after_flip_backend(seeded_app, monkeypatch):
+    """Cancel after flip_backend step is rejected (past point-of-no-return)."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    (jobs_dir / "abc.json").write_text(json.dumps({
+        "schema_version": 1, "job_id": "abc", "status": "running",
+        "source_backend": "duckdb", "target_backend": "side_car",
+        "started_at": "2026-05-27T16:00:00+00:00", "completed_at": None,
+        "current_step": "flip_backend", "progress_pct": 95,
+        "summary": None, "error": None,
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.post(
+        "/api/admin/db/cancel/abc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 409, r.text
