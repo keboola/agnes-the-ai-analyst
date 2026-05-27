@@ -22,6 +22,12 @@ from src.repositories import (
     audit_repo,
     news_template_repo,
 )
+from src.repositories.news_template import (
+    AlreadyDraftError,
+    NoDraftError,
+    NotFoundError,
+    VersionConflictError,
+)
 from src.sanitize_news import sanitize
 
 

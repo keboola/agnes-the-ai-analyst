@@ -767,7 +767,7 @@ async def update_grant_requirement(
             status_code=400,
             detail="requirement must be 'available' or 'required'",
         )
-    grants = ResourceGrantsRepository(conn)
+    grants = resource_grants_repo()
     existing = grants.get(grant_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Grant not found")
