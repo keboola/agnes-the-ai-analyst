@@ -132,6 +132,10 @@ from app.api.marketplace import router as marketplace_router
 from app.api.welcome import router as welcome_router
 from app.api.claude_md import router as claude_md_router
 from app.api.news import router as news_router
+from app.api.cowork_bundle import (
+    user_router as cowork_user_router,
+    auth_router as cowork_auth_router,
+)
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.activity import router as activity_router
@@ -753,6 +757,8 @@ def create_app() -> FastAPI:
     app.include_router(welcome_router)
     app.include_router(claude_md_router)
     app.include_router(news_router)
+    app.include_router(cowork_user_router)
+    app.include_router(cowork_auth_router)
     app.include_router(cache_warmup_router)
     app.include_router(bq_metadata_refresh_router)
     app.include_router(activity_router)

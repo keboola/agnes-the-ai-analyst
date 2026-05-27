@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+{% block title %}Connect Claude Code — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .cowork-help {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 16px 24px 64px;
+    color: var(--text-primary);
+  }
+
+  .cowork-help .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 20px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    text-decoration: none;
+  }
+  .cowork-help .back:hover { color: var(--primary); }
+  .cowork-help .back svg { flex-shrink: 0; }
+
+  .cowork-help h1 {
+    font-size: 24px;
+    font-weight: 700;
+    margin: 0 0 6px;
+  }
+  .cowork-help .subtitle {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin: 0 0 32px;
+  }
+
+  /* Step cards */
+  .ch-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-bottom: 36px;
+  }
+  .ch-step {
+    display: flex;
+    gap: 16px;
+    position: relative;
+  }
+  .ch-step:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    left: 15px;
+    top: 38px;
+    bottom: -1px;
+    width: 2px;
+    background: var(--border, #e5e7eb);
+  }
+  .ch-step-num {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--primary, #2563eb);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 2px;
+    position: relative;
+    z-index: 1;
+  }
+  .ch-step-body {
+    padding: 0 0 28px;
+    flex: 1;
+    min-width: 0;
+  }
+  .ch-step-body h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 4px 0 6px;
+  }
+  .ch-step-body p {
+    font-size: 13.5px;
+    color: var(--text-secondary, #4b5563);
+    margin: 0 0 8px;
+    line-height: 1.55;
+  }
+  .ch-step-body p:last-child { margin-bottom: 0; }
+
+  .ch-ui-path {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    background: var(--surface-secondary, #f3f4f6);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin: 6px 0;
+    line-height: 1.4;
+  }
+  .ch-ui-path strong {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .ch-ui-path .sep {
+    color: var(--text-secondary);
+    font-size: 11px;
+    margin: 0 1px;
+  }
+
+  .ch-tip {
+    font-size: 12.5px;
+    color: var(--text-secondary, #6b7280);
+    background: var(--surface-secondary, #f3f4f6);
+    border-left: 3px solid var(--primary, #2563eb);
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px;
+    margin-top: 8px;
+  }
+
+  .ch-ask-box {
+    background: var(--surface-secondary, #f3f4f6);
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: 14px;
+    color: var(--text-primary);
+    margin-top: 10px;
+    font-style: italic;
+  }
+  .ch-ask-box::before {
+    content: "💬 ";
+  }
+
+  /* Prereq pill */
+  .ch-prereq {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    background: var(--surface-secondary, #f3f4f6);
+    border-radius: 20px;
+    padding: 5px 12px;
+    margin-bottom: 28px;
+  }
+  .ch-prereq a {
+    color: var(--primary);
+    font-weight: 500;
+    text-decoration: none;
+  }
+  .ch-prereq a:hover { text-decoration: underline; }
+
+  /* FAQ */
+  .ch-faq { margin-top: 16px; }
+  .ch-faq h3 {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 0 0 14px;
+  }
+  .ch-faq details {
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    padding: 12px 0;
+  }
+  .ch-faq details:first-of-type { border-top: 1px solid var(--border, #e5e7eb); }
+  .ch-faq summary {
+    font-size: 13.5px;
+    font-weight: 500;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .ch-faq summary::-webkit-details-marker { display: none; }
+  .ch-faq summary::after {
+    content: "+";
+    font-size: 16px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+  .ch-faq details[open] summary::after { content: "−"; }
+  .ch-faq .faq-body {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    padding: 10px 0 2px;
+  }
+  .ch-faq .faq-body a { color: var(--primary); }
+</style>
+
+<div class="cowork-help">
+  <a href="/me/profile#cowork" class="back">
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd"/>
+    </svg>
+    Back to profile
+  </a>
+
+  <h1>Connect Claude Code</h1>
+  <p class="subtitle">
+    Set up your Agnes workspace in Claude Desktop — no terminal needed.
+    Takes about 2 minutes.
+  </p>
+
+  <div class="ch-prereq">
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
+    </svg>
+    Requires <a href="https://claude.ai/download" target="_blank" rel="noopener">Claude Desktop</a> to be installed
+  </div>
+
+  <div class="ch-steps">
+
+    <div class="ch-step">
+      <div class="ch-step-num">1</div>
+      <div class="ch-step-body">
+        <h2>Download the setup bundle</h2>
+        <p>
+          Go to <a href="/me/profile#cowork">your profile</a> and click
+          <strong>Download Setup Bundle</strong>. Your browser will ask where to save the file.
+        </p>
+        <div class="ch-tip">
+          The bundle expires in 24 hours and is single-use. If it has expired,
+          just download a new one.
+        </div>
+      </div>
+    </div>
+
+    <div class="ch-step">
+      <div class="ch-step-num">2</div>
+      <div class="ch-step-body">
+        <h2>Unzip the file</h2>
+        <p>
+          Double-click the downloaded <code>agnes-cowork-setup-*.zip</code> file.
+          A folder with the same name appears next to it.
+        </p>
+      </div>
+    </div>
+
+    <div class="ch-step">
+      <div class="ch-step-num">3</div>
+      <div class="ch-step-body">
+        <h2>Open the folder in Claude Desktop</h2>
+        <p>Open <strong>Claude Desktop</strong>, then follow this path:</p>
+        <div class="ch-ui-path">
+          <strong>Cowork</strong>
+          <span class="sep">›</span>
+          <strong>New project</strong>
+          <span class="sep">›</span>
+          <strong>Use an existing folder</strong>
+          <span class="sep">›</span>
+          Select the unzipped folder
+          <span class="sep">›</span>
+          <strong>Create</strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="ch-step">
+      <div class="ch-step-num">4</div>
+      <div class="ch-step-body">
+        <h2>Agnes connects automatically</h2>
+        <p>
+          The project opens and Agnes sets everything up in the background —
+          no extra steps needed. Start by asking:
+        </p>
+        <div class="ch-ask-box">What data do I have access to?</div>
+        <p style="margin-top:10px;">
+          Agnes will list your available datasets. From now on, data syncs
+          automatically every time you open the project.
+        </p>
+      </div>
+    </div>
+
+  </div>{# /ch-steps #}
+
+  <div class="ch-faq">
+    <h3>FAQ</h3>
+
+    <details>
+      <summary>The bundle expired or login fails</summary>
+      <div class="faq-body">
+        Each bundle is valid for 24 hours and is single-use.
+        Go to <a href="/me/profile#cowork">your profile</a>, click
+        <strong>Download Setup Bundle</strong> again, and repeat the steps above.
+      </div>
+    </details>
+
+    <details>
+      <summary>How do I revoke an old bundle?</summary>
+      <div class="faq-body">
+        On <a href="/me/profile#cowork">your profile</a>, expand
+        <strong>Active setup bundles</strong> under the Connect Claude Code section
+        and click <strong>Revoke</strong> next to the bundle you want to remove.
+        Bundles also expire automatically after 24 hours.
+      </div>
+    </details>
+
+    <details>
+      <summary>How do I know Agnes is connected?</summary>
+      <div class="faq-body">
+        Ask Claude: <em>"What data do I have access to?"</em>
+        — it should respond with a list of available tables.
+        If it says it has no access, check your network connection or download a fresh bundle.
+      </div>
+    </details>
+
+    <details>
+      <summary>Does data sync automatically?</summary>
+      <div class="faq-body">
+        Yes. Every time you open the project in Claude Desktop, Agnes pulls the
+        latest data in the background. You don't need to run anything manually.
+      </div>
+    </details>
+
+    <details>
+      <summary>Can I use the same bundle on multiple machines?</summary>
+      <div class="faq-body">
+        No — each bundle is single-use. Once it has been exchanged for a session
+        on one machine, it cannot be used again. Download a separate bundle for
+        each machine.
+      </div>
+    </details>
+
+  </div>
+</div>
+{% endblock %}
