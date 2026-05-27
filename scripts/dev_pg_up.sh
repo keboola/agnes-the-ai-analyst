@@ -49,18 +49,74 @@ is_present() {
   docker ps -a --filter "name=^${1}$" --format '{{.Names}}' | grep -qx "$1"
 }
 
+PG_IMAGE="${PG_IMAGE:-postgres:16-alpine}"
+
 echo "==> ensuring named volume ${PG_VOLUME}"
 docker volume inspect "${PG_VOLUME}" >/dev/null 2>&1 || \
   docker volume create "${PG_VOLUME}" >/dev/null
 
+# Verify an existing container matches expectations before reusing it.
+# Three failure modes the adversarial review surfaced:
+#   1) different image tag (postgres:15 vs 16 → data_directory layout
+#      drift, silent corruption when started against PG16's expectations).
+#   2) different volume mount (anonymous volume from an earlier
+#      ``docker run`` → bypasses the named-volume durability story).
+#   3) different bound port (operator manually moved 5432→5433 → .env's
+#      AGNES_DB_URL stops resolving without a clear error).
+# Bail loudly with the swap command instead of pretending nothing's wrong.
+_assert_container_matches() {
+  local name="$1"
+  local actual_image actual_volume actual_port
+  actual_image=$(docker inspect "$name" --format '{{ .Config.Image }}' 2>/dev/null || echo "")
+  actual_volume=$(
+    docker inspect "$name" --format \
+      '{{ range .Mounts }}{{ if eq .Destination "/var/lib/postgresql/data" }}{{ .Name }}{{ end }}{{ end }}' \
+      2>/dev/null || echo ""
+  )
+  actual_port=$(
+    docker inspect "$name" --format \
+      '{{ (index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort }}' \
+      2>/dev/null || echo ""
+  )
+
+  local fail=0
+  if [[ "$actual_image" != "$PG_IMAGE" ]]; then
+    echo "    image mismatch: container=$actual_image expected=$PG_IMAGE" >&2
+    fail=1
+  fi
+  if [[ -n "$actual_volume" && "$actual_volume" != "$PG_VOLUME" ]]; then
+    echo "    volume mismatch: container=$actual_volume expected=$PG_VOLUME" >&2
+    fail=1
+  fi
+  if [[ -n "$actual_port" && "$actual_port" != "$PG_PORT" ]]; then
+    echo "    port mismatch: container=$actual_port expected=$PG_PORT" >&2
+    fail=1
+  fi
+  if [[ "$fail" == "1" ]]; then
+    cat >&2 <<EOF
+
+==> ${name} exists but doesn't match the expected shape.
+    If you want to swap it onto the named volume + current image,
+    run ``scripts/dev_pg_migrate_volume.sh`` (which pg_dumps → rm →
+    pg_restore). If you want the existing container as-is, set
+    PG_IMAGE / PG_VOLUME / PG_PORT in the environment to match.
+EOF
+    exit 1
+  fi
+}
+
 if is_running "${PG_NAME}"; then
-  echo "==> ${PG_NAME} already running — reusing"
+  echo "==> ${PG_NAME} already running — verifying image/volume/port"
+  _assert_container_matches "${PG_NAME}"
+  echo "    matches expectations — reusing"
 else
   if is_present "${PG_NAME}"; then
-    echo "==> ${PG_NAME} exists but stopped — starting"
+    echo "==> ${PG_NAME} exists but stopped — verifying image/volume/port"
+    _assert_container_matches "${PG_NAME}"
+    echo "    matches — starting"
     docker start "${PG_NAME}" >/dev/null
   else
-    echo "==> launching ${PG_NAME} (image postgres:16-alpine)"
+    echo "==> launching ${PG_NAME} (image ${PG_IMAGE})"
     docker run -d \
       --name "${PG_NAME}" \
       -e "POSTGRES_USER=${PG_USER}" \
@@ -69,7 +125,7 @@ else
       -v "${PG_VOLUME}:/var/lib/postgresql/data" \
       -p "127.0.0.1:${PG_PORT}:5432" \
       --restart unless-stopped \
-      postgres:16-alpine >/dev/null
+      "${PG_IMAGE}" >/dev/null
   fi
 fi
 

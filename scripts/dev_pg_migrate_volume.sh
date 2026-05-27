@@ -27,8 +27,21 @@
 
 set -euo pipefail
 
+# See scripts/sync_from_prod.sh — strict KEY=VALUE parser, NOT
+# ``source``. Avoids shell-meta in values executing as code.
 if [[ -f .env ]]; then
-  set -a; source .env; set +a
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*$ ]] && continue
+    if [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="${BASH_REMATCH[2]}"
+      if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      fi
+      export "$key=$value"
+    fi
+  done < .env
 fi
 
 export DOCKER_HOST="${DOCKER_HOST:-unix:///Users/$USER/.colima/default/docker.sock}"
@@ -98,24 +111,49 @@ sha256=$(shasum -a 256 "${DUMP}" | awk '{print $1}')
 size=$(du -h "${DUMP}" | cut -f1)
 echo "    dump size: ${size}   sha256: ${sha256:0:16}…"
 
-# -- step 3: stop + remove old container ------------------------------------
+# -- step 3: rename old (don't delete yet) + launch new ---------------------
+#
+# Rename instead of removing so the operator has a fast recovery path if
+# step 4 (dev_pg_up.sh) fails — ``docker rename agnes-pg-vrpg-OLD-* back``
+# restores the previous container with its anonymous volume intact, in
+# under a second. The old container is dropped only after the new one
+# accepts connections AND pg_restore + row-count verification succeed
+# (step 7).
 
-echo "==> stopping + removing ${PG_NAME} (the anonymous volume ${CURRENT_VOL:-<anonymous>} is LEFT on disk for safety; remove manually after verifying)"
+PG_OLD_NAME="${PG_NAME}-OLD-$(date +%Y%m%d%H%M%S)"
+echo "==> stopping + renaming ${PG_NAME} → ${PG_OLD_NAME}"
 docker stop "${PG_NAME}" >/dev/null
-docker rm "${PG_NAME}" >/dev/null
+docker rename "${PG_NAME}" "${PG_OLD_NAME}" >/dev/null
 
 # -- step 4: bring up the new container -------------------------------------
 
 echo "==> launching ${PG_NAME} on named volume agnes_pg_vrpg_data"
-bash "$(dirname "$0")/dev_pg_up.sh"
+if ! bash "$(dirname "$0")/dev_pg_up.sh"; then
+  echo "==> dev_pg_up.sh failed; rolling back" >&2
+  docker rename "${PG_OLD_NAME}" "${PG_NAME}" >/dev/null
+  docker start "${PG_NAME}" >/dev/null
+  echo "    ${PG_NAME} restored from ${PG_OLD_NAME}. Dump preserved at ${DUMP}." >&2
+  exit 1
+fi
 
 # Wait for new container to accept connections.
+ready=0
 for _ in $(seq 1 30); do
   if docker exec "${PG_NAME}" pg_isready -U "${PG_USER}" -d "${PG_DB}" >/dev/null 2>&1; then
+    ready=1
     break
   fi
   sleep 1
 done
+if [[ "$ready" == "0" ]]; then
+  echo "==> new ${PG_NAME} never became ready; rolling back" >&2
+  docker stop "${PG_NAME}" >/dev/null 2>&1 || true
+  docker rm "${PG_NAME}" >/dev/null 2>&1 || true
+  docker rename "${PG_OLD_NAME}" "${PG_NAME}" >/dev/null
+  docker start "${PG_NAME}" >/dev/null
+  echo "    ${PG_NAME} restored from ${PG_OLD_NAME}. Dump preserved at ${DUMP}." >&2
+  exit 1
+fi
 
 # -- step 5: pg_restore ------------------------------------------------------
 
@@ -145,11 +183,23 @@ done < "${BEFORE_FILE}"
 if [[ "$fail" == "0" ]]; then
   echo
   echo "==> success. all $(echo "${BEFORE}" | wc -l | tr -d ' ') tables match."
+  # Drop the renamed old container ONLY after the verification passes.
+  # The anonymous volume the old container used is left on disk (the
+  # ``docker rm`` below removes the container record, not the volume)
+  # so the operator can still ``docker run --volumes-from`` it for a
+  # forensic compare if anything turns up wrong later.
+  echo "==> removing renamed old container ${PG_OLD_NAME} (anonymous volume retained)"
+  docker rm "${PG_OLD_NAME}" >/dev/null 2>&1 || true
   echo "    dump preserved at ${DUMP} (delete after one full restart cycle)"
   echo "    old anonymous volume left at ${CURRENT_VOL:-<anonymous>} — remove with:"
   echo "      docker volume rm ${CURRENT_VOL}"
 else
   echo
-  echo "==> ROW-COUNT MISMATCHES — investigate before deleting ${DUMP}."
+  echo "==> ROW-COUNT MISMATCHES — rolling back to ${PG_OLD_NAME}." >&2
+  docker stop "${PG_NAME}" >/dev/null 2>&1 || true
+  docker rm "${PG_NAME}" >/dev/null 2>&1 || true
+  docker rename "${PG_OLD_NAME}" "${PG_NAME}" >/dev/null
+  docker start "${PG_NAME}" >/dev/null
+  echo "    ${PG_NAME} restored. Dump preserved at ${DUMP}." >&2
   exit 1
 fi

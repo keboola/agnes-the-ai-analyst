@@ -9,6 +9,15 @@ from ``src.db_pg`` and adds it to the ``__all__`` re-export below.
 from __future__ import annotations
 
 from src.models.audit import AuditLog
+from src.models.catalog import (
+    DataPackage,
+    DataPackageTable,
+    KnowledgeItemDomain,
+    MemoryDomain,
+    MemoryDomainSuggestion,
+    Recipe,
+    UserStackSubscription,
+)
 from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
 from src.models.knowledge import (
     KnowledgeContradiction,
@@ -61,7 +70,14 @@ __all__ = [
     "AuditLog",
     "BqMetadataCache",
     "ColumnMetadata",
+    "DataPackage",
+    "DataPackageTable",
     "InstanceTemplate",
+    "KnowledgeItemDomain",
+    "MemoryDomain",
+    "MemoryDomainSuggestion",
+    "Recipe",
+    "UserStackSubscription",
     "KnowledgeContradiction",
     "KnowledgeItem",
     "KnowledgeItemRelation",

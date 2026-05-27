@@ -105,15 +105,59 @@ def _filtered_columns(
 ) -> List[str]:
     """DuckDB columns intersected with PG columns, preserving DuckDB order.
 
-    Logs a one-line warning when prod has columns PG doesn't — operator
-    sees the schema drift surface without the task failing on it.
+    When DuckDB has a column the PG schema doesn't, the column is dropped
+    from the INSERT. Before-fix this was a silent ``log.warning`` — an
+    adversarial review surfaced two failure modes that needed louder
+    treatment:
+
+      1. ``table_registry.bq_fqn`` (and every v55+ documentation field)
+         was being dropped on every prod snapshot. The PG cutover
+         branch missed the schema bump; the migrate script logged the
+         drop and moved on; operators only noticed when the rendered
+         catalog page came up empty. Closed in alembic 0013.
+      2. A future column added on prod and missed in alembic would
+         repeat the pattern. ``log.warning`` is not enough — operator
+         scrolls past it.
+
+    Current behaviour: probe each dropped column for any non-NULL row
+    in DuckDB. If the column is empty everywhere, downgrade to
+    ``WARNING`` (no data lost; operator can land the migration later).
+    If the column has data, raise so the operator MUST land a
+    matching alembic migration before the snapshot proceeds — silent
+    data loss is the alternative.
     """
     duck_cols = _resolved_columns(task, duck_conn)
     pg_cols = set(_pg_columns(pg_engine, task.target_table))
     skipped = [c for c in duck_cols if c not in pg_cols]
     if skipped:
+        # Probe whether the dropped columns carry any data. If they do,
+        # bail loudly — silent column drop is data loss.
+        carries_data: List[str] = []
+        for c in skipped:
+            try:
+                quoted = '"' + c.replace('"', '""') + '"'
+                row = duck_conn.execute(
+                    f"SELECT COUNT(*) FROM {task.source_table} "
+                    f"WHERE {quoted} IS NOT NULL"
+                ).fetchone()
+                if row and row[0] and int(row[0]) > 0:
+                    carries_data.append(c)
+            except Exception:  # noqa: BLE001 — surfaced via raise below
+                # Unable to probe — treat as carrying data so we err
+                # on the side of refusing the silent drop.
+                carries_data.append(c)
+        if carries_data:
+            raise RuntimeError(
+                f"{task.source_table}: refuse to drop DuckDB columns "
+                f"with data on the silent path: {', '.join(carries_data)}. "
+                "Add an alembic migration introducing these columns to PG "
+                "before re-running the snapshot, or pass an explicit "
+                "``MigrationTask(columns=...)`` allowlist if the drop is "
+                "intentional."
+            )
+        # All dropped columns are empty — safe to skip with a warning.
         log.warning(
-            "%s: DuckDB columns absent in PG schema, dropped: %s",
+            "%s: DuckDB columns absent in PG schema, dropped (no data lost): %s",
             task.source_table,
             ", ".join(skipped),
         )

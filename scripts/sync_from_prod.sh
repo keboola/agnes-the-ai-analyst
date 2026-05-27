@@ -33,10 +33,29 @@ set -euo pipefail
 
 # Pull AGNES_DB_URL + colima/PG creds from the project ``.env`` so each
 # step (alembic, migrate) connects to the same PG without the operator
-# having to remember the export incantation. ``set -a`` lets every var
-# in .env enter the environment; ``set +a`` resets after.
+# having to remember the export incantation.
+#
+# Do NOT ``source .env`` — that runs the file as bash and any shell
+# meta in a value (``#``, ``&``, spaces, ``$()``, backticks) truncates
+# the variable, backgrounds a process, or executes a subshell. Use a
+# strict KEY=VALUE parser instead: only lines that match
+# ``^[A-Z_][A-Z0-9_]*=`` are exported, the value is taken verbatim with
+# no expansion, comments + blank lines are dropped.
 if [[ -f .env ]]; then
-  set -a; source .env; set +a
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*$ ]] && continue
+    if [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="${BASH_REMATCH[2]}"
+      # Strip surrounding double or single quotes if present, no
+      # expansion inside (no $VAR / $() / backticks).
+      if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      fi
+      export "$key=$value"
+    fi
+  done < .env
 fi
 
 # -- knobs -------------------------------------------------------------------

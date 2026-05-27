@@ -2476,6 +2476,9 @@ def register_table(
     # deprecated and inert at the runtime layer. The DB column keeps its
     # schema default; the registry response no longer reflects request
     # values for this flag.
+    # ``bq_fqn`` lands here via ``RegisterTableRequest``; the repo
+    # call routes it through ``upsert_raw`` (the v55+ documentation
+    # columns aren't part of the narrow ``register()`` signature).
     repo.register(
         id=table_id,
         name=request.name,
@@ -2500,6 +2503,16 @@ def register_table(
         partition_granularity=request.partition_granularity,
         initial_load_chunk_days=request.initial_load_chunk_days,
     )
+    # ``register()`` is the narrow signature wired through every
+    # existing call site; instead of widening it (and every shim) for
+    # v55+ documentation fields, we re-emit the row via ``upsert_raw``
+    # which writes every column the SA model exposes. The same
+    # ``ON CONFLICT (id) DO UPDATE`` semantics make it idempotent on
+    # the just-INSERTed row.
+    if request.bq_fqn:
+        row = repo.get(table_id) or {}
+        row["bq_fqn"] = request.bq_fqn
+        repo.upsert_raw(row)
 
     # Audit entry — masked params; description kept raw (it's documentation).
     audit_repo().log(
@@ -2846,7 +2859,13 @@ async def update_table(
             merged["profile_after_sync"] = synthetic.profile_after_sync
             merged["source_query"] = synthetic.source_query
 
-        repo.register(id=table_id, **merged)
+        # ``register()`` is the narrow signature wired through callers
+        # that need the side-effects (audit_log, BQ validator). For
+        # PUTs we want the WIDE column set (v55+ documentation fields,
+        # ``bq_fqn``, ``sample_questions``, etc.) — pass through
+        # ``upsert_raw`` so any column the SA model exposes round-trips.
+        merged["id"] = table_id
+        repo.upsert_raw(merged)
 
     audit_repo().log(
         user_id=user.get("id"),

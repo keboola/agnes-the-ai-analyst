@@ -63,9 +63,28 @@ def main() -> int:
         dry_run=args.dry_run,
         validate=not args.no_validate,
     )
+    failed_tasks: list[str] = []
     for r in reports:
         print(r)
-    return 0 if all(r.get("checksum_match", True) for r in reports) else 1
+        # Per-task ``error`` is set by ``run_task`` when an INSERT batch
+        # raises (e.g. FK violation, NOT NULL violation, schema drift).
+        # Without surfacing this in the exit code the wrapper script
+        # (``scripts/sync_from_prod.sh``) cannot tell a successful seed
+        # apart from a partial one. checksum_match=False alone is not
+        # enough — a task that errored out before writing any rows has
+        # no checksum to compare.
+        if r.get("error"):
+            failed_tasks.append(r.get("table", "<unknown>"))
+        elif r.get("checksum_match") is False:
+            failed_tasks.append(r.get("table", "<unknown>"))
+    if failed_tasks:
+        print(
+            f"\nFAILURE: {len(failed_tasks)} task(s) reported errors or "
+            f"checksum mismatch: {', '.join(failed_tasks)}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

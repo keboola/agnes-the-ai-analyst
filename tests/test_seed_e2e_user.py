@@ -30,17 +30,24 @@ def _load_seed_module():
 def _clean_users_and_groups():
     """Per-test wipe of users/groups so the test order doesn't matter.
 
-    The seed under test writes into the shared dev/test PG; without a
-    per-test reset, a prior test leaves ``e2e@example.com`` (or wipes
-    the Admin group) and the next test starts from contaminated state.
-    ``_truncate_pg_app_state`` keeps the Admin/Everyone rows in
-    ``user_groups`` (its preserve list); we re-seed them defensively
-    here in case the prior test was ``test_seed_refuses_when_admin_group_missing``
+    Acquires the same ``pg_advisory_lock`` that ``seeded_app`` holds
+    so xdist workers serialise on the shared dev/test PG: without
+    the lock, this fixture's TRUNCATE can land mid-test on a
+    different worker, wiping rows the other worker's ``seeded_app``
+    has just inserted. The lock is held for the entire test (acquired
+    in setup, released at teardown).
+
+    ``_truncate_pg_app_state`` keeps Admin/Everyone in ``user_groups``
+    (preserve list). We re-seed them defensively in case the prior
+    test in THIS file was ``test_seed_refuses_when_admin_group_missing``
     which DELETEs Admin to simulate the half-init DB.
     """
     import uuid as _uuid
     import sqlalchemy as sa
-    from tests.conftest import _truncate_pg_app_state
+    from tests.conftest import (
+        _SEEDED_APP_ADVISORY_LOCK_KEY,
+        _truncate_pg_app_state,
+    )
     from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
     from src.db_pg import get_engine
 
@@ -59,14 +66,32 @@ def _clean_users_and_groups():
                     {"id": _uuid.uuid4().hex, "name": name, "desc": desc},
                 )
 
-    _truncate_pg_app_state()
-    _restore_system_groups()
-    yield
-    # Also re-seed at teardown — ``test_seed_refuses_when_admin_group_missing``
-    # explicitly DELETEs the Admin row; without this fix-up, the next test
-    # (whether in this file or any other on the same xdist worker) inherits
-    # a half-init DB and fails the admin gate.
-    _restore_system_groups()
+    # Hold the same session-level advisory lock used by ``seeded_app``
+    # so xdist workers can't race on the shared PG.
+    _lock_conn = get_engine().raw_connection()
+    _lock_conn.cursor().execute(
+        f"SELECT pg_advisory_lock({_SEEDED_APP_ADVISORY_LOCK_KEY})"
+    )
+    try:
+        _truncate_pg_app_state()
+        _restore_system_groups()
+        yield
+        # Also re-seed at teardown — ``test_seed_refuses_when_admin_group_missing``
+        # explicitly DELETEs the Admin row; without this fix-up the next
+        # test (whether in this file or any other on the same xdist
+        # worker) inherits a half-init DB and fails the admin gate.
+        _restore_system_groups()
+    finally:
+        try:
+            _lock_conn.cursor().execute(
+                f"SELECT pg_advisory_unlock({_SEEDED_APP_ADVISORY_LOCK_KEY})"
+            )
+        except Exception:
+            pass
+        try:
+            _lock_conn.close()
+        except Exception:
+            pass
 
 
 @pytest.fixture

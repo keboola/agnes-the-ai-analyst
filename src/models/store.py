@@ -115,6 +115,14 @@ class StoreEntity(Base):
     version_history: Mapped[list | None] = mapped_column(
         JSONB, server_default=text("'[]'::jsonb")
     )
+    # v55+ display-layer fields (alembic 0013_v55_extended). All
+    # NULLABLE + additive — ``name`` stays as the slug, ``title`` is
+    # the human-readable display name, ``tagline`` is the one-liner,
+    # ``synthetic_name`` is the auto-generated "your-name-by-<author>"
+    # used when the operator leaves ``name`` blank on upload.
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    tagline: Mapped[str | None] = mapped_column(String, nullable=True)
+    synthetic_name: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

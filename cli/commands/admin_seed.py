@@ -181,13 +181,30 @@ def _upsert_row(
     )
 
     # JSON values may arrive as Python dict/list (when read from another
-    # in-process engine) OR as a JSON-encoded string (when read from a
-    # file we just wrote). Normalise to string so CAST works.
+    # in-process engine), as a JSON-encoded string (file we just wrote),
+    # or as a plain string scalar that should be the JSON value (a
+    # ``source_spec`` of ``"./plugins/X"`` round-tripped through
+    # ``json.dumps`` decodes to the bare Python string, not to a JSON
+    # quoted string — ``CAST(... AS JSONB)`` then sees an unquoted
+    # ``./plugins/X`` and rejects it). Three rules:
+    #
+    #   - dict / list   → json.dumps unconditionally.
+    #   - str that parses as JSON → pass through.
+    #   - str that doesn't parse → wrap with json.dumps (treat as
+    #     JSON scalar).
     params: Dict[str, Any] = {}
     for c in present:
         v = row.get(c)
-        if col_types.get(c) in ("json", "jsonb") and v is not None and not isinstance(v, str):
-            v = json.dumps(v)
+        if col_types.get(c) in ("json", "jsonb") and v is not None:
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v)
+            elif isinstance(v, str):
+                try:
+                    json.loads(v)
+                except (json.JSONDecodeError, TypeError):
+                    v = json.dumps(v)
+            else:
+                v = json.dumps(v)
         params[c] = v
 
     with engine.begin() as conn:
@@ -278,9 +295,20 @@ def import_(
         False,
         "--purge",
         help=(
-            "For each imported entity, delete local rows whose PK is "
-            "not in the file. Off by default so a partial export "
-            "(e.g. ``--include table_registry``) doesn't wipe the rest."
+            "For each imported entity, HARD-DELETE local rows whose PK "
+            "is not in the file. Off by default so a partial export "
+            "(e.g. ``--include table_registry``) doesn't wipe the rest. "
+            "Requires ``--yes`` for non-interactive confirmation."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help=(
+            "Skip the interactive confirmation prompt that ``--purge`` "
+            "normally asks for. Required for non-TTY callers (CI / "
+            "scripted bootstrap)."
         ),
     ),
     dry_run: bool = typer.Option(
@@ -291,9 +319,17 @@ def import_(
 ):
     """Upsert the operator-curated state from a JSON file.
 
-    Idempotent on the primary key of each table. With ``--purge``, also
-    deletes local rows whose PK is absent from the file — i.e. exact
-    mirror of the source instance.
+    Idempotent on the primary key of each table. With ``--purge``,
+    also HARD-DELETEs local rows whose PK is absent from the file —
+    i.e. exact mirror of the source instance, NOT a soft delete.
+    Cascades from FKs (e.g. ``data_package_tables`` rows for a deleted
+    ``data_packages.id``) are NOT undone; the DELETE relies on the
+    DB's own ``ON DELETE`` rules.
+
+    Reports three categories per table: ``inserted`` (PK was new),
+    ``updated`` (PK matched an existing row; non-PK columns
+    overwritten), ``failed`` (insert raised). With ``--purge``,
+    ``deleted`` is also reported.
     """
     from src.db_pg import get_engine
     import sqlalchemy as sa
@@ -318,9 +354,31 @@ def import_(
             typer.echo(f"[dry-run] {name}: {len(bundle[name])} row(s)", err=True)
         return
 
+    # ``--purge`` HARD-DELETES local rows. Gate behind an explicit
+    # ``--yes`` so an operator who passed it by accident doesn't lose
+    # state. Non-TTY callers (CI) must opt in via ``--yes``.
+    if purge and not yes:
+        if sys.stdin.isatty():
+            typer.echo(
+                "--purge HARD-DELETES local rows whose PK is missing from "
+                "the file. This cannot be undone except from a backup.",
+                err=True,
+            )
+            confirm = input("Type 'PURGE' to proceed: ").strip()
+            if confirm != "PURGE":
+                typer.echo("Aborted (no rows touched).", err=True)
+                raise typer.Exit(1)
+        else:
+            typer.echo(
+                "--purge requires --yes when stdin is not a TTY.",
+                err=True,
+            )
+            raise typer.Exit(2)
+
     engine = get_engine()
 
-    inserted_or_updated = 0
+    inserted = 0
+    updated = 0
     failed = 0
     deleted = 0
 
@@ -330,6 +388,17 @@ def import_(
         col_types = _column_types(engine, table)
         rows = bundle.get(name, [])
 
+        # Probe the existing PK set up front so we can classify each
+        # incoming row as INSERT vs UPDATE vs CONFLICT. Without this,
+        # an operator running ``import`` against a populated DB has no
+        # way to tell whether they just overwrote 30 hand-tuned rows
+        # or added 30 brand-new ones.
+        with engine.connect() as conn:
+            existing_rows = conn.execute(
+                sa.text(f"SELECT {', '.join(pk_cols)} FROM {table}")
+            ).all()
+        existing_pks: set[Tuple] = {tuple(r) for r in existing_rows}
+
         incoming_pks: set[Tuple] = set()
         for row in rows:
             pk = _row_pk(row, pk_cols)
@@ -338,8 +407,12 @@ def import_(
                 failed += 1
                 continue
             try:
+                was_existing = pk in existing_pks
                 _upsert_row(engine, table, pk_cols, cols, col_types, row)
-                inserted_or_updated += 1
+                if was_existing:
+                    updated += 1
+                else:
+                    inserted += 1
                 incoming_pks.add(pk)
             except Exception as e:
                 typer.echo(f"Failed to upsert {name} {pk}: {e}", err=True)
@@ -366,7 +439,7 @@ def import_(
                     typer.echo(f"Failed to delete {name} {pk}: {e}", err=True)
 
     summary = (
-        f"Imported: {inserted_or_updated} upserted, {failed} failed"
+        f"Imported: {inserted} inserted, {updated} updated, {failed} failed"
         + (f", {deleted} purged" if purge else "")
     )
     typer.echo(summary)
@@ -390,7 +463,16 @@ def seed_from(
     purge: bool = typer.Option(
         False,
         "--purge",
-        help="Mirror semantics — delete local PKs missing from the remote.",
+        help=(
+            "Mirror semantics — HARD-DELETE local PKs missing from the "
+            "remote. Requires ``--yes`` for non-interactive runs."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the ``--purge`` confirmation prompt (CI / scripted use).",
     ),
     remote_agnes: str = typer.Option(
         "agnes",
@@ -404,6 +486,27 @@ def seed_from(
     Streams the JSON bundle over SSH stdin → stdout — no intermediate file.
     """
     import subprocess
+
+    # Same purge gate as ``import``. The remote-stream path is even
+    # easier to fire accidentally (one command instead of two), so the
+    # ``--yes`` requirement matters more here.
+    if purge and not yes:
+        if sys.stdin.isatty():
+            typer.echo(
+                "--purge HARD-DELETES local rows whose PK is missing from the "
+                "remote. Cannot be undone except from a backup.",
+                err=True,
+            )
+            confirm = input("Type 'PURGE' to proceed: ").strip()
+            if confirm != "PURGE":
+                typer.echo("Aborted (no rows touched).", err=True)
+                raise typer.Exit(1)
+        else:
+            typer.echo(
+                "--purge requires --yes when stdin is not a TTY.",
+                err=True,
+            )
+            raise typer.Exit(2)
 
     remote_cmd = [remote_agnes, "admin", "seed", "export", "-"]
     if include:
@@ -444,7 +547,8 @@ def seed_from(
     names = [n for n in requested if n in available]
 
     engine = get_engine()
-    inserted_or_updated = 0
+    inserted = 0
+    updated = 0
     failed = 0
     deleted = 0
 
@@ -453,6 +557,11 @@ def seed_from(
         cols = _column_names(engine, table)
         col_types = _column_types(engine, table)
         rows = bundle.get(name, [])
+        with engine.connect() as conn:
+            existing_rows = conn.execute(
+                sa.text(f"SELECT {', '.join(pk_cols)} FROM {table}")
+            ).all()
+        existing_pks: set[Tuple] = {tuple(r) for r in existing_rows}
         incoming_pks: set[Tuple] = set()
         for row in rows:
             pk = _row_pk(row, pk_cols)
@@ -461,18 +570,17 @@ def seed_from(
                 failed += 1
                 continue
             try:
+                was_existing = pk in existing_pks
                 _upsert_row(engine, table, pk_cols, cols, col_types, row)
-                inserted_or_updated += 1
+                if was_existing:
+                    updated += 1
+                else:
+                    inserted += 1
                 incoming_pks.add(pk)
             except Exception as e:
                 typer.echo(f"Failed to upsert {name} {pk}: {e}", err=True)
                 failed += 1
         if purge:
-            with engine.connect() as conn:
-                existing = conn.execute(
-                    sa.text(f"SELECT {', '.join(pk_cols)} FROM {table}")
-                ).all()
-            existing_pks = {tuple(r) for r in existing}
             for pk in (existing_pks - incoming_pks):
                 where = " AND ".join(f"{c} = :pk_{i}" for i, c in enumerate(pk_cols))
                 params = {f"pk_{i}": v for i, v in enumerate(pk)}
@@ -484,7 +592,7 @@ def seed_from(
                     typer.echo(f"Failed to delete {name} {pk}: {e}", err=True)
 
     summary = (
-        f"Seeded from {host}: {inserted_or_updated} upserted, {failed} failed"
+        f"Seeded from {host}: {inserted} inserted, {updated} updated, {failed} failed"
         + (f", {deleted} purged" if purge else "")
     )
     typer.echo(summary)
