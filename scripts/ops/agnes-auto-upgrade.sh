@@ -124,6 +124,7 @@ PROFILE_ARGS=()
 RAW_BASE="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main"
 CONFIG_FILES=(
   docker-compose.yml docker-compose.prod.yml docker-compose.host-mount.yml
+  docker-compose.postgres.yml docker-compose.postgres-host-mount.yml
   docker-compose.tls.yml Caddyfile
 )
 hash_config_files() {
