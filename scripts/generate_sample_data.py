@@ -20,6 +20,7 @@ import random
 import sys
 import time
 from datetime import date, timedelta
+from itertools import accumulate
 from pathlib import Path
 from typing import Any, Generator
 
@@ -832,8 +833,12 @@ class SampleDataGenerator:
         n_orders = self.cfg["orders"]
         logger.info(f"  Generating {n_orders:,} orders + order items...")
 
-        # Customer activity weights (Pareto-like distribution)
+        # Customer activity weights (Pareto-like distribution). Pre-compute
+        # cumulative weights once so the per-order ``rng.choices`` call below
+        # is O(log N) bisect, not O(N) cumulative rebuild — at size 'l' the
+        # per-call rebuild took ~36 min for this step alone.
         activity = [self.rng.paretovariate(1.2) for _ in self._customer_ids]
+        cum_activity = list(accumulate(activity))
 
         order_fields = [
             "order_id",
@@ -862,7 +867,7 @@ class SampleDataGenerator:
 
         for i in range(n_orders):
             oid = f"ORD-{i + 1:07d}"
-            cust_id = self.rng.choices(self._customer_ids, weights=activity, k=1)[0]
+            cust_id = self.rng.choices(self._customer_ids, cum_weights=cum_activity, k=1)[0]
             reg_date = self._customer_reg_dates[cust_id]
             segment = self._customer_segments[cust_id]
 
@@ -1018,6 +1023,17 @@ class SampleDataGenerator:
             "satisfaction_score",
         ]
 
+        # Pre-build customer → ordered list of their order_ids so the
+        # per-ticket "pick an order from this customer if possible" lookup
+        # is O(1) instead of a linear scan over every order. At size 'l'
+        # the original per-ticket scan ran for ~1.5h+ with no progress.
+        # Append order in iteration order of ``self._order_ids`` so
+        # ``rng.choice(cust_orders)`` selects the same element as the old
+        # filter-comprehension for any given seed.
+        cust_orders_index: dict[str, list[str]] = {}
+        for oid in self._order_ids:
+            cust_orders_index.setdefault(self._order_customers[oid], []).append(oid)
+
         rows = []
         for i in range(n):
             tid = f"TKT-{i + 1:06d}"
@@ -1031,7 +1047,7 @@ class SampleDataGenerator:
             order_id = ""
             if self.rng.random() < 0.60 and self._order_ids:
                 # Pick an order from this customer if possible
-                cust_orders = [o for o in self._order_ids if self._order_customers[o] == cust_id]
+                cust_orders = cust_orders_index.get(cust_id)
                 if cust_orders:
                     order_id = self.rng.choice(cust_orders)
                 else:

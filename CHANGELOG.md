@@ -16,6 +16,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`/admin/tables` shadowing `.btn` CSS deleted; buttons inherit canonical visual contract.** The markup on this page already used canonical `.btn` / `.btn-primary` / `.btn-secondary` / `.btn-sm` class names (migrated piecemeal across prior commits), but the template carried its own `.btn` family rules that shadowed canonical — most visibly, `.btn-secondary` rendered with a filled grey background (`var(--border-light)`) rather than the canonical white-bg + grey-border outline. Those page-local rules are gone (`.btn`, `.btn-primary`, `.btn-primary:hover`, `.btn-primary:disabled`, `.btn-secondary`, `.btn-secondary:hover`, `.btn-danger`, `.btn-danger:hover`, `.btn-sm`); buttons now match the unified admin look. Two surviving bare `<button class="btn">` sites (Remove-from-package + Delete-package destructive actions, which had inline `color:#b91c1c` overrides) were upgraded to canonical `.btn-danger` (the second commit on #437 fixed the same hazard there). `.btn-icon` (28×28 icon-only button family with `[data-tooltip]:hover::after` chip styling) stays page-local because canonical `.btn--icon` is just a size modifier with no tooltip behavior — flagged for a later pass once a canonical tooltip primitive exists. Visible delta: toolbar + modal secondary buttons shift from filled-grey to outlined-white; destructive buttons shift from filled-red to outlined-red (canonical "calm — committed to by hover" treatment).
 - **`/dashboard` page-local `.btn-register` rule retired; the four other bespoke button families stay page-local with documented rationale.** The "Create Account" submit button on the Telegram verify form (`<button class="btn-register">`) now renders via canonical `.btn .btn-primary`; its page-local rule and `:hover` variant are gone. The remaining bespoke button classes on this page — `.btn-setup` / `.btn-setup-secondary` (hero CTA using `--ds-hero-cta-*` tokens for the navy-hero context), `.notif-link` / `.notif-unlink` (soft-pill micro-actions inside the notification card's `.notif-managing` mode), and `.btn-copy-term` (dark-surface terminal-mock copy buttons; `system.md`-explicit carve-out for Catppuccin-themed dark-surface copy buttons) — stay page-local because each carries page-specific semantics canonical doesn't model. The decision matrix is documented at the top of `app/web/static/css/dashboard.css`. Closes the last of the four dedicated follow-up PRs from #427.
 
+## [0.55.17] — 2026-05-27
+
+### Fixed
+- `scripts/generate_sample_data.py` size `l` preset went from
+  unfinishable (>2h wall-clock, ~30 min on `_generate_orders_and_items`
+  alone, then ~1.5h+ on `_generate_support_tickets`) to ~3m24s
+  end-to-end. Two O(N×M) hotspots:
+  (a) `_generate_orders_and_items` called
+  `rng.choices(self._customer_ids, weights=activity, k=1)` once per
+  order — `random.choices` rebuilds cumulative weights internally on
+  every call, so for 50K customers × 200K orders that's ~10B ops.
+  Fix: precompute `cum_activity = list(accumulate(activity))` once and
+  pass `cum_weights=` to the per-order call → O(log N) bisect.
+  (b) `_generate_support_tickets` ran
+  `[o for o in self._order_ids if self._order_customers[o] == cust_id]`
+  per ticket — 50K tickets × 200K orders = ~10B comparisons. Fix:
+  precompute a `customer_id → list[order_id]` index dict once before
+  the loop, O(1) lookup per ticket. Both fixes preserve byte-exact
+  output for the same `--seed` (verified at size `s`; same number of
+  `random()` draws in the same order). Sizes `s` and `m` are also
+  faster but the bug was only catastrophic at `l`.
+
 ## [0.55.16] — 2026-05-27
 
 ### Changed
