@@ -107,6 +107,36 @@ def _pip_bin_path() -> Optional[Path]:
     return candidate if candidate.exists() else None
 
 
+def _python_is_uv_tool_install() -> bool:
+    """True iff ``sys.executable`` lives under uv's tool-install root.
+
+    Routing key for self-upgrade. ``uv tool install --force`` only
+    rewrites the venv uv itself manages (``~/.local/share/uv/tools/<pkg>/``);
+    if the running agnes was installed elsewhere (project venv via
+    ``pip install -e .``, pipx, system pip, …), the uv install lands in
+    a different binary and the active one stays stale — but self-upgrade
+    would still report "Installed: <new>" because uv's own exit code is 0.
+    When this returns False, route through pip targeting
+    ``sys.executable`` so the actually-running binary is the one upgraded.
+    """
+    if not shutil.which("uv"):
+        return False
+    try:
+        out = subprocess.run(
+            ["uv", "tool", "dir"], capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode != 0:
+            return False
+        uv_tool_root = Path(out.stdout.strip()).resolve()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    try:
+        Path(sys.executable).resolve().relative_to(uv_tool_root)
+        return True
+    except ValueError:
+        return False
+
+
 def _install_with_uv(download_url: str, *, quiet: bool) -> int:
     out = subprocess.DEVNULL if quiet else None
     return subprocess.run(
@@ -221,7 +251,13 @@ def _do_install_with_smoke_and_rollback(
     """Returns the exit code typer should use (0 success, 1 failure)."""
     prior_url = _read_last_known_good()  # may be None on first upgrade
 
-    if shutil.which("uv"):
+    # Route by which install manager owns the running binary, not just
+    # by `which uv`. A developer with `uv` on PATH but agnes installed
+    # via `pip install -e .` into a project venv would otherwise see
+    # self-upgrade write to `~/.local/share/uv/tools/...` (a different
+    # binary entirely) while their `.venv/bin/agnes` stays stale forever —
+    # and the stale-version banner spams every subsequent command output.
+    if _python_is_uv_tool_install():
         rc = _install_with_uv(info.download_url, quiet=quiet)
         method = "uv"
     else:

@@ -17,6 +17,54 @@ from src.identifier_validation import (
 logger = logging.getLogger(__name__)
 
 
+# Cap DuckDB memory_limit + thread count on short-lived consolidation
+# connections inside ``materialize_query``. DuckDB's default
+# ``memory_limit`` is 80% of system RAM, which on a 4 GiB cgroup
+# container resolves to ~3.2 GiB of process-resident buffer pool. With
+# Python objects + a few hundred MiB for orchestrator state + caddy /
+# scheduler sidecars, that exceeds the cgroup cap and triggers OOM-kill
+# during slice consolidation against any non-trivial table (observed
+# on a 4 GiB dev container against a multi-GiB Keboola table: anon RSS
+# climbed from ~350 MiB to ~3.5 GiB in minutes, then SIGKILL).
+#
+# 2 GiB strikes the balance: the parquet path's streaming row-group
+# COPY rarely needs more than ~100 MiB, but the legacy CSV path's
+# ``read_csv(max_line_size=64MB)`` pre-allocates a multi-thread
+# sliding window buffer that DuckDB internally treats as a single
+# ~1 GiB allocation unit (verified empirically — a 1 GiB cap raised
+# `OutOfMemoryException` on a 2-row CSV fixture). Combined with
+# ``preserve_insertion_order=false`` the peak stays well under 2 GiB.
+# On a 4 GiB cgroup container that leaves ~1.5 GiB for Python objects
+# + sidecars; on the 8 GiB target sizing the headroom is generous.
+_CONSOLIDATION_MEMORY_LIMIT = "2GB"
+_CONSOLIDATION_THREADS = 2
+
+
+def _open_consolidation_conn(db_path: Optional[str] = None):
+    """Return a DuckDB connection with memory/thread caps applied.
+
+    Use for short-lived ``COPY (SELECT … FROM read_parquet/read_csv)``
+    consolidation queries inside the materialize path. ``db_path``
+    defaults to in-memory; pass a path for on-disk consolidation.
+
+    ``preserve_insertion_order=false`` is set alongside the memory cap
+    on DuckDB's recommendation (the OOM error message itself proposes
+    it) — for the CSV→parquet path, the default
+    insertion-order-preserving execution holds row batches in memory
+    until the parent operator can emit them in order, which collides
+    badly with a 2 GiB cap when ``read_csv(max_line_size=64MB)``
+    pre-allocates large sliding-window buffers. The materialize output
+    is a single parquet that downstream consumers re-sort however they
+    like — preserving the read-order from the input file isn't
+    something any caller depends on.
+    """
+    conn = duckdb.connect(db_path) if db_path else duckdb.connect()
+    conn.execute(f"SET memory_limit='{_CONSOLIDATION_MEMORY_LIMIT}'")
+    conn.execute(f"SET threads={_CONSOLIDATION_THREADS}")
+    conn.execute("SET preserve_insertion_order=false")
+    return conn
+
+
 def materialize_query(
     table_id: str,
     *,
@@ -165,7 +213,7 @@ def materialize_query(
                     "'" + str(p).replace("'", "''") + "'" for p in slice_paths
                 )
                 safe_tmp = str(tmp_parquet).replace("'", "''")
-                conv = duckdb.connect()
+                conv = _open_consolidation_conn()
                 try:
                     conv.execute(
                         f"COPY (SELECT * FROM read_parquet([{quoted}])) "
@@ -187,7 +235,7 @@ def materialize_query(
                 )
                 # Empty placeholder parquet so the orchestrator doesn't
                 # choke on a missing file.
-                duckdb.connect().execute(
+                _open_consolidation_conn().execute(
                     f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
                 ).close()
         else:
@@ -206,7 +254,7 @@ def materialize_query(
                     "(filter may be too restrictive)",
                     full_table_id,
                 )
-                duckdb.connect().execute(
+                _open_consolidation_conn().execute(
                     f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
                 ).close()
             else:
@@ -228,7 +276,7 @@ def materialize_query(
                 safe_csv = str(csv_path).replace("'", "''")
                 safe_tmp = str(tmp_parquet).replace("'", "''")
                 try:
-                    conv = duckdb.connect()
+                    conv = _open_consolidation_conn()
                     conv.execute(
                         f"COPY (SELECT * FROM read_csv('{safe_csv}', "
                         f"all_varchar=true, max_line_size=67108864)) "
@@ -244,7 +292,7 @@ def materialize_query(
     # sometimes omits totalRowsCount on small results, and the parquet is
     # the authoritative count we'll be serving downstream anyway.
     safe_tmp = str(tmp_parquet).replace("'", "''")
-    cnt_conn = duckdb.connect()
+    cnt_conn = _open_consolidation_conn()
     try:
         row_count = cnt_conn.execute(
             f"SELECT COUNT(*) FROM read_parquet('{safe_tmp}')"
@@ -841,7 +889,7 @@ def _extract_via_legacy(
             # Storage API succeeded but produced no rows. Emit an empty
             # parquet rather than crashing — same defensive behavior as
             # `materialize_query`.
-            duckdb.connect().execute(
+            _open_consolidation_conn().execute(
                 f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{pq_path}' (FORMAT PARQUET)"
             ).close()
             return

@@ -9,6 +9,17 @@ from unittest.mock import patch
 
 from connectors.bigquery.access import apply_bq_session_settings
 
+# Memory-cap SETs that apply_bq_session_settings issues UNCONDITIONALLY
+# (before any early-exit on the timeout-config path). Defined once here so
+# every assertion lists them in the same order the production code emits.
+# Anchor for the #431-follow-up pool-uniformity contract: a regression that
+# silently dropped any of these would surface as a test diff here.
+EXPECTED_CAPS_CALLS = [
+    "SET memory_limit='2GB'",
+    "SET threads=2",
+    "SET preserve_insertion_order=false",
+]
+
 
 class _RecordingConn:
     """Minimal DuckDB-conn stand-in that records execute() calls.
@@ -78,7 +89,7 @@ def test_default_when_config_missing():
         return default
     with patch("app.instance_config.get_value", side_effect=fake):
         apply_bq_session_settings(conn)
-    assert conn.calls == [
+    assert conn.calls == EXPECTED_CAPS_CALLS + [
         "SET bq_query_timeout_ms = 600000",
         "SELECT current_setting('bq_query_timeout_ms')",
     ]
@@ -88,39 +99,40 @@ def test_explicit_value():
     conn = _RecordingConn()
     with _patched_get_value(900_000):
         apply_bq_session_settings(conn)
-    assert conn.calls == [
+    assert conn.calls == EXPECTED_CAPS_CALLS + [
         "SET bq_query_timeout_ms = 900000",
         "SELECT current_setting('bq_query_timeout_ms')",
     ]
 
 
 def test_zero_sentinel_leaves_extension_default():
-    """0 means 'use the DuckDB BQ extension's built-in default' — no SET
-    must be emitted so a non-zero default doesn't override an operator's
-    explicit opt-out."""
+    """0 means 'use the DuckDB BQ extension's built-in default' — no
+    extension SET must be emitted so a non-zero default doesn't override
+    an operator's explicit opt-out. Memory caps (always-on) still apply."""
     conn = _RecordingConn()
     with _patched_get_value(0):
         apply_bq_session_settings(conn)
-    assert conn.calls == []
+    assert conn.calls == EXPECTED_CAPS_CALLS
 
 
 def test_negative_value_treated_as_zero():
     """Negative is nonsensical for a timeout; treat as 'extension default'
     rather than emitting a negative SET that the extension might reject
-    or interpret unexpectedly."""
+    or interpret unexpectedly. Memory caps still apply."""
     conn = _RecordingConn()
     with _patched_get_value(-1):
         apply_bq_session_settings(conn)
-    assert conn.calls == []
+    assert conn.calls == EXPECTED_CAPS_CALLS
 
 
 def test_non_numeric_silently_skipped():
     """A string-typed YAML value (e.g. operator typo) shouldn't crash
-    the BQ session — fall through to the extension default."""
+    the BQ session — fall through to the extension default. Memory caps
+    still apply."""
     conn = _RecordingConn()
     with _patched_get_value("notanumber"):
         apply_bq_session_settings(conn)
-    assert conn.calls == []
+    assert conn.calls == EXPECTED_CAPS_CALLS
 
 
 def test_string_numeric_is_coerced():
@@ -129,7 +141,7 @@ def test_string_numeric_is_coerced():
     conn = _RecordingConn()
     with _patched_get_value("750000"):
         apply_bq_session_settings(conn)
-    assert conn.calls == [
+    assert conn.calls == EXPECTED_CAPS_CALLS + [
         "SET bq_query_timeout_ms = 750000",
         "SELECT current_setting('bq_query_timeout_ms')",
     ]
@@ -147,8 +159,9 @@ def test_set_failure_does_not_propagate(caplog):
             # Must not raise.
             apply_bq_session_settings(conn)
     # The SET was attempted (recorded before the exception); no readback
-    # because the SET path raised before reaching it.
-    assert conn.calls == ["SET bq_query_timeout_ms = 600000"]
+    # because the SET path raised before reaching it. Memory caps fired
+    # first (unconditional) and recorded their three SETs.
+    assert conn.calls == EXPECTED_CAPS_CALLS + ["SET bq_query_timeout_ms = 600000"]
     assert any(
         "SET bq_query_timeout_ms=600000 failed" in r.message
         for r in caplog.records
@@ -192,10 +205,11 @@ def test_no_app_config_module_silently_skipped():
     """Unit-test contexts that don't bring up the app config layer must
     still be able to construct BQ sessions for narrow tests; an
     ImportError on app.instance_config means we can't read the knob,
-    so we leave the extension default in place."""
+    so we leave the extension default in place. Memory caps still apply
+    (they don't depend on instance config — they're unconditional)."""
     conn = _RecordingConn()
     with patch.dict(
         "sys.modules", {"app.instance_config": None},
     ):
         apply_bq_session_settings(conn)
-    assert conn.calls == []
+    assert conn.calls == EXPECTED_CAPS_CALLS

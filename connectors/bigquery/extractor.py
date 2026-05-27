@@ -904,6 +904,16 @@ def materialize_query(
             # extension loaded with a SECRET token; bigquery_query() reuses that
             # auth path against the billing_project for the jobs API call.
             with bq.duckdb_session() as conn:
+                # Memory caps (memory_limit=2GB, threads=2,
+                # preserve_insertion_order=false) are applied uniformly
+                # on every pool acquire by ``apply_bq_session_settings``
+                # — see that function in ``connectors/bigquery/access.py``
+                # for the rationale and the empirical 2 GiB trace.
+                # Previously the SETs lived inline here, which only
+                # mutated whichever pool entry was acquired for this
+                # materialize call — leaving the other ~3 pool entries
+                # at the 80%-of-host default and re-opening the OOM
+                # window for any analyst query that landed on them.
                 attached = {
                     r[0] for r in conn.execute(
                         "SELECT database_name FROM duckdb_databases()"

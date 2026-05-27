@@ -15,6 +15,98 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 - The four canonical button variants are now `.btn-primary` / `.btn-secondary` / `.btn-ghost` / `.btn-danger` plus the `.btn-required` disabled-mandate state. The `.btn-warning` variant was removed from `style-custom.css` and the design-system contract test.
+### Fixed
+- **`src/profiler.py::profile_table` lowers DuckDB `memory_limit` from
+  `4GB` to `2GB` + adds `preserve_insertion_order=false`.** The prior
+  4 GiB cap matched typical container cgroup limits exactly, leaving
+  zero headroom for the host Python interpreter + ATTACHed orchestrator
+  state + sidecar processes. Observed on a 4 GiB dev container: the
+  profiler ran right up to the cap during `[SYNC] Profiled N tables`,
+  then the cgroup OOM killer reaped uvicorn within seconds of
+  orchestrator rebuild completing (anon_rss: 4180352 kB ≈ exact
+  cgroup cap). 2 GiB matches the materialize-path caps from
+  PR #431/#433 and leaves ~2 GiB of headroom for the rest of the
+  process. Profiler peak is normally a few hundred MiB (streaming
+  row-group scans + in-memory `SAMPLE`); the cap binds only when
+  something goes wrong.
+
+## [0.55.15] — 2026-05-26
+
+### Fixed
+- **DuckDB consolidation connections in `materialize_query` now cap
+  `memory_limit` + `threads`** (`connectors/keboola/extractor.py`,
+  `connectors/bigquery/extractor.py`). DuckDB's default `memory_limit`
+  is 80 % of system RAM, which on a 4 GiB cgroup container resolves to
+  ~3.2 GiB of process-resident buffer pool. With Python objects +
+  sidecar containers that exceeds the cgroup cap and triggers OOM
+  during slice consolidation of any non-trivial table — observed on
+  a 4 GiB dev container against a multi-GiB Keboola table: uvicorn
+  anon RSS climbed from ~350 MiB to ~3.5 GiB in minutes, then SIGKILL.
+  New `_open_consolidation_conn()` helper in the Keboola extractor
+  applies `SET memory_limit='2GB'` + `SET threads=2` +
+  `SET preserve_insertion_order=false` immediately after each
+  `duckdb.connect()` on the materialize path; matching inline `SET`s
+  on the BQ side run inside the materialize `bq.duckdb_session()`
+  block. The 2 GiB ceiling leaves headroom for the legacy CSV path
+  (DuckDB pre-allocates a ~1 GiB sliding-window buffer for
+  `read_csv(max_line_size=64MB)`); the parquet path's streaming
+  row-group COPY rarely needs more than ~100 MiB, so the cap binds
+  only when something goes wrong. `preserve_insertion_order=false`
+  matches DuckDB's own out-of-memory hint and is safe here — the
+  materialize output is a single parquet that downstream consumers
+  re-sort however they like.
+- **`connectors/keboola/storage_api.py::_download_single` adds a
+  pre-flight disk-space check.** Storage API signed-URL responses
+  carry `Content-Length` (the compressed transfer size); compare
+  against `shutil.disk_usage(dest.parent).free` and raise
+  `StorageApiError` early when available space is below 5x the
+  payload for `gunzip_on_read=True` (decompressed dest typically
+  3-5x the wire bytes) or 1.25x otherwise. Skipping the check when
+  `Content-Length` is absent leaves mid-write `errno 28 No space
+  left on device` as a possibility; the common case now fails
+  fast with an actionable message instead of triggering the
+  multi-GiB Python traceback retention path that compounded into
+  a cascading cgroup OOM on small dev containers (the retained `chunk`
+  buffer + response object references in the `_download_single`
+  failure frame multiplied across `download_file_slices`'
+  per-slice loop).
+- **`scripts/ops/agnes-auto-upgrade.sh` is now single-instance** via
+  `flock` on `/var/lock/agnes-auto-upgrade.lock`. GCE live migration /
+  clock-jump events make cron deliver several catch-up ticks in a
+  single second (observed 4 ticks in ≤2s on a freshly-migrated VM),
+  and parallel runs of this script raced on `docker compose pull` +
+  `docker images --digest`: different runners saw different digest
+  values for the same tag, the diff tripped the "image digest moved"
+  branch, and a `docker compose up -d` fired for an upgrade that
+  hadn't actually happened — manifesting as ~30s app unreachability
+  every ~20–30 min on VMs caught in a migration window even when no
+  release had landed. Non-blocking `flock -n` means the second runner
+  exits cleanly; the next regular tick handles whatever real change
+  is pending.
+- **`apply_bq_session_settings` now applies the materialize memory caps (`memory_limit=2GB`, `threads=2`, `preserve_insertion_order=false`) on every BQ pool acquire**, fixing the pool-state asymmetry that landed in #431. Previously the caps were SET inline inside `materialize_query`, which only mutated whichever of the ~4 pool entries handled that particular call — the other entries stayed at DuckDB's 80%-of-host default and re-opened the OOM window for any analyst query that subsequently landed on them. Mirrors the per-acquire re-apply pattern `bq_query_timeout_ms` already uses.
+- Stale `1 GiB` references in the `_open_consolidation_conn` docstring (`connectors/keboola/extractor.py`) and an inline comment in `connectors/bigquery/extractor.py::materialize_query` rewritten to match the actual 2 GiB cap. Author iterated from 1 GiB → 2 GiB during #431 and the commentary was left behind.
+
+### Added
+- `docs/ecosystem-map.md` — operator-facing bird's-eye view of the 5 repo tiers around an Agnes deployment (OSS app, per-customer infra in two patterns A/B, curated marketplace, initial-workspace template, legacy/glue), with a cross-tier checklist for new customer onboarding. Linked from `docs/README.md` operator index.
+
+### Changed
+- `docs/curated-marketplace-format.md` Quickstart explicitly enumerates filenames the metadata parser will **not** read (`.agnes/agnes-metadata.json`, root-level `marketplace-metadata.json`, other directories) — only `.claude-plugin/marketplace-metadata.json` is loaded. Heads off a footgun seen in the wild where curators copied a legacy filename from older fixture content.
+- `docs/PLATFORM_SETUP.md` first-boot bullet no longer hard-codes a schema version number ("v41") — points readers at `src/db.py` as the live source of truth, matching the convention already established in `CLAUDE.md`.
+- `docs/ONBOARDING.md` step 4 tfvars block no longer scopes optional variables to "module infra-v1.4.0+" (those have been default for several minor versions); step 9 Monitoring & backup reframed from "follow-up — not required" to "module already provisions, wire a notification channel" since `customer-instance` ships uptime checks + daily PD snapshots out of the box.
+
+## [0.55.14] — 2026-05-26
+
+### Changed
+- **`agnes admin grant list` default tabular output now leads with an `ID` column** (first 8 chars of the grant UUID). Pre-fix the table omitted the id entirely, so any operator wanting to `agnes admin grant delete <id>` had to re-run with `--json` and pipe through jq to recover what should be a primary identifier. `--json` output is unchanged (still includes the full uuid).
+- **`agnes admin grant create --help` now leads with a positional-arguments usage example** (`agnes admin grant create <group> <resource_type> <resource_id>`). The previous help body assumed the reader had already inferred argument order from typer's USAGE line; combined with the parent-level `agnes admin grant --help` hinting at flag-style filters on `list`, operators frequently invoked `grant create --group X --resource-type Y --resource-id Z` and were left to discover positional syntax from the typer error.
+- **`agnes admin activity sync` renders `synced_at` as `YYYY-MM-DD HH:MM:SSZ`** (19 chars + Z marker) instead of naively slicing the raw ISO string to 20 chars. Pre-fix the output for any timestamp with sub-second precision ended in a trailing dot (`2026-05-26T12:46:54.`) — meaningless to readers, and broke downstream `awk`/`grep` pipelines that split on whitespace.
+
+### Fixed
+- **`DELETE /api/admin/groups/{id}` no longer 500s for groups carrying auto-materialized system-plugin grants.** The handler explicitly cascade-deletes `user_group_members` + `resource_grants` before the parent `user_groups` row, but did so inside `BEGIN TRANSACTION`. DuckDB enforces the v14 foreign-key constraint at statement time and does NOT see same-transaction child DELETEs when validating the parent — so the parent DELETE raised `_duckdb.ConstraintException: Violates foreign key constraint because key "group_id: <id>" is still referenced by a foreign key in a different table` and bubbled up as HTTP 500. Empirically: any non-system group created AFTER `mark_system` had ever been called on any plugin (the per-group system grant fans out from `UserGroupsRepository.create` → `ResourceGrantsRepository.fanout_system_for_group`) could not be deleted via API or CLI — operator was stuck with a leaked entity until manual DB intervention. Removing the explicit transaction wrapper lets each statement autocommit, so by the time the parent DELETE runs the children are already committed-gone and the FK check passes. Atomicity is lost in the narrow case where the second child DELETE or the parent DELETE raises mid-cascade — but the failure mode is "a group with no members + no grants survives", which the FK already permits and which the operator can resolve by re-issuing DELETE. New regression test `tests/test_marketplace_plugin_system.py::TestGuards::test_group_delete_with_system_grant_returns_clear_error_not_500`.
+- **`agnes status` no longer falsely reports `Initialized: no` in Initial-Workspace-override workspaces.** The check was grepping `CLAUDE.md` for the literal string `"AI Data Analyst"` — but a customer-supplied override template's body may legitimately omit that exact substring (the marker is hardcoded against the default template's `# {{ instance.name }} — AI Data Analyst` heading), so a fully-initialized override workspace would still print `Initialized: no` plus a misleading `Run agnes init …` hint after every command. `agnes status` now mirrors the dual-marker convention already documented in `cli/commands/init.py:283-308`: read `.claude/init-complete` (authoritative sentinel written by every successful default OR override init) first, fall back to the legacy CLAUDE.md substring for pre-#259 workspaces.
+- **`agnes self-upgrade` now upgrades the running binary, not a sibling install.** The routing condition was `shutil.which("uv")` — so any user with `uv` on PATH took the uv install path, even when the active `agnes` came from a project venv (`pip install -e .`). `uv tool install --force` would then rewrite `~/.local/bin/agnes` (a *different* binary entirely) while the user's `.venv/bin/agnes` stayed stale forever, and the `[update] agnes X.Y is out of date …` banner spammed every subsequent command output because self-upgrade reported success but the running binary never changed. New `_python_is_uv_tool_install()` helper resolves `sys.executable` against `uv tool dir`; uv path is taken iff the running interpreter actually belongs to uv's tool root, otherwise pip targets `sys.executable` and the active binary gets upgraded.
+
+- **`agnes admin grant delete` now accepts the 8-char `short_id` from `agnes admin grant list`** (in addition to the full UUID). The previous PR added a `short_id` column to `grant list` and advertised it as input to `grant delete`, but `grant delete` was a thin pass-through to `DELETE /api/admin/grants/{id}` which does exact-match lookup → every short-id paste returned 404. A new `_resolve_grant_id` helper queries the grants API and matches by full id or unique 8-char prefix; ambiguous prefixes abort with a clear error rather than silently picking one. Closes the workflow gap created by the prior commit (caught in self-review).
 
 ## [0.55.13] — 2026-05-26
 

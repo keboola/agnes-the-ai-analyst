@@ -91,7 +91,7 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 #   seed_admin_email  = "...@customer.com"
 #   keboola_stack_url = "https://connection.<region>.gcp.keboola.com/"
 #
-# Optional (module infra-v1.4.0+):
+# Optional:
 #   runtime_secrets            = ["keboola-storage-token"]  # empty if non-keboola data_source
 #   firewall_ssh_source_ranges = ["35.235.240.0/20"]        # IAP range; "0.0.0.0/0" if public SSH
 #   notification_channel_ids   = ["projects/<p>/notificationChannels/<id>"]
@@ -163,13 +163,13 @@ curl -X POST "http://$PROD_IP:8000/api/sync/trigger" \
      -H "Authorization: Bearer $ADMIN_JWT"
 ```
 
-## 9. Monitoring + backup (recommended)
+## 9. Monitoring + backup
 
-- **Cloud Monitoring alert** on `/api/health` `status != "healthy"` for > 5 min
-- **Daily snapshot of `/data` PD**: `gcloud compute resource-policies create snapshot-schedule ...`
-- **Slack webhook** from Cloud Monitoring for alerts
+The `customer-instance` module already provisions:
+- **Per-VM uptime check + alert policy** — wire a `notification_channel_ids` tfvar to get paged (see § Monitoring alerts below).
+- **Daily snapshot of `/data` PD** — 30-day retention. See § Restoring from backup.
 
-(These are follow-ups — not required for first deploy.)
+Optional add-on: Slack webhook from Cloud Monitoring for alerts.
 
 ## Ongoing maintenance
 

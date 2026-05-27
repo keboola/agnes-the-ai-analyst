@@ -26,6 +26,7 @@ Using the platform to analyze data.
 Deploying, configuring, and running an Agnes instance.
 
 - [`PLATFORM_SETUP.md`](PLATFORM_SETUP.md) — **the consolidated operator playbook** (bootstrap, TLS, marketplaces, scheduler, telemetry)
+- [`ecosystem-map.md`](ecosystem-map.md) — bird's-eye view of all 5 tiers (OSS + infra + marketplace + initial-workspace + legacy)
 - [`ONBOARDING.md`](ONBOARDING.md) — end-to-end Terraform deployment into a new GCP project
 - [`DEPLOYMENT.md`](DEPLOYMENT.md) — picks between the Terraform and Docker Compose paths
 - [`CONFIGURATION.md`](CONFIGURATION.md) — `instance.yaml`, env vars, per-instance options
