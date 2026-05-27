@@ -3973,6 +3973,47 @@ a.news-cta:hover { background: #0056A3; }
 
 .btn-lg { padding: 12px 20px; font-size: var(--text-md); }
 
+/* `.info-panel-accent` — emitted by `ds.info_panel_accent(accent='…')`.
+   Canonical replacement for `.mp-curator-block`-style aside panels. The
+   `--{accent}` modifier supplies the surface tokens. Four canonical
+   accents reuse the `--ds-accent-{info,warn,success,danger}-*` family;
+   bespoke pages can layer additional modifiers locally. */
+.info-panel-accent {
+    border: 1px solid var(--ds-border);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 14px 18px;
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+}
+.info-panel-accent__title {
+    font-size: var(--text-md);
+    font-weight: 600;
+    margin: 0 0 6px;
+    color: inherit;
+}
+.info-panel-accent__body { font-size: var(--text-sm); line-height: 1.55; }
+.info-panel-accent--info {
+    background: var(--ds-accent-info-bg);
+    color: var(--ds-accent-info-ink);
+    border-left-color: var(--ds-accent-info-line);
+}
+.info-panel-accent--warn {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border-left-color: var(--ds-accent-warn-line);
+}
+.info-panel-accent--success {
+    background: var(--ds-accent-success-bg);
+    color: var(--ds-accent-success-ink);
+    border-left-color: var(--ds-accent-success-line);
+}
+.info-panel-accent--danger {
+    background: var(--ds-accent-danger-bg);
+    color: var(--ds-accent-danger-ink);
+    border-left-color: var(--ds-accent-danger-line);
+}
+
 .btn:disabled,
 .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 

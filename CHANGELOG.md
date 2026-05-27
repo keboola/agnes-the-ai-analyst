@@ -10,6 +10,62 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.23] — 2026-05-27
+
+### Added
+- **Seven new design-system macros in `_components.html`.** Closes the
+  "Macro gaps" tracker on #419 by extending the canonical 5 (button,
+  primary_nav, tabs, table, panel) with seven more:
+  `tabs_rich` (with `.mp-tabs`/`.stack-tabs` variants),
+  `segmented_strip` (`.os-tabs`/`.mode-tabs`),
+  `pill_chip` (`.pill` — button or anchor),
+  `kpi_card` (`.obs-kpi` — keeps existing `.obs-kpi-label/-value/-sub`
+  selectors so adoption is drop-in),
+  `hero_search_btn` (`.search-btn`/`.stack-hero__search-btn`),
+  `info_panel_accent` (new `.info-panel-accent*` family with four
+  canonical accents in `style-custom.css`),
+  `code_chip` (`.code-block` + `.btn-copy`).
+  Each macro carries a TODO list of known adopter templates — adoption
+  is a follow-up sweep, not part of this PR.
+- **`_app_scripts.html` partial.** The 570-line inline `<script>` block
+  in `base.html` (undo toast, modal Esc handler, command palette, admin
+  keyboard shortcuts) now lives in a partial both `base.html` and
+  `base_ds.html` include, so pages migrated to the design-system
+  layout keep behaviour parity. `profile.html` is the first adopter —
+  flipped from `base.html` → `base_ds.html` as a proof point.
+
+### Changed
+- **`var(--primary[-dark|-light])` → `var(--ds-primary[-dark|-light])` across
+  24 templates.** Mechanical sweep covering 128+ occurrences. The
+  legacy `_LEGACY_TOKEN_FALLBACK_ALLOWLIST` is drained because every
+  template now references `--ds-primary` explicitly; the compat shim in
+  `design-tokens.css` is unchanged.
+- **Replaced raw hex literals with `--ds-*` tokens in `profile.html`,
+  `setup.html`, `me_activity.html`** (~42 hex literals total). Every
+  hex maps to an existing token; no new tokens introduced. The
+  `var(--token, #hex)` fallback patterns in `setup.html` and
+  `me_activity.html` are dropped — the design-tokens.css compat shim
+  makes them dead weight.
+
+### Internal
+- **Semantic template-assertion helper (`tests/_template_assertions.py`).**
+  Replaces 22 rigid `<tag class="…">` substring assertions in
+  `test_web_marketplace_guide.py` (6) and `test_web_home_page.py` (15)
+  with `assert_element(body, tag, class_=…, href=…, attrs=…, text=…)`
+  via stdlib `html.parser` (nesting-aware; the prior lazy-regex
+  approach swallowed inner siblings via outer-container match spans).
+- **CI class-coverage contract test
+  (`test_component_macros_emit_only_classes_with_css_rules`).** Every
+  literal class the macros in `_components.html` emit — including the
+  computed `btn-<variant>`/`btn-<size>` and the new T11-T17 variant
+  roots — must resolve to a CSS rule in at least one shipped sheet.
+  Catches typo'd macro classes before they reach a page.
+- **Regression guards**
+  (`test_no_unprefixed_primary_token_in_templates`,
+  `test_swept_templates_use_no_raw_hex`) — pin the sweeps in
+  `test_design_system_contract.py` so a future PR re-introducing
+  legacy primary tokens or raw hex literals fails the build.
+
 ## [0.55.22] — 2026-05-27
 
 ### Added
