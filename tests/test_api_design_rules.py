@@ -106,17 +106,36 @@ _VERB_PATH_ALLOWLIST = frozenset({
     "/api/sync/manifest",
     "/api/sync/settings",
     "/api/sync/table-subscriptions",
+    # Operator-trigger RPC endpoints — fire-and-forget admin actions
+    # newly surfaced after the hyphen-aware tokeniser landed.
+    "/api/admin/run-session-collector",
+    "/api/admin/run-session-processor",
+    "/api/admin/run-corporate-memory",
+    "/api/admin/run-blocked-purge",
+    "/api/admin/run-reap-stuck-reviews",
+    "/api/admin/run-bq-metadata-refresh",
+    "/api/store/import-bundle",
 })
 
 
 def test_no_new_verbs_in_path(spec):
-    """New path segments must not contain action verbs."""
+    """New path segments must not contain action verbs.
+
+    Tokenises each non-template segment on ``-`` so multi-word
+    segments like ``register-table`` / ``discover-and-register`` /
+    ``send-link`` get checked properly — pre-fix the detector only
+    split on ``/`` so any hyphenated verb segment slipped through
+    silently. That made the existing ``_VERB_PATH_ALLOWLIST`` entries
+    for those paths unreachable (they passed without the allowlist),
+    which Codex flagged as dead test logic.
+    """
     violations = []
     for path, method, _ in _ops(spec):
         if path in _VERB_PATH_ALLOWLIST:
             continue
         segs = [s for s in path.split("/") if s and not s.startswith("{")]
-        hits = [s for s in segs if s.lower() in _VERBS]
+        subsegs = [sub for seg in segs for sub in seg.split("-")]
+        hits = [s for s in subsegs if s.lower() in _VERBS]
         if hits:
             violations.append(f"  {method.upper():6} {path}  (verbs: {hits})")
 
