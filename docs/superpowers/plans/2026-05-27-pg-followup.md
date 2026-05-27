@@ -28,7 +28,7 @@ This plan implements `docs/superpowers/specs/2026-05-27-pg-followup-design.md`. 
 | `src/models/recipes.py` | NEW. `Recipe` model | 1A |
 | `src/models/knowledge.py` | EXTEND. `MemoryDomain`, `MemoryDomainItem`, `MemoryDomainSuggestion` models | 1A |
 | `src/models/store.py` | EXTEND. `UserStackSubscription` model | 1A |
-| `src/models/__init__.py` | EXTEND. Add `from src.models import data_packages, recipes` side-effect imports | 1A |
+| `src/models/__init__.py` | EXTEND. Add explicit class imports + `__all__` entries for new model classes (codebase convention; not side-effect `noqa: F401` imports) | 1A |
 | `migrations/versions/0011_data_packages_and_memory_extensions.py` | NEW. Alembic revision creating 7 tables + indexes; downgrade in reverse FK order | 1A |
 | `src/repositories/data_packages_pg.py` | NEW. `DataPackagesPgRepository` mirrors `data_packages.py` DuckDB shape | 1B |
 | `src/repositories/memory_domains_pg.py` | NEW. `MemoryDomainsPgRepository` | 1B |
@@ -125,7 +125,7 @@ Identify the imports + base class pattern. Vojta uses `from src.db_pg import Bas
 
 ```bash
 sed -n '/CREATE TABLE IF NOT EXISTS data_packages\b/,/);/p' src/db.py
-sed -n '/CREATE TABLE IF NOT EXISTS data_packages_tables\b/,/);/p' src/db.py
+sed -n '/CREATE TABLE IF NOT EXISTS data_package_tables\b/,/);/p' src/db.py
 ```
 
 Note all columns, types, NULL/NOT NULL, defaults, FK targets.
@@ -138,7 +138,7 @@ Note all columns, types, NULL/NOT NULL, defaults, FK targets.
 
 Tables:
   - data_packages: curated package metadata (UI Browse + /catalog)
-  - data_packages_tables: bridge to table_registry, many-to-many
+  - data_package_tables: bridge to table_registry, many-to-many
 """
 from __future__ import annotations
 from datetime import datetime
@@ -180,7 +180,7 @@ class DataPackage(Base):
 
 
 class DataPackageTable(Base):
-    __tablename__ = "data_packages_tables"
+    __tablename__ = "data_package_tables"
 
     package_id: Mapped[str] = mapped_column(
         sa.String,
@@ -196,7 +196,7 @@ class DataPackageTable(Base):
     )
 ```
 
-- [ ] **Step 4: Wire into src/models/__init__.py side-effect import**
+- [ ] **Step 4: Wire into src/models/__init__.py (explicit class import + __all__)**
 
 Read current `src/models/__init__.py`:
 
@@ -204,11 +204,19 @@ Read current `src/models/__init__.py`:
 cat src/models/__init__.py
 ```
 
-Add an `import` line so `Base.metadata` picks up the new tables:
+The file uses **explicit class imports + `__all__` entries** (not side-effect `noqa: F401` imports). Add the new classes the same way:
 
 ```python
-# Append to existing imports (e.g., after `from src.models import store`):
-from src.models import data_packages  # noqa: F401
+# In the alphabetical import block (after KnowledgeItem, before InstanceTemplate, etc.):
+from src.models.data_packages import DataPackage, DataPackageTable
+
+# In __all__, insert alphabetically:
+__all__ = [
+    ...,
+    "DataPackage",
+    "DataPackageTable",
+    ...,
+]
 ```
 
 - [ ] **Step 5: Verify models register**
@@ -219,7 +227,7 @@ unset UV_PYTHON
 from src.db_pg import Base
 import src.models  # noqa
 tables = sorted(t.name for t in Base.metadata.sorted_tables)
-print('data_packages' in tables, 'data_packages_tables' in tables)
+print('data_packages' in tables, 'data_package_tables' in tables)
 "
 ```
 
@@ -290,9 +298,18 @@ Adjust column list to match the actual `CREATE TABLE recipes` from src/db.py —
 
 - [ ] **Step 3: Wire into __init__.py**
 
+`src/models/__init__.py` uses **explicit class imports + `__all__` entries** (not side-effect `noqa: F401` imports — see how Task 1A.1 wired `DataPackage` / `DataPackageTable`). Add the same way:
+
 ```python
-# Append to src/models/__init__.py:
-from src.models import recipes  # noqa: F401
+# In the alphabetical import block, add:
+from src.models.recipes import Recipe
+
+# In __all__, insert "Recipe" alphabetically:
+__all__ = [
+    ...,
+    "Recipe",
+    ...,
+]
 ```
 
 - [ ] **Step 4: Verify**
@@ -479,14 +496,14 @@ grep -A 30 "_PK_COLUMNS" scripts/migrate_duckdb_to_pg/__init__.py | head -40
 
 - [ ] **Step 2: Add entries for new composite-PK tables**
 
-`data_packages_tables`, `memory_domain_items`, `user_stack_subscriptions` have composite PKs.
+`data_package_tables`, `memory_domain_items`, `user_stack_subscriptions` have composite PKs.
 
 Append to the `_PK_COLUMNS` dict:
 
 ```python
 _PK_COLUMNS = {
     # ... existing entries ...
-    "data_packages_tables": ("package_id", "table_id"),
+    "data_package_tables": ("package_id", "table_id"),
     "memory_domain_items": ("domain_id", "item_id"),
     "user_stack_subscriptions": ("user_id", "resource_type", "resource_id"),
 }
@@ -507,7 +524,7 @@ Expect: PASS.
 git add scripts/migrate_duckdb_to_pg/__init__.py
 git commit -m "chore(migration): register composite-PK columns for new bridge tables
 
-data_packages_tables, memory_domain_items, user_stack_subscriptions
+data_package_tables, memory_domain_items, user_stack_subscriptions
 each have multi-column primary keys. The generic copy loop needs the
 PK column list to emit ON CONFLICT targets and to compute the SHA-256
 checksum during validation."
@@ -582,7 +599,7 @@ def upgrade() -> None:
     )
 
     op.create_table(
-        "data_packages_tables",
+        "data_package_tables",
         sa.Column("package_id", sa.String(), nullable=False),
         sa.Column("table_id", sa.String(), nullable=False),
         sa.Column("added_by", sa.String(), nullable=False),
@@ -675,7 +692,7 @@ def downgrade() -> None:
     op.drop_table("memory_domain_suggestions")
     op.drop_table("memory_domain_items")
     op.drop_table("memory_domains")
-    op.drop_table("data_packages_tables")
+    op.drop_table("data_package_tables")
     op.drop_table("data_packages")
 ```
 
@@ -1015,7 +1032,7 @@ class DataPackagesPgRepository:
         with self._engine.begin() as conn:
             result = conn.execute(
                 sa.text("""
-                    INSERT INTO data_packages_tables (package_id, table_id, added_by)
+                    INSERT INTO data_package_tables (package_id, table_id, added_by)
                     VALUES (:p, :t, :u)
                     ON CONFLICT (package_id, table_id) DO NOTHING
                 """),
@@ -1026,7 +1043,7 @@ class DataPackagesPgRepository:
     def remove_table(self, pkg_id: str, table_id: str) -> bool:
         with self._engine.begin() as conn:
             result = conn.execute(
-                sa.text("DELETE FROM data_packages_tables WHERE package_id = :p AND table_id = :t"),
+                sa.text("DELETE FROM data_package_tables WHERE package_id = :p AND table_id = :t"),
                 {"p": pkg_id, "t": table_id},
             )
             return result.rowcount > 0
@@ -1035,7 +1052,7 @@ class DataPackagesPgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text("""
-                    SELECT * FROM data_packages_tables
+                    SELECT * FROM data_package_tables
                     WHERE package_id = :p
                     ORDER BY added_at
                 """),
@@ -1047,7 +1064,7 @@ class DataPackagesPgRepository:
         result: Dict[str, List[str]] = {}
         with self._engine.connect() as conn:
             rows = conn.execute(
-                sa.text("SELECT package_id, table_id FROM data_packages_tables ORDER BY package_id, added_at")
+                sa.text("SELECT package_id, table_id FROM data_package_tables ORDER BY package_id, added_at")
             ).all()
         for pkg_id, table_id in rows:
             result.setdefault(pkg_id, []).append(table_id)
