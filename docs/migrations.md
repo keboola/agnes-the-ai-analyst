@@ -10,7 +10,7 @@ retired as repository ports complete.
 ```
 alembic.ini                              ; Alembic config, no DB URL
 migrations/                              ; revision chain
-  env.py                                 ; reads AGNES_DB_URL / DATABASE_URL
+  env.py                                 ; reads DATABASE_URL / AGNES_DB_URL (legacy alias)
   script.py.mako
   versions/
     0001_baseline.py                     ; empty anchor
@@ -40,15 +40,15 @@ scripts/migrate_duckdb_to_pg/__main__.py ; CLI: python -m scripts.migrate_duckdb
 
 ```bash
 # Production
-export AGNES_DB_URL="postgresql+psycopg://agnes:***@10.x.y.z:5432/agnes"
+export DATABASE_URL="postgresql+psycopg://agnes:***@10.x.y.z:5432/agnes"
 
 # Dev (defaults to a local pgserver-bundled binary; no install needed)
-unset AGNES_DB_URL DATABASE_URL  # tests pick up automatically
+unset DATABASE_URL AGNES_DB_URL  # tests pick up automatically
 ```
 
 Resolution order: explicit `cfg.attributes["sqlalchemy.url"]` (used by tests) →
-`AGNES_DB_URL` env → `DATABASE_URL` env. No silent default to SQLite or
-file paths.
+`DATABASE_URL` env → `AGNES_DB_URL` env (legacy alias, emits deprecation warning at
+runtime). No silent default to SQLite or file paths.
 
 ## Local dev via Docker Compose
 
@@ -71,7 +71,7 @@ What the overlay does:
 - Adds a `postgres:16-alpine` service with a named volume (`postgres_data`).
 - Adds a one-shot `migrate` service that runs `alembic upgrade head`
   against the Postgres above, then exits.
-- Wires `AGNES_DB_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes`
+- Wires `DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes`
   into both `migrate` and `app`. The `app` service waits for `migrate`
   to exit 0 before booting uvicorn, so a botched upgrade blocks the
   whole stack with a clear log trail.
@@ -85,7 +85,7 @@ deployment).
 ## Production wiring
 
 For managed Postgres (Cloud SQL, RDS, Azure DB), **do NOT use the
-postgres overlay** — point `AGNES_DB_URL` at the managed instance and
+postgres overlay** — point `DATABASE_URL` at the managed instance and
 run the migration step in your deploy pipeline.
 
 ### Cloud SQL — TCP from private IP
@@ -93,14 +93,14 @@ run the migration step in your deploy pipeline.
 ```bash
 # In .env or Secret Manager → injected into the systemd unit's
 # EnvironmentFile= (or container env)
-AGNES_DB_URL=postgresql+psycopg://agnes:${PG_PW}@10.x.y.z:5432/agnes
+DATABASE_URL=postgresql+psycopg://agnes:${PG_PW}@10.x.y.z:5432/agnes
 ```
 
 ### Cloud SQL — Unix socket (Cloud SQL Auth Proxy or private IP)
 
 ```bash
 # Note the URL-encoded socket path: %2F = /
-AGNES_DB_URL=postgresql+psycopg://agnes:${PG_PW}@/agnes?host=/cloudsql/${PROJ}:${REGION}:${INST}
+DATABASE_URL=postgresql+psycopg://agnes:${PG_PW}@/agnes?host=/cloudsql/${PROJ}:${REGION}:${INST}
 ```
 
 The `cfg.attributes["sqlalchemy.url"]` trick in `migrations/env.py`
@@ -117,7 +117,7 @@ no-op), so a re-deploy after a failed image pull is safe.
 ```bash
 # Recommended pattern: a one-shot pre-deploy job in your pipeline
 docker run --rm \
-  -e AGNES_DB_URL="${AGNES_DB_URL}" \
+  -e DATABASE_URL="${DATABASE_URL}" \
   ghcr.io/keboola/agnes-the-ai-analyst:${IMAGE_TAG} \
   alembic upgrade head
 
@@ -131,7 +131,7 @@ real `downgrade()` body, validated by `test_full_chain_roundtrip` and
 production:
 
 ```bash
-docker run --rm -e AGNES_DB_URL=... ghcr.io/keboola/agnes-the-ai-analyst:${IMAGE_TAG} \
+docker run --rm -e DATABASE_URL=... ghcr.io/keboola/agnes-the-ai-analyst:${IMAGE_TAG} \
   alembic downgrade -1
 ```
 
@@ -149,16 +149,16 @@ per VM.
 
 ```bash
 # Upgrade to head
-AGNES_DB_URL=... alembic upgrade head
+DATABASE_URL=... alembic upgrade head
 
 # Downgrade by one revision
-AGNES_DB_URL=... alembic downgrade -1
+DATABASE_URL=... alembic downgrade -1
 
 # Generate offline SQL (for DBA review)
-AGNES_DB_URL=... alembic upgrade head --sql > /tmp/up.sql
+DATABASE_URL=... alembic upgrade head --sql > /tmp/up.sql
 
 # Autogenerate a fresh revision from a model change
-AGNES_DB_URL=... alembic revision --autogenerate -m "your message"
+DATABASE_URL=... alembic revision --autogenerate -m "your message"
 # (then hand-review the file in migrations/versions/)
 ```
 
@@ -227,7 +227,7 @@ python -m scripts.migrate_duckdb_to_pg \
   --dry-run --verbose
 
 # Live migration
-AGNES_DB_URL="postgresql+psycopg://..." \
+DATABASE_URL="postgresql+psycopg://..." \
   python -m scripts.migrate_duckdb_to_pg \
   --duckdb-path /var/agnes-snapshot/system.duckdb
 

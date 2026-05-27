@@ -2,8 +2,8 @@
 
 Each ``<name>_repo()`` function returns a ready-to-use repository instance:
 
-* ``AGNES_DB_URL`` unset  → DuckDB ``system.duckdb`` repos (legacy, default)
-* ``AGNES_DB_URL`` set    → Postgres-backed ``*_pg`` repos
+* ``DATABASE_URL`` (or legacy ``AGNES_DB_URL``) unset  → DuckDB ``system.duckdb`` repos (legacy, default)
+* ``DATABASE_URL`` (or legacy ``AGNES_DB_URL``) set    → Postgres-backed ``*_pg`` repos
 
 Callsites import factory functions instead of repository classes:
 
@@ -80,8 +80,8 @@ __all__ = [
 
 
 def use_pg() -> bool:
-    """True when Postgres is configured (``AGNES_DB_URL`` set)."""
-    return bool(os.environ.get("AGNES_DB_URL") or os.environ.get("DATABASE_URL"))
+    """True when Postgres is configured (``DATABASE_URL`` or legacy ``AGNES_DB_URL``)."""
+    return bool(os.environ.get("DATABASE_URL") or os.environ.get("AGNES_DB_URL"))
 
 
 def _pg_engine() -> Any:

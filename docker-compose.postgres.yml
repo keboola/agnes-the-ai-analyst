@@ -13,13 +13,13 @@
 #   2. A one-shot ``migrate`` service that runs ``alembic upgrade head`` against
 #      the Postgres above, then exits. ``app`` depends on it completing
 #      successfully so the schema is always present before uvicorn boots.
-#   3. ``AGNES_DB_URL`` injected into the ``app`` service. The migration
+#   3. ``DATABASE_URL`` injected into the ``app`` service. The migration
 #      modules in ``src/repositories/*_pg.py`` and ``src/db_pg.py`` activate
 #      when this is set; without the overlay, ``app`` continues to use the
 #      DuckDB ``system.duckdb`` path unchanged.
 #
 # Production guidance — operators NOT using self-hosted Postgres (e.g. Cloud SQL,
-# RDS) should NOT include this overlay. Instead, set ``AGNES_DB_URL`` in ``.env``
+# RDS) should NOT include this overlay. Instead, set ``DATABASE_URL`` in ``.env``
 # pointing at the managed instance, and run the migration step in your deploy
 # pipeline (``alembic upgrade head`` against the same URL). See
 # docs/migrations.md § "Production wiring" for the Cloud SQL Unix-socket form.
@@ -65,7 +65,7 @@ services:
       # psycopg2). ``postgres`` is the service name resolved by Compose's
       # internal DNS; from outside the compose network the same DB is
       # reachable on 127.0.0.1:5432.
-      - AGNES_DB_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
     restart: "no"
 
   app:
@@ -79,7 +79,7 @@ services:
         # preferable to booting app against an outdated schema.
         condition: service_completed_successfully
     environment:
-      - AGNES_DB_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
 
 volumes:
   postgres_data:
