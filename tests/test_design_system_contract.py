@@ -40,6 +40,7 @@ def _classes_in_template(text: str) -> set[str]:
 DEPRECATED_CLASSES = {
     "btn-primary-v2": "btn-primary",
     "btn-secondary-v2": "btn-secondary",
+    "btn-warning": "btn-danger",
     "modal-btn": "btn + .btn-primary / .btn-secondary",
     "users-table": "data-table",
     "gp-table": "data-table",
