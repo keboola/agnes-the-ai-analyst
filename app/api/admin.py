@@ -3079,7 +3079,7 @@ async def update_table_docs(
     section on /catalog/p/<slug>. Separated from PUT /registry/{id} so
     admins can flip these fields without re-submitting the whole big
     registration payload."""
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     if not repo.get(table_id):
         raise HTTPException(status_code=404, detail="table_not_found")
     # Empty-string ``things_to_know`` clears; explicit `[]` clears lists.

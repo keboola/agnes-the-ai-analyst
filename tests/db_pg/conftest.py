@@ -101,7 +101,7 @@ def _start_embedded() -> Iterator[str]:
 
 
 def _start_pgserver() -> Iterator[str]:
-    import pgserver
+    import pixeltable_pgserver as pgserver
     import tempfile
 
     tmpdir = tempfile.mkdtemp(prefix="agnes-pgserver-")

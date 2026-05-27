@@ -43,6 +43,7 @@ from src.repositories import (
     sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
+    user_group_members_repo,
     user_groups_repo,
     users_repo,
     welcome_template_repo,

@@ -19,6 +19,7 @@ from src.db import get_system_db
 from src.scheduler import is_valid_schedule, is_table_due
 
 from src.repositories import (
+    audit_repo,
     notifications_script_repo,
 )
 logger = logging.getLogger(__name__)
