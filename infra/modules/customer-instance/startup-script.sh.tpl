@@ -114,13 +114,28 @@ if [ -z "$SCHEDULER_API_TOKEN" ]; then
     SCHEDULER_API_TOKEN=$(openssl rand -hex 32)
 fi
 
-# Optional Google OAuth credentials. If the operator has created
-# google-oauth-client-{id,secret} secrets in the project's Secret Manager
-# AND wired them via runtime_secrets in the calling Terraform, the VM SA can
-# read them — write into .env so the Google sign-in flow works. Missing /
-# 403 / empty → silent fallback to "" so password + email auth keep working.
-GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret=google-oauth-client-id 2>/dev/null || echo "")
-GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret=google-oauth-client-secret 2>/dev/null || echo "")
+# Optional Google OAuth credentials. The per-VM secret names are derived by
+# the module from `var.oauth_secret_name_template` (substituting {kind}/{role}/
+# {name} placeholders) and substituted into this script as
+# `${oauth_client_id_secret_name}` / `${oauth_client_secret_secret_name}`.
+#
+# Empty template -> empty substitution -> we fall back to the legacy shared
+# `google-oauth-client-{id,secret}` names (v1.x default — same OAuth client
+# across every VM in the module call). Setting the template gives each VM its
+# own OAuth client (different redirect URIs + separate blast radius from
+# Google's end).
+#
+# The named secrets must already exist in Secret Manager AND the VM SA must
+# have secretAccessor on them: module auto-grants for the derived per-VM names
+# via `google_secret_manager_secret_iam_member.vm_oauth`; legacy ones still
+# come via runtime_secrets. Missing / 403 / empty -> silent fallback to "" so
+# password + email auth keep working.
+OAUTH_ID_SECRET_NAME="${oauth_client_id_secret_name}"
+OAUTH_SECRET_NAME="${oauth_client_secret_secret_name}"
+if [ -z "$${OAUTH_ID_SECRET_NAME}" ]; then OAUTH_ID_SECRET_NAME="google-oauth-client-id"; fi
+if [ -z "$${OAUTH_SECRET_NAME}" ]; then OAUTH_SECRET_NAME="google-oauth-client-secret"; fi
+GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret="$${OAUTH_ID_SECRET_NAME}" 2>/dev/null || echo "")
+GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret="$${OAUTH_SECRET_NAME}" 2>/dev/null || echo "")
 
 # AGNES_VERSION, RELEASE_CHANNEL, AGNES_COMMIT_SHA are baked into the image
 # itself as ENV (see Dockerfile ARG/ENV + release.yml build-args). We do NOT

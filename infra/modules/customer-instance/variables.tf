@@ -65,8 +65,74 @@ variable "dev_instances" {
     image_tag    = optional(string, "dev")
     tls_mode     = optional(string, "none")
     domain       = optional(string, "")
+    # Role label used by per-VM OAuth secret naming
+    # (var.oauth_secret_name_template `{role}` placeholder), VM tagging in
+    # downstream cron/log filters, and dev_defaults selection. Defaults to
+    # "dev" so existing callers don't have to set it; override per VM to
+    # introduce `stage`, `perf`, etc. without any module-side code change
+    # (matching Secret Manager entries — `*-stage` / `*-perf` — must exist
+    # if the per-VM OAuth template uses {role}). MUST be declared on the
+    # object type, not only in dev_defaults: Terraform silently drops
+    # attributes that aren't in the object type during conversion, so a
+    # caller-supplied `role = "stage"` would never reach the merge() below
+    # if the type omits it.
+    role = optional(string, "dev")
   }))
   default = []
+}
+
+variable "oauth_secret_name_template" {
+  description = <<-EOT
+    Template for per-VM OAuth client (Sign-in with Google) Secret Manager
+    secret names. Supports placeholders:
+      {kind} -> "id" or "secret" (REQUIRED — otherwise both fetches resolve
+                to the same secret, which is broken)
+      {role} -> "prod" for the prod VM; for dev VMs, whatever was passed in
+                via `dev_instances[*].role` (defaults to "dev"). Set
+                `role = "stage"` / "perf" / etc. on a dev_instances entry to
+                introduce a new env class — the matching
+                <template-expanded-stage> secrets must already exist in SM.
+      {name} -> the VM name from prod_instance.name / dev_instances[*].name
+                (one OAuth client per VM, regardless of role)
+
+    Empty (default) -> legacy shared `google-oauth-client-{id,secret}`
+    (v1.x default — same OAuth client across every VM in the module call).
+
+    Examples:
+      "agnes-google-oauth-client-{kind}-{role}"  -> one client per role
+                                                    (prod, dev share across
+                                                    multiple dev VMs)
+      "agnes-oauth-{kind}-{name}"                -> one client per VM
+                                                    (every VM isolated; needed
+                                                    for per-engineer dev VMs
+                                                    on shared OAuth domain)
+
+    Resolved names must already exist in Secret Manager — the module grants
+    the VM SA secretAccessor on the resolved set; it does NOT create the
+    secret rows themselves (those carry the OAuth credentials issued in
+    Cloud Console, which has no public API).
+
+    Caveat: do NOT also list a derived name in `var.runtime_secrets` — the
+    same `google_secret_manager_secret_iam_member` would land twice for the
+    same (project, secret, role, member) tuple and apply errors with
+    "already exists". Keep `runtime_secrets` strictly for OTHER secrets the
+    VM needs (e.g. `keboola-storage-token`) when the template is in use.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.oauth_secret_name_template == "" || strcontains(var.oauth_secret_name_template, "{kind}")
+    error_message = "oauth_secret_name_template must contain the {kind} placeholder when non-empty (otherwise id and secret resolve to the same Secret Manager name)."
+  }
+
+  validation {
+    condition = var.oauth_secret_name_template == "" || (
+      strcontains(var.oauth_secret_name_template, "{role}") ||
+      strcontains(var.oauth_secret_name_template, "{name}")
+    )
+    error_message = "oauth_secret_name_template should contain {role} or {name} for per-VM differentiation — otherwise every VM resolves to the same Secret Manager name and you've just renamed the legacy shared client (which is fine, but pointless to do via this variable; set runtime_secrets instead)."
+  }
 }
 
 variable "seed_admin_email" {
