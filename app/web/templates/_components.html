@@ -333,9 +333,12 @@
      - catalog.html      (.stack-tabs at lines ~69)
      - corporate_memory.html (.stack-tabs at lines ~67)
    ───────────────────────────────────────────────────────────────────── #}
-{% macro tabs_rich(items=[], aria_label='Sections', variant='mp') -%}
+{% macro tabs_rich(items=[], aria_label='Sections', variant='mp', klass='') -%}
   {%- set root = 'mp-tabs' if variant == 'mp' else 'stack-tabs' -%}
-<div class="{{ root }}" role="tablist" aria-label="{{ aria_label }}">
+  {%- set classes = [root] -%}
+  {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
+  {%- set class_str = classes | join(' ') -%}
+<div class="{{ class_str }}" role="tablist" aria-label="{{ aria_label }}">
   {%- for item in items %}
   <button type="button" role="tab"
           class="{% if item.active %}is-active{% endif %}"
@@ -344,7 +347,11 @@
     {%- if item.svg %}{{ item.svg | safe }}{% endif %}
     {{ item.label }}
     {%- if item.count_attr %}
-    <span class="count" {{ item.count_attr }}>0</span>
+    {# `count_attr` is a bare attribute name like `data-count-curated` —
+       piped through `|safe` so a caller passing `data-x="v"` (with an
+       embedded value) emits the literal attribute instead of an
+       autoescaped string. #}
+    <span class="count" {{ item.count_attr | safe }}>0</span>
     {%- endif %}
   </button>
   {%- endfor %}
@@ -372,9 +379,12 @@
      - home_not_onboarded.html (`.mode-tabs`)
      - install.html            (`.os-tabs`)
    ───────────────────────────────────────────────────────────────────── #}
-{% macro segmented_strip(items=[], variant='os', aria_label='Choose mode') -%}
+{% macro segmented_strip(items=[], variant='os', aria_label='Choose mode', klass='') -%}
   {%- set root = ('os-tabs' if variant == 'os' else 'mode-tabs') -%}
-<div class="{{ root }}" role="tablist" aria-label="{{ aria_label }}">
+  {%- set classes = [root] -%}
+  {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
+  {%- set class_str = classes | join(' ') -%}
+<div class="{{ class_str }}" role="tablist" aria-label="{{ aria_label }}">
   {%- for item in items %}
   <button type="button" role="tab"
           class="{% if item.active %}is-active{% endif %}"

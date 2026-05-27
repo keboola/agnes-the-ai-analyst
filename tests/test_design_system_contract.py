@@ -9,7 +9,13 @@ STATIC = Path("app/web/static")
 
 
 def _all_html() -> list[Path]:
-    return sorted(p for p in TEMPLATES.rglob("*.html"))
+    """All HTML- or JINJA-templated files that ship with the app and may
+    reference design-system tokens. Includes `*.jinja` (e.g.
+    `_claude_setup_cta.jinja`) so the token-sweep regression guards
+    cover them too."""
+    return sorted(
+        list(TEMPLATES.rglob("*.html")) + list(TEMPLATES.rglob("*.jinja"))
+    )
 
 
 # Match every class="..." or class='...' attribute, possibly multi-line.

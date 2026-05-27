@@ -31,7 +31,7 @@
     background: var(--border, #e5e7eb);
     transition: background 0.15s ease;
   }
-  .progress .seg.is-done { background: var(--ds-primary, var(--ds-primary)); }
+  .progress .seg.is-done { background: var(--ds-primary); }
 
   /* ── Card (mirrors /setup) ─────────────────────────────────────── */
   .card {
@@ -46,7 +46,7 @@
   .card-body { padding: 16px 24px 24px; }
   .step-num {
     width: 26px; height: 26px;
-    background: var(--ds-primary, var(--ds-primary)); color: #fff;
+    background: var(--ds-primary); color: #fff;
     border-radius: 50%; display: inline-flex; align-items: center;
     justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0;
   }
@@ -83,7 +83,7 @@
   .field input[type=url]:focus,
   .field textarea:focus,
   .field select:focus {
-    outline: none; border-color: var(--ds-primary, var(--ds-primary));
+    outline: none; border-color: var(--ds-primary);
     box-shadow: 0 0 0 3px rgba(46, 168, 119, 0.12);
   }
 
@@ -97,7 +97,7 @@
   }
   .type-tiles label:hover { border-color: #c7d2fe; }
   .type-tiles label.is-active {
-    border-color: var(--ds-primary, var(--ds-primary));
+    border-color: var(--ds-primary);
     background: linear-gradient(180deg, rgba(46, 168, 119, 0.06), rgba(46, 168, 119, 0.02));
     box-shadow: 0 0 0 3px rgba(46, 168, 119, 0.12);
   }
@@ -115,23 +115,23 @@
     display: flex; align-items: center; gap: 12px;
     transition: all 0.15s ease;
   }
-  .file-drop:hover { border-color: var(--ds-primary, var(--ds-primary)); background: #fff; }
+  .file-drop:hover { border-color: var(--ds-primary); background: #fff; }
   .file-drop.is-dragover {
-    border-color: var(--ds-primary, var(--ds-primary)); background: #fff;
+    border-color: var(--ds-primary); background: #fff;
     box-shadow: 0 0 0 4px rgba(46, 168, 119, 0.15);
     transform: scale(1.005);
   }
   .file-drop.has-file { border-style: solid; border-color: #10b981; background: #f0fdf4; }
   .file-drop .icon {
     width: 36px; height: 36px; border-radius: 8px;
-    background: rgba(46, 168, 119, 0.1); color: var(--ds-primary, var(--ds-primary));
+    background: rgba(46, 168, 119, 0.1); color: var(--ds-primary);
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0; font-size: 16px;
   }
   .file-drop.has-file .icon { background: rgba(16, 185, 129, 0.1); color: #10b981; }
   .file-drop .file-info { flex: 1; min-width: 0; }
   .file-drop .file-info .label { font-size: 13px; font-weight: 500; color: var(--text-primary, #111827); }
-  .file-drop .file-info .label .filename { color: var(--ds-primary, var(--ds-primary)); margin-left: 6px; }
+  .file-drop .file-info .label .filename { color: var(--ds-primary); margin-left: 6px; }
   .file-drop.has-file .file-info .label { color: #047857; }
   .file-drop .file-info .meta { font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 2px; }
   .file-drop input[type=file] { display: none; }
@@ -142,7 +142,7 @@
     font-size: 12px; font-weight: 500; cursor: pointer;
     flex-shrink: 0; font-family: var(--font-primary, inherit);
   }
-  .file-drop button:hover { border-color: var(--ds-primary, var(--ds-primary)); color: var(--ds-primary, var(--ds-primary)); }
+  .file-drop button:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
 
   /* ── Doc list ──────────────────────────────────────────────────── */
   .doc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
@@ -165,7 +165,7 @@
     font-size: 13px; cursor: pointer; align-self: flex-start;
     font-family: var(--font-primary, inherit);
   }
-  .doc-add:hover { border-color: var(--ds-primary, var(--ds-primary)); color: var(--ds-primary, var(--ds-primary)); }
+  .doc-add:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
 
   /* ── Buttons ───────────────────────────────────────────────────── */
   .actions { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
@@ -269,7 +269,7 @@
   .guidelines-toggle:hover { background: rgba(46, 168, 119, 0.06); }
   .guidelines-toggle::before {
     content: "▸"; transition: transform 0.15s ease;
-    display: inline-block; color: var(--ds-primary, var(--ds-primary)); font-weight: 700;
+    display: inline-block; color: var(--ds-primary); font-weight: 700;
   }
   .guidelines-toggle[aria-expanded="true"] {
     background: rgba(46, 168, 119, 0.08);
@@ -321,7 +321,7 @@
   .comp-text .type {
     display: inline-block; margin-left: 6px; padding: 1px 6px;
     border-radius: 4px; background: rgba(46, 168, 119, 0.08);
-    color: var(--ds-primary, var(--ds-primary)); font-size: 11px;
+    color: var(--ds-primary); font-size: 11px;
   }
   .comp-text .preview {
     margin-top: 3px; color: var(--text-secondary, #6b7280); font-size: 12px;
@@ -356,7 +356,7 @@
   </div>
   <div id="banner-actions" hidden style="margin: -10px 0 14px 0; font-size: 13px;">
     <a href="/store/examples" target="_blank" rel="noopener"
-       style="color: var(--ds-primary, var(--ds-primary)); text-decoration: none; font-weight: 500;">
+       style="color: var(--ds-primary); text-decoration: none; font-weight: 500;">
       See submission examples ↗
     </a>
   </div>
@@ -405,7 +405,7 @@
             </p>
             <p style="margin-top: 10px;">
               <a href="/store/examples" target="_blank" rel="noopener"
-                 style="color: var(--ds-primary, var(--ds-primary)); text-decoration: none; font-weight: 500;">
+                 style="color: var(--ds-primary); text-decoration: none; font-weight: 500;">
                 See full examples ↗
               </a>
             </p>
@@ -491,7 +491,7 @@
             </ul>
             <p style="margin-top: 10px;">
               <a href="/store/examples" target="_blank" rel="noopener"
-                 style="color: var(--ds-primary, var(--ds-primary)); text-decoration: none; font-weight: 500;">
+                 style="color: var(--ds-primary); text-decoration: none; font-weight: 500;">
                 See full examples ↗
               </a>
             </p>
@@ -534,7 +534,7 @@
             Shown on the marketplace tile. Same bar as the per-component
             descriptions —
             <a href="#guidelines-2" id="open-guidelines-link"
-               style="color: var(--ds-primary, var(--ds-primary)); text-decoration: underline;">see Before you upload</a>.
+               style="color: var(--ds-primary); text-decoration: underline;">see Before you upload</a>.
           </div>
         </div>
 
@@ -1135,7 +1135,7 @@ function renderComponents(components) {
       link.rel = 'noopener';
       link.textContent = 'See ' + anchor + ' example ↗';
       link.style.fontSize = '12px';
-      link.style.color = 'var(--ds-primary, var(--ds-primary))';
+      link.style.color = 'var(--ds-primary)';
       link.style.textDecoration = 'underline';
       linkRow.appendChild(link);
       text.appendChild(linkRow);

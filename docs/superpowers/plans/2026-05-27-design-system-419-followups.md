@@ -139,7 +139,7 @@ def test_assert_element_raises_with_diagnostic_when_class_missing():
 
 **Step 2 — Run and confirm failure:**
 ```
-pytest tests/_template_assertions.py -x
+.venv/bin/pytest tests/_template_assertions.py -x
 # expected: ModuleNotFoundError: No module named 'tests._template_assertions'
 #           (or ImportError on the names if the file exists but is empty)
 ```
@@ -239,7 +239,7 @@ def assert_element(
 
 **Step 4 — Confirm pass:**
 ```
-pytest tests/_template_assertions.py -v
+.venv/bin/pytest tests/_template_assertions.py -v
 # expected: 5 passed
 ```
 
@@ -301,7 +301,7 @@ with pytest.raises(ElementNotFound):
 
 **Step 2 — Run, confirm pass** (these should already pass since the live templates render the matching markup):
 ```
-pytest tests/test_web_marketplace_guide.py -v
+.venv/bin/pytest tests/test_web_marketplace_guide.py -v
 # expected: 3 passed (no regression vs. before the conversion)
 ```
 
@@ -364,7 +364,7 @@ from tests._template_assertions import assert_element, ElementNotFound
 
 **Step 2 — Run before each batch:**
 ```
-pytest tests/test_web_home_page.py -v
+.venv/bin/pytest tests/test_web_home_page.py -v
 # expected: all originally-passing tests still pass
 ```
 
@@ -415,7 +415,7 @@ def test_no_unprefixed_primary_token_in_templates() -> None:
 
 **Step 2 — Run and confirm failure:**
 ```
-pytest tests/test_design_system_contract.py::test_no_unprefixed_primary_token_in_templates -x
+.venv/bin/pytest tests/test_design_system_contract.py::test_no_unprefixed_primary_token_in_templates -x
 # expected: assertion error listing all 18 templates
 ```
 
@@ -441,13 +441,13 @@ Two special cases:
 
 **Step 4 — Confirm pass:**
 ```
-pytest tests/test_design_system_contract.py -v
-pytest tests/test_web_home_page.py tests/test_web_marketplace_guide.py -q
+.venv/bin/pytest tests/test_design_system_contract.py -v
+.venv/bin/pytest tests/test_web_home_page.py tests/test_web_marketplace_guide.py -q
 ```
 
 **Step 6 — Full suite for incidental breakage:**
 ```
-pytest -q
+.venv/bin/pytest -q
 ```
 
 **Step 5 — Commit:**
@@ -488,7 +488,7 @@ def test_profile_template_uses_no_raw_hex() -> None:
 
 **Step 2 — Run and confirm failure:**
 ```
-pytest tests/test_design_system_contract.py::test_profile_template_uses_no_raw_hex -x
+.venv/bin/pytest tests/test_design_system_contract.py::test_profile_template_uses_no_raw_hex -x
 # expected: AssertionError listing #fef3c7, #92400e, #f3f4f6, #4b5563, #ede9fe, #6d28d9
 ```
 
@@ -503,12 +503,12 @@ pytest tests/test_design_system_contract.py::test_profile_template_uses_no_raw_h
 
 **Step 4 — Confirm pass:**
 ```
-pytest tests/test_design_system_contract.py::test_profile_template_uses_no_raw_hex -v
+.venv/bin/pytest tests/test_design_system_contract.py::test_profile_template_uses_no_raw_hex -v
 ```
 
 **Step 6 — Full suite:**
 ```
-pytest -q
+.venv/bin/pytest -q
 ```
 
 **Step 5 — Commit:**
@@ -568,12 +568,12 @@ document.getElementById('step-dot-' + i).style.background = i <= n ? 'var(--ds-p
 
 **Step 4 — Confirm pass:**
 ```
-pytest tests/test_design_system_contract.py::test_setup_template_uses_no_raw_hex -v
+.venv/bin/pytest tests/test_design_system_contract.py::test_setup_template_uses_no_raw_hex -v
 ```
 
 **Step 6 — Full suite:**
 ```
-pytest -q
+.venv/bin/pytest -q
 ```
 
 **Step 5 — Commit:**
@@ -633,12 +633,12 @@ The line 285 case (inside a JS template literal):
 
 **Step 4 — Confirm pass:**
 ```
-pytest tests/test_design_system_contract.py::test_me_activity_template_uses_no_raw_hex -v
+.venv/bin/pytest tests/test_design_system_contract.py::test_me_activity_template_uses_no_raw_hex -v
 ```
 
 **Step 6 — Full suite:**
 ```
-pytest -q
+.venv/bin/pytest -q
 ```
 
 **Step 5 — Commit:**
@@ -728,7 +728,7 @@ def test_macros_emit_only_classes_that_have_css_rules() -> None:
 
 **Step 2 — Run and confirm pass on current main** (the 5 existing macros are all backed by CSS):
 ```
-pytest tests/test_design_system_contract.py::test_macros_emit_only_classes_that_have_css_rules -v
+.venv/bin/pytest tests/test_design_system_contract.py::test_macros_emit_only_classes_that_have_css_rules -v
 # expected: 1 passed
 ```
 
@@ -792,7 +792,7 @@ def test_app_scripts_partial_carries_inline_helpers() -> None:
 
 **Step 2 — Run and confirm failure:**
 ```
-pytest tests/test_design_system_contract.py::test_app_scripts_partial_carries_inline_helpers -x
+.venv/bin/pytest tests/test_design_system_contract.py::test_app_scripts_partial_carries_inline_helpers -x
 # expected: AssertionError — _app_scripts.html does not exist
 ```
 
@@ -830,8 +830,8 @@ Leave the `{% block scripts %}{% endblock %}` at line 654 untouched.
 
 **Step 4 — Confirm pass:**
 ```
-pytest tests/test_design_system_contract.py::test_app_scripts_partial_carries_inline_helpers -v
-pytest -q
+.venv/bin/pytest tests/test_design_system_contract.py::test_app_scripts_partial_carries_inline_helpers -v
+.venv/bin/pytest -q
 ```
 
 **Step 6 — Manual smoke for unchanged functionality:**
@@ -900,8 +900,8 @@ In `app/web/templates/profile.html` line 1:
 
 **Step 4 — Confirm pass:**
 ```
-pytest tests/test_design_system_contract.py -v
-pytest -q
+.venv/bin/pytest tests/test_design_system_contract.py -v
+.venv/bin/pytest -q
 ```
 
 **Step 6 — Manual smoke for /profile:**
@@ -997,7 +997,7 @@ def test_tabs_rich_stack_variant_emits_stack_tabs():
 
 **Step 2 — Run and confirm failure:**
 ```
-pytest tests/test_web_components_macros.py -x
+.venv/bin/pytest tests/test_web_components_macros.py -x
 # expected: UndefinedError or AttributeError — `ds.tabs_rich` does not exist
 ```
 
@@ -1086,8 +1086,8 @@ If not imported, add at the top after `{% extends %}`: `{% import '_components.h
 
 **Step 4 — Confirm pass:**
 ```
-pytest tests/test_web_components_macros.py -v
-pytest -q
+.venv/bin/pytest tests/test_web_components_macros.py -v
+.venv/bin/pytest -q
 ```
 
 **Update T08 constructed set:** add `mp-tabs`, `stack-tabs`, `tab-icon`, `count` to the `constructed` set in the class-coverage test.
