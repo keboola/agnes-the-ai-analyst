@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`/catalog/t/<table_id>` data-preview button + modal.** Hero card on the table-detail page now has a "Preview data" button that opens a modal showing the first 10 rows via `GET /api/v2/sample/{table_id}`. The endpoint already enforces `can_access_table` per user, so a 403 lands as a clear inline error inside the modal body. Columns are derived dynamically from the first row's keys; states for Loading / Empty / Error are friendly text. Esc, Close, and backdrop click all dismiss. The issue text said "in catalog.html", but `/catalog` lists Data Packages (not tables) — the natural per-table affordance lives on the table-detail page. Closes #396.
+
 ## [0.55.17] — 2026-05-27
 
 ### Fixed
