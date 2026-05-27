@@ -46,12 +46,18 @@ def _get_group_id_by_name(name: str, conn: Optional[duckdb.DuckDBPyConnection] =
     typically only happens during the very first migration pass before
     _seed_system_groups has run, or in mis-seeded test fixtures.
 
-    The ``conn`` parameter is retained for backward-compat with existing
-    callers; the value is ignored — the underlying repository pulls from
-    the singleton via the factory (DuckDB or Postgres per ``AGNES_DB_URL``).
+    Honors ``conn`` only when the active backend is DuckDB and ``conn``
+    is a DuckDB connection (test-isolation escape hatch for fixtures that
+    seed into a per-test DuckDB). When the active backend is Postgres,
+    ``conn`` is the local DuckDB view-handle which would be stale; we
+    route through the global factory which reads from PG instead.
     """
-    from src.repositories import user_groups_repo
-    row = user_groups_repo().get_by_name(name)
+    from src.repositories import use_pg, user_groups_repo
+    if conn is not None and not use_pg():
+        from src.repositories.user_groups import UserGroupsRepository
+        row = UserGroupsRepository(conn).get_by_name(name)
+    else:
+        row = user_groups_repo().get_by_name(name)
     return row["id"] if row else None
 
 
@@ -66,18 +72,23 @@ def _user_group_ids(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = No
     enforces. Callers that want Everyone-style "always granted" plugins
     must grant them to a real group the user is a member of.
 
-    ``conn`` ignored — kept only for backward-compat signature stability.
+    Honors ``conn`` only in DuckDB-backend mode (see ``_get_group_id_by_name``
+    for rationale); routes through the global factory otherwise.
     """
-    from src.repositories import user_group_members_repo
+    from src.repositories import use_pg, user_group_members_repo
+    if conn is not None and not use_pg():
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        return set(UserGroupMembersRepository(conn).list_groups_for_user(user_id))
     return set(user_group_members_repo().list_groups_for_user(user_id))
 
 
 def is_user_admin(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> bool:
     """True iff the user is a member of the Admin system group.
 
-    ``conn`` ignored — kept only for backward-compat signature stability.
+    ``conn`` honored when explicitly passed (test isolation); falls back
+    to the global factory otherwise.
     """
-    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP)
+    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn=conn)
     if admin_id is None:
         # No Admin group seeded — defensively deny. Fail-closed beats the
         # alternative of silently granting elevated access.
@@ -85,7 +96,7 @@ def is_user_admin(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None
             "is_user_admin: Admin group missing in user_groups; denying access"
         )
         return False
-    return admin_id in _user_group_ids(user_id)
+    return admin_id in _user_group_ids(user_id, conn=conn)
 
 
 def can_access(
@@ -103,22 +114,28 @@ def can_access(
     through so they appear in /catalog and /api/v2/catalog for analysts,
     not just admins.
 
-    ``conn`` ignored — kept only for backward-compat signature stability.
+    ``conn`` honored when explicitly passed (test isolation); falls back
+    to the global factory otherwise.
     """
     if resource_type == "table":
         from connectors.internal.access import is_internal_table
         if is_internal_table(resource_id):
             return True
 
-    group_ids = _user_group_ids(user_id)
-    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP)
+    group_ids = _user_group_ids(user_id, conn=conn)
+    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn=conn)
     if admin_id is not None and admin_id in group_ids:
         return True
 
     if not group_ids:
         return False
 
-    from src.repositories import resource_grants_repo
+    from src.repositories import use_pg, resource_grants_repo
+    if conn is not None and not use_pg():
+        from src.repositories.resource_grants import ResourceGrantsRepository
+        return ResourceGrantsRepository(conn).has_grant(
+            list(group_ids), resource_type, resource_id,
+        )
     return resource_grants_repo().has_grant(
         list(group_ids), resource_type, resource_id,
     )
