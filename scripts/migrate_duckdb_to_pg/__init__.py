@@ -93,6 +93,9 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "knowledge_item_relations": ["item_a_id", "item_b_id", "relation_type"],
     "knowledge_votes": ["item_id", "user_id"],
     "knowledge_item_user_dismissed": ["user_id", "item_id"],
+    "knowledge_item_domains": ["item_id", "domain_id"],
+    "data_package_tables": ["package_id", "table_id"],
+    "user_stack_subscriptions": ["user_id", "resource_type", "resource_id"],
 }
 
 

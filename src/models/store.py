@@ -213,3 +213,21 @@ class StoreSubmission(Base):
 # uses the existing ``user_plugin_optouts`` table — pre-v28 a row meant
 # opt-OUT; v28 inverts the semantic (row presence = subscribed). See the
 # docstring in src/repositories/user_curated_subscriptions.py for context.
+
+
+class UserStackSubscription(Base):
+    __tablename__ = "user_stack_subscriptions"
+
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    resource_type: Mapped[str] = mapped_column(String, nullable=False)
+    resource_id: Mapped[str] = mapped_column(String, nullable=False)
+    subscribed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint("user_id", "resource_type", "resource_id"),
+        Index("idx_user_stack_subscriptions_user", "user_id"),
+    )

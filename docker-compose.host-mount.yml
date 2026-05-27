@@ -68,6 +68,20 @@ services:
       - /data:/data
       - ./config:/app/config:ro
 
+  # data-migrate is defined in docker-compose.postgres.yml. When the prod
+  # COMPOSE_FILE chain includes both this overlay and the postgres overlay
+  # (the default on customer-instance VMs as of Task 2B.1), restate the
+  # mount as a direct host bind — read-only because data-migrate only
+  # READS the source DuckDB and writes into Postgres. Without this
+  # override the service inherits the named-volume mount from the
+  # postgres overlay, which on a customer-instance host is empty (the
+  # data: volume is no longer populated once everything else switched to
+  # !override binds), so the script would try to read a non-existent
+  # /data/state/system.duckdb and exit 2.
+  data-migrate:
+    volumes: !override
+      - /data:/data:ro
+
   telegram-bot:
     volumes: !override
       - /data:/data

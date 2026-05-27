@@ -10,12 +10,16 @@ from __future__ import annotations
 
 from src.models.audit import AuditLog
 from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
+from src.models.data_packages import DataPackage, DataPackageTable
 from src.models.knowledge import (
     KnowledgeContradiction,
     KnowledgeItem,
+    KnowledgeItemDomain,
     KnowledgeItemRelation,
     KnowledgeItemUserDismissed,
     KnowledgeVote,
+    MemoryDomain,
+    MemoryDomainSuggestion,
     VerificationEvidence,
 )
 from src.models.lookup import (
@@ -32,12 +36,14 @@ from src.models.misc import (
     TelegramLink,
 )
 from src.models.ops import SyncHistory, SyncState, TableRegistry
+from src.models.recipes import Recipe
 from src.models.store import (
     MarketplacePlugin,
     MarketplaceRegistry,
     StoreEntity,
     StoreSubmission,
     UserPluginOptout,
+    UserStackSubscription,
     UserStoreInstall,
 )
 from src.models.telemetry import (
@@ -61,18 +67,24 @@ __all__ = [
     "AuditLog",
     "BqMetadataCache",
     "ColumnMetadata",
+    "DataPackage",
+    "DataPackageTable",
     "InstanceTemplate",
     "KnowledgeContradiction",
     "KnowledgeItem",
+    "KnowledgeItemDomain",
     "KnowledgeItemRelation",
     "KnowledgeItemUserDismissed",
     "KnowledgeVote",
     "MarketplacePlugin",
     "MarketplaceRegistry",
+    "MemoryDomain",
+    "MemoryDomainSuggestion",
     "MetricDefinition",
     "NewsTemplate",
     "PendingCode",
     "PersonalAccessToken",
+    "Recipe",
     "ResourceGrant",
     "ScriptRegistry",
     "SessionProcessorState",
@@ -94,6 +106,7 @@ __all__ = [
     "UserGroupMember",
     "UserObservabilityView",
     "UserPluginOptout",
+    "UserStackSubscription",
     "UserStoreInstall",
     "UserSyncSettings",
     "ViewOwnership",

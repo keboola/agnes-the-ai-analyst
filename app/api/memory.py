@@ -13,12 +13,12 @@ import duckdb
 from app.auth.dependencies import get_current_user, _get_db
 from app.auth.access import require_admin, is_user_admin, can_access
 from src.repositories.knowledge import KnowledgeRepository
-from src.repositories.memory_domains import MemoryDomainsRepository
 from src.repositories.audit import AuditRepository
 
 from src.repositories import (
     audit_repo,
     knowledge_repo,
+    memory_domains_repo,
 )
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def _validate_domain_slug(slug: Optional[str], conn: duckdb.DuckDBPyConnection) 
     """Raise 400 if ``slug`` is truthy but doesn't resolve to a memory_domains row."""
     if not slug:
         return
-    if not MemoryDomainsRepository(conn).exists_by_slug(slug):
+    if not memory_domains_repo().exists_by_slug(slug):
         raise HTTPException(
             status_code=400,
             detail=f"Unknown memory domain slug: {slug!r}",
@@ -256,7 +256,7 @@ async def list_memory_domains(
     endpoint. Authenticated users only — domain catalog is non-sensitive
     metadata that powers the item-edit UI.
     """
-    domains = MemoryDomainsRepository(conn).list()
+    domains = memory_domains_repo().list()
     return {
         "domains": [
             {
@@ -660,10 +660,9 @@ async def dismiss_item(
     # membership so /admin/telemetry can correlate dismissals with the
     # domain they came from.
     try:
-        from src.repositories.memory_domains import MemoryDomainsRepository
         from src.repositories.usage import UsageRepository
         domain_ids = [
-            d["id"] for d in MemoryDomainsRepository(conn).list_domains_of_item(item_id)
+            d["id"] for d in memory_domains_repo().list_domains_of_item(item_id)
         ]
         UsageRepository(conn).emit_server_event(
             event_type="memory.dismiss",
@@ -1284,8 +1283,7 @@ async def admin_patch_item(
     # /api/admin/memory-domains so a missing id means a race or an
     # already-deleted domain).
     if domain_ids is not None:
-        from src.repositories.memory_domains import MemoryDomainsRepository
-        dom_repo = MemoryDomainsRepository(conn)
+        dom_repo = memory_domains_repo()
         if domain_ids:
             placeholders = ",".join(["?"] * len(domain_ids))
             rows = conn.execute(
@@ -1595,7 +1593,7 @@ def _build_per_domain_markdown(
     via ``can_access``'s admin short-circuit. Anonymous or grantless
     callers get 403.
     """
-    repo = MemoryDomainsRepository(conn)
+    repo = memory_domains_repo()
     dom = repo.get_by_slug(slug)
     if not dom:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")

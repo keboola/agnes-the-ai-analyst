@@ -1,8 +1,11 @@
 """SQLAlchemy models for the knowledge cluster:
 knowledge_items, knowledge_contradictions, knowledge_item_relations,
-verification_evidence, knowledge_votes, knowledge_item_user_dismissed.
+verification_evidence, knowledge_votes, knowledge_item_user_dismissed,
+memory_domains, knowledge_item_domains, memory_domain_suggestions.
 
-Mirrors src/db.py:126-246.
+Mirrors src/db.py:126-246 (core knowledge cluster) and src/db.py:585-644
+(v49+ Memory Domains: first-class domain entities, M:N bridge to
+knowledge_items, and the v55 admin suggestion queue).
 """
 from __future__ import annotations
 
@@ -12,6 +15,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Double,
+    ForeignKey,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -168,4 +172,127 @@ class KnowledgeItemUserDismissed(Base):
     __table_args__ = (
         PrimaryKeyConstraint("user_id", "item_id"),
         Index("idx_knowledge_item_user_dismissed_user", "user_id"),
+    )
+
+
+class MemoryDomain(Base):
+    """v49 first-class domain entity (replaces the v15 scalar
+    ``knowledge_items.domain`` string).
+
+    Cover-image / status / soft-delete columns mirror the
+    ``data_packages`` shape (same admin upload contract, same
+    ``'prod'`` lifecycle default, same ``deleted_at IS NULL`` filter
+    convention). ``created_by`` is NULLABLE in DuckDB DDL — mirror it
+    so alembic autogenerate doesn't see drift.
+    """
+    __tablename__ = "memory_domains"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    icon: Mapped[str | None] = mapped_column(String, nullable=True)
+    color: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v50: admin-uploaded cover image (same contract as
+    # data_packages.cover_image_url).
+    cover_image_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v51: lifecycle pill ('prod' / 'poc' / 'coming-soon' / 'draft'). No
+    # ``category`` column on Memory Domains — the domain IS the
+    # classification.
+    status: Mapped[str] = mapped_column(
+        String, server_default=text("'prod'"), nullable=False
+    )
+    # v54: soft-delete column. DELETE handlers set this; list/get filter
+    # ``deleted_at IS NULL``.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class KnowledgeItemDomain(Base):
+    """M:N bridge between ``knowledge_items`` and ``memory_domains``.
+
+    The DuckDB DDL declares both ``REFERENCES knowledge_items(id)`` and
+    ``REFERENCES memory_domains(id)`` but no ``ON DELETE`` clause.
+    Mirroring the data_packages_tables precedent (Task 1A.1), we
+    declare the FK with ``ON DELETE CASCADE`` on the *owning-side*
+    parent (``memory_domains``) so a hard DELETE doesn't leave orphans,
+    and omit the FK on ``item_id`` — repository code clears the
+    junction explicitly when an item is removed, matching the
+    asymmetric pattern in ``DataPackageTable`` (FK on ``package_id``,
+    bare ``table_id``).
+    """
+    __tablename__ = "knowledge_item_domains"
+
+    item_id: Mapped[str] = mapped_column(String, nullable=False)
+    domain_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("memory_domains.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    added_by: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("item_id", "domain_id"),
+        Index("idx_knowledge_item_domains_domain", "domain_id"),
+    )
+
+
+class MemoryDomainSuggestion(Base):
+    """v55 admin queue: non-admin users propose a domain from the
+    /corporate-memory empty state.
+
+    Approve = create a real ``memory_domains`` row + set
+    ``status='approved'`` + record ``created_domain_id`` for the
+    deep-link. Reject = ``status='rejected'`` with optional
+    ``resolution_note``. Resolved rows stay around for audit /
+    requester visibility. No FK on ``created_by`` — a deleted user
+    must not cascade-nuke their suggestion history.
+    """
+    __tablename__ = "memory_domain_suggestions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 'pending' / 'approved' / 'rejected'. DuckDB DDL has no NOT NULL
+    # but a server default — mirror the data_packages.status convention
+    # and treat as nullable=False on the PG side.
+    status: Mapped[str] = mapped_column(
+        String, server_default=text("'pending'"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On approve, the ``memory_domains.id`` of the freshly created row
+    # — lets the admin queue deep-link to the result. No FK because
+    # rejected suggestions never populate this column.
+    created_domain_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("idx_memory_domain_suggestions_status", "status"),
     )

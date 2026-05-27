@@ -32,9 +32,12 @@ from app.instance_config import (
 from src.repositories import (
     audit_repo,
     claude_md_template_repo,
+    data_packages_repo,
     knowledge_repo,
+    memory_domains_repo,
     news_template_repo,
     profile_repo,
+    recipes_repo,
     store_entities_repo,
     store_submissions_repo,
     sync_settings_repo,
@@ -940,10 +943,9 @@ async def catalog(
     # source-card / per-table list moved into /catalog/p/<slug> (Task 8.3).
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
-    from src.repositories.data_packages import DataPackagesRepository
 
     resolver = StackResolver(conn)
-    pkg_repo = DataPackagesRepository(conn)
+    pkg_repo = data_packages_repo()
 
     # Pre-compute per-package table counts + source-type tag set in one pass
     # so we don't repeat the join per card.
@@ -1057,12 +1059,11 @@ async def catalog_package_detail(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.data_packages import DataPackagesRepository
     from src.repositories.sync_state import SyncStateRepository
     from src.repositories.table_registry import TableRegistryRepository
     from src.repositories.usage import UsageRepository
 
-    pkg_repo = DataPackagesRepository(conn)
+    pkg_repo = data_packages_repo()
     pkg = pkg_repo.get_by_slug(slug)
     if not pkg:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -1181,7 +1182,6 @@ async def catalog_table_detail(
     """
     from app.auth.access import can_access
     from app.resource_types import ResourceType
-    from src.repositories.data_packages import DataPackagesRepository
     from src.repositories.sync_state import SyncStateRepository
     from src.repositories.table_registry import TableRegistryRepository
 
@@ -1192,7 +1192,7 @@ async def catalog_table_detail(
 
     # Find every package that includes this table; gate access on
     # admin god-mode OR a grant on ANY of those packages.
-    pkg_repo = DataPackagesRepository(conn)
+    pkg_repo = data_packages_repo()
     parent_packages = []
     is_admin = is_user_admin(user["id"], conn)
     has_grant = False
@@ -1312,10 +1312,9 @@ async def catalog_recipe_detail(
     """
     from app.auth.access import can_access
     from app.resource_types import ResourceType
-    from src.repositories.recipes import RecipesRepository
     from src.repositories.table_registry import TableRegistryRepository
 
-    recipe = RecipesRepository(conn).get_by_slug(slug)
+    recipe = recipes_repo().get_by_slug(slug)
     if not recipe:
         raise HTTPException(status_code=404, detail="recipe_not_found")
     is_admin = is_user_admin(user["id"], conn)
@@ -1415,11 +1414,10 @@ async def corporate_memory(
     """
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
-    from src.repositories.memory_domains import MemoryDomainsRepository
 
     resolver = StackResolver(conn)
-    domains_repo = MemoryDomainsRepository(conn)
-    repo = KnowledgeRepository(conn)
+    domains_repo = memory_domains_repo()
+    repo = knowledge_repo()
 
     # Per-domain counts (items + required) computed once and indexed by id.
     dom_meta: dict[str, dict] = {}
@@ -1524,11 +1522,10 @@ async def memory_domain_detail(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.memory_domains import MemoryDomainsRepository
     from src.repositories.usage import UsageRepository
 
-    domains_repo = MemoryDomainsRepository(conn)
-    repo = KnowledgeRepository(conn)
+    domains_repo = memory_domains_repo()
+    repo = knowledge_repo()
     domain = domains_repo.get_by_slug(slug)
     if not domain:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")

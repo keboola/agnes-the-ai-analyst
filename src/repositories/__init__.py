@@ -76,6 +76,12 @@ __all__ = [
     "store_submissions_repo",
     # Knowledge
     "knowledge_repo",
+    # Data packages / memory / recipes / subscriptions
+    "data_packages_repo",
+    "memory_domain_suggestions_repo",
+    "memory_domains_repo",
+    "recipes_repo",
+    "user_stack_subscriptions_repo",
 ]
 
 
@@ -373,3 +379,55 @@ def knowledge_repo() -> Any:
         return KnowledgePgRepository(_pg_engine())
     from src.repositories.knowledge import KnowledgeRepository
     return KnowledgeRepository(get_system_db())
+
+
+# ---------------------------------------------------------------------------
+# data packages / memory / recipes / subscriptions
+# ---------------------------------------------------------------------------
+
+def data_packages_repo() -> Any:
+    if use_pg():
+        from src.repositories.data_packages_pg import DataPackagesPgRepository
+        return DataPackagesPgRepository(_pg_engine())
+    from src.repositories.data_packages import DataPackagesRepository
+    return DataPackagesRepository(get_system_db())
+
+
+def memory_domains_repo() -> Any:
+    if use_pg():
+        from src.repositories.memory_domains_pg import MemoryDomainsPgRepository
+        return MemoryDomainsPgRepository(_pg_engine())
+    from src.repositories.memory_domains import MemoryDomainsRepository
+    return MemoryDomainsRepository(get_system_db())
+
+
+def memory_domain_suggestions_repo() -> Any:
+    if use_pg():
+        from src.repositories.memory_domain_suggestions_pg import (
+            MemoryDomainSuggestionsPgRepository,
+        )
+        return MemoryDomainSuggestionsPgRepository(_pg_engine())
+    from src.repositories.memory_domain_suggestions import (
+        MemoryDomainSuggestionsRepository,
+    )
+    return MemoryDomainSuggestionsRepository(get_system_db())
+
+
+def recipes_repo() -> Any:
+    if use_pg():
+        from src.repositories.recipes_pg import RecipesPgRepository
+        return RecipesPgRepository(_pg_engine())
+    from src.repositories.recipes import RecipesRepository
+    return RecipesRepository(get_system_db())
+
+
+def user_stack_subscriptions_repo() -> Any:
+    if use_pg():
+        from src.repositories.user_stack_subscriptions_pg import (
+            UserStackSubscriptionsPgRepository,
+        )
+        return UserStackSubscriptionsPgRepository(_pg_engine())
+    from src.repositories.user_stack_subscriptions import (
+        UserStackSubscriptionsRepository,
+    )
+    return UserStackSubscriptionsRepository(get_system_db())
