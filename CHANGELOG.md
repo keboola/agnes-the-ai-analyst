@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.16] — 2026-05-27
+
 ### Changed
 - **Web UI consistency pass — CSS extraction, design-token migration, parametric hero sections.** Eight templates with large inline `<style>` blocks (news, profile, error, activity_center, admin_access, dashboard, home_not_onboarded, marketplace) had their CSS extracted into dedicated stylesheets under `app/web/static/css/`, and four landing surfaces (home, dashboard, marketplace, catalog) gained parametric hero sections sharing one partial. Color references migrated from legacy `var(--primary)` (blue) to canonical `var(--ds-primary)` (green) on `me_activity` and `memory_domain_detail` so their hover/focus accents read in the unified palette; exact-match hex literals (terminal yellow, Google-sync chip green, VS Code thumbnail bg/ink) were swapped for their `--ds-*` token equivalents in `home.css` and `profile.html`. The bespoke `.btn-warning` variant was retired — its single use (the `/admin/marketplaces` system-confirm modal) now renders via canonical `.btn-danger`, since marking a plugin as system is destructive (fans out a forced grant to every existing principal). `.btn-required` (amber-disabled affordance on catalog_package_detail + memory_domain_detail) was promoted from page-local to canonical in `style-custom.css` and pinned in `tests/test_design_system_contract.py`. Modal dialogs on `/admin/tables` now center vertically.
 
