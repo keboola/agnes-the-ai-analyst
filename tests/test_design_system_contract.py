@@ -227,12 +227,14 @@ _BUTTON_VARIANTS = ("primary", "secondary", "ghost", "danger", "google", "requir
 _BUTTON_SIZES = ("sm", "lg")
 
 # CSS files where canonical rules live. Class-coverage is satisfied if the
-# selector appears in ANY of these. Adding a new sheet means listing it
-# here (or the new selectors silently fail this contract).
+# selector appears in ANY of these. The four sheets imported by base.html
+# and base_ds.html (style-custom + components + design-tokens + stack_card)
+# are globally loaded; the per-page sheets under `css/*.css` ship with the
+# pages whose macros use them — coverage is still satisfied because the
+# macro emits the class only on pages that load the matching sheet.
 _CANONICAL_CSS = (
     STATIC / "style-custom.css",
-    STATIC / "css" / "components.css",
-    STATIC / "css" / "design-tokens.css",
+    *sorted((STATIC / "css").glob("*.css")),
 )
 
 
@@ -269,7 +271,24 @@ def test_component_macros_emit_only_classes_with_css_rules() -> None:
     button_classes.update(f"btn-{v}" for v in _BUTTON_VARIANTS)
     button_classes.update(f"btn-{s}" for s in _BUTTON_SIZES)
 
-    expected = static_classes | button_classes
+    # T11-T17 macros compose variant-driven root classes (variant arg ⇒
+    # different selector) and bespoke accent modifiers. Enumerate the
+    # documented variant values explicitly so a typo in the macro fails
+    # this contract loudly.
+    variant_classes: set[str] = {
+        # tabs_rich
+        "mp-tabs", "stack-tabs",
+        # segmented_strip
+        "os-tabs", "mode-tabs",
+        # hero_search_btn
+        "search-btn", "stack-hero__search-btn",
+        # info_panel_accent — all four canonical accents
+        "info-panel-accent",
+        "info-panel-accent--info", "info-panel-accent--warn",
+        "info-panel-accent--success", "info-panel-accent--danger",
+    }
+
+    expected = static_classes | button_classes | variant_classes
     assert expected, "extracted no classes from _components.html — extraction broken"
 
     # Load every canonical sheet once.

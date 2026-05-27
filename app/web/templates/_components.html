@@ -309,3 +309,237 @@
     {%- if caller %}{{ caller() }}{% endif %}
 </{{ tag }}>
 {%- endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────────────────
+   Tabs (rich) — tab strip with optional inline SVG icon + label + count
+   badge per item. Closes #419 macro-gap "Tabs with rich body".
+
+   Variants:
+     'mp'    → `.mp-tabs`    canonical, marketplace.html
+     'stack' → `.stack-tabs` navy surface used by catalog.html / corporate_memory.html
+
+   Item dict:
+     label      text label (required)
+     data_tab   value for data-tab attribute (JS hook)
+     active     bool — adds is-active + aria-selected=true
+     count_attr optional — raw `data-count-X` attribute on the inner
+                .count span (e.g. 'data-count-curated'). Macro does NOT
+                render a count value; page's JS populates it.
+     svg        optional — raw SVG markup (piped through |safe)
+
+   TODO follow-up sweep adopters (not migrated by macro-gap PR):
+     - marketplace.html (.mp-tabs at lines ~57)
+     - catalog.html      (.stack-tabs at lines ~69)
+     - corporate_memory.html (.stack-tabs at lines ~67)
+   ───────────────────────────────────────────────────────────────────── #}
+{% macro tabs_rich(items=[], aria_label='Sections', variant='mp') -%}
+  {%- set root = 'mp-tabs' if variant == 'mp' else 'stack-tabs' -%}
+<div class="{{ root }}" role="tablist" aria-label="{{ aria_label }}">
+  {%- for item in items %}
+  <button type="button" role="tab"
+          class="{% if item.active %}is-active{% endif %}"
+          {%- if item.data_tab %} data-tab="{{ item.data_tab }}"{% endif %}
+          aria-selected="{{ 'true' if item.active else 'false' }}">
+    {%- if item.svg %}{{ item.svg | safe }}{% endif %}
+    {{ item.label }}
+    {%- if item.count_attr %}
+    <span class="count" {{ item.count_attr }}>0</span>
+    {%- endif %}
+  </button>
+  {%- endfor %}
+</div>
+{%- endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────────────────
+   Segmented strip — dark-surface segment switcher.
+
+   Used today by `.os-tabs` (OS-platform selector on the install page) and
+   `.mode-tabs` (permission-level switch on home_not_onboarded.html).
+   Closes #419 macro-gap "Dark-surface segmented strips".
+
+   Variants:
+     'os'   → `.os-tabs`
+     'mode' → `.mode-tabs`
+
+   Item dict:
+     label    button label (required)
+     value    `data-value` attribute (JS hook)
+     active   bool — adds is-active
+
+   TODO follow-up sweep adopters:
+     - home_not_onboarded.html (`.mode-tabs`)
+     - install.html            (`.os-tabs`)
+   ───────────────────────────────────────────────────────────────────── #}
+{% macro segmented_strip(items=[], variant='os', aria_label='Choose mode') -%}
+  {%- set root = ('os-tabs' if variant == 'os' else 'mode-tabs') -%}
+<div class="{{ root }}" role="tablist" aria-label="{{ aria_label }}">
+  {%- for item in items %}
+  <button type="button" role="tab"
+          class="{% if item.active %}is-active{% endif %}"
+          data-value="{{ item.value }}"
+          aria-selected="{{ 'true' if item.active else 'false' }}">
+    {{ item.label }}
+  </button>
+  {%- endfor %}
+</div>
+{%- endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────────────────
+   Pill chip — pill-shaped filter chip. Closes #419 macro-gap
+   "Pill-shaped filter chips" (`.pill`).
+
+   Renders as <button> (filter affordance) by default, <a> when `href`
+   given (navigational chip).
+
+   Args:
+     label   chip label (required)
+     value   `data-filter` attribute value
+     href    optional — when set, renders <a>
+     active  bool — adds is-active
+
+   TODO follow-up sweep adopters:
+     - marketplace.html, catalog.html, corporate_memory.html
+   ───────────────────────────────────────────────────────────────────── #}
+{% macro pill_chip(label='', value=None, href=None, active=False, klass='') -%}
+  {%- set classes = ['pill'] -%}
+  {%- if active %}{%- set _ = classes.append('is-active') -%}{%- endif -%}
+  {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
+  {%- set class_str = classes | join(' ') -%}
+  {%- if href -%}
+<a class="{{ class_str }}" href="{{ href }}"
+   {%- if value %} data-filter="{{ value }}"{% endif %}>{{ label }}</a>
+  {%- else -%}
+<button type="button" class="{{ class_str }}"
+        {%- if value %} data-filter="{{ value }}"{% endif %}>{{ label }}</button>
+  {%- endif -%}
+{%- endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────────────────
+   KPI card — clickable observability KPI tile. Closes #419 macro-gap
+   "Clickable KPI cards" (`.obs-kpi`).
+
+   Renders as <button> so it has native keyboard nav + screen-reader
+   semantics. Pages that need an <a> instead can pass `href` (then
+   renders <a> with role=button).
+
+   Args:
+     label    KPI title (required)
+     value    Big-number value (string; pre-formatted)
+     href     optional — renders <a> instead of <button>
+     delta    optional — small delta line below the value
+     klass    additional class tokens
+
+   TODO follow-up sweep adopters:
+     - activity_center.html, admin_sessions.html, admin_usage.html
+   ───────────────────────────────────────────────────────────────────── #}
+{% macro kpi_card(label='', value='', href=None, delta=None, klass='', attrs='') -%}
+  {%- set classes = ['obs-kpi'] -%}
+  {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
+  {%- set class_str = classes | join(' ') -%}
+  {%- if href -%}
+<a class="{{ class_str }}" href="{{ href }}" role="button"
+   {%- if attrs %} {{ attrs | safe }}{% endif %}>
+    <span class="obs-kpi-label">{{ label }}</span>
+    <span class="obs-kpi-value">{{ value }}</span>
+    {%- if delta %}<span class="obs-kpi-sub">{{ delta }}</span>{% endif %}
+</a>
+  {%- else -%}
+<button type="button" class="{{ class_str }}"
+        {%- if attrs %} {{ attrs | safe }}{% endif %}>
+    <span class="obs-kpi-label">{{ label }}</span>
+    <span class="obs-kpi-value">{{ value }}</span>
+    {%- if delta %}<span class="obs-kpi-sub">{{ delta }}</span>{% endif %}
+</button>
+  {%- endif -%}
+{%- endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────────────────
+   Hero search button — search-row CTA used inside hero search
+   compositions. Closes #419 macro-gap "Hero search-row buttons".
+
+   Variants:
+     'default' → `.search-btn`
+     'stack'   → `.stack-hero__search-btn`
+
+   Args:
+     label    button text
+     icon     optional raw SVG markup (piped through |safe)
+     type     'submit' | 'button' — defaults 'submit' (form CTA)
+
+   TODO follow-up sweep adopters:
+     - marketplace.html, catalog.html, corporate_memory.html
+   ───────────────────────────────────────────────────────────────────── #}
+{% macro hero_search_btn(label='Search', icon=None, type='submit', variant='default', klass='') -%}
+  {%- set root = 'search-btn' if variant == 'default' else 'stack-hero__search-btn' -%}
+  {%- set classes = [root] -%}
+  {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
+  {%- set class_str = classes | join(' ') -%}
+<button type="{{ type }}" class="{{ class_str }}">
+    {%- if icon %}{{ icon | safe }}{% endif %}
+    {{ label }}
+</button>
+{%- endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────────────────
+   Info panel (accent) — custom-accent info panel. Closes #419
+   macro-gap "Custom-accent info panels" (`.mp-curator-block`).
+
+   Some panels use accents outside the canonical `--ds-accent-*` palette
+   (flea-purple, mystack-slate). The macro takes an `accent` arg that
+   becomes a CSS class (`.info-panel-accent--{accent}`) so the page can
+   style each variant. The four canonical accents reuse the
+   `--ds-accent-{info,warn,success,danger}-*` token family; bespoke
+   accents add their own rule.
+
+   Args:
+     title    panel title (h3)
+     accent   accent name (string, becomes a CSS class)
+
+   `{% call %}` block: body markup.
+
+   TODO follow-up sweep adopters:
+     - marketplace.html (`.mp-curator-block`)
+   ───────────────────────────────────────────────────────────────────── #}
+{% macro info_panel_accent(title=None, accent='info', klass='') -%}
+  {%- set classes = ['info-panel-accent', 'info-panel-accent--' ~ accent] -%}
+  {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
+  {%- set class_str = classes | join(' ') -%}
+<aside class="{{ class_str }}" role="note">
+    {%- if title %}<h3 class="info-panel-accent__title">{{ title }}</h3>{% endif %}
+    {%- if caller %}<div class="info-panel-accent__body">{{ caller() }}</div>{% endif %}
+</aside>
+{%- endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────────────────
+   Code chip — dark-surface code chip / copy button. Closes #419
+   macro-gap "Dark-surface code chip / copy button".
+
+   Per system.md this pattern stays intentionally page-local for now
+   (each page composes its own `.code-block` + `.btn-copy` markup). The
+   macro is defined here as a reference shape future PRs can adopt
+   incrementally — no adopter migration in scope.
+
+   Args:
+     code     code text
+     copy     bool — render a `.btn-copy` button next to the code
+
+   No `caller` block — code text is a single string.
+   ───────────────────────────────────────────────────────────────────── #}
+{% macro code_chip(code='', copy=True, klass='') -%}
+  {%- set classes = ['code-block'] -%}
+  {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
+  {%- set class_str = classes | join(' ') -%}
+<div class="{{ class_str }}">
+    <code>{{ code }}</code>
+    {%- if copy %}
+    <button type="button" class="btn-copy" data-copy="{{ code }}" aria-label="Copy">Copy</button>
+    {%- endif %}
+</div>
+{%- endmacro %}
