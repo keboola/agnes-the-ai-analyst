@@ -327,7 +327,7 @@ git add src/models/recipes.py src/models/__init__.py
 git commit -m "feat(models): add recipes cluster"
 ```
 
-### Task 1A.3: Extend knowledge.py with memory_domains, memory_domain_items, memory_domain_suggestions
+### Task 1A.3: Extend knowledge.py with memory_domains, knowledge_item_domains, memory_domain_suggestions
 
 **Files:**
 - Modify: `src/models/knowledge.py`
@@ -343,7 +343,7 @@ tail -20 src/models/knowledge.py
 
 ```bash
 sed -n '/CREATE TABLE IF NOT EXISTS memory_domains\b/,/);/p' src/db.py
-sed -n '/CREATE TABLE IF NOT EXISTS memory_domain_items\b/,/);/p' src/db.py
+sed -n '/CREATE TABLE IF NOT EXISTS knowledge_item_domains\b/,/);/p' src/db.py
 sed -n '/CREATE TABLE IF NOT EXISTS memory_domain_suggestions\b/,/);/p' src/db.py
 ```
 
@@ -371,7 +371,7 @@ class MemoryDomain(Base):
 
 
 class MemoryDomainItem(Base):
-    __tablename__ = "memory_domain_items"
+    __tablename__ = "knowledge_item_domains"
 
     domain_id: Mapped[str] = mapped_column(
         sa.String,
@@ -413,7 +413,7 @@ Confirm columns/types against the live `CREATE TABLE` output from Step 2 — adj
 from src.db_pg import Base
 import src.models
 names = {t.name for t in Base.metadata.sorted_tables}
-print(all(t in names for t in ['memory_domains', 'memory_domain_items', 'memory_domain_suggestions']))
+print(all(t in names for t in ['memory_domains', 'knowledge_item_domains', 'memory_domain_suggestions']))
 "
 ```
 
@@ -427,7 +427,7 @@ git commit -m "feat(models): extend knowledge with memory_domains + suggestions
 
 Three new tables in the knowledge cluster:
   - memory_domains: domain registry (slug + name, soft-delete)
-  - memory_domain_items: M:N bridge to knowledge_items
+  - knowledge_item_domains: M:N bridge to knowledge_items
   - memory_domain_suggestions: non-admin proposals (pending/approved/rejected)
 
 DuckDB siblings already exist in src/repositories/memory_domains.py
@@ -496,7 +496,7 @@ grep -A 30 "_PK_COLUMNS" scripts/migrate_duckdb_to_pg/__init__.py | head -40
 
 - [ ] **Step 2: Add entries for new composite-PK tables**
 
-`data_package_tables`, `memory_domain_items`, `user_stack_subscriptions` have composite PKs.
+`data_package_tables`, `knowledge_item_domains`, `user_stack_subscriptions` have composite PKs.
 
 Append to the `_PK_COLUMNS` dict:
 
@@ -504,7 +504,7 @@ Append to the `_PK_COLUMNS` dict:
 _PK_COLUMNS = {
     # ... existing entries ...
     "data_package_tables": ("package_id", "table_id"),
-    "memory_domain_items": ("domain_id", "item_id"),
+    "knowledge_item_domains": ("domain_id", "item_id"),
     "user_stack_subscriptions": ("user_id", "resource_type", "resource_id"),
 }
 ```
@@ -524,7 +524,7 @@ Expect: PASS.
 git add scripts/migrate_duckdb_to_pg/__init__.py
 git commit -m "chore(migration): register composite-PK columns for new bridge tables
 
-data_package_tables, memory_domain_items, user_stack_subscriptions
+data_package_tables, knowledge_item_domains, user_stack_subscriptions
 each have multi-column primary keys. The generic copy loop needs the
 PK column list to emit ON CONFLICT targets and to compute the SHA-256
 checksum during validation."
@@ -626,7 +626,7 @@ def upgrade() -> None:
     )
 
     op.create_table(
-        "memory_domain_items",
+        "knowledge_item_domains",
         sa.Column("domain_id", sa.String(), nullable=False),
         sa.Column("item_id", sa.String(), nullable=False),
         sa.Column("added_by", sa.String(), nullable=False),
@@ -690,7 +690,7 @@ def downgrade() -> None:
     op.drop_index("idx_memory_domain_suggestions_status",
                   table_name="memory_domain_suggestions")
     op.drop_table("memory_domain_suggestions")
-    op.drop_table("memory_domain_items")
+    op.drop_table("knowledge_item_domains")
     op.drop_table("memory_domains")
     op.drop_table("data_package_tables")
     op.drop_table("data_packages")
@@ -1173,7 +1173,7 @@ Expect: `ModuleNotFoundError` or collection error.
 
 - [ ] **Step 4: Write `src/repositories/memory_domains_pg.py`**
 
-Mirror the shape of `data_packages_pg.py` from Task 1B.1. Tables are `memory_domains` (parent) and `memory_domain_items` (bridge). No JSONB columns. ID format `"dom_" + uuid.uuid4().hex[:12]`. Methods match the DuckDB sibling: `create`, `get`, `get_by_slug`, `exists_by_slug`, `list`, `update`, `delete`, `restore`, `hard_delete`, `add_item`, `remove_item`, `list_items_of_domain`, `list_domains_of_item`. Use `ON CONFLICT DO NOTHING` for `add_item` idempotency.
+Mirror the shape of `data_packages_pg.py` from Task 1B.1. Tables are `memory_domains` (parent) and `knowledge_item_domains` (bridge). No JSONB columns. ID format `"dom_" + uuid.uuid4().hex[:12]`. Methods match the DuckDB sibling: `create`, `get`, `get_by_slug`, `exists_by_slug`, `list`, `update`, `delete`, `restore`, `hard_delete`, `add_item`, `remove_item`, `list_items_of_domain`, `list_domains_of_item`. Use `ON CONFLICT DO NOTHING` for `add_item` idempotency.
 
 The `list_domains_of_item` joins through the bridge:
 
@@ -1183,7 +1183,7 @@ def list_domains_of_item(self, item_id: str) -> List[Dict[str, Any]]:
         rows = conn.execute(
             sa.text("""
                 SELECT d.* FROM memory_domains d
-                JOIN memory_domain_items b ON b.domain_id = d.id
+                JOIN knowledge_item_domains b ON b.domain_id = d.id
                 WHERE b.item_id = :item AND d.deleted_at IS NULL
                 ORDER BY d.created_at
             """),
@@ -1302,7 +1302,7 @@ git commit -m "feat(repos): memory_domain_suggestions_pg.py"
 cat src/repositories/recipes.py
 ```
 
-Methods: `create`, `get`, `get_by_slug`, `list(search=None, limit=200)`, `update`, `delete`, `restore`, `hard_delete`. `tags` is JSONB.
+Methods: `create`, `get`, `get_by_slug`, `list(search=None, limit=200)`, `update`, `delete`, `restore`, `hard_delete`. The JSONB column is `related_table_ids`. DDL columns: `id, slug, title, description, icon, color, sql_template, related_table_ids, status, deleted_at, created_by, created_at, updated_at` (verified against `src/db.py` and the DuckDB sibling's `create()` signature). ID prefix is `rcp_`.
 
 - [ ] **Step 2: Write integration test**
 
@@ -1319,43 +1319,51 @@ def repo(pg_engine, _alembic_upgrade_to_head):
 
 
 def test_create_and_get(repo):
-    rid = repo.create(name="Top customers", slug="top-customers",
+    rid = repo.create(slug="top-customers", title="Top customers",
                        description="Find top N customers by revenue",
-                       body="SELECT customer_id, SUM(revenue) ...",
-                       tags=["sql", "revenue"], created_by="u")
+                       icon=None, color=None,
+                       sql_template="SELECT customer_id, SUM(revenue) ...",
+                       related_table_ids=["orders", "customers"],
+                       created_by="u")
     row = repo.get(rid)
     assert row["slug"] == "top-customers"
-    assert row["tags"] == ["sql", "revenue"]
+    assert row["title"] == "Top customers"
+    assert row["related_table_ids"] == ["orders", "customers"]
 
 def test_get_by_slug(repo):
-    rid = repo.create(name="X", slug="x", description=None, body=None,
-                       tags=None, created_by="u")
+    rid = repo.create(slug="x", title="X", description=None,
+                       icon=None, color=None, sql_template=None,
+                       related_table_ids=None, created_by="u")
     assert repo.get_by_slug("x")["id"] == rid
 
-def test_list_search_filters_by_name(repo):
-    repo.create(name="Top customers", slug="a", description=None, body=None,
-                tags=None, created_by="u")
-    repo.create(name="Churn analysis", slug="b", description=None, body=None,
-                tags=None, created_by="u")
+def test_list_search_filters_by_title(repo):
+    repo.create(slug="a", title="Top customers", description=None,
+                icon=None, color=None, sql_template=None,
+                related_table_ids=None, created_by="u")
+    repo.create(slug="b", title="Churn analysis", description=None,
+                icon=None, color=None, sql_template=None,
+                related_table_ids=None, created_by="u")
     matches = repo.list(search="customers")
     assert len(matches) == 1
     assert matches[0]["slug"] == "a"
 
 def test_delete_restore(repo):
-    rid = repo.create(name="X", slug="x", description=None, body=None,
-                       tags=None, created_by="u")
+    rid = repo.create(slug="x", title="X", description=None,
+                       icon=None, color=None, sql_template=None,
+                       related_table_ids=None, created_by="u")
     repo.delete(rid)
     assert repo.get(rid) is None
     repo.restore(rid)
     assert repo.get(rid) is not None
 
-def test_update_partial_with_tags_jsonb(repo):
-    rid = repo.create(name="X", slug="x", description="old", body=None,
-                       tags=None, created_by="u")
-    repo.update(rid, description="new", tags=["x"])
+def test_update_partial_with_related_table_ids_jsonb(repo):
+    rid = repo.create(slug="x", title="X", description="old",
+                       icon=None, color=None, sql_template=None,
+                       related_table_ids=None, created_by="u")
+    repo.update(rid, description="new", related_table_ids=["orders"])
     row = repo.get(rid)
     assert row["description"] == "new"
-    assert row["tags"] == ["x"]
+    assert row["related_table_ids"] == ["orders"]
 ```
 
 - [ ] **Step 3: Run — expect failure**
@@ -1366,7 +1374,7 @@ AGNES_TEST_PG_BACKEND=pgserver .venv/bin/pytest tests/db_pg/test_recipes_pg.py -
 
 - [ ] **Step 4: Write `src/repositories/recipes_pg.py`**
 
-Mirror data_packages_pg.py shape. `_JSON_COLUMNS = {"tags"}`. ID format `"rec_" + uuid.uuid4().hex[:12]`. Methods match the DuckDB sibling. `list(search=...)` uses `WHERE name ILIKE :pattern` with `pattern = f"%{search}%"`.
+Mirror data_packages_pg.py shape. `_JSON_COLUMNS = {"related_table_ids"}`. ID format `"rcp_" + uuid.uuid4().hex[:12]`. Methods match the DuckDB sibling. `list(search=...)` uses `WHERE title ILIKE :pattern` with `pattern = f"%{search}%"`.
 
 - [ ] **Step 5: Run — expect PASS**
 
@@ -1840,12 +1848,12 @@ git commit -m "test: cross-engine contract for memory_domain_suggestions (8 test
 ```python
 def test_create_then_get(repo): ...
 def test_get_by_slug(repo): ...
-def test_search_filters_by_name(repo): ...
+def test_search_filters_by_title(repo): ...
 def test_delete_restore(repo): ...
-def test_update_tags_jsonb_round_trip(repo): ...
+def test_update_related_table_ids_jsonb_round_trip(repo): ...
 ```
 
-Use fixture pattern. Adapt to recipes repos.
+Use the fixture pattern from Task 1D.1. Adapt to recipes repos. **Recipes DDL field names:** `title` (not `name`), `sql_template` (not `body`), `related_table_ids` (not `tags`). ID prefix `rcp_`. The DuckDB sibling's `create()` keyword signature is the source of truth: `slug, title, description, icon, color, sql_template, related_table_ids, status='prod', created_by=None`.
 
 - [ ] **Step 2: Run — expect 10 passed**
 
