@@ -4,6 +4,8 @@ import pytest
 from src.db_state_machine import (
     BackendState,
     InvalidTransitionError,
+    MigrationInProgressError,
+    MigrationLock,
     allowed_transitions,
     read_backend_state,
     validate_transition,
@@ -83,3 +85,24 @@ def test_write_is_atomic(tmp_path, monkeypatch):
     write_backend_state(BackendState.SIDE_CAR, url="postgresql://x")
     assert overlay.exists()
     assert not (tmp_path / "instance.yaml.tmp").exists()
+
+
+def test_lock_acquire_release(tmp_path, monkeypatch):
+    """flock acquired and released cleanly."""
+    lock_path = tmp_path / "db-migration.lock"
+    monkeypatch.setattr("src.db_state_machine._LOCK_PATH", lock_path)
+
+    with MigrationLock() as lock:
+        assert lock.held
+    assert lock_path.exists()  # file remains; lock released
+
+
+def test_second_acquire_raises(tmp_path, monkeypatch):
+    """Concurrent acquisition raises MigrationInProgressError."""
+    lock_path = tmp_path / "db-migration.lock"
+    monkeypatch.setattr("src.db_state_machine._LOCK_PATH", lock_path)
+
+    with MigrationLock():
+        with pytest.raises(MigrationInProgressError):
+            with MigrationLock():
+                pass

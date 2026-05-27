@@ -7,9 +7,11 @@ app can detect crashed migrations on startup.
 Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 """
 from __future__ import annotations
+import fcntl
 import os
 from enum import StrEnum
 from pathlib import Path
+from typing import Self
 
 import yaml
 
@@ -59,6 +61,7 @@ def validate_transition(current: BackendState, target: BackendState) -> None:
 
 
 _OVERLAY_PATH = Path(os.environ.get("DATA_DIR", "/data")) / "state" / "instance.yaml"
+_LOCK_PATH = Path(os.environ.get("DATA_DIR", "/data")) / "state" / "db-migration.lock"
 
 
 def read_backend_state() -> tuple[BackendState, str | None]:
@@ -106,3 +109,44 @@ def write_backend_state(target: BackendState, *, url: str | None = None) -> None
     tmp = _OVERLAY_PATH.with_suffix(".yaml.tmp")
     tmp.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=True))
     os.replace(tmp, _OVERLAY_PATH)
+
+
+class MigrationInProgressError(RuntimeError):
+    """A migration is already running; second concurrent attempt rejected."""
+
+
+class MigrationLock:
+    """Non-blocking flock at _LOCK_PATH.
+
+    Usage:
+        with MigrationLock():
+            # exclusive section
+            ...
+    """
+
+    def __init__(self) -> None:
+        self.held = False
+        self._fd: int | None = None
+
+    def __enter__(self) -> Self:
+        _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self._fd = os.open(str(_LOCK_PATH), os.O_CREAT | os.O_WRONLY, 0o600)
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as e:
+            os.close(self._fd)
+            self._fd = None
+            raise MigrationInProgressError(
+                f"Migration already in progress (lock held at {_LOCK_PATH})"
+            ) from e
+        self.held = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self._fd)
+                self._fd = None
+        self.held = False
