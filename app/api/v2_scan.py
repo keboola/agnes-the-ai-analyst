@@ -16,10 +16,13 @@ from app.auth.dependencies import get_current_user, _get_db
 from app.instance_config import get_value
 from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
-from src.repositories.table_registry import TableRegistryRepository
-from src.repositories.audit import AuditRepository
 from app.api.where_validator import (
     validate_where, safe_where_predicate, WhereValidationError,
+)
+
+from src.repositories import (
+    audit_repo,
+    table_registry_repo,
 )
 from app.api.v2_schema import build_schema  # reused for column resolution
 from app.api.v2_arrow import arrow_table_to_ipc_bytes, CONTENT_TYPE
@@ -143,7 +146,7 @@ def _build_bq_sql(
 
 def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     req = ScanRequest(**raw_request)
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     row = repo.get(req.table_id)
     if not row:
         raise FileNotFoundError(req.table_id)
@@ -238,7 +241,7 @@ def scan_estimate_endpoint(
     try:
         result = estimate(conn, user, raw, bq=bq)
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="snapshot.estimate",
                 resource=resource,
@@ -263,7 +266,7 @@ def scan_estimate_endpoint(
                 status_code = 400
             else:
                 status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="snapshot.estimate",
                 resource=resource,
@@ -346,7 +349,7 @@ def run_scan(
         ValueError, BqAccessError
     """
     req = ScanRequest(**raw_request)
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     row = repo.get(req.table_id)
     if not row:
         raise FileNotFoundError(req.table_id)
@@ -452,7 +455,7 @@ def scan_endpoint(
         except Exception:
             rows_written = None
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="snapshot.create",
                 resource=resource,
@@ -483,7 +486,7 @@ def scan_endpoint(
                 status_code = 400
             else:
                 status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="snapshot.create",
                 resource=resource,

@@ -41,17 +41,21 @@ from src.db import SYSTEM_ADMIN_GROUP
 logger = logging.getLogger(__name__)
 
 
-def _get_group_id_by_name(name: str, conn: duckdb.DuckDBPyConnection) -> Optional[str]:
+def _get_group_id_by_name(name: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> Optional[str]:
     """Look up a group's id by its (unique) name. Returns None if absent —
     typically only happens during the very first migration pass before
-    _seed_system_groups has run, or in mis-seeded test fixtures."""
-    row = conn.execute(
-        "SELECT id FROM user_groups WHERE name = ?", [name]
-    ).fetchone()
-    return row[0] if row else None
+    _seed_system_groups has run, or in mis-seeded test fixtures.
+
+    The ``conn`` parameter is retained for backward-compat with existing
+    callers; the value is ignored — the underlying repository pulls from
+    the singleton via the factory (DuckDB or Postgres per ``AGNES_DB_URL``).
+    """
+    from src.repositories import user_groups_repo
+    row = user_groups_repo().get_by_name(name)
+    return row["id"] if row else None
 
 
-def _user_group_ids(user_id: str, conn: duckdb.DuckDBPyConnection) -> set[str]:
+def _user_group_ids(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> set[str]:
     """Set of group_ids the user is in.
 
     Returns only the rows present in ``user_group_members``. The implicit
@@ -61,21 +65,19 @@ def _user_group_ids(user_id: str, conn: duckdb.DuckDBPyConnection) -> set[str]:
     auditing /admin/access sees the same set the authorization layer
     enforces. Callers that want Everyone-style "always granted" plugins
     must grant them to a real group the user is a member of.
+
+    ``conn`` ignored — kept only for backward-compat signature stability.
     """
-    rows = conn.execute(
-        "SELECT group_id FROM user_group_members WHERE user_id = ?",
-        [user_id],
-    ).fetchall()
-    return {r[0] for r in rows}
+    from src.repositories import user_group_members_repo
+    return set(user_group_members_repo().list_groups_for_user(user_id))
 
 
-def is_user_admin(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
+def is_user_admin(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> bool:
     """True iff the user is a member of the Admin system group.
 
-    Cheap — one SELECT EXISTS-style check (the inner _user_group_ids does
-    one fetchall + a name lookup; both are tiny, both indexed).
+    ``conn`` ignored — kept only for backward-compat signature stability.
     """
-    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn)
+    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP)
     if admin_id is None:
         # No Admin group seeded — defensively deny. Fail-closed beats the
         # alternative of silently granting elevated access.
@@ -83,20 +85,16 @@ def is_user_admin(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
             "is_user_admin: Admin group missing in user_groups; denying access"
         )
         return False
-    return admin_id in _user_group_ids(user_id, conn)
+    return admin_id in _user_group_ids(user_id)
 
 
 def can_access(
     user_id: str,
     resource_type: str,
     resource_id: str,
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> bool:
     """Generic access check. Admin short-circuits; otherwise group JOIN.
-
-    Two SELECTs in the worst case:
-      1. _user_group_ids — fetch group membership.
-      2. has_grant on resource_grants for (group_ids, resource_type, resource_id).
 
     Internal data-source tables (``agnes_sessions``/``_usage``/``_audit``) are
     implicitly granted to every authenticated user. Security there is
@@ -104,30 +102,26 @@ def can_access(
     enforced in the query path; the table-grain gate just waves them
     through so they appear in /catalog and /api/v2/catalog for analysts,
     not just admins.
+
+    ``conn`` ignored — kept only for backward-compat signature stability.
     """
     if resource_type == "table":
         from connectors.internal.access import is_internal_table
         if is_internal_table(resource_id):
             return True
 
-    group_ids = _user_group_ids(user_id, conn)
-    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn)
+    group_ids = _user_group_ids(user_id)
+    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP)
     if admin_id is not None and admin_id in group_ids:
         return True
 
     if not group_ids:
         return False
 
-    placeholders = ",".join(["?"] * len(group_ids))
-    row = conn.execute(
-        f"""SELECT 1 FROM resource_grants
-            WHERE group_id IN ({placeholders})
-              AND resource_type = ?
-              AND resource_id = ?
-            LIMIT 1""",
-        [*group_ids, resource_type, resource_id],
-    ).fetchone()
-    return row is not None
+    from src.repositories import resource_grants_repo
+    return resource_grants_repo().has_grant(
+        list(group_ids), resource_type, resource_id,
+    )
 
 
 # ---------------------------------------------------------------------------

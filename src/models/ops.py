@@ -1,0 +1,91 @@
+"""SQLAlchemy models for the ops triad: table_registry, sync_state, sync_history.
+
+Mirrors:
+  - ``table_registry``  (src/db.py:290-317)
+  - ``sync_state``      (src/db.py:81-91)
+  - ``sync_history``    (src/db.py:106-114)
+"""
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String, Text, text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from src.db_pg import Base
+
+
+class TableRegistry(Base):
+    __tablename__ = "table_registry"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    source_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    bucket: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_table: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sync_strategy: Mapped[str] = mapped_column(
+        String, server_default=text("'full_refresh'"), nullable=False
+    )
+    query_mode: Mapped[str] = mapped_column(
+        String, server_default=text("'local'"), nullable=False
+    )
+    sync_schedule: Mapped[str | None] = mapped_column(String, nullable=True)
+    profile_after_sync: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("TRUE"), nullable=False
+    )
+    primary_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    folder: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    registered_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    registered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    # v26 Keboola sync-strategy support columns
+    incremental_window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_history_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    incremental_column: Mapped[str | None] = mapped_column(String, nullable=True)
+    where_filters: Mapped[str | None] = mapped_column(String, nullable=True)
+    partition_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    partition_granularity: Mapped[str | None] = mapped_column(String, nullable=True)
+    initial_load_chunk_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_table_registry_source_type", "source_type"),
+        Index("ix_table_registry_query_mode", "query_mode"),
+    )
+
+
+class SyncState(Base):
+    __tablename__ = "sync_state"
+
+    table_id: Mapped[str] = mapped_column(String, primary_key=True)
+    last_sync: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rows: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    uncompressed_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    columns: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String, server_default=text("'ok'"), nullable=False
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SyncHistory(Base):
+    __tablename__ = "sync_history"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    table_id: Mapped[str] = mapped_column(String, nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    rows: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_sync_history_table_id", "table_id"),
+        Index("ix_sync_history_synced_at", "synced_at"),
+    )

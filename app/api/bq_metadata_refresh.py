@@ -43,9 +43,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_current_user
-from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
-from src.repositories.table_registry import TableRegistryRepository
 
+from src.repositories import (
+    bq_metadata_cache_repo,
+    table_registry_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -129,7 +131,7 @@ def refresh_one(conn: duckdb.DuckDBPyConnection, row: dict[str, Any]) -> dict[st
     table_id = row["id"]
     bucket = row.get("bucket") or ""
     source_table = row.get("source_table") or table_id
-    repo = BqMetadataCacheRepository(conn)
+    repo = bq_metadata_cache_repo()
 
     if not (
         validate_quoted_identifier(bucket, "bucket")
@@ -175,7 +177,7 @@ def refresh_one(conn: duckdb.DuckDBPyConnection, row: dict[str, Any]) -> dict[st
 
 
 def _list_remote_bq_rows(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
-    rows = TableRegistryRepository(conn).list_all()
+    rows = table_registry_repo().list_all()
     return [
         r for r in rows
         if r.get("query_mode") == "remote" and r.get("source_type") == "bigquery"
@@ -313,7 +315,7 @@ async def refresh_one_table(
     """
     from src.db import get_system_db
 
-    row = TableRegistryRepository(conn).get(table)
+    row = table_registry_repo().get(table)
     if not row:
         raise HTTPException(status_code=404, detail=f"Unknown table_id: {table}")
     if row.get("query_mode") != "remote" or row.get("source_type") != "bigquery":
@@ -333,7 +335,7 @@ def metadata_cache_status(
     decide whether to trust the catalog's ``rows`` / ``size_bytes`` or
     treat the table as opaque until the next refresh.
     """
-    cache_rows = BqMetadataCacheRepository(conn).list_all()
+    cache_rows = bq_metadata_cache_repo().list_all()
     threshold = _fresh_threshold_seconds()
     now = datetime.now(timezone.utc)
     interval = _scheduler_interval_seconds()
