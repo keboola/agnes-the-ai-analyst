@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`/dashboard` live sync-status pill.** Small horizontal pill between the env-setup-cta and the stats-row. Initial state is server-rendered from the existing `data_stats.last_updated` (MAX `last_sync` across all `sync_state` rows): "Last sync: <iso>" or "No sync recorded yet". A JS poller hits `GET /api/sync/status` every 30 s and flips the pill to `is-running` (brand-primary pulsing dot, "Sync running…" text) when the `locked` flag is true. The `/api/sync/status` endpoint is intentionally tiny (`{locked: bool}`, public/no-auth for the host-side auto-upgrade cron), so the timestamp comes from server-render rather than live fetch; extending the endpoint to return last-run pass/fail status is a follow-up. Closes #392.
+
 ## [0.55.17] — 2026-05-27
 
 ### Fixed
