@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`/admin/tables` Keboola smart-paste — split `bucket.table_name` on paste/blur.** Keboola Storage's "COPY TO CLIPBOARD" yields the full table id `{bucket}.{table_name}` (e.g. `out.c-crm-tr-RdC3aX4M.account`). The Register Keboola modal has two separate inputs (Bucket + Source Table), so pasting the full id used to fail silently. The modal now has a dedicated `#kbTableIdPaste` input above the existing fields; pasting or blurring with a value containing a `.` splits on the LAST dot and fills both downstream inputs. Downstream fields get a synthetic `input` event so any datalist-refresh / discover hooks treat it as user-typed; manual entry through Bucket + Source Table still works as before. Closes #401.
+
 ### Changed
 - **Admin nav: "Server config" → "Instance settings".** `_app_header.html` nav item label, `admin_server_config.html` page `<title>`, and the page-hero title now read "Instance settings" instead of "Server config" — less developer-centric and consistent with the already-shipped phrasing in the Keboola not-connected banners on `/admin/tables` (which deep-link with "Set your token in **Instance settings**"). Route `/admin/server-config` unchanged. Eyebrow "Server" kept as the category label (shared with `admin_scheduler_runs.html` under the same nav group). Closes #403.
 
