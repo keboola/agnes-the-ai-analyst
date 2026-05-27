@@ -36,11 +36,17 @@ def _make_pg_repo(pg_engine, monkeypatch):
 
 @pytest.fixture
 def audit_repo(tmp_path, pg_engine, monkeypatch):
-    """Yields ``(repo, None, 'pg')`` — signature kept for back-compat
-    with the parametrised callers that unpack three values.
+    """Yields the PG-backed ``AuditPgRepository``.
+
+    Pre-fix this yielded the tuple ``(repo, None, 'pg')`` and every
+    test unpacked it as ``repo, _, _ = audit_repo`` — leftover shape
+    from a pre-cutover dual-backend parametrise where the second
+    slot held a duckdb conn and the third tagged the backend.
+    Both have been single-element ``"pg"`` since the cutover landed;
+    the shape is just confusing now (Codex finding #17).
     """
     repo, _ = _make_pg_repo(pg_engine, monkeypatch)
-    yield repo, None, "pg"
+    yield repo
 
 
 # ---------------------------------------------------------------------------
@@ -48,14 +54,14 @@ def audit_repo(tmp_path, pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_log_returns_id(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     entry_id = repo.log(user_id="u1", action="auth.login")
     assert isinstance(entry_id, str)
     assert len(entry_id) > 0
 
 
 def test_log_all_kwargs_round_trip(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     entry_id = repo.log(
         user_id="u1",
         action="registry.update",
@@ -86,7 +92,7 @@ def test_log_all_kwargs_round_trip(audit_repo):
 
 
 def test_query_time_range(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     repo.log(action="a.1")
     repo.log(action="a.2")
     # Need actual time-window narrowing; both impls let us set timestamp via
@@ -97,7 +103,7 @@ def test_query_time_range(audit_repo):
 
 
 def test_query_action_prefix(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     repo.log(action="sync.trigger")
     repo.log(action="sync.complete")
     repo.log(action="auth.login")
@@ -107,7 +113,7 @@ def test_query_action_prefix(audit_repo):
 
 
 def test_query_action_in(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     repo.log(action="a")
     repo.log(action="b")
     repo.log(action="c")
@@ -116,7 +122,7 @@ def test_query_action_in(audit_repo):
 
 
 def test_query_filter_by_user(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     repo.log(user_id="u1", action="x")
     repo.log(user_id="u2", action="x")
     rows, _ = repo.query(user_id="u1")
@@ -125,7 +131,7 @@ def test_query_filter_by_user(audit_repo):
 
 
 def test_query_filter_by_resource(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     repo.log(action="x", resource="table:a")
     repo.log(action="x", resource="table:b")
     rows, _ = repo.query(resource="table:a")
@@ -134,7 +140,7 @@ def test_query_filter_by_resource(audit_repo):
 
 
 def test_query_result_pattern(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     repo.log(action="x", result="success")
     repo.log(action="x", result="error.timeout")
     repo.log(action="x", result="error.permission")
@@ -143,7 +149,7 @@ def test_query_result_pattern(audit_repo):
 
 
 def test_query_full_text_q(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     repo.log(action="x", params={"sql": "SELECT * FROM finance"})
     repo.log(action="x", params={"sql": "SELECT * FROM marketing"})
     rows, _ = repo.query(q="finance")
@@ -152,7 +158,7 @@ def test_query_full_text_q(audit_repo):
 
 def test_query_ordering_newest_first(audit_repo):
     """Both impls must order by (timestamp DESC, id DESC)."""
-    repo, _, _ = audit_repo
+    repo = audit_repo
     import time
     repo.log(action="first")
     time.sleep(0.01)
@@ -167,7 +173,7 @@ def test_query_ordering_newest_first(audit_repo):
 
 
 def test_query_actions_helper(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     repo.log(action="a")
     repo.log(action="b")
     repo.log(action="c")
@@ -176,7 +182,7 @@ def test_query_actions_helper(audit_repo):
 
 
 def test_query_for_resources_helper(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     repo.log(action="x", resource="store_submission:abc")
     repo.log(action="y", resource="store_submission:abc")
     repo.log(action="z", resource="store_submission:def")
@@ -186,7 +192,7 @@ def test_query_for_resources_helper(audit_repo):
 
 
 def test_query_cursor_pagination(audit_repo):
-    repo, _, _ = audit_repo
+    repo = audit_repo
     import time
     for i in range(5):
         repo.log(action=f"a.{i}")

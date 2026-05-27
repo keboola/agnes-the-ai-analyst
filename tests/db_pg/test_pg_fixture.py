@@ -60,11 +60,20 @@ def test_pg_session_factory_yields_session(pg_session):
 
 
 def test_backend_env_var_is_respected():
-    """The fixture honors AGNES_TEST_PG_BACKEND — if neither env value nor
-    autodetection succeeds, downstream tests skip with a clear message
-    rather than failing in an opaque way."""
+    """If ``AGNES_TEST_PG_BACKEND`` is set, it must name one of the three
+    backends ``conftest._resolve_backend`` actually knows how to start.
+
+    Pre-fix this only allowed ``{"container", "embedded"}`` and missed
+    ``pgserver`` — the universal fallback that ``_resolve_backend``
+    selects when neither container nor embedded works (Codex finding
+    #15). The assertion was therefore vacuous on a pgserver-only
+    laptop (which is how the suite runs locally for most contributors).
+    """
+    from tests.db_pg.conftest import _VALID_BACKENDS
+
     backend = os.environ.get("AGNES_TEST_PG_BACKEND")
     if backend is not None:
-        assert backend in {"container", "embedded"}, (
-            f"AGNES_TEST_PG_BACKEND must be 'container' or 'embedded' (got {backend!r})"
+        assert backend in _VALID_BACKENDS, (
+            f"AGNES_TEST_PG_BACKEND must be one of {sorted(_VALID_BACKENDS)} "
+            f"(got {backend!r})"
         )

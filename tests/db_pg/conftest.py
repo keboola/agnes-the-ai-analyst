@@ -194,19 +194,20 @@ def pg_session(pg_engine) -> Iterator[Session]:
 
 
 # ---------------------------------------------------------------------------
-# parametrized backend harness — runs the same endpoint test twice, once
-# against DuckDB and once against Postgres.
+# App-state backend setup (single-backend post-cutover).
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(params=["pg"], ids=["pg"])
-def state_backend(request, monkeypatch, tmp_path, _pg_url, pg_engine):
+@pytest.fixture
+def state_backend(monkeypatch, tmp_path, _pg_url, pg_engine):
     """Configure the app-state backend.
 
-    Originally parametrised over [duckdb, pg] for the dual-write
+    Originally parametrised over ``[duckdb, pg]`` for the dual-write
     cutover window. Post-cutover the DuckDB app-state code is gone;
-    the fixture stays a single-element ``params=["pg"]`` so existing
-    callers that key off ``state_backend == "pg"`` keep working
-    without a signature change.
+    the fake ``params=["pg"]`` parametrisation was confusing — Codex
+    finding #13 — so it's a plain fixture now. Returns the literal
+    string ``"pg"`` so existing callers that key on
+    ``state_backend == "pg"`` keep working without a signature
+    change.
     """
     # pg_engine already created the engine and bumped schema cleanly.
     # Run alembic upgrade head so the chain is materialised.
@@ -247,7 +248,7 @@ def state_backend(request, monkeypatch, tmp_path, _pg_url, pg_engine):
     import src.repositories
     importlib.reload(src.repositories)
 
-    yield request.param
+    yield "pg"
 
 
 @pytest.fixture
