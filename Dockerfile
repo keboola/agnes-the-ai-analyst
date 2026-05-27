@@ -48,6 +48,8 @@ RUN mkdir -p /opt/agnes-host && \
        /opt/agnes-host/ && \
     cp /app/docker-compose.yml /app/docker-compose.prod.yml \
        /app/docker-compose.host-mount.yml /app/docker-compose.tls.yml \
+       /app/docker-compose.postgres.yml \
+       /app/docker-compose.postgres-host-mount.yml \
        /app/Caddyfile /opt/agnes-host/ && \
     chmod 0755 /opt/agnes-host/agnes-auto-upgrade.sh \
               /opt/agnes-host/agnes-tls-rotate.sh \
@@ -59,6 +61,8 @@ RUN mkdir -p /opt/agnes-host && \
               /opt/agnes-host/docker-compose.prod.yml \
               /opt/agnes-host/docker-compose.host-mount.yml \
               /opt/agnes-host/docker-compose.tls.yml \
+              /opt/agnes-host/docker-compose.postgres.yml \
+              /opt/agnes-host/docker-compose.postgres-host-mount.yml \
               /opt/agnes-host/Caddyfile
 
 # Build wheel artifact (served at /cli/download)
