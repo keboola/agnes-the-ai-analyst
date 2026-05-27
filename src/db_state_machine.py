@@ -7,7 +7,11 @@ app can detect crashed migrations on startup.
 Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 """
 from __future__ import annotations
+import os
 from enum import StrEnum
+from pathlib import Path
+
+import yaml
 
 
 class BackendState(StrEnum):
@@ -52,3 +56,53 @@ def validate_transition(current: BackendState, target: BackendState) -> None:
             f"From {current.value}, allowed targets: "
             f"{[t.value for t in _ALLOWED_TRANSITIONS[current]] or 'none (terminal state)'}"
         )
+
+
+_OVERLAY_PATH = Path(os.environ.get("DATA_DIR", "/data")) / "state" / "instance.yaml"
+
+
+def read_backend_state() -> tuple[BackendState, str | None]:
+    """Read current backend + url from instance.yaml overlay.
+
+    Returns (BackendState.DUCKDB, None) when overlay missing or
+    ``database`` key absent — fresh-install default.
+    """
+    if not _OVERLAY_PATH.exists():
+        return BackendState.DUCKDB, None
+    try:
+        data = yaml.safe_load(_OVERLAY_PATH.read_text()) or {}
+    except yaml.YAMLError:
+        # Corrupt overlay; treat as duckdb to fail safe.
+        return BackendState.DUCKDB, None
+    db = data.get("database") or {}
+    backend_str = db.get("backend", "duckdb")
+    try:
+        state = BackendState(backend_str)
+    except ValueError:
+        state = BackendState.DUCKDB
+    return state, db.get("url")
+
+
+def write_backend_state(target: BackendState, *, url: str | None = None) -> None:
+    """Atomically update instance.yaml::database = {backend, url}.
+
+    Uses tmp + os.replace for atomicity (same pattern as
+    app/api/admin.py overlay writer). Caller is responsible for
+    transition validation; this function performs no policy check.
+    """
+    _OVERLAY_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    if _OVERLAY_PATH.exists():
+        data = yaml.safe_load(_OVERLAY_PATH.read_text()) or {}
+    else:
+        data = {}
+
+    data.setdefault("database", {})["backend"] = target.value
+    if url is not None:
+        data["database"]["url"] = url
+    elif "url" in data["database"]:
+        del data["database"]["url"]
+
+    tmp = _OVERLAY_PATH.with_suffix(".yaml.tmp")
+    tmp.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=True))
+    os.replace(tmp, _OVERLAY_PATH)

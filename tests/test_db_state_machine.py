@@ -5,7 +5,9 @@ from src.db_state_machine import (
     BackendState,
     InvalidTransitionError,
     allowed_transitions,
+    read_backend_state,
     validate_transition,
+    write_backend_state,
 )
 
 
@@ -47,3 +49,37 @@ def test_validate_transition_rejects_skip():
     """No duckdb → cloud (skip side-car)."""
     with pytest.raises(InvalidTransitionError):
         validate_transition(BackendState.DUCKDB, BackendState.CLOUD)
+
+
+def test_write_then_read_backend_state(tmp_path, monkeypatch):
+    """Round-trip: write side_car + URL, read same values."""
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    write_backend_state(
+        BackendState.SIDE_CAR,
+        url="postgresql+psycopg://agnes:pw@postgres:5432/agnes",
+    )
+    state, url = read_backend_state()
+    assert state == BackendState.SIDE_CAR
+    assert url == "postgresql+psycopg://agnes:pw@postgres:5432/agnes"
+
+
+def test_read_returns_duckdb_when_overlay_absent(tmp_path, monkeypatch):
+    """Fresh install defaults to duckdb."""
+    overlay = tmp_path / "nonexistent.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    state, url = read_backend_state()
+    assert state == BackendState.DUCKDB
+    assert url is None
+
+
+def test_write_is_atomic(tmp_path, monkeypatch):
+    """Writes go through .tmp + os.replace; no .tmp left behind on success."""
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    write_backend_state(BackendState.SIDE_CAR, url="postgresql://x")
+    assert overlay.exists()
+    assert not (tmp_path / "instance.yaml.tmp").exists()
