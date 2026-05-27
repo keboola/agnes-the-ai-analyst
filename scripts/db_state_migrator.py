@@ -124,3 +124,28 @@ class JobWriter:
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def alembic_upgrade_head(target_url: str) -> None:
+    """Run ``alembic upgrade head`` against ``target_url``.
+
+    Idempotent — alembic itself is a no-op when already at head.
+    Raises RuntimeError on failure.
+    """
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parent.parent
+    env = {**os.environ, "DATABASE_URL": target_url}
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", str(repo_root / "alembic.ini"), "upgrade", "head"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(repo_root),
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"alembic upgrade head failed (exit {result.returncode}):\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
