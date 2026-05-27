@@ -11,16 +11,24 @@ Usage:
     # Just one table, then validate
     python -m scripts.migrate_duckdb_to_pg --only users --validate
 
-The framework is intentionally simple:
+The framework:
 
-  - One ``MigrationTask`` per table.
-  - ``run_task`` selects rows from DuckDB in batches and INSERTs into PG
-    with ``ON CONFLICT DO NOTHING`` on the PK column so re-runs are
-    idempotent.
-  - ``validate_task`` returns row counts on both sides plus a checksum
-    over the PK column (sorted) — bit-for-bit row equality is too noisy
-    given timestamp precision differences, but PK-set equality + count
-    parity is the strongest practical signal.
+  - :func:`build_task_list` iterates ``Base.metadata.sorted_tables`` and
+    returns a :class:`~tasks.GenericCopyTask` for every table, substituting
+    an explicit override from :data:`~tasks.EXPLICIT_TASKS` when one exists.
+  - Each task's ``.run()`` selects rows from DuckDB and INSERTs into PG with
+    ``ON CONFLICT DO NOTHING`` so re-runs are idempotent.
+  - Each task's ``.validate()`` compares row counts + a SHA-256 checksum over
+    the PK column set — bit-for-bit equality is too noisy given timestamp
+    precision differences, but PK-set equality + count parity is the
+    strongest practical signal.
+
+Backwards-compatible shim layer:
+  The public names ``MigrationTask``, ``TASKS``, ``run_task``,
+  ``validate_task``, and ``run_all`` are preserved so that existing tests
+  and operator scripts continue to work unchanged.  ``MigrationTask`` is an
+  alias for :class:`~tasks.GenericCopyTask`.  ``TASKS`` is the full ordered
+  list produced by :func:`build_task_list`.
 
 After cutover, the DuckDB ``system.duckdb`` file becomes a one-time
 snapshot — never written to again. Analytics keep using their own
@@ -28,396 +36,146 @@ snapshot — never written to again. Analytics keep using their own
 """
 from __future__ import annotations
 
-import hashlib
 import logging
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 import duckdb
-import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from scripts.migrate_duckdb_to_pg.tasks import (
+    EXPLICIT_TASKS,
+    GenericCopyTask,
+    _JSON_COLUMNS,  # re-exported for any external consumers
+    _checksum,
+    _build_insert,
+    _normalize_for_pg,
+    _resolved_columns,
+)
 
 log = logging.getLogger(__name__)
 
 
-@dataclass
-class MigrationTask:
-    """One DuckDB → PG table copy.
+# ---------------------------------------------------------------------------
+# Public type alias — kept for backwards compatibility
+# ---------------------------------------------------------------------------
 
-    Attributes:
-      source_table: DuckDB table name (usually identical to target_table).
-      target_table: Postgres table name (Alembic-managed).
-      pk_columns: PK columns used for ``ON CONFLICT DO NOTHING`` clause.
-      columns: Ordered list of columns to copy. None = all columns.
-      transform: Optional per-row dict transformer (for JSON columns
-        that need json.dumps/loads, type widening, etc).
-      batch_size: Rows per INSERT batch. Tuned for Cloud SQL throughput.
-    """
-    source_table: str
-    target_table: str
-    pk_columns: Sequence[str]
-    columns: Optional[Sequence[str]] = None
-    transform: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
-    batch_size: int = 500
+#: Alias so ``from scripts.migrate_duckdb_to_pg import MigrationTask`` keeps
+#: working in the existing tests.
+MigrationTask = GenericCopyTask
 
 
-def _resolved_columns(task: MigrationTask, duck_conn: duckdb.DuckDBPyConnection) -> List[str]:
-    if task.columns:
-        return list(task.columns)
-    rows = duck_conn.execute(
-        f"SELECT column_name FROM information_schema.columns "
-        f"WHERE table_name = '{task.source_table}' AND table_schema = 'main' "
-        f"ORDER BY ordinal_position"
-    ).fetchall()
-    if rows:
-        return [r[0] for r in rows]
-    pragma = duck_conn.execute(f"PRAGMA table_info('{task.source_table}')").fetchall()
-    return [r[1] for r in pragma]
+# ---------------------------------------------------------------------------
+# PK column map — drives validate_task for every table
+# ---------------------------------------------------------------------------
 
-
-def _audit_log_transform(row: Dict[str, Any]) -> Dict[str, Any]:
-    """No-op — JSON columns are CAST(... AS JSONB) at INSERT time."""
-    return row
-
-
-TASKS: List[MigrationTask] = [
-    MigrationTask(
-        source_table="audit_log",
-        target_table="audit_log",
-        pk_columns=["id"],
-        transform=_audit_log_transform,
-    ),
-    MigrationTask(
-        source_table="users",
-        target_table="users",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="user_groups",
-        target_table="user_groups",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="user_group_members",
-        target_table="user_group_members",
-        pk_columns=["user_id", "group_id"],
-    ),
-    MigrationTask(
-        source_table="resource_grants",
-        target_table="resource_grants",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="table_registry",
-        target_table="table_registry",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="sync_state",
-        target_table="sync_state",
-        pk_columns=["table_id"],
-    ),
-    MigrationTask(
-        source_table="sync_history",
-        target_table="sync_history",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="metric_definitions",
-        target_table="metric_definitions",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="instance_templates",
-        target_table="instance_templates",
-        pk_columns=["key"],
-    ),
-    MigrationTask(
-        source_table="personal_access_tokens",
-        target_table="personal_access_tokens",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="view_ownership",
-        target_table="view_ownership",
-        pk_columns=["view_name"],
-    ),
-    MigrationTask(
-        source_table="column_metadata",
-        target_table="column_metadata",
-        pk_columns=["table_id", "column_name"],
-    ),
-    MigrationTask(
-        source_table="bq_metadata_cache",
-        target_table="bq_metadata_cache",
-        pk_columns=["table_id"],
-    ),
-    MigrationTask(
-        source_table="user_sync_settings",
-        target_table="user_sync_settings",
-        pk_columns=["user_id", "dataset"],
-    ),
-    # misc cluster
-    MigrationTask(
-        source_table="table_profiles",
-        target_table="table_profiles",
-        pk_columns=["table_id"],
-    ),
-    MigrationTask(
-        source_table="telegram_links",
-        target_table="telegram_links",
-        pk_columns=["user_id"],
-    ),
-    MigrationTask(
-        source_table="pending_codes",
-        target_table="pending_codes",
-        pk_columns=["code"],
-    ),
-    MigrationTask(
-        source_table="script_registry",
-        target_table="script_registry",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="news_template",
-        target_table="news_template",
-        pk_columns=["id"],
-    ),
-    # telemetry cluster
-    MigrationTask(
-        source_table="session_processor_state",
-        target_table="session_processor_state",
-        pk_columns=["processor_name", "session_file"],
-    ),
-    MigrationTask(
-        source_table="user_observability_views",
-        target_table="user_observability_views",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="usage_events",
-        target_table="usage_events",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="usage_session_summary",
-        target_table="usage_session_summary",
-        pk_columns=["session_file"],
-    ),
-    MigrationTask(
-        source_table="usage_tool_daily",
-        target_table="usage_tool_daily",
-        pk_columns=["day", "tool_name", "source"],
-    ),
-    MigrationTask(
-        source_table="usage_marketplace_item_daily",
-        target_table="usage_marketplace_item_daily",
-        pk_columns=["day", "source", "type", "parent_plugin", "name"],
-    ),
-    MigrationTask(
-        source_table="usage_marketplace_item_window",
-        target_table="usage_marketplace_item_window",
-        pk_columns=["period_label", "source", "type", "parent_plugin", "name"],
-    ),
-    # store cluster
-    MigrationTask(
-        source_table="marketplace_registry",
-        target_table="marketplace_registry",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="marketplace_plugins",
-        target_table="marketplace_plugins",
-        pk_columns=["marketplace_id", "name"],
-    ),
-    MigrationTask(
-        source_table="store_entities",
-        target_table="store_entities",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="user_store_installs",
-        target_table="user_store_installs",
-        pk_columns=["user_id", "entity_id"],
-    ),
-    MigrationTask(
-        source_table="user_plugin_optouts",
-        target_table="user_plugin_optouts",
-        pk_columns=["user_id", "marketplace_id", "plugin_name"],
-    ),
-    MigrationTask(
-        source_table="store_submissions",
-        target_table="store_submissions",
-        pk_columns=["id"],
-    ),
-    # knowledge cluster
-    MigrationTask(
-        source_table="knowledge_items",
-        target_table="knowledge_items",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="knowledge_contradictions",
-        target_table="knowledge_contradictions",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="knowledge_item_relations",
-        target_table="knowledge_item_relations",
-        pk_columns=["item_a_id", "item_b_id", "relation_type"],
-    ),
-    MigrationTask(
-        source_table="verification_evidence",
-        target_table="verification_evidence",
-        pk_columns=["id"],
-    ),
-    MigrationTask(
-        source_table="knowledge_votes",
-        target_table="knowledge_votes",
-        pk_columns=["item_id", "user_id"],
-    ),
-    MigrationTask(
-        source_table="knowledge_item_user_dismissed",
-        target_table="knowledge_item_user_dismissed",
-        pk_columns=["user_id", "item_id"],
-    ),
-]
-
-
-_JSON_COLUMNS = {
-    # (table, column) → cast to JSONB in PG INSERT
-    ("audit_log", "params"),
-    ("audit_log", "params_before"),
-    ("metric_definitions", "sql_variants"),
-    ("metric_definitions", "validation"),
-    ("bq_metadata_cache", "clustered_by"),
-    ("bq_metadata_cache", "known_columns"),
-    ("user_sync_settings", "tables"),
-    ("table_profiles", "profile"),
-    ("user_observability_views", "query_json"),
-    ("usage_events", "friction_tags"),
-    ("marketplace_plugins", "source_spec"),
-    ("marketplace_plugins", "raw"),
-    ("marketplace_plugins", "doc_links"),
-    ("store_entities", "doc_paths"),
-    ("store_entities", "version_history"),
-    ("store_submissions", "inline_checks"),
-    ("store_submissions", "llm_findings"),
-    ("knowledge_items", "tags"),
-    ("knowledge_items", "contributors"),
-    ("knowledge_items", "entities"),
+# Composite PKs can't be inferred from Base.metadata cheaply at runtime
+# (the inspector would need a live connection), so we maintain an explicit
+# map for tables whose PK is NOT a single column named "id".
+_PK_COLUMNS: Dict[str, List[str]] = {
+    "user_group_members": ["user_id", "group_id"],
+    "sync_state": ["table_id"],
+    "instance_templates": ["key"],
+    "view_ownership": ["view_name"],
+    "column_metadata": ["table_id", "column_name"],
+    "bq_metadata_cache": ["table_id"],
+    "user_sync_settings": ["user_id", "dataset"],
+    "table_profiles": ["table_id"],
+    "telegram_links": ["user_id"],
+    "pending_codes": ["code"],
+    "session_processor_state": ["processor_name", "session_file"],
+    "usage_session_summary": ["session_file"],
+    "usage_tool_daily": ["day", "tool_name", "source"],
+    "usage_marketplace_item_daily": ["day", "source", "type", "parent_plugin", "name"],
+    "usage_marketplace_item_window": ["period_label", "source", "type", "parent_plugin", "name"],
+    "marketplace_plugins": ["marketplace_id", "name"],
+    "user_store_installs": ["user_id", "entity_id"],
+    "user_plugin_optouts": ["user_id", "marketplace_id", "plugin_name"],
+    "knowledge_item_relations": ["item_a_id", "item_b_id", "relation_type"],
+    "knowledge_votes": ["item_id", "user_id"],
+    "knowledge_item_user_dismissed": ["user_id", "item_id"],
 }
 
 
-def _build_insert(task: MigrationTask, columns: Sequence[str]) -> str:
-    placeholders: List[str] = []
-    for c in columns:
-        if (task.target_table, c) in _JSON_COLUMNS:
-            placeholders.append(f"CAST(:{c} AS JSONB)")
-        else:
-            placeholders.append(f":{c}")
-    col_list = ", ".join(columns)
-    val_list = ", ".join(placeholders)
-    conflict = ", ".join(task.pk_columns)
-    return (
-        f"INSERT INTO {task.target_table} ({col_list}) "
-        f"VALUES ({val_list}) "
-        f"ON CONFLICT ({conflict}) DO NOTHING"
-    )
+# ---------------------------------------------------------------------------
+# Task builder
+# ---------------------------------------------------------------------------
 
+def build_task_list() -> List[GenericCopyTask]:
+    """Return migration tasks for every PG table, ordered by FK depth.
 
-def _normalize_for_pg(value: Any) -> Any:
-    """Bridge DuckDB-native types that psycopg can't bind directly.
-
-    DuckDB returns JSON columns as Python dict/list. PG's CAST(... AS JSONB)
-    expects text; re-encode here.
+    Uses ``Base.metadata.sorted_tables`` for topological ordering.  Each
+    table gets a :class:`GenericCopyTask`; tables in :data:`EXPLICIT_TASKS`
+    use their registered override instead.
     """
-    import json as _json
-    if isinstance(value, (dict, list)):
-        return _json.dumps(value)
-    return value
+    import src.models  # noqa: F401 — ensure all models are registered
+    from src.db_pg import Base
 
+    tasks: List[GenericCopyTask] = []
+    for table in Base.metadata.sorted_tables:
+        explicit = EXPLICIT_TASKS.get(table.name)
+        if explicit is not None:
+            tasks.append(explicit)
+        else:
+            pk_cols = _PK_COLUMNS.get(table.name, ["id"])
+            tasks.append(GenericCopyTask(table_name=table.name, pk_columns=pk_cols))
+    return tasks
+
+
+# ---------------------------------------------------------------------------
+# Public interface: all_table_names_handled
+# ---------------------------------------------------------------------------
+
+def all_table_names_handled() -> set[str]:
+    """Names of PG tables this script can migrate.
+
+    Used by
+    ``tests/db_pg/test_data_migration.py::test_every_pg_model_has_a_migration_task``
+    to catch new models added without migration coverage.  Returns the full
+    set regardless of :data:`EXPLICIT_TASKS` — every table in
+    ``Base.metadata`` is reachable (either via an explicit override or the
+    generic copy loop).
+    """
+    import src.models  # noqa: F401
+    from src.db_pg import Base
+
+    return {t.name for t in Base.metadata.sorted_tables}
+
+
+# ---------------------------------------------------------------------------
+# Lazy TASKS list (backwards-compatible public attribute)
+# ---------------------------------------------------------------------------
+
+# Built once on first access via module-level assignment.  The existing tests
+# do ``from scripts.migrate_duckdb_to_pg import TASKS`` and iterate it; the
+# list must be fully populated at import time.
+TASKS: List[GenericCopyTask] = build_task_list()
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compatible shim functions (run_task / validate_task / run_all)
+# ---------------------------------------------------------------------------
 
 def run_task(
-    task: MigrationTask,
+    task: GenericCopyTask,
     duck_conn: duckdb.DuckDBPyConnection,
     pg_engine: Engine,
     dry_run: bool = False,
 ) -> int:
     """Copy ``task.source_table`` from DuckDB into ``task.target_table`` in PG.
 
-    Returns the number of rows considered. ``ON CONFLICT DO NOTHING`` may
-    drop duplicates silently, so this is NOT the rows-inserted count.
+    Returns the number of rows considered.  ``ON CONFLICT (pk) DO NOTHING``
+    may drop PK duplicates silently, so this is NOT the rows-inserted count.
     """
-    columns = _resolved_columns(task, duck_conn)
-    log.info("migrate %s (%d cols, dry_run=%s)", task.source_table, len(columns), dry_run)
-
-    select_sql = f"SELECT {', '.join(columns)} FROM {task.source_table}"
-    rows = duck_conn.execute(select_sql).fetchall()
-    if not rows:
-        log.info("  empty source; nothing to do")
-        return 0
-
-    insert_sql = _build_insert(task, columns)
-    considered = 0
-    batch: List[Dict[str, Any]] = []
-    for r in rows:
-        d = dict(zip(columns, r))
-        if task.transform:
-            d = task.transform(d)
-        d = {k: _normalize_for_pg(v) for k, v in d.items()}
-        batch.append(d)
-        considered += 1
-        if len(batch) >= task.batch_size and not dry_run:
-            with pg_engine.begin() as conn:
-                conn.execute(sa.text(insert_sql), batch)
-            batch.clear()
-    if batch and not dry_run:
-        with pg_engine.begin() as conn:
-            conn.execute(sa.text(insert_sql), batch)
-
-    log.info("  considered %d rows%s", considered, " (dry-run)" if dry_run else "")
-    return considered
-
-
-def _checksum(values: Sequence[Sequence[Any]]) -> str:
-    """Stable digest over a sorted list of PK tuples."""
-    h = hashlib.sha256()
-    for v in sorted(tuple(str(x) for x in row) for row in values):
-        for item in v:
-            h.update(item.encode("utf-8"))
-            h.update(b"|")
-        h.update(b"\n")
-    return h.hexdigest()
+    return task.run(duck_conn, pg_engine, dry_run=dry_run)
 
 
 def validate_task(
-    task: MigrationTask,
+    task: GenericCopyTask,
     duck_conn: duckdb.DuckDBPyConnection,
     pg_engine: Engine,
 ) -> Dict[str, Any]:
     """Compare row counts + PK-set checksums between DuckDB and PG."""
-    pk_select = ", ".join(task.pk_columns)
-    duck_rows = duck_conn.execute(
-        f"SELECT {pk_select} FROM {task.source_table}"
-    ).fetchall()
-    duck_count = len(duck_rows)
-
-    with pg_engine.connect() as conn:
-        pg_rows = conn.execute(
-            sa.text(f"SELECT {pk_select} FROM {task.target_table}")
-        ).all()
-    pg_count = len(pg_rows)
-
-    return {
-        "table": task.target_table,
-        "duckdb_rows": duck_count,
-        "pg_rows": pg_count,
-        "checksum_match": (
-            duck_count == pg_count and _checksum(duck_rows) == _checksum(pg_rows)
-        ),
-    }
+    return task.validate(duck_conn, pg_engine)
 
 
 def run_all(
