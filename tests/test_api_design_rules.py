@@ -272,6 +272,12 @@ _PUBLIC_API_PATHS = frozenset({
     "/api/health",
     "/api/health/detailed",
     "/api/version",
+    # ``/api/sync/status`` is intentionally public — host-side
+    # ``agnes-auto-upgrade.sh`` polls it to decide whether to skip a
+    # ``docker compose up -d`` that would kill an in-flight extractor.
+    # Returns ``{"locked": bool}`` — single Lock.locked() check, no
+    # sensitive data. Documented in ``app/api/sync.py::sync_status``.
+    "/api/sync/status",
 })
 
 
@@ -296,4 +302,89 @@ def test_protected_endpoints_declare_auth_errors(spec):
         + ("\n  … (truncated)" if len(violations) > 40 else "")
         + "\n\nFix: ensure the path is covered by _add_auth_error_responses() in app/main.py, "
         "or add to _PUBLIC_API_PATHS above if it is genuinely unauthenticated."
+    )
+
+
+# Path-parameter expansion for the runtime auth probe below. Pick
+# strings that pass through the regex / int converters FastAPI uses on
+# the route placeholders so we exercise the auth dependency, not a
+# 422 before it. ``{table_id}`` matches the safe-identifier regex in
+# ``src/sql_safe.py``; UUID-shaped placeholders take a random uuid4.
+_PATH_PARAM_FILLERS = {
+    "item_id":     "00000000-0000-0000-0000-000000000000",
+    "submission_id": "00000000-0000-0000-0000-000000000000",
+    "entity_id":   "00000000-0000-0000-0000-000000000000",
+    "plugin_name": "stub_plugin",
+    "marketplace_id": "stub_mp",
+    "table_id":    "stub_table",
+    "table_name":  "stub_table",
+    "sid":         "stub",
+    "user_id":     "00000000-0000-0000-0000-000000000000",
+    "id":          "00000000-0000-0000-0000-000000000000",
+    "script_id":   "stub_script",
+    "package_id":  "stub_package",
+    "domain_id":   "stub_domain",
+}
+
+
+def _fill_path(path: str) -> str:
+    """Replace ``{param}`` placeholders in an OpenAPI path with stub values."""
+    import re
+    return re.sub(
+        r"\{([^}]+)\}",
+        lambda m: _PATH_PARAM_FILLERS.get(m.group(1), "stub"),
+        path,
+    )
+
+
+def test_protected_endpoints_actually_enforce_auth(spec):
+    """Unauthenticated calls to non-PUBLIC /api/* routes must NOT return 2xx.
+
+    Codex finding #20: ``test_protected_endpoints_declare_auth_errors``
+    above only checks the OpenAPI schema declarations injected by
+    ``_add_auth_error_responses`` — so it passes for free, regardless
+    of whether the route's ``Depends(require_admin)`` / ``get_current_user``
+    chain actually fires. A future endpoint that declares the responses
+    but forgets the auth dep would slip through.
+
+    This test probes a sample of GET endpoints (read paths only, no
+    state mutation) with a vanilla unauthenticated ``TestClient``. A
+    2xx response means the auth dep is missing or accidentally
+    bypassed — the assertion lists every such path so the bug is
+    obvious.
+
+    GET-only by design: probing POST/DELETE without auth would still
+    likely return 401/403, but on a route that legitimately enforces
+    auth-after-validation a 422 would mask the test. GET is the
+    cleanest signal.
+    """
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    violations: list[str] = []
+    for path, method, _ in _ops(spec):
+        if method != "get":
+            continue
+        if not path.startswith("/api/"):
+            continue
+        if path in _PUBLIC_API_PATHS:
+            continue
+        url = _fill_path(path)
+        try:
+            resp = client.get(url, follow_redirects=False)
+        except Exception:
+            # Some routes (e.g. SSE endpoints) raise on the test client
+            # without an event loop. Skip rather than fail the check —
+            # auth-dep verification is the goal, not framework quirks.
+            continue
+        if 200 <= resp.status_code < 300:
+            violations.append(f"  GET {url}  → {resp.status_code} (expected 401/403/404/422)")
+
+    assert not violations, (
+        f"{len(violations)} /api/* GET endpoint(s) returned 2xx without auth:\n"
+        + "\n".join(violations[:40])
+        + ("\n  … (truncated)" if len(violations) > 40 else "")
+        + "\n\nFix: add ``Depends(get_current_user)`` (or stricter) to the route, "
+        "or add the path to ``_PUBLIC_API_PATHS`` above with a comment."
     )
