@@ -34,6 +34,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`/admin/corporate-memory` button family migrated to the canonical `.btn-*` vocabulary.** The bespoke moderation-specific variants (`.btn-mandate`, `.btn-approve`, `.btn-reject`, `.btn-revoke`) are retired in favor of the canonical four — `.btn-mandate` → `.btn-primary` (Save / Apply / Confirm / Mark-as-Required / Mark-as-duplicate), `.btn-approve` → `.btn-secondary` (Approve / Keep / Different), `.btn-reject` → `.btn-danger` (Reject / Delete), `.btn-revoke` → `.btn-ghost` (Dismiss). The variant-choice hierarchy (primary > secondary > danger > ghost) continues to encode the semantic priority; the green-on-approve / red-on-reject solid color cues from the bespoke palette are lost but visual hierarchy is preserved. Page-local `.btn` base rule deleted — the canonical `.btn` family in `style-custom.css` supplies the same contract. 29 button class-name swaps across Jinja static markup + JS template-literal contexts. Closes one of the four dedicated follow-up PRs called out by #427.
 - **`/admin/tables` shadowing `.btn` CSS deleted; buttons inherit canonical visual contract.** The markup on this page already used canonical `.btn` / `.btn-primary` / `.btn-secondary` / `.btn-sm` class names (migrated piecemeal across prior commits), but the template carried its own `.btn` family rules that shadowed canonical — most visibly, `.btn-secondary` rendered with a filled grey background (`var(--border-light)`) rather than the canonical white-bg + grey-border outline. Those page-local rules are gone (`.btn`, `.btn-primary`, `.btn-primary:hover`, `.btn-primary:disabled`, `.btn-secondary`, `.btn-secondary:hover`, `.btn-danger`, `.btn-danger:hover`, `.btn-sm`); buttons now match the unified admin look. Two surviving bare `<button class="btn">` sites (Remove-from-package + Delete-package destructive actions, which had inline `color:#b91c1c` overrides) were upgraded to canonical `.btn-danger` (the second commit on #437 fixed the same hazard there). `.btn-icon` (28×28 icon-only button family with `[data-tooltip]:hover::after` chip styling) stays page-local because canonical `.btn--icon` is just a size modifier with no tooltip behavior — flagged for a later pass once a canonical tooltip primitive exists. Visible delta: toolbar + modal secondary buttons shift from filled-grey to outlined-white; destructive buttons shift from filled-red to outlined-red (canonical "calm — committed to by hover" treatment).
 - **`/dashboard` page-local `.btn-register` rule retired; the four other bespoke button families stay page-local with documented rationale.** The "Create Account" submit button on the Telegram verify form (`<button class="btn-register">`) now renders via canonical `.btn .btn-primary`; its page-local rule and `:hover` variant are gone. The remaining bespoke button classes on this page — `.btn-setup` / `.btn-setup-secondary` (hero CTA using `--ds-hero-cta-*` tokens for the navy-hero context), `.notif-link` / `.notif-unlink` (soft-pill micro-actions inside the notification card's `.notif-managing` mode), and `.btn-copy-term` (dark-surface terminal-mock copy buttons; `system.md`-explicit carve-out for Catppuccin-themed dark-surface copy buttons) — stay page-local because each carries page-specific semantics canonical doesn't model. The decision matrix is documented at the top of `app/web/static/css/dashboard.css`. Closes the last of the four dedicated follow-up PRs from #427.
+- Setup-script Step 2 ("Confirm the install location") no longer treats
+  the user's current `cwd` as a mistake whenever it isn't exactly
+  `~/Desktop/{workspace_dir}`. Before, any other path triggered a "you
+  are in the wrong place" warning whose only escape hatch was the magic
+  keyword `install here` — which silently accepted `$HOME` and other
+  destructive defaults. New three-branch decision tree replaces it:
+  (a) **REFUSE** if `pwd` is `$HOME` exactly or any system dir (`/`,
+  `/tmp`, `/etc`, `/usr`, `/var`, `/opt`, `/root`, `/bin`, `/sbin`,
+  `/boot`, `/sys`, `/proc`) — no override, the install would scatter
+  `.claude/`, `.agnes/`, `AGNES_WORKSPACE.md`, marketplace clones into a
+  directory that already has unrelated meaning. (b) **PROCEED
+  SILENTLY** if `cwd` is empty or contains only a whitelist of
+  workspace artefacts (`.git`, `.claude`, `.agnes`, `AGNES_WORKSPACE.md`,
+  `README.md`) — the user clearly created+cd'd into a workspace, no
+  prompt needed. (c) **CONFIRM ONCE** for everything else, with neutral
+  phrasing: *"I'll install Agnes in `<pwd>`. Reply 'ok' to continue here,
+  'default' to install in `~/Desktop/Agnes` instead, or 'abort'."*. The
+  `default` branch runs `mkdir -p ~/Desktop/{workspace_dir} && cd …`
+  itself, so users opting back into the recommended path don't have to
+  re-paste. Legacy `install here` keyword still works as an `ok`
+  synonym for muscle-memory compatibility, and Step 9's restart cue
+  keeps the same wording.
 
 ## [0.55.17] — 2026-05-27
 
