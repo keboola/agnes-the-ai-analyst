@@ -14,9 +14,12 @@ from src.models.data_packages import DataPackage, DataPackageTable
 from src.models.knowledge import (
     KnowledgeContradiction,
     KnowledgeItem,
+    KnowledgeItemDomain,
     KnowledgeItemRelation,
     KnowledgeItemUserDismissed,
     KnowledgeVote,
+    MemoryDomain,
+    MemoryDomainSuggestion,
     VerificationEvidence,
 )
 from src.models.lookup import (
@@ -68,11 +71,14 @@ __all__ = [
     "InstanceTemplate",
     "KnowledgeContradiction",
     "KnowledgeItem",
+    "KnowledgeItemDomain",
     "KnowledgeItemRelation",
     "KnowledgeItemUserDismissed",
     "KnowledgeVote",
     "MarketplacePlugin",
     "MarketplaceRegistry",
+    "MemoryDomain",
+    "MemoryDomainSuggestion",
     "MetricDefinition",
     "NewsTemplate",
     "PendingCode",
