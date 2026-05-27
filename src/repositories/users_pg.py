@@ -30,7 +30,18 @@ class UsersPgRepository:
             ).mappings().first()
         return dict(row) if row else None
 
-    def list_all(self, limit: int = 1000, offset: int = 0) -> List[Dict[str, Any]]:
+    def list_all(self) -> List[Dict[str, Any]]:
+        """Exhaustive enumeration of users (no pagination).
+
+        Mirrors DuckDB UserRepository.list_all() — used by bootstrap paths
+        that need the full set (auth router login, app/main.py admin
+        promotion). API endpoint listings use list_paginated() instead.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(sa.text("SELECT * FROM users ORDER BY email")).mappings().all()
+        return [dict(r) for r in rows]
+
+    def list_paginated(self, limit: int = 1000, offset: int = 0) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
