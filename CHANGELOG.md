@@ -11,6 +11,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Fixed
+- **`src/db.py::get_analytics_db` + `get_analytics_db_readonly` now
+  cap DuckDB `memory_limit` to `2GB` + `threads=2` +
+  `preserve_insertion_order=false`.** Prior to this the analytics
+  connection inherited the DuckDB default of `~80%` of system RAM,
+  which on a 4 GiB cgroup container leaves no headroom for the host
+  Python process + short-lived consolidation / profiler connections
+  that share the container. Defensive companion to the profiler
+  bullet below — closes the only DuckDB-using surface in the sync
+  pipeline that was not yet capped. Analyst queries that hit the
+  ceiling surface a clear DuckDB OOM exception which the API layer
+  can present (vs. a silent process-wide cgroup OOM-kill).
 - **`src/profiler.py::profile_table` lowers DuckDB `memory_limit` from
   `4GB` to `2GB` + adds `preserve_insertion_order=false`.** The prior
   4 GiB cap matched typical container cgroup limits exactly, leaving
