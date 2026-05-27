@@ -10,10 +10,6 @@
 # (before authlib gets imported transitively) keeps `make local-dev`
 # stdout clean without hiding warnings from any other package.
 import warnings as _warnings
-from src.repositories import (
-    user_group_members_repo,
-    users_repo,
-)
 try:
     from authlib.deprecate import AuthlibDeprecationWarning as _AuthlibDepr
     _warnings.filterwarnings("ignore", category=_AuthlibDepr)
@@ -245,8 +241,10 @@ async def lifespan(app):
     if seed_email:
         try:
             from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+            from src.repositories.user_group_members import UserGroupMembersRepository
+            from src.repositories.users import UserRepository
             conn = get_system_db()
-            repo = users_repo()
+            repo = UserRepository(conn)
             seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
             password_hash = None
             if seed_password:
@@ -275,7 +273,7 @@ async def lifespan(app):
                 "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
             ).fetchone()
             if admin_group:
-                user_group_members_repo().add_member(
+                UserGroupMembersRepository(conn).add_member(
                     user_id=user_id,
                     group_id=admin_group[0],
                     source="system_seed",
@@ -336,8 +334,9 @@ async def lifespan(app):
     if not is_local_dev_mode():
         try:
             from src.db import get_system_db
+            from src.repositories.users import UserRepository
             conn = get_system_db()
-            repo = users_repo()
+            repo = UserRepository(conn)
             all_users = repo.list_all()
             has_password = any(u.get("password_hash") for u in all_users)
             if not has_password:

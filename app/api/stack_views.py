@@ -22,11 +22,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.auth.access import can_access, is_user_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
-from src.repositories import (
-    data_packages_repo,
-    memory_domains_repo,
-)
+from src.repositories.data_packages import DataPackagesRepository
 from src.repositories.knowledge import KnowledgeRepository
+from src.repositories.memory_domains import MemoryDomainsRepository
 from src.repositories.usage import UsageRepository
 
 logger = logging.getLogger(__name__)
@@ -78,7 +76,7 @@ async def view_data_package(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Public-ish detail view — slug-keyed for stable URLs."""
-    repo = data_packages_repo()
+    repo = DataPackagesRepository(conn)
     pkg = repo.get_by_slug(slug)
     if not pkg:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -116,7 +114,7 @@ async def view_memory_domain(
     ``/api/memory`` browse endpoint — non-privileged callers see only items
     they're allowed to see. The metadata is gated by the domain grant.
     """
-    repo = memory_domains_repo()
+    repo = MemoryDomainsRepository(conn)
     dom = repo.get_by_slug(slug)
     if not dom:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")

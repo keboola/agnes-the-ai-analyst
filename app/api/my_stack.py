@@ -26,13 +26,12 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_current_user
 from src.marketplace_filter import resolve_allowed_plugins
-from src.repositories import (
-    audit_repo,
-    user_curated_subscriptions_repo,
-    user_store_installs_repo,
+from src.repositories.audit import AuditRepository
+from src.repositories.store_entities import StoreEntitiesRepository
+from src.repositories.user_curated_subscriptions import (
+    UserCuratedSubscriptionsRepository,
 )
 from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.store_naming import suffixed_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/my-stack", tags=["my-stack"])
@@ -101,7 +100,7 @@ def _audit(
     params: Optional[dict] = None,
 ) -> None:
     try:
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=actor_id, action=action, resource=target, params=params
         )
     except Exception:
@@ -120,7 +119,7 @@ async def get_my_stack(
     # Model B (v28+): explicit subscriptions decide what's enabled.
     # `enabled` mirrors the legacy "not opted_out" UX so the existing toggle
     # remains semantically intuitive in the my-stack view.
-    subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
+    subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
 
     # v39: surface is_system flag so the template can lock the toggle.
     # One round trip — set membership intersection in Python is cheaper
@@ -150,7 +149,7 @@ async def get_my_stack(
             )
         )
 
-    installs = user_store_installs_repo().list_for_user(user["id"])
+    installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
     store_items: List[StoreInstallEntry] = []
     from src.store_naming import strip_archive_suffix
     for row in installs:
@@ -238,7 +237,7 @@ async def toggle_curated(
                 detail="cannot_unsubscribe_system_plugin",
             )
 
-    repo = user_curated_subscriptions_repo()
+    repo = UserCuratedSubscriptionsRepository(conn)
     if body.enabled:
         repo.subscribe(user["id"], marketplace_id, plugin_name)
     else:

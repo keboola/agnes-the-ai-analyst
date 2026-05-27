@@ -21,14 +21,11 @@ from connectors.internal.access import (
     find_internal_refs,
     is_internal_table,
 )
-
-from src.repositories import (
-    audit_repo,
-    table_registry_repo,
-)
 from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.rbac import get_accessible_tables
+from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.audit import AuditRepository
 
 # Imported at module level so tests can monkeypatch via
 # `app.api.query._bq_dry_run_bytes` without resolving lazy imports inside
@@ -235,7 +232,7 @@ def _run_internal_query(
         for row in rows
     ]
     try:
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=user.get("id"),
             action="query.internal",
             resource=("table:" + ",".join(internal_refs))[:256],
@@ -350,7 +347,7 @@ def execute_query(
             )
         # Reject if user SQL also mentions any non-internal registry id —
         # that would be a mixed query against analytics.duckdb views.
-        registry_rows = table_registry_repo().list_all()
+        registry_rows = TableRegistryRepository(conn).list_all()
         for r in registry_rows:
             rid = r.get("id") or ""
             if not rid or is_internal_table(rid):
@@ -385,7 +382,7 @@ def execute_query(
             # pre-existing class of name/id mismatch flagged across this
             # PR's BQ guardrail too).
             allowed_ids = set(allowed)
-            registry_rows = table_registry_repo().list_all()
+            registry_rows = TableRegistryRepository(conn).list_all()
             allowed_view_names = {
                 r["name"] for r in registry_rows
                 if r.get("name") and r.get("id") in allowed_ids
@@ -539,7 +536,7 @@ def execute_query(
         # bytes_scanned from _dry_run_set (pinned to entry 0 after _bq_quota_and_cap_guard).
         _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
         try:
-            audit_repo().log(
+            AuditRepository(conn).log(
                 user_id=user.get("id"),
                 action=_action,
                 resource=_resource,
@@ -566,7 +563,7 @@ def execute_query(
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         _action_err = "query.remote" if _dry_run_set else "query.local"
         try:
-            audit_repo().log(
+            AuditRepository(conn).log(
                 user_id=user.get("id"),
                 action=_action_err,
                 resource=_resource,
@@ -596,7 +593,7 @@ def execute_query(
         _first_table = _first_table_from_sql(request.sql)
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
-            audit_repo().log(
+            AuditRepository(conn).log(
                 user_id=user.get("id"),
                 action="query.local",
                 resource=_resource,
@@ -637,7 +634,7 @@ def _materialized_hint_for_query_error(
     if "does not exist" not in el and "table with name" not in el:
         return None
     try:
-        repo = table_registry_repo()
+        repo = TableRegistryRepository(conn)
         rows = repo.list_all()
     except Exception:
         # Registry read failed for whatever reason — don't compound the
@@ -716,7 +713,7 @@ def _bq_guardrail_inputs(
       grant on the registered name (`bq_path_access_denied`). None when the
       RBAC check passes.
     """
-    repo = table_registry_repo()
+    repo = TableRegistryRepository(sys_conn)
 
     # 1. Bare-name pass: look up registered remote-BQ names that appear in
     # the user SQL as word-boundary tokens. Reuses the same regex shape as
@@ -1039,7 +1036,7 @@ def _rewrite_user_sql_for_bigquery_query(
     seen_paths: set = set()
 
     try:
-        repo = table_registry_repo()
+        repo = TableRegistryRepository(conn)
         bq_rows = repo.list_by_source("bigquery")
         all_rows = repo.list_all()
     except Exception:

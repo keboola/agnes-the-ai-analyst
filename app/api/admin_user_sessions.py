@@ -26,11 +26,9 @@ from fastapi.responses import StreamingResponse
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.repositories.audit import AuditRepository
+from src.repositories.users import UserRepository
 
-from src.repositories import (
-    audit_repo,
-    users_repo,
-)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -47,7 +45,7 @@ def _session_data_dir() -> Path:
 
 
 def _resolve_user(user_id: str, conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
-    repo = users_repo()
+    repo = UserRepository(conn)
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -244,7 +242,7 @@ def download_all_sessions(
             file_count += 1
     zip_bytes = buf.getvalue()
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="session_bulk_download",
         resource=f"users/{user_id}/sessions",
@@ -313,7 +311,7 @@ def download_session(
 
     size = path.stat().st_size
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="session_download",
         resource=f"users/{user_id}/sessions/{safe_name}",
@@ -356,13 +354,14 @@ def list_user_activity(
     Resolves user_id to the user record (404 if not found), filters audit_log
     on the user_id field, returns paginated rows newest first.
     """
+    from src.repositories.audit import AuditRepository
 
     row = conn.execute("SELECT id, email FROM users WHERE id = ?", [user_id]).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="user not found")
 
-    audit = audit_repo()
-    rows, _ = audit.query(user_id=user_id, limit=limit + offset)
+    audit_repo = AuditRepository(conn)
+    rows, _ = audit_repo.query(user_id=user_id, limit=limit + offset)
     # Apply offset via slicing — cursor-based pagination is per-page only
     rows = rows[offset : offset + limit]
 
@@ -382,7 +381,7 @@ def list_user_activity(
     total = conn.execute("SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]).fetchone()[0]
 
     try:
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=user.get("id"),
             action="admin.user_activity_read",
             resource=f"users/{user_id}/activity"[:256],

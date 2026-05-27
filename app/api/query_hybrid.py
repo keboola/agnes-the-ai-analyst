@@ -12,11 +12,9 @@ from app.auth.dependencies import _get_db
 from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.remote_query import RemoteQueryEngine, RemoteQueryError, load_config
+from src.repositories.audit import AuditRepository
 import duckdb
 
-from src.repositories import (
-    audit_repo,
-)
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/query", tags=["query"])
 
@@ -52,7 +50,7 @@ async def hybrid_query(
                 engine.register_bq(alias, bq_sql)
             except RemoteQueryError as e:
                 try:
-                    audit_repo().log(
+                    AuditRepository(conn).log(
                         user_id=user.get("id"),
                         action="query.hybrid",
                         resource=resource,
@@ -70,7 +68,7 @@ async def hybrid_query(
             result = engine.execute(request.sql)
         except RemoteQueryError as e:
             try:
-                audit_repo().log(
+                AuditRepository(conn).log(
                     user_id=user.get("id"),
                     action="query.hybrid",
                     resource=resource,
@@ -87,7 +85,7 @@ async def hybrid_query(
         # bytes_scanned is not directly surfaced by RemoteQueryEngine; deferred TODO.
         rows_returned = len(result.get("rows", [])) if isinstance(result, dict) else None
         try:
-            audit_repo().log(
+            AuditRepository(conn).log(
                 user_id=user.get("id"),
                 action="query.hybrid",
                 resource=resource,

@@ -44,11 +44,7 @@ from src.initial_workspace import (
     list_template_files,
     sync_template,
 )
-
-from src.repositories import (
-    audit_repo,
-)
-
+from src.repositories.audit import AuditRepository
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +253,7 @@ def _audit(
                     safe_params[k] = v.isoformat()
                 else:
                     safe_params[k] = v
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=actor_id,
             action=action,
             resource="initial_workspace",

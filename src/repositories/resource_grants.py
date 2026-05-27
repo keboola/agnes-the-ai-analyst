@@ -209,14 +209,6 @@ class ResourceGrantsRepository:
         ).fetchall()
         return len(rows)
 
-    def delete_all_for_group(self, group_id: str) -> int:
-        """Drop every grant for ``group_id``. Used by the group-delete cascade."""
-        rows = self.conn.execute(
-            "DELETE FROM resource_grants WHERE group_id = ? RETURNING 1",
-            [group_id],
-        ).fetchall()
-        return len(rows)
-
     def count_for_group(self, group_id: str) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) FROM resource_grants WHERE group_id = ?",

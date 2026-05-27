@@ -27,9 +27,9 @@ from pydantic import BaseModel, field_validator
 from app.api.data_packages import _validate_color
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories import memory_domains_repo
 from src.repositories.audit import AuditRepository
 from src.repositories.knowledge import KnowledgeRepository
+from src.repositories.memory_domains import MemoryDomainsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +143,7 @@ async def list_memory_domains_admin(
     """List all domains (admin-scoped — includes seed rows + non-canonical
     ones). The user-facing ``GET /api/memory/domains`` is the read endpoint
     for non-admins; this one ships ``created_by`` + timestamps too."""
-    rows = memory_domains_repo().list(search=search)
+    rows = MemoryDomainsRepository(conn).list(search=search)
     return [_serialize(r) for r in rows]
 
 
@@ -153,7 +153,7 @@ async def create_memory_domain(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = memory_domains_repo()
+    repo = MemoryDomainsRepository(conn)
     if not payload.name.strip() or not payload.slug.strip():
         raise HTTPException(status_code=400, detail="name and slug are required")
     try:
@@ -186,7 +186,7 @@ async def get_memory_domain(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Detail view including the list of items tagged with this domain."""
-    repo = memory_domains_repo()
+    repo = MemoryDomainsRepository(conn)
     domain = repo.get(domain_id)
     if not domain:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
@@ -203,7 +203,7 @@ async def update_memory_domain(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = memory_domains_repo()
+    repo = MemoryDomainsRepository(conn)
     existing = repo.get(domain_id)
     if not existing:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
@@ -252,7 +252,7 @@ async def delete_memory_domain(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = memory_domains_repo()
+    repo = MemoryDomainsRepository(conn)
     existing = repo.get(domain_id)
     if not existing:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
@@ -274,7 +274,7 @@ async def restore_memory_domain(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """v54 undo: reverse a soft delete. Idempotent."""
-    repo = memory_domains_repo()
+    repo = MemoryDomainsRepository(conn)
     existing = repo.get(domain_id, include_deleted=True)
     if not existing:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
@@ -301,7 +301,7 @@ async def add_item_to_domain(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = memory_domains_repo()
+    repo = MemoryDomainsRepository(conn)
     if not repo.get(domain_id):
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
     item = KnowledgeRepository(conn).get_by_id(payload.item_id)
@@ -328,7 +328,7 @@ async def remove_item_from_domain(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = memory_domains_repo()
+    repo = MemoryDomainsRepository(conn)
     if not repo.get(domain_id):
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
     removed = repo.remove_item(domain_id, item_id)

@@ -93,12 +93,7 @@ def stub_table_registry(monkeypatch):
                 for k, v in state["rows"].items()
             ]
 
-    # Patch the factory in src.repositories — the api module imports it
-    # by name (``table_registry_repo``) and calls it with no args, so a
-    # lambda returning a fresh _FakeRepo wires the stub into both
-    # callsites (DuckDB and PG modes).
-    fake_instance = _FakeRepo(None)
-    monkeypatch.setattr("app.api.admin.table_registry_repo", lambda: fake_instance)
+    monkeypatch.setattr("app.api.admin.TableRegistryRepository", _FakeRepo)
     return state
 
 

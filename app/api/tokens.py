@@ -11,12 +11,10 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import require_session_token, get_current_user, _get_db
+from src.repositories.access_tokens import AccessTokenRepository
+from src.repositories.audit import AuditRepository
 from app.auth.jwt import create_access_token
 
-from src.repositories import (
-    access_token_repo,
-    audit_repo,
-)
 router = APIRouter(prefix="/auth/tokens", tags=["tokens"])
 admin_router = APIRouter(prefix="/auth/admin/tokens", tags=["tokens-admin"])
 
@@ -62,7 +60,7 @@ class AdminTokenItem(TokenListItem):
 
 def _audit(conn, actor: str, action: str, target: str, params=None):
     try:
-        audit_repo().log(user_id=actor, action=action,
+        AuditRepository(conn).log(user_id=actor, action=action,
                                   resource=f"token:{target}", params=params)
     except Exception:
         pass
@@ -138,7 +136,7 @@ async def create_token(
     if expires_delta is not None:
         expires_at = datetime.now(timezone.utc) + expires_delta
 
-    repo = access_token_repo()
+    repo = AccessTokenRepository(conn)
     token_id = str(uuid.uuid4())
     # Build the JWT that embeds jti=token_id and typ=pat
     jwt_token = create_access_token(
@@ -175,7 +173,7 @@ async def list_tokens(
     # PATs may list their owner's own tokens — required by the documented
     # `agnes auth token list` CLI flow (HEADLESS_USAGE.md). Only `create_token`
     # is session-only (to block PAT-spawning-PAT chains).
-    rows = access_token_repo().list_for_user(user["id"])
+    rows = AccessTokenRepository(conn).list_for_user(user["id"])
     return [_row_to_item(r) for r in rows]
 
 
@@ -185,7 +183,7 @@ async def get_token(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    row = access_token_repo().get_by_id(token_id)
+    row = AccessTokenRepository(conn).get_by_id(token_id)
     if not row or row["user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail="Token not found")
     return _row_to_item(row)
@@ -197,7 +195,7 @@ async def revoke_token(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = access_token_repo()
+    repo = AccessTokenRepository(conn)
     row = repo.get_by_id(token_id)
     if not row or row["user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail="Token not found")
@@ -214,7 +212,7 @@ async def admin_list_tokens(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return [_row_to_admin_item(r) for r in access_token_repo().list_all_with_user(limit=limit, offset=offset)]
+    return [_row_to_admin_item(r) for r in AccessTokenRepository(conn).list_all_with_user(limit=limit, offset=offset)]
 
 
 @admin_router.delete("/{token_id}", status_code=204)
@@ -223,7 +221,7 @@ async def admin_revoke_token(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = access_token_repo()
+    repo = AccessTokenRepository(conn)
     row = repo.get_by_id(token_id)
     if not row:
         raise HTTPException(status_code=404, detail="Token not found")

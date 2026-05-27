@@ -18,17 +18,11 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.audit import AuditRepository
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
-)
-
-from src.repositories import (
-    audit_repo,
-    store_entities_repo,
-    store_submissions_repo,
-    table_registry_repo,
-    user_store_installs_repo,
 )
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
@@ -1319,7 +1313,7 @@ async def update_server_config(
     # fields changed so the operator's intent (touched the page, hit
     # save) is auditable.
     diff = _diff_dicts(before, after)
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="instance_config.update",
         resource="instance.yaml",
@@ -2283,7 +2277,7 @@ async def list_registry(
     scheduler logs. None for rows that have never errored or have already
     recovered (status='ok'); the per-row error message string otherwise.
     """
-    repo = table_registry_repo()
+    repo = TableRegistryRepository(conn)
     tables = repo.list_all()
 
     # Single batched read of sync_state — avoid N+1 GETs against
@@ -2526,7 +2520,7 @@ def register_table(
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
     import re as _re
-    repo = table_registry_repo()
+    repo = TableRegistryRepository(conn)
     table_id = request.name.strip().lower().replace(" ", "_")
 
     if not _re.fullmatch(r"[a-z_][a-z0-9_]*", table_id):
@@ -2619,7 +2613,7 @@ def register_table(
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="register_table",
         resource=table_id,
@@ -2864,7 +2858,7 @@ async def update_table(
     up changes (e.g. a renamed dataset) without waiting for the next
     scheduled sync.
     """
-    repo = table_registry_repo()
+    repo = TableRegistryRepository(conn)
     existing = repo.get(table_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -2998,7 +2992,7 @@ async def update_table(
 
         repo.register(id=table_id, **merged)
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="update_table",
         resource=table_id,
@@ -3079,7 +3073,7 @@ async def update_table_docs(
     section on /catalog/p/<slug>. Separated from PUT /registry/{id} so
     admins can flip these fields without re-submitting the whole big
     registration payload."""
-    repo = table_registry_repo()
+    repo = TableRegistryRepository(conn)
     if not repo.get(table_id):
         raise HTTPException(status_code=404, detail="table_not_found")
     # Empty-string ``things_to_know`` clears; explicit `[]` clears lists.
@@ -3151,7 +3145,7 @@ async def unregister_table(
     resurrect a master view from the leftover parquet (E2E sub-agent
     finding 2026-05-01).
     """
-    repo = table_registry_repo()
+    repo = TableRegistryRepository(conn)
     existing = repo.get(table_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -3210,7 +3204,7 @@ async def unregister_table(
             table_id, e,
         )
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="unregister_table",
         resource=table_id,
@@ -3448,7 +3442,7 @@ def _build_keboola_discovery_plan(
     in ``_discover_and_register_tables`` and there was no way to see
     what would change without writing.
     """
-    repo = table_registry_repo()
+    repo = TableRegistryRepository(conn)
     # Pre-load all keboola rows once so the name-collision lookup
     # below is O(1) per discovered entry. Falls back to per-id
     # `repo.get(...)` calls when list_all isn't available — keeps
@@ -3598,7 +3592,7 @@ def _discover_and_register_tables(
             "dry_run": True,
         }
 
-    repo = table_registry_repo()
+    repo = TableRegistryRepository(conn)
     registered = 0
     errors = 0
     table_names = []
@@ -3726,7 +3720,7 @@ def run_session_collector(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="run_session_collector",
         resource="job:session-collector",
@@ -3823,7 +3817,7 @@ def run_session_processor(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action=f"run_session_processor:{processor}",
         resource=f"job:session-processor:{processor}",
@@ -3874,7 +3868,7 @@ def run_corporate_memory(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="run_corporate_memory",
         resource="job:corporate-memory",
@@ -3922,6 +3916,7 @@ async def admin_list_store_submissions(
     ``plugin``. ``name`` and ``version`` are case-insensitive substrings.
     ``limit`` clamped to [1, 500].
     """
+    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     statuses = None
     if status:
@@ -3945,7 +3940,7 @@ async def admin_list_store_submissions(
         statuses = None
 
     try:
-        items, total = store_submissions_repo().list_for_admin(
+        items, total = StoreSubmissionsRepository(conn).list_for_admin(
             status=statuses,
             submitter_id=submitter or None,
             type_=type or None,
@@ -3972,8 +3967,9 @@ async def admin_get_store_submission(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    sub = store_submissions_repo().get(submission_id)
+    sub = StoreSubmissionsRepository(conn).get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
     return sub
@@ -3997,8 +3993,10 @@ async def admin_override_store_submission(
     captures who, why, and the verdict that was overridden so the next
     time this submission shows up, the trail is intact.
     """
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    subs = store_submissions_repo()
+    subs = StoreSubmissionsRepository(conn)
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
@@ -4020,7 +4018,7 @@ async def admin_override_store_submission(
         )
 
     subs.set_override(submission_id, admin_user_id=user["id"], reason=body.reason)
-    ents_repo = store_entities_repo()
+    ents_repo = StoreEntitiesRepository(conn)
     ents_repo.set_visibility(entity_id, "approved")
 
     # Mirror the runner's deferred-promotion path. An override on a
@@ -4070,7 +4068,7 @@ async def admin_override_store_submission(
     # v46: attribution lookup is live — the next UsageProcessor tick
     # preloads the newly-approved entity by name.
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user["id"],
         action="store.submission.overridden",
         resource=f"store_submission:{submission_id}",
@@ -4121,6 +4119,8 @@ async def admin_rescan_store_submission(
         _version_no_for_submission,
     )
     from src.db import get_system_db
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails import run_inline_checks
     from src.store_guardrails.runner import (
         default_api_key_loader,
@@ -4132,7 +4132,7 @@ async def admin_rescan_store_submission(
         get_guardrails_llm_provider_ready,
     )
 
-    subs = store_submissions_repo()
+    subs = StoreSubmissionsRepository(conn)
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
@@ -4140,7 +4140,7 @@ async def admin_rescan_store_submission(
     if not entity_id:
         raise HTTPException(status_code=409, detail="cannot_rescan_without_entity")
 
-    ents = store_entities_repo()
+    ents = StoreEntitiesRepository(conn)
     entity = ents.get(entity_id)
     # Rescan the bundle this submission represents — not live. See the
     # equivalent fix in /retry for the full reasoning. Same fall-back
@@ -4171,7 +4171,7 @@ async def admin_rescan_store_submission(
             [__import__("json").dumps(inline.to_response_dict()), submission_id],
         )
         ents.set_visibility(entity_id, "hidden")
-        audit_repo().log(
+        AuditRepository(conn).log(
             user_id=user["id"],
             action="store.submission.rescan",
             resource=f"store_submission:{submission_id}",
@@ -4212,7 +4212,7 @@ async def admin_rescan_store_submission(
         if target_n is not None and target_n > int(entity_row.get("version_no") or 0):
             promote_to_version(entity_id, target_n, ents)
         # v46: attribution lookup is live — no explicit refresh needed.
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user["id"],
         action="store.submission.rescan",
         resource=f"store_submission:{submission_id}",
@@ -4259,13 +4259,15 @@ async def admin_retry_store_submission(
         _version_no_for_submission,
     )
     from src.db import get_system_db
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails.runner import (
         default_api_key_loader,
         default_model_loader,
         run_llm_review,
     )
 
-    subs = store_submissions_repo()
+    subs = StoreSubmissionsRepository(conn)
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
@@ -4285,7 +4287,7 @@ async def admin_retry_store_submission(
     # verdict against the wrong bytes; the runner's hash-match
     # promotion would then advance the entity to staged bytes that
     # were never actually reviewed.
-    ent = store_entities_repo().get(entity_id) or {}
+    ent = StoreEntitiesRepository(conn).get(entity_id) or {}
     target_n = _version_no_for_submission(ent, submission_id)
     if target_n is not None:
         plugin_dir = _submission_plugin_dir(entity_id, target_n)
@@ -4299,7 +4301,7 @@ async def admin_retry_store_submission(
         raise HTTPException(status_code=410, detail="bundle_missing")
 
     subs.update_status(submission_id, status="pending_llm")
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user["id"],
         action="store.submission.retry",
         resource=f"store_submission:{submission_id}",
@@ -4329,20 +4331,23 @@ async def admin_delete_store_submission(
     triage needs the evidence trail later.
     """
     from app.api.store import _entity_dir
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
+    from src.repositories.user_store_installs import UserStoreInstallsRepository
 
-    subs = store_submissions_repo()
+    subs = StoreSubmissionsRepository(conn)
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
 
     entity_id = sub.get("entity_id")
     if entity_id:
-        user_store_installs_repo().delete_all_for_entity(entity_id)
-        store_entities_repo().delete(entity_id)
+        UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
+        StoreEntitiesRepository(conn).delete(entity_id)
         _shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
     conn.execute("DELETE FROM store_submissions WHERE id = ?", [submission_id])
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user["id"],
         action="store.submission.deleted",
         resource=f"store_submission:{submission_id}",
@@ -4384,8 +4389,10 @@ async def admin_download_store_submission_bundle(
         _version_no_for_submission,
     )
 
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    sub = store_submissions_repo().get(submission_id)
+    sub = StoreSubmissionsRepository(conn).get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
     entity_id = sub.get("entity_id")
@@ -4398,7 +4405,7 @@ async def admin_download_store_submission_bundle(
     # while the staged v2 bytes (the actual risky upload the admin is
     # reviewing) sit in `versions/v2/plugin/`. Falls back to live for
     # legacy rows that never seeded a versions/ dir.
-    ent = store_entities_repo().get(entity_id) or {}
+    ent = StoreEntitiesRepository(conn).get(entity_id) or {}
     target_n = _version_no_for_submission(ent, submission_id)
     if target_n is not None:
         plugin_dir = _submission_plugin_dir(entity_id, target_n)
@@ -4409,7 +4416,7 @@ async def admin_download_store_submission_bundle(
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user["id"],
         action="store.submission.bundle_downloaded",
         resource=f"store_submission:{submission_id}",
@@ -4457,7 +4464,7 @@ async def run_blocked_purge(
     ttl = get_guardrails_blocked_bundle_ttl_days()
     result = purge_blocked_bundles(conn, ttl_days=ttl)
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="run_blocked_purge",
         resource="job:store-blocked-purge",
@@ -4486,7 +4493,7 @@ async def run_reap_stuck_reviews(
     grace = get_guardrails_stuck_review_grace_seconds()
     result = reap_stuck_llm_reviews(conn, grace_seconds=grace)
 
-    audit_repo().log(
+    AuditRepository(conn).log(
         user_id=user.get("id"),
         action="run_reap_stuck_reviews",
         resource="job:store-reap-stuck-reviews",

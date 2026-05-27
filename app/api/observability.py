@@ -21,10 +21,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.repositories.observability_views import ObservabilityViewsRepository
 
-from src.repositories import (
-    observability_views_repo,
-)
 router = APIRouter(prefix="/api/admin/observability", tags=["observability"])
 
 
@@ -189,7 +187,7 @@ def list_views(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     user_id = user.get("id") or ""
-    return {"views": observability_views_repo().list_for_user(user_id)}
+    return {"views": ObservabilityViewsRepository(conn).list_for_user(user_id)}
 
 
 @router.post("/views")
@@ -235,7 +233,7 @@ def save_view(
             status_code=400,
             detail="saved-view count for this user has reached 100; delete one before adding another",
         )
-    return observability_views_repo().create(user_id, name, query)
+    return ObservabilityViewsRepository(conn).create(user_id, name, query)
 
 
 @router.delete("/views/{view_id}", status_code=204)
@@ -245,6 +243,6 @@ def delete_view(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     user_id = user.get("id") or ""
-    ok = observability_views_repo().delete(user_id, view_id)
+    ok = ObservabilityViewsRepository(conn).delete(user_id, view_id)
     if not ok:
         raise HTTPException(status_code=404, detail="view not found")

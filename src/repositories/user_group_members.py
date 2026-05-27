@@ -160,44 +160,6 @@ class UserGroupMembersRepository:
         ).fetchone()
         return int(row[0]) if row else 0
 
-    def delete_all_for_group(self, group_id: str) -> int:
-        """Drop every membership row pointing at ``group_id``.
-
-        Used by group-delete cascade in ``app/api/access.py`` so a group
-        row's removal doesn't leave dangling membership rows.
-        """
-        rows = self.conn.execute(
-            "DELETE FROM user_group_members WHERE group_id = ? RETURNING 1",
-            [group_id],
-        ).fetchall()
-        return len(rows)
-
-    def list_groups_with_meta_for_user(self, user_id: str) -> List[Dict[str, Any]]:
-        """Return groups the user is in joined with the groups table.
-
-        Each row: ``{group_id, name, is_system, created_by, source}``.
-        Powers the user-detail endpoints in ``app.api.users`` that need
-        the membership graph + group metadata in a single round-trip.
-        """
-        rows = self.conn.execute(
-            """SELECT g.id, g.name, g.is_system, g.created_by, m.source
-               FROM user_group_members m
-               JOIN user_groups g ON g.id = m.group_id
-               WHERE m.user_id = ?
-               ORDER BY g.is_system DESC, g.name""",
-            [user_id],
-        ).fetchall()
-        return [
-            {
-                "group_id": r[0],
-                "name": r[1],
-                "is_system": bool(r[2]),
-                "created_by": r[3],
-                "source": r[4],
-            }
-            for r in rows
-        ]
-
     def has_any_google_sync_membership(self, user_id: str) -> bool:
         """Whether the user has any prior `source='google_sync'` row.
 

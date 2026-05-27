@@ -17,11 +17,9 @@ from pydantic import BaseModel, Field
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.repositories.welcome_template import WelcomeTemplateRepository
 from src.welcome_template import build_context, compute_default_agent_prompt, render_agent_prompt_banner
 
-from src.repositories import (
-    welcome_template_repo,
-)
 logger = logging.getLogger(__name__)
 
 
@@ -79,7 +77,7 @@ async def admin_get_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    row = welcome_template_repo().get()
+    row = WelcomeTemplateRepository(conn).get()
     server_url = str(request.base_url).rstrip("/")
     live_default = compute_default_agent_prompt(conn, user=user, server_url=server_url)
     return TemplateGetResponse(
@@ -126,7 +124,7 @@ async def admin_put_template(
             ),
         )
 
-    welcome_template_repo().set(payload.content, updated_by=user["email"])
+    WelcomeTemplateRepository(conn).set(payload.content, updated_by=user["email"])
     return {"status": "ok"}
 
 
@@ -135,7 +133,7 @@ async def admin_reset_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    welcome_template_repo().reset(updated_by=user["email"])
+    WelcomeTemplateRepository(conn).reset(updated_by=user["email"])
     return Response(status_code=204)
 
 

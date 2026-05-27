@@ -88,21 +88,7 @@ IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 # omit `--profile tls` until the next 5-minute tick — a window where
 # the recreate uses the wrong overlay set). Base file list is fine to
 # initialise here because the tls overlay is the only conditional one.
-# COMPOSE_FILE is sourced from /opt/agnes/.env above (startup-script.sh.tpl
-# writes the full ``docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml``
-# list so the prod + postgres + host-mount overlays engage by default on
-# every tick — note host-mount loads LAST so its !override on
-# data-migrate.volumes can see the service already defined by
-# docker-compose.postgres.yml). Fall back to the historical prod + host-mount baseline when
-# .env doesn't set it — keeps long-uptime VMs whose .env predates the
-# COMPOSE_FILE line behaving identically.
-#
-# The colon-separated COMPOSE_FILE form is the documented alternative to
-# explicit ``-f`` args (docker.com/compose/reference/envvars/compose_file).
-# The conditional TLS overlay (further down) APPENDS via the same
-# colon-separator so docker compose sees a unified list — interleaving
-# ``-f`` args and a COMPOSE_FILE env var is unspecified behaviour.
-export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml}"
+COMPOSE_FILES=( -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml )
 PROFILE_ARGS=()
 
 # Re-fetch the bind-mounted config files (compose overlays + Caddyfile)
@@ -158,22 +144,14 @@ CONFIG_AFTER=$(hash_config_files)
 # freshly-removed Caddyfile is reflected in this tick's compose set,
 # not the next one.
 if [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem" ] && [ -s Caddyfile ]; then
-    # Append tls overlay onto the colon-separated COMPOSE_FILE list. Idempotent
-    # check guards against the cron tick re-appending across self-update
-    # iterations (unlikely since COMPOSE_FILE is re-sourced from .env each
-    # run, but cheap insurance).
-    case ":$COMPOSE_FILE:" in
-      *:docker-compose.tls.yml:*) : ;;
-      *) export COMPOSE_FILE="$COMPOSE_FILE:docker-compose.tls.yml" ;;
-    esac
+    COMPOSE_FILES+=( -f docker-compose.tls.yml )
     PROFILE_ARGS=( --profile tls )
 elif [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem" ]; then
     logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
 fi
 
 BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
-# COMPOSE_FILE is exported above; docker compose picks it up automatically.
-docker compose pull >/dev/null 2>&1
+docker compose "${COMPOSE_FILES[@]}" pull >/dev/null 2>&1
 AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
     REASON=()
@@ -233,9 +211,7 @@ if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
     fi
     # ${arr[@]+"${arr[@]}"} pattern: expands to nothing when array is
     # empty (vs. plain "${arr[@]}" which trips `set -u` on bash <4.4).
-    # COMPOSE_FILE (incl. any conditionally-appended overlays) is exported
-    # above and picked up by docker compose automatically.
-    docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
+    docker compose "${COMPOSE_FILES[@]}" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
     docker image prune -f >/dev/null 2>&1
 fi
 

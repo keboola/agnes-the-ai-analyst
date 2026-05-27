@@ -24,9 +24,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.repositories import (
-    sync_state_repo,
-)
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, Query
@@ -34,6 +31,7 @@ import duckdb
 
 from app.auth.dependencies import _get_db, get_current_user
 from src.db import SCHEMA_VERSION, get_system_db
+from src.repositories.sync_state import SyncStateRepository
 
 router = APIRouter(tags=["health"])
 
@@ -378,7 +376,7 @@ async def health_check_detailed(
 
     # Sync state summary
     try:
-        repo = sync_state_repo()
+        repo = SyncStateRepository(conn)
         all_states = repo.get_all_states()
         total_tables = len(all_states)
         total_rows = sum(s.get("rows", 0) or 0 for s in all_states)

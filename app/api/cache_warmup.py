@@ -24,9 +24,6 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.auth.access import require_admin
 
-from src.repositories import (
-    table_registry_repo,
-)
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -126,8 +123,9 @@ async def _warm_catalog_caches_bg(
 def _list_remote_rows() -> list[dict]:
     """Snapshot of registry rows that need a warmup pass."""
     from src.db import get_system_db
+    from src.repositories.table_registry import TableRegistryRepository
     conn = get_system_db()
-    rows = table_registry_repo().list_all()
+    rows = TableRegistryRepository(conn).list_all()
     return [
         r for r in rows
         if r.get("query_mode") == "remote" and r.get("source_type") == "bigquery"
@@ -187,8 +185,9 @@ async def warm_one_table(table_id: str) -> None:
     registry change. Does NOT update WARMUP_STATE (small change shouldn't
     overwrite the last full run's status); just refreshes the caches."""
     from src.db import get_system_db
+    from src.repositories.table_registry import TableRegistryRepository
     conn = get_system_db()
-    row = table_registry_repo().get(table_id)
+    row = TableRegistryRepository(conn).get(table_id)
     if not row or row.get("query_mode") != "remote":
         return
     try:

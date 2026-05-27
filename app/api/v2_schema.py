@@ -9,13 +9,11 @@ import duckdb
 from app.auth.dependencies import get_current_user, _get_db
 from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
+from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.audit import AuditRepository
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
-from src.repositories import (
-    audit_repo,
-    table_registry_repo,
-)
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
@@ -103,7 +101,7 @@ def build_schema(
 ) -> dict:
     # RBAC + existence check MUST run before cache lookup — otherwise an
     # unauthorized user can read cached schema fetched by an authorized one.
-    repo = table_registry_repo()
+    repo = TableRegistryRepository(conn)
     row = repo.get(table_id)
     if not row:
         raise NotFound(table_id)
@@ -135,7 +133,7 @@ def build_schema_uncached(
     fetches it itself (the warmup-direct call site).
     """
     if row is None:
-        repo = table_registry_repo()
+        repo = TableRegistryRepository(conn)
         row = repo.get(table_id)
         if not row:
             raise NotFound(table_id)
@@ -228,7 +226,7 @@ def schema(
     try:
         result = build_schema(conn, user, table_id, bq=bq)
         try:
-            audit_repo().log(
+            AuditRepository(conn).log(
                 user_id=user.get("id"),
                 action="catalog.schema",
                 resource=resource,
@@ -249,7 +247,7 @@ def schema(
                 status_code = 400
             else:
                 status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
-            audit_repo().log(
+            AuditRepository(conn).log(
                 user_id=user.get("id"),
                 action="catalog.schema",
                 resource=resource,
