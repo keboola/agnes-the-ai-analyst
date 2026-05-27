@@ -1,4 +1,4 @@
-"""CLI: `agnes admin db state` (and later: migrate, job, cancel).
+"""CLI: `agnes admin db {state,migrate,job,cancel}`.
 
 Talks to the live server through the `/api/admin/db/*` endpoints
 (PAT-authed via the shared `cli.client` helpers — same contract as
@@ -143,3 +143,39 @@ def migrate(
         err=True,
     )
     raise typer.Exit(2)
+
+
+@db_app.command("job")
+def job(
+    job_id: str = typer.Argument(..., help="Migration job id (from `db migrate`)"),
+    as_json: bool = typer.Option(False, "--json", help="Output JSON for scripting"),
+) -> None:
+    """Show the status of a migration job."""
+    resp = api_get(f"/api/admin/db/job/{job_id}")
+    data = _exit_on_error(resp)
+
+    if as_json:
+        typer.echo(_json.dumps(data, indent=2))
+        return
+
+    typer.echo(f"Job:    {data.get('job_id')}")
+    typer.echo(f"Status: {data.get('status')}")
+    step = data.get("current_step")
+    pct = data.get("progress_pct", 0)
+    typer.echo(f"Step:   {step} ({pct}%)")
+    err = data.get("error")
+    if err:
+        typer.echo(f"Error:  {err.get('message')} (at {err.get('step')})")
+    summary = data.get("summary")
+    if summary:
+        typer.echo(f"Summary: {summary}")
+
+
+@db_app.command("cancel")
+def cancel(
+    job_id: str = typer.Argument(..., help="Migration job id to cancel"),
+) -> None:
+    """Cancel a running migration job (rejected past point-of-no-return)."""
+    resp = api_post(f"/api/admin/db/cancel/{job_id}")
+    _exit_on_error(resp)
+    typer.echo(f"Job {job_id} cancelled.")

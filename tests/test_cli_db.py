@@ -1,7 +1,6 @@
 """CLI smoke tests for `agnes admin db ...`.
 
-Covers the read-only `state` subcommand; mutation subcommands (migrate,
-job, cancel) are covered by later phases.
+Covers `state`, `migrate`, `job`, and `cancel` subcommands.
 """
 from __future__ import annotations
 
@@ -117,3 +116,87 @@ class TestDbMigrate:
         body = kwargs.get("json") or {}
         assert body.get("target") == "cloud"
         assert body.get("cloud_url") == "postgresql://test"
+
+
+class TestDbJob:
+    def test_job_shows_status_json(self):
+        """`db job <id> --json` prints job status JSON."""
+        payload = {
+            "job_id": "abc-123",
+            "status": "success",
+            "current_step": "flip_backend",
+            "progress_pct": 100,
+            "summary": {"tables_migrated": 28},
+        }
+        with patch("cli.commands.db.api_get", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["admin", "db", "job", "abc-123", "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        assert data["job_id"] == "abc-123"
+
+    def test_job_shows_status_text(self):
+        """`db job <id>` prints human-readable status."""
+        payload = {
+            "job_id": "abc-123",
+            "status": "running",
+            "current_step": "copy_tables",
+            "progress_pct": 42,
+        }
+        with patch("cli.commands.db.api_get", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["admin", "db", "job", "abc-123"])
+        assert result.exit_code == 0, result.output
+        assert "abc-123" in result.output
+        assert "running" in result.output
+        assert "copy_tables" in result.output
+        assert "42" in result.output
+
+    def test_job_shows_error_when_failed(self):
+        """Failed job displays the error block."""
+        payload = {
+            "job_id": "abc-123",
+            "status": "failed",
+            "current_step": "copy_tables",
+            "progress_pct": 50,
+            "error": {"step": "copy_tables", "message": "duck quacked"},
+        }
+        with patch("cli.commands.db.api_get", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["admin", "db", "job", "abc-123"])
+        assert result.exit_code == 0, result.output
+        assert "duck quacked" in result.output
+        assert "copy_tables" in result.output
+
+    def test_job_not_found(self):
+        with patch(
+            "cli.commands.db.api_get",
+            return_value=_resp(404, {"detail": "Unknown job_id: abc-123"}),
+        ):
+            result = runner.invoke(app, ["admin", "db", "job", "abc-123"])
+        assert result.exit_code != 0
+
+
+class TestDbCancel:
+    def test_cancel_succeeds(self):
+        """`db cancel <id>` invokes POST /cancel/{id}, prints confirmation."""
+        with patch(
+            "cli.commands.db.api_post",
+            return_value=_resp(200, {"cancelled": True}),
+        ) as mock_post:
+            result = runner.invoke(app, ["admin", "db", "cancel", "abc-123"])
+        assert result.exit_code == 0, result.output
+        assert "cancelled" in result.output.lower()
+        # Verify the right URL was POSTed
+        args, _ = mock_post.call_args
+        assert "/api/admin/db/cancel/abc-123" in args[0]
+
+    def test_cancel_rejected_past_point_of_no_return(self):
+        """409 from server (past flip_backend) propagates as non-zero exit."""
+        with patch(
+            "cli.commands.db.api_post",
+            return_value=_resp(
+                409, {"detail": "Past point-of-no-return (step >= flip_backend)"}
+            ),
+        ):
+            result = runner.invoke(app, ["admin", "db", "cancel", "abc-123"])
+        assert result.exit_code != 0
+        assert "409" in result.output or "point-of-no-return" in result.output
