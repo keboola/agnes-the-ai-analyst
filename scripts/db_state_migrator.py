@@ -182,3 +182,46 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
         "rows_total": rows_total,
         "tables_migrated": tables_migrated,
     }
+
+
+def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
+    """Compare row counts per Base.metadata table between DuckDB and PG.
+
+    Returns list of diffs ``[{table, source_rows, target_rows}]``.
+    Empty list = all tables match. Tables present in only one side
+    are also reported (the other side's count = 0).
+    """
+    import duckdb as _duckdb
+    import sqlalchemy as sa
+    from src.db_pg import Base
+
+    diffs: list[dict] = []
+    tables = [t.name for t in Base.metadata.sorted_tables]
+
+    duck_conn = _duckdb.connect(str(duckdb_path))
+    pg_engine = sa.create_engine(target_url)
+    try:
+        for table in tables:
+            try:
+                src_count = duck_conn.execute(
+                    f'SELECT COUNT(*) FROM "{table}"'
+                ).fetchone()[0]
+            except _duckdb.CatalogException:
+                src_count = 0
+            try:
+                with pg_engine.connect() as pg_conn:
+                    tgt_count = pg_conn.execute(
+                        sa.text(f'SELECT COUNT(*) FROM "{table}"')
+                    ).fetchone()[0]
+            except sa.exc.ProgrammingError:
+                tgt_count = 0
+            if src_count != tgt_count:
+                diffs.append({
+                    "table": table,
+                    "source_rows": src_count,
+                    "target_rows": tgt_count,
+                })
+    finally:
+        duck_conn.close()
+        pg_engine.dispose()
+    return diffs

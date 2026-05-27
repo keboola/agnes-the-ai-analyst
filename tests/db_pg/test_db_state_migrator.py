@@ -46,3 +46,48 @@ def test_copy_duckdb_to_pg_full_cycle(tmp_path, pg_engine):
             sa.text("SELECT email FROM users WHERE id = :id"), {"id": "u1"}
         ).fetchone()
     assert row[0] == "alice@example.com"
+
+
+def test_verify_row_counts_match(tmp_path, pg_engine):
+    """After copy, source and target row counts match."""
+    import duckdb, sqlalchemy as sa
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import (
+        alembic_upgrade_head,
+        copy_duckdb_to_pg,
+        verify_row_counts,
+    )
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'a@x', 'A'), ('u2', 'b@x', 'B')")
+    conn.close()
+
+    alembic_upgrade_head(str(pg_engine.url))
+    copy_duckdb_to_pg(duck_path, str(pg_engine.url))
+
+    diffs = verify_row_counts(duck_path, str(pg_engine.url))
+    # Empty diffs = all tables match
+    assert diffs == [], f"Row count diffs: {diffs}"
+
+
+def test_verify_row_counts_detects_mismatch(tmp_path, pg_engine):
+    """When PG missing rows, verify returns table-level diff."""
+    import duckdb, sqlalchemy as sa
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import alembic_upgrade_head, verify_row_counts
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'a@x', 'A')")
+    conn.close()
+
+    alembic_upgrade_head(str(pg_engine.url))
+    # Skip copy — leave PG empty
+
+    diffs = verify_row_counts(duck_path, str(pg_engine.url))
+    user_diff = next(d for d in diffs if d["table"] == "users")
+    assert user_diff["source_rows"] == 1
+    assert user_diff["target_rows"] == 0
