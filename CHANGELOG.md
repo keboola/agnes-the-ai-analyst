@@ -10,6 +10,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`docker-compose.postgres.yml` gains a `data-migrate` one-shot service.**
+  Runs `python -m scripts.migrate_duckdb_to_pg --duckdb-path
+  /data/state/system.duckdb` on every `compose up`; `app` and `scheduler`
+  block on it exiting 0 so neither serves traffic against a partially
+  populated PG. The underlying script is idempotent (ON CONFLICT DO
+  NOTHING + per-row SHA-256 checksums) so re-runs against an
+  already-migrated PG are near-instant no-ops.
+- **`postgres_data` named volume now binds to `/data/postgres`.** Lives on
+  the customer-instance config disk that's already covered by the daily
+  snapshot policy; the startup-script pre-creates `/data/postgres` with
+  uid 70 ownership (the Alpine `postgres` user) before the side-car boots.
+  Local-dev users without `/data/postgres` can override this overlay via
+  `docker-compose.override.yml`.
+
+### Changed
+- **`startup-script.sh.tpl` + `scripts/ops/agnes-auto-upgrade.sh` honor
+  `COMPOSE_FILE` from `/opt/agnes/.env`.** Replaces the hard-coded
+  `-f docker-compose.yml -f docker-compose.prod.yml
+  -f docker-compose.host-mount.yml` arrays. Default falls back to the
+  prior baseline so deploys without the `.env` line are unchanged. The
+  customer-instance `.env` now writes
+  `COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml`
+  so the prod + postgres + host-mount overlays engage automatically.
+  Host-mount loads LAST so its `volumes: !override` on `data-migrate`
+  (added here) replaces the named-volume mount with the host `/data:/data:ro`
+  bind — without that override the migration script would read an empty
+  named volume and exit 2.
+
 ### Fixed
 - **`src/profiler.py::profile_table` lowers DuckDB `memory_limit` from
   `4GB` to `2GB` + adds `preserve_insertion_order=false`.** The prior
