@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`agnes admin db state` CLI command.** Read-only inspector for the app-state DB backend state machine — prints current backend (`duckdb` / `side_car` / `cloud` / `*_in_progress`), redacted URL, allowed next transitions, and any in-progress migration job id. Talks to `GET /api/admin/db/state` through the standard PAT-authed `cli.client.api_get` path (same contract as `agnes admin news`). `--json` flag for scripting. Migrate / job / cancel subcommands land in later phases.
+
 ## [0.55.20] — 2026-05-27
 
 ### Added
