@@ -144,6 +144,17 @@ def _bundle_settings_json() -> str:
                 }
             ]
         },
+        # Placeholder — setup.py replaces __AGNES_BIN__ with the absolute
+        # path detected via `shutil.which("agnes")` on the analyst's machine.
+        # The MCP server runs outside Claude Desktop's Bash sandbox, so it
+        # has full network access to the Agnes server.
+        "mcpServers": {
+            "agnes": {
+                "command": "__AGNES_BIN__",
+                "args": ["mcp"],
+                "type": "stdio",
+            }
+        },
     }
     return json.dumps(cfg, indent=2) + "\n"
 
@@ -167,7 +178,7 @@ def _bundle_setup_py(server_url: str) -> str:
         #!/usr/bin/env python3
         \"\"\"Agnes Cowork one-time setup — no external packages needed.\"\"\"
         from __future__ import annotations
-        import json, pathlib, subprocess, sys, urllib.error, urllib.request
+        import json, pathlib, shutil, subprocess, sys, urllib.error, urllib.request
 
         # ── CLI overrides (used from Terminal as fallback) ────────────────────
         _args = sys.argv[1:]
@@ -239,16 +250,16 @@ def _bundle_setup_py(server_url: str) -> str:
         )
         print("Credentials saved.")
 
-        # 3. Replace the one-time setup hook with a simple data-pull hook.
-        #    Pure file I/O — no network needed.
-        #
-        #    Intentionally minimal: only `agnes pull` on SessionStart.
-        #    No self-upgrade (would allow the server to run arbitrary code),
-        #    no push (session upload is opt-in, not default for Cowork).
+        # 3. Detect the agnes binary and wire the MCP server + pull hook.
+        #    The MCP server runs as a subprocess outside Claude Desktop's
+        #    sandbox, so it has full network access to the Agnes server.
+        #    Pure file I/O — no network needed for this step.
+        agnes_bin = shutil.which("agnes") or ""
         settings_path = HERE / ".claude" / "settings.json"
         if settings_path.exists():
             cfg = json.loads(settings_path.read_text())
             cfg.setdefault("hooks", {{}})
+            # Replace one-time setup hook with the permanent pull hook
             cfg["hooks"]["SessionStart"] = [
                 {{"hooks": [{{"type": "command", "command":
                     "agnes pull --quiet 2>/dev/null || true"
@@ -256,6 +267,23 @@ def _bundle_setup_py(server_url: str) -> str:
             ]
             # Remove SessionEnd entirely — no background push in Cowork default
             cfg["hooks"].pop("SessionEnd", None)
+            # Wire the MCP server so Claude Desktop can reach the Agnes API
+            # even though the Bash tool sandbox blocks outbound HTTP.
+            if agnes_bin:
+                cfg["mcpServers"] = {{
+                    "agnes": {{
+                        "command": agnes_bin,
+                        "args": ["mcp"],
+                        "type": "stdio",
+                    }}
+                }}
+                print(f"Agnes MCP server registered ({{agnes_bin}}).")
+            else:
+                # agnes not found — remove the placeholder so Claude Desktop
+                # doesn't error on startup trying to launch __AGNES_BIN__.
+                cfg.pop("mcpServers", None)
+                print("Warning: agnes CLI not found in PATH — MCP server not registered.")
+                print("  Install agnes, then re-run: python3 setup.py")
             settings_path.write_text(json.dumps(cfg, indent=2) + "\\n")
             print("Session hook installed (agnes pull on start).")
 
@@ -267,7 +295,6 @@ def _bundle_setup_py(server_url: str) -> str:
 
         # 5. Best-effort: fetch server-rendered CLAUDE.md (needs network).
         #    Skipped silently if unreachable — the existing CLAUDE.md stays.
-        #    The SessionStart hook will retry agnes pull on the next open.
         try:
             req2 = urllib.request.Request(
                 f"{{server_url}}/api/welcome?server_url={{server_url}}",
@@ -282,10 +309,28 @@ def _bundle_setup_py(server_url: str) -> str:
         except Exception:
             pass  # best-effort; hooks handle the full pull on next session
 
+        # 6. Best-effort: run agnes pull to pre-cache data for offline queries.
+        #    Only runs when network is reachable (i.e. from Terminal, not
+        #    from Claude Desktop's sandboxed Bash tool).
+        if agnes_bin:
+            try:
+                result = subprocess.run(
+                    [agnes_bin, "pull", "--quiet"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode == 0:
+                    print("Initial data sync complete.")
+                # Non-zero exit is silently swallowed — pull may fail if
+                # the server has no data yet or network is unreachable.
+            except Exception:
+                pass  # best-effort; MCP pull tool handles it on demand
+
         print()
         print("Agnes Cowork ready!")
         print(f"  Server : {{server_url}}")
         print(f"  Account: {{user_email}}")
+        if agnes_bin:
+            print(f"  MCP    : agnes mcp (Claude Desktop will start automatically)")
         print()
         print("Ask: \\"What data do I have access to?\\"")
     """)
