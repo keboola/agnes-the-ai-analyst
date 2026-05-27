@@ -225,3 +225,43 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
         duck_conn.close()
         pg_engine.dispose()
     return diffs
+
+
+def backup_duckdb(duckdb_path: Path, backups_dir: Path) -> Path:
+    """gzip the DuckDB file to backups dir with timestamp.
+
+    Returns path to backup file. Used before duckdb → side_car cutover
+    so the operator has a recovery point if the side-car PG ever
+    diverges and needs to be re-built from the frozen DuckDB.
+    """
+    import gzip
+    import shutil
+
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out = backups_dir / f"duckdb-pre-sidecar-{ts}.duckdb.gz"
+    with open(duckdb_path, "rb") as src, gzip.open(out, "wb", compresslevel=6) as dst:
+        shutil.copyfileobj(src, dst)
+    return out
+
+
+def backup_sidecar_pg(container_name: str, backups_dir: Path) -> Path:
+    """pg_dump custom format of side-car PG, via docker exec.
+
+    Returns path to .dump file. Used before side_car → cloud cutover.
+    """
+    import subprocess
+
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out = backups_dir / f"sidecar-pre-cloud-{ts}.dump"
+    with open(out, "wb") as fp:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "pg_dump", "-U", "agnes", "-F", "c", "agnes"],
+            stdout=fp,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(f"pg_dump failed: {result.stderr.decode()}")
+    return out

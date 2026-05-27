@@ -61,3 +61,24 @@ def test_job_writer_mark_failed(tmp_path):
     assert data["status"] == "failed"
     assert data["error"]["step"] == "data_copy"
     assert data["error"]["class"] == "OperationalError"
+
+
+def test_backup_duckdb_creates_gzipped_copy(tmp_path):
+    """Backup writes gzip'd DuckDB to backups dir; original untouched."""
+    import duckdb
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import backup_duckdb
+
+    src = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(src))
+    _ensure_schema(conn)
+    conn.close()
+
+    backups_dir = tmp_path / "backups"
+    backups_dir.mkdir()
+
+    out = backup_duckdb(src, backups_dir)
+    assert out.exists()
+    assert out.name.startswith("duckdb-pre-sidecar-")
+    assert out.suffix == ".gz"
+    assert src.exists()  # original preserved
