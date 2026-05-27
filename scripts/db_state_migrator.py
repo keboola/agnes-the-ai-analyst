@@ -265,3 +265,98 @@ def backup_sidecar_pg(container_name: str, backups_dir: Path) -> Path:
     if result.returncode != 0:
         raise RuntimeError(f"pg_dump failed: {result.stderr.decode()}")
     return out
+
+
+def main(
+    *,
+    job_id: str,
+    to: str,
+    target_url: str,
+    duckdb_path: Path,
+    jobs_dir: Path,
+    backups_dir: Path,
+) -> int:
+    """Run the migration job. Returns process exit code.
+
+    Steps for ``to="side_car"``:
+      1. write initial job status
+      2. alembic upgrade head
+      3. copy DuckDB → PG
+      4. verify row counts
+      5. backup DuckDB
+      6. flip instance.yaml::database
+      7. mark success
+    """
+    from src.db_state_machine import BackendState, write_backend_state
+
+    writer = JobWriter(
+        job_id=job_id,
+        jobs_dir=jobs_dir,
+        source="duckdb" if to == "side_car" else "side_car",
+        target=to,
+    )
+    writer.write_initial()
+
+    try:
+        writer.update_step("alembic", progress_pct=20)
+        alembic_upgrade_head(target_url)
+
+        writer.update_step("data_copy", progress_pct=40)
+        copy_summary = copy_duckdb_to_pg(duckdb_path, target_url)
+
+        writer.update_step("verify", progress_pct=80)
+        diffs = verify_row_counts(duckdb_path, target_url)
+        if diffs:
+            writer.mark_failed(
+                step="verify",
+                error_class="VerifyMismatchError",
+                error_message=f"Row count mismatch: {diffs[:5]}",
+            )
+            return 1
+
+        writer.update_step("backup", progress_pct=90)
+        backup_duckdb(duckdb_path, backups_dir)
+
+        writer.update_step("flip_backend", progress_pct=95)
+        target_state = BackendState(to)
+        write_backend_state(target_state, url=target_url)
+
+        writer.mark_success(summary=copy_summary)
+        return 0
+
+    except Exception as e:
+        # Revert state to previous stable (best-effort).
+        try:
+            write_backend_state(
+                BackendState.DUCKDB if to == "side_car" else BackendState.SIDE_CAR,
+            )
+        except Exception:
+            pass
+        writer.mark_failed(
+            step=writer._read().get("current_step", "unknown"),
+            error_class=type(e).__name__,
+            error_message=str(e),
+        )
+        return 1
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--job-id", required=True)
+    parser.add_argument("--to", choices=["side_car", "cloud"], required=True)
+    parser.add_argument("--target-url", required=True)
+    parser.add_argument("--duckdb-path", type=Path, default=Path("/data/state/system.duckdb"))
+    parser.add_argument("--jobs-dir", type=Path, default=Path("/data/state/db-jobs"))
+    parser.add_argument("--backups-dir", type=Path, default=Path("/data/state/backups"))
+    args = parser.parse_args()
+
+    sys.exit(main(
+        job_id=args.job_id,
+        to=args.to,
+        target_url=args.target_url,
+        duckdb_path=args.duckdb_path,
+        jobs_dir=args.jobs_dir,
+        backups_dir=args.backups_dir,
+    ))

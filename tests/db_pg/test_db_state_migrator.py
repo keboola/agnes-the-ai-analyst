@@ -91,3 +91,43 @@ def test_verify_row_counts_detects_mismatch(tmp_path, pg_engine):
     user_diff = next(d for d in diffs if d["table"] == "users")
     assert user_diff["source_rows"] == 1
     assert user_diff["target_rows"] == 0
+
+
+def test_main_duckdb_to_side_car_end_to_end(tmp_path, pg_engine, monkeypatch):
+    """End-to-end: main(--to=side_car) drives all steps + writes success."""
+    import json
+    import duckdb
+    from src.db import _ensure_schema
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users (id, email, name) VALUES ('u1', 'a@x', 'A')")
+    conn.close()
+
+    jobs_dir = tmp_path / "db-jobs"
+    backups_dir = tmp_path / "backups"
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import BackendState, write_backend_state, read_backend_state
+    write_backend_state(BackendState.SIDE_CAR_IN_PROGRESS)
+
+    from scripts.db_state_migrator import main
+    rc = main(
+        job_id="job-test-1",
+        to="side_car",
+        target_url=str(pg_engine.url),
+        duckdb_path=duck_path,
+        jobs_dir=jobs_dir,
+        backups_dir=backups_dir,
+    )
+    assert rc == 0
+
+    job = json.loads((jobs_dir / "job-test-1.json").read_text())
+    assert job["status"] == "success"
+    assert job["summary"]["tables_migrated"] > 0
+
+    # State machine flipped to stable side_car
+    state, url = read_backend_state()
+    assert state == BackendState.SIDE_CAR
+    assert url == str(pg_engine.url)
