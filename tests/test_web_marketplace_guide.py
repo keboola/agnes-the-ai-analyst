@@ -14,6 +14,8 @@ import uuid
 
 import pytest
 
+from tests._template_assertions import assert_element, ElementNotFound
+
 
 @pytest.fixture
 def fresh_db(monkeypatch):
@@ -101,19 +103,19 @@ def test_marketplace_guide_curated_page(fresh_db):
     # Lede surfaces the gatekeeping concept.
     assert "Named Curators" in body
     # Three-step ordered list under `.guide-steps`.
-    assert '<ol class="guide-steps">' in body
+    assert_element(body, "ol", class_="guide-steps")
     assert "Find a Curator" in body
     assert "Hand off your skill or plugin" in body
     assert "Curator publishes" in body
     # Fast-path callout exists and the CTA inside it points at the flea
     # guide (NOT /store/new directly — we want users to read the flea
     # context before they upload).
-    assert '<div class="guide-fastpath">' in body
+    assert_element(body, "div", class_="guide-fastpath")
     assert 'href="/marketplace/guide/flea"' in body
     # Primary CTA at the bottom also surfaces the flea path. Renders
     # via `ds.button(variant='primary', href='/marketplace/guide/flea')`
     # which emits href before class.
-    assert '<a href="/marketplace/guide/flea" class="btn btn-primary"' in body
+    assert_element(body, "a", class_="btn btn-primary", href="/marketplace/guide/flea")
 
 
 def test_marketplace_guide_flea_page(fresh_db):
@@ -138,7 +140,7 @@ def test_marketplace_guide_flea_page(fresh_db):
     assert "Upload to Flea Market" in body
     # Four-step ordered list (no fast-path callout on flea — it IS the
     # fast path, the curated guide is what links here).
-    assert '<ol class="guide-steps">' in body
+    assert_element(body, "ol", class_="guide-steps")
     assert "Package what you" in body
     assert "Upload via the form" in body
     assert "Automated review" in body
@@ -147,6 +149,7 @@ def test_marketplace_guide_flea_page(fresh_db):
     # from being live, no intermediate handoff). Renders via
     # `ds.button(variant='primary', href='/store/new')` which emits
     # href before class.
-    assert '<a href="/store/new" class="btn btn-primary"' in body
+    assert_element(body, "a", class_="btn btn-primary", href="/store/new")
     # No fast-path callout here — sanity check the asymmetry sticks.
-    assert '<div class="guide-fastpath">' not in body
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "div", class_="guide-fastpath")
