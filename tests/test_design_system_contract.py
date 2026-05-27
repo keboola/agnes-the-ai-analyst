@@ -138,17 +138,13 @@ def test_no_deprecated_class_in_templates() -> None:
     )
 
 
-_LEGACY_TOKEN_FALLBACK_ALLOWLIST = {
-    # Not yet converted — tracked as follow-up PRs. Remove each entry as the
-    # template is converted (replace var(--primary, #NNN) → var(--ds-primary)).
-    "admin_groups.html",
-    "admin_group_detail.html",
-    "admin_marketplaces.html",
-    "admin_server_config.html",
-    "admin_user_detail.html",
-    "admin_users.html",
-    "setup.html",
-}
+_LEGACY_TOKEN_FALLBACK_ALLOWLIST: set[str] = set()
+# Allowlist drained — every template now references --ds-primary explicitly
+# (#419 follow-up sweep). The stricter
+# `test_no_unprefixed_primary_token_in_templates` guards regressions; the
+# old `var(--primary, #hex)` fallback pattern this test catches is no
+# longer present in any tracked file. Re-populate if a future PR
+# legitimately needs an interim fallback.
 
 
 def test_no_legacy_primary_token_with_hex_fallback() -> None:
@@ -168,6 +164,31 @@ def test_no_legacy_primary_token_with_hex_fallback() -> None:
             offenders.append(str(path))
     assert not offenders, (
         "var(--primary, #<hex>) found — use var(--ds-primary) instead:\n"
+        + "\n".join(f"  {p}" for p in offenders)
+    )
+
+
+def test_no_unprefixed_primary_token_in_templates() -> None:
+    """`var(--primary)` (no `--ds-` prefix) rides the legacy blue token via
+    the compat shim in design-tokens.css. Explicit `var(--ds-primary)`
+    reads self-documenting in code review and survives a future shim
+    removal.
+
+    Per #419 follow-up sweep: every template MUST reference `--ds-primary`
+    explicitly. `base.html` and `base_ds.html` are exempt — both only
+    mention `--primary` inside CSS-comment blocks documenting the legacy
+    compat shim, not as live token references.
+    """
+    pattern = re.compile(r"var\(\s*--primary[-)\s,]")
+    exempt = {"base.html", "base_ds.html"}
+    offenders: list[str] = []
+    for path in _all_html():
+        if path.name in exempt:
+            continue
+        if pattern.search(path.read_text(encoding="utf-8")):
+            offenders.append(str(path))
+    assert not offenders, (
+        "`var(--primary…)` found — use `var(--ds-primary…)` instead:\n"
         + "\n".join(f"  {p}" for p in offenders)
     )
 

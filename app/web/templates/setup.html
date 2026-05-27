@@ -18,7 +18,7 @@
 
             <!-- Progress -->
             <div style="display: flex; gap: 8px; margin-bottom: 24px;">
-                <div id="step-dot-1" style="flex: 1; height: 4px; border-radius: 2px; background: var(--primary, #2563eb);"></div>
+                <div id="step-dot-1" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-primary, #2563eb);"></div>
                 <div id="step-dot-2" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
                 <div id="step-dot-3" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
                 <div id="step-dot-4" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
@@ -144,7 +144,7 @@ function goToStep(n) {
     hideStatus();
     for (let i = 1; i <= 4; i++) {
         document.getElementById('step-' + i).style.display = i === n ? 'block' : 'none';
-        document.getElementById('step-dot-' + i).style.background = i <= n ? 'var(--primary, #2563eb)' : '#e5e7eb';
+        document.getElementById('step-dot-' + i).style.background = i <= n ? 'var(--ds-primary, #2563eb)' : '#e5e7eb';
     }
     document.getElementById('wizard-title').textContent = steps[n].title;
     document.getElementById('wizard-description').textContent = steps[n].desc;

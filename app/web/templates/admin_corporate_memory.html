@@ -61,7 +61,7 @@
         .page-icon {
             width: 36px;
             height: 36px;
-            background: var(--primary);
+            background: var(--ds-primary);
             border-radius: var(--radius-lg);
             display: flex;
             align-items: center;
@@ -102,7 +102,7 @@
         }
 
         .stat-item.highlight-blue .value {
-            color: var(--primary);
+            color: var(--ds-primary);
         }
 
         .stat-item.highlight-green .value {
@@ -160,8 +160,8 @@
         }
 
         .tab-btn.active {
-            color: var(--primary);
-            border-bottom-color: var(--primary);
+            color: var(--ds-primary);
+            border-bottom-color: var(--ds-primary);
         }
 
         .tab-badge {
@@ -211,7 +211,7 @@
             width: 16px;
             height: 16px;
             cursor: pointer;
-            accent-color: var(--primary);
+            accent-color: var(--ds-primary);
         }
 
         .batch-actions {
@@ -250,13 +250,13 @@
         }
 
         .knowledge-item:hover {
-            border-color: var(--primary);
+            border-color: var(--ds-primary);
             box-shadow: var(--shadow-md);
         }
 
         .knowledge-item.focused {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 2px var(--primary-light);
+            border-color: var(--ds-primary);
+            box-shadow: 0 0 0 2px var(--ds-primary-light);
         }
 
         /* ─── v49 Task 8.6 — Admin moderation visual parity with /memory/d/<slug> ───
@@ -397,7 +397,7 @@
             width: 16px;
             height: 16px;
             cursor: pointer;
-            accent-color: var(--primary);
+            accent-color: var(--ds-primary);
             flex-shrink: 0;
         }
 
@@ -436,7 +436,7 @@
         }
 
         .category-badge.data_analysis { background: rgba(16, 183, 127, 0.1); color: var(--success); }
-        .category-badge.api_integration { background: var(--primary-light); color: var(--primary); }
+        .category-badge.api_integration { background: var(--ds-primary-light); color: var(--ds-primary); }
         .category-badge.debugging { background: rgba(234, 88, 12, 0.1); color: var(--error); }
         .category-badge.performance { background: rgba(245, 159, 10, 0.1); color: #b45309; }
         .category-badge.workflow { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
@@ -466,8 +466,8 @@
         }
 
         .status-badge.mandatory {
-            background: var(--primary-light);
-            color: var(--primary);
+            background: var(--ds-primary-light);
+            color: var(--ds-primary);
         }
 
         .status-badge.rejected {
@@ -539,7 +539,7 @@
             width: 20px;
             height: 20px;
             border-radius: var(--radius-full);
-            background: var(--primary-light);
+            background: var(--ds-primary-light);
             border: 2px solid var(--surface);
             margin-left: -6px;
             display: flex;
@@ -547,7 +547,7 @@
             justify-content: center;
             font-size: 8px;
             font-weight: var(--font-semibold);
-            color: var(--primary);
+            color: var(--ds-primary);
         }
 
         .contributor-avatar:first-child {
@@ -599,8 +599,8 @@
 
         .mandate-form textarea:focus {
             outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 2px var(--primary-light);
+            border-color: var(--ds-primary);
+            box-shadow: 0 0 0 2px var(--ds-primary-light);
         }
 
         .mandate-form select {
@@ -668,8 +668,8 @@
         }
 
         .action-badge.mandated {
-            background: var(--primary-light);
-            color: var(--primary);
+            background: var(--ds-primary-light);
+            color: var(--ds-primary);
         }
 
         .action-badge.revoked {
@@ -756,8 +756,8 @@
         }
 
         .page-btn:hover:not(:disabled) {
-            border-color: var(--primary);
-            color: var(--primary);
+            border-color: var(--ds-primary);
+            color: var(--ds-primary);
         }
 
         .page-btn:disabled {
@@ -766,8 +766,8 @@
         }
 
         .page-btn.active {
-            background: var(--primary);
-            border-color: var(--primary);
+            background: var(--ds-primary);
+            border-color: var(--ds-primary);
             color: white;
         }
 
@@ -893,13 +893,13 @@
             cursor: text;
         }
         .tag-input-widget:focus-within {
-            border-color: var(--primary, var(--primary));
+            border-color: var(--ds-primary, var(--ds-primary));
             box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.15);
         }
         .tag-input-widget .tag-pill {
             display: inline-flex; align-items: center; gap: 4px;
             padding: 2px 4px 2px 10px;
-            background: var(--primary, var(--primary));
+            background: var(--ds-primary, var(--ds-primary));
             color: white;
             border-radius: 999px;
             font-size: 12px; font-weight: 500;
@@ -946,14 +946,14 @@
             font-size: 13px;
         }
         .tag-suggestion:hover, .tag-suggestion.active {
-            background: var(--primary-light, #eef5fb);
-            color: var(--primary, var(--primary));
+            background: var(--ds-primary-light, #eef5fb);
+            color: var(--ds-primary, var(--ds-primary));
         }
         .tag-suggestion .hint {
             color: var(--text-muted); font-size: 11px; margin-left: 8px;
             font-weight: 500;
         }
-        .tag-suggestion.new-tag .hint { color: var(--primary, var(--primary)); }
+        .tag-suggestion.new-tag .hint { color: var(--ds-primary, var(--ds-primary)); }
         .tag-suggestions .empty-hint {
             padding: 8px 12px; color: var(--text-muted); font-size: 12px; font-style: italic;
         }
@@ -2452,8 +2452,8 @@
                 <div class="contradiction-card" data-key="${escapeHtml(r.item_a_id)}::${escapeHtml(r.item_b_id)}" style="border: 1px solid var(--border); border-radius: var(--radius-xl); padding: var(--space-5); margin-bottom: var(--space-4); background: var(--surface);">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
                         <div>
-                            <span style="font-weight: var(--font-semibold); color: var(--primary);">Likely Duplicate</span>
-                            <span style="display: inline-block; padding: 2px 8px; background: var(--primary-light); color: var(--primary); border-radius: 999px; font-size: 11px; margin-left: 8px;">Jaccard ${score}</span>
+                            <span style="font-weight: var(--font-semibold); color: var(--ds-primary);">Likely Duplicate</span>
+                            <span style="display: inline-block; padding: 2px 8px; background: var(--ds-primary-light); color: var(--ds-primary); border-radius: 999px; font-size: 11px; margin-left: 8px;">Jaccard ${score}</span>
                         </div>
                         <span style="font-size: var(--text-xs); color: var(--text-secondary);">${escapeHtml((r.created_at || '').toString().substring(0, 10))}</span>
                     </div>

@@ -9,7 +9,7 @@
     color: var(--text-secondary, #5f6368); text-decoration: none;
     font-size: 13px; margin-bottom: 12px;
   }
-  .back-link:hover { color: var(--primary, var(--primary)); }
+  .back-link:hover { color: var(--ds-primary, var(--ds-primary)); }
 
   /* ── Hero ─────────────────────────────────────────────────── */
   .pkg-hero {
@@ -178,7 +178,7 @@
 {% endif %}
 
 <div class="pkg-hero">
-  <div class="pkg-hero__icon" style="background: {{ pkg.color or 'var(--primary)' }};">
+  <div class="pkg-hero__icon" style="background: {{ pkg.color or 'var(--ds-primary)' }};">
     {% if pkg.icon %}{{ pkg.icon }}{% else %}{{ _initials }}{% endif %}
   </div>
   <div class="pkg-hero__body">
@@ -267,7 +267,7 @@
             data-href="/catalog/t/{{ t.id }}"
             onclick="event.stopPropagation(); window.location.href=this.dataset.href;"
             onkeydown="if(event.key==='Enter'||event.key===' '){event.stopPropagation();event.preventDefault();window.location.href=this.dataset.href;}"
-            style="color: var(--primary); text-decoration: none; cursor: pointer;">{{ t.name }}</span>
+            style="color: var(--ds-primary); text-decoration: none; cursor: pointer;">{{ t.name }}</span>
       <span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span>
       {% if t.description %}
       <span class="pkg-table-row__desc">{{ t.description }}</span>

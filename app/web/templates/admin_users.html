@@ -24,7 +24,7 @@
     cursor: pointer;
   }
   .user-cell:hover .user-meta .name,
-  .user-cell.no-name:hover .email { color: var(--primary, #4338ca); }
+  .user-cell.no-name:hover .email { color: var(--ds-primary, #4338ca); }
   .user-avatar {
     width: 32px; height: 32px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
@@ -79,7 +79,7 @@
   }
   .toggle input:checked + .toggle-slider { background: #10b981; }
   .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
-  .toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--primary, #6366f1); outline-offset: 2px; }
+  .toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: 2px; }
 
   .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
 
@@ -128,7 +128,7 @@
     border-radius: 8px; font-size: 13px; box-sizing: border-box;
     background: var(--surface, #fff); color: var(--text-primary, #111827);
   }
-  .modal-card input:focus, .modal-card select:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+  .modal-card input:focus, .modal-card select:focus { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 
   .token-reveal {
@@ -141,7 +141,7 @@
   }
   .token-reveal code { flex: 1; }
   .copy-btn {
-    background: var(--primary, #6366f1); color: #fff; border: none;
+    background: var(--ds-primary, #6366f1); color: #fff; border: none;
     padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 500;
     cursor: pointer; flex-shrink: 0;
   }

@@ -23,7 +23,7 @@
   /* ── Hero ─────────────────────────────────────────────────────────── */
   .plugin-detail .hero {
     position: relative;
-    background: linear-gradient(135deg, var(--primary) 0%, #0056A3 100%);
+    background: linear-gradient(135deg, var(--ds-primary) 0%, #0056A3 100%);
     border-radius: 14px;
     padding: 22px 28px 28px;
     margin-bottom: 24px;
@@ -200,7 +200,7 @@
        visible white border without shifting the button's size. */
     border: 1px solid transparent;
     transition: all 0.15s ease;
-    background: #fff; color: var(--primary);
+    background: #fff; color: var(--ds-primary);
   }
   .plugin-detail .btn-install:hover {
     /* Darken-glass — same formula as the secondary "Open parent plugin"
@@ -335,7 +335,7 @@
   }
   .plugin-detail .stack-hint .learn-more {
     display: inline-block; margin-top: 8px;
-    font-size: 12px; color: var(--primary); text-decoration: none;
+    font-size: 12px; color: var(--ds-primary); text-decoration: none;
   }
   .plugin-detail .stack-hint .learn-more:hover { text-decoration: underline; }
 
@@ -409,7 +409,7 @@
   .plugin-detail .lead-rendered pre code {
     background: transparent; border: none; border-radius: 0; padding: 0; color: inherit;
   }
-  .plugin-detail .lead-rendered a { color: var(--primary); text-decoration: none; }
+  .plugin-detail .lead-rendered a { color: var(--ds-primary); text-decoration: none; }
   .plugin-detail .lead-rendered a:hover { text-decoration: underline; }
 
   /* Use-cases grid — 3-column on wide, 2 on tablet, 1 on phone. Each card
@@ -614,7 +614,7 @@
     border: 1px solid var(--border);
   }
   .plugin-detail .doc-link-list a {
-    color: var(--primary); text-decoration: none; font-weight: 500;
+    color: var(--ds-primary); text-decoration: none; font-weight: 500;
     display: block;
   }
   .plugin-detail .doc-link-list a:hover { text-decoration: underline; }
@@ -635,15 +635,15 @@
     transition: all 0.15s ease; text-decoration: none; color: inherit;
   }
   .plugin-detail .inner-card:hover {
-    border-color: var(--primary);
+    border-color: var(--ds-primary);
     box-shadow: 0 4px 14px rgba(46, 168, 119, 0.10);
     transform: translateY(-1px);
   }
   .plugin-detail .inner-card .photo {
     width: 100%; aspect-ratio: 715 / 310;
     display: flex; align-items: center; justify-content: center;
-    background: linear-gradient(135deg, var(--primary-light) 0%, #fce7f3 100%);
-    color: var(--primary);
+    background: linear-gradient(135deg, var(--ds-primary-light) 0%, #fce7f3 100%);
+    color: var(--ds-primary);
     font-size: 18px; font-weight: var(--font-bold);
     letter-spacing: 0.5px;
     border: none; border-radius: 0;
@@ -727,7 +727,7 @@
   .plugin-detail .substruct tr:last-child td { border-bottom: none; }
   .plugin-detail .substruct .cell-name {
     font-family: var(--font-mono); font-size: 12.5px; font-weight: 600;
-    color: var(--primary); white-space: nowrap;
+    color: var(--ds-primary); white-space: nowrap;
   }
   .plugin-detail .substruct .cell-event,
   .plugin-detail .substruct .cell-type {
