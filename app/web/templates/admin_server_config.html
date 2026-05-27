@@ -1690,4 +1690,16 @@ async function iwDelete() {
 document.getElementById("iw-modal-save").addEventListener("click", iwSave);
 iwLoad();
 </script>
+
+<!-- ==== Database backend (state machine) ==== -->
+<section id="db-backend-section">
+  <h2>Database backend</h2>
+  <p>Switch app-state DB between DuckDB, side-car Postgres, and a managed cloud Postgres.
+     See <a href="/docs/postgres-cutover-runbook">runbook</a> for operator details.</p>
+
+  <div id="db-state-card"><!-- populated by db_state.js --></div>
+  <div id="db-migration-progress" style="display: none;"></div>
+</section>
+
+<script src="{{ static_url('js/admin/db_state.js') }}"></script>
 {% endblock %}
