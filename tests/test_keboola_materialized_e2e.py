@@ -15,10 +15,17 @@ KBC_TOKEN = os.environ.get("KBC_TEST_TOKEN")
 KBC_BUCKET = os.environ.get("KBC_TEST_BUCKET")
 KBC_TABLE = os.environ.get("KBC_TEST_TABLE")
 
-pytestmark = pytest.mark.skipif(
-    not all([KBC_URL, KBC_TOKEN, KBC_BUCKET, KBC_TABLE]),
-    reason="Keboola creds not provided",
-)
+pytestmark = [
+    # ``live`` opts the test out of the default suite (pytest.ini sets
+    # ``-m "not live and not docker"``). Without this marker, any
+    # developer with KBC creds in their env runs this real-network
+    # test by default — slow + flaky on a credentialed laptop.
+    pytest.mark.live,
+    pytest.mark.skipif(
+        not all([KBC_URL, KBC_TOKEN, KBC_BUCKET, KBC_TABLE]),
+        reason="Keboola creds not provided",
+    ),
+]
 
 
 def test_register_trigger_manifest_path(seeded_app, monkeypatch, tmp_path):

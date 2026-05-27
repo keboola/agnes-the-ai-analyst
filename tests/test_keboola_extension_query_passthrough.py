@@ -15,10 +15,16 @@ KBC_TOKEN = os.environ.get("KBC_TEST_TOKEN")
 KBC_BUCKET = os.environ.get("KBC_TEST_BUCKET")
 KBC_TABLE = os.environ.get("KBC_TEST_TABLE")
 
-pytestmark = pytest.mark.skipif(
-    not all([KBC_URL, KBC_TOKEN, KBC_BUCKET, KBC_TABLE]),
-    reason="Keboola integration creds not provided",
-)
+pytestmark = [
+    # ``live`` opts out of the default suite. The DuckDB Keboola
+    # extension ATTACH below hits real Keboola; default ``pytest``
+    # invocations stay offline (pytest.ini: ``-m "not live and not docker"``).
+    pytest.mark.live,
+    pytest.mark.skipif(
+        not all([KBC_URL, KBC_TOKEN, KBC_BUCKET, KBC_TABLE]),
+        reason="Keboola integration creds not provided",
+    ),
+]
 
 
 def test_extension_supports_attach_and_select(tmp_path):

@@ -35,6 +35,9 @@ class TestRemoteQuery:
         with patch("cli.client.api_post", return_value=_resp(200, payload)):
             result = runner.invoke(app, ["query", "SELECT * FROM users", "--remote"])
         assert result.exit_code == 0
+        # Assert the row actually rendered — pre-fix this test passed on
+        # any 0-exit invocation regardless of whether output appeared.
+        assert "Alice" in result.output
 
     def test_remote_query_failure(self):
         """--remote prints error message on API failure (#160 §4.7: shared

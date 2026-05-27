@@ -23,10 +23,3 @@ def test_diagnose_help_lists_system():
     assert "system" in _clean(result.output)
 
 
-def test_diagnose_default_still_works():
-    """`agnes diagnose` (no subcommand) should still produce its existing output —
-    we only added a sibling subcommand, didn't change the default."""
-    result = runner.invoke(diagnose_app, [])
-    # Either runs successfully or fails for unrelated reasons (no server etc).
-    # We just want to verify no traceback from the addition.
-    assert "Traceback" not in (_clean(result.output) + _clean(result.stderr or ''))

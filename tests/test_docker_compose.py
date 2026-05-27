@@ -19,20 +19,12 @@ def compose() -> dict:
     return yaml.safe_load((root / "docker-compose.yml").read_text())
 
 
-class TestComposeServicesRemoved:
-    """The two side-car services must not exist in docker-compose.yml."""
-
-    def test_corporate_memory_service_removed(self, compose):
-        assert "corporate-memory" not in compose["services"], (
-            "corporate-memory was dropped in #176 — scheduler drives it via HTTP. "
-            "Do not re-add the service stanza."
-        )
-
-    def test_session_collector_service_removed(self, compose):
-        assert "session-collector" not in compose["services"], (
-            "session-collector was dropped in #176 — scheduler drives it via HTTP. "
-            "Do not re-add the service stanza."
-        )
+# Pre-fix this file also pinned that ``corporate-memory`` and
+# ``session-collector`` side-car services stayed deleted. That's
+# historical drift, not active behaviour — the same invariant is
+# enforced more robustly by ``TestComposeNoBootLoopProfile`` below
+# (which catches the actual past footgun: anthropic-importing
+# services in a ``restart: unless-stopped`` loop).
 
 
 class TestComposeSchedulerWires:

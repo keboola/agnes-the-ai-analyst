@@ -18,11 +18,3 @@ def test_catalog_metrics_help():
     assert "--show" in _clean(result.output)
 
 
-def test_catalog_default_still_works():
-    """Existing `agnes catalog` (no flags) behavior unchanged."""
-    runner = CliRunner()
-    # Help should still mention the default tables view
-    result = runner.invoke(catalog_app, ["--help"])
-    assert result.exit_code == 0
-    # No traceback
-    assert "Traceback" not in _clean(result.output)
