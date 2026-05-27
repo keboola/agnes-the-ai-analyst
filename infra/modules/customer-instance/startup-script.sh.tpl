@@ -95,6 +95,23 @@ if [ "$DATA_SOURCE" = "keboola" ]; then
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
 
+# ── Postgres password from Secret Manager + side-car data dir prep ──
+# Task 2A.1 provisioned agnes-<customer>-postgres-password with VM SA bound to
+# secretAccessor. Pull every boot (idempotent — the secret value is stable
+# across reboots; we re-fetch rather than reading from .env because .env may
+# have been wiped to force a reset).
+POSTGRES_PASSWORD=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-postgres-password)
+
+# postgres:16-alpine runs as uid 70 (the Alpine ``postgres`` user). When a
+# future overlay bind-mounts /data/postgres into the side-car (mirroring the
+# /data:/data pattern in docker-compose.host-mount.yml), the dir must be
+# pre-created and owned by uid 70 so initdb / runtime writes succeed.
+# Cheap to do unconditionally — the dir is unused when the side-car runs on
+# the default named volume.
+mkdir -p "$DATA_MNT/postgres"
+chown 70:70 "$DATA_MNT/postgres"
+chmod 700 "$DATA_MNT/postgres"
+
 # SCHEDULER_API_TOKEN — shared secret between the app and scheduler containers.
 # Both source the same /opt/agnes/.env via Docker Compose env_file:, so the
 # scheduler's outbound bearer token always matches the app's expected value.
@@ -190,6 +207,9 @@ AGNES_TAG=$EFFECTIVE_AGNES_TAG
 ACME_EMAIL=$ACME_EMAIL
 GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+DATABASE_URL=postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes
+COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml
 $CADDY_TLS_LINE
 $AGNES_TEMP_DIR_LINE
 ENVEOF
@@ -201,10 +221,26 @@ if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
     COMPOSE_PROFILES_ARG="--profile tls"
 fi
 
-COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml"
+# Honor COMPOSE_FILE from /opt/agnes/.env. The .env write above sets the
+# full list ``docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml``
+# so the prod + postgres + host-mount overlays engage by default. Order
+# matters: host-mount loads LAST so its ``volumes: !override`` on
+# data-migrate (in docker-compose.host-mount.yml) can see the service
+# defined by docker-compose.postgres.yml. Fall back to the historical
+# prod + host-mount baseline when .env doesn't set COMPOSE_FILE — keeps
+# existing customer instances behaving identically if an operator removes
+# the line. The colon-separated COMPOSE_FILE form is the documented
+# alternative to explicit ``-f`` args (docker.com/compose/reference/envvars
+# /compose_file); docker compose reads it from the working-directory .env
+# automatically. Export so the value is visible to the docker compose
+# subprocess regardless of whether docker's own dotenv loader fires first.
+COMPOSE_FILE_DEFAULT="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml"
+# shellcheck disable=SC1091
+set -a; . "$APP_DIR/.env"; set +a
+export COMPOSE_FILE="$${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
 
-docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG pull
-docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG up -d
+docker compose $COMPOSE_PROFILES_ARG pull
+docker compose $COMPOSE_PROFILES_ARG up -d
 
 # --- 6. Auto-upgrade via cron (pulls new image digest every 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then

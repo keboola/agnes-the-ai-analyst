@@ -11,9 +11,11 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
-from src.repositories.column_metadata import ColumnMetadataRepository
-from src.repositories.table_registry import TableRegistryRepository
 
+from src.repositories import (
+    column_metadata_repo,
+    table_registry_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["metadata"])
 
@@ -36,7 +38,7 @@ async def get_table_metadata(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return column metadata for a table."""
-    repo = ColumnMetadataRepository(conn)
+    repo = column_metadata_repo()
     columns = repo.list_for_table(table_id)
     return {"table_id": table_id, "columns": columns}
 
@@ -49,7 +51,7 @@ async def save_table_metadata(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Save column metadata for a table. Admin only."""
-    repo = ColumnMetadataRepository(conn)
+    repo = column_metadata_repo()
     for item in body.columns:
         repo.save(
             table_id=table_id,
@@ -68,7 +70,7 @@ async def push_metadata_to_source(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Push column metadata to Keboola Storage API. Admin only."""
-    registry_repo = TableRegistryRepository(conn)
+    registry_repo = table_registry_repo()
     table = registry_repo.get(table_id)
     if not table:
         raise HTTPException(status_code=404, detail=f"Table not found: {table_id}")
@@ -90,7 +92,7 @@ async def push_metadata_to_source(
             detail="KBC_STACK_URL and KBC_STORAGE_TOKEN must be set",
         )
 
-    metadata_repo = ColumnMetadataRepository(conn)
+    metadata_repo = column_metadata_repo()
     columns = metadata_repo.list_for_table(table_id)
     if not columns:
         return {"status": "ok", "pushed": 0, "message": "No column metadata to push"}
