@@ -111,6 +111,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- `scripts/generate_sample_data.py` size `l` preset went from
+  unfinishable (>2h wall-clock, ~30 min on `_generate_orders_and_items`
+  alone, then ~1.5h+ on `_generate_support_tickets`) to ~3m24s
+  end-to-end. Two O(N×M) hotspots:
+  (a) `_generate_orders_and_items` called
+  `rng.choices(self._customer_ids, weights=activity, k=1)` once per
+  order — `random.choices` rebuilds cumulative weights internally on
+  every call, so for 50K customers × 200K orders that's ~10B ops.
+  Fix: precompute `cum_activity = list(accumulate(activity))` once and
+  pass `cum_weights=` to the per-order call → O(log N) bisect.
+  (b) `_generate_support_tickets` ran
+  `[o for o in self._order_ids if self._order_customers[o] == cust_id]`
+  per ticket — 50K tickets × 200K orders = ~10B comparisons. Fix:
+  precompute a `customer_id → list[order_id]` index dict once before
+  the loop, O(1) lookup per ticket. Both fixes preserve byte-exact
+  output for the same `--seed` (verified at size `s`; same number of
+  `random()` draws in the same order). Sizes `s` and `m` are also
+  faster but the bug was only catastrophic at `l`.
 - Google Workspace connector prompt's Step 8 verify no longer asks
   Claude to parse a row count out of `gws drive files list` / `gws
   chat spaces list` JSON. Claude would improvise a `python3 -c 'f"…
