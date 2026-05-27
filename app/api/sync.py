@@ -151,8 +151,20 @@ def _run_materialized_pass(
         n = 0
     bq_max_bytes = n if n > 0 else None
 
-    registry = table_registry_repo()
-    state = sync_state_repo()
+    # Honor explicit ``conn`` only in DuckDB-backend mode (same escape hatch
+    # as app/auth/access.py — test fixtures seed into a per-test DuckDB and
+    # pass it down; PG mode reads from the engine instead because conn
+    # would be a stale local handle). Production callers pass
+    # ``get_system_db()`` so both paths land on the factory's choice.
+    from src.repositories import use_pg
+    if not use_pg():
+        from src.repositories.table_registry import TableRegistryRepository
+        from src.repositories.sync_state import SyncStateRepository
+        registry = TableRegistryRepository(conn)
+        state = SyncStateRepository(conn)
+    else:
+        registry = table_registry_repo()
+        state = sync_state_repo()
 
     summary = {"materialized": [], "skipped": [], "errors": []}
     keboola_access = None  # lazy-init on first Keboola row
