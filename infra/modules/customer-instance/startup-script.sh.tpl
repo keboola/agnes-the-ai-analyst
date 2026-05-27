@@ -114,13 +114,23 @@ if [ -z "$SCHEDULER_API_TOKEN" ]; then
     SCHEDULER_API_TOKEN=$(openssl rand -hex 32)
 fi
 
-# Optional Google OAuth credentials. If the operator has created
-# google-oauth-client-{id,secret} secrets in the project's Secret Manager
-# AND wired them via runtime_secrets in the calling Terraform, the VM SA can
-# read them — write into .env so the Google sign-in flow works. Missing /
-# 403 / empty → silent fallback to "" so password + email auth keep working.
-GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret=google-oauth-client-id 2>/dev/null || echo "")
-GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret=google-oauth-client-secret 2>/dev/null || echo "")
+# Optional Google OAuth credentials. Per-instance secret names come from the
+# `oauth_client_{id,secret}_secret_name` fields on the prod_instance /
+# dev_instances objects; empty -> legacy shared `google-oauth-client-{id,secret}`
+# (v1.x default — same OAuth client across every VM in the module call). Set
+# per VM to isolate prod vs dev (different OAuth clients = different redirect
+# URIs + separate blast radius from Google's end). The named secrets must
+# already exist in Secret Manager AND the VM SA must have secretAccessor on
+# them: module auto-grants for the per-instance ones via
+# `google_secret_manager_secret_iam_member.vm_oauth`; legacy ones still come
+# via runtime_secrets. Missing / 403 / empty -> silent fallback to "" so
+# password + email auth keep working.
+OAUTH_ID_SECRET_NAME="${oauth_client_id_secret_name}"
+OAUTH_SECRET_NAME="${oauth_client_secret_secret_name}"
+if [ -z "$${OAUTH_ID_SECRET_NAME}" ]; then OAUTH_ID_SECRET_NAME="google-oauth-client-id"; fi
+if [ -z "$${OAUTH_SECRET_NAME}" ]; then OAUTH_SECRET_NAME="google-oauth-client-secret"; fi
+GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret="$${OAUTH_ID_SECRET_NAME}" 2>/dev/null || echo "")
+GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret="$${OAUTH_SECRET_NAME}" 2>/dev/null || echo "")
 
 # AGNES_VERSION, RELEASE_CHANNEL, AGNES_COMMIT_SHA are baked into the image
 # itself as ENV (see Dockerfile ARG/ENV + release.yml build-args). We do NOT

@@ -45,6 +45,14 @@ variable "prod_instance" {
     upgrade_mode = optional(string, "auto")
     tls_mode     = optional(string, "caddy")
     domain       = optional(string, "")
+    # Per-instance OAuth client (Sign-in with Google). Empty -> falls back to
+    # the legacy shared `google-oauth-client-{id,secret}` Secret Manager names
+    # (v1.x default; same client across all VMs in the module call). Set per
+    # VM to use distinct OAuth clients (recommended for prod isolation —
+    # different redirect URIs, separate blast radius). The named secrets MUST
+    # already exist in Secret Manager; VM SA gets secretAccessor automatically.
+    oauth_client_id_secret_name     = optional(string, "")
+    oauth_client_secret_secret_name = optional(string, "")
   })
 }
 
@@ -65,6 +73,10 @@ variable "dev_instances" {
     image_tag    = optional(string, "dev")
     tls_mode     = optional(string, "none")
     domain       = optional(string, "")
+    # Per-instance OAuth client (Sign-in with Google). See `prod_instance`
+    # docs for the same field — same semantics here.
+    oauth_client_id_secret_name     = optional(string, "")
+    oauth_client_secret_secret_name = optional(string, "")
   }))
   default = []
 }

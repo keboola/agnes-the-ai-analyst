@@ -28,6 +28,15 @@ locals {
     [merge(var.prod_instance, { role = "prod" })],
     [for d in var.dev_instances : merge(local.dev_defaults, d)]
   )
+  # Per-instance OAuth (Sign-in with Google) secret names, deduplicated.
+  # Used both to grant secretAccessor IAM to the VM SA and to substitute
+  # the effective name into the startup-script. Empty strings filtered
+  # out so the legacy shared `google-oauth-client-{id,secret}` path
+  # continues to work for callers who don't set the per-instance fields.
+  per_instance_oauth_secrets = toset(compact(concat(
+    [for inst in local.all_instances : inst.oauth_client_id_secret_name],
+    [for inst in local.all_instances : inst.oauth_client_secret_secret_name],
+  )))
 }
 
 # --- Secrets ---
@@ -72,6 +81,20 @@ resource "google_secret_manager_secret_iam_member" "vm_jwt" {
 # Caller specifies these via var.runtime_secrets. Each secret must already exist.
 resource "google_secret_manager_secret_iam_member" "vm_runtime" {
   for_each  = toset(var.runtime_secrets)
+  project   = var.gcp_project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Per-instance OAuth client secrets. Granted to the same shared VM SA (all VMs
+# in this module call use one SA, so prod and dev secrets are technically both
+# readable from either VM — isolation comes from distinct OAuth clients with
+# different redirect URIs at Google's end, not from at-rest read scoping). A
+# per-VM SA refactor is tracked separately; this resource fans out across
+# whichever secrets the caller named in prod_instance / dev_instances.
+resource "google_secret_manager_secret_iam_member" "vm_oauth" {
+  for_each  = local.per_instance_oauth_secrets
   project   = var.gcp_project_id
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
@@ -218,19 +241,21 @@ resource "google_compute_instance" "vm" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup-script.sh.tpl", {
-    customer_name       = var.customer_name
-    image_repo          = var.image_repo
-    image_tag           = each.value.image_tag
-    upgrade_mode        = each.value.upgrade_mode
-    tls_mode            = each.value.tls_mode
-    domain              = each.value.domain
-    acme_email          = var.acme_email != "" ? var.acme_email : var.seed_admin_email
-    data_source         = var.data_source
-    keboola_stack_url   = var.keboola_stack_url
-    seed_admin_email    = var.seed_admin_email
-    seed_admin_password = var.enable_seed_password ? var.seed_admin_password : ""
-    role                = each.value.role
-    compose_ref         = var.compose_ref
+    customer_name                   = var.customer_name
+    image_repo                      = var.image_repo
+    image_tag                       = each.value.image_tag
+    upgrade_mode                    = each.value.upgrade_mode
+    tls_mode                        = each.value.tls_mode
+    domain                          = each.value.domain
+    acme_email                      = var.acme_email != "" ? var.acme_email : var.seed_admin_email
+    data_source                     = var.data_source
+    keboola_stack_url               = var.keboola_stack_url
+    seed_admin_email                = var.seed_admin_email
+    seed_admin_password             = var.enable_seed_password ? var.seed_admin_password : ""
+    role                            = each.value.role
+    compose_ref                     = var.compose_ref
+    oauth_client_id_secret_name     = each.value.oauth_client_id_secret_name
+    oauth_client_secret_secret_name = each.value.oauth_client_secret_secret_name
   })
 
   service_account {
@@ -257,6 +282,7 @@ resource "google_compute_instance" "vm" {
   depends_on = [
     google_secret_manager_secret_iam_member.vm_jwt,
     google_secret_manager_secret_iam_member.vm_runtime,
+    google_secret_manager_secret_iam_member.vm_oauth,
     google_secret_manager_secret_version.jwt,
   ]
 }
