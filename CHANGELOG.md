@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`src/profiler.py::profile_table` lowers DuckDB `memory_limit` from
+  `4GB` to `2GB` + adds `preserve_insertion_order=false`.** The prior
+  4 GiB cap matched typical container cgroup limits exactly, leaving
+  zero headroom for the host Python interpreter + ATTACHed orchestrator
+  state + sidecar processes. Observed on a 4 GiB dev container: the
+  profiler ran right up to the cap during `[SYNC] Profiled N tables`,
+  then the cgroup OOM killer reaped uvicorn within seconds of
+  orchestrator rebuild completing (anon_rss: 4180352 kB ≈ exact
+  cgroup cap). 2 GiB matches the materialize-path caps from
+  PR #431/#433 and leaves ~2 GiB of headroom for the rest of the
+  process. Profiler peak is normally a few hundred MiB (streaming
+  row-group scans + in-memory `SAMPLE`); the cap binds only when
+  something goes wrong.
+
 ## [0.55.15] — 2026-05-26
 
 ### Fixed
