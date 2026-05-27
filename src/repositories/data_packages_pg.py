@@ -165,7 +165,10 @@ class DataPackagesPgRepository:
     def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text("SELECT id FROM data_packages WHERE slug = :slug"),
+                sa.text(
+                    "SELECT id FROM data_packages "
+                    "WHERE slug = :slug AND deleted_at IS NULL"
+                ),
                 {"slug": slug},
             ).first()
         return self.get(row[0]) if row else None
