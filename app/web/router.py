@@ -1417,7 +1417,7 @@ async def corporate_memory(
 
     resolver = StackResolver(conn)
     domains_repo = memory_domains_repo()
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
 
     # Per-domain counts (items + required) computed once and indexed by id.
     dom_meta: dict[str, dict] = {}
@@ -1525,7 +1525,7 @@ async def memory_domain_detail(
     from src.repositories.usage import UsageRepository
 
     domains_repo = memory_domains_repo()
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     domain = domains_repo.get_by_slug(slug)
     if not domain:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
