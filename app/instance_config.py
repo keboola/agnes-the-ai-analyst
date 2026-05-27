@@ -32,6 +32,28 @@ def reset_cache() -> None:
         pass
 
 
+def get_database_config() -> dict:
+    """Return ``{backend: "...", url: "..."}`` from the state machine.
+
+    Centralised so future callers don't reach into src.db_state_machine
+    directly. Cache invalidation via reset_database_cache() after
+    /api/admin/db/migrate success.
+    """
+    from src.db_state_machine import read_backend_state
+    state, url = read_backend_state()
+    return {"backend": state.value, "url": url}
+
+
+def reset_database_cache() -> None:
+    """No-op for now — get_database_config reads fresh each call.
+
+    Exposed as a public API so future caching (if added) has a single
+    invalidation point. Called by app/api/db_state.py after a successful
+    backend flip.
+    """
+    pass
+
+
 def _deep_merge(base: dict, patch: dict) -> dict:
     """Deep-merge `patch` into `base`, returning a new dict.
 

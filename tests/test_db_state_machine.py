@@ -106,3 +106,17 @@ def test_second_acquire_raises(tmp_path, monkeypatch):
         with pytest.raises(MigrationInProgressError):
             with MigrationLock():
                 pass
+
+
+def test_get_database_config_reads_from_state_module(tmp_path, monkeypatch):
+    """get_database_config delegates to state machine read."""
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import write_backend_state
+    write_backend_state(BackendState.CLOUD, url="postgresql://cloud/agnes")
+
+    from app.instance_config import get_database_config, reset_database_cache
+    reset_database_cache()
+    config = get_database_config()
+    assert config["backend"] == "cloud"
+    assert config["url"] == "postgresql://cloud/agnes"
