@@ -50,6 +50,27 @@ resource "google_secret_manager_secret_version" "jwt" {
   secret_data = random_password.jwt.result
 }
 
+# Postgres password for the side-car postgres:16-alpine container.
+# Startup-script pulls this and writes POSTGRES_PASSWORD + DATABASE_URL
+# into /opt/agnes/.env before docker compose up.
+resource "google_secret_manager_secret" "postgres" {
+  secret_id = "agnes-${var.customer_name}-postgres-password"
+  project   = var.gcp_project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "random_password" "postgres" {
+  length  = 32
+  special = false # PG-friendly; avoids shell-quoting in startup-script
+}
+
+resource "google_secret_manager_secret_version" "postgres" {
+  secret      = google_secret_manager_secret.postgres.id
+  secret_data = random_password.postgres.result
+}
+
 # --- VM service account (dedicated, read-only on specific secrets only) ---
 
 resource "google_service_account" "vm" {
@@ -64,6 +85,14 @@ resource "google_service_account" "vm" {
 resource "google_secret_manager_secret_iam_member" "vm_jwt" {
   project   = var.gcp_project_id
   secret_id = google_secret_manager_secret.jwt.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Same scoped read access for the postgres password secret.
+resource "google_secret_manager_secret_iam_member" "vm_postgres" {
+  project   = var.gcp_project_id
+  secret_id = google_secret_manager_secret.postgres.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.vm.email}"
 }
