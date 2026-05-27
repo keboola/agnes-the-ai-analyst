@@ -129,3 +129,10 @@ def test_update_partial_fields(repo):
     assert row["description"] == "new"
     assert row["tags"] == ["x"]
     assert row["name"] == "A"  # untouched
+
+
+def test_get_by_slug_does_not_return_soft_deleted(repo):
+    pkg_id = repo.create(name="X", slug="ghost", description=None, icon=None,
+                          color=None, created_by="u")
+    repo.delete(pkg_id)
+    assert repo.get_by_slug("ghost") is None
