@@ -3552,6 +3552,9 @@
         if (radio) radio.checked = true;
         ['kbViewName', 'kbBucket', 'kbSourceTable', 'kbSourceQuery',
          'kbSyncSchedule', 'kbDescription', 'kbFolder', 'kbPrimaryKey',
+         // Smart-paste source field — reset so a stale value doesn't blur-fire
+         // splitAndFill() and clobber the freshly-reset Bucket/Source Table.
+         'kbTableIdPaste',
          // v26 Direct-extract fields — reset so a stale value from a prior
          // open doesn't leak into the next registration.
          'kbIncrementalWindowDays', 'kbMaxHistoryDays', 'kbPartitionBy',
