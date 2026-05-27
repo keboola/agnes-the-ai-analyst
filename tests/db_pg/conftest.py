@@ -193,6 +193,65 @@ def pg_session(pg_engine) -> Iterator[Session]:
         yield session
 
 
+@pytest.fixture(scope="module")
+def pg_engine_migrated_module(_pg_engine_session) -> Iterator[Engine]:
+    """Module-scoped engine — schema dropped + alembic upgrade head ONCE
+    per test module.
+
+    Codex finding #14 (SPLIT): the per-test ``store_engine`` fixture in
+    ``test_store_pg.py`` re-ran the full alembic chain for every test in
+    the file (~12 migrations × N tests). Used heavily across the
+    marketplace / store / flea-market cluster — meaningful real-world
+    cost. Tests that need a clean PG per test should still depend on
+    ``pg_engine``; tests that just need "schema present, my own rows"
+    can switch to this fixture + the ``pg_truncate_all`` helper below
+    for a per-test wipe that's ~100× cheaper than re-migrating.
+
+    Trade-off: schema drift between migrations and the in-memory model
+    is no longer caught test-by-test in modules that use this fixture
+    (the run-once setup means later tests inherit any partial-migrate
+    state). The drift-detector test in ``test_alembic_roundtrip.py``
+    still runs at module-fresh scope and catches that class of bug.
+    """
+    from pathlib import Path
+    from alembic import command
+    from alembic.config import Config
+
+    _drop_user_schema(_pg_engine_session)
+    repo_root = Path(__file__).resolve().parents[2]
+    cfg = Config(str(repo_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(repo_root / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = str(_pg_engine_session.url)
+    command.upgrade(cfg, "head")
+    yield _pg_engine_session
+
+
+def pg_truncate_all(engine: Engine) -> None:
+    """TRUNCATE every base table in ``public`` (RESTART IDENTITY CASCADE).
+
+    Companion to ``pg_engine_migrated_module``: schema stays intact,
+    rows go. Preserves ``alembic_version`` so a follow-up
+    ``alembic upgrade head`` is a no-op. Faster + safer than
+    drop-schema + re-migrate when only data isolation is needed.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(
+            sa.text(
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname='public' AND tablename <> 'alembic_version'"
+            )
+        ).all()
+    targets = [r[0] for r in rows]
+    if not targets:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                f"TRUNCATE TABLE {', '.join(targets)} RESTART IDENTITY CASCADE"
+            )
+        )
+
+
 # ---------------------------------------------------------------------------
 # App-state backend setup (single-backend post-cutover).
 # ---------------------------------------------------------------------------

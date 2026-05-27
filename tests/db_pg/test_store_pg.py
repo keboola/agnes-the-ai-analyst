@@ -14,16 +14,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def store_engine(pg_engine, monkeypatch):
-    from alembic import command
-    from alembic.config import Config
+def store_engine(pg_engine_migrated_module, monkeypatch):
+    """Shares one ``alembic upgrade head`` across every test in this
+    module — Codex finding #14. Pre-fix this ran the full migration
+    chain per test (~12 revisions × N tests). The module-scoped
+    fixture in ``conftest.py::pg_engine_migrated_module`` does the
+    schema setup once; ``pg_truncate_all`` below resets row state
+    between tests so each test still sees an empty PG.
+    """
+    from tests.db_pg.conftest import pg_truncate_all
 
-    cfg = Config(str(REPO_ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    cfg.attributes["sqlalchemy.url"] = str(pg_engine.url)
-    command.upgrade(cfg, "head")
-
-    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+    pg_truncate_all(pg_engine_migrated_module)
+    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine_migrated_module.url))
     import src.db_pg as db_pg
     db_pg.dispose()
     return db_pg.get_engine()
