@@ -5639,8 +5639,6 @@
 
     document.addEventListener('DOMContentLoaded', loadAdminTablesLayout);
 
-    // Auto-open the Create Data Package modal when the page is opened with
-    // `?new_package=1` — drives the /catalog right-of-tabs admin action
     // ── #401: Keboola smart-paste — split `{bucket}.{table_name}` into the
     //   Bucket + Source Table inputs in the Register Keboola modal.
     //   Keboola's "COPY TO CLIPBOARD" yields the full table id; pasting it
@@ -5678,6 +5676,8 @@
       });
     });
 
+    // Auto-open the Create Data Package modal when the page is opened with
+    // `?new_package=1` — drives the /catalog right-of-tabs admin action
     // (which redirects here rather than duplicating the modal scaffolding).
     document.addEventListener('DOMContentLoaded', function() {
       var qs = new URLSearchParams(window.location.search);
