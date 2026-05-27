@@ -43,28 +43,44 @@ _lock = threading.Lock()
 
 
 def _resolve_url() -> str:
-    """Return the PG connection URL.
+    """Return the Postgres URL using fallback chain:
 
-    Resolution priority:
-      1. ``DATABASE_URL`` env var (preferred; 12-factor convention).
-      2. ``AGNES_DB_URL`` env var (deprecated alias — logs a warning).
+      1. ``instance.yaml::database.url`` (admin-controlled, runtime-mutable).
+      2. ``DATABASE_URL`` env var (12-factor convention).
+      3. ``AGNES_DB_URL`` env var (deprecated alias — warning logged).
 
-    Either is fine for local dev. For prod, set DATABASE_URL; the
-    AGNES_DB_URL alias exists so existing .env files in deployments
-    don't break on upgrade.
+    Raises RuntimeError when no URL is configured.
     """
     import logging
+    logger = logging.getLogger(__name__)
+
+    # 1. instance.yaml
+    try:
+        from src.db_state_machine import read_backend_state
+        _state, yaml_url = read_backend_state()
+        if yaml_url:
+            return yaml_url
+    except Exception:
+        # State module may be unavailable during early startup; fall
+        # through to env vars.
+        pass
+
+    # 2. DATABASE_URL
     db_url = os.environ.get("DATABASE_URL")
     if db_url:
         return db_url
+
+    # 3. AGNES_DB_URL (legacy)
     legacy = os.environ.get("AGNES_DB_URL")
     if legacy:
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "AGNES_DB_URL is deprecated — rename to DATABASE_URL (12-factor convention)"
         )
         return legacy
+
     raise RuntimeError(
-        "Postgres URL is unset: set DATABASE_URL (preferred) or AGNES_DB_URL (legacy alias)"
+        "Postgres URL is unset: set instance.yaml::database.url via "
+        "/api/admin/db/migrate, or set DATABASE_URL env var"
     )
 
 

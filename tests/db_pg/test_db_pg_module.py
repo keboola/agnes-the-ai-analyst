@@ -38,14 +38,17 @@ def test_get_engine_returns_singleton(_pg_url, monkeypatch):
     assert e1 is e2
 
 
-def test_get_engine_reads_url_from_env(_pg_url, monkeypatch):
+def test_get_engine_reads_url_from_env(_pg_url, monkeypatch, tmp_path):
     """No URL → RuntimeError. With AGNES_DB_URL set → connects."""
     import src.db_pg as db_pg
 
     db_pg.dispose()
     monkeypatch.delenv("AGNES_DB_URL", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    with pytest.raises(RuntimeError, match="AGNES_DB_URL"):
+    # Also ensure no instance.yaml overlay leaks in from another test's
+    # DATA_DIR — point at a guaranteed-missing path.
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", tmp_path / "missing.yaml")
+    with pytest.raises(RuntimeError, match="Postgres URL is unset"):
         db_pg.get_engine()
 
     monkeypatch.setenv("AGNES_DB_URL", _pg_url)
