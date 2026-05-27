@@ -170,7 +170,7 @@ dev = [
     # system `postgres` binary nor a working Docker socket is available.
     # Ideal for laptop/sandbox dev environments where installing PG
     # system-wide is not an option.
-    "pgserver>=0.1.4",
+    "pixeltable-pgserver>=0.5.1",
 ]
 
 [project.scripts]
@@ -199,7 +199,7 @@ dev-dependencies = [
     "fastapi-debug-toolbar>=0.6.3",
     "testcontainers[postgres]>=4",
     "pytest-postgresql>=6",
-    "pgserver>=0.1.4",
+    "pixeltable-pgserver>=0.5.1",
 ]
 # Override the urllib3<2.0.0 ceiling kbcstorage 0.9.5 declares (upstream
 # hasn't relaxed it as of 2026-05-12 but the SDK works fine against
