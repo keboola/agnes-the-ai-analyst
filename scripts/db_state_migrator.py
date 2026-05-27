@@ -149,3 +149,36 @@ def alembic_upgrade_head(target_url: str) -> None:
             f"alembic upgrade head failed (exit {result.returncode}):\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
+
+
+def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
+    """Copy all PG-mapped tables from DuckDB to target PG.
+
+    Wraps :func:`scripts.migrate_duckdb_to_pg.run_all` — the same
+    idempotent copy loop that the docker-compose data-migrate one-shot
+    uses. Returns ``{rows_total, tables_migrated}`` where ``rows_total``
+    is the sum of PG row counts across all migrated tables (per the
+    validator report — ``ON CONFLICT DO NOTHING`` makes per-task
+    rows-inserted untrustworthy, so we use post-copy PG counts).
+    """
+    import duckdb
+    import sqlalchemy as sa
+
+    from scripts.migrate_duckdb_to_pg import run_all
+
+    duck_conn = duckdb.connect(str(duckdb_path), read_only=True)
+    try:
+        pg_engine = sa.create_engine(target_url)
+        try:
+            reports = run_all(duck_conn, pg_engine, validate=True)
+        finally:
+            pg_engine.dispose()
+    finally:
+        duck_conn.close()
+
+    rows_total = sum(r.get("pg_rows", 0) for r in reports if "error" not in r)
+    tables_migrated = sum(1 for r in reports if "error" not in r)
+    return {
+        "rows_total": rows_total,
+        "tables_migrated": tables_migrated,
+    }
