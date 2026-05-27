@@ -55,6 +55,22 @@ if [ -b "$DATA_DEV" ]; then
     chown -R 999:999 "$DATA_MNT"
 fi
 
+# Initial instance.yaml::database = {backend: "duckdb"} so the app starts in
+# DuckDB mode even before any admin migration. The DB-backend state machine
+# (see scripts/ops/agnes-state-applier.sh + app/api/admin_db_migrate.py)
+# reads this file at boot to decide which compose overlay set to run.
+# Idempotent: never clobber an existing file — an operator-initiated
+# migration may have already flipped backend to "postgres".
+INSTANCE_YAML="$DATA_MNT/state/instance.yaml"
+if [ ! -f "$INSTANCE_YAML" ]; then
+    mkdir -p "$DATA_MNT/state"
+    cat > "$INSTANCE_YAML" <<'YAML'
+database:
+  backend: duckdb
+YAML
+    chown 999:999 "$INSTANCE_YAML"
+fi
+
 # --- 3. App directory + extract host artifacts from the pinned image ---
 APP_DIR="/opt/agnes"
 mkdir -p "$APP_DIR"
@@ -79,6 +95,17 @@ trap "docker rm '$EXTRACT_CONTAINER' >/dev/null 2>&1 || true" EXIT
 docker cp "$EXTRACT_CONTAINER:/opt/agnes-host/." "$APP_DIR/"
 docker cp "$EXTRACT_CONTAINER:/opt/agnes-host/agnes-auto-upgrade.sh" /usr/local/bin/agnes-auto-upgrade.sh
 chmod +x /usr/local/bin/agnes-auto-upgrade.sh
+
+# Install agnes-state-applier (DB backend state machine — applies compose
+# lifecycle changes when /data/state/db-state-target.flag changes). The
+# script + its systemd units are baked into /opt/agnes-host/ via Dockerfile
+# (same image-extract contract as agnes-auto-upgrade.sh above), already
+# pulled into $APP_DIR by the recursive docker cp two lines up.
+install -m 0755 "$APP_DIR/agnes-state-applier.sh" /usr/local/bin/agnes-state-applier.sh
+install -m 0644 "$APP_DIR/agnes-state-applier.service" /etc/systemd/system/agnes-state-applier.service
+install -m 0644 "$APP_DIR/agnes-state-applier.timer" /etc/systemd/system/agnes-state-applier.timer
+systemctl daemon-reload
+systemctl enable --now agnes-state-applier.timer
 
 # docker-compose.tls.yml + Caddyfile land regardless of TLS_MODE. agnes-auto-upgrade.sh
 # detects TLS at runtime via cert files on disk; certs can appear after boot via
