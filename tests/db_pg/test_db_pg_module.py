@@ -76,3 +76,33 @@ def test_dispose_clears_singleton(_pg_url, monkeypatch):
     db_pg.dispose()
     e2 = db_pg.get_engine()
     assert e1 is not e2
+
+
+def test_database_url_is_primary_agnes_db_url_aliased_with_warning(monkeypatch, caplog):
+    """DATABASE_URL is the primary; AGNES_DB_URL still works but logs a deprecation warning."""
+    import logging
+    from src import db_pg
+    db_pg.dispose()  # clear singleton
+
+    # 1. DATABASE_URL alone: no warning.
+    monkeypatch.delenv("AGNES_DB_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://x:y@localhost/z")
+    with caplog.at_level(logging.WARNING, logger="src.db_pg"):
+        assert db_pg._resolve_url() == "postgresql+psycopg://x:y@localhost/z"
+    assert "AGNES_DB_URL" not in caplog.text
+
+    # 2. AGNES_DB_URL alone: works, logs deprecation.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("AGNES_DB_URL", "postgresql+psycopg://a:b@localhost/c")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="src.db_pg"):
+        assert db_pg._resolve_url() == "postgresql+psycopg://a:b@localhost/c"
+    assert "AGNES_DB_URL is deprecated" in caplog.text
+
+    # 3. Both set: DATABASE_URL wins, AGNES_DB_URL ignored, no warning.
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://x:y@localhost/z")
+    monkeypatch.setenv("AGNES_DB_URL", "postgresql+psycopg://a:b@localhost/c")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="src.db_pg"):
+        assert db_pg._resolve_url() == "postgresql+psycopg://x:y@localhost/z"
+    assert "AGNES_DB_URL" not in caplog.text
