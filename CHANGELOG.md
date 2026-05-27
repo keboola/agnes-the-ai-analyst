@@ -10,6 +10,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Setup-script Step 2 ("Confirm the install location") no longer treats
+  the user's current `cwd` as a mistake whenever it isn't exactly
+  `~/Desktop/{workspace_dir}`. Before, any other path triggered a "you
+  are in the wrong place" warning whose only escape hatch was the magic
+  keyword `install here` — which silently accepted `$HOME` and other
+  destructive defaults. New three-branch decision tree replaces it:
+  (a) **REFUSE** if `pwd` is `$HOME` exactly or any system dir (`/`,
+  `/tmp`, `/etc`, `/usr`, `/var`, `/opt`, `/root`, `/bin`, `/sbin`,
+  `/boot`, `/sys`, `/proc`) — no override, the install would scatter
+  `.claude/`, `.agnes/`, `AGNES_WORKSPACE.md`, marketplace clones into a
+  directory that already has unrelated meaning. (b) **PROCEED
+  SILENTLY** if `cwd` is empty or contains only a whitelist of
+  workspace artefacts (`.git`, `.claude`, `.agnes`, `AGNES_WORKSPACE.md`,
+  `README.md`) — the user clearly created+cd'd into a workspace, no
+  prompt needed. (c) **CONFIRM ONCE** for everything else, with neutral
+  phrasing: *"I'll install Agnes in `<pwd>`. Reply 'ok' to continue here,
+  'default' to install in `~/Desktop/Agnes` instead, or 'abort'."*. The
+  `default` branch runs `mkdir -p ~/Desktop/{workspace_dir} && cd …`
+  itself, so users opting back into the recommended path don't have to
+  re-paste. Legacy `install here` keyword still works as an `ok`
+  synonym for muscle-memory compatibility, and Step 9's restart cue
+  keeps the same wording.
+
 ## [0.55.17] — 2026-05-27
 
 ### Fixed
