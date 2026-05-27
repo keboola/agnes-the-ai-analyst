@@ -11,6 +11,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Five new Postgres repository ports closing the DuckDB-only gap left by PR #388.**
+  `src/repositories/{data_packages,memory_domains,memory_domain_suggestions,recipes,user_stack_subscriptions}_pg.py` mirror their DuckDB siblings method-for-method via SQLAlchemy core + psycopg. Alembic revision `0011_data_packages` covers the seven new PG tables (5 + 2 bridges: `data_package_tables`, `knowledge_item_domains`) with full downgrade and round-trip test coverage. Factory entries in `src/repositories/__init__.py` route to either backend based on `use_pg()`; ten callsites across `app/web/router.py`, `app/api/{data_packages,memory,memory_domain_suggestions,memory_domains,recipes,stack_views,sync}.py` swapped from direct `XYZRepository(conn)` instantiation to the factory layer. **Fifty-four parametrized cross-engine contract tests** (14+12+8+10+10 across the 5 clusters) prove DuckDB ↔ PG parity for every public method. Full `tests/db_pg/` suite now 322 passed, 1 skipped.
 - **`docker-compose.postgres.yml` gains a `data-migrate` one-shot service.**
   Runs `python -m scripts.migrate_duckdb_to_pg --duckdb-path
   /data/state/system.duckdb` on every `compose up`; `app` and `scheduler`
