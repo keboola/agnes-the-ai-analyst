@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from src.models.audit import AuditLog
 from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
+from src.models.data_packages import DataPackage, DataPackageTable
 from src.models.knowledge import (
     KnowledgeContradiction,
     KnowledgeItem,
@@ -61,6 +62,8 @@ __all__ = [
     "AuditLog",
     "BqMetadataCache",
     "ColumnMetadata",
+    "DataPackage",
+    "DataPackageTable",
     "InstanceTemplate",
     "KnowledgeContradiction",
     "KnowledgeItem",
