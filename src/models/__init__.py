@@ -43,6 +43,7 @@ from src.models.store import (
     StoreEntity,
     StoreSubmission,
     UserPluginOptout,
+    UserStackSubscription,
     UserStoreInstall,
 )
 from src.models.telemetry import (
@@ -105,6 +106,7 @@ __all__ = [
     "UserGroupMember",
     "UserObservabilityView",
     "UserPluginOptout",
+    "UserStackSubscription",
     "UserStoreInstall",
     "UserSyncSettings",
     "ViewOwnership",
