@@ -218,6 +218,78 @@ def test_no_unprefixed_primary_token_in_templates() -> None:
     )
 
 
+_COMPONENTS_HTML = TEMPLATES / "_components.html"
+
+# Button macro composes ['btn', 'btn-' ~ variant] + optional 'btn-' ~ size
+# + 'btn--icon' (see _components.html:44). These are the variants actually
+# emitted across the codebase today — re-survey if a new variant is added.
+_BUTTON_VARIANTS = ("primary", "secondary", "ghost", "danger", "google", "required")
+_BUTTON_SIZES = ("sm", "lg")
+
+# CSS files where canonical rules live. Class-coverage is satisfied if the
+# selector appears in ANY of these. Adding a new sheet means listing it
+# here (or the new selectors silently fail this contract).
+_CANONICAL_CSS = (
+    STATIC / "style-custom.css",
+    STATIC / "css" / "components.css",
+    STATIC / "css" / "design-tokens.css",
+)
+
+
+def test_component_macros_emit_only_classes_with_css_rules() -> None:
+    """Every class token a macro in `_components.html` emits MUST resolve
+    to a CSS rule in one of the canonical sheets (style-custom.css,
+    components.css, design-tokens.css). A typo'd class on a macro renders
+    nothing — this contract catches it before the macro ships.
+
+    Approach: static extraction (no Jinja render). Literal classes are
+    pulled from `class="…"` attribute values in `_components.html`,
+    Jinja-templated portions (`{{ … }}` / `{% … %}`) skipped, and the
+    button macro's computed `btn-<variant>` / `btn-<size>` classes are
+    enumerated from the documented variant tuples above.
+    """
+    text = _COMPONENTS_HTML.read_text(encoding="utf-8")
+
+    # Strip Jinja blocks/expressions/comments before tokenising — we only
+    # want the literal class strings the author wrote, not Jinja runtime
+    # gunk or comment-block examples (`{# … class="…" … #}`).
+    jinja_free = re.sub(
+        r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", " ", text, flags=re.DOTALL,
+    )
+
+    static_classes: set[str] = set()
+    for m in _CLASS_ATTR_RE.finditer(jinja_free):
+        for token in m.group(2).split():
+            if "{" in token or "}" in token:
+                continue
+            static_classes.add(token)
+
+    # Button macro variants + sizes that get composed at runtime.
+    button_classes = {"btn", "btn--icon"}
+    button_classes.update(f"btn-{v}" for v in _BUTTON_VARIANTS)
+    button_classes.update(f"btn-{s}" for s in _BUTTON_SIZES)
+
+    expected = static_classes | button_classes
+    assert expected, "extracted no classes from _components.html — extraction broken"
+
+    # Load every canonical sheet once.
+    css_blob = "\n".join(p.read_text(encoding="utf-8") for p in _CANONICAL_CSS)
+
+    missing: list[str] = []
+    for cls in sorted(expected):
+        # Selector match: `.cls` followed by a non-class-name char so
+        # `.btn` doesn't match `.btn-primary`. CSS rules also appear in
+        # compound selectors (`.btn.is-active`) — the simple lookahead
+        # is enough because we only need ONE occurrence.
+        if not re.search(r"\." + re.escape(cls) + r"(?![\w-])", css_blob):
+            missing.append(cls)
+    assert not missing, (
+        f"_components.html emits classes with no CSS rule in any of "
+        f"{[str(p) for p in _CANONICAL_CSS]}:\n"
+        + "\n".join(f"  .{m}" for m in missing)
+    )
+
+
 def test_app_js_referenced_by_base_only() -> None:
     """app.js carries dropdown wiring scoped to the authed nav. base_login.html
     has no nav, so it must NOT load app.js — that would let login pages call
