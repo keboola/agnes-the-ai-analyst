@@ -679,10 +679,24 @@ sys.exit(compute_exit_code(result, len(configs)))
         views = orch.rebuild()
         print(f"[SYNC] Orchestrator rebuild: {{{', '.join(f'{k}: {len(v)}' for k, v in views.items())}}}", file=_sys.stderr, flush=True)
 
-        # Auto-profile synced tables (best-effort, don't fail sync on profile error)
+        # Auto-profile synced tables (best-effort, don't fail sync on profile error).
+        #
+        # Each profile runs in a fresh Python subprocess (``src._profiler_worker``)
+        # so all DuckDB allocator state — including the anon mmap arenas that
+        # ``profile_table`` accumulates per call — is reliably reclaimed by the
+        # OS on subprocess exit. Pre-subprocess, running this loop in-process
+        # against ~30 tables would drift the resident set up by ~100-300 MiB
+        # per iteration (Python's malloc keeps freed arenas, libc keeps the
+        # heap), eventually tripping the cgroup OOM around 4 GiB even though
+        # each individual ``profile_table`` cleaned up its DuckDB session
+        # correctly. See PR notes for the empirical traces.
+        #
+        # The parent still owns the ``ProfileRepository.save(...)`` write so
+        # the system.duckdb lock semantics stay single-writer: the worker
+        # returns the profile dict, the parent persists it.
         try:
-            from src.profiler import profile_table, TableInfo
             from src.repositories.profiles import ProfileRepository
+            from src._subprocess_runner import run_subprocess_job, SubprocessJobError
 
             data_dir = Path(os.environ.get("DATA_DIR", "./data"))
             extracts_dir = data_dir / "extracts"
@@ -697,10 +711,25 @@ sys.exit(compute_exit_code(result, len(configs)))
                         if not pq_path.exists():
                             continue
                         try:
-                            table_info = TableInfo(name=table_name, table_id=table_name)
-                            profile = profile_table(table_info, pq_path, [], {}, {})
+                            profile = run_subprocess_job(
+                                "src._profiler_worker",
+                                {
+                                    "table_name": table_name,
+                                    "table_id": table_name,
+                                    "parquet_path": str(pq_path),
+                                },
+                                timeout_sec=600,
+                            )
                             profile_repo.save(table_name, profile)
                             profiled += 1
+                        except SubprocessJobError as pe:
+                            # Worker-side failure — log subprocess stderr tail
+                            # to surface the actual traceback to operators.
+                            print(
+                                f"[SYNC] Profile {table_name}: {pe}\n"
+                                f"  stderr tail: {pe.stderr[-500:]}",
+                                file=_sys.stderr, flush=True,
+                            )
                         except Exception as pe:
                             print(f"[SYNC] Profile {table_name}: {pe}", file=_sys.stderr, flush=True)
                 print(f"[SYNC] Profiled {profiled} tables", file=_sys.stderr, flush=True)
