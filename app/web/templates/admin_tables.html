@@ -162,60 +162,16 @@
             font-size: 13px;
         }
 
-        /* ── Buttons ── */
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 16px;
-            border: none;
-            border-radius: 8px;
-            font-family: var(--font-primary);
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.15s ease;
-            white-space: nowrap;
-        }
+        /* ── Buttons ──
+           `.btn`, `.btn-primary`, `.btn-secondary`, `.btn-danger`, `.btn-sm`
+           rules deleted — canonical `.btn` family in style-custom.css now
+           supplies the shape, color, and hover treatment uniformly with
+           the rest of the admin UI.
 
-        .btn-primary {
-            background: var(--primary);
-            color: white;
-        }
-
-        .btn-primary:hover {
-            background: #005FA8;
-        }
-
-        .btn-primary:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        .btn-secondary {
-            background: var(--border-light);
-            color: var(--text-primary);
-        }
-
-        .btn-secondary:hover {
-            background: var(--border);
-        }
-
-        .btn-danger {
-            background: var(--error-light);
-            color: var(--error);
-        }
-
-        .btn-danger:hover {
-            background: rgba(234, 88, 12, 0.2);
-        }
-
-        .btn-sm {
-            padding: 5px 10px;
-            font-size: 12px;
-            border-radius: 6px;
-        }
-
+           `.btn-icon` (below) stays page-local — its `[data-tooltip]:hover::after`
+           tooltip-chip styling has no equivalent in canonical `.btn--icon`
+           (which is just a size modifier). Migrating to a canonical tooltip
+           primitive is a separate follow-up. */
         .btn-icon {
             width: 28px;
             height: 28px;
@@ -2299,7 +2255,7 @@
             + '<div style="display:flex; align-items:center; justify-content:space-between; '
             +           'padding:8px 12px; border-bottom:1px solid var(--border-light, #f0f0f0);">'
             + '  <span style="font-size:13px; color:#202124;">' + escapeHtml(name) + '</span>'
-            + '  <button class="btn" type="button" style="padding:3px 10px; font-size:11px; color:#b91c1c;" '
+            + '  <button class="btn btn-danger btn-sm" type="button" '
             +          'onclick="removeTableFromPackage(\'' + escapeHtmlAttr(id) + '\')">Remove</button>'
             + '</div>';
         }).join('');
@@ -3298,7 +3254,7 @@
           </details>
         </div>
         <div class="modal-footer" style="justify-content:space-between;">
-          <button class="btn" type="button" style="color:#b91c1c; border-color:#fca5a5;"
+          <button class="btn btn-danger" type="button"
                   onclick="deleteEditDataPackage()">Delete package</button>
           <div style="display:flex; gap:8px;">
             <button class="btn btn-secondary" onclick="closeEditDataPackageModal()">Cancel</button>
