@@ -30,6 +30,13 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api.mcp_policy import (
+    MutatingNotAllowed,
+    RateLimited,
+    check_mutating,
+    check_rate_limit,
+    redact_response,
+)
 from app.auth.access import _user_group_ids, is_user_admin
 from app.auth.dependencies import _get_db, get_current_user
 from connectors.mcp.client import call_tool_async
@@ -148,13 +155,30 @@ async def invoke_passthrough_tool(
     if tool is None or tool.get("mode") != PASSTHROUGH or not tool.get("enabled", True):
         raise HTTPException(status_code=404, detail="passthrough tool not found")
 
-    if not is_user_admin(user["id"], conn):
+    caller_is_admin = is_user_admin(user["id"], conn)
+    if not caller_is_admin:
         group_ids = list(_user_group_ids(user["id"], conn))
         if not tools_repo.is_granted_to_groups(tool_id, group_ids):
             raise HTTPException(
                 status_code=403,
                 detail=f"no grant on tool {tool_id!r} for your groups",
             )
+
+    # Policy gates (RFC #461 §3). Order matters: cheap-and-decisive
+    # mutating gate first, then rate-limit (also cheap), then forward.
+    # PII redaction is applied *after* a successful forward.
+    try:
+        check_mutating(tool, is_admin=caller_is_admin)
+    except MutatingNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    try:
+        check_rate_limit(tool_id, user["id"], tool.get("rate_limit_pm"))
+    except RateLimited as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds) + 1)},
+        ) from exc
 
     sources_repo = MCPSourceRepository(conn)
     source = sources_repo.get(tool["source_id"])
@@ -168,4 +192,9 @@ async def invoke_passthrough_tool(
         # 502 — Agnes IS reachable, but the upstream MCP we're proxying isn't.
         raise HTTPException(status_code=502, detail=f"upstream call failed: {exc}") from exc
 
-    return InvokeResponse(is_error=result.is_error, text=result.text, data=result.data)
+    redacted_text, redacted_data = redact_response(
+        text=result.text,
+        data=result.data,
+        pii_fields=tool.get("pii_fields") if isinstance(tool.get("pii_fields"), list) else None,
+    )
+    return InvokeResponse(is_error=result.is_error, text=redacted_text, data=redacted_data)
