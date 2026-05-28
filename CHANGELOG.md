@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.24] — 2026-05-28
+
+### Fixed
+- **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**
+  The `{% set _brand = instance_brand | e %}` + `{% set title = _brand ~ "…<span>…" %}`
+  pattern silently autoescaped the right operand because Jinja's `~`
+  autoescapes a `str` when the left side is `Markup`. The literal
+  `<span class="accent">AI workspace.</span>` ended up as visible text
+  in the browser. Replaced with the `{% set foo %}…{% endset %}` block
+  form, which gets autoescape semantics right (operator-set
+  `instance_brand` is still escaped; literal HTML in the block stays
+  literal). Two regression tests pin both invariants
+  (`test_home_not_onboarded_hero_title_html_renders_unescaped`,
+  `test_home_not_onboarded_hero_title_html_escapes_brand`).
+
 ## [0.55.23] — 2026-05-27
 
 ### Added

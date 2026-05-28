@@ -76,6 +76,56 @@ def test_home_not_onboarded_user_sees_setup_view(fresh_db):
     assert "setupClaudeBtn" in body  # primary one-click CTA from shared partial
 
 
+def test_home_not_onboarded_hero_title_html_renders_unescaped(fresh_db, monkeypatch):
+    """Regression: PR #375's `{% set _brand = instance_brand | e %}` +
+    `{% set hero_title_html = _brand ~ \"…<span>…\" %}` Jinja idiom silently
+    escaped the literal `<span class=\"accent\">` because `Markup ~ str`
+    autoescapes the str operand. The `| safe` in `_home_hero_intro.html`
+    can't undo that — by then the chars are already `&lt;span&gt;`.
+
+    Pin: the rendered hero title MUST contain the LITERAL `<span class=\"accent\">`
+    tag (so the accent styling applies) AND must NOT contain the escaped
+    `&lt;span` variant. Operator-controlled `instance_brand` must still
+    be autoescaped — covered by `test_home_not_onboarded_hero_title_html_escapes_brand`.
+    """
+    monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Acme")
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert "Acme is your team's <span class=\"accent\">AI workspace.</span>" in body
+    assert "&lt;span class=" not in body, (
+        "literal `<span>` chars are HTML-encoded — the Markup~str concat "
+        "anti-pattern is back; use `{% set hero_title_html %}…{% endset %}` "
+        "block form instead."
+    )
+
+
+def test_home_not_onboarded_hero_title_html_escapes_brand(fresh_db, monkeypatch):
+    """XSS guard: operator-set `instance_brand` must be autoescaped before
+    being spliced into the hero title (which contains literal HTML the
+    partial renders with `| safe`). The previous `instance_brand | e` +
+    `~` concat got this right at the cost of breaking literal HTML — the
+    new `{% set %}…{% endset %}` block must preserve the escape guarantee."""
+    monkeypatch.setenv("AGNES_INSTANCE_BRAND", "<script>alert(1)</script>EvilCo")
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;EvilCo" in body
+    assert "<script>alert(1)</script>EvilCo" not in body
+
+
 def test_home_onboarded_user_sees_nav_hub(fresh_db):
     """A TRUE-onboarded user gets the post-onboarding view: the blue
     install-hero is gone entirely (no welcome banner, no completion
