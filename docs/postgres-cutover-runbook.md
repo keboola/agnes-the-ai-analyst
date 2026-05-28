@@ -221,7 +221,65 @@ The two counts should match. Repeat for `audit_log`, `table_registry`,
 
 ---
 
-## Operator override — managed Postgres
+## Provisioning a Cloud SQL Postgres via Terraform
+
+GCP operators can provision the managed Postgres alongside the VM
+using the bundled `cloud-pg` module. Minimal root configuration:
+
+```hcl
+# Pre-existing Secret Manager secret holding the app-user password.
+# Provision out-of-band so the plaintext never enters TF code:
+#   gcloud secrets create agnes-cloud-pg-app-password --replication-policy=automatic
+#   gcloud secrets versions add agnes-cloud-pg-app-password --data-file=- <<< '…'
+data "google_secret_manager_secret" "agnes_cloud_pg_password" {
+  project   = var.project
+  secret_id = "agnes-cloud-pg-app-password"
+}
+
+module "agnes_cloud_pg" {
+  source = "git::https://github.com/keboola/agnes-the-ai-analyst.git//infra/modules/cloud-pg?ref=infra-vX.Y.Z"
+
+  name              = "agnes-prod-pg"
+  project           = var.project
+  region            = "europe-west1"          # match the VM region
+  tier              = "db-custom-2-7680"      # 2 vCPU / 7.5 GB
+  postgres_version  = "POSTGRES_16"
+  storage_size_gb   = 50
+  backup_enabled    = true
+  high_availability = true                    # prod; set false for dev
+
+  authorized_cidrs = [
+    { name = "agnes-vm", value = "${module.agnes_vm.external_ip}/32" },
+  ]
+
+  password_secret_id = data.google_secret_manager_secret.agnes_cloud_pg_password.id
+}
+
+output "agnes_cloud_pg_url_template" {
+  value = module.agnes_cloud_pg.url_template
+}
+```
+
+Module docs: [`infra/modules/cloud-pg/README.md`](../infra/modules/cloud-pg/README.md).
+
+After `terraform apply`:
+
+1. Note the `url_template` output — `postgresql+psycopg://agnes:<PASSWORD>@<ip>:5432/agnes`.
+2. Substitute `<PASSWORD>` with the value from
+   `gcloud secrets versions access latest --secret=agnes-cloud-pg-app-password`.
+3. Open `/admin/database` → click **Migrate to managed Postgres** →
+   paste the URL. The state machine drives the rest.
+
+Equivalents for other clouds: fork the module and swap
+`google_sql_database_instance` for `aws_db_instance` (RDS) or
+`azurerm_postgresql_flexible_server` (Azure). The `customer-instance`
+module's interface — variable names, Secret Manager pattern,
+authorized-network plumbing — is the contract; adapters per cloud
+are otherwise mechanical.
+
+---
+
+## Operator override — managed Postgres (manual, no Terraform)
 
 If you don't want the side-car container — for example to share one Cloud
 SQL / RDS / Supabase / Neon instance across several Agnes VMs, or to keep
