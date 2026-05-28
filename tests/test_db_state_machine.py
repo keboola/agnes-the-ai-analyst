@@ -137,3 +137,57 @@ def test_get_database_config_reads_from_state_module(tmp_path, monkeypatch):
     config = get_database_config()
     assert config["backend"] == "cloud"
     assert config["url"] == "postgresql://cloud/agnes"
+
+
+def test_write_backend_state_preserves_url_when_url_kw_absent(tmp_path, monkeypatch):
+    """When ``write_backend_state`` is called with no ``url`` argument
+    it must KEEP the existing url key in instance.yaml. Previously it
+    omitted url from the output → yaml.safe_dump erased the key →
+    repository routing saw backend=*_in_progress (treated as PG) with
+    no URL → 30s+ window where every authenticated request crashed
+    with ``Postgres URL is unset``."""
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import BackendState, write_backend_state, read_backend_state
+
+    write_backend_state(BackendState.SIDE_CAR, url="postgresql+psycopg://x:y@h/d")
+    write_backend_state(BackendState.SIDE_CAR_IN_PROGRESS)   # no url= kwarg
+
+    state, url = read_backend_state()
+    assert state == BackendState.SIDE_CAR_IN_PROGRESS
+    assert url == "postgresql+psycopg://x:y@h/d"
+
+
+def test_write_backend_state_clears_url_when_url_none_explicit(tmp_path, monkeypatch):
+    """Explicit url=None means CLEAR. Used for transitioning to a
+    stateless backend like DuckDB."""
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import BackendState, write_backend_state, read_backend_state
+    write_backend_state(BackendState.SIDE_CAR, url="postgresql+psycopg://x:y@h/d")
+    write_backend_state(BackendState.DUCKDB, url=None)
+    state, url = read_backend_state()
+    assert state == BackendState.DUCKDB
+    assert url is None
+
+
+def test_write_backend_state_preserves_other_top_level_keys(tmp_path, monkeypatch):
+    """Non-database keys (logging, auth, feature flags) the operator
+    may have set via /admin/server-config must NOT be lost when
+    write_backend_state mutates the database subkey."""
+    import yaml
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    # Pre-seed the overlay with operator-set keys.
+    overlay.write_text(yaml.safe_dump({
+        "logging": {"level": "debug"},
+        "auth": {"providers": ["google", "magic_link"]},
+        "database": {"backend": "duckdb"},
+    }))
+    from src.db_state_machine import BackendState, write_backend_state
+    write_backend_state(BackendState.SIDE_CAR, url="postgresql+psycopg://x:y@h/d")
+    data = yaml.safe_load(overlay.read_text())
+    assert data["logging"]["level"] == "debug"
+    assert data["auth"]["providers"] == ["google", "magic_link"]
+    assert data["database"]["backend"] == "side_car"
+    assert data["database"]["url"] == "postgresql+psycopg://x:y@h/d"

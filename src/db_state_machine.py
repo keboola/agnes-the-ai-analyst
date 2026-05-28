@@ -102,12 +102,25 @@ def read_backend_state() -> tuple[BackendState, str | None]:
     return state, db.get("url")
 
 
-def write_backend_state(target: BackendState, *, url: str | None = None) -> None:
+def write_backend_state(target: BackendState, *, url: "str | None" = ...) -> None:  # type: ignore[assignment]
     """Atomically update instance.yaml::database = {backend, url}.
 
     Uses tmp + os.replace for atomicity (same pattern as
     app/api/admin.py overlay writer). Caller is responsible for
     transition validation; this function performs no policy check.
+
+    ``url`` sentinel semantics:
+
+    * ``url=...`` (``Ellipsis``, the default) — leave the existing url
+      key in instance.yaml unchanged.  Used when marking a migration
+      in-progress so the live DATABASE_URL is not erased while the
+      applier runs (B4 fix).
+    * ``url="postgresql://..."`` — set the url to the given string.
+    * ``url=None`` — remove the url key (transition to a stateless
+      backend such as DuckDB).
+
+    All other top-level keys (logging, auth, feature flags) are
+    preserved; only the ``database`` subkey is touched.
     """
     _OVERLAY_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -116,11 +129,16 @@ def write_backend_state(target: BackendState, *, url: str | None = None) -> None
     else:
         data = {}
 
-    data.setdefault("database", {})["backend"] = target.value
-    if url is not None:
-        data["database"]["url"] = url
-    elif "url" in data["database"]:
-        del data["database"]["url"]
+    db: dict = dict(data.get("database") or {})
+    db["backend"] = target.value
+    if url is ...:
+        # Sentinel: keep whatever url is currently stored.
+        pass
+    elif url is None:
+        db.pop("url", None)
+    else:
+        db["url"] = url
+    data["database"] = db
 
     tmp = _OVERLAY_PATH.with_suffix(".yaml.tmp")
     tmp.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=True))
