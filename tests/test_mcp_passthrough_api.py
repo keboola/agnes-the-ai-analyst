@@ -185,3 +185,147 @@ def test_invoke_502_when_upstream_call_blows_up(seeded_app):
         )
     assert r.status_code == 502
     assert "upstream gone" in r.json()["detail"]
+
+
+# ── Policy gates (mutating / rate-limit / PII redact) ──────────────────────
+
+
+def _seed_mutating_tool(*, analyst_id: str = "analyst1") -> None:
+    """Seed a single passthrough tool with ``mutating=True``, granted to
+    the analyst's group so RBAC doesn't 403 before the mutating gate."""
+    conn = get_system_db()
+    sources = MCPSourceRepository(conn)
+    tools = ToolRegistryRepository(conn)
+    groups = UserGroupsRepository(conn)
+    members = UserGroupMembersRepository(conn)
+
+    sources.upsert(id="src_mut", name="mut-up", transport="stdio", command="/bin/true", args=[])
+    tools.upsert(
+        tool_id="mut-up.delete_all",
+        source_id="src_mut",
+        original_name="delete_all",
+        exposed_name="delete_all",
+        mode=PASSTHROUGH,
+        description="Wipes the upstream.",
+        mutating=True,
+    )
+    grp = groups.create(name="mut-grant-grp", description=None)
+    tools.add_grant("mut-up.delete_all", grp["id"])
+    members.add_member(analyst_id, grp["id"], source="system_seed")
+    conn.close()
+
+
+def test_invoke_mutating_blocked_for_analyst(seeded_app):
+    _seed_mutating_tool()
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="should-not-reach"):
+        r = client.post(
+            "/api/mcp/passthrough/tools/mut-up.delete_all/call",
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 403
+    assert "mutating" in r.json()["detail"]
+
+
+def test_invoke_mutating_allowed_for_admin(seeded_app):
+    _seed_mutating_tool()
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="deleted"):
+        r = client.post(
+            "/api/mcp/passthrough/tools/mut-up.delete_all/call",
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 200
+    assert r.json()["text"] == "deleted"
+
+
+def _seed_pii_tool(*, analyst_id: str = "analyst1") -> None:
+    """Seed a passthrough tool with ``pii_fields=['email']`` for redact tests."""
+    conn = get_system_db()
+    sources = MCPSourceRepository(conn)
+    tools = ToolRegistryRepository(conn)
+    groups = UserGroupsRepository(conn)
+    members = UserGroupMembersRepository(conn)
+
+    sources.upsert(id="src_pii", name="pii-up", transport="stdio", command="/bin/true", args=[])
+    tools.upsert(
+        tool_id="pii-up.lookup",
+        source_id="src_pii",
+        original_name="lookup",
+        exposed_name="lookup",
+        mode=PASSTHROUGH,
+        pii_fields=["email"],
+    )
+    grp = groups.create(name="pii-grant-grp", description=None)
+    tools.add_grant("pii-up.lookup", grp["id"])
+    members.add_member(analyst_id, grp["id"], source="system_seed")
+    conn.close()
+
+
+def test_invoke_redacts_pii_in_response(seeded_app):
+    _seed_pii_tool()
+    client = seeded_app["client"]
+    with _patch_upstream_call(
+        text='{"email": "a@x", "name": "Alice"}',
+        data={"email": "a@x", "name": "Alice"},
+    ):
+        r = client.post(
+            "/api/mcp/passthrough/tools/pii-up.lookup/call",
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["data"]["email"] == "[REDACTED]"
+    assert body["data"]["name"] == "Alice"
+    assert "a@x" not in body["text"]
+
+
+def _seed_rate_limited_tool(*, analyst_id: str = "analyst1", cap: int = 2) -> None:
+    """Seed a passthrough tool with ``rate_limit_pm=cap`` for rate tests."""
+    conn = get_system_db()
+    sources = MCPSourceRepository(conn)
+    tools = ToolRegistryRepository(conn)
+    groups = UserGroupsRepository(conn)
+    members = UserGroupMembersRepository(conn)
+
+    sources.upsert(id="src_rl", name="rl-up", transport="stdio", command="/bin/true", args=[])
+    tools.upsert(
+        tool_id="rl-up.search",
+        source_id="src_rl",
+        original_name="search",
+        exposed_name="search",
+        mode=PASSTHROUGH,
+        rate_limit_pm=cap,
+    )
+    grp = groups.create(name="rl-grant-grp", description=None)
+    tools.add_grant("rl-up.search", grp["id"])
+    members.add_member(analyst_id, grp["id"], source="system_seed")
+    conn.close()
+
+
+def test_invoke_rate_limit_returns_429_after_cap(seeded_app):
+    from app.api.mcp_policy import reset_rate_buckets_for_tests
+    reset_rate_buckets_for_tests()
+    _seed_rate_limited_tool(cap=2)
+    client = seeded_app["client"]
+    with _patch_upstream_call(text="ok"):
+        # Two calls within the same window succeed
+        for _ in range(2):
+            r = client.post(
+                "/api/mcp/passthrough/tools/rl-up.search/call",
+                headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+                json={"arguments": {}},
+            )
+            assert r.status_code == 200, r.text
+        # Third call within the same minute → 429 + Retry-After header
+        r = client.post(
+            "/api/mcp/passthrough/tools/rl-up.search/call",
+            headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 429
+    assert "Retry-After" in r.headers
+    reset_rate_buckets_for_tests()
