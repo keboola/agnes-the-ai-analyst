@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Vendored web assets for the cloud-chat UI.**
+  `app/web/static/vendor/` now ships `marked.min.js` (12.0.2, MIT),
+  `highlight.min.js` + `highlight.min.css` (11.10.0 common build,
+  BSD-3) — both referenced by `chat.html` and `admin_chat.html`.
+  Previously these files were referenced but never committed, so the
+  chat page threw `ReferenceError: marked is not defined` on the first
+  message render. Also adds `app/web/static/css/admin.css` (loaded by
+  the admin chat dashboard and chat page) and a `LICENSES.md`
+  documenting source URLs + versions + licenses. Regression test
+  (`tests/test_web_static_assets.py`) pins all references on disk.
+
 ### Fixed
 - **Admin chat tail WS now requires a one-shot ticket.** The
   `WS /admin/chat/{id}/tail` route previously accepted any anonymous
