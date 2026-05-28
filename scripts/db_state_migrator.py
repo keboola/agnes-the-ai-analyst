@@ -184,6 +184,123 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
     }
 
 
+def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
+    """Copy all PG-mapped tables from one PG to another in FK order.
+
+    Used for ``side_car → cloud`` migration. Mirrors
+    :func:`copy_duckdb_to_pg` but with a PG source instead of DuckDB.
+    Reuses the same JSON / ARRAY / NOT-NULL-default coercion the DuckDB
+    path uses — the column-introspection helpers in
+    ``scripts.migrate_duckdb_to_pg.tasks`` work for any source.
+
+    Returns ``{rows_total, tables_migrated}`` based on post-copy target
+    row counts (ON CONFLICT DO NOTHING makes per-task inserted-count
+    untrustworthy).
+    """
+    import sqlalchemy as sa
+
+    import src.models  # noqa: F401 — ensures every model is imported
+    from src.db_pg import Base
+    from scripts.migrate_duckdb_to_pg import _PK_COLUMNS
+    from scripts.migrate_duckdb_to_pg.tasks import (
+        _array_columns_for,
+        _build_insert,
+        _coerce_array_value,
+        _normalize_for_pg,
+        _not_null_columns_with_default,
+        _substitute_default,
+    )
+
+    source = sa.create_engine(source_url)
+    target = sa.create_engine(target_url)
+    rows_total = 0
+    tables_migrated = 0
+    try:
+        for table in Base.metadata.sorted_tables:
+            tname = table.name
+            cols = [c.name for c in table.columns]
+            pk_cols = _PK_COLUMNS.get(tname, ["id"])
+            array_cols = _array_columns_for(tname)
+            default_cols = _not_null_columns_with_default(tname)
+
+            with source.connect() as src_conn:
+                rows = src_conn.execute(
+                    sa.text(f'SELECT {", ".join(cols)} FROM "{tname}"')
+                ).all()
+            if not rows:
+                tables_migrated += 1
+                continue
+
+            insert_sql = _build_insert(tname, cols, pk_cols)
+            batch = []
+            for r in rows:
+                d = {}
+                for k, v in zip(cols, r):
+                    if k in array_cols:
+                        d[k] = _coerce_array_value(v)
+                    else:
+                        d[k] = _normalize_for_pg(v)
+                    if k in default_cols:
+                        d[k] = _substitute_default(d[k], default_cols[k])
+                batch.append(d)
+
+            with target.begin() as tgt_conn:
+                tgt_conn.execute(sa.text(insert_sql), batch)
+
+            with target.connect() as tgt_conn:
+                count = tgt_conn.execute(
+                    sa.text(f'SELECT COUNT(*) FROM "{tname}"')
+                ).scalar()
+            rows_total += int(count or 0)
+            tables_migrated += 1
+    finally:
+        source.dispose()
+        target.dispose()
+
+    return {"rows_total": rows_total, "tables_migrated": tables_migrated}
+
+
+def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
+    """Compare PG row counts between source and target.
+
+    Mirrors :func:`verify_row_counts` but reads both sides as PG.
+    Returns list of diffs ``[{table, source_rows, target_rows}]``.
+    """
+    import sqlalchemy as sa
+    from src.db_pg import Base
+
+    diffs: list[dict] = []
+    source = sa.create_engine(source_url)
+    target = sa.create_engine(target_url)
+    try:
+        for table in Base.metadata.sorted_tables:
+            tname = table.name
+            try:
+                with source.connect() as c:
+                    src_count = c.execute(
+                        sa.text(f'SELECT COUNT(*) FROM "{tname}"')
+                    ).scalar()
+            except sa.exc.ProgrammingError:
+                src_count = 0
+            try:
+                with target.connect() as c:
+                    tgt_count = c.execute(
+                        sa.text(f'SELECT COUNT(*) FROM "{tname}"')
+                    ).scalar()
+            except sa.exc.ProgrammingError:
+                tgt_count = 0
+            if src_count != tgt_count:
+                diffs.append({
+                    "table": tname,
+                    "source_rows": int(src_count or 0),
+                    "target_rows": int(tgt_count or 0),
+                })
+    finally:
+        source.dispose()
+        target.dispose()
+    return diffs
+
+
 def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
     """Compare row counts per Base.metadata table between DuckDB and PG.
 
@@ -275,15 +392,26 @@ def main(
     duckdb_path: Path,
     jobs_dir: Path,
     backups_dir: Path,
+    source_url: str | None = None,
 ) -> int:
     """Run the migration job. Returns process exit code.
 
-    Steps for ``to="side_car"``:
+    Steps for ``to="side_car"`` (source = DuckDB):
       1. write initial job status
-      2. alembic upgrade head
+      2. alembic upgrade head on target
       3. copy DuckDB → PG
       4. verify row counts
       5. backup DuckDB
+      6. flip instance.yaml::database
+      7. mark success
+
+    Steps for ``to="cloud"`` (source = side-car PG, given via
+    ``source_url``):
+      1. write initial job status
+      2. alembic upgrade head on target
+      3. backup side-car PG (pg_dump) — recovery point
+      4. copy PG → PG
+      5. verify row counts (PG vs PG)
       6. flip instance.yaml::database
       7. mark success
     """
@@ -297,15 +425,46 @@ def main(
     )
     writer.write_initial()
 
+    # Argument validation BEFORE we touch any network — the cloud branch
+    # requires source_url; failing here keeps the failure stack short
+    # and the error message actionable rather than burying it under a
+    # connect-to-bogus-target traceback.
+    if to == "cloud" and not source_url:
+        writer.mark_failed(
+            step="validate",
+            error_class="ValueError",
+            error_message="--source-url is required for cloud migration",
+        )
+        return 1
+
     try:
         writer.update_step("alembic", progress_pct=20)
         alembic_upgrade_head(target_url)
 
-        writer.update_step("data_copy", progress_pct=40)
-        copy_summary = copy_duckdb_to_pg(duckdb_path, target_url)
+        if to == "side_car":
+            writer.update_step("data_copy", progress_pct=40)
+            copy_summary = copy_duckdb_to_pg(duckdb_path, target_url)
 
-        writer.update_step("verify", progress_pct=80)
-        diffs = verify_row_counts(duckdb_path, target_url)
+            writer.update_step("verify", progress_pct=80)
+            diffs = verify_row_counts(duckdb_path, target_url)
+        else:  # to == "cloud"
+            writer.update_step("backup", progress_pct=30)
+            try:
+                backup_sidecar_pg("agnes-postgres-1", backups_dir)
+            except Exception as e:
+                # Backup failure is non-fatal — host applier may have
+                # already brought postgres down, or pg_dump is missing
+                # in this image. Log via job state and proceed; the
+                # source PG keeps its data and is rolled back to on
+                # error anyway.
+                _log_backup_skip(writer, str(e))
+
+            writer.update_step("data_copy", progress_pct=40)
+            copy_summary = copy_pg_to_pg(source_url, target_url)
+
+            writer.update_step("verify", progress_pct=80)
+            diffs = verify_pg_row_counts(source_url, target_url)
+
         if diffs:
             writer.mark_failed(
                 step="verify",
@@ -314,8 +473,9 @@ def main(
             )
             return 1
 
-        writer.update_step("backup", progress_pct=90)
-        backup_duckdb(duckdb_path, backups_dir)
+        if to == "side_car":
+            writer.update_step("backup", progress_pct=90)
+            backup_duckdb(duckdb_path, backups_dir)
 
         writer.update_step("flip_backend", progress_pct=95)
         target_state = BackendState(to)
@@ -340,6 +500,34 @@ def main(
         return 1
 
 
+def _log_backup_skip(writer: JobWriter, reason: str) -> None:
+    """Annotate the job file with a non-fatal backup skip."""
+    data = writer._read()
+    data.setdefault("warnings", []).append({
+        "step": "backup",
+        "message": f"backup skipped: {reason}",
+    })
+    writer._write(data)
+
+
+def _resolve_source_url_from_instance_yaml() -> str | None:
+    """Read ``database.url`` from /data/state/instance.yaml.
+
+    Default source for ``--to cloud`` when the applier hasn't passed
+    ``--source-url`` explicitly. Returns None if the file doesn't exist
+    or lacks the key — caller decides whether to error.
+    """
+    import yaml as _yaml
+    overlay = Path(os.environ.get("DATA_DIR", "/data")) / "state" / "instance.yaml"
+    if not overlay.exists():
+        return None
+    try:
+        data = _yaml.safe_load(overlay.read_text()) or {}
+    except Exception:
+        return None
+    return (data.get("database") or {}).get("url")
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -347,10 +535,18 @@ if __name__ == "__main__":
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--to", choices=["side_car", "cloud"], required=True)
     parser.add_argument("--target-url", required=True)
+    parser.add_argument(
+        "--source-url",
+        help="PG source URL for --to=cloud. Defaults to instance.yaml's database.url.",
+    )
     parser.add_argument("--duckdb-path", type=Path, default=Path("/data/state/system.duckdb"))
     parser.add_argument("--jobs-dir", type=Path, default=Path("/data/state/db-jobs"))
     parser.add_argument("--backups-dir", type=Path, default=Path("/data/state/backups"))
     args = parser.parse_args()
+
+    source_url = args.source_url
+    if args.to == "cloud" and not source_url:
+        source_url = _resolve_source_url_from_instance_yaml()
 
     sys.exit(main(
         job_id=args.job_id,
@@ -359,4 +555,5 @@ if __name__ == "__main__":
         duckdb_path=args.duckdb_path,
         jobs_dir=args.jobs_dir,
         backups_dir=args.backups_dir,
+        source_url=source_url,
     ))

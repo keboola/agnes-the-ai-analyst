@@ -156,6 +156,26 @@ SOURCE_BACKEND=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).
 
 IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 
+# For side_car → cloud, pass the current side-car URL as --source-url.
+# Migrator's fallback reads instance.yaml, but the file already says
+# *_in_progress at this point so the explicit pass is safer.
+SOURCE_URL_ARGS=()
+if [ "$TARGET_BACKEND" = "cloud" ]; then
+    SIDECAR_URL=$(python3 -c '
+import yaml, sys
+data = yaml.safe_load(open("/data/state/instance.yaml.bak", encoding="utf-8")) if __import__("os").path.exists("/data/state/instance.yaml.bak") else None
+if not data:
+    data = yaml.safe_load(open("/data/state/instance.yaml")) or {}
+print((data.get("database") or {}).get("url") or "")
+')
+    if [ -z "$SIDECAR_URL" ]; then
+        # Fallback for the standard side-car container — same string
+        # the API endpoint composes for side-car migrations.
+        SIDECAR_URL="postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes"
+    fi
+    SOURCE_URL_ARGS=( --source-url "$SIDECAR_URL" )
+fi
+
 # 1. Stop the app + scheduler so DuckDB releases the file lock.
 docker stop agnes-app-1 agnes-scheduler-1 >/dev/null 2>&1 || true
 
@@ -179,6 +199,7 @@ docker run --rm \
         --job-id   "$JOB_ID" \
         --to       "$TARGET_BACKEND" \
         --target-url "$TARGET_URL" \
+        "${SOURCE_URL_ARGS[@]}" \
         --duckdb-path /data/state/system.duckdb \
         --jobs-dir   "$JOBS_DIR" \
         --backups-dir /data/state/backups

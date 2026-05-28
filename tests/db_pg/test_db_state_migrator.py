@@ -131,3 +131,63 @@ def test_main_duckdb_to_side_car_end_to_end(tmp_path, pg_engine, monkeypatch):
     state, url = read_backend_state()
     assert state == BackendState.SIDE_CAR
     assert url == str(pg_engine.url)
+
+
+def test_copy_pg_to_pg_idempotent_same_url(tmp_path, pg_engine):
+    """copy_pg_to_pg(url, url) — copying the schema onto itself is a no-op.
+
+    Smoke test guarding the side_car → cloud path; the row-handling
+    logic (JSON cast, ARRAY coerce, NOT NULL default sub) is shared
+    with the DuckDB path, so the dedicated tests on that path cover
+    the per-column edge cases. Real cross-host PG→PG verification
+    happens live on agnes-dev with a Cloud SQL target.
+    """
+    import sqlalchemy as sa
+    from src.db_pg import Base
+    from scripts.db_state_migrator import copy_pg_to_pg, verify_pg_row_counts
+
+    # Create the empty schema on the test PG.
+    Base.metadata.create_all(pg_engine)
+    url = str(pg_engine.url)
+
+    # Seed a row in source so we have something non-trivial to copy.
+    with pg_engine.begin() as conn:
+        conn.execute(sa.text(
+            "INSERT INTO users (id, email, name) VALUES ('u1', 'a@x', 'A')"
+        ))
+
+    summary = copy_pg_to_pg(url, url)
+    assert summary["tables_migrated"] > 0
+    # Idempotent — re-running yields the same row count.
+    summary2 = copy_pg_to_pg(url, url)
+    assert summary2["rows_total"] == summary["rows_total"]
+
+    # Verification reports no diffs.
+    diffs = verify_pg_row_counts(url, url)
+    assert diffs == []
+
+
+def test_main_to_cloud_requires_source_url(tmp_path):
+    """main(--to=cloud) without source_url raises ValueError.
+
+    The applier passes --source-url explicitly; CLI fallback reads
+    instance.yaml. If neither is set, fail loud rather than silently
+    re-migrate from DuckDB (the v6 footgun we fixed in v7).
+    """
+    from scripts.db_state_migrator import main
+
+    rc = main(
+        job_id="job-cloud-1",
+        to="cloud",
+        target_url="postgresql+psycopg://x:y@z/q",
+        duckdb_path=tmp_path / "system.duckdb",
+        jobs_dir=tmp_path / "db-jobs",
+        backups_dir=tmp_path / "backups",
+        source_url=None,
+    )
+    # main() catches the exception and writes failed status; rc=1.
+    assert rc == 1
+    import json
+    job = json.loads((tmp_path / "db-jobs" / "job-cloud-1.json").read_text())
+    assert job["status"] == "failed"
+    assert "source-url" in job["error"]["message"].lower()
