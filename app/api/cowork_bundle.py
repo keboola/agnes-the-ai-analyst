@@ -199,7 +199,7 @@ def _bundle_mcp_server_py() -> str:
         Claude has Agnes tools from the very first session — no Terminal needed.
         \"\"\"
         from __future__ import annotations
-        import json, os, pathlib, site, subprocess as _sp, sys
+        import json, pathlib, site, subprocess as _sp, sys, threading
 
         HERE = pathlib.Path(__file__).resolve().parent
         BUNDLE_FILE = HERE / "agnes-bundle.json"
@@ -224,37 +224,93 @@ def _bundle_mcp_server_py() -> str:
             except Exception:
                 pass  # best-effort; setup.py will fix it on next hook run
 
-        # ── 2. Ensure the agnes package is installed ─────────────────────────
-        # Try the import directly; on ImportError pip-install and add the user
-        # site-packages dir to sys.path without re-exec (avoids MCP timeout).
-        def _ensure_agnes():
-            try:
-                from cli.mcp.server import run as _r
-                return _r
-            except ImportError:
-                pass
+        # ── 2. Fast path: Agnes already installed → start full MCP server ─────
+        try:
+            from cli.mcp.server import run as _run_mcp
+            _run_mcp()   # blocking; process stays here
+            sys.exit(0)
+        except ImportError:
+            pass
+
+        # ── 3. Agnes not installed — placeholder MCP + background pip install ──
+        # Claude Code has a short MCP-init timeout; we must respond to
+        # `initialize` immediately.  Start a minimal pure-stdlib server now,
+        # install agnes-the-ai-analyst in a background thread, then tell the
+        # user to restart Claude Code once the install is done.
+        _done  = threading.Event()
+        _err: list[str] = []
+
+        def _bg() -> None:
             try:
                 _sp.run(
                     [sys.executable, "-m", "pip", "install",
                      "--quiet", "--user", "agnes-the-ai-analyst"],
-                    check=True,
-                    stdout=_sp.DEVNULL,
+                    check=True, stdout=_sp.DEVNULL,
                 )
+                _user = site.getusersitepackages()
+                if _user not in sys.path:
+                    sys.path.insert(0, _user)
             except Exception as e:
-                print(f"Agnes: pip install failed: {e}", file=sys.stderr)
-                sys.exit(1)
-            user_site = site.getusersitepackages()
-            if user_site not in sys.path:
-                sys.path.insert(0, user_site)
-            try:
-                from cli.mcp.server import run as _r
-                return _r
-            except ImportError as e:
-                print(f"Agnes: import failed after install: {e}", file=sys.stderr)
-                sys.exit(1)
+                _err.append(str(e))
+            finally:
+                _done.set()
 
-        # ── 3. Run the MCP server ─────────────────────────────────────────────
-        _ensure_agnes()()
+        threading.Thread(target=_bg, daemon=True).start()
+
+        def _send(obj: dict) -> None:
+            sys.stdout.write(json.dumps(obj) + "\\n")
+            sys.stdout.flush()
+
+        _TOOL = {
+            "name": "status",
+            "description": (
+                "Check Agnes setup status. Agnes is installing in the background. "
+                "Call this to see if the install is done, then restart Claude Code."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+
+        for _raw in sys.stdin:
+            _raw = _raw.strip()
+            if not _raw:
+                continue
+            try:
+                _msg = json.loads(_raw)
+            except ValueError:
+                continue
+            _m  = _msg.get("method", "")
+            _id = _msg.get("id")
+            if _m == "initialize":
+                _send({"jsonrpc": "2.0", "id": _id, "result": {
+                    "protocolVersion": _msg.get("params", {}).get(
+                        "protocolVersion", "2024-11-05"
+                    ),
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "Agnes", "version": "installing"},
+                }})
+            elif _m == "tools/list":
+                _send({"jsonrpc": "2.0", "id": _id, "result": {"tools": [_TOOL]}})
+            elif _m == "tools/call":
+                if _err:
+                    _text = (
+                        f"Agnes install failed: {_err[0]}\\n"
+                        "Open Terminal and run: pip install agnes-the-ai-analyst"
+                    )
+                elif _done.is_set():
+                    _text = (
+                        "Agnes installed! Restart Claude Code to load all Agnes tools."
+                    )
+                else:
+                    _text = (
+                        "Agnes is installing in the background (first run takes ~60s). "
+                        "Restart Claude Code when done."
+                    )
+                _send({"jsonrpc": "2.0", "id": _id, "result": {
+                    "content": [{"type": "text", "text": _text}]
+                }})
+            elif _id is not None:
+                _send({"jsonrpc": "2.0", "id": _id,
+                       "error": {"code": -32601, "message": "Method not found"}})
     """)
 
 
@@ -496,9 +552,17 @@ def _bundle_claude_md(server_url: str, user_email: str, expires_at: datetime) ->
         - **Do NOT ask the user to install anything or run terminal commands.**
           The Agnes package installs itself automatically in the background.
         - **Do NOT ask about the Agnes CLI.** Everything works through MCP.
-        - If the Agnes tools aren't responding yet, say:
-          > "Agnes is still starting up. Please wait a moment and ask again,
-          > or restart this application if it persists."
+
+        ### If only a `status` tool is available (first-time setup)
+
+        Agnes is still installing its packages. Call `status()` to check progress,
+        then tell the user:
+
+        > "Agnes is installing in the background (first run ~60s). I'll let you know
+        > when it's ready — just restart Claude Code once the install is done and
+        > all Agnes tools will be available."
+
+        Do NOT try to use Bash for data access. Do NOT ask for Terminal commands.
 
         ## Typical workflow
 
