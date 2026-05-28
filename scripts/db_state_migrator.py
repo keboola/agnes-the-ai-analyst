@@ -27,6 +27,27 @@ from pathlib import Path
 from typing import Any
 
 
+def _bounded_engine(url: str):
+    """Return a SQLAlchemy engine with conservative network + query
+    timeouts. The migrator runs unattended via the host applier; an
+    unreachable target (DNS, firewall, dead SQL Proxy) must NOT hang
+    indefinitely. ``connect_timeout`` covers the initial handshake;
+    ``statement_timeout`` (PG-side) caps any single query at 5 min,
+    enough for the heaviest tables in the current schema but short
+    enough to surface a runaway as a clear error.
+    """
+    import sqlalchemy as sa
+    return sa.create_engine(
+        url,
+        connect_args={
+            "connect_timeout": 10,
+            "options": "-c statement_timeout=300000",  # 5 min in ms
+        },
+        pool_pre_ping=True,
+        pool_recycle=1800,
+    )
+
+
 class JobStatus(StrEnum):
     RUNNING = "running"
     SUCCESS = "success"
@@ -168,7 +189,7 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
 
     duck_conn = duckdb.connect(str(duckdb_path), read_only=True)
     try:
-        pg_engine = sa.create_engine(target_url)
+        pg_engine = _bounded_engine(target_url)
         try:
             reports = run_all(duck_conn, pg_engine, validate=True)
         finally:
@@ -245,8 +266,8 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
         _substitute_default,
     )
 
-    source = sa.create_engine(source_url)
-    target = sa.create_engine(target_url)
+    source = _bounded_engine(source_url)
+    target = _bounded_engine(target_url)
     rows_total = 0
     tables_migrated = 0
     try:
@@ -314,8 +335,8 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
     from src.db_pg import Base
 
     diffs: list[dict] = []
-    source = sa.create_engine(source_url)
-    target = sa.create_engine(target_url)
+    source = _bounded_engine(source_url)
+    target = _bounded_engine(target_url)
     try:
         for table in Base.metadata.sorted_tables:
             tname = table.name
@@ -375,7 +396,7 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
     tables = [t.name for t in Base.metadata.sorted_tables]
 
     duck_conn = _duckdb.connect(str(duckdb_path))
-    pg_engine = sa.create_engine(target_url)
+    pg_engine = _bounded_engine(target_url)
     try:
         for table in tables:
             try:

@@ -284,3 +284,18 @@ def test_main_writes_duckdb_backup_before_copy(tmp_path, pg_engine, monkeypatch)
     assert rc == 1
     backups = list(backups_dir.glob("duckdb-pre-sidecar-*.duckdb.gz"))
     assert backups, "backup file should exist even though copy failed"
+
+
+def test_bounded_engine_fails_fast_on_unreachable(tmp_path):
+    """A bogus host must error within ~connect_timeout, not hang.
+    The test asserts the engine raises within 15s end-to-end —
+    plenty of headroom over the 10s connect_timeout."""
+    import time, pytest, sqlalchemy as sa
+    from scripts.db_state_migrator import _bounded_engine
+    eng = _bounded_engine("postgresql+psycopg://x:y@10.255.255.1:5432/nope")
+    t0 = time.monotonic()
+    with pytest.raises((sa.exc.OperationalError, sa.exc.DBAPIError)):
+        with eng.connect() as c:
+            c.execute(sa.text("SELECT 1"))
+    elapsed = time.monotonic() - t0
+    assert elapsed < 15, f"connect_timeout did not fire within 15s, took {elapsed:.1f}s"
