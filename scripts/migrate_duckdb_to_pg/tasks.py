@@ -72,7 +72,13 @@ _JSON_COLUMNS: frozenset[tuple[str, str]] = frozenset(
 def _resolved_columns(
     table_name: str, duck_conn: duckdb.DuckDBPyConnection
 ) -> List[str]:
-    """Return ordered column list for *table_name* from DuckDB information_schema."""
+    """Return ordered column list for *table_name* from DuckDB information_schema.
+
+    Returns ``[]`` when the table does not exist in DuckDB — this is a valid
+    state when PG has newer tables (added by alembic migrations) that the
+    source DuckDB instance has never had. The caller treats ``[]`` as an
+    empty source (0 rows to copy).
+    """
     rows = duck_conn.execute(
         "SELECT column_name FROM information_schema.columns "
         f"WHERE table_name = '{table_name}' AND table_schema = 'main' "
@@ -81,8 +87,13 @@ def _resolved_columns(
     if rows:
         return [r[0] for r in rows]
     # Fallback: PRAGMA (DuckDB extension tables may not appear in
-    # information_schema on all versions)
-    pragma = duck_conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
+    # information_schema on all versions). Catch CatalogException
+    # so a table that exists in PG but not in DuckDB returns [] rather
+    # than raising — callers treat [] as "empty source, nothing to copy".
+    try:
+        pragma = duck_conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
+    except Exception:
+        return []
     return [r[1] for r in pragma]
 
 
@@ -294,6 +305,11 @@ class GenericCopyTask:
     ) -> int:
         """Copy rows from DuckDB to PG.  Returns number of rows considered."""
         columns = _resolved_columns(self.table_name, duck_conn)
+        if not columns:
+            # Table does not exist in DuckDB — PG-only table added by a
+            # later alembic migration. Nothing to copy; this is not an error.
+            log.info("migrate %s: table absent in DuckDB, skipping (0 rows)", self.table_name)
+            return 0
 
         # Probe for DuckDB-only columns that hold data. Silent column
         # drop is data loss; force the operator to either land the
@@ -369,11 +385,21 @@ class GenericCopyTask:
         duck_conn: duckdb.DuckDBPyConnection,
         pg_engine: Engine,
     ) -> Dict[str, Any]:
-        """Compare PK-set checksums + row counts between DuckDB and PG."""
+        """Compare PK-set checksums + row counts between DuckDB and PG.
+
+        When the table does not exist in DuckDB (PG-only table added by a
+        later alembic migration), ``duck_rows = 0`` is used so the
+        validation passes iff PG also has 0 rows — which it always will,
+        since :meth:`run` already skipped the copy for this table.
+        """
         pk_select = ", ".join(self.pk_columns)
-        duck_rows = duck_conn.execute(
-            f"SELECT {pk_select} FROM {self.source_table}"
-        ).fetchall()
+        try:
+            duck_rows = duck_conn.execute(
+                f"SELECT {pk_select} FROM {self.source_table}"
+            ).fetchall()
+        except Exception:
+            # Table absent in DuckDB — treat as empty source.
+            duck_rows = []
         duck_count = len(duck_rows)
 
         with pg_engine.connect() as conn:

@@ -279,17 +279,24 @@ def test_run_all_reports_per_table_error(tmp_path, pg_with_schema):
     reports (default), so the migrator exited 0 even on hard failure,
     the applier read MIG_RC=0, flipped the backend, and the app booted
     against a partially-populated PG.
+
+    We seed a row in audit_log so there is data to copy, then drop the PG
+    table to force a real INSERT-time failure. An empty source would return
+    0 rows silently (nothing to insert = no error), so we need actual data.
     """
     import duckdb
     from src.db import _ensure_schema
+    from src.repositories.audit import AuditRepository
     from scripts.migrate_duckdb_to_pg import run_all
 
     duck = duckdb.connect(str(tmp_path / "src.duckdb"))
     _ensure_schema(duck)
-    # Drop a PG table to force per-table failure on copy.
+    # Seed a row so the copy actually tries to INSERT.
+    AuditRepository(duck).log(user_id="u1", action="test.event", correlation_id="c-1")
+    # Drop the PG table to force per-table failure on copy.
     with pg_with_schema.connect() as conn:
         from sqlalchemy import text as sa_text
-        conn.execute(sa_text("DROP TABLE IF EXISTS users CASCADE"))
+        conn.execute(sa_text("DROP TABLE IF EXISTS audit_log CASCADE"))
         conn.commit()
 
     reports = run_all(duck, pg_with_schema, validate=False)
@@ -386,3 +393,40 @@ def test_audit_log_timestamp_preserved_when_present(tmp_path, pg_with_schema):
     assert row.timestamp == original
     duck.close()
     duck.close()
+
+
+def test_copy_duckdb_to_pg_summary_lists_failed_tables(tmp_path, pg_with_schema):
+    """copy_duckdb_to_pg currently silently drops failed-table reports
+    from its summary (the ``if 'error' not in r`` filter). Operators
+    + verify both then see ``tables_migrated == len(reports)`` and
+    proceed. The summary must list failures explicitly.
+
+    We seed audit_log with a row so the copy for that table actually
+    touches PG, then drop the audit_log table from PG to force a
+    per-table failure that is non-empty (users and most tables are
+    empty in the seed, so a missing PG table silently copies 0 rows).
+    """
+    import duckdb
+    from sqlalchemy import text as sa_text
+    from src.db import _ensure_schema
+    from src.repositories.audit import AuditRepository
+    from scripts.db_state_migrator import copy_duckdb_to_pg
+
+    duck_path = tmp_path / "src.duckdb"
+    duck = duckdb.connect(str(duck_path))
+    _ensure_schema(duck)
+    # Seed a row so the copy actually tries to INSERT into PG.
+    AuditRepository(duck).log(user_id="u1", action="test.event", correlation_id="c-1")
+    duck.close()
+
+    # Drop the target table to force a per-table error on copy.
+    with pg_with_schema.connect() as conn:
+        conn.execute(sa_text("DROP TABLE IF EXISTS audit_log CASCADE"))
+        conn.commit()
+
+    summary = copy_duckdb_to_pg(duck_path, str(pg_with_schema.url))
+    assert summary.get("tables_failed"), summary
+    assert "audit_log" in [t["table"] for t in summary["tables_failed"]]
+    # Shape: each entry must carry both keys.
+    for entry in summary["tables_failed"]:
+        assert "table" in entry and "error" in entry, entry

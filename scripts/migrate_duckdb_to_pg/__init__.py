@@ -189,16 +189,35 @@ def run_all(
     dry_run: bool = False,
     validate: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Run every registered task (or a subset by ``only``)."""
+    """Run every registered task (or a subset by ``only``).
+
+    Every task produces exactly one entry in the returned list:
+    - On copy failure: ``{"table": ..., "error": ...}`` (copy exception caught).
+    - On validate failure: ``{"table": ..., "error": ...}`` (validate exception caught).
+    - On success with validate=True: full validate report (``duckdb_rows``,
+      ``pg_rows``, ``checksum_match``, etc.).
+    - On success with validate=False: ``{"table": ..., "ok": True}`` marker,
+      so callers can count ``tables_migrated`` without validation overhead.
+
+    The consistent per-task entry contract means callers like
+    :func:`~scripts.db_state_migrator.copy_duckdb_to_pg` can always split
+    reports into ``ok`` / ``err`` buckets by checking for an ``"error"`` key.
+    """
     selected = [t for t in TASKS if not only or t.target_table in only]
     reports: List[Dict[str, Any]] = []
     for task in selected:
         try:
             run_task(task, duck_conn, pg_engine, dry_run=dry_run)
-        except Exception as exc:  # pragma: no cover — logged for operator
+        except Exception as exc:
             log.exception("task %s failed: %s", task.source_table, exc)
             reports.append({"table": task.target_table, "error": str(exc)})
             continue
         if validate:
-            reports.append(validate_task(task, duck_conn, pg_engine))
+            try:
+                reports.append(validate_task(task, duck_conn, pg_engine))
+            except Exception as exc:
+                log.exception("validate %s failed: %s", task.source_table, exc)
+                reports.append({"table": task.target_table, "error": str(exc)})
+        else:
+            reports.append({"table": task.target_table, "ok": True})
     return reports

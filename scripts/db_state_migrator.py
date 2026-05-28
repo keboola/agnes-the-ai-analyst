@@ -197,11 +197,15 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
     finally:
         duck_conn.close()
 
-    rows_total = sum(r.get("pg_rows", 0) for r in reports if "error" not in r)
-    tables_migrated = sum(1 for r in reports if "error" not in r)
+    ok = [r for r in reports if "error" not in r]
+    err = [r for r in reports if "error" in r]
     return {
-        "rows_total": rows_total,
-        "tables_migrated": tables_migrated,
+        "rows_total": sum(r.get("pg_rows", 0) for r in ok),
+        "tables_migrated": len(ok),
+        "tables_failed": [
+            {"table": r["table"], "error": str(r["error"])}
+            for r in err
+        ],
     }
 
 
@@ -322,7 +326,11 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
         source.dispose()
         target.dispose()
 
-    return {"rows_total": rows_total, "tables_migrated": tables_migrated}
+    # tables_failed is always empty here: copy_pg_to_pg raises on the
+    # first per-table error rather than collecting them (unlike the
+    # DuckDB path which uses run_all). Included for API shape parity with
+    # copy_duckdb_to_pg so main() can apply the same guard uniformly.
+    return {"rows_total": rows_total, "tables_migrated": tables_migrated, "tables_failed": []}
 
 
 def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
@@ -556,6 +564,20 @@ def main(
             writer.update_step("data_copy", progress_pct=40)
             copy_summary = copy_duckdb_to_pg(duckdb_path, target_url)
 
+            if copy_summary.get("tables_failed"):
+                writer.mark_failed(
+                    step="data_copy",
+                    error_class="CopyTableError",
+                    error_message=(
+                        "Per-table copy failed: "
+                        + ", ".join(
+                            f"{t['table']}={t['error']!r}"
+                            for t in copy_summary["tables_failed"]
+                        )
+                    ),
+                )
+                return 1
+
             writer.update_step("verify", progress_pct=80)
             diffs = verify_row_counts(duckdb_path, target_url)
         else:
@@ -573,6 +595,20 @@ def main(
 
             writer.update_step("data_copy", progress_pct=40)
             copy_summary = copy_pg_to_pg(source_url, target_url)
+
+            if copy_summary.get("tables_failed"):
+                writer.mark_failed(
+                    step="data_copy",
+                    error_class="CopyTableError",
+                    error_message=(
+                        "Per-table copy failed: "
+                        + ", ".join(
+                            f"{t['table']}={t['error']!r}"
+                            for t in copy_summary["tables_failed"]
+                        )
+                    ),
+                )
+                return 1
 
             writer.update_step("verify", progress_pct=80)
             diffs = verify_pg_row_counts(source_url, target_url)
