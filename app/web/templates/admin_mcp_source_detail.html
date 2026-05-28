@@ -554,16 +554,24 @@ document.getElementById("introspect-btn").addEventListener("click", async () => 
 document.getElementById("save-tools-btn").addEventListener("click", async () => {
   const btn = document.getElementById("save-tools-btn");
   const rows = document.querySelectorAll("#discover-body tr[data-tool-name]");
-  // Collect selections
+  // Collect selections + run client-side validation. Materialize without
+  // a schedule used to silently 400 — we now block the save up-front and
+  // tell the user exactly which row is missing data.
   const selections = [];
+  const validationErrors = [];
   rows.forEach(row => {
     const name = row.dataset.toolName;
     const mode = row.querySelector(`input[type="radio"][name="mode-${name}"]:checked`).value;
     if (mode === "skip") return;
     const exposedName = row.querySelector('[data-field="exposed_name"]').value.trim();
     const schedule = row.querySelector('[data-field="schedule"]').value.trim();
+    if (mode === "materialize" && !schedule) {
+      validationErrors.push(name);
+      return;
+    }
     const proposal = proposals.find(p => p.name === name) || {};
     selections.push({
+      __row_name: name,
       source_id: SOURCE_ID,
       original_name: name,
       exposed_name: exposedName || name,
@@ -574,13 +582,23 @@ document.getElementById("save-tools-btn").addEventListener("click", async () => 
       enabled: true,
     });
   });
+  if (validationErrors.length) {
+    toast(
+      `Schedule is required for materialize mode. Add one for: ${validationErrors.join(", ")}.`,
+      "error",
+    );
+    return;
+  }
   if (!selections.length) {
     toast("Nothing to save — every tool is set to skip.", "error");
     return;
   }
   btn.disabled = true;
-  let ok = 0, fail = 0;
+  let ok = 0;
+  const failures = [];
   for (const sel of selections) {
+    const rowName = sel.__row_name;
+    delete sel.__row_name;
     // tool_id is server-generated; the contract expects it but we pass a deterministic
     // composite so the server can de-dupe (a re-save on the same original_name overwrites).
     sel.tool_id = `${SOURCE_ID}__${sel.original_name}`;
@@ -590,16 +608,28 @@ document.getElementById("save-tools-btn").addEventListener("click", async () => 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(sel),
       });
-      if (r.ok) ok++; else fail++;
-    } catch (_) {
-      fail++;
+      if (r.ok) {
+        ok++;
+      } else {
+        // Surface the server's detail string in the per-row error toast.
+        let detail = `HTTP ${r.status}`;
+        try {
+          const body = await r.json();
+          if (body && body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+        } catch (_) { /* not JSON */ }
+        failures.push({ row: rowName, detail });
+      }
+    } catch (err) {
+      failures.push({ row: rowName, detail: err.message || String(err) });
     }
   }
   btn.disabled = false;
-  if (fail === 0) {
+  if (!failures.length) {
     toast(`Saved ${ok} tool(s).`, "success");
   } else {
-    toast(`Saved ${ok}, ${fail} failed.`, "error");
+    const head = failures.length === 1 ? "1 tool failed:" : `${failures.length} tools failed:`;
+    const summary = failures.map(f => `${f.row} — ${f.detail}`).join("; ");
+    toast(`${head} ${summary}`, "error");
   }
   await loadRegistered();
 });
