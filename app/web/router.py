@@ -2465,6 +2465,44 @@ async def admin_marketplaces_page(
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
+# ── Inbound MCP source admin (RFC keboola/agnes-the-ai-analyst#461) ──
+#
+# Shell-only routes — every dynamic bit is fetched client-side from the
+# REST API under /api/admin/mcp-sources and /api/admin/mcp-tools (built in
+# parallel; contract pinned in the RFC §5). Keeping the server side this
+# thin means a contract drift only requires touching the templates' JS.
+@router.get("/admin/mcp-sources", response_class=HTMLResponse)
+async def admin_mcp_sources_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """List page for registered MCP sources."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_mcp_sources.html", ctx)
+
+
+@router.get("/admin/mcp-sources/{source_id}", response_class=HTMLResponse)
+async def admin_mcp_source_detail_page(
+    source_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Detail page for a single MCP source — config, introspect, curation."""
+    ctx = _build_context(request, user=user, source_id=source_id)
+    return templates.TemplateResponse(request, "admin_mcp_source_detail.html", ctx)
+
+
+@router.get("/admin/mcp-tools/{tool_id}/grants", response_class=HTMLResponse)
+async def admin_mcp_tool_grants_page(
+    tool_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Grant-management page for a passthrough MCP tool."""
+    ctx = _build_context(request, user=user, tool_id=tool_id)
+    return templates.TemplateResponse(request, "admin_mcp_tool_grants.html", ctx)
+
+
 # Scheduler-driven admin actions audited by app/api/admin.py and
 # app/api/marketplaces.py. Keep in sync with the JOBS list in
 # services/scheduler/__main__.py.
