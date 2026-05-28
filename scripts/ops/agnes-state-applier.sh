@@ -125,7 +125,7 @@ case "$TARGET" in
             # we'll launch in a moment opens a TCP connection on
             # postgres:5432 and we'd rather fail fast here than have
             # the migrator timeout on its first ALEMBIC operation.
-            for i in $(seq 1 30); do
+            for _ in $(seq 1 30); do
                 docker exec agnes-postgres-1 pg_isready -U agnes >/dev/null 2>&1 && break
                 sleep 2
             done
