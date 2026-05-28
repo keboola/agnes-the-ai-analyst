@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Agnes MCP server (`agnes mcp` / `cli/mcp/server.py`).** FastMCP-based stdio server exposing seven tools to Claude: `catalog`, `schema`, `describe`, `query`, `query_local`, `pull`, `server_info`. Registered in `cli/main.py` as the `mcp` subcommand. Enables Claude Code / Claude Desktop to query Agnes data directly — no Bash tool, no CLI install required.
+- **HTTP MCP server (`app/api/mcp_http.py`).** SSE-transport MCP endpoint mounted at `/api/mcp/sse`. Exposes five server-side tools (`server_info`, `catalog`, `schema`, `describe`, `query`) over HTTP with PAT Bearer auth. Allows Claude Desktop's cowork VM — which cannot reach `localhost` — to connect when Agnes is deployed with a public URL. Cowork bundle `settings.json` now uses `type: sse` pointing at `{server_url}/api/mcp/sse` with the pre-baked PAT in headers; `setup.py` upgrades to the 90-day token on first run.
+- **Cowork bundle now includes `mcp_server.py` launcher.** Bundled pure-Python script bootstraps credentials from `agnes-bundle.json` on first open (before `setup.py` runs), auto-installs `agnes-the-ai-analyst` via pip if the package is absent, then starts the MCP server by direct import — no Agnes binary required.
+- **`setup.py` writes global Claude Desktop MCP config on first run.** On macOS, Windows, and Linux, `setup.py` now writes `mcpServers.agnes` with an absolute path to `mcp_server.py` into `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) / `%APPDATA%\Claude\claude_desktop_config.json` (Windows) / `~/.config/Claude/claude_desktop_config.json` (Linux) so the MCP server is picked up by Claude Desktop as well as Claude Code.
+- **`CLAUDE.md` in bundle rewrites agent guidance** — documents MCP tools in a table, instructs Claude to use MCP for all data queries and never ask the user to install anything or run terminal commands.
+
 ## [0.57.2] — 2026-06-01
 
 ### Added
