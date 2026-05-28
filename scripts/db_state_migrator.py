@@ -957,14 +957,33 @@ def main(
                 writer.update_step("backup", progress_pct=30)
                 if writer.check_cancel_requested():
                     raise JobCancelled(step="backup")
+                # B.4 — side_car → cloud: backup is a HARD requirement.
+                # Pre-fix the failure was swallowed as a warning and the
+                # operator discovered the missing recovery point only at
+                # restore time. Now a failed backup short-circuits the
+                # migration with mark_failed("BackupError"); operator
+                # fixes the path (e.g. ensures the side-car container is
+                # still up so pg_dump can reach it) and retries.
                 try:
                     backup_sidecar_pg("agnes-postgres-1", backups_dir)
                 except Exception as e:
-                    # Backup failure is non-fatal — applier may have
-                    # already brought postgres down, or pg_dump is
-                    # missing in this image. Log via job state and
-                    # proceed; the source PG keeps its data anyway.
-                    _log_backup_skip(writer, str(e))
+                    writer.mark_failed(
+                        step="backup",
+                        error_class="BackupError",
+                        error_message=(
+                            f"side-car backup failed: {e!s}. "
+                            "Side-car → cloud migration requires a successful "
+                            "pre-cutover dump; investigate (pg_dump available? "
+                            "container running? disk space?) and retry."
+                        ),
+                    )
+                    # Revert state to source like the generic except path.
+                    try:
+                        from src.db_state_machine import BackendState as _BS, write_backend_state as _wbs
+                        _wbs(_BS(source_backend), url=source_url)
+                    except Exception:
+                        pass
+                    return 1
 
             writer.update_step("data_copy", progress_pct=40)
             if writer.check_cancel_requested():

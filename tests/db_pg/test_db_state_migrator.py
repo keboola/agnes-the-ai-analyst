@@ -728,6 +728,51 @@ def test_backup_sidecar_pg_raises_on_timeout(tmp_path, monkeypatch):
     assert captured["timeout"] is not None and captured["timeout"] > 0
 
 
+def test_side_car_to_cloud_backup_failure_is_hard_fail(tmp_path, pg_engine, monkeypatch):
+    """B.4 — side_car → cloud must HARD-FAIL when backup_sidecar_pg
+    raises. Pre-fix the exception was swallowed as a warning and the
+    UI showed 'success' while the operator was missing a recovery
+    point at restore time.
+
+    Post-fix: backup_sidecar_pg exception -> mark_failed(class=
+    BackupError) + return 1. The operator must explicitly retry after
+    fixing the backup path.
+    """
+    import json
+
+    from scripts.db_state_migrator import main
+
+    # Force backup_sidecar_pg to raise.
+    def boom(*a, **kw):
+        raise RuntimeError("pg_dump connection refused")
+
+    monkeypatch.setattr(
+        "scripts.db_state_migrator.backup_sidecar_pg", boom
+    )
+    # Isolate state-machine overlay so the test doesn't touch /data.
+    monkeypatch.setattr(
+        "src.db_state_machine._OVERLAY_PATH",
+        tmp_path / "instance.yaml",
+    )
+
+    rc = main(
+        job_id="job-b4",
+        to="cloud",
+        target_url=str(pg_engine.url),
+        duckdb_path=tmp_path / "src.duckdb",  # unused for side_car source
+        jobs_dir=tmp_path / "db-jobs",
+        backups_dir=tmp_path / "backups",
+        source_url=str(pg_engine.url),
+        source_backend="side_car",
+    )
+    assert rc == 1, "side_car→cloud backup failure must return 1"
+
+    job = json.loads((tmp_path / "db-jobs" / "job-b4.json").read_text())
+    assert job["status"] == "failed"
+    assert job["error"]["class"] == "BackupError"
+    assert "side-car backup failed" in job["error"]["message"].lower()
+
+
 def test_pre_copy_scrubs_audit_log_pii(tmp_path, pg_engine):
     """H7 — historical audit_log rows with password/token/api_key in
     params must be scrubbed BEFORE copy so neither the migrated PG
