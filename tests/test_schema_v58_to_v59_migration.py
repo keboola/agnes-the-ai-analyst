@@ -47,7 +47,9 @@ def _columns(conn, table: str) -> set[str]:
 
 def test_schema_version_is_current():
     # v59 → v60: ``setup_tokens`` table for Agnes Cowork one-click setup.
-    assert SCHEMA_VERSION == 61
+    # v60 → v61: ``mcp_sources`` + ``tool_registry`` + ``tool_grants`` (Universal MCP).
+    # v61 → v62: ``mcp_secrets`` server-wide vault for MCP source auth.
+    assert SCHEMA_VERSION == 62
 
 def test_fresh_install_lands_at_or_past_v59(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))

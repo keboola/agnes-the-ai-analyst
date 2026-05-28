@@ -41,6 +41,7 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from app.secrets_vault import SharedSecretsRepository
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
 from src.repositories.audit import AuditRepository
@@ -443,6 +444,60 @@ async def delete_mcp_source(
         "mcp_source.delete",
         f"mcp_source:{source_id}",
         {"name": existing.get("name"), "tool_count": tool_count},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Source secret (server-wide vault) — RFC #461 §4
+# ---------------------------------------------------------------------------
+
+
+class SecretBody(BaseModel):
+    value: str
+
+
+@router.put("/mcp-sources/{source_id}/secret", status_code=204)
+async def set_mcp_source_secret(
+    source_id: str,
+    body: SecretBody,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Store (or rotate) the server-wide vault secret for ``source_id``.
+
+    The plaintext lives only in the request body — Fernet-encrypted at
+    rest in ``mcp_secrets``. ``connectors/mcp/client._lookup_secret_for_source``
+    pulls it on every call, falling back to the legacy
+    ``auth_secret_env`` lookup if the vault has no row, so an operator
+    can roll out the vault without a flag-day rewrite of source rows.
+    """
+    src_repo = MCPSourceRepository(conn)
+    if not src_repo.get(source_id):
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    if not body.value:
+        raise HTTPException(status_code=400, detail="secret value required")
+    SharedSecretsRepository(conn).upsert(source_id, body.value)
+    _audit(
+        conn, user["id"], "mcp_source.secret.set",
+        f"mcp_source:{source_id}", {},
+    )
+
+
+@router.delete("/mcp-sources/{source_id}/secret", status_code=204)
+async def delete_mcp_source_secret(
+    source_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Drop the vault row for ``source_id``. Source then falls back to
+    its ``auth_secret_env`` env-var, or to anonymous if neither is set."""
+    src_repo = MCPSourceRepository(conn)
+    if not src_repo.get(source_id):
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    SharedSecretsRepository(conn).delete(source_id)
+    _audit(
+        conn, user["id"], "mcp_source.secret.delete",
+        f"mcp_source:{source_id}", {},
     )
 
 
