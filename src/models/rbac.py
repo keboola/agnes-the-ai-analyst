@@ -89,6 +89,64 @@ class UserGroupMember(Base):
 
 
 class ResourceGrant(Base):
+    """Generic ``(group, resource_type, resource_id)`` access tuple.
+
+    Polymorphic by design: ``resource_id`` is a free-form string whose
+    schema is determined by the enum member persisted in
+    ``resource_type``. There is intentionally NO PG-level foreign key
+    from ``resource_id`` to the target entity table — see the
+    cross-type table below for why.
+
+    +------------------------+--------------------------------+----------------+
+    | resource_type          | resource_id shape              | target table   |
+    +========================+================================+================+
+    | ``marketplace_plugin`` | ``<slug>/<plugin_name>``       | composite —    |
+    |                        |                                | no surrogate   |
+    +------------------------+--------------------------------+----------------+
+    | ``table``              | ``<table_id>`` (UUID)          | table_registry |
+    +------------------------+--------------------------------+----------------+
+    | ``data_package``       | ``<package_id>`` (UUID)        | data_packages  |
+    +------------------------+--------------------------------+----------------+
+    | ``memory_domain``      | ``<memory_domain_id>`` (UUID)  | memory_domains |
+    +------------------------+--------------------------------+----------------+
+    | ``memory_item``        | ``<knowledge_item_id>`` (UUID) | knowledge_items|
+    +------------------------+--------------------------------+----------------+
+    | ``recipe``             | ``<recipe_id>`` (UUID)         | recipes        |
+    +------------------------+--------------------------------+----------------+
+
+    Why no FK (E.3 from round-2 review; cvrysanek's LOW finding):
+
+    1. ``marketplace_plugin`` uses a composite path that doesn't match
+       any single surrogate column on ``marketplace_plugins``. The
+       table's PK is ``(marketplace_id, name)``; the grant id is
+       ``"<slug>/<name>"`` where slug != marketplace_id. A FK would
+       require either denormalising the grant (split into two columns)
+       or denormalising the plugins table (add a ``slug_path`` column
+       with a CHECK that it stays consistent with id+name).
+    2. PG doesn't support polymorphic FKs natively. The five non-
+       marketplace types all target tables with stable surrogate
+       UUIDs, but a single FK constraint can only reference ONE
+       target table — encoding the per-type target requires either
+       five conditional CHECK-via-trigger constraints (verbose,
+       maintenance burden when adding a new resource type) or five
+       NULLable FK columns with a CHECK that exactly one is non-NULL
+       (verbose; requires migrating every existing grant row to split
+       resource_id into the right per-type column).
+    3. Orphan grants are an information-leakage non-issue today:
+       ``app.auth.access`` does the existence check at lookup time
+       (the resource list returned from ``list_blocks`` drops missing
+       entities), and the admin /access UI surfaces a per-grant
+       "no longer exists" badge so operators clean up at their pace.
+       The downside of orphan rows is purely cosmetic — they don't
+       grant access to anything that doesn't exist.
+
+    The pragmatic choice: keep the loose link, document why, and let
+    the application layer be the source of truth for FK enforcement.
+    A periodic admin "clean up orphan grants" job (currently manual
+    via /admin/access) is the cheapest way to bound the orphan
+    population if it becomes a real problem.
+    """
+
     __tablename__ = "resource_grants"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -96,6 +154,8 @@ class ResourceGrant(Base):
         String, ForeignKey("user_groups.id"), nullable=False
     )
     resource_type: Mapped[str] = mapped_column(String, nullable=False)
+    # Polymorphic — see class docstring for shape per ``resource_type``.
+    # Intentionally no FK; orphan cleanup is application-layer.
     resource_id: Mapped[str] = mapped_column(String, nullable=False)
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
