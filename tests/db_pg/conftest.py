@@ -163,6 +163,63 @@ def pg_engine(_pg_engine_session) -> Iterator[Engine]:
     yield _pg_engine_session
 
 
+# ---------------------------------------------------------------------------
+# Module-scoped alembic fixture (Phase 7.13)
+#
+# Running alembic upgrade head once per module (rather than once per test)
+# saves ~3-5 s per test.  Tests that need a clean slate TRUNCATE individual
+# tables (handled by the autouse _truncate_pg_user_tables fixture below)
+# rather than DROP/recreate the whole schema.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def pg_engine_with_schema(_pg_engine_session) -> Engine:
+    """Module-scoped: fresh schema + alembic head applied once per module.
+
+    The ``public`` schema is dropped and recreated once at the start of each
+    test module that requests this fixture — so two modules that both use it
+    get independent schemas without re-running the PG process.  Individual
+    tests rely on the autouse ``_truncate_pg_user_tables`` fixture to clear
+    data rows between runs.
+    """
+    from pathlib import Path
+    from alembic import command
+    from alembic.config import Config
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    _drop_user_schema(_pg_engine_session)
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = str(_pg_engine_session.url)
+    command.upgrade(cfg, "head")
+    return _pg_engine_session
+
+
+@pytest.fixture(autouse=True)
+def _truncate_pg_user_tables(request) -> Iterator[None]:
+    """Auto-applied per-test cleanup for tests that use
+    ``pg_engine_with_schema``.
+
+    Yields immediately (no setup cost) and on teardown TRUNCATEs all
+    ``public`` tables except ``alembic_version``, leaving the schema intact
+    so the module-scoped alembic fixture can be reused by the next test.
+
+    Tests that do NOT use ``pg_engine_with_schema`` are unaffected — the
+    early-return guard skips the teardown entirely.
+    """
+    yield
+    if "pg_engine_with_schema" not in request.fixturenames:
+        return
+    engine: Engine = request.getfixturevalue("pg_engine_with_schema")
+    with engine.begin() as conn:
+        rows = conn.execute(sa.text(
+            "SELECT tablename FROM pg_tables "
+            "WHERE schemaname = 'public' AND tablename != 'alembic_version'"
+        )).fetchall()
+        for (table,) in rows:
+            conn.execute(sa.text(f'TRUNCATE TABLE "{table}" CASCADE'))
+
+
 @pytest.fixture
 def pg_session(pg_engine) -> Iterator[Session]:
     """Per-test SQLAlchemy session over the per-test engine."""

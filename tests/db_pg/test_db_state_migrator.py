@@ -286,6 +286,65 @@ def test_main_writes_duckdb_backup_before_copy(tmp_path, pg_engine, monkeypatch)
     assert backups, "backup file should exist even though copy failed"
 
 
+def test_cancel_sentinel_during_data_copy_step(tmp_path, pg_engine, monkeypatch):
+    """Phase 7.4 — sentinel arrives mid-migration (after alembic has run,
+    during the data_copy call).  The migrator must observe the sentinel at
+    the next step boundary (verify), mark_cancelled, and return 0.
+
+    The existing cancel test in tests/test_db_state_migrator.py pre-creates
+    the sentinel BEFORE main() runs (boundary 0).  This test complements it
+    by exercising the late-stage boundary check that fires AFTER copy returns.
+    """
+    import json
+    import duckdb
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import main, copy_duckdb_to_pg
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.close()
+
+    jobs_dir = tmp_path / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    backups_dir = tmp_path / "backups"
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    job_id = "job-cancel-mid-copy"
+    orig_copy = copy_duckdb_to_pg
+
+    def copy_then_drop_sentinel(duck_path, target_url):
+        result = orig_copy(duck_path, target_url)
+        # Sentinel arrives after copy finishes — the next boundary check
+        # (verify) must trip it.
+        (jobs_dir / f"{job_id}.cancel").touch()
+        return result
+
+    monkeypatch.setattr(
+        "scripts.db_state_migrator.copy_duckdb_to_pg",
+        copy_then_drop_sentinel,
+    )
+
+    rc = main(
+        job_id=job_id,
+        to="side_car",
+        target_url=str(pg_engine.url),
+        duckdb_path=duck_path,
+        jobs_dir=jobs_dir,
+        backups_dir=backups_dir,
+    )
+    assert rc == 0, "cancellation is not a process failure"
+
+    job = json.loads((jobs_dir / f"{job_id}.json").read_text())
+    assert job["status"] == "cancelled", f"unexpected status: {job['status']}"
+    # The cancel must be observed at the verify boundary (first check after
+    # copy returns), NOT inside data_copy itself.
+    assert job["error"]["step"] == "verify", (
+        f"expected cancel at verify step, got: {job['error']['step']}"
+    )
+
+
 def test_bounded_engine_fails_fast_on_unreachable(tmp_path):
     """A bogus host must error within ~connect_timeout, not hang.
     The test asserts the engine raises within 15s end-to-end —

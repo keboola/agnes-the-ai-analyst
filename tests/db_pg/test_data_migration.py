@@ -395,6 +395,67 @@ def test_audit_log_timestamp_preserved_when_present(tmp_path, pg_with_schema):
     duck.close()
 
 
+def test_jsonb_dict_round_trip_through_full_copy(tmp_path, pg_engine_with_schema):
+    """Phase 7.1 — round-trip a Python dict through the entire
+    DuckDB → PG copy pipeline and assert it deserializes BACK to a dict
+    (not a literal string).
+
+    The v9 _normalize_for_pg fix made this work by ``json.dumps``-ing
+    dict/list values when the target column is JSONB.  Without that fix,
+    a dict repr (or even ``None``-safe insertion) would either raise or
+    land as a string, and a subsequent SELECT through SQLAlchemy would
+    return str instead of dict.  This is a regression guard for any future
+    "optimization" of the JSONB branch in
+    scripts/migrate_duckdb_to_pg/tasks.py.
+
+    Concrete coverage: audit_log.params — nullable JSONB — seeded with a
+    nested dict value.  We insert via raw DuckDB (as a JSON string, which
+    is what DuckDB stores) and read back via SQLAlchemy ORM after copy.
+
+    Uses the module-scoped ``pg_engine_with_schema`` fixture (alembic runs
+    once per module).  Row isolation provided by the autouse
+    ``_truncate_pg_user_tables`` conftest fixture.
+    """
+    import json
+    import duckdb
+    import sqlalchemy as sa
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import copy_duckdb_to_pg
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+
+    sentinel_value = {"deeply": {"nested": ["list", "values"]}, "answer": 42}
+    # DuckDB stores JSONB-equivalent columns as JSON text; provide the
+    # serialised form so DuckDB accepts it, then the migrator must
+    # deserialize+re-serialize correctly on the PG side.
+    conn.execute(
+        "INSERT INTO audit_log (id, timestamp, action, params) "
+        "VALUES (?, CURRENT_TIMESTAMP, ?, ?)",
+        ["test-jsonb-1", "test.jsonb_round_trip", json.dumps(sentinel_value)],
+    )
+    conn.close()
+
+    summary = copy_duckdb_to_pg(duck_path, str(pg_engine_with_schema.url))
+    assert not summary.get("tables_failed", []), summary
+
+    with pg_engine_with_schema.connect() as conn:
+        row = conn.execute(
+            sa.text("SELECT params FROM audit_log WHERE id = :id"),
+            {"id": "test-jsonb-1"},
+        ).fetchone()
+    assert row is not None, "Row not copied to PG"
+    value = row[0]
+    # psycopg auto-decodes JSONB columns → Python dict.  If we see a str
+    # here the value was double-serialized (JSONB regression).
+    assert not isinstance(value, str), (
+        f"JSONB column 'params' came back as string — double-serialization regression: {value!r}"
+    )
+    assert isinstance(value, dict), f"Expected dict, got {type(value)}: {value!r}"
+    assert value == sentinel_value, f"Round-trip value mismatch: {value!r}"
+
+
 def test_copy_duckdb_to_pg_summary_lists_failed_tables(tmp_path, pg_with_schema):
     """copy_duckdb_to_pg currently silently drops failed-table reports
     from its summary (the ``if 'error' not in r`` filter). Operators
