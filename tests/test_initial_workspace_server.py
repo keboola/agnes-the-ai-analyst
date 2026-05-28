@@ -2,6 +2,8 @@ import io
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from src.initial_workspace import (
     extract_zip_to_workspace,
     initialize_default_workspace,
@@ -30,12 +32,8 @@ def test_extract_zip_creates_files(tmp_path: Path):
 
 def test_extract_zip_rejects_traversal(tmp_path: Path):
     zip_bytes = _make_zip({"../escape.txt": b"x"})
-    try:
+    with pytest.raises(ValueError, match="unsafe"):
         extract_zip_to_workspace(zip_bytes, tmp_path)
-    except ValueError as exc:
-        assert "unsafe" in str(exc).lower()
-    else:
-        raise AssertionError("expected ValueError on traversal entry")
 
 
 def test_write_sentinel_records_metadata(tmp_path: Path):

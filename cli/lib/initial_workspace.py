@@ -37,7 +37,7 @@ from src.initial_workspace import (
     ExtractResult,
     extract_zip_to_workspace as _extract_zip_pure,
     initialize_workspace_from_template,
-    write_sentinel,
+    is_override_workspace,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,6 +219,29 @@ def download_zip(server_url: str, token: str) -> bytes:
     return resp.content
 
 
+def _render_unsafe_entry_error(exc: ValueError) -> None:
+    """Render a typed ``initial_workspace_unsafe_entry`` error and exit.
+
+    Single source of truth for the CLI's reaction to a ``ValueError``
+    raised by the pure ``extract_zip_to_workspace`` /
+    ``initialize_workspace_from_template`` — both call sites funnel
+    through here so the error shape stays consistent.
+    """
+    typer.echo(
+        render_error(
+            0,
+            {
+                "detail": {
+                    "kind": "initial_workspace_unsafe_entry",
+                    "hint": str(exc),
+                }
+            },
+        ),
+        err=True,
+    )
+    raise typer.Exit(1) from exc
+
+
 def extract_zip_to_workspace(
     zip_bytes: bytes, workspace: Path
 ) -> ExtractResult:
@@ -235,19 +258,8 @@ def extract_zip_to_workspace(
     try:
         return _extract_zip_pure(zip_bytes, workspace)
     except ValueError as exc:
-        typer.echo(
-            render_error(
-                0,
-                {
-                    "detail": {
-                        "kind": "initial_workspace_unsafe_entry",
-                        "hint": str(exc),
-                    }
-                },
-            ),
-            err=True,
-        )
-        raise typer.Exit(1) from exc
+        _render_unsafe_entry_error(exc)
+        raise  # unreachable — _render_unsafe_entry_error always raises typer.Exit
 
 
 def report_applied(
@@ -288,34 +300,6 @@ def report_applied(
         logger.exception("audit event /applied failed")
 
 
-def write_override_sentinel(
-    workspace: Path,
-    *,
-    agnes_version: str,
-    server_url: str,
-    template_source: Optional[str],
-    template_sha: Optional[str],
-) -> None:
-    """Write the extended sentinel that flags this workspace as an
-    override workspace. Read by ``cli.lib.override.is_override_workspace``
-    on every subsequent CLI invocation to short-circuit Agnes writers
-    that would otherwise clobber admin's content.
-
-    Path: ``<workspace>/.claude/init-complete``.
-
-    Delegates to :func:`src.initial_workspace.write_sentinel` with
-    ``override=True``.
-    """
-    write_sentinel(
-        workspace,
-        agnes_version=agnes_version,
-        server_url=server_url,
-        template_source=template_source,
-        template_sha=template_sha,
-        override=True,
-    )
-
-
 def apply_override(
     workspace: Path,
     status: StatusInfo,
@@ -346,8 +330,6 @@ def apply_override(
     Returns the :class:`ExtractResult` so the caller can include counts
     in its final summary.
     """
-    from cli.lib.override import is_override_workspace
-
     if not status.synced:
         typer.echo(
             render_error(
@@ -384,19 +366,8 @@ def apply_override(
             template_sha=status.template_sha,
         )
     except ValueError as exc:
-        typer.echo(
-            render_error(
-                0,
-                {
-                    "detail": {
-                        "kind": "initial_workspace_unsafe_entry",
-                        "hint": str(exc),
-                    }
-                },
-            ),
-            err=True,
-        )
-        raise typer.Exit(1) from exc
+        _render_unsafe_entry_error(exc)
+        raise  # unreachable — _render_unsafe_entry_error always raises typer.Exit
 
     report_applied(
         server_url,

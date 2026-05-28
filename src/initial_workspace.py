@@ -387,6 +387,10 @@ def is_override_workspace(workspace: Path) -> bool:
     False on missing / unreadable sentinel, on sentinel without an override
     key, and on sentinel with ``override`` set to anything other than
     literal ``true`` (case-insensitive).
+
+    Parser tolerates whitespace variants on either side of the ``:`` so a
+    manually-edited sentinel with extra spaces still reads correctly —
+    matches the pre-extraction behaviour from ``cli/lib/override.py``.
     """
     sentinel = workspace / ".claude" / "init-complete"
     if not sentinel.exists():
@@ -397,7 +401,10 @@ def is_override_workspace(workspace: Path) -> bool:
         return False
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.lower() == "override: true":
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        if key.strip().lower() == "override" and value.strip().lower() == "true":
             return True
     return False
 

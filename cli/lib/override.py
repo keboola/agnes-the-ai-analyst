@@ -28,8 +28,10 @@ keep the workspace in sync with their runtime data (plugin stack, new
 Agnes hook layouts, etc.) regardless of how the workspace was seeded.
 
 NB: this module is intentionally tiny. The CLI is widely imported and
-the override check fires on init paths, so we keep imports cheap
-(stdlib only — no YAML library).
+the override check fires on init paths, so we keep imports cheap (no
+heavy dependencies at module-load time — the sentinel parser stays
+stdlib-only, and ``is_override_workspace`` is re-exported from
+``src.initial_workspace`` whose own imports are likewise light).
 """
 
 from __future__ import annotations
