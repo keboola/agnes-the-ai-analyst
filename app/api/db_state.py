@@ -66,18 +66,34 @@ def _redact_url(url: str | None) -> str | None:
 
 
 def _current_job_id() -> str | None:
-    """Return ``job_id`` of any currently-running migration job, else None."""
+    """Return ``job_id`` of any currently-active migration job, else None.
+
+    "Active" = ``pending`` (queued, awaiting applier pickup) OR ``running``
+    (applier is driving the migrator subprocess). The pending state was
+    previously omitted from this check (B8), which made GET /state report no
+    current job during the ~30s applier-pickup window — the UI showed "no
+    migration in progress" while the state machine already sat at
+    ``*_in_progress``.
+
+    Running takes priority over pending: when both files exist (theoretically
+    impossible under normal lock discipline, but defensive), the UI should
+    surface the actively-executing work.
+    """
     jobs_dir = _jobs_dir()
     if not jobs_dir.exists():
         return None
+    pending: str | None = None
     for path in jobs_dir.glob("*.json"):
         try:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        if data.get("status") == "running":
+        status = data.get("status")
+        if status == "running":
             return data.get("job_id")
-    return None
+        if status == "pending" and pending is None:
+            pending = data.get("job_id")
+    return pending
 
 
 @router.get("/state", dependencies=[Depends(require_admin)])

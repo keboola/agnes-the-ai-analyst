@@ -573,6 +573,160 @@ def test_urls_alias_different_host_returns_false():
     assert _urls_alias(a, b) is False
 
 
+# ---------------------------------------------------------------------------
+# Task 2.5 — _current_job_id includes pending (BLOCKER B8)
+# ---------------------------------------------------------------------------
+
+
+def test_current_job_id_returns_pending_jobs(tmp_path, monkeypatch):
+    """_current_job_id must include status=pending (B8). Otherwise the
+    GET /state response is None during the ~30s window between POST
+    /migrate and the host applier picking up the job — UI shows 'no
+    migration' while the state machine says *_in_progress."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    import json as _json
+    jobs_dir = tmp_path / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True)
+    (jobs_dir / "job-pending.json").write_text(_json.dumps({
+        "job_id": "job-pending",
+        "status": "pending",
+        "source_backend": "duckdb",
+        "target_backend": "side_car",
+    }))
+
+    from app.api.db_state import _current_job_id
+    assert _current_job_id() == "job-pending"
+
+
+def test_current_job_id_returns_running_jobs(tmp_path, monkeypatch):
+    """The original contract still holds — running jobs are surfaced."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    import json as _json
+    jobs_dir = tmp_path / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True)
+    (jobs_dir / "job-running.json").write_text(_json.dumps({
+        "job_id": "job-running",
+        "status": "running",
+        "source_backend": "duckdb",
+        "target_backend": "side_car",
+    }))
+
+    from app.api.db_state import _current_job_id
+    assert _current_job_id() == "job-running"
+
+
+def test_current_job_id_ignores_terminal_jobs(tmp_path, monkeypatch):
+    """Success / failed / cancelled MUST NOT be reported as current —
+    those are history."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    import json as _json
+    jobs_dir = tmp_path / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True)
+    for status in ("success", "failed", "cancelled"):
+        (jobs_dir / f"job-{status}.json").write_text(_json.dumps({
+            "job_id": f"job-{status}",
+            "status": status,
+        }))
+
+    from app.api.db_state import _current_job_id
+    assert _current_job_id() is None
+
+
+def test_current_job_id_prefers_running_over_pending(tmp_path, monkeypatch):
+    """When both exist (an out-of-order pickup window where one job is
+    already running and another is queued behind it — should never
+    happen because the lock prevents it, but the predicate ordering
+    should be deterministic), running takes priority over pending so
+    the UI shows the active work."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    import json as _json
+    jobs_dir = tmp_path / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True)
+    (jobs_dir / "job-running.json").write_text(_json.dumps({
+        "job_id": "job-running",
+        "status": "running",
+    }))
+    (jobs_dir / "job-pending.json").write_text(_json.dumps({
+        "job_id": "job-pending",
+        "status": "pending",
+    }))
+
+    from app.api.db_state import _current_job_id
+    assert _current_job_id() == "job-running"
+
+
+def test_migrate_holds_lock_until_pending_json_durable(seeded_app, monkeypatch):
+    """Regression: the migration flock MUST be held until the pending
+    job JSON is on disk (B8). Otherwise a peer POST /migrate could
+    sneak in between the state write and the JSON write, see no current
+    job, and start a second migration onto the same in-progress state.
+
+    Test approach: monkeypatch ``write_backend_state`` to capture
+    whether the lock file is locked at the moment of the state write.
+    Then assert the JSON is on disk after the request returns. The
+    behaviour we're locking in is: while the request is mid-flight,
+    the lock is held; by the time it returns 202, the JSON is durable."""
+    import fcntl
+    import json as _json
+
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+
+    # Capture lock-state during the state write.
+    locked_during_write = {"yes": False}
+    from src import db_state_machine
+    original_write = db_state_machine.write_backend_state
+
+    def watching_write(*args, **kwargs):
+        # Try to acquire the SAME lock non-blocking by opening a fresh fd —
+        # mimics a concurrent peer caller. fcntl.flock is per-fd (on macOS/
+        # Linux in-process flock is per open-file-description), so a new fd
+        # gets its own independent lock state.
+        lock_path = db_state_machine._LOCK_PATH
+        try:
+            with open(lock_path, "w") as fd:
+                try:
+                    fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    # If we got here, the lock is NOT being held — bug.
+                    locked_during_write["yes"] = False
+                    fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+                except BlockingIOError:
+                    locked_during_write["yes"] = True
+        except FileNotFoundError:
+            # Lock file not yet created — not held.
+            locked_during_write["yes"] = False
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr("src.db_state_machine.write_backend_state", watching_write)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "side_car"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 202, resp.text
+
+    # 1. Pending JSON is durable after the request returns.
+    body = resp.json()
+    job_id = body["job_id"]
+    job_path = data_dir / "state" / "db-jobs" / f"{job_id}.json"
+    assert job_path.exists(), "pending job JSON must be on disk after 202 response"
+    job = _json.loads(job_path.read_text())
+    assert job["status"] == "pending"
+
+    # 2. The lock WAS held during the state-machine write.
+    assert locked_during_write["yes"], (
+        "flock must be held while in_progress state is written (B8)"
+    )
+
+
 def test_migrate_rejects_alias_url_with_400(seeded_app, monkeypatch):
     """End-to-end: POST /migrate where source and target alias the same PG
     database must return 400 (B7).
