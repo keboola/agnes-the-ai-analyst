@@ -37,6 +37,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from src.initial_workspace import is_override_workspace  # re-export
+
+__all__ = ["is_override_workspace", "read_override_metadata"]
+
 
 # OVERRIDE MODE — init-time only.
 #
@@ -84,21 +88,7 @@ def _read_sentinel(workspace: Path) -> Optional[dict]:
     return out
 
 
-def is_override_workspace(workspace: Path) -> bool:
-    """True iff ``workspace`` was inited from an admin-configured Initial
-    Workspace Template (the sentinel carries ``override: true``).
-
-    False on missing / unreadable sentinel, on sentinel without an
-    override key, and on sentinel with ``override`` set to anything
-    other than literal ``true`` (case-insensitive).
-
-    Callers should use this only to gate **init-time** behavior — see
-    the module docstring for the init-time/runtime split.
-    """
-    data = _read_sentinel(workspace)
-    if not data:
-        return False
-    return data.get("override", "").strip().lower() == "true"
+# is_override_workspace is imported from src.initial_workspace above (re-export).
 
 
 def read_override_metadata(workspace: Path) -> Optional[dict]:

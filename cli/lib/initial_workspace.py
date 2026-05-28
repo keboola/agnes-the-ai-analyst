@@ -25,7 +25,6 @@ responsibility-transfer contract.
 from __future__ import annotations
 
 import logging
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -34,6 +33,12 @@ import typer
 
 from cli.client import api_get, api_post
 from cli.error_render import render_error
+from src.initial_workspace import (
+    ExtractResult,
+    extract_zip_to_workspace as _extract_zip_pure,
+    initialize_workspace_from_template,
+    write_sentinel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +53,6 @@ class StatusInfo:
     template_sha: Optional[str] = None
     synced_at: Optional[str] = None
     files: list[str] = field(default_factory=list)
-
-
-@dataclass
-class ExtractResult:
-    """Outcome of writing the zip into the workspace."""
-
-    overwritten: list[str] = field(default_factory=list)
-    created: list[str] = field(default_factory=list)
 
 
 def probe_status(server_url: str, token: str) -> Optional[StatusInfo]:
@@ -225,81 +222,32 @@ def download_zip(server_url: str, token: str) -> bytes:
 def extract_zip_to_workspace(
     zip_bytes: bytes, workspace: Path
 ) -> ExtractResult:
-    """Validate then extract the zip's entries into ``workspace``.
+    """CLI-facing wrapper around the pure :func:`src.initial_workspace.extract_zip_to_workspace`.
 
-    Rejects entries with ``..``, absolute paths, or paths that escape
-    ``workspace`` after resolution. (Server already validates on
-    ``build_zip``; this is defense in depth — the bytes on the wire are
-    untrusted from the CLI's perspective.)
+    On unsafe entries (``..`` traversal, absolute paths, workspace escapes)
+    renders a typed error to stderr and raises ``typer.Exit(1)`` so the CLI
+    fails cleanly. (Server already validates on ``build_zip``; this is
+    defense in depth from the CLI's perspective.)
 
-    Returns an :class:`ExtractResult` so the caller can include real
-    counts in the ``POST /api/initial-workspace/applied`` audit event.
+    Returns an :class:`ExtractResult` so the caller can include real counts
+    in the ``POST /api/initial-workspace/applied`` audit event.
     """
-    overwritten: list[str] = []
-    created: list[str] = []
-
-    import io
-
-    workspace = workspace.resolve()
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        # Sanity-check every name before writing anything so we don't
-        # end up with a half-extracted workspace if a bad entry is
-        # somewhere in the middle of the archive.
-        for info in zf.infolist():
-            name = info.filename
-            if not name or name.endswith("/"):
-                continue
-            if name.startswith("/") or ".." in name.split("/"):
-                typer.echo(
-                    render_error(
-                        0,
-                        {
-                            "detail": {
-                                "kind": "initial_workspace_unsafe_entry",
-                                "hint": f"Zip entry {name!r} is unsafe — extraction aborted",
-                            }
-                        },
-                    ),
-                    err=True,
-                )
-                raise typer.Exit(1)
-            target = (workspace / name).resolve()
-            try:
-                target.relative_to(workspace)
-            except ValueError:
-                typer.echo(
-                    render_error(
-                        0,
-                        {
-                            "detail": {
-                                "kind": "initial_workspace_unsafe_entry",
-                                "hint": f"Zip entry {name!r} escapes workspace — aborted",
-                            }
-                        },
-                    ),
-                    err=True,
-                )
-                raise typer.Exit(1)
-
-        # All entries verified — now extract.
-        for info in zf.infolist():
-            name = info.filename
-            if not name or name.endswith("/"):
-                continue
-            target = workspace / name
-            if target.exists():
-                overwritten.append(name)
-            else:
-                created.append(name)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info) as src, open(target, "wb") as dst:
-                while True:
-                    chunk = src.read(65536)
-                    if not chunk:
-                        break
-                    dst.write(chunk)
-
-    return ExtractResult(overwritten=sorted(overwritten), created=sorted(created))
+    try:
+        return _extract_zip_pure(zip_bytes, workspace)
+    except ValueError as exc:
+        typer.echo(
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "initial_workspace_unsafe_entry",
+                        "hint": str(exc),
+                    }
+                },
+            ),
+            err=True,
+        )
+        raise typer.Exit(1) from exc
 
 
 def report_applied(
@@ -354,19 +302,17 @@ def write_override_sentinel(
     that would otherwise clobber admin's content.
 
     Path: ``<workspace>/.claude/init-complete``.
-    """
-    from datetime import datetime, timezone
 
-    sentinel = workspace / ".claude" / "init-complete"
-    sentinel.parent.mkdir(parents=True, exist_ok=True)
-    sentinel.write_text(
-        f"completed_at: {datetime.now(timezone.utc).isoformat()}\n"
-        f"agnes_version: {agnes_version}\n"
-        f"server_url: {server_url}\n"
-        f"override: true\n"
-        f"template_source: {template_source or ''}\n"
-        f"template_sha: {template_sha or ''}\n",
-        encoding="utf-8",
+    Delegates to :func:`src.initial_workspace.write_sentinel` with
+    ``override=True``.
+    """
+    write_sentinel(
+        workspace,
+        agnes_version=agnes_version,
+        server_url=server_url,
+        template_source=template_source,
+        template_sha=template_sha,
+        override=True,
     )
 
 
@@ -428,15 +374,29 @@ def apply_override(
             raise typer.Exit(1)
 
     zip_bytes = download_zip(server_url, token)
-    result = extract_zip_to_workspace(zip_bytes, workspace)
-
-    write_override_sentinel(
-        workspace,
-        agnes_version=agnes_version,
-        server_url=server_url,
-        template_source=status.template_source,
-        template_sha=status.template_sha,
-    )
+    try:
+        result = initialize_workspace_from_template(
+            workspace,
+            zip_bytes,
+            agnes_version=agnes_version,
+            server_url=server_url,
+            template_source=status.template_source,
+            template_sha=status.template_sha,
+        )
+    except ValueError as exc:
+        typer.echo(
+            render_error(
+                0,
+                {
+                    "detail": {
+                        "kind": "initial_workspace_unsafe_entry",
+                        "hint": str(exc),
+                    }
+                },
+            ),
+            err=True,
+        )
+        raise typer.Exit(1) from exc
 
     report_applied(
         server_url,

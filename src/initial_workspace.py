@@ -6,10 +6,16 @@ most one initial-workspace template per Agnes instance. Configuration
 lives in ``instance.yaml`` under ``initial_workspace:`` rather than the
 DB (read by ``app/api/initial_workspace.py``, not by this module).
 
-This module has no HTTP surface. Callers:
+This module has no HTTP surface. Callers (server-side template-repo
+management — clone, validate, build_zip, sync_template):
   - ``app/api/initial_workspace.py::sync_endpoint`` (admin "Sync now" click)
   - ``app/api/initial_workspace.py::status_endpoint`` (analyst CLI status probe)
   - ``app/api/initial_workspace.py::zip_endpoint`` (analyst CLI content fetch)
+
+Pure workspace-init helpers (no typer / CLI dependencies) are appended
+below ``delete_template_dir``. These are callable from both the CLI
+(``cli/lib/initial_workspace.py`` wraps them) and the server-side chat
+manager when hydrating per-user workdirs.
 """
 
 from __future__ import annotations
@@ -21,6 +27,8 @@ import shutil
 import subprocess
 import threading
 import zipfile
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -284,3 +292,168 @@ def delete_template_dir() -> bool:
         return False
     shutil.rmtree(target)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Pure workspace-init helpers — no typer, no prompts, no CLI dependencies.
+# Usable from the CLI wrapper AND from the server-side chat manager.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TemplateStatus:
+    configured: bool = False
+    synced: bool = False
+    template_source: Optional[str] = None
+    template_sha: Optional[str] = None
+    synced_at: Optional[str] = None
+    files: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ExtractResult:
+    overwritten: list[str] = field(default_factory=list)
+    created: list[str] = field(default_factory=list)
+
+
+def extract_zip_to_workspace(zip_bytes: bytes, workspace: Path) -> ExtractResult:
+    """Validate then extract every zip entry into ``workspace``.
+
+    Rejects ``..`` traversal, absolute paths, and entries that resolve
+    outside ``workspace`` after resolution. Raises ``ValueError`` with a
+    short message if any entry is unsafe (caller decides how to surface).
+    """
+    workspace = workspace.resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    overwritten: list[str] = []
+    created: list[str] = []
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for info in zf.infolist():
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            if name.startswith("/") or ".." in name.split("/"):
+                raise ValueError(f"unsafe zip entry: {name!r}")
+            target = (workspace / name).resolve()
+            try:
+                target.relative_to(workspace)
+            except ValueError as exc:
+                raise ValueError(
+                    f"unsafe zip entry escapes workspace: {name!r}"
+                ) from exc
+
+        for info in zf.infolist():
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            target = workspace / name
+            (overwritten if target.exists() else created).append(name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as dst:
+                while chunk := src.read(65536):
+                    dst.write(chunk)
+
+    return ExtractResult(overwritten=sorted(overwritten), created=sorted(created))
+
+
+def write_sentinel(
+    workspace: Path,
+    *,
+    agnes_version: str,
+    server_url: str,
+    template_source: Optional[str],
+    template_sha: Optional[str],
+    override: bool,
+) -> None:
+    """Write ``.claude/init-complete`` marking the workspace as initialized."""
+    sentinel = workspace / ".claude" / "init-complete"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text(
+        f"completed_at: {datetime.now(timezone.utc).isoformat()}\n"
+        f"agnes_version: {agnes_version}\n"
+        f"server_url: {server_url}\n"
+        f"override: {'true' if override else 'false'}\n"
+        f"template_source: {template_source or ''}\n"
+        f"template_sha: {template_sha or ''}\n",
+        encoding="utf-8",
+    )
+
+
+def is_override_workspace(workspace: Path) -> bool:
+    """True iff ``workspace`` was initialised from an admin-configured
+    Initial Workspace Template (the sentinel carries ``override: true``).
+
+    False on missing / unreadable sentinel, on sentinel without an override
+    key, and on sentinel with ``override`` set to anything other than
+    literal ``true`` (case-insensitive).
+    """
+    sentinel = workspace / ".claude" / "init-complete"
+    if not sentinel.exists():
+        return False
+    try:
+        text = sentinel.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower() == "override: true":
+            return True
+    return False
+
+
+def initialize_workspace_from_template(
+    workspace: Path,
+    template_zip_bytes: bytes,
+    *,
+    agnes_version: str,
+    server_url: str,
+    template_source: Optional[str],
+    template_sha: Optional[str],
+) -> ExtractResult:
+    """Extract template zip into ``workspace`` and write the override sentinel."""
+    result = extract_zip_to_workspace(template_zip_bytes, workspace)
+    write_sentinel(
+        workspace,
+        agnes_version=agnes_version,
+        server_url=server_url,
+        template_source=template_source,
+        template_sha=template_sha,
+        override=True,
+    )
+    return result
+
+
+def initialize_default_workspace(
+    workspace: Path,
+    *,
+    agnes_version: str,
+    server_url: str,
+    bundled_template_dir: Path,
+) -> ExtractResult:
+    """Copy every file from ``bundled_template_dir`` into ``workspace``
+    and write the non-override sentinel.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    overwritten: list[str] = []
+    created: list[str] = []
+    bundled_template_dir = bundled_template_dir.resolve()
+
+    for src in bundled_template_dir.rglob("*"):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(bundled_template_dir)
+        dst = workspace / rel
+        (overwritten if dst.exists() else created).append(str(rel))
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    write_sentinel(
+        workspace,
+        agnes_version=agnes_version,
+        server_url=server_url,
+        template_source=None,
+        template_sha=None,
+        override=False,
+    )
+    return ExtractResult(overwritten=sorted(overwritten), created=sorted(created))
