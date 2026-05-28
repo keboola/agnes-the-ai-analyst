@@ -181,3 +181,43 @@ def test_jobwriter_status_file_is_0600(tmp_path):
     w.mark_success(summary={"rows_total": 0, "tables_migrated": 0})
     mode = stat.S_IMODE(os.stat(p).st_mode)
     assert mode == 0o600, f"expected 0600 after mark_success, got {oct(mode)}"
+
+
+def test_jobwriter_heartbeat_touches_alive(tmp_path):
+    """B5 — JobWriter.heartbeat() must create or refresh the alive
+    side-car file. The applier polls this file's mtime to detect
+    stuck-running jobs (host reboot, OOM, docker daemon restart)."""
+    import os, time
+    from scripts.db_state_migrator import JobWriter
+    w = JobWriter(job_id="j1", jobs_dir=tmp_path, source="duckdb", target="side_car")
+    w.write_initial()
+    alive = tmp_path / "j1.alive"
+    assert alive.exists(), "write_initial must heartbeat too"
+
+    # Refresh mtime check.
+    orig_mtime = alive.stat().st_mtime
+    time.sleep(0.05)
+    w.heartbeat()
+    new_mtime = alive.stat().st_mtime
+    assert new_mtime > orig_mtime, "heartbeat must refresh mtime"
+
+
+def test_jobwriter_alive_path_property(tmp_path):
+    """The alive file lives next to the JSON, named ``<job_id>.alive``."""
+    from scripts.db_state_migrator import JobWriter
+    w = JobWriter(job_id="my-job", jobs_dir=tmp_path, source="duckdb", target="cloud")
+    assert w.alive_path == tmp_path / "my-job.alive"
+
+
+def test_jobwriter_update_step_pings_heartbeat(tmp_path):
+    """Every update_step call must also touch the alive file — that's
+    how the migrator advertises ongoing liveness during data_copy."""
+    import os, time
+    from scripts.db_state_migrator import JobWriter
+    w = JobWriter(job_id="j2", jobs_dir=tmp_path, source="duckdb", target="side_car")
+    w.write_initial()
+    alive = tmp_path / "j2.alive"
+    orig = alive.stat().st_mtime
+    time.sleep(0.05)
+    w.update_step("alembic", progress_pct=20)
+    assert alive.stat().st_mtime > orig

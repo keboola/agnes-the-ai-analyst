@@ -91,6 +91,22 @@ class JobWriter:
         """
         return self.jobs_dir / f"{self.job_id}.cancel"
 
+    @property
+    def alive_path(self) -> Path:
+        """Side-car liveness file. Refreshed via :meth:`heartbeat` on
+        every step boundary. The host applier polls its mtime to
+        detect stuck-running jobs (host reboot, OOM-kill, docker daemon
+        crash — see B5).
+        """
+        return self.jobs_dir / f"{self.job_id}.alive"
+
+    def heartbeat(self) -> None:
+        """Touch the alive file. Idempotent — repeated calls just bump
+        mtime. Distinct from the JSON status write so a slow migrator
+        between JSON updates still advertises liveness."""
+        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self.alive_path.touch()
+
     def check_cancel_requested(self) -> bool:
         """Return True if the cancel sentinel exists.
 
@@ -106,6 +122,7 @@ class JobWriter:
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
         os.replace(tmp, self._path)
         os.chmod(self._path, 0o600)
+        self.heartbeat()
 
     def _read(self) -> dict[str, Any]:
         if self._path.exists():

@@ -133,6 +133,32 @@ PY
     chown 999:999 /data/state/instance.yaml || true
 }
 
+# --- Stuck-running recovery (B5) -----------------------------------------
+# A job that hasn't touched its .alive sentinel in 120s is treated as
+# failed (host reboot mid-migration, OOM-kill, docker daemon crash).
+# The applier writes the failure so forward progress can resume on the
+# next tick. Without this the system would refuse to pick up new
+# pending jobs because a never-finishing 'running' entry sits there.
+NOW=$(date +%s)
+if [ -d "$JOBS_DIR" ]; then
+    for f in "$JOBS_DIR"/*.json; do
+        [ -e "$f" ] || continue
+        st=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('status',''))" "$f" 2>/dev/null || echo "")
+        if [ "$st" = "running" ]; then
+            alive="${f%.json}.alive"
+            if [ -e "$alive" ]; then
+                age=$(( NOW - $(stat -c '%Y' "$alive" 2>/dev/null || stat -f '%m' "$alive") ))
+            else
+                age=999
+            fi
+            if [ "$age" -gt 120 ]; then
+                logger -t agnes-state-applier "Stale running job $f: alive=${age}s, marking failed"
+                update_job "$f" "failed" "stuck running (no heartbeat for ${age}s, host reboot / OOM / docker crash suspected)"
+            fi
+        fi
+    done
+fi
+
 # --- Lifecycle: ensure postgres container matches the flag ----------------
 case "$TARGET" in
     side-car-enabled)

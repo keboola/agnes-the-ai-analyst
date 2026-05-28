@@ -146,6 +146,36 @@ sed -e "s|FLAG=/data/state/db-state-target.flag|FLAG=$tmp/data/state/db-state-ta
     "$script" > "$sandboxed"
 chmod +x "$sandboxed"
 
+# --- B5 regression: stuck-running job seed (before applier run) ------------
+# A job that died mid-migration (host reboot, OOM, docker daemon crash) stays
+# at status=running forever. The recovery loop must detect it via the alive
+# file mtime and flip it to failed so forward progress can resume.
+STUCK_ID="stuck-job-deadbeef-1234"
+cat > "$tmp/data/state/db-jobs/$STUCK_ID.json" <<JSON
+{
+  "job_id": "$STUCK_ID",
+  "status": "running",
+  "source_backend": "duckdb",
+  "target_backend": "side_car",
+  "current_step": "data_copy"
+}
+JSON
+# Create an alive file with mtime 200s in the past.
+# touch -d is GNU; touch -A is BSD macOS. Fall back to python3 if both fail.
+if touch -d "200 seconds ago" "$tmp/data/state/db-jobs/$STUCK_ID.alive" 2>/dev/null; then
+    :
+elif touch -A -0200 "$tmp/data/state/db-jobs/$STUCK_ID.alive" 2>/dev/null; then
+    :
+else
+    python3 -c "
+import os, time
+p = '$tmp/data/state/db-jobs/$STUCK_ID.alive'
+open(p, 'w').close()
+old = time.time() - 200
+os.utime(p, (old, old))
+"
+fi
+
 # --- Run -------------------------------------------------------------------
 TRANSCRIPT="$transcript" JOB_FILE="$tmp/data/state/db-jobs/$JOB_ID.json" \
     PATH="$fake_bin:$PATH" \
@@ -187,5 +217,17 @@ grep -q "google: enabled" "$tmp/data/state/instance.yaml" \
 grep -q "backend: side_car" "$tmp/data/state/instance.yaml" \
     || fail "backend not updated to side_car (B6)"
 echo "OK: instance.yaml preserves non-database keys (B6)"
+
+# B5 regression: stuck-running job must have been flipped to failed.
+STUCK_STATUS=$(python3 -c "import json;print(json.load(open('$tmp/data/state/db-jobs/$STUCK_ID.json'))['status'])")
+if [ "$STUCK_STATUS" != "failed" ]; then
+    fail "stuck-running job not recovered (status=$STUCK_STATUS)"
+fi
+STUCK_MSG=$(python3 -c "import json;print(json.load(open('$tmp/data/state/db-jobs/$STUCK_ID.json')).get('error',{}).get('message',''))")
+case "$STUCK_MSG" in
+    *"stuck running"*) ;;
+    *) fail "stuck-running recovery message missing 'stuck running' (got: $STUCK_MSG)" ;;
+esac
+echo "OK: stuck-running recovery (B5)"
 
 echo "OK"
