@@ -575,6 +575,38 @@ def test_main_cloud_to_side_car_dr_rollback_smoke(tmp_path, pg_engine, monkeypat
     assert row[0] == "dr@example.com"
 
 
+def test_verify_row_counts_opens_duckdb_read_only(tmp_path, pg_engine):
+    """E.1 — verify_row_counts must open the DuckDB file read-only;
+    a writable open creates a .wal sidecar that adds clutter and can
+    confuse subsequent reads if the migrator crashes between verify
+    and flip.
+    """
+    import duckdb
+    import src.models  # noqa: F401
+    from src.db import _ensure_schema
+    from src.db_pg import Base
+
+    from scripts.db_state_migrator import alembic_upgrade_head, verify_row_counts
+
+    duck_path = tmp_path / "src.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.close()
+
+    alembic_upgrade_head(str(pg_engine.url))
+    # No pre-existing .wal in the tmp dir.
+    wal_path = duck_path.with_suffix(".duckdb.wal")
+    if wal_path.exists():
+        wal_path.unlink()
+
+    verify_row_counts(duck_path, str(pg_engine.url))
+
+    # Read-only opens do NOT create a .wal sidecar.
+    assert not wal_path.exists(), (
+        "verify_row_counts must open DuckDB read-only; .wal file appeared"
+    )
+
+
 def test_migrator_subprocess_watchdog_fires_end_to_end(tmp_path):
     """D.3 — End-to-end watchdog: launch the migrator CLI as a real
     subprocess that hangs inside its alembic step; the outer

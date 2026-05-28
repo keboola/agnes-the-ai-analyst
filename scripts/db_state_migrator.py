@@ -765,7 +765,11 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
     diffs: list[dict] = []
     tables = [t.name for t in Base.metadata.sorted_tables]
 
-    duck_conn = _duckdb.connect(str(duckdb_path))
+    # E.1 — open the DuckDB file read-only. Verify is purely a SELECT
+    # workload; a writable connection creates a .wal sidecar that adds
+    # clutter and can confuse subsequent reads if the migrator crashes
+    # between verify and flip.
+    duck_conn = _duckdb.connect(str(duckdb_path), read_only=True)
     pg_engine = _bounded_engine(target_url)
     try:
         for table in tables:
