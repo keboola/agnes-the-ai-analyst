@@ -67,6 +67,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Refactored `cli/lib/initial_workspace.py` — pure server-callable
   logic extracted to `src/initial_workspace.py`. CLI is now a thin
   typer wrapper.
+- **CI: nsjail escape suite on Ubuntu (`e2e-nsjail.yml`).** Builds the
+  `tests/e2e/Dockerfile.e2e` image (which compiles nsjail 3.4 + sets
+  up uid 1001 + iptables), then runs `pytest tests/security/test_nsjail_escape.py`
+  inside a `docker run --cap-add NET_ADMIN` invocation. The security
+  tests already skip cleanly on macOS dev boxes; this workflow gives
+  them real Linux coverage on push to `zs/cloud-claude-code-design`
+  and on PR to main. Replaces the previously-missing CI coverage for
+  the chat sandbox isolation contract.
 
 ### Fixed
 - **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**

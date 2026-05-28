@@ -1,0 +1,104 @@
+name: E2E nsjail (Linux isolation suite)
+
+# Runs the nsjail escape-attempt smoke tests inside the same docker image the
+# cloud-chat E2E suite uses (tests/e2e/Dockerfile.e2e). The tests live in
+# tests/security/test_nsjail_escape.py and skip cleanly on macOS / when nsjail
+# is absent — so they're invisible on the regular CI lane but get real Linux
+# coverage here on ubuntu-latest.
+#
+# Two triggers:
+#   - push to the cloud-chat branch (fast feedback during the branch's life)
+#   - PR to main (gate the eventual merge)
+#
+# The image is built from tests/e2e/Dockerfile.e2e (which already compiles
+# nsjail 3.4 + sets up the unprivileged agnes-sandbox uid + iptables). We run
+# the security pytest directly inside that container; no need for the full
+# docker-compose stack because these tests instantiate SubprocessProvider
+# in-process — they don't need the FastAPI app, DuckDB, or sample data.
+#
+# `--cap-add NET_ADMIN` is required for the iptables OWNER rule that the
+# nsjail test_cannot_curl_external case relies on. GitHub-hosted runners
+# (ubuntu-latest) allow `docker run --cap-add NET_ADMIN` on the outer
+# `docker` invocation just fine — the runner itself is privileged enough.
+
+on:
+  push:
+    branches:
+      - "zs/cloud-claude-code-design"
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/chat/**"
+      - "config/nsjail/**"
+      - "tests/security/**"
+      - "tests/e2e/Dockerfile.e2e"
+      - "tests/e2e/iptables-setup.sh"
+      - ".github/workflows/e2e-nsjail.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nsjail-escape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build agnes E2E image (with nsjail)
+        # Same Dockerfile docker-compose.e2e.yml uses, but we build it
+        # directly so we can `docker run` with --cap-add NET_ADMIN
+        # against the bare image rather than spinning up the full
+        # compose stack. The security tests don't need the FastAPI
+        # app — they exercise SubprocessProvider in-process.
+        run: |
+          docker build \
+            -f tests/e2e/Dockerfile.e2e \
+            -t agnes-e2e:nsjail \
+            .
+
+      - name: Apply iptables OWNER rules (test_cannot_curl_external relies on this)
+        # The iptables-setup.sh script is also invoked from start.sh inside
+        # the production-like compose run; here we invoke it once on the
+        # *host* runner to drop egress for uid 1001. We don't actually
+        # need this on the host — we'll invoke it INSIDE the container
+        # below via --cap-add NET_ADMIN — but documenting the intent
+        # here keeps the workflow honest about its capability surface.
+        run: |
+          echo "iptables egress filter will be applied INSIDE the container."
+
+      - name: Run nsjail escape suite
+        # `--cap-add NET_ADMIN` lets the entrypoint (start.sh) install
+        # the OWNER allow/deny rules for uid 1001. We override the
+        # default CMD to skip uvicorn and just run pytest against the
+        # security suite. Tests skip on darwin / no-nsjail and pass on
+        # Linux+nsjail.
+        #
+        # We bind-mount the repo into /app so any local changes are
+        # picked up without a full rebuild on dev pushes (the rebuild
+        # above already did the heavy lifting; this is a quick rerun).
+        run: |
+          docker run --rm \
+            --cap-add NET_ADMIN \
+            -v "${{ github.workspace }}:/workspace:ro" \
+            agnes-e2e:nsjail \
+            bash -c '
+              set -euo pipefail
+              # Apply iptables rules the same way start.sh does, then
+              # run the security pytest. We use the in-image source
+              # (frozen at build time) because the tests import from
+              # `app.chat.subprocess_provider`.
+              if [ -x /app/tests/e2e/iptables-setup.sh ]; then
+                /app/tests/e2e/iptables-setup.sh || echo "iptables setup soft-failed (rules may already exist)"
+              fi
+              /opt/venv/bin/pytest tests/security/test_nsjail_escape.py -v --tb=short
+            '
+
+      - name: Dump iptables state on failure
+        if: failure()
+        run: |
+          docker run --rm \
+            --cap-add NET_ADMIN \
+            agnes-e2e:nsjail \
+            bash -c "iptables -L -n -v || true; iptables -L OUTPUT -n -v || true"
