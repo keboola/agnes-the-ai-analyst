@@ -472,6 +472,57 @@ def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
     asyncio.run(_run())
 
 
+def test_daily_tokens_cached_per_user(tmp_path):
+    """daily_anthropic_tokens is called at most once per 60-second window.
+
+    Two consecutive send_user_message calls for the same user must hit the
+    repo only once — the second resolves from the in-instance TTL cache.
+    """
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    from app.chat.manager import LiveSession
+    from app.chat.types import SessionState
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    cfg = ChatConfig(
+        enabled=True,
+        require_isolation=False,
+        concurrency_per_user=5,
+        daily_anthropic_spend_usd=10**6,  # effectively unlimited
+        max_session_tokens=10**9,
+        rate_messages_per_hour=10**6,
+    )
+    mgr = ChatManager(
+        provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg,
+    )
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        mgr._live[s.id] = LiveSession(
+            chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
+            handle=FakeHandle(), ws=ws,
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+        )
+        with patch.object(repo, "daily_anthropic_tokens", wraps=repo.daily_anthropic_tokens) as mock_fn:
+            await mgr.send_user_message(s.id, "msg1")
+            await mgr.send_user_message(s.id, "msg2")
+            # Both calls should have used the cache; repo method called exactly once.
+            assert mock_fn.call_count == 1, (
+                f"expected daily_anthropic_tokens called once (cached); got {mock_fn.call_count}"
+            )
+
+    asyncio.run(_run())
+
+
 def test_double_crash_dies_after_three(manager: ChatManager):
     handles = [FakeHandle(), FakeHandle(), FakeHandle(), FakeHandle()]
     spawn_calls = iter(handles)

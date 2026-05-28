@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,12 @@ logger = logging.getLogger(__name__)
 # Sonnet pricing constants (USD per million tokens)
 _PRICE_IN_PER_MTOK = 3.0
 _PRICE_OUT_PER_MTOK = 15.0
+
+# TTL for the per-user daily-token-sum cache inside ChatManager.
+# The budget check runs on every send_user_message; hitting the DB on
+# every keystroke is wasteful — a 60-second stale window is acceptable
+# given the daily-cap semantics.
+_DAILY_CACHE_TTL_SEC = 60
 
 
 class ConcurrencyCapHit(Exception):
@@ -72,6 +79,21 @@ class ChatManager:
         from collections import deque
         self._user_msg_window: dict[str, "deque[float]"] = {}
         self._deque_cls = deque
+        # TTL cache: user_email → (monotonic_timestamp, (tokens_in, tokens_out))
+        self._daily_tokens_cache: dict[str, tuple[float, tuple[int, int]]] = {}
+
+    def _cached_daily_tokens(self, user_email: str) -> tuple[int, int]:
+        """Return (tokens_in, tokens_out) for today, with a 60-second TTL cache.
+
+        Avoids hitting the DB on every send_user_message call.
+        """
+        now = time.monotonic()
+        cached = self._daily_tokens_cache.get(user_email)
+        if cached and now - cached[0] < _DAILY_CACHE_TTL_SEC:
+            return cached[1]
+        val = self._repo.daily_anthropic_tokens(user_email)
+        self._daily_tokens_cache[user_email] = (now, val)
+        return val
 
     # --- public API used by app/api/chat.py and services/slack_bot/ -------
 
@@ -282,8 +304,8 @@ class ChatManager:
         live = self._live.get(chat_id)
         if live is None or live.handle is None or live.state == SessionState.DEAD:
             raise SessionNotFound(chat_id)
-        # Enforce daily Anthropic spend cap
-        tokens_in, tokens_out = self._repo.daily_anthropic_tokens(live.user_email)
+        # Enforce daily Anthropic spend cap (result is TTL-cached — see _cached_daily_tokens)
+        tokens_in, tokens_out = self._cached_daily_tokens(live.user_email)
         spent_usd = (
             tokens_in * _PRICE_IN_PER_MTOK / 1_000_000
             + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
