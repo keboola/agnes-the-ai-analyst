@@ -100,30 +100,18 @@ def _generate_setup_token() -> str:
 
 # ── bundle generation helpers ─────────────────────────────────────────────────
 
-def _bundle_settings_json() -> str:
+def _bundle_settings_json(server_url: str, access_token: str) -> str:
     """Return .claude/settings.json content for the setup bundle.
 
-    Installs a one-time ``python3 setup.py`` SessionStart hook.
+    Uses SSE transport so the MCP server works from Claude Desktop's cowork
+    VM — which cannot reach localhost but CAN reach the Agnes public URL.
 
-    The hook runs as a **system process** (not through Claude's sandboxed Bash
-    tool), so it has full outbound network access and can reach the Agnes
-    server even when the interactive Bash tool cannot.
-
-    On the first session open the hook:
-      1. Exchanges the setup token for a PAT (HTTP call to Agnes server).
-      2. Saves credentials to ``~/.config/agnes/``.
-      3. Replaces itself with the standard pull/push hooks in settings.json.
-      4. Runs an initial ``agnes pull`` if the CLI is available.
-
-    After successful completion the setup hook is gone — subsequent sessions
-    run the normal pull/push hooks and never touch setup.py again.
-    ``|| true`` ensures a transient failure (server down, network drop) never
-    blocks the session from opening.
+    The hook on first session open:
+      1. Runs setup.py which exchanges the setup token for a 90-day PAT and
+         updates settings.json with the long-lived token.
+      2. Registers the stdio MCP server in Claude Desktop's global config for
+         users who open the workspace directly in Claude Desktop (not cowork).
     """
-    # Try python3 first (macOS, Linux), fall back to python (Windows / aliases).
-    # Claude Code runs hooks with the project root as the working directory,
-    # so `setup.py` resolves correctly without any `cd`.
-    # setup.py uses only stdlib — no pip, no agnes CLI required.
     _init_cmd = (
         "python3 setup.py 2>/dev/null || python setup.py 2>/dev/null || true"
     )
@@ -144,17 +132,15 @@ def _bundle_settings_json() -> str:
                 }
             ]
         },
-        # mcp_server.py is bundled in the ZIP alongside this settings.json.
-        # It bootstraps credentials from agnes-bundle.json on first run (so
-        # the MCP server works even before setup.py has written ~/.config/agnes/),
-        # auto-installs agnes-the-ai-analyst via pip if the package is absent,
-        # then runs the MCP server by direct import — no agnes binary needed.
-        # setup.py replaces this with an absolute sys.executable + absolute path.
+        # SSE transport: works from cowork VM (public Agnes URL) and from
+        # CLI mode. setup.py replaces the short-lived token with a 90-day PAT.
         "mcpServers": {
             "agnes": {
-                "command": "python3",
-                "args": ["mcp_server.py"],
-                "type": "stdio",
+                "type": "sse",
+                "url": f"{server_url}/api/mcp/sse",
+                "headers": {
+                    "Authorization": f"Bearer {access_token}",
+                },
             }
         },
     }
@@ -406,10 +392,9 @@ def _bundle_setup_py(server_url: str) -> str:
         print("Credentials saved.")
 
         # 3. Replace the one-time setup hook with a permanent pull hook.
-        #    Update mcpServers to absolute paths so MCP works regardless of
-        #    which directory Claude Code sets as cwd when starting the server.
+        #    Switch mcpServers to SSE transport with the long-lived 90-day PAT
+        #    so MCP keeps working after the short-lived bundle token expires.
         settings_path = HERE / ".claude" / "settings.json"
-        _mcp_launcher = str((HERE / "mcp_server.py").resolve())
         if settings_path.exists():
             cfg = json.loads(settings_path.read_text())
             cfg.setdefault("hooks", {{}})
@@ -419,12 +404,11 @@ def _bundle_setup_py(server_url: str) -> str:
                 }}]}},
             ]
             cfg["hooks"].pop("SessionEnd", None)
-            # Absolute path so MCP starts correctly regardless of cwd
             cfg["mcpServers"] = {{
                 "agnes": {{
-                    "command": sys.executable,
-                    "args": [_mcp_launcher],
-                    "type": "stdio",
+                    "type": "sse",
+                    "url": f"{{server_url}}/api/mcp/sse",
+                    "headers": {{"Authorization": f"Bearer {{pat}}"}},
                 }}
             }}
             settings_path.write_text(json.dumps(cfg, indent=2) + "\\n")
@@ -622,7 +606,7 @@ def _build_bundle_zip(
         zf.writestr(f"{folder_name}/agnes-bundle.json", bundle_json)
         zf.writestr(f"{folder_name}/setup.py", _bundle_setup_py(server_url))
         zf.writestr(f"{folder_name}/mcp_server.py", _bundle_mcp_server_py())
-        zf.writestr(f"{folder_name}/.claude/settings.json", _bundle_settings_json())
+        zf.writestr(f"{folder_name}/.claude/settings.json", _bundle_settings_json(server_url, access_token))
         zf.writestr(
             f"{folder_name}/CLAUDE.md",
             _bundle_claude_md(server_url, user_email, expires_at),
