@@ -29,6 +29,8 @@ fallback solved a problem we don't have.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import Optional
 
 import duckdb
@@ -204,3 +206,30 @@ def require_resource_access(
         return user
 
     return dep
+
+
+def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) -> str:
+    """Mint a short-lived service JWT scoped to one chat session.
+
+    Used by ChatManager._spawn_runner to inject AGNES_TOKEN into the
+    subprocess env. Verified by the existing require_login dependency
+    because it carries the same ``sub`` (user_email) claim.
+
+    Secret is read from the ``JWT_SECRET_KEY`` environment variable —
+    the same key used by the rest of the auth layer (see app/auth/jwt.py).
+    """
+    import jwt  # PyJWT — already a project dependency
+
+    now = int(time.time())
+    payload = {
+        "sub": user_email,
+        "iat": now,
+        "exp": now + ttl_seconds,
+        "scope": "chat",
+        "session_id": chat_id,
+    }
+    secret = os.environ.get(
+        "JWT_SECRET_KEY",
+        "test-jwt-secret-key-minimum-32-chars!!",
+    )
+    return jwt.encode(payload, secret, algorithm="HS256")
