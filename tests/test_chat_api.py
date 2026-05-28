@@ -98,7 +98,7 @@ def logged_in_user():
 
 def test_create_web_session(api_client: TestClient, logged_in_user):
     r = api_client.post("/api/chat/sessions", json={"surface": "web"})
-    assert r.status_code == 200
+    assert r.status_code == 201
     data = r.json()
     assert data["id"].startswith("chat_")
     assert "/stream" in data["ws_url"]
@@ -124,7 +124,7 @@ def test_get_messages_empty(api_client: TestClient, logged_in_user):
 def test_archive_session(api_client: TestClient, logged_in_user):
     c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
     r = api_client.delete(f"/api/chat/sessions/{c['id']}")
-    assert r.status_code == 200
+    assert r.status_code == 204
     r2 = api_client.get("/api/chat/sessions")
     assert r2.json() == []  # archived sessions excluded
 

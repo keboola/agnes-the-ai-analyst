@@ -155,7 +155,7 @@ def test_admin_lists_active_sessions(api_client: TestClient, logged_in_admin):
 def test_admin_kills_session(api_client: TestClient, logged_in_admin):
     c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
     r = api_client.delete(f"/admin/chat/{c['id']}")
-    assert r.status_code == 200
+    assert r.status_code == 204
 
 
 def test_non_admin_forbidden(api_client_non_admin: TestClient, logged_in_user):

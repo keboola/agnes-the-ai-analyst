@@ -152,8 +152,20 @@ class ChatManager:
             await self.kill(chat_id, reason="ws_disconnect")
 
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
+        from app.auth.access import mint_session_jwt
+        try:
+            token = mint_session_jwt(session.user_email, session.id)
+        except ValueError:
+            # User not found in DB (e.g. deleted mid-session) — fall back to
+            # the env-seed so the runner at least starts; it will fail auth
+            # on its first API call and surface a clear error to the user.
+            logger.warning(
+                "_spawn_runner: mint_session_jwt failed for %s; using AGNES_SESSION_JWT_SEED fallback",
+                session.user_email,
+            )
+            token = os.environ.get("AGNES_SESSION_JWT_SEED", "")
         env = {
-            "AGNES_TOKEN": os.environ.get("AGNES_SESSION_JWT_SEED", ""),
+            "AGNES_TOKEN": token,
             "AGNES_API": os.environ.get("AGNES_INTERNAL_URL", "http://127.0.0.1:8000"),
             "AGNES_SESSION_ID": session.id,
             "AGNES_USER_EMAIL": session.user_email,

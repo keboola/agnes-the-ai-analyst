@@ -142,6 +142,9 @@ from app.api.admin_usage_summary import router as admin_usage_summary_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
+from app.api.chat import router as chat_router
+from app.api.slack import router as slack_router
+from app.api.admin_chat import router as admin_chat_router
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +362,119 @@ async def lifespan(app):
                         pc.host, pc.identify_mode, pc.replay_enabled)
     except Exception:
         logger.exception("PostHog init at startup failed")
+
+    # --- CHAT-INIT -----------------------------------------------------------
+    # Always create chat_repo + chat_config regardless of chat.enabled so that
+    # the admin_chat and chat API routers (which use app.state.chat_repo) work
+    # even when chat is disabled — they degrade gracefully via _get_manager().
+    try:
+        import shutil
+        from src.db import get_system_db as _get_system_db_chat, _get_data_dir as _get_data_dir_chat
+        from app.chat.config import load_chat_config
+        from app.chat.persistence import ChatRepository
+
+        _chat_data_dir = _get_data_dir_chat()
+        _chat_conn = _get_system_db_chat()
+        app.state.chat_repo = ChatRepository(_chat_conn)
+        app.state.chat_data_dir = _chat_data_dir
+
+        _chat_instance_yaml = _chat_data_dir / "state" / "instance.yaml"
+        app.state.chat_config = load_chat_config(_chat_instance_yaml)
+
+        def _get_marketplace_sha() -> str:
+            """Return combined SHA over all synced marketplace repos.
+
+            The marketplace ingest pipeline writes
+            ``${DATA_DIR}/marketplaces/.combined-sha`` after each nightly
+            sync. Read it when it exists; otherwise return empty string so
+            WorkdirManager.needs_reinit() falls through to the version check.
+            """
+            p = _chat_data_dir / "marketplaces" / ".combined-sha"
+            try:
+                return p.read_text().strip() if p.exists() else ""
+            except Exception:
+                return ""
+
+        def _server_template_status():
+            """Return TemplateStatus if an initial-workspace template is configured."""
+            try:
+                from src.initial_workspace import TemplateStatus
+                from app.api.initial_workspace import _read_section
+                section = _read_section()
+                if not section.get("url"):
+                    return None
+                synced = bool(section.get("last_commit_sha"))
+                return TemplateStatus(
+                    configured=True,
+                    synced=synced,
+                    template_source=section.get("url"),
+                    template_sha=section.get("last_commit_sha"),
+                    synced_at=section.get("last_synced_at"),
+                )
+            except Exception:
+                logger.exception("_server_template_status failed (non-fatal)")
+                return None
+
+        def _fetch_local_template_zip() -> bytes:
+            """Read the cached template zip from disk."""
+            try:
+                from src.initial_workspace import build_zip
+                return build_zip()
+            except Exception:
+                logger.exception("_fetch_local_template_zip failed (non-fatal)")
+                return b""
+
+        if app.state.chat_config.enabled:
+            if int(os.environ.get("UVICORN_WORKERS", "1")) > 1:
+                logger.error(
+                    "chat.enabled=true but UVICORN_WORKERS > 1 — "
+                    "cloud chat requires a single-worker deployment; "
+                    "chat_manager disabled"
+                )
+                app.state.chat_manager = None
+            else:
+                from app.chat.workdir import WorkdirManager
+                from app.chat.subprocess_provider import SubprocessProvider
+                from app.chat.manager import ChatManager
+                from app.version import APP_VERSION as _APP_VERSION_CHAT
+
+                _server_url = os.environ.get("SERVER_URL", "http://localhost:8000")
+                workdir_mgr = WorkdirManager(
+                    data_dir=_chat_data_dir,
+                    repo=app.state.chat_repo,
+                    bundled_template_dir=Path("app/initial_workspace_default"),
+                    server_url=_server_url,
+                    agnes_version=_APP_VERSION_CHAT,
+                    get_marketplace_sha=_get_marketplace_sha,
+                    get_template_status=_server_template_status,
+                    fetch_template_zip=_fetch_local_template_zip,
+                )
+                provider = SubprocessProvider(
+                    nsjail_path=shutil.which("nsjail"),
+                    nsjail_config_template=Path("config/nsjail/chat-session.cfg.template"),
+                    require_isolation=app.state.chat_config.require_isolation,
+                )
+                mgr = ChatManager(
+                    provider=provider,
+                    workdir_mgr=workdir_mgr,
+                    repo=app.state.chat_repo,
+                    config=app.state.chat_config,
+                )
+                mgr.start_idle_reaper()
+                app.state.chat_manager = mgr
+                logger.info(
+                    "chat.enabled: ChatManager started (idle_ttl=%ds, concurrency_per_user=%d)",
+                    app.state.chat_config.idle_ttl_seconds,
+                    app.state.chat_config.concurrency_per_user,
+                )
+        else:
+            app.state.chat_manager = None
+            logger.info("chat.enabled=false; ChatManager not started")
+    except Exception:
+        logger.exception("CHAT-INIT failed (non-fatal); chat features will be unavailable")
+        app.state.chat_manager = None
+    # --- end CHAT-INIT -------------------------------------------------------
+
     yield
     try:
         from src.observability import get_posthog
@@ -760,6 +876,9 @@ def create_app() -> FastAPI:
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
     app.include_router(marketplace_server_router)
+    app.include_router(chat_router)
+    app.include_router(slack_router)
+    app.include_router(admin_chat_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
     # WSGI → ASGI bridge (dulwich is WSGI-native; FastAPI is ASGI).
@@ -801,6 +920,7 @@ def create_app() -> FastAPI:
         "/marketplace.zip",
         "/marketplace.git",
         "/marketplace/",
+        "/admin/chat",
     )
 
     _ERROR_TITLES = {

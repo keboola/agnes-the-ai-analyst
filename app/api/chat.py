@@ -59,7 +59,7 @@ def _get_repo(request: Request) -> ChatRepository:
     return request.app.state.chat_repo
 
 
-@router.post("/sessions")
+@router.post("/sessions", status_code=201)
 async def create_session(
     body: CreateSessionBody,
     request: Request,
@@ -128,7 +128,7 @@ async def list_messages(
     ]
 
 
-@router.delete("/sessions/{chat_id}")
+@router.delete("/sessions/{chat_id}", status_code=204)
 async def archive_session(
     chat_id: str,
     request: Request,
@@ -144,7 +144,6 @@ async def archive_session(
     except Exception:
         logger.exception("kill on archive failed for %s", chat_id)
     repo.archive_session(chat_id)
-    return {"ok": True}
 
 
 @router.websocket("/sessions/{chat_id}/stream")

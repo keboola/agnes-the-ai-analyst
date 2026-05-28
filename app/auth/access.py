@@ -212,21 +212,37 @@ def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) 
     """Mint a short-lived service JWT scoped to one chat session.
 
     Used by ChatManager._spawn_runner to inject AGNES_TOKEN into the
-    subprocess env. Verified by the existing require_login dependency
-    because it carries the same ``sub`` (user_email) claim.
+    subprocess env. The token is verified by the existing get_current_user
+    dependency (app/auth/pat_resolver.py calls UserRepository.get_by_id on
+    the ``sub`` claim), so ``sub`` MUST be the user's UUID — not the email.
 
     Secret is read from the ``JWT_SECRET_KEY`` environment variable —
     the same key used by the rest of the auth layer (see app/auth/jwt.py).
     """
     import jwt  # PyJWT — already a project dependency
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+
+    conn = get_system_db()
+    try:
+        row = UserRepository(conn).get_by_email(user_email)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if not row:
+        raise ValueError(f"mint_session_jwt: user not found: {user_email!r}")
+    user_id = row["id"]
 
     now = int(time.time())
     payload = {
-        "sub": user_email,
+        "sub": user_id,
         "iat": now,
         "exp": now + ttl_seconds,
         "scope": "chat",
-        "session_id": chat_id,
+        "chat_session_id": chat_id,
+        "email": user_email,
     }
     secret = os.environ.get(
         "JWT_SECRET_KEY",

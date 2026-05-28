@@ -32,13 +32,12 @@ async def list_active(request: Request, _admin: dict = Depends(require_admin)):
     return {"sessions": sessions}
 
 
-@router.delete("/{chat_id}")
+@router.delete("/{chat_id}", status_code=204)
 async def admin_kill(chat_id: str, request: Request, _admin: dict = Depends(require_admin)):
     mgr = getattr(request.app.state, "chat_manager", None)
     if mgr is None:
         raise HTTPException(503, detail="chat_disabled")
     await mgr.kill(chat_id, reason="admin_kill")
-    return {"ok": True}
 
 
 @router.websocket("/{chat_id}/tail")
