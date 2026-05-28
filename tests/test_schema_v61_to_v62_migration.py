@@ -26,7 +26,7 @@ def fresh_conn(tmp_path):
 def test_fresh_install_lands_at_v62_with_mcp_secrets(fresh_conn):
     _ensure_schema(fresh_conn)
     version = fresh_conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == SCHEMA_VERSION == 62
+    assert version == SCHEMA_VERSION == 63
 
     cols = {
         r[1]: r[2]
@@ -50,7 +50,8 @@ def test_existing_v61_upgrades_to_v62(fresh_conn):
 
     _ensure_schema(fresh_conn)
     version = fresh_conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 62
+    # Rolling back v61 → incremental ladder runs to current SCHEMA_VERSION.
+    assert version == SCHEMA_VERSION
     # Table back, and idempotent
     assert fresh_conn.execute(
         "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'mcp_secrets'"
