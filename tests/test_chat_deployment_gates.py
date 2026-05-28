@@ -138,3 +138,39 @@ def test_chat_skips_jwt_check_when_disabled(monkeypatch):
 
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     assert _chat_jwt_secret_ok(ChatConfig(enabled=False)) is True
+
+
+# ---------------------------------------------------------------------------
+# ANTHROPIC_API_KEY presence gate
+# ---------------------------------------------------------------------------
+
+
+def test_chat_refused_without_anthropic_key(monkeypatch):
+    """chat.enabled=true with no ANTHROPIC_API_KEY → helper refuses."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_anthropic_key_ok
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True)
+    assert _chat_anthropic_key_ok(cfg) is False
+
+
+def test_chat_accepts_anthropic_key(monkeypatch):
+    """chat.enabled=true with ANTHROPIC_API_KEY set → accepted."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_anthropic_key_ok
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-value")
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True)
+    assert _chat_anthropic_key_ok(cfg) is True
+
+
+def test_chat_anthropic_key_skipped_when_disabled(monkeypatch):
+    """chat.enabled=false → key check is bypassed."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_anthropic_key_ok
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert _chat_anthropic_key_ok(ChatConfig(enabled=False)) is True

@@ -92,6 +92,32 @@ def _chat_jwt_secret_ok(chat_config) -> bool:
     return True
 
 
+def _chat_anthropic_key_ok(chat_config) -> bool:
+    """Refuse ``chat.enabled=true`` deployments that lack ``ANTHROPIC_API_KEY``.
+
+    The chat runner subprocess calls the Anthropic API on behalf of each
+    user.  If the key is absent the runner silently fails on its first API
+    call.  Refuse to enable chat and surface a fatal log so the operator
+    finds the cause immediately rather than after users start reporting
+    mysterious errors.
+
+    Returns True when chat is disabled (irrelevant) or when
+    ``ANTHROPIC_API_KEY`` is set to a non-empty value; False otherwise.
+    """
+    if not chat_config.enabled:
+        return True
+    # Bypass for TESTING=1 — pytest-driven sessions don't need a real key.
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    if os.environ.get("ANTHROPIC_API_KEY", ""):
+        return True
+    logging.getLogger("app.main").error(
+        "chat.enabled=true requires ANTHROPIC_API_KEY env to be set; "
+        "refusing to spawn ChatManager",
+    )
+    return False
+
+
 class _SelectiveGZipMiddleware:
     """GZipMiddleware wrapper that skips a set of path prefixes.
 
@@ -479,6 +505,12 @@ async def lifespan(app):
             elif not _chat_jwt_secret_ok(app.state.chat_config):
                 # Fatal already logged inside the helper.  Disable chat so the
                 # runner never spawns with a public-constant secret.
+                app.state.chat_manager = None
+            elif not _chat_anthropic_key_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.  No key → no runner.
+                logger.error(
+                    "ANTHROPIC_API_KEY missing; disabling chat",
+                )
                 app.state.chat_manager = None
             else:
                 from app.chat.workdir import WorkdirManager
