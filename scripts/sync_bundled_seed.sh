@@ -25,7 +25,7 @@
 set -euo pipefail
 
 REF="${1:-}"
-SOURCE_URL="${2:-https://github.com/keboola/agnes-the-ai-analyst-workspace-seed}"
+SOURCE_URL="${2:-https://github.com/keboola/agnes-infra-template}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUNDLED_DIR="$REPO_ROOT/src/_bundled_seed"

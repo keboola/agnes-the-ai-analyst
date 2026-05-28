@@ -6,12 +6,15 @@ the admin UI, sync semantics, override behavior), see
 [`docs/initial-workspace-override.md`](initial-workspace-override.md).
 
 > The OSS reference seed lives at
-> [`github.com/keboola/agnes-the-ai-analyst-workspace-seed`](https://github.com/keboola/agnes-the-ai-analyst-workspace-seed)
-> and ships pre-bundled inside every Agnes wheel at
-> `src/_bundled_seed/`. When the operator hasn't configured an Initial
-> Workspace Template, Agnes falls back to that bundle so the install
-> prompt + canonical connectors always render. Forks replace the bundle
-> by running `scripts/sync_bundled_seed.sh` against their own repo.
+> [`github.com/keboola/agnes-infra-template`](https://github.com/keboola/agnes-infra-template)
+> (the same repo that ships the Terraform skeleton — its `workspace/`,
+> `.claude-plugin/`, `plugins/`, and `install-prompt/` sub-trees are
+> the canonical seed content) and ships pre-bundled inside every
+> Agnes wheel at `src/_bundled_seed/`. When the operator hasn't
+> configured an Initial Workspace Template, Agnes falls back to that
+> bundle so the install prompt + canonical connectors always render.
+> Forks replace the bundle by running `scripts/sync_bundled_seed.sh`
+> against their own repo.
 
 ---
 
@@ -296,25 +299,30 @@ breaking the manifest.
 ## 10. OSS reference seed
 
 The OSS reference seed lives at
-[`github.com/keboola/agnes-the-ai-analyst-workspace-seed`](https://github.com/keboola/agnes-the-ai-analyst-workspace-seed).
-A snapshot of it ships inside the Agnes wheel at `src/_bundled_seed/`
-(see `scripts/sync_bundled_seed.sh` for how to refresh it).
+[`github.com/keboola/agnes-infra-template`](https://github.com/keboola/agnes-infra-template).
+A snapshot of its `workspace/` + `install-prompt/` sub-trees ships
+inside the Agnes wheel at `src/_bundled_seed/` (see
+`scripts/sync_bundled_seed.sh` for how to refresh it). The template
+repo doubles as the Terraform skeleton — operators get the deploy
+stack and the seed content from the same fork.
 
 **Suggested fork-and-customize workflow:**
 
 ```bash
-# 1. Fork the OSS seed
-gh repo fork keboola/agnes-the-ai-analyst-workspace-seed --clone
+# 1. Fork the OSS template (also gives you the Terraform skeleton)
+gh repo create <your-org>/agnes-infra --template keboola/agnes-infra-template --private
+gh repo clone <your-org>/agnes-infra
 
 # 2. Customize workspace/ contents — rename skills, add company-specific
 #    CLAUDE.md context, etc.
-cd agnes-the-ai-analyst-workspace-seed
+cd agnes-infra
 vim workspace/CLAUDE.md
 vim workspace/.claude/skills/connector-asana/SKILL.md
 
 # 3. Push to your fork
 
 # 4. Register the fork URL in your Agnes instance via /admin/server-config
+#    (the Initial Workspace Template URL points at your fork's HTTPS clone URL)
 ```
 
 If you also want your fork's content bundled into your custom Agnes

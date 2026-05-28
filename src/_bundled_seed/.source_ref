@@ -13,6 +13,6 @@
 # then verify against your fork instead. The Agnes binary's resolution chain
 # is unaffected (operator-configured Initial Workspace Template ALWAYS wins
 # over the bundled snapshot at runtime).
-source_url=https://github.com/keboola/agnes-the-ai-analyst-workspace-seed
-source_sha=4e357de06df66d39f7f55e1c861fde0cabf2abbc
-source_branch=vr/connector-skills-b1a
+source_url=https://github.com/keboola/agnes-infra-template
+source_sha=4171aa8919430dba6798c98d948a275f64828bec
+source_branch=main
