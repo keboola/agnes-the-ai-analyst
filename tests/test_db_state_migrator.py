@@ -159,3 +159,25 @@ def test_backup_duckdb_creates_gzipped_copy(tmp_path):
     assert out.name.startswith("duckdb-pre-sidecar-")
     assert out.suffix == ".gz"
     assert src.exists()  # original preserved
+
+
+def test_jobwriter_status_file_is_0600(tmp_path):
+    """H2 — every JobWriter status update must leave the file at 0600.
+    The migrator updates this file ~6 times per job (write_initial,
+    update_step x5, mark_success); each write goes through ._write
+    via tmp + os.replace + chmod."""
+    import os, stat
+    from scripts.db_state_migrator import JobWriter
+    w = JobWriter(job_id="job-mode-test", jobs_dir=tmp_path, source="duckdb", target="side_car")
+    w.write_initial()
+    p = tmp_path / "job-mode-test.json"
+    mode = stat.S_IMODE(os.stat(p).st_mode)
+    assert mode == 0o600, f"expected 0600 after write_initial, got {oct(mode)}"
+
+    w.update_step("alembic", progress_pct=20)
+    mode = stat.S_IMODE(os.stat(p).st_mode)
+    assert mode == 0o600, f"expected 0600 after update_step, got {oct(mode)}"
+
+    w.mark_success(summary={"rows_total": 0, "tables_migrated": 0})
+    mode = stat.S_IMODE(os.stat(p).st_mode)
+    assert mode == 0o600, f"expected 0600 after mark_success, got {oct(mode)}"

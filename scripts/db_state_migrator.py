@@ -105,6 +105,7 @@ class JobWriter:
         tmp = self._path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
         os.replace(tmp, self._path)
+        os.chmod(self._path, 0o600)
 
     def _read(self) -> dict[str, Any]:
         if self._path.exists():

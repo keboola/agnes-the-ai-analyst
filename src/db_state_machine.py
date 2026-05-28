@@ -143,6 +143,7 @@ def write_backend_state(target: BackendState, *, url: "str | None" = ...) -> Non
     tmp = _OVERLAY_PATH.with_suffix(".yaml.tmp")
     tmp.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=True))
     os.replace(tmp, _OVERLAY_PATH)
+    os.chmod(_OVERLAY_PATH, 0o600)
 
 
 class MigrationInProgressError(RuntimeError):

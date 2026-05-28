@@ -191,3 +191,16 @@ def test_write_backend_state_preserves_other_top_level_keys(tmp_path, monkeypatc
     assert data["auth"]["providers"] == ["google", "magic_link"]
     assert data["database"]["backend"] == "side_car"
     assert data["database"]["url"] == "postgresql+psycopg://x:y@h/d"
+
+
+def test_write_backend_state_sets_0600(tmp_path, monkeypatch):
+    """H2 — instance.yaml carries plaintext PG credentials and must
+    be owner-readable only. Catches the case where a non-app user on
+    the same host could ``cat`` the overlay and exfiltrate the URL."""
+    import os, stat
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+    from src.db_state_machine import BackendState, write_backend_state
+    write_backend_state(BackendState.SIDE_CAR, url="postgresql+psycopg://agnes:pw@host/agnes")
+    mode = stat.S_IMODE(os.stat(overlay).st_mode)
+    assert mode == 0o600, f"expected 0600, got {oct(mode)}"

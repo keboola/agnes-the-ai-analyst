@@ -231,6 +231,7 @@ def start_migration(payload: MigrateRequest) -> dict:
         tmp_path = job_path.with_suffix(".json.tmp")
         tmp_path.write_text(_json.dumps(intent, indent=2))
         os.replace(tmp_path, job_path)
+        os.chmod(job_path, 0o600)
 
         # Flag tells the applier WHICH compose lifecycle to settle on.
         flag_target = (
@@ -306,6 +307,7 @@ def cancel_job(job_id: str) -> dict:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
     os.replace(tmp, path)
+    os.chmod(path, 0o600)
 
     # Revert state machine to the source backend captured when the
     # migration kicked off.  The URL was preserved across the *_in_progress

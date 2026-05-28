@@ -901,3 +901,69 @@ def test_get_job_disk_file_is_unredacted(seeded_app, monkeypatch):
     # File on disk is untouched.
     on_disk = json.loads(job_file.read_text())
     assert on_disk["target_url"] == "postgresql+psycopg://agnes:secretvalue@host/agnes"
+
+
+def test_migrate_writes_job_json_with_0600(seeded_app, monkeypatch):
+    """H2 — job JSON contains target_url + source_url with credentials.
+    Must be owner-readable only."""
+    import os, stat
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "side_car"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["job_id"]
+    job_path = data_dir / "state" / "db-jobs" / f"{job_id}.json"
+    mode = stat.S_IMODE(os.stat(job_path).st_mode)
+    assert mode == 0o600, f"expected 0600 on {job_path}, got {oct(mode)}"
+
+
+def test_cancel_keeps_job_json_at_0600(seeded_app, monkeypatch):
+    """H2 — cancel_job rewrites the job JSON; the rewrite must keep
+    mode 0600 because the file still carries target_url/source_url
+    with credentials (cancel doesn't clear them, the applier may need
+    them for cleanup). Without chmod the os.replace would reset to
+    umask-default."""
+    import os, stat
+
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    job_id = "job-cancel-mode"
+    job = {
+        "schema_version": 1,
+        "job_id": job_id,
+        "status": "running",
+        "source_backend": "duckdb",
+        "target_backend": "side_car",
+        "target_url": "postgresql+psycopg://agnes:pw@host/agnes",
+        "current_step": "data_copy",
+        "started_at": "2026-05-28T10:00:00Z",
+        "completed_at": None,
+        "progress_pct": 30,
+        "summary": None,
+        "error": None,
+    }
+    path = jobs_dir / f"{job_id}.json"
+    path.write_text(json.dumps(job))
+    os.chmod(path, 0o600)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        f"/api/admin/db/cancel/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode == 0o600, f"cancel rewrite must keep 0600, got {oct(mode)}"
