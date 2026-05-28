@@ -20,8 +20,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   - `scripts/sync_bundled_seed.sh` clones the OSS seed at a given ref into `src/_bundled_seed/` and writes `.source_ref` provenance.
   - `.github/workflows/check-bundled-seed.yml` verifies the bundled snapshot's `.source_ref` SHA exists at `source_url`.
 
+### Changed
+- Install-prompt renderer (`app/web/setup_instructions.py`) now sources connector content from the seed manifest + per-skill SKILL.md bodies instead of hardcoded Python strings (A1.2 of the connector-skills refactor).
+  - `app/web/connector_prompts.py` retired and deleted. The asana / atlassian / gws prompts moved to `workspace/.claude/skills/connector-*/SKILL.md` inside the seed (operator IWT clone or bundled snapshot fallback). Adding a fourth connector now requires only a new `connector-X/SKILL.md` in the seed — no Agnes code change.
+  - `resolve_lines()` / `render_setup_instructions()` accept `connector_manifest: list[ConnectorEntry]` instead of `connector_prompts: dict[str, str]`. `None` triggers a fresh `load_manifest()` call; `[]` intentionally renders no connectors step (was previously rehydrated silently).
+  - Finale Confirm-step bullets list connector names dynamically from the manifest, so a fourth connector flows through to the summary text automatically.
+  - **BREAKING for behaviour**: operator-baked Atlassian base URL (`atlassian_prompt(base_url=...)`) and operator-baked GWS OAuth client (literal `client_id` / `client_secret` substituted into the rendered HTML) are no longer applied at render time. Operator-side values flow into `<workspace>/.claude/agnes/.env` via `agnes init` (A1.3 work) and the seed skills read them at install time.
+- Connectors now render in alphabetical order by display_name (Asana, Atlassian (Jira / Confluence), Google Workspace) — was previously asana → gws → atlassian (registry order).
+
 ### Internal
 - Manifest cache invalidates from `POST /api/admin/initial-workspace/sync` after a successful clone update, so freshly-synced seed content surfaces on the next render scan without a process restart.
+- `tests/snapshots/install_prompt_default.txt` snapshot regression guard catches unintended drift in the renderer output as a single targeted diff rather than dozens of substring assertions.
 
 ## [0.55.25] — 2026-05-28
 
