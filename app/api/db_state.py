@@ -241,9 +241,10 @@ def cancel_job(job_id: str) -> dict:
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
     os.replace(tmp, path)
 
-    # Revert state machine
+    # Revert state machine to the source backend captured when the
+    # migration kicked off.  The URL was preserved across the *_in_progress
+    # write (B4), so a no-url write here keeps the live source URL.
     from src.db_state_machine import BackendState, write_backend_state
-    revert = BackendState.DUCKDB if data["target_backend"] == "side_car" else BackendState.SIDE_CAR
-    write_backend_state(revert)
+    write_backend_state(BackendState(data["source_backend"]))
 
     return {"cancelled": True}

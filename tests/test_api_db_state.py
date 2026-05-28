@@ -315,3 +315,160 @@ def test_post_cancel_409_after_flip_backend(seeded_app, monkeypatch):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 409, r.text
+
+
+def test_cancel_reverts_to_source_backend_duckdb_to_cloud(seeded_app, monkeypatch):
+    """Cancelling a DUCKDB → CLOUD migration must revert to DUCKDB (the source).
+
+    The previous bug computed the revert from ``target_backend == 'side_car'``
+    and so picked SIDE_CAR for target=cloud — leaving the state machine in
+    SIDE_CAR even though the app never ran there (B1).
+    """
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    # Leave overlay absent (default DUCKDB) so use_pg() stays False during
+    # auth and the test client can authenticate without a live Postgres.
+    # The cancel endpoint writes the revert value itself — we verify that.
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "job-cancel-duckdb-cloud"
+    (jobs_dir / f"{job_id}.json").write_text(json.dumps({
+        "schema_version": 1,
+        "job_id": job_id,
+        "status": "running",
+        "source_backend": "duckdb",
+        "target_backend": "cloud",
+        "current_step": "data_copy",   # pre point-of-no-return
+        "started_at": "2026-05-28T10:00:00Z",
+        "completed_at": None,
+        "progress_pct": 30,
+        "summary": None,
+        "error": None,
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.post(
+        f"/api/admin/db/cancel/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] is True
+
+    # Verify state machine reverted to DUCKDB (the SOURCE), not SIDE_CAR.
+    from src.db_state_machine import BackendState, read_backend_state
+    state, _url = read_backend_state()
+    assert state == BackendState.DUCKDB, f"expected DUCKDB after cancel, got {state.value}"
+
+
+def test_cancel_reverts_to_source_backend_cloud_to_side_car(seeded_app, monkeypatch):
+    """Cancelling a CLOUD → SIDE_CAR migration reverts to CLOUD (the source)
+    and preserves the cloud URL that was live when the migration kicked off.
+
+    URL-preservation is tested via a raw overlay pre-written with
+    backend=duckdb so the test client can authenticate (use_pg() stays False).
+    After cancel the endpoint writes backend=cloud while the pre-seeded URL
+    carries through via the Ellipsis sentinel in write_backend_state.
+    """
+    import yaml
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    # Pre-seed the overlay with the source URL but keep backend=duckdb so the
+    # test-client HTTP requests use the DuckDB repository (no live PG needed).
+    # In production the *_in_progress write preserves this URL via the
+    # Ellipsis sentinel (B4); here we replicate that end-state directly.
+    overlay = data_dir / "state" / "instance.yaml"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(yaml.safe_dump({
+        "database": {
+            "backend": "duckdb",
+            "url": "postgresql+psycopg://cloud:pw@cloudhost/agnes",
+        }
+    }))
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "job-cancel-cloud-side"
+    (jobs_dir / f"{job_id}.json").write_text(json.dumps({
+        "schema_version": 1,
+        "job_id": job_id,
+        "status": "running",
+        "source_backend": "cloud",
+        "target_backend": "side_car",
+        "current_step": "data_copy",
+        "started_at": "2026-05-28T10:00:00Z",
+        "completed_at": None,
+        "progress_pct": 30,
+        "summary": None,
+        "error": None,
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.post(
+        f"/api/admin/db/cancel/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] is True
+
+    from src.db_state_machine import BackendState, read_backend_state
+    state, url = read_backend_state()
+    assert state == BackendState.CLOUD, f"expected CLOUD after cancel, got {state.value}"
+    assert url == "postgresql+psycopg://cloud:pw@cloudhost/agnes", \
+        "source URL must be preserved on cancel"
+
+
+def test_cancel_reverts_to_source_backend_side_car_to_cloud(seeded_app, monkeypatch):
+    """Cancelling a SIDE_CAR → CLOUD migration reverts to SIDE_CAR with the
+    side_car URL preserved.
+    """
+    import yaml
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    # Same URL-preservation technique: park the side_car URL in the overlay
+    # under backend=duckdb so use_pg() stays False during auth.
+    overlay = data_dir / "state" / "instance.yaml"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(yaml.safe_dump({
+        "database": {
+            "backend": "duckdb",
+            "url": "postgresql+psycopg://x:y@postgres:5432/agnes",
+        }
+    }))
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "job-cancel-side-cloud"
+    (jobs_dir / f"{job_id}.json").write_text(json.dumps({
+        "schema_version": 1,
+        "job_id": job_id,
+        "status": "running",
+        "source_backend": "side_car",
+        "target_backend": "cloud",
+        "current_step": "data_copy",
+        "started_at": "2026-05-28T10:00:00Z",
+        "completed_at": None,
+        "progress_pct": 30,
+        "summary": None,
+        "error": None,
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.post(
+        f"/api/admin/db/cancel/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] is True
+
+    from src.db_state_machine import BackendState, read_backend_state
+    state, url = read_backend_state()
+    assert state == BackendState.SIDE_CAR, f"expected SIDE_CAR after cancel, got {state.value}"
+    assert url == "postgresql+psycopg://x:y@postgres:5432/agnes", \
+        "source URL must be preserved on cancel"
