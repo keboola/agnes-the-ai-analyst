@@ -40,6 +40,48 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/query", tags=["query"])
 
+# ---------------------------------------------------------------------------
+# Per-session BQ scan budget (Phase 12.3)
+# ---------------------------------------------------------------------------
+
+# In-memory counter: session_id → cumulative bytes scanned this session.
+# Keyed by chat session JWT claim ``chat_session_id`` (set by Task 13.1).
+# Resets on server restart (intentional — sessions are short-lived).
+_per_session_bq_bytes: dict[str, int] = {}
+
+_DEFAULT_PER_SESSION_BQ_BYTES = 20 * 1024**3  # 20 GiB
+
+
+def accumulate_session_bq_bytes(
+    session_id: str,
+    scan_bytes: int,
+    *,
+    limit_bytes: int = _DEFAULT_PER_SESSION_BQ_BYTES,
+) -> None:
+    """Accumulate ``scan_bytes`` for ``session_id`` and raise HTTPException
+    (400 / ``bq_budget_exhausted``) if the cumulative total exceeds
+    ``limit_bytes``.
+
+    Called from the BQ scan guard after the dry-run resolves ``total_bytes``.
+    Integration with the request auth path is deferred to Task 13.1 — that
+    task wires ``chat_session_id`` from the JWT into ``request.state`` so the
+    execute_query handler can pass it through here.
+    """
+    current = _per_session_bq_bytes.get(session_id, 0)
+    new_total = current + scan_bytes
+    _per_session_bq_bytes[session_id] = new_total
+    if limit_bytes > 0 and new_total > limit_bytes:
+        raise HTTPException(status_code=400, detail={
+            "reason": "bq_budget_exhausted",
+            "session_id": session_id,
+            "scan_bytes_cumulative": new_total,
+            "limit_bytes": limit_bytes,
+            "suggestion": (
+                "Per-session BigQuery scan budget exhausted. "
+                "Start a new chat session to reset the quota."
+            ),
+        })
+
 
 # Heuristic: did the BQ-side execution of a `bigquery_query()`-rewritten
 # query reject the inner SQL because of a **DuckDB-vs-BQ dialect mismatch**
