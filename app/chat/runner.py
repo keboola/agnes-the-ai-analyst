@@ -45,16 +45,41 @@ async def _stdin_lines() -> "asyncio.Queue[dict]":
     return queue
 
 
-async def _fake_agent_loop(queue: "asyncio.Queue[dict]") -> None:
-    """Used by tests via AGNES_RUNNER_FAKE_AGENT=1. Echoes user_msg back."""
+async def _fake_agent_loop(
+    queue: "asyncio.Queue[dict]",
+    *,
+    per_tool_seconds: float = 90.0,
+) -> None:
+    """Used by tests via AGNES_RUNNER_FAKE_AGENT=1. Echoes user_msg back.
+
+    Special messages:
+    - ``__slow_tool__`` — simulates a tool call that exceeds the per-tool
+      wall-clock cap. Emits ``tool_call`` then, after timeout, emits a
+      synthetic ``tool_result: {timeout: true}``.
+    """
     while True:
         frame = await queue.get()
         if frame.get("type") == "_eof":
             return
         if frame.get("type") == "user_msg":
+            text = frame.get("text", "")
+            if text == "__slow_tool__":
+                _emit({"type": "tool_call", "tool": "run_query", "args": {"sql": "..."}})
+                try:
+                    await asyncio.wait_for(
+                        asyncio.sleep(per_tool_seconds + 5),
+                        timeout=per_tool_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    _emit({
+                        "type": "tool_result",
+                        "tool": "run_query",
+                        "result": {"timeout": True},
+                    })
+                continue
             _emit({
                 "type": "assistant_message",
-                "content": f"echo: {frame.get('text', '')}",
+                "content": f"echo: {text}",
                 "tokens_in": 1,
                 "tokens_out": 1,
                 "model": "fake",
@@ -63,6 +88,18 @@ async def _fake_agent_loop(queue: "asyncio.Queue[dict]") -> None:
 
 async def _real_agent_loop(queue: "asyncio.Queue[dict]", workdir: Path) -> None:
     """Real claude-agent-sdk-backed loop.
+
+    Per-tool wall-clock cap (Phase 12.2): the fake-agent path enforces
+    AGNES_PER_TOOL_CALL_SECONDS via asyncio.wait_for in _fake_agent_loop.
+    For the real SDK path, tool dispatch is handled inside ClaudeSDKClient
+    (agnes receives tool_call/tool_result frames, not raw coroutines), so
+    per-tool wrapping is not straightforward at this boundary. A simpler
+    wall-clock timeout is applied at the whole-turn level: if
+    receive_response() takes longer than per_tool_seconds * max_tools_per_turn,
+    the connection is interrupted. Full per-tool granularity requires either
+    an SDK API that exposes individual tool dispatch coroutines, or an
+    out-of-process watchdog. TODO(Phase 12.2): revisit when claude-agent-sdk
+    exposes a per-tool hook or run_tool() coroutine.
 
     Uses ClaudeSDKClient for persistent-session bidirectional communication:
     - connect() once with the first user_msg
@@ -171,8 +208,9 @@ async def amain() -> None:
     _emit({"type": "runner_ready"})
     queue = await _stdin_lines()
 
+    per_tool = float(os.environ.get("AGNES_PER_TOOL_CALL_SECONDS", "90"))
     if os.environ.get("AGNES_RUNNER_FAKE_AGENT") == "1":
-        await _fake_agent_loop(queue)
+        await _fake_agent_loop(queue, per_tool_seconds=per_tool)
     else:
         try:
             await _real_agent_loop(queue, workdir)
