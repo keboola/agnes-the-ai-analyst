@@ -1208,6 +1208,87 @@ def test_get_db_state_returns_applier_tick_age(seeded_app, monkeypatch):
     assert 4 <= age <= 30, f"expected ~5s, got {age}s"
 
 
+# ---------------------------------------------------------------------------
+# Phase 5.3 — GET /job passes through table_progress verbatim
+# ---------------------------------------------------------------------------
+
+
+def test_get_job_passes_through_table_progress(tmp_path, monkeypatch):
+    """Phase 5.3 — when the migrator has called update_table_progress,
+    the job JSON carries a ``table_progress`` block. The UI renders
+    it inline; the API layer must pass it through verbatim (alongside
+    the existing URL-redaction guarantees from H1)."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    import json as _json
+    jobs_dir = tmp_path / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True)
+    job_id = "job-table-progress"
+    (jobs_dir / f"{job_id}.json").write_text(_json.dumps({
+        "job_id": job_id,
+        "status": "running",
+        "current_step": "data_copy",
+        "progress_pct": 65,
+        "table_progress": {
+            "current_table": "users",
+            "tables_done": 7,
+            "tables_total": 12,
+        },
+        "target_url": "postgresql+psycopg://x:secret@h/d",
+    }))
+
+    # Import here so DATA_DIR monkeypatch is in effect.
+    from app.api.db_state import get_job
+    # Call the endpoint function directly (no auth needed for a unit call).
+    result = get_job(job_id)
+    assert result["table_progress"] == {
+        "current_table": "users",
+        "tables_done": 7,
+        "tables_total": 12,
+    }
+    # And the H1 redaction is still applied to the URL.
+    assert "secret" not in result["target_url"]
+
+
+def test_get_job_passes_through_table_progress_via_client(seeded_app, monkeypatch):
+    """Phase 5.3 — end-to-end via HTTP client: table_progress is a
+    top-level field in the GET /job/{id} response body."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "job-tp-e2e"
+    (jobs_dir / f"{job_id}.json").write_text(json.dumps({
+        "job_id": job_id,
+        "status": "running",
+        "current_step": "data_copy",
+        "progress_pct": 40,
+        "table_progress": {
+            "current_table": "audit_log",
+            "tables_done": 3,
+            "tables_total": 10,
+        },
+        "target_url": "postgresql+psycopg://agnes:pw@host/agnes",
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.get(
+        f"/api/admin/db/job/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["table_progress"] == {
+        "current_table": "audit_log",
+        "tables_done": 3,
+        "tables_total": 10,
+    }
+    # H1 redaction still applied.
+    assert "pw" not in body["target_url"]
+
+
 def test_get_db_state_applier_tick_none_when_missing(seeded_app, monkeypatch):
     """If the applier has never run (fresh install / broken unit),
     the tick file is absent — return None so the UI can flag it as

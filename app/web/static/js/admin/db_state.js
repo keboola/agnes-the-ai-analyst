@@ -45,6 +45,34 @@ const DBState = {
     return r.json();
   },
 
+  // -------------------------------------------------------------------------
+  // Phase 5.1 — localStorage cache helpers
+  // Persist the last known job state so that during the ~30-90s applier
+  // restart window (when fetch errors replace successful responses) the UI
+  // can show "last known state" instead of a blank yellow box.
+  // -------------------------------------------------------------------------
+
+  _cacheJobState(jobId, job) {
+    try {
+      localStorage.setItem(`db-job-${jobId}`, JSON.stringify({
+        ts: Date.now(),
+        job,
+      }));
+    } catch (e) {
+      // Quota / private mode — non-fatal; polling still works, just no cache.
+    }
+  },
+
+  _loadCachedJobState(jobId) {
+    try {
+      const raw = localStorage.getItem(`db-job-${jobId}`);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  },
+
   renderState(data) {
     const backend = data.backend;
 
@@ -160,41 +188,106 @@ const DBState = {
     }
   },
 
+  // -------------------------------------------------------------------------
+  // _renderJob(job, isStale, progress, jobId)
+  //
+  // Extracted from the old inline tick callback so the same render path
+  // is shared between the live-fetch success path and the cache-fallback
+  // stale path (Phase 5.1).
+  //
+  // Phase 5.3: renders job.table_progress when present.
+  // -------------------------------------------------------------------------
+  _renderJob(job, isStale, progress, jobId) {
+    // Phase 5.3 — per-table progress block, only shown when the migrator
+    // has called update_table_progress (field is absent on early steps).
+    const tableProgressHtml = job.table_progress
+      ? `<div class="table-progress">Table ${job.table_progress.tables_done}/${job.table_progress.tables_total}: <code>${job.table_progress.current_table}</code></div>`
+      : '';
+
+    // Phase 5.1 — stale subtitle shown when cache is used during outage.
+    const staleHtml = isStale
+      ? `<div class="stale-notice">(connection lost — retrying…)</div>`
+      : '';
+
+    progress.innerHTML = `
+      <div class="job-status">
+        <div>Job <code>${jobId}</code>${staleHtml}</div>
+        <div>Step: <strong>${job.current_step}</strong> (${job.progress_pct}%)</div>
+        <div class="progress-bar"><div style="width: ${job.progress_pct}%"></div></div>
+        ${tableProgressHtml}
+        ${job.error ? `<div class="error">Error: ${job.error.message}</div>` : ''}
+        <button class="btn btn-secondary" id="db-cancel-btn">Cancel</button>
+      </div>
+    `;
+    document.getElementById('db-cancel-btn')?.addEventListener('click', async () => {
+      try {
+        await this.cancelJob(jobId);
+        alert('Cancelled');
+      } catch (e) {
+        alert(`Cancel failed: ${e.message}`);
+      }
+    });
+  },
+
   startPolling(jobId) {
     const progress = document.getElementById('db-migration-progress');
     if (!progress) return;
     progress.style.display = 'block';
 
+    // Phase 5.1 — hydrate from cache immediately before the first fetch.
+    // Eliminates the blank-box flash on page-reload mid-migration, and
+    // gives operators something to read during the applier restart window.
+    // Cache TTL guard: an entry older than 5 minutes is treated as stale
+    // (operator may have reopened the page much later, the job has long
+    // since completed, the cached state should not be shown as live).
+    const CACHE_TTL_MS = 5 * 60 * 1000;
+    const cached = this._loadCachedJobState(jobId);
+    if (cached && (Date.now() - cached.ts) < CACHE_TTL_MS) {
+      this._renderJob(cached.job, /*isStale=*/false, progress, jobId);
+    }
+
+    // Phase 5.2 — exponential backoff state.
+    // While the app container is restarting (fetch errors) we back off
+    // from 2s → 4s → 8s → … → 30s max, then reset to 2s on first
+    // successful fetch. This avoids spamming connection-refused errors
+    // during the ~30-90s applier restart window.
+    let consecutiveFailures = 0;
+    const BASE_INTERVAL = 2000;
+    const MAX_INTERVAL = 30000;
+
+    // Phase 5.2 — recursive setTimeout instead of setInterval so each
+    // tick can choose its own next-delay after seeing whether the fetch
+    // succeeded or failed.
     const tick = async () => {
       try {
         const job = await this.fetchJob(jobId);
-        progress.innerHTML = `
-          <div class="job-status">
-            <div>Job <code>${jobId}</code></div>
-            <div>Step: <strong>${job.current_step}</strong> (${job.progress_pct}%)</div>
-            <div class="progress-bar"><div style="width: ${job.progress_pct}%"></div></div>
-            ${job.error ? `<div class="error">Error: ${job.error.message}</div>` : ''}
-            <button class="btn btn-secondary" id="db-cancel-btn">Cancel</button>
-          </div>
-        `;
-        document.getElementById('db-cancel-btn')?.addEventListener('click', async () => {
-          try {
-            await this.cancelJob(jobId);
-            alert('Cancelled');
-          } catch (e) {
-            alert(`Cancel failed: ${e.message}`);
-          }
-        });
+        // Successful fetch — reset backoff and update cache.
+        consecutiveFailures = 0;
+        this._cacheJobState(jobId, job);
+        this._renderJob(job, /*isStale=*/false, progress, jobId);
         if (['success', 'failed', 'cancelled'].includes(job.status)) {
-          clearInterval(this._poll);
+          // Terminal state — stop polling, reload after 2s so the state
+          // card refreshes to the new backend. Also drop the cache entry
+          // so it doesn't linger in the operator's localStorage forever.
+          try { localStorage.removeItem(`db-job-${jobId}`); } catch (e) {}
           setTimeout(() => location.reload(), 2000);
+          return;
         }
       } catch (e) {
-        // Silently swallow transient fetch errors; next tick retries.
+        // Fetch failed (app restarting or transient network issue).
+        // Phase 5.1: render last known state with a stale subtitle.
+        consecutiveFailures += 1;
+        const staleCache = this._loadCachedJobState(jobId);
+        if (staleCache) {
+          this._renderJob(staleCache.job, /*isStale=*/true, progress, jobId);
+        }
       }
+      // Phase 5.2 — schedule next tick with exponential backoff.
+      const interval = Math.min(BASE_INTERVAL * Math.pow(2, consecutiveFailures), MAX_INTERVAL);
+      this._poll = setTimeout(tick, interval);
     };
+
     tick();
-    this._poll = setInterval(tick, 2000);
   },
 
   async init() {
