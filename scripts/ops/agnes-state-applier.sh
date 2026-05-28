@@ -62,16 +62,27 @@ dc() { docker compose "${COMPOSE_FILES[@]}" "$@"; }
 # wants us to actually MIGRATE data, not just shift lifecycle. We pick
 # the oldest pending — there should usually only be one because the
 # API holds the MigrationLock until it has written the job.
+# Sort by mtime so we maintain FIFO ordering if two jobs queued up
+# (applier missed a tick, operator submitted back-to-back requests).
 PENDING_JOB=""
 if [ -d "$JOBS_DIR" ]; then
-    for f in "$JOBS_DIR"/*.json; do
-        [ -e "$f" ] || continue
-        st=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('status',''))" "$f" 2>/dev/null || echo "")
-        if [ "$st" = "pending" ]; then
-            PENDING_JOB="$f"
-            break
-        fi
-    done
+    PENDING_JOB=$(python3 - "$JOBS_DIR" <<'PY' 2>/dev/null
+import json, os, sys
+d = sys.argv[1]
+candidates = []
+for f in os.listdir(d):
+    if not f.endswith(".json"): continue
+    p = os.path.join(d, f)
+    try:
+        data = json.load(open(p))
+    except Exception:
+        continue
+    if data.get("status") == "pending":
+        candidates.append((os.path.getmtime(p), p))
+candidates.sort()
+print(candidates[0][1] if candidates else "")
+PY
+    ) || PENDING_JOB=""
 fi
 
 # --- Helpers --------------------------------------------------------------
@@ -171,10 +182,18 @@ case "$TARGET" in
             # we'll launch in a moment opens a TCP connection on
             # postgres:5432 and we'd rather fail fast here than have
             # the migrator timeout on its first ALEMBIC operation.
+            PG_READY=0
             for _ in $(seq 1 30); do
-                docker exec agnes-postgres-1 pg_isready -U agnes >/dev/null 2>&1 && break
+                if docker exec agnes-postgres-1 pg_isready -U agnes >/dev/null 2>&1; then
+                    PG_READY=1
+                    break
+                fi
                 sleep 2
             done
+            if [ "$PG_READY" -ne 1 ]; then
+                logger -t agnes-state-applier "postgres did not become ready within 60s — aborting"
+                exit 1
+            fi
         fi
         ;;
     duckdb|cloud-only)
@@ -195,20 +214,24 @@ fi
 
 logger -t agnes-state-applier "Picked up pending migration job: $PENDING_JOB"
 
-JOB_ID=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["job_id"])' "$PENDING_JOB")
-TARGET_URL=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("target_url",""))' "$PENDING_JOB")
-TARGET_BACKEND=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("target_backend",""))' "$PENDING_JOB")
-SOURCE_BACKEND=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("source_backend",""))' "$PENDING_JOB")
+# Read all required job fields in a single python invocation. The
+# fields land into shell vars via `read`; missing optional fields are
+# emitted as empty strings. Newline-separated output + `read -r` is
+# more shell-safe than a single space-separated line — URLs contain
+# special chars that don't survive whitespace tokenization cleanly.
+{ read -r JOB_ID; read -r TARGET_URL; read -r TARGET_BACKEND; read -r SOURCE_BACKEND; read -r SOURCE_URL; } < <(
+    python3 - "$PENDING_JOB" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d["job_id"])
+print(d.get("target_url", ""))
+print(d.get("target_backend", ""))
+print(d.get("source_backend", ""))
+print(d.get("source_url", "") or "")
+PY
+)
 
 IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
-
-# Source URL — included in the pending job for every PG→PG transition
-# (side_car→cloud and cloud→side_car). The API endpoint reads
-# instance.yaml::database.url before flipping the state to
-# *_in_progress and persists it on the job; reading it back from the
-# job file is more reliable than re-reading instance.yaml at this
-# point (which already shows *_in_progress).
-SOURCE_URL=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("source_url") or "")' "$PENDING_JOB")
 SOURCE_URL_ARGS=()
 if [ -n "$SOURCE_URL" ]; then
     SOURCE_URL_ARGS=( --source-url "$SOURCE_URL" )
@@ -262,6 +285,12 @@ else
     # Roll the state machine back so the next /api/admin/db/state read
     # shows the (non-transient) source backend, not *_in_progress.
     write_instance_yaml "$SOURCE_BACKEND"
+    # Clear the lifecycle flag if the rollback lands on a non-PG state —
+    # otherwise the next applier tick would re-trigger the postgres
+    # lifecycle ("side-car-enabled") even though we just reverted to duckdb.
+    if [ "$SOURCE_BACKEND" = "duckdb" ]; then
+        rm -f "$FLAG"
+    fi
 fi
 
 # 4. Bring the app back up. After-state app reads instance.yaml and
@@ -276,8 +305,10 @@ fi
 # machine already ran the migration on the HOST via `docker run` —
 # the in-compose migrate/data-migrate services are vestigial here and
 # must not be touched on each cycle.
+set +e
 RESTART_LOG=$(dc up -d --no-deps --force-recreate app scheduler 2>&1)
 RESTART_RC=$?
+set -e
 if [ "$RESTART_RC" -ne 0 ]; then
     # Don't fail the applier hard — the restart is best-effort recovery.
     # Surface the failure to journalctl so operators see it.
