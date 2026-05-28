@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.24] — 2026-05-28
+
 ### Fixed
 - **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**
   The `{% set _brand = instance_brand | e %}` + `{% set title = _brand ~ "…<span>…" %}`
