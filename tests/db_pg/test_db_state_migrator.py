@@ -361,6 +361,79 @@ def test_bounded_engine_fails_fast_on_unreachable(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Phase 7.5 — Hung-migrator statement_timeout contract
+# ---------------------------------------------------------------------------
+
+def test_bounded_engine_carries_statement_timeout(pg_engine):
+    """Phase 7.5 — _bounded_engine must set PG-side statement_timeout
+    to 5 minutes (300_000 ms). This bounds any single query so a
+    hung migrator subprocess cannot sit forever on a runaway query;
+    the unattended applier needs it to surface a clear error within
+    a known horizon. Without this guard, a misconfigured target
+    (broken index, deadlock with another client) could block the
+    migrator indefinitely.
+
+    This test exercises the runtime behaviour: the PG server
+    actually honours the setting when a connection is established
+    via _bounded_engine.
+    """
+    import sqlalchemy as sa
+    from scripts.db_state_migrator import _bounded_engine
+
+    eng = _bounded_engine(str(pg_engine.url))
+    with eng.connect() as conn:
+        row = conn.execute(sa.text("SHOW statement_timeout")).fetchone()
+    eng.dispose()
+
+    raw = row[0]
+
+    def parse_ms(v: str) -> int:
+        """Normalise PG's SHOW statement_timeout output to integer ms.
+
+        PG may return the value in several formats depending on version and
+        unit: "300000ms", "300s", "5min", or bare digits (treated as ms
+        by PG's SHOW output — unlike SET which treats bare digits as ms
+        only in some contexts). We normalise all to integer ms so the
+        assertion is unit-independent.
+        """
+        v = v.strip()
+        if v.endswith("ms"):
+            return int(v[:-2])
+        if v.endswith("min"):
+            return int(v[:-3]) * 60_000
+        if v.endswith("s"):
+            return int(v[:-1]) * 1_000
+        # bare integer — PG SHOW output for this GUC uses ms
+        return int(v)
+
+    assert parse_ms(raw) == 300_000, (
+        f"statement_timeout {raw!r} != 5 min (300_000 ms) — "
+        "_bounded_engine is not enforcing the query time-cap"
+    )
+
+
+def test_bounded_engine_connect_args_carry_statement_timeout():
+    """Phase 7.5 — static contract: the literal option string
+    ``-c statement_timeout=300000`` must be present in
+    ``_bounded_engine``'s source.
+
+    This is a pure static guard: it fails immediately on accidental
+    deletion of the option, without needing a PG server. The runtime
+    counterpart (``test_bounded_engine_carries_statement_timeout``)
+    proves PG actually honours the setting; this test catches
+    accidental removal before it can reach CI.
+    """
+    import inspect
+    from scripts.db_state_migrator import _bounded_engine
+
+    src = inspect.getsource(_bounded_engine)
+    assert "statement_timeout=300000" in src, (
+        "5-minute statement_timeout (300_000 ms) is missing from "
+        "_bounded_engine — the hung-migrator guard has been removed"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 7.2 — DuckDB → CLOUD direct end-to-end
 # ---------------------------------------------------------------------------
 
