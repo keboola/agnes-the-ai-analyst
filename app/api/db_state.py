@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.engine.url import make_url
 
 from app.auth.access import require_admin
 from src.db_state_machine import (
@@ -28,6 +29,33 @@ def _jobs_dir() -> Path:
     on each fixture pick up the correct path.
     """
     return Path(os.environ.get("DATA_DIR", "/data")) / "state" / "db-jobs"
+
+
+def _normalize_pg_url(url: str) -> tuple[str, int, str]:
+    """Normalize a Postgres URL down to ``(host, port, database)``.
+
+    Used to detect alias URLs that compare unequal as strings but point
+    at the same physical Postgres database (B7). The comparison ignores
+    user/password (credentials don't change which DB you're talking to)
+    and the SQLAlchemy driver prefix (``postgresql://`` vs
+    ``postgresql+psycopg://`` etc.). Host names and database names are
+    lower-cased — Postgres treats them case-insensitively by convention,
+    and our deployment never relies on case-distinct hosts.
+    """
+    parsed = make_url(url)
+    host = (parsed.host or "").lower()
+    port = parsed.port or 5432
+    database = (parsed.database or "").lower()
+    return (host, port, database)
+
+
+def _urls_alias(a: str, b: str) -> bool:
+    """True iff two Postgres URLs point at the same physical database.
+
+    See :func:`_normalize_pg_url` for the normalization rules. Used by
+    the migrate endpoint to reject "migrate onto self" attempts (B7).
+    """
+    return _normalize_pg_url(a) == _normalize_pg_url(b)
 
 
 def _redact_url(url: str | None) -> str | None:
@@ -133,13 +161,15 @@ def start_migration(payload: MigrateRequest) -> dict:
         BackendState.SIDE_CAR, BackendState.CLOUD
     ) else None
 
-    # Reject same-URL DR cycles (cloud → side_car against the same
-    # IP/port) — would silently put two readers on the same DB after
-    # the cutover. Cheap belt-and-suspenders.
-    if source_url and source_url == target_url:
+    # Reject same-DB cycles — would silently put two readers on the
+    # same physical Postgres after the cutover, which is data-loss
+    # destructive once the source side is wiped. The alias check
+    # normalizes credentials, default port, and driver prefix so that
+    # cosmetic URL differences cannot bypass the guard (B7).
+    if source_url and _urls_alias(source_url, target_url):
         raise HTTPException(
             400,
-            detail="source and target URL are identical — refusing to migrate onto self",
+            detail="source and target URL alias the same Postgres database — refusing to migrate onto self",
         )
 
     job_id = str(uuid.uuid4())

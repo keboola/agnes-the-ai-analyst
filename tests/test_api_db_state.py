@@ -509,3 +509,112 @@ def test_cancel_writes_sentinel_for_migrator(seeded_app, monkeypatch):
 
     sentinel = jobs_dir / f"{job_id}.cancel"
     assert sentinel.exists(), "cancel endpoint must touch <job_id>.cancel for migrator"
+
+
+# ---------------------------------------------------------------------------
+# Task 2.4 — URL alias detection (BLOCKER B7)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_pg_url_default_port():
+    """Default port 5432 inferred when absent."""
+    from app.api.db_state import _normalize_pg_url
+    assert _normalize_pg_url("postgresql+psycopg://x:y@host/agnes") == ("host", 5432, "agnes")
+    assert _normalize_pg_url("postgresql+psycopg://x:y@host:5432/agnes") == ("host", 5432, "agnes")
+
+
+def test_normalize_pg_url_case_insensitive_host_and_db():
+    """Hosts and DB names are case-insensitive in PG conventions."""
+    from app.api.db_state import _normalize_pg_url
+    assert _normalize_pg_url("postgresql+psycopg://x:y@Host/Agnes") == ("host", 5432, "agnes")
+
+
+def test_normalize_pg_url_ignores_credentials():
+    """User/password are irrelevant to whether two URLs point at the
+    same physical DB."""
+    from app.api.db_state import _normalize_pg_url
+    a = _normalize_pg_url("postgresql+psycopg://reader:r@host:5432/agnes")
+    b = _normalize_pg_url("postgresql+psycopg://writer:w@host:5432/agnes")
+    assert a == b
+
+
+def test_normalize_pg_url_ignores_driver_choice():
+    """``postgresql://`` and ``postgresql+psycopg://`` are the same
+    target — driver picks the client library, not the DB."""
+    from app.api.db_state import _normalize_pg_url
+    a = _normalize_pg_url("postgresql://x:y@host/agnes")
+    b = _normalize_pg_url("postgresql+psycopg://x:y@host/agnes")
+    assert a == b
+
+
+def test_urls_alias_default_port_omission():
+    """B7 repro: omitted default port. String equality says no,
+    alias says yes."""
+    from app.api.db_state import _urls_alias
+    a = "postgresql+psycopg://agnes:pw@cloud-sql-host/agnes"
+    b = "postgresql+psycopg://agnes:pw@cloud-sql-host:5432/agnes"
+    assert a != b  # string equal would let this through
+    assert _urls_alias(a, b) is True  # alias check catches it
+
+
+def test_urls_alias_different_database_returns_false():
+    """Two PGs on same host different DB are NOT aliases."""
+    from app.api.db_state import _urls_alias
+    a = "postgresql+psycopg://x:y@host:5432/agnes"
+    b = "postgresql+psycopg://x:y@host:5432/different-db"
+    assert _urls_alias(a, b) is False
+
+
+def test_urls_alias_different_host_returns_false():
+    """Different hosts → different DBs."""
+    from app.api.db_state import _urls_alias
+    a = "postgresql+psycopg://x:y@host-a:5432/agnes"
+    b = "postgresql+psycopg://x:y@host-b:5432/agnes"
+    assert _urls_alias(a, b) is False
+
+
+def test_migrate_rejects_alias_url_with_400(seeded_app, monkeypatch):
+    """End-to-end: POST /migrate where source and target alias the same PG
+    database must return 400 (B7).
+
+    Scenario: SIDE_CAR → CLOUD where the supplied cloud_url points at the
+    same Postgres as the sidecar's URL (different user + default port
+    omitted → string-unequal but alias-equal).  The pre-existing string
+    equality check would have silently passed this request; the new alias
+    check must block it.
+
+    ``read_backend_state`` is patched at the endpoint module boundary so
+    the app still authenticates against DuckDB (no live Postgres needed).
+    """
+    from src.db_state_machine import BackendState
+
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    # Sidecar source URL — explicit port, credential user=agnes.
+    sidecar_url = "postgresql+psycopg://agnes:pw@postgres:5432/agnes"
+
+    # Patch the endpoint's read_backend_state so it sees SIDE_CAR + the
+    # sidecar URL.  Auth machinery still runs against DuckDB (the fixture
+    # didn't write an overlay, so use_pg() returns False throughout).
+    monkeypatch.setattr(
+        "app.api.db_state.read_backend_state",
+        lambda: (BackendState.SIDE_CAR, sidecar_url),
+    )
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # cloud_url aliases the sidecar URL: same host/port/db, different
+    # credentials, default port omitted → not string-equal, but alias-equal.
+    aliasing_cloud_url = "postgresql+psycopg://reader:r@postgres/agnes"
+    assert sidecar_url != aliasing_cloud_url  # string equality misses this
+
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "cloud", "cloud_url": aliasing_cloud_url},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"].lower()
+    assert "alias" in detail or "same" in detail
