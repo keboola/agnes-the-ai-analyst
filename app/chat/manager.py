@@ -349,6 +349,22 @@ class ChatManager:
         payload = json.dumps({"type": "cancel"}) + "\n"
         live.handle.stdin.write(payload.encode("utf-8"))
         await live.handle.stdin.drain()
+        # Synthetic tool_result so the agent's conversation history reflects
+        # the cancellation (per spec § Lifecycle "On cancellation").  Without
+        # this, the next user_msg lands in a dangling tool_call context and
+        # the model can hallucinate a result.  Persisted to chat_messages so
+        # crash-respawn replay sees it too.
+        synthetic = {
+            "type": "tool_result",
+            "tool": "_cancel",
+            "result": {"cancelled": True},
+        }
+        await live.ws.send_json(synthetic)
+        self._repo.append_message(
+            session_id=chat_id, role="assistant",
+            content="",
+            tool_calls=[{"cancelled": True}],
+        )
         await live.ws.send_json({"type": "cancelled"})
 
     async def kill(self, chat_id: str, *, reason: str) -> None:

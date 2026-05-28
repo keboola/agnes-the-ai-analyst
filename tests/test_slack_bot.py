@@ -295,3 +295,30 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
         text == "echo: hello agnes" and ch == "D1"
         for ch, _ts, text in sent
     ), sent
+
+
+def test_slack_app_mention_emits_log_record(caplog):
+    """`app_mention` events must produce an INFO log so operators can see
+    that the bot is receiving channel mentions even though channel scope
+    is deferred (DM-only MVP).
+    """
+    import asyncio
+    import logging
+    import services.slack_bot.events as ev
+
+    caplog.set_level(logging.INFO, logger="services.slack_bot.events")
+    event = {
+        "type": "app_mention", "channel": "C1", "thread_ts": "1.1",
+        "user": "U999", "text": "<@AGNES> hello",
+    }
+
+    async def _run():
+        await ev.dispatch_event(app=object(), event=event)
+
+    asyncio.run(_run())
+
+    matched = [
+        r for r in caplog.records
+        if "app_mention received" in r.message
+    ]
+    assert matched, f"expected app_mention log record; got {caplog.records!r}"

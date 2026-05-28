@@ -94,7 +94,7 @@ def test_ws_token_streaming_with_fake_runner(tmp_path, logged_in_user, monkeypat
     and returns an assistant_message echoing the user text."""
     # Force the fake-agent runner so we don't need an Anthropic key.
     monkeypatch.setenv("AGNES_RUNNER_FAKE_AGENT", "1")
-    monkeypatch.setenv("AGNES_JWT_SECRET", "dev-secret")
+    monkeypatch.setenv("JWT_SECRET_KEY", "dev-secret-at-least-32-chars-long-aaaa")
     # Ensure the subprocess can import the app package from this worktree.
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parent.parent))
 

@@ -68,5 +68,15 @@ async def _handle_dm(app, event: dict) -> None:
 
 
 async def _handle_mention(app, event: dict) -> None:
-    # MVP: scope = DM only (per spec defaults). Stub for follow-up.
+    # MVP: scope = DM only (per spec defaults). Stub for follow-up — channel
+    # @agnes mentions land in a future PR. Operators who install the manifest
+    # can still see events arriving at this handler in the logs.
+    logger.info(
+        "app_mention received but not yet implemented",
+        extra={
+            "channel": event.get("channel"),
+            "thread_ts": event.get("thread_ts"),
+            "user": event.get("user"),
+        },
+    )
     return

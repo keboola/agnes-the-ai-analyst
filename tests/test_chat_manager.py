@@ -202,6 +202,27 @@ def test_cancel_emits_synthetic_tool_result(manager: ChatManager):
         await asyncio.sleep(0.05)
         cancelled = [m for m in ws.sent if m.get("type") == "cancelled"]
         assert cancelled, "expected a {'type': 'cancelled'} frame after cancel"
+        # Synthetic tool_result must be emitted before the `cancelled` frame
+        # so the agent sees the cancellation in its conversation history.
+        synthetic = [
+            m for m in ws.sent
+            if m.get("type") == "tool_result"
+            and isinstance(m.get("result"), dict)
+            and m["result"].get("cancelled") is True
+        ]
+        assert synthetic, (
+            f"expected synthetic tool_result with cancelled=true; got {ws.sent}"
+        )
+        # And it must be persisted so crash-respawn replay sees it too.
+        msgs = manager._repo.list_messages(s.id)
+        persisted_cancels = [
+            m for m in msgs
+            if m.tool_calls and any(
+                isinstance(tc, dict) and tc.get("cancelled") is True
+                for tc in m.tool_calls
+            )
+        ]
+        assert persisted_cancels, "expected persisted cancel marker in chat_messages"
         await manager.kill(s.id, reason="test_done")
         handle.emit_eof()
         await attach_task
