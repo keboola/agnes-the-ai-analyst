@@ -52,16 +52,15 @@
 ### New
 - `app/chat/e2b_provider.py` — implements SandboxProvider Protocol via E2B SDK (~300 LOC)
 - `app/chat/e2b_workspace_sync.py` — upload/download per-user workspace to/from sandbox (~150 LOC)
-- `app/chat/mock_e2b_provider.py` — local mock for dev/CI; conforms to SandboxProvider Protocol; runs subprocess locally with a thin wrapper so tests don't burn E2B budget (~150 LOC)
-- `app/initial_workspace_default/e2b-template/` — Dockerfile + `e2b.toml` defining the Agnes sandbox template (~100 LOC + ops docs)
-- `tests/test_chat_e2b_provider.py` — unit + mocked integration tests (~250 LOC)
+- `app/initial_workspace_default/e2b-template/` — Dockerfile + `e2b.toml` defining the Agnes sandbox template (~100 LOC + ops docs). **No firewall rules** per Q4 — egress allowlist lives only in PreToolUse hook.
+- `tests/test_chat_e2b_provider.py` — unit tests via `unittest.mock.patch("e2b.Sandbox")` (~250 LOC). No `MockE2BProvider` class.
 - `tests/e2e/test_e2b_smoke.py` — opt-in real E2B smoke test (`AGNES_E2E_E2B=1`)
 
 ---
 
-## Pre-flight — 7 open design questions for owner sign-off
+## Pre-flight — 7 design decisions (owner-signed 2026-05-28)
 
-**These must be answered before any task starts.** Each defaults to a recommendation; flag it if you want a different answer.
+**All 7 questions answered.** Three diverge from architect's default recommendation; consequences flagged inline.
 
 ### Q1 — Workspace sync strategy
 
@@ -81,7 +80,7 @@
 | B | Build template at server startup if mismatch detected | reject — too much operator surprise |
 | C | Use latest template tag; trust E2B namespace | reject — risk of silent template upgrade breaking runner |
 
-**Recommendation:** A. Template IDs are immutable + content-addressed in E2B. Each Agnes minor version (e.g. `0.55.x`) targets `agnes-chat-v0.55`. Operator builds once per release. Docs document the build step.
+**Owner decision: C (latest tag) — diverges from recommendation.** Operator picks ops simplicity over upgrade safety. Consequence: when anyone in the org rebuilds `agnes-chat:latest`, all live deployments pick up the new template on their next sandbox spawn. If a rebuild ships an incompatible `claude-agent-sdk` version, the runner code may break silently. Mitigation: docs warn operators *"`:latest` is global — test rebuilds on a dev Agnes first; for production rollouts consider pinning a content-hashed tag temporarily"*.
 
 ### Q3 — Cost gating
 
@@ -101,7 +100,7 @@
 | B | E2B template defaults open; allowlist enforced by inspecting outbound at PreToolUse hook only | reject — fail-open |
 | C | No egress; runner only talks to Anthropic via E2B's hosted LLM gateway | tempting but coupling to E2B LLM gateway is yet another dep |
 
-**Recommendation:** A. Document the allowlist in the template's `e2b.toml`. Operators who need additional hosts (e.g., internal Snowflake) extend the template themselves. Agnes URL is templated into the sandbox at spawn via env var; template's firewall rule uses that var.
+**Owner decision: B (default open + PreToolUse hook only) — diverges from recommendation.** Owner picks ops simplicity over defense-in-depth. Consequence: a prompt injection that convinces the agent to bypass or rewrite the hook's allowlist can exfil data to arbitrary external hosts. Architect's Critical caveat #6 ("tighten allowlist to `api.github.com` only; fail-closed") is **partially undone** — the allowlist exists only in the hook, which is itself running inside the agent's tool surface. Mitigation: PreToolUse hook is bundled in the default workspace template and applies to every `Bash` invocation; spec § Known limitations gets an explicit "fail-open egress" entry; future commit could re-introduce E2B firewall as additional defense layer once owner reverses.
 
 ### Q5 — E2B API key handling
 
@@ -131,7 +130,11 @@
 | B | `MockE2BProvider` runs `claude-agent-sdk` as a subprocess locally with a thin shim that mimics E2B's stream API; selected by `instance.yaml :: chat.provider: mock_e2b` or `AGNES_TESTING=1` | ✓ **recommended** |
 | C | Provider selection per-test via fixture (some tests with real E2B, most with mock) | overlaps with B; B + opt-in real-E2B tests handles it |
 
-**Recommendation:** B. `MockE2BProvider` is the "subprocess on the server" path we already built, but **renamed and de-emphasized as dev-only**. Production deployments cannot opt into the mock; `chat.provider: mock_e2b` is explicitly rejected unless `AGNES_TESTING=1` env is set. Opt-in real-E2B tests gated on `AGNES_E2E_E2B=1` env (mirror `AGNES_E2E_ANTHROPIC`).
+**Owner decision: A (real E2B everywhere) — diverges from recommendation.** Owner accepts the per-PR CI billing cost in exchange for full-fidelity testing. Consequences:
+
+- **`MockE2BProvider` is not implemented.** Task H.5 is removed from this plan. Unit tests mock the `e2b` SDK at the import boundary (`unittest.mock.patch("app.chat.e2b_provider.Sandbox")`); E2E tests require a real `E2B_API_KEY`.
+- **Agnes OSS contributors without an E2B account cannot run `tests/e2e/`.** README and CONTRIBUTING update needed to document this.
+- **CI billing impact:** every PR + main push runs the E2E suite against real E2B. At 10 sandbox spawns × ~30s each × $X/spawn-minute, this is a per-run cost the operator monitors. GitHub Secret holds the API key.
 
 ---
 
@@ -187,7 +190,7 @@ RUN bash /opt/agnes_cli_install.sh
 # The runner script is uploaded at spawn time via files.write — not baked.
 ```
 
-- [ ] **Step 2: `e2b.toml`** — defines template name `agnes-chat-vX.Y` (operator substitutes X.Y per Agnes version), CPU/memory limits, network allowlist (`api.anthropic.com`, `api.github.com`, `${AGNES_API_HOST}`).
+- [ ] **Step 2: `e2b.toml`** — defines template name `agnes-chat:latest` (per Q2 decision — single mutable tag, not per-version), CPU/memory limits. **No `allowed_hosts` / firewall rules** per Q4 decision — egress allowlist lives only in PreToolUse hook bundled in workspace template. Document the trade-off in the template README.
 - [ ] **Step 3: README.md** — `e2b auth login` → `e2b template build` → save returned `template_id` into `chat.e2b_template_id` in `instance.yaml`.
 - [ ] Commit.
 
@@ -219,18 +222,11 @@ RUN bash /opt/agnes_cli_install.sh
 - [ ] **Step 4: Tests** with mocked E2B SDK + a `pyfakefs`-style local workspace.
 - [ ] Commit.
 
-### Task H.5 — `MockE2BProvider` for dev/CI
+### ~~Task H.5 — `MockE2BProvider`~~ (DROPPED per owner decision on Q7)
 
-**Files:**
-- Create: `app/chat/mock_e2b_provider.py`
-- Test:   `tests/test_chat_mock_e2b_provider.py`
-
-- [ ] **Step 1: Spawn subprocess** locally as `claude-agent-sdk` (the existing path from old `SubprocessProvider`, but without nsjail wrapping).
-- [ ] **Step 2: Mimic E2B's network allowlist** by checking the `argv` for forbidden hosts; refuse with a runtime exception if violated. This way dev tests still exercise the allowlist contract.
-- [ ] **Step 3: Skip workspace sync** — mock provider works directly against the on-disk workspace (no upload/download).
-- [ ] **Step 4: Hard guard:** refuse to start unless `os.environ.get("AGNES_TESTING") == "1"`. Production deployments cannot accidentally use the mock.
-- [ ] **Step 5: Tests.**
-- [ ] Commit.
+Owner picked real E2B everywhere (dev + CI). Unit tests mock the SDK at the
+import boundary instead of a dedicated provider class. See `tests/test_chat_e2b_provider.py`
+(Task H.3) for the `unittest.mock.patch` pattern.
 
 ### Task H.6 — Refactor ChatManager._spawn_runner + app/main.py wiring
 
