@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_59():
+def test_schema_version_is_60():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -169,7 +169,15 @@ def test_schema_version_is_59():
     #            (grain, platforms, partition_col, history, gotchas) for
     #            the /catalog/p/<slug> rewrite per the extended-
     #            descriptions admin spec. All additive + NULLABLE.
-    assert SCHEMA_VERSION == 59
+    # v59 → v60: collapse ``usage_events.username`` /
+    #            ``usage_session_summary.username`` to canonical email
+    #            by backfilling from ``users.email`` where ``user_id`` is
+    #            set. Pre-v60 the column was written by three callers
+    #            with conflicting semantics (full email vs email
+    #            local-part vs user-id fallback); v60 makes
+    #            "username == email" the stable contract so RBAC
+    #            filters and per-user telemetry joins line up.
+    assert SCHEMA_VERSION == 60
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
