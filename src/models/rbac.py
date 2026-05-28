@@ -103,6 +103,10 @@ class ResourceGrant(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
     assigned_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # DuckDB v50+ adds the `requirement` column to flag grants as
+    # ``available`` (default) vs ``required`` (must-install for the group).
+    # Nullable so legacy rows that predate the column migrate cleanly.
+    requirement: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(

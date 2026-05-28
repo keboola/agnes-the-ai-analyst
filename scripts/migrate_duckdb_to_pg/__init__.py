@@ -83,6 +83,7 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "telegram_links": ["user_id"],
     "pending_codes": ["code"],
     "session_processor_state": ["processor_name", "session_file"],
+    "session_extraction_state": ["session_file"],
     "usage_session_summary": ["session_file"],
     "usage_tool_daily": ["day", "tool_name", "source"],
     "usage_marketplace_item_daily": ["day", "source", "type", "parent_plugin", "name"],

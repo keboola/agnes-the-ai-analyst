@@ -125,6 +125,12 @@ class StoreEntity(Base):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
     )
+    # v50+ flea-market polish — separate human-display title/tagline from the
+    # internal entity ``name`` (which is the npm-style slug). ``synthetic_name``
+    # is the LLM-generated fallback when the publisher didn't pick a title.
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    tagline: Mapped[str | None] = mapped_column(String, nullable=True)
+    synthetic_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("owner_user_id", "name", name="uq_store_entities_owner_name"),

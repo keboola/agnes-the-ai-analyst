@@ -65,6 +65,10 @@ class KnowledgeItem(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # v50+ Required-onboarding flag (matches the Required column on Memory
+    # Domains / Data Packages — same semantics across all three). Nullable
+    # because legacy DuckDB rows predate the column and don't carry a value.
+    is_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     __table_args__ = (
         Index("idx_knowledge_items_status", "status"),

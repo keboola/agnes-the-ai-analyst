@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String, Text, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db_pg import Base
@@ -51,6 +52,17 @@ class TableRegistry(Base):
     partition_by: Mapped[str | None] = mapped_column(String, nullable=True)
     partition_granularity: Mapped[str | None] = mapped_column(String, nullable=True)
     initial_load_chunk_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # v40+ BigQuery / catalog-context columns. ``bq_fqn`` and ``partition_col``
+    # are BQ-specific; the rest are catalog metadata surfaced in /catalog UI.
+    bq_fqn: Mapped[str | None] = mapped_column(String, nullable=True)
+    partition_col: Mapped[str | None] = mapped_column(String, nullable=True)
+    grain: Mapped[str | None] = mapped_column(String, nullable=True)
+    platforms: Mapped[str | None] = mapped_column(String, nullable=True)
+    history: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gotchas: Mapped[str | None] = mapped_column(Text, nullable=True)
+    things_to_know: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sample_questions: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    pairs_well_with: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (
         Index("ix_table_registry_source_type", "source_type"),
