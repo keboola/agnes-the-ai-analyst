@@ -278,8 +278,10 @@ def test_write_agnes_env_escapes_newlines_in_value(workspace: Path):
             p.stop()
 
     body = (workspace / ".claude" / "agnes" / ".env").read_text(encoding="utf-8")
-    # The escaped form lands as a single line carrying the literal `\n`.
-    assert r"ATLASSIAN_BASE_URL=\"https://acme\nATLASSIAN_EMAIL=evil@x.com\"" in body
+    # `_dotenv_quote` wraps in plain `"…"` (no backslash on the wrapping
+    # quote), but escapes the embedded newline to the literal two-char
+    # sequence `\n`. The escaped form lands as a single dotenv line.
+    assert r'ATLASSIAN_BASE_URL="https://acme\nATLASSIAN_EMAIL=evil@x.com"' in body
     # And the injection target MUST NOT appear as a separate top-level
     # key. The presence of the escaped literal above is sufficient
     # proof, but an extra `startswith` scan makes the contract explicit
@@ -330,6 +332,8 @@ def test_write_agnes_env_chmod_failure_does_not_abort(workspace: Path, monkeypat
     body = env_path.read_text(encoding="utf-8")
     assert "AGNES_ASANA_PAT_ENV=AGNES_ASANA_PAT" in body
     # And no temp file was left behind (fd was closed, temp swapped or
-    # cleaned up).
-    siblings = [p.name for p in env_path.parent.iterdir() if p.name.startswith(".env.")]
+    # cleaned up). `tempfile.mkstemp` names temps `.env.XXXXXXXX` — the
+    # `.env*` filter catches the canonical `.env` AND any orphan
+    # `.env.tmp…`, so the equality check below is exact.
+    siblings = sorted(p.name for p in env_path.parent.iterdir() if p.name.startswith(".env"))
     assert siblings == [".env"], f"orphan temp files: {siblings}"
