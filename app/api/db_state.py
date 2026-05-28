@@ -7,6 +7,7 @@ import json
 import os
 import re
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -280,6 +281,12 @@ def start_migration(payload: MigrateRequest) -> dict:
         # source_backend + target_backend to compose the migrator
         # invocation, and overwrites this file with running/success/
         # failed as the migrator progresses.
+        #
+        # ``queued_at`` is a UTC ISO timestamp used by the applier
+        # to expire stale pending jobs (H8 — operator masks the
+        # applier timer, queues a migration, fixes state manually,
+        # then unmasks days later; we don't want the applier to
+        # blindly run an old intent against now-incompatible state).
         intent = {
             "job_id": job_id,
             "schema_version": 1,
@@ -290,6 +297,7 @@ def start_migration(payload: MigrateRequest) -> dict:
             "source_url": source_url,
             "progress_pct": 0,
             "current_step": "queued",
+            "queued_at": datetime.now(timezone.utc).isoformat(),
         }
         job_path = jobs_dir / f"{job_id}.json"
         tmp_path = job_path.with_suffix(".json.tmp")

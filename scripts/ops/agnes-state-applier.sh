@@ -75,21 +75,62 @@ dc() { docker compose "${COMPOSE_FILES[@]}" "$@"; }
 # API holds the MigrationLock until it has written the job.
 # Sort by mtime so we maintain FIFO ordering if two jobs queued up
 # (applier missed a tick, operator submitted back-to-back requests).
+#
+# H8 — Pending-job expiry. A pending job whose ``queued_at`` is older
+# than PENDING_JOB_MAX_AGE_SEC (default 3600s = 1h) is marked failed
+# without being processed: the operator may have masked the timer,
+# queued a migration, manually fixed state via the CLI, then unmasked
+# weeks later — running an old intent against now-incompatible current
+# state would be worse than dropping the request. Expiry runs BEFORE
+# the candidate scan so an expired pending is excluded from selection.
+PENDING_JOB_MAX_AGE_SEC=${PENDING_JOB_MAX_AGE_SEC:-3600}
 PENDING_JOB=""
 if [ -d "$JOBS_DIR" ]; then
-    PENDING_JOB=$(python3 - "$JOBS_DIR" <<'PY' 2>/dev/null
-import json, os, sys
+    PENDING_JOB=$(python3 - "$JOBS_DIR" "$PENDING_JOB_MAX_AGE_SEC" <<'PY' 2>/dev/null
+import json, os, sys, time
+from datetime import datetime, timezone
 d = sys.argv[1]
+max_age = int(sys.argv[2])
+now = datetime.now(timezone.utc)
 candidates = []
 for f in os.listdir(d):
-    if not f.endswith(".json"): continue
+    if not f.endswith(".json"):
+        continue
     p = os.path.join(d, f)
     try:
         data = json.load(open(p))
     except Exception:
         continue
-    if data.get("status") == "pending":
-        candidates.append((os.path.getmtime(p), p))
+    if data.get("status") != "pending":
+        continue
+    queued_at = data.get("queued_at")
+    age = None
+    if queued_at:
+        try:
+            age = (now - datetime.fromisoformat(queued_at)).total_seconds()
+        except Exception:
+            age = None
+    # No queued_at (pre-H8 jobs) or unparseable timestamp — fall back to
+    # filesystem mtime so the expiry guard still bites on legacy files.
+    if age is None:
+        age = now.timestamp() - os.path.getmtime(p)
+    if age > max_age:
+        # Atomic-rewrite as failed/expired so the next tick (or the
+        # API status endpoint) sees the terminal state.
+        data["status"] = "failed"
+        data.setdefault("error", {})
+        data["error"]["step"] = "queued"
+        data["error"]["class"] = "PendingJobExpired"
+        data["error"]["message"] = (
+            f"pending job expired (queued {int(age)}s ago, threshold {max_age}s); "
+            "applier refuses to run stale intent against potentially-divergent state"
+        )
+        tmp = p + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, p)
+        continue
+    candidates.append((os.path.getmtime(p), p))
 candidates.sort()
 print(candidates[0][1] if candidates else "")
 PY

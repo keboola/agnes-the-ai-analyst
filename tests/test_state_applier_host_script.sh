@@ -236,4 +236,68 @@ test -e "$tmp/data/state/agnes-state-applier.tick" \
     || { echo "FAIL: applier did not touch agnes-state-applier.tick"; exit 1; }
 echo "OK: applier touched tick file (Phase 4)"
 
+# --- B.2 regression: pending-job expiry (H8) ---------------------------------
+# A separate, isolated harness run because the previous run already
+# consumed its pending job. Seed a NEW pending job with queued_at 2h
+# in the past + PENDING_JOB_MAX_AGE_SEC=3600 (1h); applier must mark
+# it failed/expired without invoking the migrator.
+tmp2=$(mktemp -d)
+mkdir -p "$tmp2/data/state/db-jobs" "$tmp2/opt/agnes"
+echo "AGNES_TAG=stable" > "$tmp2/opt/agnes/.env"
+touch "$tmp2/opt/agnes/docker-compose.yml" \
+      "$tmp2/opt/agnes/docker-compose.prod.yml" \
+      "$tmp2/opt/agnes/docker-compose.host-mount.yml"
+EXPIRED_ID="expired-pending-2h-old"
+QUEUED_2H_AGO=$(python3 -c "
+from datetime import datetime, timezone, timedelta
+print((datetime.now(timezone.utc) - timedelta(hours=2)).isoformat())
+")
+cat > "$tmp2/data/state/db-jobs/$EXPIRED_ID.json" <<JSON
+{
+  "job_id": "$EXPIRED_ID",
+  "schema_version": 1,
+  "status": "pending",
+  "source_backend": "duckdb",
+  "target_backend": "side_car",
+  "target_url": "postgresql+psycopg://agnes:agnes@postgres:5432/agnes",
+  "progress_pct": 0,
+  "current_step": "queued",
+  "queued_at": "$QUEUED_2H_AGO"
+}
+JSON
+# No flag => applier exits without processing any lifecycle. We still
+# want the expiry loop to run, which it does BEFORE the flag check.
+# Set a target-flag so the lifecycle settles to duckdb (no postgres up).
+echo -n "duckdb" > "$tmp2/data/state/db-state-target.flag"
+sandboxed2=$tmp2/applier.sh
+sed -e "s|FLAG=/data/state/db-state-target.flag|FLAG=$tmp2/data/state/db-state-target.flag|" \
+    -e "s|JOBS_DIR=/data/state/db-jobs|JOBS_DIR=$tmp2/data/state/db-jobs|" \
+    -e "s|COMPOSE_DIR=/opt/agnes|COMPOSE_DIR=$tmp2/opt/agnes|" \
+    -e "s|LOCK_FILE=/data/state/db-state-applier.lock|LOCK_FILE=$tmp2/data/state/db-state-applier.lock|" \
+    -e "s|/data/postgres|$tmp2/data/postgres|g" \
+    -e "s|/data/state/certs|$tmp2/data/state/certs|g" \
+    -e "s|/data/state/instance.yaml|$tmp2/data/state/instance.yaml|g" \
+    -e "s|/data/state/agnes-state-applier.tick|$tmp2/data/state/agnes-state-applier.tick|g" \
+    "$script" > "$sandboxed2"
+chmod +x "$sandboxed2"
+transcript2=$tmp2/transcript.log
+PENDING_JOB_MAX_AGE_SEC=3600 \
+    TRANSCRIPT="$transcript2" \
+    PATH="$fake_bin:$PATH" \
+    bash "$sandboxed2"
+EXPIRED_STATUS=$(python3 -c "import json;print(json.load(open('$tmp2/data/state/db-jobs/$EXPIRED_ID.json'))['status'])")
+[ "$EXPIRED_STATUS" = "failed" ] \
+    || { echo "FAIL (B.2): expired pending status=$EXPIRED_STATUS, want failed"; cat "$transcript2"; exit 1; }
+EXPIRED_CLASS=$(python3 -c "import json;print(json.load(open('$tmp2/data/state/db-jobs/$EXPIRED_ID.json')).get('error',{}).get('class',''))")
+[ "$EXPIRED_CLASS" = "PendingJobExpired" ] \
+    || { echo "FAIL (B.2): expired error.class=$EXPIRED_CLASS, want PendingJobExpired"; exit 1; }
+# Critically: the migrator must NOT have been invoked.
+if grep -q "docker run --rm" "$transcript2"; then
+    echo "FAIL (B.2): applier ran the migrator for an expired pending job"
+    cat "$transcript2"
+    exit 1
+fi
+rm -rf "$tmp2"
+echo "OK: B.2 pending-job expiry (H8)"
+
 echo "OK"

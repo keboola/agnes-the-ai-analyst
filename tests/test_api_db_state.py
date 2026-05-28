@@ -140,6 +140,15 @@ def test_post_migrate_queues_pending_job(seeded_app, monkeypatch):
     assert job["target_backend"] == "side_car"
     assert "postgres:5432" in job["target_url"]
     assert job["schema_version"] == 1
+    # H8 — queued_at lets the applier expire stale pending jobs that
+    # sat on disk while the timer was masked.
+    assert "queued_at" in job and job["queued_at"], (
+        "pending job JSON must carry queued_at for stale-job expiry"
+    )
+    # Round-trip — value must be ISO-8601 parseable.
+    from datetime import datetime as _dt
+    parsed = _dt.fromisoformat(job["queued_at"])
+    assert parsed.tzinfo is not None, "queued_at must include a timezone"
 
     # Flag flipped to the side-car-enabled lifecycle.
     flag = (data_dir / "state" / "db-state-target.flag").read_text()
