@@ -728,6 +728,92 @@ def test_backup_sidecar_pg_raises_on_timeout(tmp_path, monkeypatch):
     assert captured["timeout"] is not None and captured["timeout"] > 0
 
 
+def test_pre_copy_scrubs_audit_log_pii(tmp_path, pg_engine):
+    """H7 — historical audit_log rows with password/token/api_key in
+    params must be scrubbed BEFORE copy so neither the migrated PG
+    nor the DuckDB backup retain the secret.
+
+    Pre-fix: ``_sanitize_for_audit`` only ran at WRITE time. Rows
+    captured before that sanitiser existed carried raw credentials
+    in ``params`` / ``params_before``; the migrator copied them
+    verbatim to PG.
+
+    Post-fix: ``scrub_audit_log_pii`` runs at the start of
+    ``copy_duckdb_to_pg`` and rewrites offending rows in place in
+    the DuckDB source. Clean rows survive verbatim. Idempotent:
+    re-running the migration finds no further matches.
+    """
+    import json
+
+    import duckdb
+    import sqlalchemy as sa
+    import src.models  # noqa: F401 — registers ORM models onto Base.metadata
+    from src.db import _ensure_schema
+    from src.db_pg import Base
+
+    from scripts.db_state_migrator import alembic_upgrade_head, copy_duckdb_to_pg
+
+    duck_path = tmp_path / "src.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+
+    # Three seed rows:
+    #   a1 — params contains a password (must scrub)
+    #   a2 — params is clean (must survive verbatim)
+    #   a3 — params contains an api_key (must scrub)
+    #   a4 — params_before contains a bearer token (must scrub)
+    conn.execute(
+        """INSERT INTO audit_log (id, action, params, params_before, timestamp) VALUES
+            ('a1', 'login',        ?, NULL, current_timestamp),
+            ('a2', 'view',         ?, NULL, current_timestamp),
+            ('a3', 'config_change',?, NULL, current_timestamp),
+            ('a4', 'token_rotate', ?, ?,    current_timestamp)""",
+        [
+            json.dumps({"password": "secret123", "user": "alice"}),
+            json.dumps({"page": "/dashboard"}),
+            json.dumps({"name": "Bob", "api_key": "sk-deadbeef"}),
+            json.dumps({"event": "rotate"}),
+            json.dumps({"bearer": "eyJhbGciOiJIUzI1NiJ9.payload.sig"}),
+        ],
+    )
+    conn.close()
+
+    alembic_upgrade_head(str(pg_engine.url))
+    copy_duckdb_to_pg(duck_path, str(pg_engine.url))
+
+    # Source DuckDB is now scrubbed in place — the backup taken from
+    # this file will not leak the secret either.
+    duck_ro = duckdb.connect(str(duck_path), read_only=True)
+    rows = duck_ro.execute(
+        "SELECT id, params, params_before FROM audit_log ORDER BY id"
+    ).fetchall()
+    duck_ro.close()
+    by_id = {rid: (p, pb) for rid, p, pb in rows}
+
+    def _payload(s):
+        if s is None:
+            return None
+        return json.loads(s) if isinstance(s, str) else s
+
+    assert "secret123" not in str(by_id["a1"]).lower()
+    assert _payload(by_id["a2"][0]) == {"page": "/dashboard"}, "clean rows untouched"
+    assert "sk-deadbeef" not in str(by_id["a3"]).lower()
+    assert "eyJhbGciOiJIUzI1NiJ9" not in str(by_id["a4"]).lower()
+
+    # Target PG mirrors the scrubbed source.
+    with pg_engine.connect() as c:
+        pg_rows = c.execute(
+            sa.text("SELECT id, params, params_before FROM audit_log ORDER BY id")
+        ).fetchall()
+    for rid, p, pb in pg_rows:
+        blob = (str(p) + str(pb)).lower()
+        if rid == "a2":
+            continue
+        assert "secret123" not in blob
+        assert "sk-deadbeef" not in blob
+        assert "eyjhbGciOiJIUzI1NiJ9".lower() not in blob
+
+
 def test_content_hash_sample_detects_non_pk_drift():
     """H12 — same PK set, different non-PK content must yield a
     different content hash.

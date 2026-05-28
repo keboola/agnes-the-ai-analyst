@@ -250,6 +250,108 @@ def alembic_upgrade_head(target_url: str) -> None:
         )
 
 
+#: Regex matching audit-log keys whose values are likely to carry
+#: credentials. Matched on JSON keys (case-insensitive). Any row whose
+#: ``params`` / ``params_before`` JSON object contains a matching key
+#: is rewritten in place to the redaction sentinel by
+#: :func:`scrub_audit_log_pii` (H7). Word-boundary anchors keep the
+#: regex from matching innocent substrings like ``"keynote"`` or
+#: ``"secretary"``.
+_AUDIT_PII_KEY_REGEX = (
+    r"(?i)\b(password|passwd|token|secret|api[-_ ]?key|bearer|"
+    r"client[-_ ]?secret|access[-_ ]?token|refresh[-_ ]?token|"
+    r"private[-_ ]?key|signing[-_ ]?key)\b"
+)
+
+#: Sentinel payload written in place of the original JSON when any
+#: PII key is detected. Recognisable post-migration so operators can
+#: tell the row was redacted at migration time (vs scrubbed at write
+#: time by the runtime sanitiser).
+_AUDIT_REDACTION_PAYLOAD = '{"_redacted_at_migration": true}'
+
+
+def scrub_audit_log_pii(duckdb_path: Path) -> dict[str, int]:
+    """Pre-copy scrub of ``audit_log`` rows that carry PII in
+    ``params`` / ``params_before``.
+
+    Runs at the start of :func:`copy_duckdb_to_pg`. Opens DuckDB
+    read-write (briefly) and rewrites offending rows IN THE SOURCE
+    so:
+
+    * The DuckDB backup taken right after (or right before) the
+      copy step also has the redacted form — the backup IS the
+      recovery artifact, leaving PII in it would defeat the
+      purpose.
+    * The PG target receives the redacted form via the normal
+      copy loop with no extra transform pass.
+
+    Idempotent — re-running finds zero matches because previously
+    scrubbed rows no longer contain any PII keys. Schema-tolerant —
+    silently no-ops on DBs that don't have an ``audit_log`` table
+    (e.g. fresh installs migrated immediately after first boot).
+
+    Returns ``{"rows_scanned", "rows_redacted"}`` for the JobWriter
+    summary.
+    """
+    import re
+
+    import duckdb
+
+    pattern = re.compile(_AUDIT_PII_KEY_REGEX)
+    conn = duckdb.connect(str(duckdb_path))
+    rows_redacted = 0
+    rows_scanned = 0
+    try:
+        # Tolerant of fresh installs without an audit_log table.
+        try:
+            count_row = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()
+        except duckdb.CatalogException:
+            return {"rows_scanned": 0, "rows_redacted": 0}
+        rows_scanned = int(count_row[0] or 0) if count_row else 0
+        if rows_scanned == 0:
+            return {"rows_scanned": 0, "rows_redacted": 0}
+
+        # Pull only id + the two JSON cols; rewrite the matching rows
+        # in a single UPDATE-per-row pass. The DBs we care about have
+        # O(10^5) audit rows; a per-row UPDATE is acceptable.
+        rows = conn.execute(
+            "SELECT id, params, params_before FROM audit_log"
+        ).fetchall()
+        for rid, params, params_before in rows:
+            new_params = (
+                _AUDIT_REDACTION_PAYLOAD
+                if params is not None and pattern.search(str(params))
+                else None
+            )
+            new_params_before = (
+                _AUDIT_REDACTION_PAYLOAD
+                if params_before is not None
+                and pattern.search(str(params_before))
+                else None
+            )
+            if new_params is None and new_params_before is None:
+                continue
+            # Build the UPDATE SET dynamically — only overwrite the
+            # column(s) we matched on.
+            set_parts: list[str] = []
+            bind: list[object] = []
+            if new_params is not None:
+                set_parts.append("params = ?")
+                bind.append(new_params)
+            if new_params_before is not None:
+                set_parts.append("params_before = ?")
+                bind.append(new_params_before)
+            bind.append(rid)
+            conn.execute(
+                f"UPDATE audit_log SET {', '.join(set_parts)} WHERE id = ?",
+                bind,
+            )
+            rows_redacted += 1
+    finally:
+        conn.close()
+    return {"rows_scanned": rows_scanned, "rows_redacted": rows_redacted}
+
+
 def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
     """Copy all PG-mapped tables from DuckDB to target PG.
 
@@ -259,11 +361,19 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
     is the sum of PG row counts across all migrated tables (per the
     validator report — ``ON CONFLICT DO NOTHING`` makes per-task
     rows-inserted untrustworthy, so we use post-copy PG counts).
+
+    Before opening the source read-only, runs
+    :func:`scrub_audit_log_pii` to redact any audit rows captured
+    before the runtime sanitiser existed (H7). The scrub is
+    idempotent so re-runs are safe; the rewrite happens in the
+    source so the DuckDB backup also carries the redacted form.
     """
     import duckdb
     import sqlalchemy as sa
 
     from scripts.migrate_duckdb_to_pg import run_all
+
+    scrub_summary = scrub_audit_log_pii(duckdb_path)
 
     duck_conn = duckdb.connect(str(duckdb_path), read_only=True)
     try:
@@ -293,6 +403,7 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
             {"table": r["table"], "reason": r.get("reason", "")}
             for r in skipped
         ],
+        "audit_pii_scrub": scrub_summary,
     }
 
 
