@@ -55,7 +55,11 @@ jobs:
         continue-on-error: true  # Don't block on mypy initially, can tighten later
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        # `-n auto` parallelises across the runner's cores via pytest-xdist
+        # (matches ci.yml's per-shard invocation). Without it the full
+        # suite serialises into ~25 min — every deploy iteration paid
+        # that toll. `-q` keeps the log readable when 5000+ tests run.
+        run: pytest tests/ -n auto -q --tb=short
         env:
           TESTING: "1"
 
