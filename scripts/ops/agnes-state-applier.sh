@@ -266,6 +266,37 @@ fi
 
 logger -t agnes-state-applier "Picked up pending migration job: $PENDING_JOB"
 
+# E.5 — structured rollback on unexpected abort.
+# When a python heredoc inside this script raises mid-execution,
+# ``set -e`` aborts before we can run the post-migrator update_job /
+# write_instance_yaml block. Pre-fix the pending job stayed at
+# ``pending`` forever and the next applier tick re-picked it (or
+# the H8 expiry caught it 1h later). Post-fix the ERR trap
+# idempotently marks the pending job failed and reverts
+# instance.yaml::backend to the source state so /api/admin/db/state
+# never reports a *_in_progress that won't progress.
+__rollback() {
+    local rc=$?
+    local trapped_at=${BASH_LINENO[0]:-?}
+    [ -n "${PENDING_JOB:-}" ] || return $rc
+    # Best-effort: any failure inside the trap is swallowed so we
+    # don't recurse. Status update first; instance.yaml revert
+    # second (only if we know the source backend at this point).
+    update_job "$PENDING_JOB" "failed" \
+        "applier aborted at line ${trapped_at} (rc=${rc}); recovering via ERR trap" \
+        || true
+    if [ -n "${SOURCE_BACKEND:-}" ]; then
+        write_instance_yaml "$SOURCE_BACKEND" || true
+        case "$SOURCE_BACKEND" in
+            duckdb|cloud) rm -f "$FLAG" 2>/dev/null || true ;;
+        esac
+    fi
+    logger -t agnes-state-applier \
+        "Applier aborted (rc=${rc}) — rolled back job ${PENDING_JOB##*/} via ERR trap"
+    return $rc
+}
+trap '__rollback' ERR
+
 # Read all required job fields in a single python invocation. The
 # fields land into shell vars via `read`; missing optional fields are
 # emitted as empty strings. Newline-separated output + `read -r` is
