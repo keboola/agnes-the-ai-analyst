@@ -183,7 +183,7 @@ fi
 
 set +e
 docker run --rm \
-    "${NETWORK_ARGS[@]}" \
+    ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
     -v /data:/data \
     -e DATA_DIR=/data \
     "$IMAGE" \
@@ -192,7 +192,7 @@ docker run --rm \
         --to       "$TARGET_BACKEND" \
         --source-backend "$SOURCE_BACKEND" \
         --target-url "$TARGET_URL" \
-        "${SOURCE_URL_ARGS[@]}" \
+        ${SOURCE_URL_ARGS[@]+"${SOURCE_URL_ARGS[@]}"} \
         --duckdb-path /data/state/system.duckdb \
         --jobs-dir   "$JOBS_DIR" \
         --backups-dir /data/state/backups
@@ -220,4 +220,20 @@ fi
 
 # 4. Bring the app back up. After-state app reads instance.yaml and
 #    opens the chosen backend on startup.
-dc up -d --force-recreate app scheduler >/dev/null 2>&1 || true
+#
+# `--no-deps` is critical: docker-compose.postgres.yml declares the
+# `migrate` and `data-migrate` services with `build: .`. On the
+# customer-instance VM the source tree isn't present, so any compose
+# command that follows the depends_on chain (migrate → app → scheduler)
+# attempts a build, fails with `failed to read dockerfile`, and either
+# leaves app+scheduler down or up with a stale config. Our state
+# machine already ran the migration on the HOST via `docker run` —
+# the in-compose migrate/data-migrate services are vestigial here and
+# must not be touched on each cycle.
+RESTART_LOG=$(dc up -d --no-deps --force-recreate app scheduler 2>&1)
+RESTART_RC=$?
+if [ "$RESTART_RC" -ne 0 ]; then
+    # Don't fail the applier hard — the restart is best-effort recovery.
+    # Surface the failure to journalctl so operators see it.
+    logger -t agnes-state-applier "WARNING app+scheduler restart exited $RESTART_RC: $RESTART_LOG"
+fi

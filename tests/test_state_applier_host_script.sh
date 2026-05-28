@@ -153,13 +153,13 @@ grep -q "docker run --rm" "$transcript" \
     && grep -q "db_state_migrator" "$transcript" \
     || fail "expected 'docker run --rm ... db_state_migrator ...'"
 
-grep -q "docker compose -f .* up -d --force-recreate app scheduler" "$transcript" \
-    || fail "expected app+scheduler restart after migrator"
+grep -q "docker compose -f .* up -d --no-deps --force-recreate app scheduler" "$transcript" \
+    || fail "expected --no-deps app+scheduler restart after migrator"
 
 # Ordering: stop must come BEFORE run; restart must come AFTER run.
 stop_line=$(grep -n "docker stop agnes-app-1" "$transcript" | head -1 | cut -d: -f1)
 run_line=$(grep -n "docker run --rm" "$transcript" | head -1 | cut -d: -f1)
-restart_line=$(grep -n "docker compose -f .* up -d --force-recreate app scheduler" "$transcript" | head -1 | cut -d: -f1)
+restart_line=$(grep -n "docker compose -f .* up -d --no-deps --force-recreate app scheduler" "$transcript" | head -1 | cut -d: -f1)
 [ "$stop_line" -lt "$run_line" ] && [ "$run_line" -lt "$restart_line" ] \
     || fail "ordering wrong: stop=$stop_line run=$run_line restart=$restart_line"
 
