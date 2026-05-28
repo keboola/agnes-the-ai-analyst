@@ -11,6 +11,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Slack DM assistant-back pump (`SlackSinkBridge`).** Previously
+  `services/slack_bot/events.py::_handle_dm` accepted a user message
+  and returned — nothing consumed the runner subprocess's stdout and
+  posted it back to Slack, so the "answer in Slack thread" half of the
+  feature didn't work. New `services/slack_bot/sink.py` defines
+  `SlackSinkBridge`, a duck-typed WebSocket whose `send_json` forwards
+  `assistant_message` (and `error`, `cancelled`) frames to
+  `send_thread_reply` in the originating thread; chatty token / tool
+  frames are dropped. `_handle_dm` now `asyncio.create_task`s
+  `mgr.attach(session_id, bridge)` before forwarding the user message.
+- **Slack verification-code issuance on first DM.** First DM from an
+  unbound Slack user now mints a 6-digit `slack_binding_codes` row and
+  DMs the user a Slack-formatted prompt (`Visit {public_url}/setup?slack=1`
+  + bold `*123456*` code, expires in 10 minutes). The user redeems it
+  at `/setup` while logged into Agnes via the existing
+  `redeem_verification_code` path. Without this, the bot used to tell
+  unbound users to go to `/setup` with no code to redeem.
 - **Vendored web assets for the cloud-chat UI.**
   `app/web/static/vendor/` now ships `marked.min.js` (12.0.2, MIT),
   `highlight.min.js` + `highlight.min.css` (11.10.0 common build,
