@@ -191,26 +191,51 @@ def run_all(
 ) -> List[Dict[str, Any]]:
     """Run every registered task (or a subset by ``only``).
 
-    Every task produces exactly one entry in the returned list:
-    - On copy failure: ``{"table": ..., "error": ...}`` (copy exception caught).
-    - On validate failure: ``{"table": ..., "error": ...}`` (validate exception caught).
-    - On success with validate=True: full validate report (``duckdb_rows``,
-      ``pg_rows``, ``checksum_match``, etc.).
-    - On success with validate=False: ``{"table": ..., "ok": True}`` marker,
-      so callers can count ``tables_migrated`` without validation overhead.
+    Halt-on-first-failure semantics (H6): once any task's copy or
+    validate step raises, subsequent tasks are NOT executed. They
+    still produce a per-task entry — ``{"table": ..., "skipped":
+    True, "reason": "halted after prior task failure"}`` — so callers
+    see the full inventory at-a-glance, but no further INSERTs are
+    issued against the target PG. The migrator's caller (``main()``)
+    then refuses to flip_backend, so a partial-state PG never goes
+    live.
 
-    The consistent per-task entry contract means callers like
-    :func:`~scripts.db_state_migrator.copy_duckdb_to_pg` can always split
-    reports into ``ok`` / ``err`` buckets by checking for an ``"error"`` key.
+    Per-task entry contract:
+    - Copy failure: ``{"table": ..., "error": ...}``
+    - Validate failure: ``{"table": ..., "error": ...}``
+    - Skipped after prior failure: ``{"table": ..., "skipped": True, "reason": ...}``
+    - Success with validate=True: full validate report (``duckdb_rows``,
+      ``pg_rows``, ``checksum_match``, etc.).
+    - Success with validate=False: ``{"table": ..., "ok": True}``.
+
+    Callers like :func:`~scripts.db_state_migrator.copy_duckdb_to_pg`
+    split reports into ok / err / skipped buckets by inspecting which
+    of those keys is present.
+
+    Idempotency: ``ON CONFLICT DO NOTHING`` means a successful retry
+    after the operator fixes the failing table is safe — re-running
+    overwrites nothing in already-migrated tables and resumes the
+    halted ones.
     """
     selected = [t for t in TASKS if not only or t.target_table in only]
     reports: List[Dict[str, Any]] = []
+    halted = False
     for task in selected:
+        if halted:
+            reports.append(
+                {
+                    "table": task.target_table,
+                    "skipped": True,
+                    "reason": "halted after prior task failure",
+                }
+            )
+            continue
         try:
             run_task(task, duck_conn, pg_engine, dry_run=dry_run)
         except Exception as exc:
             log.exception("task %s failed: %s", task.source_table, exc)
             reports.append({"table": task.target_table, "error": str(exc)})
+            halted = True
             continue
         if validate:
             try:
@@ -218,6 +243,7 @@ def run_all(
             except Exception as exc:
                 log.exception("validate %s failed: %s", task.source_table, exc)
                 reports.append({"table": task.target_table, "error": str(exc)})
+                halted = True
         else:
             reports.append({"table": task.target_table, "ok": True})
     return reports

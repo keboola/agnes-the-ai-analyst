@@ -275,14 +275,23 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
     finally:
         duck_conn.close()
 
-    ok = [r for r in reports if "error" not in r]
+    # Halt-on-failure (H6) introduced ``skipped: True`` entries — exclude
+    # them from both the success and failure buckets. main() inspects
+    # ``tables_failed`` to refuse the flip; skipped entries are
+    # informational and surface separately as ``tables_skipped``.
+    ok = [r for r in reports if "error" not in r and not r.get("skipped")]
     err = [r for r in reports if "error" in r]
+    skipped = [r for r in reports if r.get("skipped")]
     return {
         "rows_total": sum(r.get("pg_rows", 0) for r in ok),
         "tables_migrated": len(ok),
         "tables_failed": [
             {"table": r["table"], "error": str(r["error"])}
             for r in err
+        ],
+        "tables_skipped": [
+            {"table": r["table"], "reason": r.get("reason", "")}
+            for r in skipped
         ],
     }
 

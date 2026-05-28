@@ -491,3 +491,65 @@ def test_copy_duckdb_to_pg_summary_lists_failed_tables(tmp_path, pg_with_schema)
     # Shape: each entry must carry both keys.
     for entry in summary["tables_failed"]:
         assert "table" in entry and "error" in entry, entry
+
+
+def test_run_all_halts_on_first_failure(tmp_path, pg_with_schema):
+    """H6 — when one task raises, subsequent tasks MUST be skipped
+    (status='skipped'), not silently produce orphan rows.
+
+    Pre-fix: the loop ``continue``d on each per-task failure, so tables
+    further down the FK order kept getting inserted while the offending
+    table was missing. With no PG-level FK on ``personal_access_tokens
+    (user_id)`` etc., the result was persistent orphan rows in the
+    target.
+
+    Post-fix: the loop halts on the first failure. main() still refuses
+    to flip_backend (so partial-state PG never goes live) but the report
+    surface lets the operator see exactly which tables ran vs were skipped.
+    """
+    import duckdb
+
+    from scripts.migrate_duckdb_to_pg import TASKS, run_all
+    from src.db import _ensure_schema
+
+    duck_path = tmp_path / "src.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.close()
+
+    # Pick a task in the middle of the ordering so we can verify both
+    # halted-before (ran) and halted-after (skipped) buckets exist.
+    assert len(TASKS) > 5, "test assumes >5 migration tasks"
+    fail_idx_in_tasks = 2
+    fail_table = TASKS[fail_idx_in_tasks].target_table
+
+    original_run = TASKS[fail_idx_in_tasks].run
+
+    def boom(*a, **kw):
+        raise RuntimeError("simulated mid-loop failure")
+
+    TASKS[fail_idx_in_tasks].run = boom
+    duck_ro = duckdb.connect(str(duck_path), read_only=True)
+    try:
+        reports = run_all(duck_ro, pg_with_schema, validate=False)
+    finally:
+        duck_ro.close()
+        TASKS[fail_idx_in_tasks].run = original_run
+
+    # The failing table's report must carry an error.
+    fail_report_idx = next(
+        i for i, r in enumerate(reports) if r.get("table") == fail_table
+    )
+    assert "error" in reports[fail_report_idx]
+
+    # Every report AFTER the failing one must be marked skipped — no
+    # silent ``ok: True`` entries that would imply rows landed in PG.
+    after_failure = reports[fail_report_idx + 1 :]
+    assert after_failure, "test ineffective: no tables after the failure point"
+    for r in after_failure:
+        assert r.get("skipped") is True, (
+            f"task {r.get('table')!r} should be skipped after the prior failure, got {r}"
+        )
+        assert "halted" in r.get("reason", "").lower(), (
+            f"skip reason should mention halting, got {r.get('reason')!r}"
+        )
