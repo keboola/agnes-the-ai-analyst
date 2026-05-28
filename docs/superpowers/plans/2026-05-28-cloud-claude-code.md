@@ -2815,6 +2815,29 @@ stdin, emits JSON line frames to stdout.
 
 ### Task 6.1: Runner — JSON-line protocol + agent-sdk loop
 
+> **SDK reality check (Task 0.2 surfaced this — applied to plan 2026-05-28):**
+> `claude-agent-sdk` 0.2.87 (the installed version) does **not** export a
+> class named `Agent`. The actual primary entrypoints are:
+>
+> - `claude_agent_sdk.query(...)` — async-generator function, single-turn
+>   or streaming consumption.
+> - `claude_agent_sdk.ClaudeSDKClient(...)` — class for persistent
+>   sessions; methods include `connect()`, `query(...)`, and
+>   `receive_response()` (async-iter).
+>
+> The skeleton in Step 2 below was sketched against an imagined `Agent`
+> class. Implementer of this task **must** verify the actual SDK surface
+> with `.venv/bin/python -c "import claude_agent_sdk; help(claude_agent_sdk.ClaudeSDKClient); help(claude_agent_sdk.query)"`
+> and adapt the inbound/outbound loop accordingly. The protocol on the
+> stdin/stdout boundary (`runner_ready`, `user_msg`, `token`,
+> `tool_call`, `tool_result`, `assistant_message`, `cancel`, `error`)
+> does NOT need to change — only the SDK binding inside `_real_agent_loop`
+> does. Use `ClaudeSDKClient` for the persistent-session model the chat
+> manager needs (`connect()` once, then iterate `receive_response()` per
+> turn). Look up the actual event/message type names (`AssistantMessage`,
+> `UserMessage`, `TextBlock`, `ToolUseBlock`, `ToolResultBlock`,
+> `StreamEvent`) and map them to the outbound JSON frames.
+
 **Files:**
 - Create: `app/chat/runner.py`
 - Test:   `tests/test_chat_runner.py`
