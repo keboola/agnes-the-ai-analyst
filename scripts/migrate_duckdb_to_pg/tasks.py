@@ -286,6 +286,39 @@ class GenericCopyTask:
     ) -> int:
         """Copy rows from DuckDB to PG.  Returns number of rows considered."""
         columns = _resolved_columns(self.table_name, duck_conn)
+
+        # Probe for DuckDB-only columns that hold data. Silent column
+        # drop is data loss; force the operator to either land the
+        # alembic migration (so PG has the column) or explicitly
+        # accept the loss by removing the column from the DuckDB
+        # source first.
+        import src.models as _m  # noqa: F401 — ensure models registered
+        from src.db_pg import Base as _Base
+        _pg_table = _Base.metadata.tables.get(self.target_table)
+        _pg_cols = {c.name for c in _pg_table.columns} if _pg_table is not None else set()
+        _duck_only = [c for c in columns if c not in _pg_cols]
+        for _col in _duck_only:
+            try:
+                _non_null = duck_conn.execute(
+                    f'SELECT COUNT(*) FROM "{self.table_name}" WHERE "{_col}" IS NOT NULL'
+                ).fetchone()[0]
+            except Exception:
+                _non_null = 0
+            if _non_null > 0:
+                raise RuntimeError(
+                    f"Column '{self.table_name}.{_col}' exists in DuckDB with "
+                    f"{_non_null} non-null row(s) but is missing from the PG "
+                    f"schema — data will be lost. Land the alembic migration "
+                    f"that adds the column, or drop the column from DuckDB "
+                    f"before re-running."
+                )
+            log.warning(
+                "DuckDB-only column %s.%s is empty; skipping from PG INSERT",
+                self.table_name, _col,
+            )
+        # Restrict `columns` to the PG-side set so the INSERT is well-formed.
+        columns = [c for c in columns if c in _pg_cols]
+
         log.info(
             "migrate %s (%d cols, dry_run=%s)", self.table_name, len(columns), dry_run
         )

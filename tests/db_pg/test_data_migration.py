@@ -312,3 +312,47 @@ def test_run_all_cli_exits_nonzero_on_error_report(tmp_path, pg_with_schema):
     # The predicate the CLI uses:
     ok = all("error" not in r and r.get("checksum_match", True) for r in reports)
     assert ok is False, "CLI predicate must reject reports with error entries"
+
+
+def test_run_raises_on_duckdb_column_missing_in_pg_with_data(tmp_path, pg_with_schema):
+    """If DuckDB has data in a column the PG schema lacks, the copy
+    task MUST raise. Silent drop = silent data loss. Empty columns
+    pass through with a warning (covered by a separate test).
+    """
+    import duckdb
+    import pytest
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_task, TASKS
+
+    duck_path = tmp_path / "src.duckdb"
+    duck = duckdb.connect(str(duck_path))
+    _ensure_schema(duck)
+    # Add an extra column DuckDB-side that PG doesn't have.
+    duck.execute("ALTER TABLE table_registry ADD COLUMN extra_field VARCHAR")
+    duck.execute(
+        "INSERT INTO table_registry (id, name, source_type, extra_field) "
+        "VALUES ('t1', 'tbl', 'duckdb', 'has-data')"
+    )
+    task = next(t for t in TASKS if t.target_table == "table_registry")
+    with pytest.raises(RuntimeError, match="extra_field.*data will be lost"):
+        run_task(task, duck, pg_with_schema)
+    duck.close()
+
+
+def test_run_warns_but_continues_on_empty_duckdb_only_column(tmp_path, pg_with_schema, caplog):
+    """DuckDB-only column with NO data → warning log + continue.
+    Operator's response: drop the column from DuckDB to clean it up;
+    not blocking the cutover."""
+    import duckdb
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_task, TASKS
+
+    duck = duckdb.connect(str(tmp_path / "src.duckdb"))
+    _ensure_schema(duck)
+    duck.execute("ALTER TABLE table_registry ADD COLUMN unused_field VARCHAR")
+    # No data inserted into unused_field.
+    task = next(t for t in TASKS if t.target_table == "table_registry")
+    with caplog.at_level("WARNING"):
+        run_task(task, duck, pg_with_schema)  # must not raise
+    assert any("unused_field" in rec.message for rec in caplog.records)
+    duck.close()
