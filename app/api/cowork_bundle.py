@@ -144,19 +144,110 @@ def _bundle_settings_json() -> str:
                 }
             ]
         },
-        # Placeholder — setup.py replaces __AGNES_BIN__ with the absolute
-        # path detected via `shutil.which("agnes")` on the analyst's machine.
-        # The MCP server runs outside Claude Desktop's Bash sandbox, so it
-        # has full network access to the Agnes server.
+        # mcp_server.py is bundled in the ZIP alongside this settings.json.
+        # It bootstraps credentials from agnes-bundle.json on first run (so
+        # the MCP server works even before setup.py has written ~/.config/agnes/),
+        # then finds the agnes binary and execs `agnes mcp`.
+        # Using python3 as the launcher means no hard-coded binary paths — the
+        # script searches PATH + common install locations at runtime.
         "mcpServers": {
             "agnes": {
-                "command": "__AGNES_BIN__",
-                "args": ["mcp"],
+                "command": "python3",
+                "args": ["mcp_server.py"],
                 "type": "stdio",
             }
         },
     }
     return json.dumps(cfg, indent=2) + "\n"
+
+
+def _bundle_mcp_server_py() -> str:
+    """Return mcp_server.py — a bundled MCP launcher, pure stdlib.
+
+    Placed in the ZIP root so .claude/settings.json can reference it as
+    ``python3 mcp_server.py`` without any absolute paths.
+
+    On startup (called by Claude Desktop when the project is opened) it:
+
+    1. **Bootstraps credentials** — if ``agnes-bundle.json`` is still present
+       (setup.py hasn't run yet) it reads the pre-baked PAT and writes
+       ``~/.config/agnes/config.yaml`` + ``token.json`` so ``agnes mcp``
+       can authenticate on first launch, before the SessionStart hook fires.
+
+    2. **Finds the agnes binary** — searches ``$PATH`` then common install
+       locations (``~/.local/bin``, ``/usr/local/bin``, ``/opt/homebrew/bin``).
+
+    3. **Exec's ``agnes mcp``** — replaces itself with the MCP server process.
+       The MCP server then handles all tool calls (catalog, query, etc.)
+       with full network access to the Agnes server.
+
+    This solves the chicken-and-egg problem: MCP is live on the FIRST session
+    open even before setup.py has run, so the analyst can ask
+    "What data do I have access to?" immediately.
+    """
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        \"\"\"Agnes MCP launcher — bundled in the Cowork ZIP, pure stdlib.
+
+        Called by Claude Desktop on project open via .claude/settings.json:
+            mcpServers.agnes.command = python3
+            mcpServers.agnes.args    = [mcp_server.py]
+
+        Bootstraps credentials from agnes-bundle.json if needed, then
+        execs `agnes mcp` so Claude Desktop has Agnes tools available
+        from the very first session — no Terminal required.
+        \"\"\"
+        from __future__ import annotations
+        import json, os, pathlib, shutil, sys
+
+        HERE = pathlib.Path(__file__).parent
+        BUNDLE_FILE = HERE / "agnes-bundle.json"
+        CONFIG_DIR  = pathlib.Path.home() / ".config" / "agnes"
+
+        # ── 1. Bootstrap credentials from bundle if not already configured ──
+        # This runs BEFORE setup.py (SessionStart hook fires after MCP init),
+        # so we seed ~/.config/agnes/ here to make the MCP server usable
+        # on the very first session open.
+        token_file = CONFIG_DIR / "token.json"
+        if BUNDLE_FILE.exists() and not token_file.exists():
+            try:
+                bundle = json.loads(BUNDLE_FILE.read_text())
+                server_url = bundle.get("server_url", "").rstrip("/")
+                pat = bundle.get("access_token", "")
+                if server_url and pat:
+                    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                    (CONFIG_DIR / "config.yaml").write_text(f"server: {server_url}\\n")
+                    (CONFIG_DIR / "config.json").write_text(
+                        json.dumps({"server": server_url}, indent=2)
+                    )
+                    token_file.write_text(json.dumps({"access_token": pat}, indent=2))
+            except Exception:
+                pass  # best-effort; setup.py will fix it on next hook run
+
+        # ── 2. Find the agnes binary ─────────────────────────────────────────
+        _candidates = [
+            shutil.which("agnes"),
+            os.path.expanduser("~/.local/bin/agnes"),
+            "/usr/local/bin/agnes",
+            "/opt/homebrew/bin/agnes",
+            "/usr/bin/agnes",
+        ]
+        agnes_bin = next(
+            (p for p in _candidates if p and pathlib.Path(p).is_file()), None
+        )
+
+        if not agnes_bin:
+            print(
+                "Agnes CLI not found. Install it first:\\n"
+                "  pip install agnes-the-ai-analyst\\n"
+                "Then reopen this project in Claude Desktop.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # ── 3. Exec agnes mcp (replaces this process) ────────────────────────
+        os.execv(agnes_bin, [agnes_bin, "mcp"])
+    """)
 
 
 def _bundle_setup_py(server_url: str) -> str:
@@ -178,7 +269,7 @@ def _bundle_setup_py(server_url: str) -> str:
         #!/usr/bin/env python3
         \"\"\"Agnes Cowork one-time setup — no external packages needed.\"\"\"
         from __future__ import annotations
-        import json, pathlib, shutil, subprocess, sys, urllib.error, urllib.request
+        import json, pathlib, subprocess, sys, urllib.error, urllib.request
 
         # ── CLI overrides (used from Terminal as fallback) ────────────────────
         _args = sys.argv[1:]
@@ -250,40 +341,20 @@ def _bundle_setup_py(server_url: str) -> str:
         )
         print("Credentials saved.")
 
-        # 3. Detect the agnes binary and wire the MCP server + pull hook.
-        #    The MCP server runs as a subprocess outside Claude Desktop's
-        #    sandbox, so it has full network access to the Agnes server.
-        #    Pure file I/O — no network needed for this step.
-        agnes_bin = shutil.which("agnes") or ""
+        # 3. Replace the one-time setup hook with a permanent pull hook.
+        #    mcpServers already points to mcp_server.py (bundled) — leave it
+        #    unchanged so Claude Desktop keeps the MCP server running.
         settings_path = HERE / ".claude" / "settings.json"
         if settings_path.exists():
             cfg = json.loads(settings_path.read_text())
             cfg.setdefault("hooks", {{}})
-            # Replace one-time setup hook with the permanent pull hook
             cfg["hooks"]["SessionStart"] = [
                 {{"hooks": [{{"type": "command", "command":
                     "agnes pull --quiet 2>/dev/null || true"
                 }}]}},
             ]
-            # Remove SessionEnd entirely — no background push in Cowork default
             cfg["hooks"].pop("SessionEnd", None)
-            # Wire the MCP server so Claude Desktop can reach the Agnes API
-            # even though the Bash tool sandbox blocks outbound HTTP.
-            if agnes_bin:
-                cfg["mcpServers"] = {{
-                    "agnes": {{
-                        "command": agnes_bin,
-                        "args": ["mcp"],
-                        "type": "stdio",
-                    }}
-                }}
-                print(f"Agnes MCP server registered ({{agnes_bin}}).")
-            else:
-                # agnes not found — remove the placeholder so Claude Desktop
-                # doesn't error on startup trying to launch __AGNES_BIN__.
-                cfg.pop("mcpServers", None)
-                print("Warning: agnes CLI not found in PATH — MCP server not registered.")
-                print("  Install agnes, then re-run: python3 setup.py")
+            # mcpServers already correct (python3 mcp_server.py) — don't touch
             settings_path.write_text(json.dumps(cfg, indent=2) + "\\n")
             print("Session hook installed (agnes pull on start).")
 
@@ -310,27 +381,24 @@ def _bundle_setup_py(server_url: str) -> str:
             pass  # best-effort; hooks handle the full pull on next session
 
         # 6. Best-effort: run agnes pull to pre-cache data for offline queries.
-        #    Only runs when network is reachable (i.e. from Terminal, not
-        #    from Claude Desktop's sandboxed Bash tool).
-        if agnes_bin:
-            try:
+        try:
+            import shutil as _shutil
+            agnes_bin = _shutil.which("agnes") or ""
+            if agnes_bin:
                 result = subprocess.run(
                     [agnes_bin, "pull", "--quiet"],
                     capture_output=True, text=True, timeout=120,
                 )
                 if result.returncode == 0:
                     print("Initial data sync complete.")
-                # Non-zero exit is silently swallowed — pull may fail if
-                # the server has no data yet or network is unreachable.
-            except Exception:
-                pass  # best-effort; MCP pull tool handles it on demand
+        except Exception:
+            pass  # best-effort; MCP pull tool handles it on demand
 
         print()
         print("Agnes Cowork ready!")
         print(f"  Server : {{server_url}}")
         print(f"  Account: {{user_email}}")
-        if agnes_bin:
-            print(f"  MCP    : agnes mcp (Claude Desktop will start automatically)")
+        print(f"  MCP    : starts automatically when you open this project")
         print()
         print("Ask: \\"What data do I have access to?\\"")
     """)
@@ -427,6 +495,7 @@ def _build_bundle_zip(
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{folder_name}/agnes-bundle.json", bundle_json)
         zf.writestr(f"{folder_name}/setup.py", _bundle_setup_py(server_url))
+        zf.writestr(f"{folder_name}/mcp_server.py", _bundle_mcp_server_py())
         zf.writestr(f"{folder_name}/.claude/settings.json", _bundle_settings_json())
         zf.writestr(
             f"{folder_name}/CLAUDE.md",
