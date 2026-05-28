@@ -114,6 +114,39 @@ class ToolRegistryRepository:
         rows = self.conn.execute(sql, params).fetchall()
         return self._rows_to_dicts(rows)
 
+    def list_passthrough_for_groups(self, group_ids: List[str]) -> List[Dict[str, Any]]:
+        """Passthrough tools any of ``group_ids`` is granted on (DISTINCT).
+
+        Empty ``group_ids`` returns empty — by design, since the RBAC layer
+        already short-circuits admin. Callers that want admin-sees-all
+        should call ``list_by_mode(PASSTHROUGH)`` instead and skip this.
+        """
+        if not group_ids:
+            return []
+        placeholders = ",".join("?" * len(group_ids))
+        rows = self.conn.execute(
+            f"""SELECT DISTINCT t.*
+                  FROM tool_registry t
+                  JOIN tool_grants g ON g.tool_id = t.tool_id
+                 WHERE t.mode = ?
+                   AND t.enabled = true
+                   AND g.group_id IN ({placeholders})
+                 ORDER BY t.source_id, t.exposed_name""",
+            [PASSTHROUGH, *group_ids],
+        ).fetchall()
+        return self._rows_to_dicts(rows)
+
+    def is_granted_to_groups(self, tool_id: str, group_ids: List[str]) -> bool:
+        """True iff any of ``group_ids`` is in tool_grants for this tool."""
+        if not group_ids:
+            return False
+        placeholders = ",".join("?" * len(group_ids))
+        row = self.conn.execute(
+            f"SELECT 1 FROM tool_grants WHERE tool_id = ? AND group_id IN ({placeholders}) LIMIT 1",
+            [tool_id, *group_ids],
+        ).fetchone()
+        return row is not None
+
     def delete(self, tool_id: str) -> None:
         self.conn.execute("DELETE FROM tool_grants WHERE tool_id = ?", [tool_id])
         self.conn.execute("DELETE FROM tool_registry WHERE tool_id = ?", [tool_id])
