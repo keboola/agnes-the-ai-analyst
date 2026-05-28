@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 64
+SCHEMA_VERSION = 65
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -4576,6 +4576,32 @@ def _v63_to_v64(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 
+def _v64_to_v65(conn: duckdb.DuckDBPyConnection) -> None:
+    """v65: ``mcp_secrets`` table — server-wide vault for MCP source auth.
+
+    RFC #461 §4. One row per ``mcp_sources.id`` holds the Fernet-
+    ciphertext of the upstream auth token. Replaces the legacy
+    ``mcp_sources.auth_secret_env`` env-var pattern for HTTP/SSE
+    sources — connectors/mcp/client.py first consults this table, then
+    falls back to the env-var path so old registrations keep working.
+
+    Per-user secrets (analyst-scoped OAuth tokens for upstream MCP) land
+    in a follow-up migration as ``mcp_user_secrets``.
+
+    Renumbered from v64 to v65: main PR #455 shipped per-type FK columns
+    on resource_grants as v62 before this branch merged.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_secrets (
+            source_id        VARCHAR PRIMARY KEY,
+            secret_value_enc BLOB NOT NULL,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 65")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -4879,6 +4905,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v62_to_v63(conn)
             # v63→v64: Universal MCP — mcp_sources, tool_registry, tool_grants.
             _v63_to_v64(conn)
+            # v64→v65: mcp_secrets — shared vault for MCP source auth.
+            _v64_to_v65(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5060,6 +5088,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v62_to_v63(conn)
             if current < 64:
                 _v63_to_v64(conn)
+            if current < 65:
+                _v64_to_v65(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
