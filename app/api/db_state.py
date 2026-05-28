@@ -106,7 +106,7 @@ def start_migration(payload: MigrateRequest) -> dict:
         write_backend_state,
     )
 
-    current_state, _ = read_backend_state()
+    current_state, current_url = read_backend_state()
     try:
         target_state = BackendState(payload.target)
     except ValueError:
@@ -126,6 +126,21 @@ def start_migration(payload: MigrateRequest) -> dict:
         target_url = f"postgresql+psycopg://agnes:{password}@postgres:5432/agnes"
     else:
         target_url = payload.cloud_url
+
+    # Source URL — only present when source is a PG backend. The
+    # applier passes it to the migrator's --source-url.
+    source_url = current_url if current_state in (
+        BackendState.SIDE_CAR, BackendState.CLOUD
+    ) else None
+
+    # Reject same-URL DR cycles (cloud → side_car against the same
+    # IP/port) — would silently put two readers on the same DB after
+    # the cutover. Cheap belt-and-suspenders.
+    if source_url and source_url == target_url:
+        raise HTTPException(
+            400,
+            detail="source and target URL are identical — refusing to migrate onto self",
+        )
 
     job_id = str(uuid.uuid4())
 
@@ -162,6 +177,7 @@ def start_migration(payload: MigrateRequest) -> dict:
             "source_backend": current_state.value,
             "target_backend": payload.target,
             "target_url": target_url,
+            "source_url": source_url,
             "progress_pct": 0,
             "current_step": "queued",
         }

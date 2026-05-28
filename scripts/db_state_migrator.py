@@ -437,47 +437,57 @@ def main(
     jobs_dir: Path,
     backups_dir: Path,
     source_url: str | None = None,
+    source_backend: str | None = None,
 ) -> int:
     """Run the migration job. Returns process exit code.
 
-    Steps for ``to="side_car"`` (source = DuckDB):
-      1. write initial job status
-      2. alembic upgrade head on target
-      3. copy DuckDB → PG
-      4. verify row counts
-      5. backup DuckDB
-      6. flip instance.yaml::database
-      7. mark success
+    Dispatches by the (source_backend, target_backend) pair. Source
+    defaults to ``duckdb`` for ``to=side_car`` and ``side_car`` for
+    ``to=cloud`` when not specified explicitly — those are the original
+    forward-only paths. The applier passes ``--source-backend`` for
+    every transition so the cloud → side_car rollback (which has the
+    same target=side_car as the duckdb cutover) is dispatched
+    correctly.
 
-    Steps for ``to="cloud"`` (source = side-car PG, given via
-    ``source_url``):
-      1. write initial job status
-      2. alembic upgrade head on target
-      3. backup side-car PG (pg_dump) — recovery point
-      4. copy PG → PG
-      5. verify row counts (PG vs PG)
-      6. flip instance.yaml::database
-      7. mark success
+    Source ↔ Target dispatch:
+      ============  ============  ===========================
+      Source        Target        Steps
+      ============  ============  ===========================
+      duckdb        side_car      alembic + duckdb→pg + verify + backup duckdb + flip
+      duckdb        cloud         alembic + duckdb→pg + verify + flip
+      side_car      cloud         alembic + backup sidecar + pg→pg + verify + flip
+      cloud         side_car      alembic + pg→pg + verify + flip
+      ============  ============  ===========================
+
+    DuckDB is never a target — once an instance is on Postgres, the
+    DuckDB file is treated as immutable (the backup taken before the
+    cutover is the recovery artifact, not a writable target).
     """
     from src.db_state_machine import BackendState, write_backend_state
+
+    # Derive source from the legacy "to" if not passed (back-compat for
+    # the original duckdb→side_car and side_car→cloud paths).
+    if source_backend is None:
+        source_backend = "duckdb" if to == "side_car" else "side_car"
 
     writer = JobWriter(
         job_id=job_id,
         jobs_dir=jobs_dir,
-        source="duckdb" if to == "side_car" else "side_car",
+        source=source_backend,
         target=to,
     )
     writer.write_initial()
 
-    # Argument validation BEFORE we touch any network — the cloud branch
-    # requires source_url; failing here keeps the failure stack short
-    # and the error message actionable rather than burying it under a
-    # connect-to-bogus-target traceback.
-    if to == "cloud" and not source_url:
+    # Argument validation BEFORE we touch any network — every PG→PG
+    # transition requires source_url. Failing here keeps the failure
+    # stack short and the error message actionable rather than burying
+    # it under a connect-to-bogus-target traceback.
+    pg_source = source_backend in ("side_car", "cloud")
+    if pg_source and not source_url:
         writer.mark_failed(
             step="validate",
             error_class="ValueError",
-            error_message="--source-url is required for cloud migration",
+            error_message="--source-url is required when source is a PG backend",
         )
         return 1
 
@@ -485,23 +495,26 @@ def main(
         writer.update_step("alembic", progress_pct=20)
         alembic_upgrade_head(target_url)
 
-        if to == "side_car":
+        if source_backend == "duckdb":
+            # duckdb → side_car  OR  duckdb → cloud — both copy from the
+            # DuckDB file to whichever PG target the operator picked.
             writer.update_step("data_copy", progress_pct=40)
             copy_summary = copy_duckdb_to_pg(duckdb_path, target_url)
 
             writer.update_step("verify", progress_pct=80)
             diffs = verify_row_counts(duckdb_path, target_url)
-        else:  # to == "cloud"
-            writer.update_step("backup", progress_pct=30)
-            try:
-                backup_sidecar_pg("agnes-postgres-1", backups_dir)
-            except Exception as e:
-                # Backup failure is non-fatal — host applier may have
-                # already brought postgres down, or pg_dump is missing
-                # in this image. Log via job state and proceed; the
-                # source PG keeps its data and is rolled back to on
-                # error anyway.
-                _log_backup_skip(writer, str(e))
+        else:
+            # side_car → cloud  OR  cloud → side_car — PG→PG.
+            if source_backend == "side_car":
+                writer.update_step("backup", progress_pct=30)
+                try:
+                    backup_sidecar_pg("agnes-postgres-1", backups_dir)
+                except Exception as e:
+                    # Backup failure is non-fatal — applier may have
+                    # already brought postgres down, or pg_dump is
+                    # missing in this image. Log via job state and
+                    # proceed; the source PG keeps its data anyway.
+                    _log_backup_skip(writer, str(e))
 
             writer.update_step("data_copy", progress_pct=40)
             copy_summary = copy_pg_to_pg(source_url, target_url)
@@ -517,7 +530,9 @@ def main(
             )
             return 1
 
-        if to == "side_car":
+        if source_backend == "duckdb" and to == "side_car":
+            # Backup the DuckDB file only on the first PG cutover — for
+            # later transitions the DuckDB is already frozen-in-time.
             writer.update_step("backup", progress_pct=90)
             backup_duckdb(duckdb_path, backups_dir)
 
@@ -529,10 +544,22 @@ def main(
         return 0
 
     except Exception as e:
-        # Revert state to previous stable (best-effort).
+        # Revert state to the source backend (best-effort). The source
+        # is the authoritative "what's still working" — the in-progress
+        # state was just a transient flag the API endpoint set before
+        # we started. If we fail, the operator should see the original
+        # backend on the next /api/admin/db/state read, not the
+        # *_in_progress that hung from a half-finished migration.
         try:
+            revert_state = BackendState(source_backend) if source_backend else (
+                BackendState.DUCKDB if to == "side_car" else BackendState.SIDE_CAR
+            )
+            # For the PG sources, preserve the URL we came from so the
+            # app can keep reading after restart. For DuckDB source the
+            # URL is intentionally None.
             write_backend_state(
-                BackendState.DUCKDB if to == "side_car" else BackendState.SIDE_CAR,
+                revert_state,
+                url=source_url if source_backend in ("side_car", "cloud") else None,
             )
         except Exception:
             pass
@@ -580,16 +607,28 @@ if __name__ == "__main__":
     parser.add_argument("--to", choices=["side_car", "cloud"], required=True)
     parser.add_argument("--target-url", required=True)
     parser.add_argument(
+        "--source-backend",
+        choices=["duckdb", "side_car", "cloud"],
+        help="Explicit source backend; the applier always passes this. "
+             "When omitted, defaults to 'duckdb' for --to=side_car and "
+             "'side_car' for --to=cloud (legacy forward-only paths).",
+    )
+    parser.add_argument(
         "--source-url",
-        help="PG source URL for --to=cloud. Defaults to instance.yaml's database.url.",
+        help="Source PG URL (any PG source). Defaults to instance.yaml's database.url.",
     )
     parser.add_argument("--duckdb-path", type=Path, default=Path("/data/state/system.duckdb"))
     parser.add_argument("--jobs-dir", type=Path, default=Path("/data/state/db-jobs"))
     parser.add_argument("--backups-dir", type=Path, default=Path("/data/state/backups"))
     args = parser.parse_args()
 
+    source_backend = args.source_backend
+    if source_backend is None:
+        # Legacy default — keeps the old direct-invocation paths working.
+        source_backend = "duckdb" if args.to == "side_car" else "side_car"
+
     source_url = args.source_url
-    if args.to == "cloud" and not source_url:
+    if source_backend in ("side_car", "cloud") and not source_url:
         source_url = _resolve_source_url_from_instance_yaml()
 
     sys.exit(main(
@@ -600,4 +639,5 @@ if __name__ == "__main__":
         jobs_dir=args.jobs_dir,
         backups_dir=args.backups_dir,
         source_url=source_url,
+        source_backend=source_backend,
     ))

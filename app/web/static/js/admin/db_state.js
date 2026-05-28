@@ -50,7 +50,18 @@ const DBState = {
     if (!el) return;
     const backend = data.backend;
     const transitionBtns = data.allowed_transitions.map(t => {
-      const label = t === 'side_car' ? 'Enable side-car Postgres' : 'Migrate to managed Postgres';
+      let label;
+      if (t === 'side_car') {
+        // From DuckDB this is the first cutover; from cloud it's a DR
+        // move back to the local container PG.
+        label = (backend === 'cloud')
+          ? 'Move back to side-car Postgres'
+          : 'Enable side-car Postgres';
+      } else {  // t === 'cloud'
+        label = (backend === 'duckdb')
+          ? 'Migrate straight to managed Postgres'
+          : 'Migrate to managed Postgres';
+      }
       return `<button class="btn btn-primary" data-target="${t}">${label}</button>`;
     }).join(' ');
 

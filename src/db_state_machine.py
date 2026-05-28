@@ -34,12 +34,28 @@ class InvalidTransitionError(ValueError):
     """Requested transition is not allowed from the current state."""
 
 
-# Allowed forward transitions. In-progress states allow only the
-# corresponding stable target (so a crashed migration can be retried).
+# Allowed transitions.
+#
+#   DUCKDB → SIDE_CAR   (initial cutover to in-container Postgres)
+#   DUCKDB → CLOUD      (cutover directly to managed Postgres,
+#                        skipping the side-car container)
+#   SIDE_CAR → CLOUD    (graduate from container PG to managed PG)
+#   CLOUD → SIDE_CAR    (move back to container PG — DR, cost, or
+#                        when the managed instance is being retired)
+#
+# DuckDB is **start-only**. No path back to DuckDB exists on purpose:
+# once an instance is on Postgres, anything written there since the
+# cutover has no DuckDB-readable form. Operators that genuinely need
+# to re-test the cutover from scratch wipe the persistent volume
+# and recreate the VM instead — re-running the state-machine on the
+# same instance is not a supported workflow.
+#
+# In-progress states retain their old "revert to stable" reads so a
+# crashed migration can be retried; the cancel API path uses those.
 _ALLOWED_TRANSITIONS: dict[BackendState, list[BackendState]] = {
-    BackendState.DUCKDB: [BackendState.SIDE_CAR],
+    BackendState.DUCKDB: [BackendState.SIDE_CAR, BackendState.CLOUD],
     BackendState.SIDE_CAR: [BackendState.CLOUD],
-    BackendState.CLOUD: [],
+    BackendState.CLOUD: [BackendState.SIDE_CAR],
     BackendState.SIDE_CAR_IN_PROGRESS: [BackendState.SIDE_CAR],
     BackendState.CLOUD_IN_PROGRESS: [BackendState.CLOUD],
 }

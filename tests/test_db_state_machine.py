@@ -22,11 +22,20 @@ def test_backend_state_values():
     assert BackendState.CLOUD_IN_PROGRESS.value == "cloud_in_progress"
 
 
-def test_allowed_transitions_forward_only():
-    """duckdb → side_car → cloud; no rollback."""
-    assert allowed_transitions(BackendState.DUCKDB) == [BackendState.SIDE_CAR]
+def test_allowed_transitions_matrix():
+    """DuckDB is start-only; PG↔PG is bidirectional.
+
+      DUCKDB    → [SIDE_CAR, CLOUD]   (first cutover, either target)
+      SIDE_CAR  → [CLOUD]              (graduate to managed)
+      CLOUD     → [SIDE_CAR]           (DR / retire managed instance)
+
+    No transition back to DuckDB once on PG.
+    """
+    assert allowed_transitions(BackendState.DUCKDB) == [
+        BackendState.SIDE_CAR, BackendState.CLOUD,
+    ]
     assert allowed_transitions(BackendState.SIDE_CAR) == [BackendState.CLOUD]
-    assert allowed_transitions(BackendState.CLOUD) == []
+    assert allowed_transitions(BackendState.CLOUD) == [BackendState.SIDE_CAR]
 
 
 def test_allowed_transitions_from_transient():
@@ -36,21 +45,29 @@ def test_allowed_transitions_from_transient():
 
 
 def test_validate_transition_ok():
-    """Valid transition returns None; invalid raises."""
-    validate_transition(BackendState.DUCKDB, BackendState.SIDE_CAR)  # no raise
+    """Valid transitions return None; invalid raises."""
+    validate_transition(BackendState.DUCKDB, BackendState.SIDE_CAR)   # first cutover
+    validate_transition(BackendState.DUCKDB, BackendState.CLOUD)      # skip side-car
+    validate_transition(BackendState.SIDE_CAR, BackendState.CLOUD)    # graduate
+    validate_transition(BackendState.CLOUD, BackendState.SIDE_CAR)    # DR back
 
 
-def test_validate_transition_rejects_backward():
-    """Backward transition (side_car → duckdb) raises InvalidTransitionError."""
-    with pytest.raises(InvalidTransitionError) as exc:
-        validate_transition(BackendState.SIDE_CAR, BackendState.DUCKDB)
-    assert "not allowed" in str(exc.value).lower()
+def test_validate_transition_rejects_rollback_to_duckdb():
+    """No transition lands on DuckDB once a PG cutover has happened.
 
-
-def test_validate_transition_rejects_skip():
-    """No duckdb → cloud (skip side-car)."""
+    DuckDB is treated as immutable post-cutover (the backup file is
+    the recovery artifact, not a writable target).
+    """
     with pytest.raises(InvalidTransitionError):
-        validate_transition(BackendState.DUCKDB, BackendState.CLOUD)
+        validate_transition(BackendState.SIDE_CAR, BackendState.DUCKDB)
+    with pytest.raises(InvalidTransitionError):
+        validate_transition(BackendState.CLOUD, BackendState.DUCKDB)
+
+
+def test_validate_transition_rejects_self():
+    """No-op transition (state → same state) raises."""
+    with pytest.raises(InvalidTransitionError):
+        validate_transition(BackendState.SIDE_CAR, BackendState.SIDE_CAR)
 
 
 def test_write_then_read_backend_state(tmp_path, monkeypatch):

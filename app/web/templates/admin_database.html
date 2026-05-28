@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Database backend — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .db-page    { max-width: 880px; margin: 2rem auto; padding: 0 1.5rem; }
+  .db-page h1 { margin-bottom: 0.25rem; }
+  .db-page .lede { color: var(--text-muted, #666); margin-bottom: 1.5rem; }
+  #db-state-card .card { background: var(--surface, #fafafa); border: 1px solid var(--border, #ddd); border-radius: 8px; padding: 1.25rem 1.5rem; }
+  #db-state-card .card h3 { margin-top: 0; }
+  #db-state-card .actions { margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  #db-state-card .actions button { padding: 0.5rem 1rem; }
+  #db-migration-progress { margin-top: 1.5rem; padding: 1rem; background: #f0f4ff; border-radius: 6px; }
+  .db-transitions-help { margin-top: 1rem; font-size: 0.9rem; color: var(--text-muted, #666); }
+</style>
+
+<div class="db-page">
+  <h1>Database backend</h1>
+  <p class="lede">
+    Switch app-state DB between DuckDB, side-car Postgres (container alongside the
+    app), and a managed cloud Postgres. Forward-only from DuckDB — once an instance
+    is on Postgres, the DuckDB file is the immutable backup, not a writable target.
+    Container↔Cloud transitions are bidirectional. See the
+    <a href="/docs/postgres-cutover-runbook">cutover runbook</a> for operator detail.
+  </p>
+
+  <div id="db-state-card"><!-- populated by db_state.js --></div>
+  <div id="db-migration-progress" style="display: none;"></div>
+
+  <div class="db-transitions-help">
+    <strong>Allowed transitions:</strong>
+    DuckDB → side-car, DuckDB → cloud, side-car → cloud, cloud → side-car.
+    There is no transition back to DuckDB.
+  </div>
+</div>
+
+<script src="{{ static_url('js/admin/db_state.js') }}"></script>
+{% endblock %}

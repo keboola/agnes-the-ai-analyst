@@ -2297,6 +2297,20 @@ async def admin_server_config_page(
     return templates.TemplateResponse(request, "admin_server_config.html", ctx)
 
 
+@router.get("/admin/database", response_class=HTMLResponse)
+async def admin_database_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """DB backend state machine — current backend, allowed transitions,
+    active migration progress. Standalone page (not buried in
+    /admin/server-config) so the operator workflow is one click from
+    the admin menu.
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_database.html", ctx)
+
+
 @router.get("/admin/users", response_class=HTMLResponse)
 async def admin_users_page(
     request: Request,

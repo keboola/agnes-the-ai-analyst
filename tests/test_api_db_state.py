@@ -27,7 +27,8 @@ def test_get_db_state_default_duckdb(seeded_app, monkeypatch):
     body = r.json()
     assert body["backend"] == "duckdb"
     assert body["url_redacted"] is None
-    assert body["allowed_transitions"] == ["side_car"]
+    # DuckDB can cut over to either side-car PG or straight to cloud.
+    assert body["allowed_transitions"] == ["side_car", "cloud"]
     assert body["current_job_id"] is None
 
 
@@ -172,7 +173,13 @@ def test_post_migrate_does_not_spawn_subprocess(seeded_app, monkeypatch):
 
 
 def test_post_migrate_rejects_invalid_transition(seeded_app, monkeypatch):
-    """duckdb → cloud (skipping side-car) rejected with 400."""
+    """duckdb → duckdb (self-loop) rejected with 400.
+
+    DuckDB has [SIDE_CAR, CLOUD] in its allowed list — never itself.
+    Asserting via the self-loop keeps the test in DuckDB mode (no
+    instance.yaml write) so the test harness doesn't switch to PG
+    mode mid-test and try to connect to ``postgres:5432``.
+    """
     data_dir = seeded_app["env"]["data_dir"]
     _patch_state_paths(monkeypatch, data_dir)
 
@@ -180,7 +187,7 @@ def test_post_migrate_rejects_invalid_transition(seeded_app, monkeypatch):
     token = seeded_app["admin_token"]
     r = client.post(
         "/api/admin/db/migrate",
-        json={"target": "cloud", "cloud_url": "postgresql://u:p@h/d"},
+        json={"target": "duckdb"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 400, r.text

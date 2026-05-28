@@ -156,24 +156,16 @@ SOURCE_BACKEND=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).
 
 IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 
-# For side_car → cloud, pass the current side-car URL as --source-url.
-# Migrator's fallback reads instance.yaml, but the file already says
-# *_in_progress at this point so the explicit pass is safer.
+# Source URL — included in the pending job for every PG→PG transition
+# (side_car→cloud and cloud→side_car). The API endpoint reads
+# instance.yaml::database.url before flipping the state to
+# *_in_progress and persists it on the job; reading it back from the
+# job file is more reliable than re-reading instance.yaml at this
+# point (which already shows *_in_progress).
+SOURCE_URL=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("source_url") or "")' "$PENDING_JOB")
 SOURCE_URL_ARGS=()
-if [ "$TARGET_BACKEND" = "cloud" ]; then
-    SIDECAR_URL=$(python3 -c '
-import yaml, sys
-data = yaml.safe_load(open("/data/state/instance.yaml.bak", encoding="utf-8")) if __import__("os").path.exists("/data/state/instance.yaml.bak") else None
-if not data:
-    data = yaml.safe_load(open("/data/state/instance.yaml")) or {}
-print((data.get("database") or {}).get("url") or "")
-')
-    if [ -z "$SIDECAR_URL" ]; then
-        # Fallback for the standard side-car container — same string
-        # the API endpoint composes for side-car migrations.
-        SIDECAR_URL="postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes"
-    fi
-    SOURCE_URL_ARGS=( --source-url "$SIDECAR_URL" )
+if [ -n "$SOURCE_URL" ]; then
+    SOURCE_URL_ARGS=( --source-url "$SOURCE_URL" )
 fi
 
 # 1. Stop the app + scheduler so DuckDB releases the file lock.
@@ -198,6 +190,7 @@ docker run --rm \
     python -m scripts.db_state_migrator \
         --job-id   "$JOB_ID" \
         --to       "$TARGET_BACKEND" \
+        --source-backend "$SOURCE_BACKEND" \
         --target-url "$TARGET_URL" \
         "${SOURCE_URL_ARGS[@]}" \
         --duckdb-path /data/state/system.duckdb \

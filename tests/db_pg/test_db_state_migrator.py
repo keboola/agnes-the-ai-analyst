@@ -167,7 +167,7 @@ def test_copy_pg_to_pg_idempotent_same_url(tmp_path, pg_engine):
     assert diffs == []
 
 
-def test_main_to_cloud_requires_source_url(tmp_path):
+def test_main_to_cloud_requires_source_url(tmp_path, monkeypatch):
     """main(--to=cloud) without source_url raises ValueError.
 
     The applier passes --source-url explicitly; CLI fallback reads
@@ -175,6 +175,13 @@ def test_main_to_cloud_requires_source_url(tmp_path):
     re-migrate from DuckDB (the v6 footgun we fixed in v7).
     """
     from scripts.db_state_migrator import main
+
+    # Isolate the state-machine overlay path so the test doesn't read
+    # or write to the host-default /data/state/instance.yaml.
+    monkeypatch.setattr(
+        "src.db_state_machine._OVERLAY_PATH",
+        tmp_path / "instance.yaml",
+    )
 
     rc = main(
         job_id="job-cloud-1",
@@ -184,6 +191,7 @@ def test_main_to_cloud_requires_source_url(tmp_path):
         jobs_dir=tmp_path / "db-jobs",
         backups_dir=tmp_path / "backups",
         source_url=None,
+        source_backend="side_car",
     )
     # main() catches the exception and writes failed status; rc=1.
     assert rc == 1
