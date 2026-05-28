@@ -159,8 +159,16 @@ def test_post_migrate_does_not_spawn_subprocess(seeded_app, monkeypatch):
     """Regression: the endpoint MUST NOT shell out to the migrator.
 
     The host applier owns subprocess execution now. If anything inside
-    the handler reaches for subprocess.Popen / os.execv / os.system,
-    we're back to the in-process DuckDB lock conflict.
+    the handler reaches for subprocess.Popen / subprocess.run, we're
+    back to the in-process DuckDB lock conflict.
+
+    E.4 — kept after re-audit. The round-2 review flagged this as
+    vacuous on the premise that the test only checked
+    ``status_code == 202``. The actual implementation IS a real
+    probe: ``subprocess.Popen`` and ``subprocess.run`` are
+    monkey-patched to raise ``AssertionError`` BEFORE the POST fires.
+    If the handler invokes either, the 202 assertion never runs
+    because the exception propagates through TestClient as a 500.
     """
     import subprocess as _sp
     data_dir = seeded_app["env"]["data_dir"]
