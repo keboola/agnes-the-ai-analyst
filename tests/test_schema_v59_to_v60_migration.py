@@ -36,8 +36,10 @@ def _columns(conn, table: str) -> set[str]:
     }
 
 
-def test_schema_version_is_60():
-    assert SCHEMA_VERSION == 60
+def test_schema_version_is_at_least_60():
+    # Pinning to == 60 made this test break every time SCHEMA_VERSION bumps;
+    # the v60 migration itself is what this file tests, so >= is sufficient.
+    assert SCHEMA_VERSION >= 60
 
 
 def test_fresh_install_has_setup_tokens_table(tmp_path):
@@ -58,7 +60,7 @@ def test_v59_to_v60_is_idempotent(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 60
+    assert get_schema_version(conn) == 61
 
 
 def test_v59_to_v60_migration_function_is_idempotent():

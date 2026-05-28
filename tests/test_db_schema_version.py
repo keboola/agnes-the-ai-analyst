@@ -170,7 +170,9 @@ def test_schema_version_is_60():
     #            the /catalog/p/<slug> rewrite per the extended-
     #            descriptions admin spec. All additive + NULLABLE.
     # v59 → v60: ``setup_tokens`` table for Agnes Cowork one-click setup.
-    assert SCHEMA_VERSION == 60
+    # v60 → v61: ``mcp_sources``, ``tool_registry``, ``tool_grants`` for the
+    #            Universal MCP inbound connector (RFC #461).
+    assert SCHEMA_VERSION == 61
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
