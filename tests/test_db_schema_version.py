@@ -171,12 +171,11 @@ def test_schema_version_is_60():
     #            descriptions admin spec. All additive + NULLABLE.
     # v59 → v60: backfill ``usage_events.username`` and
     #            ``usage_session_summary.username`` from ``users.email``
-    #            where ``user_id`` is non-null. Collapses the admin
-    #            telemetry dropdown which previously listed the same
-    #            user under multiple identities (email from REST writers,
-    #            UUID from upload-API sessions, OS-username from the
-    #            legacy collector).
-    assert SCHEMA_VERSION == 60
+    #            where ``user_id`` is non-null.
+    # v60 → v61: ``setup_tokens`` table for Agnes Cowork one-click setup.
+    # v61 → v62: ``mcp_sources``, ``tool_registry``, ``tool_grants``
+    #            for Universal MCP inbound connector (RFC #461).
+    assert SCHEMA_VERSION == 62
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
