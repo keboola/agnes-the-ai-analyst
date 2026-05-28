@@ -3,7 +3,9 @@
 The fixtures here are intentionally heavyweight (real docker-compose +
 real Chromium) and gated behind env vars so they never run in the
 default `pytest` invocation. Without `AGNES_E2E=1` every test that
-depends on `docker_e2e_agnes` skips cleanly.
+depends on `docker_e2e_agnes` skips cleanly; without
+`AGNES_E2E_ANTHROPIC=1` every test marked `real_llm` skips on top of
+that.
 """
 
 from __future__ import annotations
@@ -17,6 +19,51 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# real_llm marker (Task E.3)
+# ---------------------------------------------------------------------------
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom markers used by the E2E suite.
+
+    `real_llm` — see `pytest_collection_modifyitems` below. Registering
+    the marker explicitly stops pytest from emitting an `UnknownMark`
+    warning when --strict-markers is on (the project doesn't enable
+    that today but might).
+    """
+    config.addinivalue_line(
+        "markers",
+        "real_llm: requires a real Anthropic API key — runs only when "
+        "AGNES_E2E_ANTHROPIC=1 (set the key in ANTHROPIC_API_KEY).",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip `real_llm` tests when AGNES_E2E_ANTHROPIC isn't set.
+
+    Lets the rest of the E2E suite run against the fake-agent runner
+    (deterministic, no API spend) by default. Operators opt into the
+    real-LLM path by exporting AGNES_E2E_ANTHROPIC=1 alongside an
+    ANTHROPIC_API_KEY.
+
+    Mark a test like:
+
+        @pytest.mark.real_llm
+        def test_catalog_discovery_via_natural_language(...):
+            ...
+    """
+    if os.environ.get("AGNES_E2E_ANTHROPIC"):
+        return
+    skip_real_llm = pytest.mark.skip(
+        reason="real_llm: set AGNES_E2E_ANTHROPIC=1 (and ANTHROPIC_API_KEY) to enable",
+    )
+    for item in items:
+        if "real_llm" in item.keywords:
+            item.add_marker(skip_real_llm)
 
 
 # ---------------------------------------------------------------------------
