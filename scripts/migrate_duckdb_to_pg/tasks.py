@@ -149,14 +149,22 @@ def _not_null_columns_with_default(table_name: str) -> dict[str, Any]:
     return out
 
 
-def _substitute_default(value: Any, default: Any) -> Any:
-    """Return *value* unchanged, or the materialised default if *value* is None.
+def _substitute_default(value: Any, default: Any, *, column_name: str = "") -> Any:
+    """Materialise a server_default ONLY when the row's value is None.
+
+    Honour the existing value in every other case — never overwrite an
+    operator-supplied timestamp or any other typed value. Returning
+    ``value`` unchanged for non-None inputs is the audit-integrity
+    contract; the only legitimate use is to fill genuine NULLs in
+    NOT-NULL columns where the source carries no value.
+
+    Returns None when no usable default is found (caller decides what
+    to do — typically let the INSERT raise NotNullViolation so the
+    operator sees the column needs attention).
 
     ``CURRENT_TIMESTAMP`` / ``CURRENT_DATE`` text defaults materialise to a
     timezone-aware Python ``datetime`` / ``date`` so the migrator can ship
-    a binding psycopg understands. Other text defaults pass through as the
-    raw SQL fragment — psycopg will reject them, but those are rare
-    enough that an explicit error beats silent default-skipping.
+    a binding psycopg understands.
     """
     if value is not None:
         return value

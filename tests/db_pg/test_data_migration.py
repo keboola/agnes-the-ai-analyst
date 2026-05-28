@@ -355,4 +355,34 @@ def test_run_warns_but_continues_on_empty_duckdb_only_column(tmp_path, pg_with_s
     with caplog.at_level("WARNING"):
         run_task(task, duck, pg_with_schema)  # must not raise
     assert any("unused_field" in rec.message for rec in caplog.records)
+
+
+def test_audit_log_timestamp_preserved_when_present(tmp_path, pg_with_schema):
+    """audit_log rows with explicit timestamps must keep them. The
+    previous _substitute_default replaced NULLs AND non-NULL bound
+    values with datetime.now() because the helper looked at the
+    column's server_default + nullable status, not whether the row
+    actually carried a value. Audit trail integrity => never rewrite.
+    """
+    import datetime as _dt
+    import duckdb
+    from sqlalchemy import text as sa_text
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_task, TASKS
+
+    duck = duckdb.connect(str(tmp_path / "src.duckdb"))
+    _ensure_schema(duck)
+    original = _dt.datetime(2025, 1, 15, 9, 30, 0, tzinfo=_dt.timezone.utc)
+    duck.execute(
+        "INSERT INTO audit_log (id, timestamp, action) VALUES (?, ?, ?)",
+        ["a1", original, "test.event"],
+    )
+
+    task = next(t for t in TASKS if t.target_table == "audit_log")
+    run_task(task, duck, pg_with_schema)
+
+    with pg_with_schema.connect() as conn:
+        row = conn.execute(sa_text("SELECT timestamp FROM audit_log WHERE id='a1'")).first()
+    assert row.timestamp == original
+    duck.close()
     duck.close()
