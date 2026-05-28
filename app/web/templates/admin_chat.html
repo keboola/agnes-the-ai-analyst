@@ -1,0 +1,38 @@
+{# app/web/templates/admin_chat.html #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Agnes — Admin / Chat</title>
+  <link rel="stylesheet" href="/static/css/admin.css" />
+</head>
+<body class="admin-body">
+  <h1>Active chat sessions</h1>
+  <table id="sessions">
+    <thead><tr>
+      <th>ID</th><th>User</th><th>State</th><th>Started</th><th>Last activity</th><th>Crashes</th><th></th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+  <script>
+  async function refresh() {
+    const r = await fetch("/admin/chat", { credentials: "same-origin" });
+    const { sessions } = await r.json();
+    const tbody = document.querySelector("#sessions tbody");
+    tbody.innerHTML = sessions.map(s => `
+      <tr>
+        <td>${s.id}</td><td>${s.user_email}</td><td>${s.state}</td>
+        <td>${s.started_at}</td><td>${s.last_activity}</td><td>${s.crash_count}</td>
+        <td><button onclick="killSession('${s.id}')">Kill</button></td>
+      </tr>`).join("");
+  }
+  async function killSession(id) {
+    if (!confirm("Kill session " + id + "?")) return;
+    await fetch("/admin/chat/" + id, { method: "DELETE", credentials: "same-origin" });
+    refresh();
+  }
+  refresh();
+  setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
