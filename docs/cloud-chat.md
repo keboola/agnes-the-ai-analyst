@@ -74,7 +74,29 @@ refuses workspace-destructive bash and prompts for admin mutations.
 **Warehouse data is sent to Anthropic by design** — do not store data
 the operator does not want Anthropic to process.
 
-## Network egress allowlist (operator setup)
+## Operator setup
+
+### Dedicated sandbox host user (recommended for production)
+
+By default the nsjail subprocess runs under Agnes's own host UID
+(`os.getuid()` of the server process). That's fine for single-tenant
+development, but production deployments should isolate the sandbox under
+a dedicated host user so:
+
+1. Agnes itself does not need to run as root.
+2. The iptables OWNER rules below can scope to that user only.
+
+```bash
+# As root: create the sandbox user (no login, no home dir needed).
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin agnes-sandbox
+SANDBOX_UID=$(id -u agnes-sandbox)
+```
+
+Then set `chat.sandbox_uid: <SANDBOX_UID>` in your `instance.yaml`
+(under the `chat:` block). When unset, the SubprocessProvider falls back
+to `os.getuid()` — same behaviour as v1.
+
+### Network egress allowlist
 
 nsjail restricts filesystem access and syscalls but does **not** enforce
 network egress on its own — it relies on the host kernel's netfilter
@@ -82,26 +104,26 @@ network egress on its own — it relies on the host kernel's netfilter
 `agnes-sandbox` subprocess.
 
 Without operator-configured iptables rules, sandboxed sessions have
-full host-network access. Add the following rules (as root) after
-determining the host UID that runs the Agnes server process:
+full host-network access. Add the following rules (as root) using the
+`SANDBOX_UID` from the section above:
 
 ```bash
-# As root — replace $UID with the host UID running the agnes-sandbox process
-# (e.g. `id -u agnes` if you run under a dedicated system account).
+# As root — SANDBOX_UID is the uid of the agnes-sandbox user created above
+# (or os.getuid() of the Agnes server process if you skipped that step).
 
 # Allow loopback (agnes CLI talking back to the Agnes server)
-sudo iptables -A OUTPUT -m owner --uid-owner $UID -d 127.0.0.1 -j ACCEPT
+sudo iptables -A OUTPUT -m owner --uid-owner $SANDBOX_UID -d 127.0.0.1 -j ACCEPT
 
 # Allow outbound HTTPS to the Anthropic API
-sudo iptables -A OUTPUT -m owner --uid-owner $UID -p tcp --dport 443 \
+sudo iptables -A OUTPUT -m owner --uid-owner $SANDBOX_UID -p tcp --dport 443 \
     -d api.anthropic.com -j ACCEPT
 
 # Allow outbound HTTPS to the GitHub API (agnes CLI, marketplace updates)
-sudo iptables -A OUTPUT -m owner --uid-owner $UID -p tcp --dport 443 \
+sudo iptables -A OUTPUT -m owner --uid-owner $SANDBOX_UID -p tcp --dport 443 \
     -d api.github.com -j ACCEPT
 
 # Drop everything else from this UID
-sudo iptables -A OUTPUT -m owner --uid-owner $UID -j DROP
+sudo iptables -A OUTPUT -m owner --uid-owner $SANDBOX_UID -j DROP
 ```
 
 These rules must be applied after every host reboot (add to a

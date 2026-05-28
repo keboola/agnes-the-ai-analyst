@@ -502,6 +502,7 @@ async def lifespan(app):
                     nsjail_path=shutil.which("nsjail"),
                     nsjail_config_template=Path("config/nsjail/chat-session.cfg.template"),
                     require_isolation=app.state.chat_config.require_isolation,
+                    host_uid=app.state.chat_config.sandbox_uid,
                 )
                 mgr = ChatManager(
                     provider=provider,

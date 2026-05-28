@@ -121,6 +121,40 @@ def _nsjail_available() -> bool:
     return shutil.which("nsjail") is not None and sys.platform != "darwin"
 
 
+def test_render_nsjail_cfg_defaults_to_os_getuid(tmp_path: Path):
+    """When sandbox_uid is None (default), the rendered cfg uses os.getuid()."""
+    import os as _os
+    template = Path("config/nsjail/chat-session.cfg.template")
+    assert template.exists()
+
+    workdir = tmp_path / "session-def"
+    workdir.mkdir()
+
+    prov = SubprocessProvider(
+        nsjail_path=None,
+        nsjail_config_template=template,
+        require_isolation=False,
+        # host_uid left at the default (None)
+    )
+    cfg_path = prov._render_nsjail_cfg(workdir)
+    rendered = cfg_path.read_text(encoding="utf-8")
+    assert str(_os.getuid()) in rendered
+
+
+def test_chat_config_sandbox_uid_default_none():
+    """sandbox_uid defaults to None so existing single-user deployments keep
+    falling back to os.getuid() (no breaking change)."""
+    from app.chat.config import ChatConfig
+    assert ChatConfig().sandbox_uid is None
+
+
+def test_chat_config_sandbox_uid_can_be_set():
+    """Operators can pin a dedicated sandbox uid for non-root deploys."""
+    from app.chat.config import ChatConfig
+    cfg = ChatConfig(sandbox_uid=1001)
+    assert cfg.sandbox_uid == 1001
+
+
 @pytest.mark.skipif(not _nsjail_available(), reason="nsjail not installed or darwin")
 def test_jailed_spawn_runs_python_inside(tmp_path: Path):
     async def _run():
