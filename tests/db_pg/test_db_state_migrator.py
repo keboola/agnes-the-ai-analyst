@@ -199,3 +199,49 @@ def test_main_to_cloud_requires_source_url(tmp_path, monkeypatch):
     job = json.loads((tmp_path / "db-jobs" / "job-cloud-1.json").read_text())
     assert job["status"] == "failed"
     assert "source-url" in job["error"]["message"].lower()
+
+
+def test_verify_raises_on_missing_target_table(tmp_path, pg_engine):
+    """If a target table is missing (e.g. partial alembic apply),
+    verify_row_counts must raise — not return ``tgt_count = 0`` and
+    silently match an empty source. Hides typos AND partial schemas."""
+    import duckdb
+    import pytest
+    import src.models  # noqa: F401 — registers all ORM models onto Base.metadata
+    from sqlalchemy import text as sa_text
+    from src.db import _ensure_schema
+    from src.db_pg import Base
+    from scripts.db_state_migrator import verify_row_counts
+
+    duck_path = tmp_path / "src.duckdb"
+    duck = duckdb.connect(str(duck_path))
+    _ensure_schema(duck)
+    duck.close()
+
+    Base.metadata.create_all(pg_engine)
+    with pg_engine.begin() as conn:
+        conn.execute(sa_text("DROP TABLE users CASCADE"))
+
+    with pytest.raises(RuntimeError, match="target table.*missing"):
+        verify_row_counts(duck_path, str(pg_engine.url))
+
+
+def test_verify_pg_raises_on_missing_target_table(tmp_path, pg_engine):
+    """Same contract for the PG -> PG verify variant (used on
+    side_car -> cloud and cloud -> side_car transitions)."""
+    import pytest
+    import src.models  # noqa: F401 — registers all ORM models onto Base.metadata
+    from sqlalchemy import text as sa_text
+    from src.db_pg import Base
+    from scripts.db_state_migrator import verify_pg_row_counts
+
+    Base.metadata.create_all(pg_engine)
+    with pg_engine.begin() as conn:
+        conn.execute(sa_text("DROP TABLE users CASCADE"))
+
+    # Same URL on both sides — the test exercises the PROGRAMMING
+    # error code path (table missing on the target side). The fact
+    # that source side ALSO has the table missing is irrelevant; the
+    # missing-target raise must fire regardless.
+    with pytest.raises(RuntimeError, match="(target|source) table.*missing"):
+        verify_pg_row_counts(str(pg_engine.url), str(pg_engine.url))

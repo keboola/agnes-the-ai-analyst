@@ -324,15 +324,30 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
                     src_count = c.execute(
                         sa.text(f'SELECT COUNT(*) FROM "{tname}"')
                     ).scalar()
-            except sa.exc.ProgrammingError:
-                src_count = 0
+            except sa.exc.ProgrammingError as exc:
+                # Was: silent src_count=0. Hard-fail so the operator can act —
+                # a missing source table means the schema is broken and migration
+                # cannot be validated safely.
+                raise RuntimeError(
+                    f"verify_pg_row_counts: source table '{tname}' is missing from PG "
+                    f"(or the connection lacks SELECT on it). Migration cannot "
+                    f"complete safely. Underlying error: {exc!s}"
+                ) from exc
             try:
                 with target.connect() as c:
                     tgt_count = c.execute(
                         sa.text(f'SELECT COUNT(*) FROM "{tname}"')
                     ).scalar()
-            except sa.exc.ProgrammingError:
-                tgt_count = 0
+            except sa.exc.ProgrammingError as exc:
+                # Was: silent tgt_count=0. That collapsed to a 0==0 "match"
+                # whenever source also had 0 rows, hiding typos and partial-
+                # alembic states. Hard-fail with a specific message so the
+                # operator can act.
+                raise RuntimeError(
+                    f"verify_pg_row_counts: target table '{tname}' is missing from PG "
+                    f"(or the connection lacks SELECT on it). Migration cannot "
+                    f"complete safely. Underlying error: {exc!s}"
+                ) from exc
             if src_count != tgt_count:
                 diffs.append({
                     "table": tname,
@@ -374,8 +389,16 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
                     tgt_count = pg_conn.execute(
                         sa.text(f'SELECT COUNT(*) FROM "{table}"')
                     ).fetchone()[0]
-            except sa.exc.ProgrammingError:
-                tgt_count = 0
+            except sa.exc.ProgrammingError as exc:
+                # Was: silent tgt_count=0. That collapsed to a 0==0 "match"
+                # whenever source also had 0 rows, hiding typos and partial-
+                # alembic states. Hard-fail with a specific message so the
+                # operator can act.
+                raise RuntimeError(
+                    f"verify_row_counts: target table '{table}' is missing from PG "
+                    f"(or the connection lacks SELECT on it). Migration cannot "
+                    f"complete safely. Underlying error: {exc!s}"
+                ) from exc
             if src_count != tgt_count:
                 diffs.append({
                     "table": table,
