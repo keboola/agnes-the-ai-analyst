@@ -38,6 +38,61 @@ the next tick fires as agnes-applier.)
 
 ---
 
+## Cancel semantics
+
+`POST /api/admin/db/cancel/<id>` (or `agnes admin db cancel <id>`) writes a
+`<job-id>.cancel` sentinel file that the host-side applier checks at every
+processing boundary. When the applier observes the sentinel, it stops the
+migration, removes the sentinel, resets `current_state` and `source_backend`
+back to what they were before the job started, and marks the job `cancelled`.
+The source `DATABASE_URL` is preserved intact — no `.env` change is written.
+
+## Pre-PNR vs post-PNR cancel
+
+There is a point-of-no-return (PNR) in the migration: the step where the
+applier rewrites `/opt/agnes/.env` and flips `current_state` to the target
+backend (`current_step >= flip_backend`). Once that step is reached, `cancel`
+returns **409 Conflict** — the migration completed and the app is already
+running on the new backend. Do NOT attempt to recover by hand-editing `.env`;
+the state machine is already consistent. If you want to go back to the
+previous backend, use the appropriate reverse migration (e.g. DuckDB → side
+car → DuckDB via rollback — see [Rollback to DuckDB](#rollback-to-duckdb)).
+
+## Stuck-running recovery
+
+The applier writes a `<job-id>.alive` heartbeat file every tick while a job
+is running. If `status=running` with no JSON update for more than 120 seconds
+(i.e. the heartbeat has gone stale), the applier auto-marks the job `failed`
+on its next tick, allowing a fresh migration to be triggered. Operators
+normally do not need to intervene. The only situation that requires manual
+action is if the applier timer itself has stopped — in that case follow the
+"Migrating an existing VM" steps at the top of this runbook to re-initialise
+the unit.
+
+## URL alias detection (migrate-onto-self guard)
+
+The `POST /api/admin/db/migrate` endpoint rejects requests where the target
+URL resolves to the same physical database as the current backend.
+"Same database" detection is server-side: `host/db` and `host:5432/db` are
+normalised before comparison, as are credential-only differences and
+driver-prefix variants (`postgresql://` vs `postgresql+psycopg://`). Operators
+do not need to format URLs identically — they just need to ensure the target
+URL actually points to a different database instance. The error is a
+**400 Bad Request** with code `url_alias_same_db`.
+
+## URL redaction
+
+`GET /api/admin/db/job/<id>` (and the matching CLI `agnes admin db job <id>`)
+returns connection URLs with the password replaced by `****`. The admin UI
+never shows the plaintext password. If you need the real URL — for example to
+run a manual `psql` check — SSH into the VM and read the JSON job file
+directly under `/data/state/jobs/<id>.json`. The file is written `0600` and
+readable only by `root` and the `agnes-applier` service account.
+
+See the [Migrating an existing VM to the non-root applier](#migrating-an-existing-vm-to-the-non-root-applier-one-time-phase-81) section above for the service account setup if `agnes-applier` is not yet present on your VM.
+
+---
+
 ## What changed
 
 - **Postgres is now a side-car container on the customer-instance VM.** The

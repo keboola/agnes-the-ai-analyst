@@ -15,6 +15,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`/admin/server-config` — Database backend section.** UI card showing current backend, redacted connection URL, allowed transitions, and a live progress panel that polls the running migration job. Confirmation modal + cloud-URL input for the `cloud` transition.
 - **`agnes admin db` CLI.** `state` (inspect current backend + transitions), `migrate <target>` (kick off a migration; `--cloud-url` flag for non-interactive cloud targets), `job <id>` (poll status), `cancel <id>` (abort pre-flip). All subcommands hit the PAT-authed admin endpoints; `--json` available for scripting.
 - **`agnes-state-applier` systemd unit + timer.** Host-side daemon installed by the customer-instance startup-script that watches for pending state-machine jobs and applies them (compose lifecycle + `.env` rewrite). Idempotent; ticks every 30 s.
+- **URL alias detection blocks migrate-onto-self attempts.** Server-side normalisation of host, default port, credentials, and driver prefix means `host/db` and `host:5432/db` are treated as equal; target URL pointing at the current database returns 400 `url_alias_same_db`.
+- **Heartbeat-based stuck-job recovery.** Jobs whose applier heartbeat has not updated for 120 s are auto-marked failed on the next applier tick, allowing a fresh migration to be triggered without operator intervention.
+- **Applier liveness surfaced in `GET /api/admin/db/state` as `applier_last_tick_age_s`.** Operators can check whether the host-side timer is running without SSH access.
+- **Admin UI: localStorage progress cache, exponential polling backoff, and per-table migration progress.** The migration progress card survives page refreshes, reduces server load during idle polling, and shows row-level progress per migrated table.
+- **`agnes admin db migrate` confirmation gate; `--yes` / `-y` bypasses interactively.** Non-TTY callers (CI, scripts) must pass `--yes` explicitly; the CLI refuses without it to prevent accidental migrations from piped invocations.
+
+### Changed
+- **`agnes-state-applier` runs as non-root `agnes-applier:docker` on new VMs.** Existing VMs require a one-time migration; see the "Migrating an existing VM to the non-root applier" section in `docs/postgres-cutover-runbook.md`.
+- **`instance.yaml` writes on both the API side and the applier side now preserve non-database top-level keys.** Previously a write could silently drop unrecognised keys from the YAML file.
+
+### Fixed
+- **Migration cancel reverts `current_state` to `source_backend`; source `DATABASE_URL` is not modified.** A cancelled mid-flight job no longer leaves the state machine pointing at the target.
+- **Cancel after the flip step returns 409 rather than silently no-oping.** Once `.env` has been rewritten and the stack restarted the migration is complete; operators should not attempt manual recovery.
+- **Auto-recovery marks stuck jobs failed after 120 s of missing heartbeat.** Jobs killed by OOM or VM restart no longer stay permanently in `running` state.
+- **URL alias check rejects credential-only and driver-prefix variants of the current URL.** Prevents a class of silent no-op migrations where target and source resolve to the same physical database.
+- **`GET /api/admin/db/job/<id>` redacts passwords in connection URLs.** Plain-text credentials are no longer surfaced in API responses or the admin UI.
+- **`GET /api/admin/db/job/<id>` returns correct redacted URLs for side-car connections.** Previously the `@postgres:` host segment was partially masked.
+- **Migrator CLI exits non-zero on data-copy failure.** Previously an exception in the row-copy loop could result in exit code 0, masking the failure from the applier.
+- **Backup is written before the data copy begins, not after.** Ensures the pre-migration DuckDB snapshot is available for rollback even if the copy is interrupted.
+
+### Internal
+- **Job JSON and `instance.yaml` files are written with mode 0600.**
+- **`GET /api/admin/db/job/<id>` redacts connection URL passwords before serialisation** — credentials never reach log lines or browser DevTools.
+- **Module-scoped Alembic fixture in the Postgres test suite** reduces schema-creation overhead; per-test isolation is provided by transaction rollback.
+- **Admin auth-bypass runtime probe** added so the test suite can exercise admin endpoints without a real auth stack.
 
 ## [0.55.20] — 2026-05-27
 
