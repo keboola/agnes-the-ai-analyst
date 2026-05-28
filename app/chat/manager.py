@@ -45,6 +45,10 @@ class LiveSession:
     crash_count: int = 0
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     tasks: list[asyncio.Task] = field(default_factory=list)
+    # Latest pump-subprocess-to-ws task. Each crash respawn replaces this
+    # (and removes the previous one from `tasks`) so the per-session task
+    # list does not grow unboundedly across crashes.
+    current_pump: Optional[asyncio.Task] = None
 
 
 class ChatManager:
@@ -145,6 +149,7 @@ class ChatManager:
         pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
         wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
         live.tasks = [pump_task, wait_task]
+        live.current_pump = pump_task
 
         try:
             await asyncio.gather(*live.tasks, return_exceptions=True)
@@ -248,8 +253,21 @@ class ChatManager:
                     payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
                     new_handle.stdin.write(payload.encode("utf-8"))
                     await new_handle.stdin.drain()
-            # New pump for new handle — tracked so kill() can cancel it.
+            # Replace (not append) the per-session pump task so the task
+            # list does not grow unboundedly across crash respawns.  The old
+            # pump returned on EOF; cancel it for hygiene, then drop it from
+            # `tasks` before spawning the new one.
+            old_pump = live.current_pump
+            if old_pump is not None and not old_pump.done():
+                old_pump.cancel()
+                try:
+                    await old_pump
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if old_pump is not None and old_pump in live.tasks:
+                live.tasks.remove(old_pump)
             new_pump = asyncio.create_task(self._pump_subprocess_to_ws(live))
+            live.current_pump = new_pump
             live.tasks.append(new_pump)
             # Loop back to wait on the new handle.
 

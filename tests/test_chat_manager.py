@@ -239,6 +239,71 @@ def test_crash_respawns_with_notice(manager: ChatManager):
     asyncio.run(_run())
 
 
+def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
+    """Each respawn must replace (not append to) the per-session pump task.
+
+    Pre-fix: every crash respawn created a new pump task and pushed it onto
+    ``live.tasks`` while leaving the old (already-exited) one on the list.
+    After N crashes the manager held N+1 pump tasks of which only the
+    latest read from the live handle — a leak; tests can also see it
+    grow unboundedly.
+    """
+    async def _run():
+        handles = [FakeHandle(), FakeHandle(), FakeHandle()]
+        spawn_calls = iter(handles)
+
+        async def fake_spawn(**kw):
+            return next(spawn_calls)
+
+        manager._provider.spawn = fake_spawn
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = manager._live[s.id]
+        initial_tasks = list(live.tasks)
+        assert len(initial_tasks) == 2  # pump + wait
+        assert live.current_pump is not None
+        assert live.current_pump in initial_tasks
+
+        # First crash → respawn
+        handles[0].emit_eof()
+        handles[0].killed = True
+        await asyncio.sleep(0.1)
+        # After respawn, still exactly two tasks (one wait + one pump),
+        # not three.  current_pump points at the NEW pump.
+        post_crash_tasks = [t for t in live.tasks if not t.done()]
+        assert len(post_crash_tasks) == 2, (
+            f"expected 2 live tasks after crash respawn, got {len(post_crash_tasks)}"
+        )
+        assert live.current_pump is not None
+        assert live.current_pump in post_crash_tasks
+
+        # Second crash → respawn again
+        handles[1].emit_eof()
+        handles[1].killed = True
+        await asyncio.sleep(0.1)
+        post_crash2_tasks = [t for t in live.tasks if not t.done()]
+        assert len(post_crash2_tasks) == 2, (
+            f"expected 2 live tasks after 2nd respawn, got {len(post_crash2_tasks)}"
+        )
+
+        # Cleanup
+        try:
+            await manager.kill(s.id, reason="test_done")
+        except Exception:
+            pass
+        for h in handles:
+            h.emit_eof()
+        try:
+            await asyncio.wait_for(attach_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            attach_task.cancel()
+
+    asyncio.run(_run())
+
+
 def test_double_crash_dies_after_three(manager: ChatManager):
     handles = [FakeHandle(), FakeHandle(), FakeHandle(), FakeHandle()]
     spawn_calls = iter(handles)
