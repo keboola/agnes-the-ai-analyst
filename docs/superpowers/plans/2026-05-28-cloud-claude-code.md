@@ -1892,7 +1892,13 @@ class SubprocessProvider:
     async def spawn(
         self, *, workdir: Path, env: dict[str, str], argv: list[str],
     ) -> SubprocessHandle:
-        scrubbed = _scrub_env(env)
+        # Scrub host env (os.environ) through the allowlist to prevent
+        # accidental leakage of operator-set secrets like BIGQUERY_SA_KEY;
+        # then layer the caller-supplied env on top. The caller is trusted
+        # (ChatManager._spawn_runner constructs it explicitly from session
+        # state). See spec § Security & isolation "Environment scrub".
+        scrubbed = _scrub_env(dict(os.environ))
+        scrubbed.update(env)
         scrubbed.setdefault("AGNES_WORKDIR", str(workdir))
 
         if self._is_jailed():
