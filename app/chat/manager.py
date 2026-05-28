@@ -66,6 +66,12 @@ class ChatManager:
         self._config = config
         self._live: dict[str, LiveSession] = {}
         self._idle_task: Optional[asyncio.Task] = None
+        # Per-user sliding-window message timestamps for the rate-limit knob.
+        # Each entry is a deque of monotonic timestamps in the last hour.
+        # Trimmed on each send; entries older than 3600 s evicted.
+        from collections import deque
+        self._user_msg_window: dict[str, "deque[float]"] = {}
+        self._deque_cls = deque
 
     # --- public API used by app/api/chat.py and services/slack_bot/ -------
 
@@ -307,6 +313,27 @@ class ChatManager:
                 ),
             })
             raise RuntimeError("max_session_tokens_exhausted")
+        # Per-user sliding-window message-rate cap. Trim entries older than
+        # one hour, then check the count.  Anti-abuse knob; previously dead
+        # config in instance.yaml.
+        import time as _time
+        now_mono = _time.monotonic()
+        window = self._user_msg_window.setdefault(
+            live.user_email, self._deque_cls(),
+        )
+        while window and (now_mono - window[0]) > 3600:
+            window.popleft()
+        if len(window) >= self._config.rate_messages_per_hour:
+            await live.ws.send_json({
+                "type": "error",
+                "kind": "rate_limit",
+                "message": (
+                    f"Rate limit hit: {self._config.rate_messages_per_hour} messages/hour. "
+                    "Slow down or wait an hour."
+                ),
+            })
+            raise RuntimeError("rate_limit_exceeded")
+        window.append(now_mono)
         self._repo.append_message(session_id=chat_id, role="user", content=text)
         payload = json.dumps({"type": "user_msg", "text": text}) + "\n"
         live.handle.stdin.write(payload.encode("utf-8"))

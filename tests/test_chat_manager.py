@@ -239,6 +239,53 @@ def test_crash_respawns_with_notice(manager: ChatManager):
     asyncio.run(_run())
 
 
+def test_send_user_message_rejects_when_rate_limit_exceeded(tmp_path):
+    """Per-user sliding-window rate limit: more than rate_messages_per_hour
+    messages within the last hour from one user gets refused.
+    """
+    from datetime import datetime, timezone
+
+    from app.chat.manager import LiveSession
+    from app.chat.types import SessionState
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    cfg = ChatConfig(
+        enabled=True, require_isolation=False, concurrency_per_user=5,
+        rate_messages_per_hour=3,
+        daily_anthropic_spend_usd=10**6,
+        max_session_tokens=10**9,
+    )
+    mgr = ChatManager(
+        provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg,
+    )
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        mgr._live[s.id] = LiveSession(
+            chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
+            handle=FakeHandle(), ws=ws,
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+        )
+        # 3 messages allowed
+        for i in range(3):
+            await mgr.send_user_message(s.id, f"msg{i}")
+        # 4th gets refused
+        with pytest.raises(RuntimeError, match="rate_limit_exceeded"):
+            await mgr.send_user_message(s.id, "msg3")
+        kinds = [c.args[0].get("kind") for c in ws.send_json.call_args_list]
+        assert "rate_limit" in kinds
+
+    asyncio.run(_run())
+
+
 def test_send_user_message_rejects_when_session_tokens_exhausted(tmp_path):
     """send_user_message must refuse new turns when the session's cumulative
     tokens exceed ChatConfig.max_session_tokens.
