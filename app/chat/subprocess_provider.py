@@ -21,6 +21,13 @@ _ENV_ALLOWLIST = {
 
 
 def _scrub_env(env: dict[str, str]) -> dict[str, str]:
+    # Filters a dict to only allowlisted keys.
+    # Called with dict(os.environ) to strip host secrets (tokens, credentials,
+    # SA keys) from the subprocess environment.  The *caller-supplied* env dict
+    # (from ChatManager._spawn_runner) is layered on top via .update() after
+    # this call and is fully trusted — it carries only Agnes session vars that
+    # the caller constructed explicitly.  Do NOT pass os.environ as the caller
+    # env; if you do, host secrets will bypass the scrub.
     return {k: v for k, v in env.items() if k in _ENV_ALLOWLIST}
 
 
