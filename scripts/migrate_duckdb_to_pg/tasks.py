@@ -119,11 +119,64 @@ def _build_insert(
     )
 
 
+def _array_columns_for(table_name: str) -> set[str]:
+    """Return the names of PG ``ARRAY`` columns on *table_name*.
+
+    Introspected from ``Base.metadata`` at first use and cached. PG arrays
+    are NOT the same wire format as JSONB — psycopg expects a Python list
+    for an array column and serialises it as a ``{a, b, c}`` literal,
+    while a JSON string starting with ``[`` would be misread as an
+    ill-formed PG array literal (``"[" must introduce explicitly-specified
+    array dimensions``, surfaced live on agnes-dev migration).
+
+    DuckDB returns these columns as JSON strings, so we json.loads them
+    before passing to psycopg. Detecting from metadata avoids the
+    duplicate maintenance burden of a hand-curated registry like
+    ``_JSON_COLUMNS``.
+    """
+    import src.models  # noqa: F401 — ensures every model is imported
+    from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
+    from src.db_pg import Base
+
+    table = Base.metadata.tables.get(table_name)
+    if table is None:
+        return set()
+    return {c.name for c in table.columns if isinstance(c.type, PG_ARRAY)}
+
+
 def _normalize_for_pg(value: Any) -> Any:
     """Serialise DuckDB-native dict/list to JSON text for PG CAST."""
     import json as _json
     if isinstance(value, (dict, list)):
         return _json.dumps(value)
+    return value
+
+
+def _coerce_array_value(value: Any) -> Any:
+    """Coerce a DuckDB-returned ARRAY value into a Python list for psycopg.
+
+    DuckDB returns ``ARRAY``-typed columns either as a Python list already
+    (when the source type is ``LIST``/``ARRAY``) or as a JSON-encoded text
+    string (when the source type is ``JSON``/``VARCHAR`` and the producer
+    serialised manually — what ``metric_definitions.dimensions`` does on
+    agnes-dev). psycopg's PG-array adapter wants the list form; if it
+    receives the string form it forwards it to PG as text and PG raises
+    ``InvalidTextRepresentation: malformed array literal``.
+    """
+    import json as _json
+    if value is None or isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = _json.loads(stripped)
+        except _json.JSONDecodeError:
+            return value
+        if isinstance(parsed, list):
+            return parsed
+        return value
     return value
 
 
@@ -190,10 +243,16 @@ class GenericCopyTask:
             return 0
 
         insert_sql = _build_insert(self.target_table, columns, self.pk_columns)
+        array_cols = _array_columns_for(self.target_table)
         considered = 0
         batch: List[Dict[str, Any]] = []
         for r in rows:
-            d = {k: _normalize_for_pg(v) for k, v in zip(columns, r)}
+            d: Dict[str, Any] = {}
+            for k, v in zip(columns, r):
+                if k in array_cols:
+                    d[k] = _coerce_array_value(v)
+                else:
+                    d[k] = _normalize_for_pg(v)
             batch.append(d)
             considered += 1
             if len(batch) >= self.batch_size and not dry_run:

@@ -138,6 +138,67 @@ def test_migrate_users_round_trip(tmp_path, pg_with_schema):
     duck_conn.close()
 
 
+def test_migrate_pg_array_columns_coerce_from_duckdb_json_strings(tmp_path, pg_with_schema):
+    """Regression: DuckDB-stored JSON arrays must arrive in PG as PG arrays.
+
+    ``metric_definitions.dimensions`` (and ``tables``/``filters``/
+    ``synonyms``/``notes``) are typed as ``ARRAY(String)`` on the PG
+    side but DuckDB serialises them as JSON-encoded strings. Without
+    the array-column coercion in ``GenericCopyTask.run``, psycopg
+    forwards the raw string ``["technology", "kbc_stack"]`` to PG and
+    PG raises ``InvalidTextRepresentation: malformed array literal —
+    "[" must introduce explicitly-specified array dimensions`` —
+    surfaced live on agnes-dev v5 migration.
+    """
+    import json
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_task, validate_task, TASKS
+
+    duck_path = tmp_path / "src.duckdb"
+    duck_conn = duckdb.connect(str(duck_path))
+    _ensure_schema(duck_conn)
+
+    # Seed a metric_definitions row whose ARRAY columns are JSON strings —
+    # the exact shape DuckDB produces on the live agnes-dev system.
+    duck_conn.execute(
+        """
+        INSERT INTO metric_definitions
+            (id, name, display_name, category, description, type, unit, grain,
+             table_name, tables, expression, time_column, dimensions, filters,
+             synonyms, notes, sql, sql_variants, validation, source)
+        VALUES
+            ('test/m', 'm', 'Metric', 'finance', 'd', 'sum', 'USD', 'monthly',
+             'tbl', ?, 'expr', 't', ?, NULL, ?, ?, 'SELECT 1', NULL, NULL,
+             'manual')
+        """,
+        [
+            json.dumps(["t1", "t2"]),
+            json.dumps(["dim1", "dim2", "dim3"]),
+            json.dumps(["syn"]),
+            json.dumps(["note"]),
+        ],
+    )
+
+    task = next(t for t in TASKS if t.target_table == "metric_definitions")
+    run_task(task, duck_conn, pg_with_schema)
+
+    # All four ARRAY columns must round-trip as native PG arrays.
+    with pg_with_schema.connect() as conn:
+        from sqlalchemy import text as sa_text
+        row = conn.execute(
+            sa_text("SELECT tables, dimensions, synonyms, notes FROM metric_definitions WHERE id='test/m'")
+        ).first()
+    assert row.tables == ["t1", "t2"]
+    assert row.dimensions == ["dim1", "dim2", "dim3"]
+    assert row.synonyms == ["syn"]
+    assert row.notes == ["note"]
+
+    report = validate_task(task, duck_conn, pg_with_schema)
+    assert report["pg_rows"] == 1
+    assert report["checksum_match"] is True
+    duck_conn.close()
+
+
 def test_non_id_pk_tables_are_in_pk_columns_map():
     """Tables whose primary key isn't a single column named 'id' must be
     registered in _PK_COLUMNS so the generic copy loop knows what to
