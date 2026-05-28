@@ -465,6 +465,12 @@ async def admin_sync(
     except Exception:
         logger.exception("connectors_manifest: cache invalidation after sync failed")
 
+    # Render dry-run — exercise the install-prompt + manifest path against
+    # the freshly-synced clone so the operator sees parse failures
+    # immediately, never ships a broken seed silently to analysts. The
+    # admin UI red-banners this block when `ok=false`.
+    render_dry_run = _compute_render_dry_run()
+
     _audit(
         conn,
         actor_id=user.get("id"),
@@ -472,6 +478,7 @@ async def admin_sync(
         params={
             "commit_sha": result["commit_sha"],
             "file_count": result["file_count"],
+            "render_ok": render_dry_run.get("ok"),
         },
     )
 
@@ -481,7 +488,70 @@ async def admin_sync(
         "file_count": result["file_count"],
         "path": result["path"],
         "synced_at": now_iso,
+        "render_dry_run": render_dry_run,
     }
+
+
+def _compute_render_dry_run() -> dict:
+    """Validate the freshly-synced seed by exercising the manifest scan +
+    install-prompt renderer. Returns a structured summary the admin UI
+    surfaces inline.
+
+    Errors block the operator from claiming "seed is good"; warnings
+    surface in the modal but don't gate the sync (analysts can still hit
+    /home — the renderer skips the bad connector, the rest works).
+    """
+    summary: dict = {
+        "ok": True,
+        "scaffolding_source": "bundled",
+        "connectors_found": 0,
+        "connectors": [],
+        "warnings": [],
+        "errors": [],
+    }
+
+    try:
+        from src.connectors_manifest import load_manifest
+        from src.initial_workspace import is_configured, resolve_seed_file
+
+        # Scaffolding tier — IWT clone first, bundled fallback.
+        template = resolve_seed_file("install-prompt/template.md.tmpl")
+        if template is not None:
+            _content, source = template
+            summary["scaffolding_source"] = source
+        elif is_configured():
+            # IWT configured but neither tier has the file — that's the
+            # bundled fallback below, but only if the bundle survived
+            # release (a deployer stripping `src/_bundled_seed/` would
+            # land here). Surface as error so the admin sees it.
+            summary["errors"].append(
+                "install-prompt/template.md.tmpl missing from both IWT clone "
+                "and bundled seed — install prompt will not render"
+            )
+            summary["ok"] = False
+
+        # Manifest tier — same resolution, scoped to connector-*/SKILL.md.
+        manifest = load_manifest()
+        summary["connectors_found"] = len(manifest)
+        summary["connectors"] = [e.slug for e in manifest]
+
+        # Confirm the renderer can build a complete document end-to-end
+        # using the synced content. Failures here catch unicode / format
+        # regressions the manifest validator misses.
+        from app.web.setup_instructions import resolve_lines
+
+        resolve_lines(
+            "agnes.whl",
+            connector_manifest=manifest,
+            server_host="example.invalid",
+            instance_brand="Agnes",
+        )
+    except Exception as e:
+        summary["ok"] = False
+        summary["errors"].append(f"render dry-run raised: {e!r}")
+        logger.exception("initial-workspace: render dry-run failed")
+
+    return summary
 
 
 # ---------------------------------------------------------------------------

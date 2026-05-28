@@ -603,6 +603,22 @@ def init(
     if override_active:
         pass  # apply_override already wrote the extended sentinel
     else:
+        # Default mode: fetch operator-provisioned per-tenant params and
+        # write <workspace>/.claude/agnes/.env so seed-resident connector
+        # skills can read them at install time. Best-effort; empty overlay
+        # or older server (no /api/connectors/params endpoint) silently
+        # skips the file.
+        try:
+            from cli.lib.initial_workspace import write_agnes_env
+            write_agnes_env(workspace, server_url, token)
+        except Exception as e:
+            # Best-effort — failure here doesn't block init. Seed skills
+            # will fall back to interactive prompts.
+            typer.echo(
+                f"  Warning: .env.agnes write skipped ({e})",
+                err=True,
+            )
+
         sentinel = workspace / _INIT_COMPLETE_FILE
         sentinel.parent.mkdir(parents=True, exist_ok=True)
         try:

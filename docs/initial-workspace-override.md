@@ -9,6 +9,12 @@ defaults.
 **Audience:** operators of an Agnes instance who want to customize the
 analyst onboarding experience without forking Agnes.
 
+> **Building or forking a seed repo?** Read
+> [`docs/seed-repo-contract.md`](seed-repo-contract.md) — it documents
+> the directory layout, the connector skill frontmatter schema, the
+> install-prompt placeholders the Agnes server substitutes, and the
+> per-file admin-editor ownership map.
+
 ## What it is
 
 By default, `agnes init` builds an analyst workspace from a mix of

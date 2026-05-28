@@ -20,6 +20,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   - `scripts/sync_bundled_seed.sh` clones the OSS seed at a given ref into `src/_bundled_seed/` and writes `.source_ref` provenance.
   - `.github/workflows/check-bundled-seed.yml` verifies the bundled snapshot's `.source_ref` SHA exists at `source_url`.
 
+### Added
+- A1.3 — admin-editor gating, `.env.agnes` writer, sync render dry-run, smoke `/home` assertion, seed-repo-contract doc.
+  - `/admin/workspace-prompt` and `/admin/agent-prompt` flip into read-only mode when the corresponding seed file is present in the IWT clone (`workspace/CLAUDE.md` and `install-prompt/template.md.tmpl` respectively). `GET` returns the seed file content with `source: "seed"`. `PUT`/`DELETE` return `409` with `kind: iwt_seed_owns_template` and a `hint` naming the seed file.
+  - `agnes init` writes `<workspace>/.claude/agnes/.env` atomically (temp-file + `os.replace` + `chmod 600` + dotenv quoting + `content_sha256` header) with operator-provisioned per-tenant values fetched from `GET /api/connectors/params`. Globals override per-connector keys on collision. Failure is best-effort — seed skills fall back to interactive prompts.
+  - `POST /api/admin/initial-workspace/sync` response carries a `render_dry_run` block: `ok`, `scaffolding_source`, `connectors_found`, `connectors`, `warnings`, `errors`. Operator sees parse failures inline in the admin UI's sync modal — never ships a broken seed silently.
+  - `scripts/smoke-test.sh` asserts `/home` renders with the three bundled connector slugs and that `POST /api/admin/initial-workspace/sync` returns the typed `not_configured` error contract.
+  - `config/instance.yaml.example` documents `initial_workspace:` and `connectors:` blocks for seed authors + per-tenant param overlays.
+  - **NEW** `docs/seed-repo-contract.md` — full contract for seed authors: directory layout, per-file admin-editor ownership, connector frontmatter schema, template placeholders, tile render shape, sync flow, CI lint snippet, versioning, OSS reference seed, vendor-agnostic naming guidance for forks.
+  - `docs/initial-workspace-override.md` cross-links to the new contract doc.
+
 ### Changed
 - Install-prompt renderer (`app/web/setup_instructions.py`) now sources connector content from the seed manifest + per-skill SKILL.md bodies instead of hardcoded Python strings (A1.2 of the connector-skills refactor).
   - `app/web/connector_prompts.py` retired and deleted. The asana / atlassian / gws prompts moved to `workspace/.claude/skills/connector-*/SKILL.md` inside the seed (operator IWT clone or bundled snapshot fallback). Adding a fourth connector now requires only a new `connector-X/SKILL.md` in the seed — no Agnes code change.

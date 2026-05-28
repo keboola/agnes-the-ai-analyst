@@ -529,3 +529,53 @@ catalog:
 # Min 60 (1 minute), max 604800 (7 days). Configurable via /admin/server-config UI.
 materialize:
   lock_ttl_seconds: 86400
+
+
+# --- Initial Workspace Template (optional) ---
+#
+# When configured, Agnes serves the contents of <repo>/workspace/ to analysts
+# during `agnes init` (replacing the built-in workspace bootstrap). The
+# install-prompt template + connector skills also flow from this seed if
+# present — see `docs/seed-repo-contract.md` for the full contract.
+#
+# Configure via the admin UI: /admin/server-config → "Initial Workspace
+# Template". PAT (when the repo is private) lives in
+# ${DATA_DIR}/state/.env_overlay, NOT in this file. The block below is
+# managed by the API endpoint at /api/admin/initial-workspace — manual
+# edits here are honored, but the admin UI is the canonical writer.
+#
+# initial_workspace:
+#   url: https://github.com/keboola/agnes-the-ai-analyst-workspace-seed
+#   branch: main
+#   token_env: AGNES_INITIAL_WORKSPACE_TOKEN  # optional; PAT name in shell env
+#   last_synced_at: ...                       # written by API after sync
+#   last_commit_sha: ...                      # written by API after sync
+#   last_error: ...                           # written by API on failure
+
+
+# --- Connector per-tenant runtime params (optional) ---
+#
+# Operator-provisioned values that flow into `<workspace>/.claude/agnes/.env`
+# via `agnes init`. Seed-resident connector skills read these at install
+# time so the user isn't asked for org-specific values that the operator
+# already knows.
+#
+# **Never put secret VALUES here.** Use the `*_ENV` convention to name the
+# shell env var that holds the secret on the Agnes server (and on the
+# user's machine for any per-user secrets). The .env.agnes file carries
+# the env-var NAMES; the actual secret lives in the shell env.
+#
+# Resolution order: `globals` (instance-wide) beats per-connector keys on
+# name collision. Empty `connectors:` block → empty .env.agnes (the API
+# endpoint /api/connectors/params returns {}), seed skills fall back to
+# interactive prompts.
+#
+# connectors:
+#   globals:
+#     AGNES_INSTANCE_BRAND: Acme Analytics
+#   connector-atlassian:
+#     ATLASSIAN_BASE_URL: https://acme.atlassian.net
+#   connector-gws:
+#     AGNES_GWS_CLIENT_ID: 1234-abcd.apps.googleusercontent.com
+#     AGNES_GWS_PROJECT_ID: "1234"
+#     AGNES_GWS_CLIENT_SECRET_ENV: AGNES_GWS_CLIENT_SECRET  # secret VALUE lives in shell env

@@ -180,6 +180,60 @@ else
     echo "  SKIP metrics (no token)"
 fi
 
+# 11. /home renders with bundled connectors (regression guard for the
+#     seed-driven install-prompt renderer in app/web/setup_instructions.py).
+#     A blank /home — empty body, missing connector slugs, renderer crash —
+#     is the worst-case failure of the A1 connector-skills refactor: the
+#     setup prompt is the primary onboarding surface. CI smoke can only
+#     exercise the bundled-fallback path (fresh stack has no IWT clone),
+#     so we assert the three bundled connector slugs appear verbatim.
+if [ -n "$TOKEN" ]; then
+    HOME_BODY=$(curl -s "$HOST/home" \
+      -H "Authorization: Bearer $TOKEN" \
+      -b "access_token=$TOKEN" 2>/dev/null || echo "")
+    HOME_OK="true"
+    for slug in connector-asana connector-atlassian connector-gws; do
+        if ! echo "$HOME_BODY" | grep -qF "$slug"; then
+            HOME_OK="false"
+            echo "  WARN /home body missing $slug (bundled seed regression?)"
+        fi
+    done
+    if [ -z "$HOME_BODY" ]; then
+        HOME_OK="false"
+    fi
+    check "/home renders bundled connector tiles" "$HOME_OK"
+else
+    echo "  SKIP /home (no token)"
+fi
+
+# 12. POST /api/admin/initial-workspace/sync (no-op-friendly): the endpoint
+#     400s with kind=not_configured on a fresh install (no IWT registered).
+#     We don't try to register one — that would require a live PAT — but we
+#     verify the contract returns the typed error rather than 500.
+if [ -n "$TOKEN" ]; then
+    IW_SYNC_HTTP=$(curl -s -o /tmp/smoke_iw_sync.json -w "%{http_code}" \
+      -X POST "$HOST/api/admin/initial-workspace/sync" \
+      -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
+    if [ "$IW_SYNC_HTTP" = "400" ]; then
+        IW_KIND=$(python3 -c "
+import sys, json
+try:
+    print(json.load(open('/tmp/smoke_iw_sync.json'))['detail']['kind'])
+except Exception:
+    print('')
+" 2>/dev/null)
+        if [ "$IW_KIND" = "not_configured" ]; then
+            check "initial-workspace sync error contract" "true"
+        else
+            check "initial-workspace sync error contract (got kind=$IW_KIND)" "false"
+        fi
+    else
+        check "initial-workspace sync error contract (HTTP $IW_SYNC_HTTP, expected 400)" "false"
+    fi
+else
+    echo "  SKIP initial-workspace sync (no token)"
+fi
+
 # Results
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
