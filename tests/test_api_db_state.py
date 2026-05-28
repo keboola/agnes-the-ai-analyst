@@ -139,6 +139,47 @@ def test_post_migrate_starts_job(seeded_app, monkeypatch):
     assert "side_car" in spawned[0]
 
 
+def test_post_migrate_releases_duckdb_lock_before_spawn(seeded_app, monkeypatch):
+    """``close_singleton_connections()`` runs before ``subprocess.Popen``.
+
+    Regression for the agnes-dev deploy verification where the migrator
+    subprocess hit ``IOException: Conflicting lock is held in
+    /usr/local/bin/python3.13`` because the app held the exclusive
+    DuckDB file lock. The fix is to close both singleton connections
+    immediately before spawning so the subprocess can acquire the lock.
+    """
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        "src.db.close_singleton_connections",
+        lambda: events.append("close"),
+    )
+
+    def fake_popen(cmd, *args, **kwargs):
+        events.append("popen")
+
+        class FakeProc:
+            pid = 12345
+
+        return FakeProc()
+
+    monkeypatch.setattr("app.api.db_state.subprocess.Popen", fake_popen)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "side_car"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 202, r.text
+    # Order matters: close MUST happen before popen, otherwise the
+    # subprocess hits the lock conflict.
+    assert events == ["close", "popen"]
+
+
 def test_post_migrate_rejects_invalid_transition(seeded_app, monkeypatch):
     """duckdb → cloud (skipping side-car) rejected with 400."""
     data_dir = seeded_app["env"]["data_dir"]

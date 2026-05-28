@@ -144,6 +144,16 @@ def start_migration(payload: MigrateRequest) -> dict:
         )
         writer.write_initial()
 
+        # Release the DuckDB file lock so the migrator subprocess can read
+        # /data/state/system.duckdb. DuckDB ≥1.5 holds an exclusive
+        # per-process file lock; without this the subprocess hits
+        # `IOException: Conflicting lock is held` on `duckdb.connect()`.
+        # The app's next request lazily re-opens — but the migration
+        # promotes backend → PG before that happens, so in the happy path
+        # the DuckDB file is never re-opened by this process.
+        from src.db import close_singleton_connections
+        close_singleton_connections()
+
         subprocess.Popen(
             [
                 sys.executable, "-m", "scripts.db_state_migrator",

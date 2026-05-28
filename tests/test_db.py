@@ -6,6 +6,22 @@ import duckdb
 import pytest
 
 
+def _probe_open_duckdb(path: str, queue) -> None:
+    """Module-level worker for the cross-process lock-conflict test.
+
+    Spawn-context multiprocessing can't pickle locals; ForkingPickler
+    needs the worker to be importable by name.
+    """
+    import duckdb
+    try:
+        c = duckdb.connect(path)
+        c.execute("SELECT 1").fetchone()
+        c.close()
+        queue.put("ok")
+    except Exception as e:
+        queue.put(repr(e))
+
+
 def _setup_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
@@ -1730,3 +1746,68 @@ class TestV17ToV18Migration:
         finally:
             conn.close()
             close_system_db()
+
+
+class TestCloseSingletonConnections:
+    """``close_singleton_connections`` releases DuckDB locks so a subprocess
+    can read the file (state-machine migrator-spawn path)."""
+
+    def test_clears_both_singleton_globals(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
+        import src.db as db_module
+
+        # Prime both singletons.
+        db_module.get_system_db().close()
+        db_module.get_analytics_db().close()
+        assert db_module._system_db_conn is not None
+        assert db_module._analytics_db_conn is not None
+
+        db_module.close_singleton_connections()
+
+        # Globals reset to None so the next caller re-opens lazily, and the
+        # underlying file is no longer held by the old connection.
+        assert db_module._system_db_conn is None
+        assert db_module._analytics_db_conn is None
+
+    def test_releases_cross_process_lock(self, tmp_path, monkeypatch):
+        """A subprocess can read the DuckDB file after we close the singleton.
+
+        DuckDB ≥1.5 holds an exclusive *per-process* file lock; while another
+        process tries to open the same file, it raises ``IOException:
+        Conflicting lock`` — the exact error agnes-dev hit on the
+        live state-machine migration test. After
+        ``close_singleton_connections`` the lock is gone.
+        """
+        import multiprocessing
+        _setup_data_dir(tmp_path, monkeypatch)
+        from src.db import close_singleton_connections, get_system_db
+
+        get_system_db().close()  # owns the file lock
+        db_path = str(tmp_path / "state" / "system.duckdb")
+
+        # Before close: the subprocess must hit the lock conflict.
+        ctx = multiprocessing.get_context("spawn")
+        q1 = ctx.Queue()
+        p1 = ctx.Process(target=_probe_open_duckdb, args=(db_path, q1))
+        p1.start()
+        p1.join(timeout=15)
+        res_before = q1.get_nowait()
+        assert "Conflicting lock" in res_before, res_before
+
+        # After close: the subprocess opens the file cleanly.
+        close_singleton_connections()
+        q2 = ctx.Queue()
+        p2 = ctx.Process(target=_probe_open_duckdb, args=(db_path, q2))
+        p2.start()
+        p2.join(timeout=15)
+        res_after = q2.get_nowait()
+        assert res_after == "ok", res_after
+
+    def test_idempotent(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
+        from src.db import close_singleton_connections, get_system_db
+
+        get_system_db().close()
+        close_singleton_connections()
+        # Second call must not raise even though both globals are already None.
+        close_singleton_connections()

@@ -1328,6 +1328,37 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
         return _maybe_instrument(_analytics_db_conn.cursor(), "analytics")
 
 
+def close_singleton_connections() -> None:
+    """Close both shared DuckDB connections so a subprocess can take the lock.
+
+    Called from the DB-backend state-machine migrator-spawn path
+    (`app.api.db_state.start_migration`) right before launching the migrator
+    subprocess. DuckDB ≥1.5 holds an exclusive per-process file lock on each
+    open database file; without releasing it here the subprocess raises
+    ``IOException: Conflicting lock is held in /usr/local/bin/python3.13``.
+
+    Idempotent. The next call to ``get_system_db()`` / ``get_analytics_db()``
+    will lazily re-open if the file is still on disk; if the migration
+    flipped the backend to Postgres, the app process will be recreated by
+    the host applier and these globals never need to re-open.
+    """
+    global _system_db_conn, _analytics_db_conn
+    with _system_db_lock:
+        if _system_db_conn is not None:
+            try:
+                _system_db_conn.close()
+            except Exception:
+                pass
+            _system_db_conn = None
+    with _analytics_db_lock:
+        if _analytics_db_conn is not None:
+            try:
+                _analytics_db_conn.close()
+            except Exception:
+                pass
+            _analytics_db_conn = None
+
+
 def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: Path) -> None:
     """Re-LOAD DuckDB extensions listed in _remote_attach tables of each extract.duckdb.
 
