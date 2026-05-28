@@ -343,17 +343,30 @@ CREATE TABLE chat_messages (
 CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);
 CREATE INDEX idx_chat_sessions_user ON chat_sessions(user_email, last_message_at DESC);
 
--- Partial unique indexes per surface. A plain composite UNIQUE on
--- (surface, slack_channel_id, slack_thread_ts) is wrong for DuckDB:
--- the SQL standard treats NULL as not-equal-to-NULL in UNIQUE, so two
--- rows with NULL slack_thread_ts always satisfy the constraint and
--- dedupe never fires for the DM case.
+-- Partial unique indexes per surface — INTENDED, BUT NOT POSSIBLE in
+-- DuckDB 1.5.3 (verified during Task 1.1 implementation 2026-05-28):
+--   CREATE UNIQUE INDEX ... WHERE      → NotImplementedException
+--   FK ... ON DELETE CASCADE           → ParserException
+-- Per-surface Slack-session uniqueness MUST be enforced at the
+-- application layer in `ChatRepository.create_session` instead. This
+-- is safe under the spec's single-worker constraint (single asyncio
+-- event loop = no true concurrency at the INSERT level), provided the
+-- check-then-insert pattern is atomic — i.e. **no `await` between the
+-- SELECT and the INSERT**. The intended SQL form is preserved below as
+-- a target to re-enable when DuckDB ships partial-index + cascade.
+--
+-- For GDPR hard-delete: `ChatRepository.hard_delete_user_sessions`
+-- must DELETE FROM chat_messages WHERE session_id IN (…) FIRST, then
+-- DELETE FROM chat_sessions — the plain FK we have today blocks parent
+-- delete while children exist (which is actually safer than CASCADE).
+/*
 CREATE UNIQUE INDEX uq_chat_slack_dm
     ON chat_sessions (slack_channel_id)
     WHERE surface = 'slack_dm' AND archived = FALSE;
 CREATE UNIQUE INDEX uq_chat_slack_thread
     ON chat_sessions (slack_channel_id, slack_thread_ts)
     WHERE surface = 'slack_thread' AND archived = FALSE;
+*/
 
 CREATE TABLE user_workdirs (
     user_email        VARCHAR PRIMARY KEY,

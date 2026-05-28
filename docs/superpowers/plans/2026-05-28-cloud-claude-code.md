@@ -1062,6 +1062,29 @@ shared connection lives — Devin: grep for `get_system_db_conn` or
 
 ### Task 2.1: ChatRepository — sessions CRUD
 
+> **DB-constraint reality check (Task 1.1 surfaced this — applied 2026-05-28):**
+> DuckDB 1.5.3 does NOT support partial unique indexes or `ON DELETE
+> CASCADE`. Per-surface Slack uniqueness and hard-delete cascade
+> therefore MUST be enforced in this Python layer, not by the schema.
+>
+> **Slack uniqueness atomicity rule.** `create_session` for
+> `surface=slack_dm` or `surface=slack_thread` MUST do the check-then-
+> insert with **no `await` between the SELECT and the INSERT** — that
+> way, under the spec's single-worker constraint, the asyncio event
+> loop cannot switch tasks between the two statements. Concretely: do
+> both queries via the synchronous `duckdb.DuckDBPyConnection.execute`
+> calls back-to-back; do not interleave any await on a network call,
+> file I/O, or `asyncio.sleep`. Add a code comment at the call site
+> stating "intentional: no await between SELECT and INSERT — Slack
+> uniqueness without DB partial unique index".
+>
+> **Hard-delete order rule.** `hard_delete_user_sessions(user_email)`
+> MUST issue `DELETE FROM chat_messages WHERE session_id IN (SELECT id
+> FROM chat_sessions WHERE user_email = ?)` BEFORE
+> `DELETE FROM chat_sessions WHERE user_email = ?`. The plain FK
+> blocks the parent delete while children exist; reverse order = SQL
+> error.
+
 **Files:**
 - Create: `app/chat/persistence.py`
 - Test:   `tests/test_chat_persistence.py`
@@ -1252,6 +1275,14 @@ class ChatRepository:
         n = self._conn.execute(
             "SELECT COUNT(*) FROM chat_sessions WHERE user_email = ?", [user_email]
         ).fetchone()[0]
+        # FK on chat_messages.session_id blocks parent delete while
+        # children exist (DuckDB has no ON DELETE CASCADE — Task 1.1
+        # documented this). Delete messages first.
+        self._conn.execute(
+            "DELETE FROM chat_messages WHERE session_id IN ("
+            " SELECT id FROM chat_sessions WHERE user_email = ?)",
+            [user_email],
+        )
         self._conn.execute("DELETE FROM chat_sessions WHERE user_email = ?", [user_email])
         return n
 ```
