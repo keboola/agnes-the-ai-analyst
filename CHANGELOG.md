@@ -75,6 +75,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   them real Linux coverage on push to `zs/cloud-claude-code-design`
   and on PR to main. Replaces the previously-missing CI coverage for
   the chat sandbox isolation contract.
+- **E2E load test (`tests/e2e/test_load.py`).** Fans out 30 concurrent
+  WS connections (10 simulated users × 3 sessions) against the
+  docker-compose E2E stack with the fake-agent runner, asserts every
+  session got an `assistant_message` whose content echoes its
+  per-session marker (catches ChatManager pump cross-routing
+  regressions), and logs host RSS + p50/p95/p99 timings. Gated behind
+  `AGNES_E2E_LOAD=1` on top of `AGNES_E2E=1` + `AGNES_E2E_FAKE_AGENT=1`
+  — load is expensive, deterministic-echoes are required, and 30×
+  real Anthropic calls would rate-limit.
 
 ### Fixed
 - **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**
