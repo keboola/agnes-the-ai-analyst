@@ -59,6 +59,144 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Per-type FK on `resource_grants` for five typed ResourceTypes** (`table`, `data_package`, `memory_domain`, `memory_item`, `recipe`). New per-type FK columns enforce referential integrity at the DB layer with ON DELETE CASCADE; a CHECK constraint enforces that exactly the matching per-type column is populated for these five types, and that all per-type columns are NULL for the polymorphic-path-only `marketplace_plugin` type. Existing rows backfilled; legacy `resource_id` retained for backwards compatibility with app-layer lookups. DuckDB ladder step adds mirror columns (no FK / CHECK — application-validated on that backend).
 - **Test additions:** `_substitute_default` parametrised over NOW() / CURRENT_DATE branches, PG→PG round-trip with PG ARRAY + JSONB columns, python-side hang-watchdog E2E, applier shell tests use semantic keyword matchers instead of brittle argv-substring asserts, strengthened subprocess-spawn probe with explicit spies on `subprocess.*` / `os.spawn*` / `multiprocessing.Process` (catches silent spawns that earlier raise-on-call stubs would have missed).
 
+## [0.55.25] — 2026-05-28
+
+### Fixed
+- **Telemetry dropdown listed the same user under both their email and
+  their UUID.** `usage_events.username` /
+  `usage_session_summary.username` had three writers disagreeing on what
+  the column means: REST emitters wrote `user.get('email')`, the session
+  pipeline wrote the `/data/user_sessions/<dir>/` directory name (OS
+  username from the legacy collector, `user["id"]` UUID from
+  `/api/upload/sessions`). The admin telemetry facet
+  (`SELECT DISTINCT username FROM usage_events`) then surfaced one user
+  as up to three rows — anonymised local-part *and* the same person's
+  UUID for sessions uploaded via the API. The session-pipeline runner
+  now resolves `(user_id, email)` together (new `resolve_user_identity`
+  helper) and writes the email as the canonical `username` (falling
+  back to the directory name only for orphaned uploads). Schema v60
+  migration backfills historical rows where `user_id` is set so the
+  dropdown collapses immediately on first start. Directory name remains
+  the filesystem lookup key via `session_file = "<dir>/<name>"` — only
+  the display/grouping identity changes.
+
+## [0.55.24] — 2026-05-28
+
+### Fixed
+- **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**
+  The `{% set _brand = instance_brand | e %}` + `{% set title = _brand ~ "…<span>…" %}`
+  pattern silently autoescaped the right operand because Jinja's `~`
+  autoescapes a `str` when the left side is `Markup`. The literal
+  `<span class="accent">AI workspace.</span>` ended up as visible text
+  in the browser. Replaced with the `{% set foo %}…{% endset %}` block
+  form, which gets autoescape semantics right (operator-set
+  `instance_brand` is still escaped; literal HTML in the block stays
+  literal). Two regression tests pin both invariants
+  (`test_home_not_onboarded_hero_title_html_renders_unescaped`,
+  `test_home_not_onboarded_hero_title_html_escapes_brand`).
+
+## [0.55.23] — 2026-05-27
+
+### Added
+- **Seven new design-system macros in `_components.html`.** Closes the
+  "Macro gaps" tracker on #419 by extending the canonical 5 (button,
+  primary_nav, tabs, table, panel) with seven more:
+  `tabs_rich` (with `.mp-tabs`/`.stack-tabs` variants),
+  `segmented_strip` (`.os-tabs`/`.mode-tabs`),
+  `pill_chip` (`.pill` — button or anchor),
+  `kpi_card` (`.obs-kpi` — keeps existing `.obs-kpi-label/-value/-sub`
+  selectors so adoption is drop-in),
+  `hero_search_btn` (`.search-btn`/`.stack-hero__search-btn`),
+  `info_panel_accent` (new `.info-panel-accent*` family with four
+  canonical accents in `style-custom.css`),
+  `code_chip` (`.code-block` + `.btn-copy`).
+  Each macro carries a TODO list of known adopter templates — adoption
+  is a follow-up sweep, not part of this PR.
+- **`_app_scripts.html` partial.** The 570-line inline `<script>` block
+  in `base.html` (undo toast, modal Esc handler, command palette, admin
+  keyboard shortcuts) now lives in a partial both `base.html` and
+  `base_ds.html` include, so pages migrated to the design-system
+  layout keep behaviour parity. `profile.html` is the first adopter —
+  flipped from `base.html` → `base_ds.html` as a proof point.
+
+### Changed
+- **`var(--primary[-dark|-light])` → `var(--ds-primary[-dark|-light])` across
+  24 templates.** Mechanical sweep covering 128+ occurrences. The
+  legacy `_LEGACY_TOKEN_FALLBACK_ALLOWLIST` is drained because every
+  template now references `--ds-primary` explicitly; the compat shim in
+  `design-tokens.css` is unchanged.
+- **Replaced raw hex literals with `--ds-*` tokens in `profile.html`,
+  `setup.html`, `me_activity.html`** (~42 hex literals total). Every
+  hex maps to an existing token; no new tokens introduced. The
+  `var(--token, #hex)` fallback patterns in `setup.html` and
+  `me_activity.html` are dropped — the design-tokens.css compat shim
+  makes them dead weight.
+
+### Internal
+- **Semantic template-assertion helper (`tests/_template_assertions.py`).**
+  Replaces 22 rigid `<tag class="…">` substring assertions in
+  `test_web_marketplace_guide.py` (6) and `test_web_home_page.py` (15)
+  with `assert_element(body, tag, class_=…, href=…, attrs=…, text=…)`
+  via stdlib `html.parser` (nesting-aware; the prior lazy-regex
+  approach swallowed inner siblings via outer-container match spans).
+- **CI class-coverage contract test
+  (`test_component_macros_emit_only_classes_with_css_rules`).** Every
+  literal class the macros in `_components.html` emit — including the
+  computed `btn-<variant>`/`btn-<size>` and the new T11-T17 variant
+  roots — must resolve to a CSS rule in at least one shipped sheet.
+  Catches typo'd macro classes before they reach a page.
+- **Regression guards**
+  (`test_no_unprefixed_primary_token_in_templates`,
+  `test_swept_templates_use_no_raw_hex`) — pin the sweeps in
+  `test_design_system_contract.py` so a future PR re-introducing
+  legacy primary tokens or raw hex literals fails the build.
+
+## [0.55.22] — 2026-05-27
+
+### Added
+- **`customer-instance` module: per-VM OAuth client secrets via naming
+  template.** New module-level variable `oauth_secret_name_template` lets
+  callers declare a single convention (e.g.
+  `"agnes-google-oauth-client-{kind}-{role}"`) that the module expands across
+  every VM in the call to derive Secret Manager secret names. Placeholders:
+  `{kind}` (id|secret — REQUIRED), `{role}` (from `dev_instances[*].role`,
+  defaulting to `"dev"`; always `"prod"` for the prod VM), `{name}` (VM
+  name). Empty default (`""`) keeps the legacy shared
+  `google-oauth-client-{id,secret}` behavior, so existing callers see zero
+  plan changes. Set the template once to give prod and dev their own OAuth
+  clients (recommended for prod isolation — different redirect URIs,
+  separate blast radius from Google's end); the per-role grouping means a
+  new env (`stage`, `perf`) lands by creating Secret Manager entries that
+  match the template and setting `role = "stage"` on a `dev_instances`
+  entry, with no Terraform diff in the module surface. Resolved names get
+  `secretAccessor` IAM via the new
+  `google_secret_manager_secret_iam_member.vm_oauth` resource
+  (de-duplicated across colliding `{role}` expansions). All VMs share one
+  SA, so this buys isolation at Google's OAuth client layer but not at-rest
+  in Secret Manager — a per-VM SA refactor is tracked for a future cut.
+- **`customer-instance` module: `role` is now a first-class field on
+  `dev_instances` items** (optional, default `"dev"`). Previously the role
+  was added solely by `local.dev_defaults` and any caller-supplied `role`
+  was silently dropped by Terraform's object-type conversion before reaching
+  the merge — so the `{role}` placeholder above could only ever resolve to
+  `dev` for any dev VM, defeating the stage/perf extensibility claim. Adding
+  the field to the type lets callers set `role = "stage"` per VM and have
+  it propagate. No change is needed for callers that don't set it; the
+  default keeps every existing dev VM on `role = "dev"`.
+
+  Bump to `infra-v1.10.0`.
+
+## [0.55.21] — 2026-05-27
+
+### Added
+- **Scheduler-driven Jira self-healing pair: SLA poll + consistency check.** Brings Agnes back to parity with the legacy Data Broker `jira-sla-poll.timer` / `jira-consistency.timer` systemd units, but invoked from the in-cluster scheduler container instead of host systemd. Two new entries in `services/scheduler/__main__.py` (`jira-sla-poll`, `jira-consistency-check`) target the new endpoints `POST /api/admin/run-jira-sla-poll` and `POST /api/admin/run-jira-consistency-check`. Defaults match the systemd unit cadence — 15 min for SLA poll, 30 min for consistency — and are tunable via two new env vars: `SCHEDULER_JIRA_SLA_POLL_INTERVAL`, `SCHEDULER_JIRA_CONSISTENCY_INTERVAL`. The SLA poll re-fetches `elapsed_millis` + `status` for open tickets whose snapshot would otherwise stagnate between webhooks (and self-heals stale status/resolution on the same pass); the consistency check compares Jira API ↔ raw JSON ↔ parquet and auto-backfills small webhook-loss gaps (`max_age_days=30` default, tunable per call). Both endpoints short-circuit with `{"status": "skipped", "reason": "jira_not_configured"}` when the `JIRA_*` env vars are unset, so a customer without Jira ingest pays nothing for the default scheduler entries. `connectors/jira/scripts/poll_sla.py` `main()` was split into a programmatic `run(dry_run, verbose) -> dict` plus a thin CLI wrapper so the endpoint can call it in-process (the `consistency_check.py` `Config` + `JiraConsistencyChecker` factoring was already endpoint-shaped). The pre-existing systemd units in `connectors/jira/systemd/` are left in place for customers who prefer host-side scheduling. Twelve new parametrized tests cover defaults, env-var overrides, and rejection of invalid values for both intervals.
+
+### Removed
+- **Postgres app-state layer (PR #388) reverted in PR #451.** Shipped briefly in
+  v0.55.20; rolled back the same day for infra reasons. DuckDB remains the
+  single source of truth for system state; no operator-visible behavior change
+  if you stayed on v0.55.19 or upgraded straight to v0.55.21.
+
 ## [0.55.20] — 2026-05-27
 
 ### Added

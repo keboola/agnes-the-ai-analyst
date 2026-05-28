@@ -28,6 +28,35 @@ locals {
     [merge(var.prod_instance, { role = "prod" })],
     [for d in var.dev_instances : merge(local.dev_defaults, d)]
   )
+  # Per-VM OAuth (Sign-in with Google) secret names, derived from
+  # var.oauth_secret_name_template. Empty template -> empty map ->
+  # startup-script falls back to legacy `google-oauth-client-{id,secret}`.
+  #
+  # The {kind}/{role}/{name} substitution is done in HCL so the resolved
+  # names are visible to the IAM resource (it needs the literal strings to
+  # set secretAccessor on each).
+  per_vm_oauth = var.oauth_secret_name_template == "" ? {} : {
+    for inst in local.all_instances : inst.name => {
+      id = replace(replace(replace(
+        var.oauth_secret_name_template,
+        "{kind}", "id"),
+        "{role}", inst.role),
+        "{name}", inst.name
+      )
+      secret = replace(replace(replace(
+        var.oauth_secret_name_template,
+        "{kind}", "secret"),
+        "{role}", inst.role),
+        "{name}", inst.name
+      )
+    }
+  }
+  # Deduplicated union — multiple VMs with the same role collapse to the
+  # same name when the template uses {role}, and the toset() makes the
+  # IAM resource for_each idempotent across those collisions.
+  per_instance_oauth_secrets = toset(flatten([
+    for k, v in local.per_vm_oauth : [v.id, v.secret]
+  ]))
 }
 
 # --- Secrets ---
@@ -101,6 +130,22 @@ resource "google_secret_manager_secret_iam_member" "vm_postgres" {
 # Caller specifies these via var.runtime_secrets. Each secret must already exist.
 resource "google_secret_manager_secret_iam_member" "vm_runtime" {
   for_each  = toset(var.runtime_secrets)
+  project   = var.gcp_project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Per-VM OAuth client secrets, expanded from var.oauth_secret_name_template.
+# Granted to the same shared VM SA (all VMs in this module call use one SA, so
+# every per-VM OAuth secret is technically readable from every VM — isolation
+# comes from distinct OAuth clients with different redirect URIs at Google's
+# end, not from at-rest read scoping). A per-VM SA refactor is tracked
+# separately. When the template is empty the local resolves to an empty set
+# and this resource is a noop (legacy `google-oauth-client-{id,secret}` are
+# still listed by the caller in var.runtime_secrets and bound there).
+resource "google_secret_manager_secret_iam_member" "vm_oauth" {
+  for_each  = local.per_instance_oauth_secrets
   project   = var.gcp_project_id
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
@@ -247,19 +292,21 @@ resource "google_compute_instance" "vm" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup-script.sh.tpl", {
-    customer_name       = var.customer_name
-    image_repo          = var.image_repo
-    image_tag           = each.value.image_tag
-    upgrade_mode        = each.value.upgrade_mode
-    tls_mode            = each.value.tls_mode
-    domain              = each.value.domain
-    acme_email          = var.acme_email != "" ? var.acme_email : var.seed_admin_email
-    data_source         = var.data_source
-    keboola_stack_url   = var.keboola_stack_url
-    seed_admin_email    = var.seed_admin_email
-    seed_admin_password = var.enable_seed_password ? var.seed_admin_password : ""
-    role                = each.value.role
-    compose_ref         = var.compose_ref
+    customer_name                   = var.customer_name
+    image_repo                      = var.image_repo
+    image_tag                       = each.value.image_tag
+    upgrade_mode                    = each.value.upgrade_mode
+    tls_mode                        = each.value.tls_mode
+    domain                          = each.value.domain
+    acme_email                      = var.acme_email != "" ? var.acme_email : var.seed_admin_email
+    data_source                     = var.data_source
+    keboola_stack_url               = var.keboola_stack_url
+    seed_admin_email                = var.seed_admin_email
+    seed_admin_password             = var.enable_seed_password ? var.seed_admin_password : ""
+    role                            = each.value.role
+    compose_ref                     = var.compose_ref
+    oauth_client_id_secret_name     = try(local.per_vm_oauth[each.value.name].id, "")
+    oauth_client_secret_secret_name = try(local.per_vm_oauth[each.value.name].secret, "")
   })
 
   service_account {
@@ -286,6 +333,7 @@ resource "google_compute_instance" "vm" {
   depends_on = [
     google_secret_manager_secret_iam_member.vm_jwt,
     google_secret_manager_secret_iam_member.vm_runtime,
+    google_secret_manager_secret_iam_member.vm_oauth,
     google_secret_manager_secret_version.jwt,
   ]
 }

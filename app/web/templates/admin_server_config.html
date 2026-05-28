@@ -82,9 +82,9 @@
     color: var(--text-primary, #1a253c);
   }
   .cfg-sidenav a.is-active {
-    border-left-color: var(--primary, #0073d1);
-    background: var(--primary-light, rgba(0,115,209,.08));
-    color: var(--primary, #0073d1);
+    border-left-color: var(--ds-primary, #0073d1);
+    background: var(--ds-primary-light, rgba(0,115,209,.08));
+    color: var(--ds-primary, #0073d1);
     font-weight: 500;
   }
   /* Danger links: default dark, hover = subtle grey (distinct from active red) */
@@ -169,7 +169,7 @@
   }
   .cfg-field textarea { resize: vertical; min-height: 80px; font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace); font-size: 12px; }
   .cfg-field input:focus, .cfg-field select:focus, .cfg-field textarea:focus {
-    outline: 2px solid var(--primary, #6366f1); outline-offset: -1px;
+    outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px;
   }
   .cfg-field input.is-secret { font-family: var(--font-mono, ui-monospace, monospace); }
   .cfg-field .secret-pill {
@@ -317,7 +317,7 @@
       font-family: inherit;
     }
     .iw-form-field input:focus {
-      outline: none; border-color: var(--primary, #6366f1);
+      outline: none; border-color: var(--ds-primary, #6366f1);
       box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
     }
     .iw-form-field .field-help {

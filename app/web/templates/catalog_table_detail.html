@@ -9,7 +9,7 @@
     color: var(--text-secondary, #5f6368); text-decoration: none;
     font-size: 13px; margin-bottom: 12px;
   }
-  .td-back:hover { color: var(--primary, var(--primary)); }
+  .td-back:hover { color: var(--ds-primary); }
 
   /* ── Hero ─────────────────────────────────────────────────── */
   .td-hero {
@@ -22,7 +22,7 @@
     display: inline-flex; align-items: center; justify-content: center;
     width: 56px; height: 56px; border-radius: 12px; flex-shrink: 0;
     font-size: 22px; font-weight: 700; color: #fff;
-    background: var(--td-glyph-bg, var(--primary, var(--primary)));
+    background: var(--td-glyph-bg, var(--ds-primary));
   }
   .td-hero__body { flex: 1; min-width: 0; }
   .td-hero__title {
@@ -60,7 +60,7 @@
   .td-pill--mode-remote      { background: #fef3c7; color: #92400e; }
   .td-pill--mode-materialized{ background: #e0f2fe; color: #075985; }
   .td-pill--mode-internal    { background: #f3f4f6; color: #4b5563; }
-  .td-pill--source           { background: var(--primary-light, #e0f2fe); color: var(--primary, var(--primary)); }
+  .td-pill--source           { background: var(--ds-primary-light, #e0f2fe); color: var(--ds-primary); }
 
   /* ── Sections ─────────────────────────────────────────────── */
   .td-section {
@@ -106,7 +106,7 @@
     text-transform: uppercase; font-size: 11px;
     letter-spacing: 0.4px; background: var(--border-light, #f9fafb);
   }
-  .td-columns code { font-family: var(--font-mono); font-size: 12px; color: var(--primary, var(--primary)); }
+  .td-columns code { font-family: var(--font-mono); font-size: 12px; color: var(--ds-primary); }
   .td-columns td.td-null { color: var(--text-secondary); }
 
   .td-pairs { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -116,7 +116,7 @@
     border-radius: 6px; text-decoration: none;
     color: var(--text-primary); font-size: 13px;
   }
-  .td-pairs a:hover { background: var(--primary-light, #e0f2fe); color: var(--primary, var(--primary)); }
+  .td-pairs a:hover { background: var(--ds-primary-light, #e0f2fe); color: var(--ds-primary); }
 
   .td-note {
     white-space: pre-wrap; line-height: 1.5; font-size: 14px;
@@ -214,7 +214,7 @@
 
 {# ── Hero card ─────────────────────────────────────────────── #}
 {% set _qmode = (table.query_mode or 'local')|lower %}
-{% set _glyph_bg = table.color or 'var(--primary)' %}
+{% set _glyph_bg = table.color or 'var(--ds-primary)' %}
 {% set _initials =
     (table.name or table.id or '?').split()|map('first')|join('')|upper
 %}
@@ -262,7 +262,7 @@
       In package{{ '' if parent_packages|length == 1 else 's' }}:
       {% for p in parent_packages %}
       <a href="/catalog/p/{{ p.slug }}"
-         style="color:var(--primary, var(--primary)); text-decoration:none; font-weight:600;">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
+         style="color:var(--ds-primary); text-decoration:none; font-weight:600;">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
       {% endfor %}
     </div>
     {% endif %}

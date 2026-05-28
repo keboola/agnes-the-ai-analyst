@@ -11,7 +11,7 @@
 <style>
         /* Design tokens come from the global `:root` block in
            style-custom.css. The local override that used to live
-           here re-declared `--primary` as `var(--primary)` (a
+           here re-declared `--primary` as `var(--ds-primary)` (a
            circular reference that resolved to empty), which
            collapsed the gradient on the page-header hero. */
 
@@ -136,7 +136,7 @@
             align-items: center;
             justify-content: center;
             flex-shrink: 0;
-            background: var(--primary-light);
+            background: var(--ds-primary-light);
         }
 
         .panel-title {
@@ -235,8 +235,8 @@
         }
 
         .badge-available {
-            color: var(--primary);
-            background: var(--primary-light);
+            color: var(--ds-primary);
+            background: var(--ds-primary-light);
         }
 
         /* ── Spinner ── */
@@ -245,7 +245,7 @@
             width: 18px;
             height: 18px;
             border: 2px solid var(--border);
-            border-top-color: var(--primary);
+            border-top-color: var(--ds-primary);
             border-radius: 50%;
             animation: spin 0.6s linear infinite;
         }
@@ -549,8 +549,8 @@
         }
 
         .mode-badge.mode-remote {
-            background: var(--primary-light);
-            color: var(--primary);
+            background: var(--ds-primary-light);
+            color: var(--ds-primary);
         }
 
         .mode-badge.mode-materialized {
@@ -698,7 +698,7 @@
         .form-input:focus,
         .form-select:focus {
             outline: none;
-            border-color: var(--primary);
+            border-color: var(--ds-primary);
             box-shadow: 0 0 0 3px rgba(46, 168, 119, 0.1);
         }
 
@@ -732,7 +732,7 @@
         }
 
         .footer a {
-            color: var(--primary);
+            color: var(--ds-primary);
             text-decoration: none;
         }
 
@@ -788,7 +788,7 @@
             color: var(--text-secondary);
         }
         .tab[aria-selected="true"] {
-            border-bottom: 2px solid var(--primary);
+            border-bottom: 2px solid var(--ds-primary);
             color: var(--text-primary);
             font-weight: 600;
         }
@@ -5220,7 +5220,7 @@
             if (!idCell || idCell.textContent.trim() !== tableId) return;
             var statusCell = tr.querySelector('td.col-status');
             if (!statusCell) return;
-            var color = {fresh: '#10B77F', warming: 'var(--primary)', pending: '#9CA3AF', error: '#EA580C'}[rs.status] || '#9CA3AF';
+            var color = {fresh: '#10B77F', warming: 'var(--ds-primary)', pending: '#9CA3AF', error: '#EA580C'}[rs.status] || '#9CA3AF';
             var label = rs.status === 'fresh' ? 'fresh' : rs.status;
             // Build via DOM API so rs.error escapes safely into the title
             // attribute (XSS guard — rs.error is server-derived, may contain
@@ -5491,7 +5491,7 @@
                 : '';
             html += '<td class="col-id" title="' + escapeHtml(id) + '">'
                   + '<a href="' + escapeHtmlAttr(editUrl) + '" '
-                  +    'style="color:var(--primary); text-decoration:none;">'
+                  +    'style="color:var(--ds-primary); text-decoration:none;">'
                   + escapeHtml(name) + '</a>'
                   + kbDisconnectedWarning
                   + '</td>';
@@ -5527,7 +5527,7 @@
                 html += '<button class="btn-icon" type="button" '
                       + 'data-tooltip="Add to a Data Package" '
                       + 'onclick="openBulkAssignFromRow(&#39;' + escapeHtmlAttr(id) + '&#39;)" '
-                      + 'style="color:var(--primary);">'
+                      + 'style="color:var(--ds-primary);">'
                       + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
                       +   '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'
                       +   '<line x1="12" y1="11" x2="12" y2="17"/>'
