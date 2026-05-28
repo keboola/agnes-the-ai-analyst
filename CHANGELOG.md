@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-05-28
+
 ### Added
 - **Admin-controlled DB backend state machine.** Replaces ad-hoc `.env` editing with a guarded workflow for migrating Agnes app-state between DuckDB, side-car Postgres, and managed cloud Postgres. Spec at `docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md`; operator playbook in `docs/postgres-cutover-runbook.md` (new "Admin UI / CLI" section). The machine records `target_state` intent + a `db_migration_job` row; a host-side `agnes-state-applier.timer` runs the data-migrate subprocess, then rewrites `/opt/agnes/.env` and `docker compose up -d` once verification passes. Pre-flip DuckDB snapshots land gzipped under `/data/state/backups/duckdb-pre-<target>-<ts>.duckdb.gz`.
 - **`/admin/server-config` — Database backend section.** UI card showing current backend, redacted connection URL, allowed transitions, and a live progress panel that polls the running migration job. Confirmation modal + cloud-URL input for the `cloud` transition.
@@ -40,6 +42,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`GET /api/admin/db/job/<id>` redacts connection URL passwords before serialisation** — credentials never reach log lines or browser DevTools.
 - **Module-scoped Alembic fixture in the Postgres test suite** reduces schema-creation overhead; per-test isolation is provided by transaction rollback.
 - **Admin auth-bypass runtime probe** added so the test suite can exercise admin endpoints without a real auth stack.
+
+### Review fixes — round 2 (PR #455)
+- **Streaming `copy_pg_to_pg` in 500-row batches** via `execution_options(yield_per=500)` and per-batch `target.begin()`. Production audit/usage tables (millions of rows) no longer materialise into the migrator container's heap; mid-stream failures only roll back the in-flight batch; ON CONFLICT DO NOTHING preserves resume semantics.
+- **Subprocess timeouts on alembic + gzip + pg_dump** (300s / 1800s / 1800s respectively). `TimeoutExpired` surfaces as a typed `RuntimeError` that lands in the job JSON's `error.message`; half-written backup artifacts are removed so retries start clean.
+- **Migrator subprocess wall-clock from the applier.** `timeout(1)` wraps the `docker run` invocation; rc 124/137 marks the pending job failed with an actionable message and skips the `instance.yaml` flip. `MIGRATOR_TIMEOUT_SEC` env override defaults to 1800.
+- **`run_all` halt-on-first-failure semantics.** Once any task's copy or validate raises, subsequent tasks produce `{skipped: True, reason: "halted after prior task failure"}` instead of silently INSERTing into downstream tables. `main()` still refuses the flip; ON CONFLICT DO NOTHING keeps retries idempotent.
+- **Pre-copy `audit_log` PII scrub.** Audit rows captured before the runtime sanitiser existed get their `params` / `params_before` JSON rewritten in the DuckDB source (regex-matched on password / token / secret / api_key / bearer / private_key / signing_key keys) so neither the migrated PG nor the pre-cutover backup carry historical credentials. Idempotent and schema-tolerant.
+- **Pending-job age expiry.** API writes `queued_at` (UTC ISO) into the pending job JSON; the applier marks pending jobs older than `PENDING_JOB_MAX_AGE_SEC` (default 3600s) as `PendingJobExpired` and refuses to run stale intent against potentially-divergent current state.
+- **Content-hash check in `verify_pg_row_counts`.** Row counts alone missed preseed corruption (same PKs, drifted non-PK content); SHA-256 over the first 1000 PK-ordered rows surfaces the drift as a separate `kind: content_drift` diff. Verify now returns `{kind: row_count | content_drift, ...}` entries.
+- **Per-table progress wiring (`update_table_progress`).** `run_all` gains optional `progress_callback`; `copy_duckdb_to_pg` / `copy_pg_to_pg` gain optional `writer=`. `main()` forwards the writer so the admin UI's progress bar advances during the long data_copy step instead of freezing at 40%.
+- **`cloud → side_car` failure rollback clears the `db-state-target.flag`** in addition to the existing `duckdb` case. Prevents orphan `agnes-postgres-1` containers running with no data after a failed DR rollback.
+- **Side-car → cloud backup failure is now a hard fail** (`BackupError`). Pre-fix it was swallowed as a warning attached to `job.warnings[]` while the UI showed `success`; operators only discovered the missing recovery point at restore time.
+- **Applier ERR trap with structured rollback.** Unexpected mid-script aborts (heredoc exceptions, `set -e` chains) idempotently mark the pending job failed and revert `instance.yaml` to source. For source in (duckdb, cloud) the FLAG file is also cleared.
+- **`verify_row_counts` opens DuckDB read-only.** No stray `.wal` sidecar from a write-mode open of a SELECT-only workload.
+- **Test additions:** `_substitute_default` parametrised over NOW() / CURRENT_DATE branches, PG→PG round-trip with PG ARRAY + JSONB columns, python-side hang-watchdog E2E, applier shell tests use semantic keyword matchers instead of brittle argv-substring asserts.
+- **`resource_grants.resource_id` FK** — closed out, doc-only. The 6 enum members include 1 (marketplace_plugin) with a composite path that has no surrogate column; PG can't model polymorphic FKs natively without 5 NULLable per-type columns or trigger-based CHECKs. Class docstring on `ResourceGrant` documents the per-type table + rationale + the application-layer-as-source-of-truth choice.
 
 ## [0.55.20] — 2026-05-27
 
