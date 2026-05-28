@@ -90,6 +90,31 @@ def _redact_url(url: str | None) -> str | None:
     return re.sub(r"(://[^:]+:)[^@]+(@)", r"\1****\2", url)
 
 
+def _applier_last_tick_age_s() -> int | None:
+    """Seconds since the host applier touched its heartbeat file, or
+    ``None`` if the file is missing.
+
+    The applier touches ``<DATA_DIR>/state/agnes-state-applier.tick``
+    at the start of every invocation (Phase 4). UI uses this to warn
+    when the systemd timer is broken or the unit is disabled — without
+    it, pending migration jobs queue silently because nothing is
+    advancing them. None signals "applier has never run" (fresh install
+    or broken unit).
+    """
+    import time
+    data_dir = Path(os.environ.get("DATA_DIR", "/data"))
+    tick = data_dir / "state" / "agnes-state-applier.tick"
+    if not tick.exists():
+        return None
+    try:
+        # max(0, ...) defends against clock skew where the file mtime
+        # is briefly in the future (NTP slew, VM snapshot restore) —
+        # a negative age would confuse the UI's threshold logic.
+        return max(0, int(time.time() - tick.stat().st_mtime))
+    except OSError:
+        return None
+
+
 def _current_job_id() -> str | None:
     """Return ``job_id`` of any currently-active migration job, else None.
 
@@ -123,13 +148,15 @@ def _current_job_id() -> str | None:
 
 @router.get("/state", dependencies=[Depends(require_admin)])
 def get_db_state() -> dict:
-    """Current backend + allowed transitions + in-progress job (if any)."""
+    """Current backend + allowed transitions + in-progress job (if any)
+    + host applier liveness (Phase 4)."""
     state, url = read_backend_state()
     return {
         "backend": state.value,
         "url_redacted": _redact_url(url),
         "allowed_transitions": [t.value for t in allowed_transitions(state)],
         "current_job_id": _current_job_id(),
+        "applier_last_tick_age_s": _applier_last_tick_age_s(),
     }
 
 

@@ -143,6 +143,7 @@ sed -e "s|FLAG=/data/state/db-state-target.flag|FLAG=$tmp/data/state/db-state-ta
     -e "s|/data/postgres|$tmp/data/postgres|g" \
     -e "s|/data/state/certs|$tmp/data/state/certs|g" \
     -e "s|/data/state/instance.yaml|$tmp/data/state/instance.yaml|g" \
+    -e "s|/data/state/agnes-state-applier.tick|$tmp/data/state/agnes-state-applier.tick|g" \
     "$script" > "$sandboxed"
 chmod +x "$sandboxed"
 
@@ -229,5 +230,10 @@ case "$STUCK_MSG" in
     *) fail "stuck-running recovery message missing 'stuck running' (got: $STUCK_MSG)" ;;
 esac
 echo "OK: stuck-running recovery (B5)"
+
+# Phase 4 — applier must touch tick file at start of every invocation.
+test -e "$tmp/data/state/agnes-state-applier.tick" \
+    || { echo "FAIL: applier did not touch agnes-state-applier.tick"; exit 1; }
+echo "OK: applier touched tick file (Phase 4)"
 
 echo "OK"

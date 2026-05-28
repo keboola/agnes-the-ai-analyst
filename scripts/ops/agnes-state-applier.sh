@@ -34,6 +34,17 @@ LOCK_FILE=/data/state/db-state-applier.lock
 exec 9>"$LOCK_FILE"
 flock -n 9 || exit 0
 
+# --- Applier heartbeat (Phase 4) -----------------------------------------
+# Touch a tick file so /api/admin/db/state can expose
+# ``applier_last_tick_age_s`` for UI liveness. Fired on EVERY
+# invocation including no-op ticks so the value stays fresh during
+# idle periods. None / missing tick = applier has never run (fresh
+# install, broken unit, OS reboot wiped the systemd target).
+# State dir is guaranteed to exist (LOCK_FILE lives there), so the
+# mkdir is just a defensive guard.
+mkdir -p "$(dirname "$LOCK_FILE")"
+touch /data/state/agnes-state-applier.tick || true
+
 if [ ! -f "$FLAG" ]; then
     exit 0
 fi

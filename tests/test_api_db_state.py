@@ -1168,3 +1168,61 @@ def test_migrate_to_side_car_no_state_writes_when_password_missing(seeded_app, m
     assert not (data_dir / "state" / "db-jobs").exists() or not any(
         (data_dir / "state" / "db-jobs").iterdir()
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Applier heartbeat: ``applier_last_tick_age_s`` in GET /state
+# ---------------------------------------------------------------------------
+
+
+def test_get_db_state_returns_applier_tick_age(seeded_app, monkeypatch):
+    """Phase 4 — GET /api/admin/db/state must expose
+    ``applier_last_tick_age_s`` so the UI can warn when the host
+    applier has stopped ticking (timer broken, unit disabled, OS
+    reboot wiped the systemd target). Without this signal, pending
+    migration jobs queue silently with no operator visibility."""
+    import os
+    import time
+
+    data_dir = seeded_app["env"]["data_dir"]
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", data_dir / "state" / "instance.yaml")
+
+    # Touch the tick file ~5s in the past.
+    tick = data_dir / "state" / "agnes-state-applier.tick"
+    tick.write_text("")
+    five_s_ago = time.time() - 5
+    os.utime(tick, (five_s_ago, five_s_ago))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.get(
+        "/api/admin/db/state",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "applier_last_tick_age_s" in body
+    age = body["applier_last_tick_age_s"]
+    assert age is not None
+    assert 4 <= age <= 30, f"expected ~5s, got {age}s"
+
+
+def test_get_db_state_applier_tick_none_when_missing(seeded_app, monkeypatch):
+    """If the applier has never run (fresh install / broken unit),
+    the tick file is absent — return None so the UI can flag it as
+    'applier not running'."""
+    data_dir = seeded_app["env"]["data_dir"]
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", data_dir / "state" / "instance.yaml")
+    # No tick file created.
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.get(
+        "/api/admin/db/state",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["applier_last_tick_age_s"] is None
