@@ -70,22 +70,63 @@ def _to_call_result(content_blocks: List[Any], *, is_error: bool = False) -> Too
     return ToolCallResult(text=text, data=data, is_error=is_error)
 
 
+def _lookup_secret_for_source(source: Dict[str, Any]) -> Optional[str]:
+    """Return the upstream auth token for ``source`` from one of two
+    places, in order:
+
+    1. ``mcp_secrets`` row keyed on ``source['id']`` (Phase 4 vault).
+    2. Env var named by ``source['auth_secret_env']`` (legacy POC path).
+
+    Returns ``None`` if neither yields a value — callers fall through
+    to anonymous connect, matching ``auth_method='none'`` behavior.
+    The vault path opens a fresh system.duckdb connection on each call
+    rather than threading a connection through ``call_tool_async``;
+    cost is one cheap file-open per upstream call (negligible vs the
+    network roundtrip). Keeps the connector free of FastAPI/DB plumbing.
+    """
+    source_id = source.get("id")
+    if source_id:
+        try:
+            # Local import avoids dragging the vault module into the
+            # connector's import surface — keeps stdio MCP startup fast
+            # when no DB is around (tests, headless POC scripts).
+            from src.db import get_system_db
+            from app.secrets_vault import SharedSecretsRepository
+
+            conn = get_system_db()
+            try:
+                value = SharedSecretsRepository(conn).get(source_id)
+                if value:
+                    return value
+            finally:
+                conn.close()
+        except Exception:
+            # System DB unavailable (test fixtures, fresh setup before
+            # migration) — silently fall through to the env-var path.
+            pass
+
+    secret_env = source.get("auth_secret_env")
+    if secret_env and secret_env in os.environ:
+        return os.environ[secret_env]
+    return None
+
+
 def _build_http_headers(source: Dict[str, Any]) -> Dict[str, str]:
     """Build the Authorization header dict for an HTTP/SSE MCP source.
 
     Returns an empty dict for ``auth_method`` in {``None``, ``""``, ``none``}
-    or when the named env var is absent — the caller still attempts to
-    connect anonymously, which matches the MCP spec for unauthenticated
-    servers and is what the mock fixture does for local testing.
+    or when no secret is available from vault or env — the caller still
+    attempts to connect anonymously, which matches the MCP spec for
+    unauthenticated servers and is what the mock fixture does for local
+    testing.
     """
     headers: Dict[str, str] = {}
     auth_method = (source.get("auth_method") or "").lower()
-    secret_env = source.get("auth_secret_env")
     if auth_method in ("", "none"):
         return headers
-    if not secret_env or secret_env not in os.environ:
+    token = _lookup_secret_for_source(source)
+    if not token:
         return headers
-    token = os.environ[secret_env]
     if auth_method == "bearer":
         headers["Authorization"] = f"Bearer {token}"
     elif auth_method == "basic":
@@ -122,9 +163,16 @@ async def _open_session(source: Dict[str, Any]) -> AsyncIterator[ClientSession]:
 
         env_extra: Optional[Dict[str, str]] = None
         secret_env = source.get("auth_secret_env")
-        if secret_env and secret_env in os.environ:
-            # Pass the named secret through unchanged so the upstream MCP can read it.
-            env_extra = {secret_env: os.environ[secret_env]}
+        if secret_env:
+            # Vault first, env-var second — same precedence as the HTTP
+            # path so an admin who migrated a source from env-var to
+            # vault doesn't have to keep both populated. The vault path
+            # writes the decrypted value under the original env-var
+            # name the upstream MCP server expects, so the subprocess
+            # contract stays unchanged.
+            token = _lookup_secret_for_source(source)
+            if token:
+                env_extra = {secret_env: token}
 
         params = StdioServerParameters(command=command, args=list(args), env=env_extra)
         async with stdio_client(params) as (read, write):
