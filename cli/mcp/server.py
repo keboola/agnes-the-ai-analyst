@@ -256,7 +256,25 @@ def pull(skip_materialize: bool = False) -> dict:
 
 
 def run() -> None:
-    """Entry point — start the MCP server (stdio transport)."""
+    """Entry point — start the MCP server (stdio transport).
+
+    Before binding stdio we ask the configured Agnes server for the set of
+    passthrough MCP tools the caller's groups can see, and dynamically
+    register one FastMCP tool per entry that forwards through the server's
+    ``/api/mcp/passthrough/tools/{tool_id}/call`` endpoint. Best-effort —
+    a server outage or pre-Phase-2 image leaves the static tools above
+    untouched (the dynamic helper logs to stderr and returns []).
+    """
+    try:
+        # Local import keeps the module's top-level import surface light
+        # for callers that only need the static tools (or import this
+        # module for testing).
+        from cli.mcp._dynamic_passthrough import register_passthrough_tools
+        register_passthrough_tools(mcp)
+    except Exception as exc:
+        # Never let dynamic-registration explode the whole stdio surface.
+        import sys as _sys
+        print(f"[agnes mcp] dynamic passthrough registration skipped: {exc}", file=_sys.stderr)
     mcp.run()
 
 
