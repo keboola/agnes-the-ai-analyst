@@ -53,6 +53,10 @@ async def list_active(request: Request, admin: dict = Depends(require_admin)):
     dashboard URL must match the JSON URL so admins typing /admin/chat
     in the address bar see something, not a 404.
     """
+    # Content-negotiated route. Browsers (Accept: text/html) get the admin_chat.html
+    # template; XHR / tooling get JSON {"sessions": [...]}. If you add a new
+    # /admin/chat/{subpath} route, mirror this pattern: don't add a separate HTML
+    # route in app/web/router.py — it would never match because this prefix wins.
     accept = request.headers.get("accept", "")
     if "text/html" in accept and "application/json" not in accept:
         from app.web.router import templates as _templates, _build_context as _build_ctx
