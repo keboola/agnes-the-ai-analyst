@@ -188,6 +188,7 @@ def run_all(
     only: Optional[List[str]] = None,
     dry_run: bool = False,
     validate: bool = True,
+    progress_callback: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Run every registered task (or a subset by ``only``).
 
@@ -216,11 +217,31 @@ def run_all(
     after the operator fixes the failing table is safe — re-running
     overwrites nothing in already-migrated tables and resumes the
     halted ones.
+
+    Optional ``progress_callback`` (C.1): called once per task as
+    ``cb(target_table, tables_done, tables_total)`` BEFORE the task
+    runs. ``tables_done`` is the count of tasks already attempted
+    (0-indexed at first call); ``tables_total`` is the size of the
+    selected task list. Halted tasks are still counted because the
+    caller (e.g. JobWriter.update_table_progress) uses the value to
+    drive the UI progress bar, which should reflect "we've made it
+    this far through the inventory" rather than "this many succeeded".
+    Keep the migrator subscript independently callable: when
+    ``progress_callback`` is None the function behaves identically to
+    pre-C.1.
     """
     selected = [t for t in TASKS if not only or t.target_table in only]
+    total = len(selected)
     reports: List[Dict[str, Any]] = []
     halted = False
-    for task in selected:
+    for i, task in enumerate(selected):
+        if progress_callback is not None:
+            try:
+                progress_callback(task.target_table, i, total)
+            except Exception:
+                # Progress reporting is best-effort — a broken callback
+                # must not interrupt the migration. Log and continue.
+                log.exception("progress_callback raised for %s", task.target_table)
         if halted:
             reports.append(
                 {
@@ -246,4 +267,10 @@ def run_all(
                 halted = True
         else:
             reports.append({"table": task.target_table, "ok": True})
+    # Final ping so callers see done==total at the end of the loop.
+    if progress_callback is not None and selected:
+        try:
+            progress_callback(selected[-1].target_table, total, total)
+        except Exception:
+            log.exception("progress_callback raised on final tick")
     return reports

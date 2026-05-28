@@ -352,7 +352,11 @@ def scrub_audit_log_pii(duckdb_path: Path) -> dict[str, int]:
     return {"rows_scanned": rows_scanned, "rows_redacted": rows_redacted}
 
 
-def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
+def copy_duckdb_to_pg(
+    duckdb_path: Path,
+    target_url: str,
+    writer: "JobWriter | None" = None,
+) -> dict[str, int]:
     """Copy all PG-mapped tables from DuckDB to target PG.
 
     Wraps :func:`scripts.migrate_duckdb_to_pg.run_all` — the same
@@ -367,6 +371,11 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
     before the runtime sanitiser existed (H7). The scrub is
     idempotent so re-runs are safe; the rewrite happens in the
     source so the DuckDB backup also carries the redacted form.
+
+    Optional ``writer`` (C.1): when supplied, per-table progress
+    flows into ``writer.update_table_progress`` so the admin UI's
+    progress bar advances during the long data_copy step instead of
+    freezing at 40%.
     """
     import duckdb
     import sqlalchemy as sa
@@ -375,11 +384,27 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
 
     scrub_summary = scrub_audit_log_pii(duckdb_path)
 
+    progress_cb = None
+    if writer is not None:
+        def progress_cb(table: str, done: int, total: int) -> None:
+            try:
+                writer.update_table_progress(table, done, total)
+            except Exception:
+                # Best-effort — never let progress-write failures
+                # break the migration. The next step boundary write
+                # via update_step will refresh the state anyway.
+                pass
+
     duck_conn = duckdb.connect(str(duckdb_path), read_only=True)
     try:
         pg_engine = _bounded_engine(target_url)
         try:
-            reports = run_all(duck_conn, pg_engine, validate=True)
+            reports = run_all(
+                duck_conn,
+                pg_engine,
+                validate=True,
+                progress_callback=progress_cb,
+            )
         finally:
             pg_engine.dispose()
     finally:
@@ -447,7 +472,11 @@ def _json_dumps_for_jsonb(value):
 PG_TO_PG_BATCH_SIZE = 500
 
 
-def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
+def copy_pg_to_pg(
+    source_url: str,
+    target_url: str,
+    writer: "JobWriter | None" = None,
+) -> dict[str, int]:
     """Copy all PG-mapped tables from one PG to another in FK order.
 
     Used for ``side_car → cloud`` migration. Mirrors
@@ -465,6 +494,10 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
 
     A mid-stream failure now only rolls back the in-flight batch; the
     next retry resumes via ``ON CONFLICT DO NOTHING``.
+
+    Optional ``writer`` (C.1): when supplied, per-table progress
+    flows into ``writer.update_table_progress`` so the admin UI gets
+    movement during the data_copy step.
 
     Returns ``{rows_total, tables_migrated}`` based on post-copy target
     row counts (ON CONFLICT DO NOTHING makes per-task inserted-count
@@ -519,9 +552,16 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
     target = _bounded_engine(target_url)
     rows_total = 0
     tables_migrated = 0
+    all_tables = list(Base.metadata.sorted_tables)
+    total_tables = len(all_tables)
     try:
-        for table in Base.metadata.sorted_tables:
+        for i, table in enumerate(all_tables):
             tname = table.name
+            if writer is not None:
+                try:
+                    writer.update_table_progress(tname, i, total_tables)
+                except Exception:
+                    pass
             cols = [c.name for c in table.columns]
             pk_cols = _PK_COLUMNS.get(tname, ["id"])
             array_cols = _array_columns_for(tname)
@@ -556,6 +596,16 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
                 ).scalar()
             rows_total += int(count or 0)
             tables_migrated += 1
+        # Final progress tick — UI sees done==total at the end of the
+        # data_copy step, even though no further table iteration will
+        # update the writer.
+        if writer is not None and total_tables:
+            try:
+                writer.update_table_progress(
+                    all_tables[-1].name, total_tables, total_tables
+                )
+            except Exception:
+                pass
     finally:
         source.dispose()
         target.dispose()
@@ -931,7 +981,7 @@ def main(
             writer.update_step("data_copy", progress_pct=40)
             if writer.check_cancel_requested():
                 raise JobCancelled(step="data_copy")
-            copy_summary = copy_duckdb_to_pg(duckdb_path, target_url)
+            copy_summary = copy_duckdb_to_pg(duckdb_path, target_url, writer=writer)
 
             if copy_summary.get("tables_failed"):
                 writer.mark_failed(
@@ -988,7 +1038,7 @@ def main(
             writer.update_step("data_copy", progress_pct=40)
             if writer.check_cancel_requested():
                 raise JobCancelled(step="data_copy")
-            copy_summary = copy_pg_to_pg(source_url, target_url)
+            copy_summary = copy_pg_to_pg(source_url, target_url, writer=writer)
 
             if copy_summary.get("tables_failed"):
                 writer.mark_failed(

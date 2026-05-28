@@ -314,8 +314,10 @@ def test_cancel_sentinel_during_data_copy_step(tmp_path, pg_engine, monkeypatch)
     job_id = "job-cancel-mid-copy"
     orig_copy = copy_duckdb_to_pg
 
-    def copy_then_drop_sentinel(duck_path, target_url):
-        result = orig_copy(duck_path, target_url)
+    def copy_then_drop_sentinel(duck_path, target_url, **kwargs):
+        # Accept the optional writer= kwarg added by C.1 — main()
+        # forwards it so per-table progress lands in the JobWriter.
+        result = orig_copy(duck_path, target_url, **kwargs)
         # Sentinel arrives after copy finishes — the next boundary check
         # (verify) must trip it.
         (jobs_dir / f"{job_id}.cancel").touch()
@@ -726,6 +728,53 @@ def test_backup_sidecar_pg_raises_on_timeout(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match=r"pg_dump.*timed out"):
         backup_sidecar_pg("agnes-postgres-1", tmp_path / "backups")
     assert captured["timeout"] is not None and captured["timeout"] > 0
+
+
+def test_copy_duckdb_to_pg_emits_table_progress(tmp_path, pg_engine):
+    """C.1 — JobWriter.update_table_progress must fire from copy_*
+    so the UI gets per-table % during data_copy. Pre-fix the field
+    was defined on JobWriter but never written, so progress_pct
+    froze at 40% for the entire copy step.
+    """
+    import json
+
+    import duckdb
+
+    from src.db import _ensure_schema
+
+    from scripts.db_state_migrator import (
+        JobWriter,
+        alembic_upgrade_head,
+        copy_duckdb_to_pg,
+    )
+
+    duck_path = tmp_path / "src.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.close()
+
+    alembic_upgrade_head(str(pg_engine.url))
+
+    writer = JobWriter(
+        job_id="job-progress",
+        jobs_dir=tmp_path / "jobs",
+        source="duckdb",
+        target="side_car",
+    )
+    writer.write_initial()
+
+    copy_duckdb_to_pg(duck_path, str(pg_engine.url), writer=writer)
+
+    job = json.loads((tmp_path / "jobs" / "job-progress.json").read_text())
+    tp = job.get("table_progress")
+    assert tp is not None, "update_table_progress was never called"
+    assert tp["tables_total"] > 0
+    # After the copy finishes the most recent callback corresponds to
+    # the last table — done == total.
+    assert tp["tables_done"] == tp["tables_total"], tp
+    # progress_pct is the 40-80% range mapped from done/total — at
+    # completion of data_copy it sits at 80%.
+    assert job["progress_pct"] >= 40 and job["progress_pct"] <= 80, job["progress_pct"]
 
 
 def test_side_car_to_cloud_backup_failure_is_hard_fail(tmp_path, pg_engine, monkeypatch):

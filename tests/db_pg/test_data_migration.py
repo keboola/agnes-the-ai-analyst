@@ -493,6 +493,49 @@ def test_copy_duckdb_to_pg_summary_lists_failed_tables(tmp_path, pg_with_schema)
         assert "table" in entry and "error" in entry, entry
 
 
+def test_run_all_emits_progress_callback(tmp_path, pg_with_schema):
+    """C.1 — run_all must invoke progress_callback once per task with
+    (current_table, tables_done, tables_total). This is the wiring
+    that makes JobWriter.update_table_progress actually fire during
+    data_copy — pre-fix it was defined but never called and the UI's
+    progress_pct froze at 40% for the whole copy step.
+    """
+    import duckdb
+
+    from scripts.migrate_duckdb_to_pg import run_all
+    from src.db import _ensure_schema
+
+    duck_path = tmp_path / "src.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.close()
+
+    calls: list[tuple[str, int, int]] = []
+
+    def progress_cb(table: str, done: int, total: int) -> None:
+        calls.append((table, done, total))
+
+    duck_ro = duckdb.connect(str(duck_path), read_only=True)
+    try:
+        reports = run_all(
+            duck_ro,
+            pg_with_schema,
+            validate=False,
+            progress_callback=progress_cb,
+        )
+    finally:
+        duck_ro.close()
+
+    assert calls, "progress_callback was never invoked"
+    # Every callback's total must match the report count.
+    assert all(t == len(reports) for _, _, t in calls), calls
+    # ``done`` is monotonic: 0, 1, 2, ... matching the index of the
+    # task about to run / just-ran (the callback's exact semantics is
+    # 'about to start this table', so the first call carries done=0).
+    dones = [d for _, d, _ in calls]
+    assert dones == sorted(dones), f"done values not monotonic: {dones}"
+
+
 def test_run_all_halts_on_first_failure(tmp_path, pg_with_schema):
     """H6 — when one task raises, subsequent tasks MUST be skipped
     (status='skipped'), not silently produce orphan rows.
