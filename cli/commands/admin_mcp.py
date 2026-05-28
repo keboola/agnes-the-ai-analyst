@@ -205,6 +205,14 @@ def source_add(
         None, "--auth-secret-env",
         help="Name of the env var on the agnes server that holds the secret",
     ),
+    scope: Optional[str] = typer.Option(
+        None, "--scope",
+        help=(
+            "Credential scope: 'shared' (default — server-wide secret used "
+            "for every caller) or 'per_user' (each analyst stores their own "
+            "via `agnes mcp my-secret set`)"
+        ),
+    ),
 ):
     """Register a new MCP source.
 
@@ -250,6 +258,11 @@ def source_add(
         payload["auth_method"] = auth_method
     if auth_secret_env:
         payload["auth_secret_env"] = auth_secret_env
+    if scope:
+        if scope not in ("shared", "per_user"):
+            typer.echo("--scope must be 'shared' or 'per_user'", err=True)
+            raise typer.Exit(2)
+        payload["scope"] = scope
 
     resp = api_post("/api/admin/mcp-sources", json=payload)
     if resp.status_code not in (200, 201):

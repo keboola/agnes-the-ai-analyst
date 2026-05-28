@@ -70,31 +70,51 @@ def _to_call_result(content_blocks: List[Any], *, is_error: bool = False) -> Too
     return ToolCallResult(text=text, data=data, is_error=is_error)
 
 
-def _lookup_secret_for_source(source: Dict[str, Any]) -> Optional[str]:
-    """Return the upstream auth token for ``source`` from one of two
-    places, in order:
+def _lookup_secret_for_source(
+    source: Dict[str, Any],
+    *,
+    caller_user_id: Optional[str] = None,
+) -> Optional[str]:
+    """Return the upstream auth token for ``source`` from one of three
+    places, in priority order:
 
-    1. ``mcp_secrets`` row keyed on ``source['id']`` (Phase 4 vault).
-    2. Env var named by ``source['auth_secret_env']`` (legacy POC path).
+    1. ``mcp_user_secrets`` row keyed on ``(source['id'], caller_user_id)``
+       — applies only when ``source['scope']=='per_user'`` AND the caller's
+       id was threaded through. Calls forward under the analyst's own
+       identity (RFC #461 §4 per-user credential passthrough).
+    2. ``mcp_secrets`` row keyed on ``source['id']`` (shared vault).
+    3. Env var named by ``source['auth_secret_env']`` (legacy POC path).
 
-    Returns ``None`` if neither yields a value — callers fall through
-    to anonymous connect, matching ``auth_method='none'`` behavior.
-    The vault path opens a fresh system.duckdb connection on each call
-    rather than threading a connection through ``call_tool_async``;
-    cost is one cheap file-open per upstream call (negligible vs the
-    network roundtrip). Keeps the connector free of FastAPI/DB plumbing.
+    Returns ``None`` if none yields a value — callers fall through to
+    anonymous connect, matching ``auth_method='none'`` behavior.
+
+    ``caller_user_id`` MUST stay None for scheduled materialize jobs —
+    they have no calling user; per-user scope ALWAYS falls back to
+    shared in that path.
     """
     source_id = source.get("id")
+    scope = (source.get("scope") or "shared").lower()
+
     if source_id:
         try:
             # Local import avoids dragging the vault module into the
             # connector's import surface — keeps stdio MCP startup fast
             # when no DB is around (tests, headless POC scripts).
             from src.db import get_system_db
-            from app.secrets_vault import SharedSecretsRepository
+            from app.secrets_vault import (
+                PerUserSecretsRepository,
+                SharedSecretsRepository,
+            )
 
             conn = get_system_db()
             try:
+                if scope == "per_user" and caller_user_id:
+                    value = PerUserSecretsRepository(conn).get(
+                        source_id, caller_user_id
+                    )
+                    if value:
+                        return value
+                # Either scope='shared', or per_user with no row → shared fallback
                 value = SharedSecretsRepository(conn).get(source_id)
                 if value:
                     return value
@@ -111,7 +131,11 @@ def _lookup_secret_for_source(source: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _build_http_headers(source: Dict[str, Any]) -> Dict[str, str]:
+def _build_http_headers(
+    source: Dict[str, Any],
+    *,
+    caller_user_id: Optional[str] = None,
+) -> Dict[str, str]:
     """Build the Authorization header dict for an HTTP/SSE MCP source.
 
     Returns an empty dict for ``auth_method`` in {``None``, ``""``, ``none``}
@@ -119,12 +143,17 @@ def _build_http_headers(source: Dict[str, Any]) -> Dict[str, str]:
     attempts to connect anonymously, which matches the MCP spec for
     unauthenticated servers and is what the mock fixture does for local
     testing.
+
+    When the source's ``scope`` is ``per_user`` and ``caller_user_id`` is
+    provided, the lookup prefers the caller's ``mcp_user_secrets`` row
+    before falling back to the shared vault — see
+    ``_lookup_secret_for_source`` for the full precedence chain.
     """
     headers: Dict[str, str] = {}
     auth_method = (source.get("auth_method") or "").lower()
     if auth_method in ("", "none"):
         return headers
-    token = _lookup_secret_for_source(source)
+    token = _lookup_secret_for_source(source, caller_user_id=caller_user_id)
     if not token:
         return headers
     if auth_method == "bearer":
@@ -139,7 +168,11 @@ def _build_http_headers(source: Dict[str, Any]) -> Dict[str, str]:
 
 
 @asynccontextmanager
-async def _open_session(source: Dict[str, Any]) -> AsyncIterator[ClientSession]:
+async def _open_session(
+    source: Dict[str, Any],
+    *,
+    caller_user_id: Optional[str] = None,
+) -> AsyncIterator[ClientSession]:
     """Open an MCP session for the given source row (see mcp_sources schema).
 
     Routes to one of three SDK transports based on ``source['transport']``:
@@ -148,6 +181,9 @@ async def _open_session(source: Dict[str, Any]) -> AsyncIterator[ClientSession]:
     * ``http``  — ``mcp.client.streamable_http.streamablehttp_client``
       (MCP 2025-03-26+; the recommended transport for new servers).
     * ``sse``   — ``mcp.client.sse.sse_client`` (legacy HTTP+SSE).
+
+    ``caller_user_id`` is propagated through to the secret lookup so
+    sources with ``scope='per_user'`` resolve the analyst's own token.
     """
     transport = (source.get("transport") or "").lower()
 
@@ -170,7 +206,7 @@ async def _open_session(source: Dict[str, Any]) -> AsyncIterator[ClientSession]:
             # writes the decrypted value under the original env-var
             # name the upstream MCP server expects, so the subprocess
             # contract stays unchanged.
-            token = _lookup_secret_for_source(source)
+            token = _lookup_secret_for_source(source, caller_user_id=caller_user_id)
             if token:
                 env_extra = {secret_env: token}
 
@@ -185,7 +221,7 @@ async def _open_session(source: Dict[str, Any]) -> AsyncIterator[ClientSession]:
         url = source.get("url")
         if not url:
             raise ValueError(f"{transport!r} transport requires 'url'")
-        headers = _build_http_headers(source)
+        headers = _build_http_headers(source, caller_user_id=caller_user_id)
 
         if transport == "http":
             # streamablehttp_client yields (read, write, get_session_id) — we
@@ -223,8 +259,18 @@ async def call_tool_async(
     source: Dict[str, Any],
     tool_name: str,
     arguments: Optional[Dict[str, Any]] = None,
+    *,
+    caller_user_id: Optional[str] = None,
 ) -> ToolCallResult:
-    async with _open_session(source) as session:
+    """Forward a single ``tool_name`` call to the upstream MCP described
+    by ``source``.
+
+    ``caller_user_id`` is threaded to the secret lookup so per-user
+    scoped sources see the right credential. Materialize jobs (which
+    have no calling user) leave it at ``None`` and stay on the shared
+    vault / env-var path.
+    """
+    async with _open_session(source, caller_user_id=caller_user_id) as session:
         result = await session.call_tool(tool_name, arguments or {})
         is_error = bool(getattr(result, "isError", False))
         return _to_call_result(result.content, is_error=is_error)
@@ -234,6 +280,10 @@ def call_tool(
     source: Dict[str, Any],
     tool_name: str,
     arguments: Optional[Dict[str, Any]] = None,
+    *,
+    caller_user_id: Optional[str] = None,
 ) -> ToolCallResult:
     """Sync wrapper around call_tool_async."""
-    return asyncio.run(call_tool_async(source, tool_name, arguments))
+    return asyncio.run(call_tool_async(
+        source, tool_name, arguments, caller_user_id=caller_user_id,
+    ))
