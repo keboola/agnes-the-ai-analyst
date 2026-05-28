@@ -207,36 +207,39 @@ class ChatManager:
                 )
 
     async def _wait_for_exit_and_respawn(self, live: LiveSession, session_dir: Path) -> None:
-        assert live.handle is not None
-        rc = await live.handle.wait()
-        if rc == 0 or live.state == SessionState.DEAD:
-            return
-        # Crash path
-        live.crash_count += 1
-        await live.ws.send_json({
-            "type": "error",
-            "kind": "subprocess_crashed",
-            "auto_respawn": live.crash_count < 3,
-        })
-        if live.crash_count >= 3:
-            live.state = SessionState.DEAD
-            return
-        session = self._repo.get_session(live.chat_id)
-        if session is None:
-            return
-        new_handle = await self._spawn_runner(session, session_dir)
-        live.handle = new_handle
-        live.state = SessionState.ACTIVE
-        await live.ws.send_json({"type": "ready"})
-        # Replay last 3 user turns into the new subprocess
-        history = self._repo.list_messages(live.chat_id)[-3:]
-        for msg in history:
-            if msg.role == "user":
-                payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
-                new_handle.stdin.write(payload.encode("utf-8"))
-                await new_handle.stdin.drain()
-        # Restart pump on new handle
-        asyncio.create_task(self._pump_subprocess_to_ws(live))
+        while True:
+            assert live.handle is not None
+            rc = await live.handle.wait()
+            if rc == 0 or live.state == SessionState.DEAD:
+                return
+            # Crash path
+            live.crash_count += 1
+            await live.ws.send_json({
+                "type": "error",
+                "kind": "subprocess_crashed",
+                "auto_respawn": live.crash_count < 3,
+            })
+            if live.crash_count >= 3:
+                live.state = SessionState.DEAD
+                return
+            session = self._repo.get_session(live.chat_id)
+            if session is None:
+                return
+            new_handle = await self._spawn_runner(session, session_dir)
+            live.handle = new_handle
+            live.state = SessionState.ACTIVE
+            await live.ws.send_json({"type": "ready"})
+            # Replay last 3 user turns into the new subprocess
+            history = self._repo.list_messages(live.chat_id)[-3:]
+            for msg in history:
+                if msg.role == "user":
+                    payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
+                    new_handle.stdin.write(payload.encode("utf-8"))
+                    await new_handle.stdin.drain()
+            # New pump for new handle — tracked so kill() can cancel it.
+            new_pump = asyncio.create_task(self._pump_subprocess_to_ws(live))
+            live.tasks.append(new_pump)
+            # Loop back to wait on the new handle.
 
     async def send_user_message(self, chat_id: str, text: str) -> None:
         live = self._live.get(chat_id)

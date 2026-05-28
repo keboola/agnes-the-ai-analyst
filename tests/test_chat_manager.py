@@ -16,7 +16,7 @@ from src.db import _ensure_schema
 from app.chat.config import ChatConfig
 from app.chat.manager import ChatManager, ConcurrencyCapHit
 from app.chat.persistence import ChatRepository
-from app.chat.types import Surface
+from app.chat.types import SessionState, Surface
 from app.chat.workdir import WorkdirManager
 
 
@@ -237,3 +237,54 @@ def test_crash_respawns_with_notice(manager: ChatManager):
         await attach_task
 
     asyncio.run(_run())
+
+
+def test_double_crash_dies_after_three(manager: ChatManager):
+    handles = [FakeHandle(), FakeHandle(), FakeHandle(), FakeHandle()]
+    spawn_calls = iter(handles)
+
+    async def fake_spawn(**kw):
+        return next(spawn_calls)
+
+    manager._provider.spawn = fake_spawn
+
+    async def go():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        # First crash → respawn
+        handles[0].emit_eof()
+        handles[0].killed = True
+        await asyncio.sleep(0.1)
+        # Second crash → respawn
+        handles[1].emit_eof()
+        handles[1].killed = True
+        await asyncio.sleep(0.1)
+        # Third crash → DEAD
+        handles[2].emit_eof()
+        handles[2].killed = True
+        await asyncio.sleep(0.1)
+        # Should have three crashed notices, at least three ready notices
+        crashed = [m for m in ws.sent if m.get("type") == "error" and m.get("kind") == "subprocess_crashed"]
+        ready = [m for m in ws.sent if m.get("type") == "ready"]
+        assert len(crashed) == 3, f"expected 3 crash notices, got {len(crashed)}"
+        # First ready is the initial; respawns add 2 more
+        assert len(ready) >= 3, f"expected >=3 ready, got {len(ready)}"
+        # Session should now be DEAD
+        live = manager._live.get(s.id)
+        assert live is None or live.state == SessionState.DEAD
+
+        # Cleanup
+        try:
+            await manager.kill(s.id, reason="test_done")
+        except Exception:
+            pass
+        for h in handles[:3]:
+            h.emit_eof()
+        try:
+            await asyncio.wait_for(attach_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            attach_task.cancel()
+
+    asyncio.run(go())
