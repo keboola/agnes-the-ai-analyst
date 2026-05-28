@@ -46,41 +46,104 @@ const DBState = {
   },
 
   renderState(data) {
-    const el = document.getElementById('db-state-card');
-    if (!el) return;
     const backend = data.backend;
-    const transitionBtns = data.allowed_transitions.map(t => {
-      let label;
-      if (t === 'side_car') {
-        // From DuckDB this is the first cutover; from cloud it's a DR
-        // move back to the local container PG.
-        label = (backend === 'cloud')
-          ? 'Move back to side-car Postgres'
-          : 'Enable side-car Postgres';
-      } else {  // t === 'cloud'
-        label = (backend === 'duckdb')
-          ? 'Migrate straight to managed Postgres'
-          : 'Migrate to managed Postgres';
+
+    // Status header — hero strip on /admin/database, or the legacy
+    // single-card view (#db-state-card) that older calls still render.
+    const valueEl = document.getElementById('db-backend-value');
+    const urlEl   = document.getElementById('db-url-value');
+    const actionsEl = document.getElementById('db-actions');
+    const helpEl    = document.getElementById('db-actions-help');
+
+    if (valueEl) {
+      // Drop the loading class + any previous backend-* state class,
+      // then add the one matching this read so the colored dot picks
+      // up the right hue.
+      valueEl.className = `backend-value backend-${backend}`;
+      valueEl.textContent = this._friendlyBackend(backend);
+    }
+    if (urlEl) {
+      urlEl.textContent = data.url_redacted || '— (DuckDB file on the VM, no URL)';
+    }
+
+    // Render transition buttons. /admin/database has #db-actions
+    // (preferred); fall back to the legacy #db-state-card.actions
+    // container for any old embedded view.
+    const transitionBtns = data.allowed_transitions.map(t => ({
+      target: t,
+      label: this._transitionLabel(backend, t),
+    }));
+
+    if (actionsEl) {
+      if (transitionBtns.length === 0) {
+        actionsEl.innerHTML = '';
+        if (helpEl) {
+          helpEl.innerHTML = `<em>No transitions available from <code>${backend}</code> —
+            this is a terminal state.</em>`;
+        }
+      } else {
+        actionsEl.innerHTML = transitionBtns
+          .map(b => `<button class="btn" data-target="${b.target}">${b.label}</button>`)
+          .join(' ');
+        if (helpEl) {
+          helpEl.textContent = `Pick a target to start a migration. The
+            host applier will copy data, restart the app on the new backend,
+            and verify row counts. Progress shows below.`;
+        }
+        actionsEl.querySelectorAll('button[data-target]').forEach(btn => {
+          btn.addEventListener('click', () => this.handleTransitionClick(btn.dataset.target));
+        });
       }
-      return `<button class="btn btn-primary" data-target="${t}">${label}</button>`;
-    }).join(' ');
-
-    el.innerHTML = `
-      <div class="card">
-        <h3>Database backend</h3>
-        <p><strong>Current:</strong> ${backend}</p>
-        <p><strong>URL:</strong> ${data.url_redacted || '(none — DuckDB)'}</p>
-        <div class="actions">${transitionBtns}</div>
-      </div>
-    `;
-
-    el.querySelectorAll('button[data-target]').forEach(btn => {
-      btn.addEventListener('click', () => this.handleTransitionClick(btn.dataset.target));
-    });
+    } else {
+      // Legacy single-card view (kept for the old /admin/server-config
+      // section in case any installation still has it embedded).
+      const legacyEl = document.getElementById('db-state-card');
+      if (legacyEl) {
+        const html = transitionBtns
+          .map(b => `<button class="btn btn-primary" data-target="${b.target}">${b.label}</button>`)
+          .join(' ');
+        legacyEl.innerHTML = `
+          <div class="card">
+            <h3>Database backend</h3>
+            <p><strong>Current:</strong> ${backend}</p>
+            <p><strong>URL:</strong> ${data.url_redacted || '(none — DuckDB)'}</p>
+            <div class="actions">${html}</div>
+          </div>
+        `;
+        legacyEl.querySelectorAll('button[data-target]').forEach(btn => {
+          btn.addEventListener('click', () => this.handleTransitionClick(btn.dataset.target));
+        });
+      }
+    }
 
     if (data.current_job_id) {
       this.startPolling(data.current_job_id);
     }
+  },
+
+  _friendlyBackend(b) {
+    switch (b) {
+      case 'duckdb':                return 'DuckDB (on-VM file)';
+      case 'side_car':              return 'Side-car Postgres (container)';
+      case 'cloud':                 return 'Managed cloud Postgres';
+      case 'side_car_in_progress':  return 'Side-car cutover in progress…';
+      case 'cloud_in_progress':     return 'Cloud cutover in progress…';
+      default:                      return b;
+    }
+  },
+
+  _transitionLabel(backend, target) {
+    if (target === 'side_car') {
+      return (backend === 'cloud')
+        ? 'Move back to side-car Postgres'
+        : 'Enable side-car Postgres';
+    }
+    if (target === 'cloud') {
+      return (backend === 'duckdb')
+        ? 'Migrate straight to managed Postgres'
+        : 'Migrate to managed Postgres';
+    }
+    return `Migrate to ${target}`;
   },
 
   async handleTransitionClick(target) {
