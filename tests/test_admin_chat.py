@@ -161,3 +161,62 @@ def test_admin_kills_session(api_client: TestClient, logged_in_admin):
 def test_non_admin_forbidden(api_client_non_admin: TestClient, logged_in_user):
     r = api_client_non_admin.get("/admin/chat")
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# admin_tail WebSocket — ticket-based auth (architect finding #2)
+# ---------------------------------------------------------------------------
+
+def test_admin_tail_rejects_anonymous_ws(api_client: TestClient, logged_in_admin):
+    """No ticket → WS closes with 4401 before any frame is sent.
+
+    Confidentiality bypass test: another user's run.log must not stream
+    over an unauthenticated WebSocket.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    with pytest.raises(WebSocketDisconnect) as excinfo:
+        with api_client.websocket_connect(f"/admin/chat/{c['id']}/tail") as ws:
+            ws.receive_json()
+    assert excinfo.value.code == 4401
+
+
+def test_admin_tail_accepts_valid_ticket(api_client: TestClient, logged_in_admin):
+    """A freshly-issued admin ticket opens the WS; we receive a sentinel frame."""
+    c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    tk = api_client.get(f"/admin/chat/{c['id']}/tail-ticket")
+    assert tk.status_code == 200
+    ticket = tk.json()["ticket"]
+    with api_client.websocket_connect(
+        f"/admin/chat/{c['id']}/tail?ticket={ticket}"
+    ) as ws:
+        frame = ws.receive_json()
+        # No run.log on disk for a freshly-minted session → no_log frame.
+        # Either no_log or line — both prove the WS opened (accept-after-auth).
+        assert frame.get("type") in ("no_log", "line")
+
+
+def test_admin_tail_rejects_non_admin_ticket_request(
+    api_client_non_admin: TestClient, logged_in_user
+):
+    """Non-admin cannot mint a tail-ticket."""
+    # Non-admin can still POST a session for themselves
+    c = api_client_non_admin.post("/api/chat/sessions", json={"surface": "web"}).json()
+    r = api_client_non_admin.get(f"/admin/chat/{c['id']}/tail-ticket")
+    assert r.status_code == 403
+
+
+def test_admin_tail_rejects_expired_or_unknown_ticket(
+    api_client: TestClient, logged_in_admin
+):
+    """A bogus ticket value closes the WS with 4401."""
+    from starlette.websockets import WebSocketDisconnect
+
+    c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    with pytest.raises(WebSocketDisconnect) as excinfo:
+        with api_client.websocket_connect(
+            f"/admin/chat/{c['id']}/tail?ticket=not-a-real-ticket"
+        ) as ws:
+            ws.receive_json()
+    assert excinfo.value.code == 4401

@@ -11,6 +11,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Fixed
+- **Admin chat tail WS now requires a one-shot ticket.** The
+  `WS /admin/chat/{id}/tail` route previously accepted any anonymous
+  WebSocket and streamed another user's `run.log` — confidentiality
+  bypass. Now mirrors the chat-WS pattern in `app/api/chat.py`: a 60 s
+  ticket is minted via `GET /admin/chat/{id}/tail-ticket` (admin-gated),
+  consumed once on WS open. The admin dashboard JS fetches the ticket
+  before opening the WS; non-admins get 403 on the ticket endpoint and
+  invalid tickets close the WS with code 4401 before any frame is sent.
 - **Cloud chat: `ANTHROPIC_API_KEY` is now forwarded into the sandbox env.**
   Without it on the `SubprocessProvider._ENV_ALLOWLIST`, the real-agent
   runner couldn't authenticate; only the `AGNES_RUNNER_FAKE_AGENT=1` test

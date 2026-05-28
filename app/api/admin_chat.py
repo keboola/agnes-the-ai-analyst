@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
+import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 
@@ -11,6 +14,30 @@ from app.auth.access import require_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/chat", tags=["admin-chat"])
+
+
+# In-memory ticket store for admin tail-WS auth.  Mirrors the chat-WS pattern
+# in `app/api/chat.py`: a short-TTL one-shot token gates the WebSocket open.
+# Without this, the tail route streamed any session's run.log to any
+# anonymous WS caller — a confidentiality bypass.
+_ADMIN_TAIL_TICKETS: dict[str, tuple[str, float]] = {}  # ticket -> (admin_user_id, expires_at)
+_ADMIN_TICKET_TTL_SEC = 60
+
+
+def _issue_admin_ticket(user_id: str) -> str:
+    ticket = secrets.token_urlsafe(32)
+    _ADMIN_TAIL_TICKETS[ticket] = (user_id, time.time() + _ADMIN_TICKET_TTL_SEC)
+    return ticket
+
+
+def _consume_admin_ticket(ticket: str) -> Optional[str]:
+    rec = _ADMIN_TAIL_TICKETS.pop(ticket, None)
+    if rec is None:
+        return None
+    user_id, expires_at = rec
+    if time.time() > expires_at:
+        return None
+    return user_id
 
 
 @router.get("")
@@ -40,9 +67,40 @@ async def admin_kill(chat_id: str, request: Request, _admin: dict = Depends(requ
     await mgr.kill(chat_id, reason="admin_kill")
 
 
+@router.get("/{chat_id}/tail-ticket")
+async def tail_ticket(
+    chat_id: str,
+    request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """Issue a short-TTL one-shot ticket for the tail WebSocket.
+
+    The WebSocket itself can't carry the admin's session cookie/Authorization
+    reliably across browsers (Safari in particular strips cookies on WS
+    upgrades from `fetch`), so we mint a ticket here under the normal admin
+    auth flow and the JS hands it to the WS as a query parameter.
+    """
+    # Verify the session exists so 404 surfaces here rather than mid-WS.
+    repo = getattr(request.app.state, "chat_repo", None)
+    if repo is None:
+        raise HTTPException(status_code=503, detail="chat_disabled")
+    if repo.get_session(chat_id) is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    ticket = _issue_admin_ticket(admin["id"])
+    return {
+        "ticket": ticket,
+        "ws_url": f"/admin/chat/{chat_id}/tail?ticket={ticket}",
+    }
+
+
 @router.websocket("/{chat_id}/tail")
-async def admin_tail(ws: WebSocket, chat_id: str):
-    await ws.accept()
+async def admin_tail(ws: WebSocket, chat_id: str, ticket: str = ""):
+    # Ticket auth BEFORE accept() — invalid callers get close(4401) without
+    # ever seeing protocol-upgrade success.
+    user_id = _consume_admin_ticket(ticket)
+    if user_id is None:
+        await ws.close(code=4401, reason="invalid_or_expired_ticket")
+        return
     repo = getattr(ws.app.state, "chat_repo", None)
     if repo is None:
         await ws.close(code=4404)
@@ -51,6 +109,7 @@ async def admin_tail(ws: WebSocket, chat_id: str):
     if s is None:
         await ws.close(code=4404)
         return
+    await ws.accept()
     chat_data_dir = getattr(ws.app.state, "chat_data_dir", None)
     if chat_data_dir is None:
         await ws.send_json({"type": "no_log", "reason": "chat_data_dir_not_configured"})
