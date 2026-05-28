@@ -1,0 +1,34 @@
+{# app/web/templates/chat.html #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Agnes — Chat</title>
+  <link rel="stylesheet" href="/static/css/admin.css" />
+  <link rel="stylesheet" href="/static/css/chat.css" />
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
+</head>
+<body class="chat-body">
+  <header class="topbar">
+    <a href="/" class="brand">Agnes</a>
+    <span class="user">{{ current_user.email }}</span>
+  </header>
+  <main class="chat-shell">
+    <aside class="chat-sidebar">
+      <button id="new-chat">+ New chat</button>
+      <ul id="chat-list"></ul>
+    </aside>
+    <section class="chat-main">
+      <div id="chat-status"></div>
+      <div id="chat-messages" aria-live="polite"></div>
+      <form id="chat-form">
+        <textarea id="chat-input" placeholder="Ask Agnes…" rows="2"></textarea>
+        <button type="submit">Send</button>
+        <button type="button" id="cancel-btn" hidden>Stop</button>
+      </form>
+    </section>
+  </main>
+  <script type="module" src="/static/js/chat.js"></script>
+</body>
+</html>

@@ -3007,6 +3007,19 @@ def _is_debug() -> bool:
     return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 
 
+@router.get("/chat", response_class=HTMLResponse)
+async def chat_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Web chat UI — streams Claude Code sessions over WebSocket."""
+    if not request.app.state.chat_config.enabled:
+        return RedirectResponse("/")
+    return templates.TemplateResponse(
+        request, "chat.html", {"request": request, "current_user": user}
+    )
+
+
 @router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
 async def _catch_all_404(request: Request, full_path: str):
     """Catch-all 404 for unmatched routes.
