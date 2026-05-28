@@ -302,23 +302,40 @@ if docker network ls --format '{{.Name}}' | grep -q '^agnes_default$'; then
     NETWORK_ARGS=( --network agnes_default )
 fi
 
+# C.2 — bound the migrator subprocess wall-clock. Engine-side
+# statement_timeout (set in _bounded_engine) only caps SQL queries; a
+# hung migrator that doesn't reach a step boundary (e.g. wedged DuckDB
+# connection holding the GIL) would otherwise sit forever. coreutils
+# `timeout(1)` is universally available on customer-instance VMs.
+# Exit codes from `timeout`:
+#   124 — TERM fired (limit exceeded)
+#   137 — KILL fired (TERM ignored, --kill-after kicked in)
+# Both indicate the watchdog triggered.
+MIGRATOR_TIMEOUT_SEC=${MIGRATOR_TIMEOUT_SEC:-1800}
 set +e
-docker run --rm \
-    ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
-    -v /data:/data \
-    -e DATA_DIR=/data \
-    "$IMAGE" \
-    python -m scripts.db_state_migrator \
-        --job-id   "$JOB_ID" \
-        --to       "$TARGET_BACKEND" \
-        --source-backend "$SOURCE_BACKEND" \
-        --target-url "$TARGET_URL" \
-        ${SOURCE_URL_ARGS[@]+"${SOURCE_URL_ARGS[@]}"} \
-        --duckdb-path /data/state/system.duckdb \
-        --jobs-dir   "$JOBS_DIR" \
-        --backups-dir /data/state/backups
+timeout --signal=TERM --kill-after=30 "$MIGRATOR_TIMEOUT_SEC" \
+    docker run --rm \
+        ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
+        -v /data:/data \
+        -e DATA_DIR=/data \
+        "$IMAGE" \
+        python -m scripts.db_state_migrator \
+            --job-id   "$JOB_ID" \
+            --to       "$TARGET_BACKEND" \
+            --source-backend "$SOURCE_BACKEND" \
+            --target-url "$TARGET_URL" \
+            ${SOURCE_URL_ARGS[@]+"${SOURCE_URL_ARGS[@]}"} \
+            --duckdb-path /data/state/system.duckdb \
+            --jobs-dir   "$JOBS_DIR" \
+            --backups-dir /data/state/backups
 MIG_RC=$?
 set -e
+if [ "$MIG_RC" -eq 124 ] || [ "$MIG_RC" -eq 137 ]; then
+    update_job "$PENDING_JOB" "failed" \
+        "migrator subprocess exceeded ${MIGRATOR_TIMEOUT_SEC}s timeout (rc=${MIG_RC} — watchdog fired)"
+    logger -t agnes-state-applier \
+        "Migration job $JOB_ID — migrator subprocess timed out after ${MIGRATOR_TIMEOUT_SEC}s"
+fi
 
 # 3. Decide post-migration lifecycle based on whether the migrator updated
 #    its job file to success. (The migrator owns the JSON during its

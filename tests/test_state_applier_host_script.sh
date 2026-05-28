@@ -134,6 +134,21 @@ exit 0
 FAKE
 chmod +x "$fake_bin/flock"
 
+# `timeout(1)` (coreutils) may be missing on macOS dev laptops.
+# Provide a passthrough fake — when the script runs in this test it
+# forwards to the wrapped command without enforcing the limit.
+# Tests that want to assert the watchdog logic (C.2) install a
+# different stub locally.
+cat > "$fake_bin/timeout" <<'FAKE'
+#!/usr/bin/env bash
+# Skip the timeout-specific flags / duration; run the rest.
+while [[ "$1" == --* ]] || [[ "$1" =~ ^[0-9]+(s|m|h)?$ ]]; do
+    shift
+done
+exec "$@"
+FAKE
+chmod +x "$fake_bin/timeout"
+
 # --- Patch script paths for sandbox ----------------------------------------
 sandboxed=$tmp/applier.sh
 sed -e "s|FLAG=/data/state/db-state-target.flag|FLAG=$tmp/data/state/db-state-target.flag|" \
@@ -378,6 +393,9 @@ cp "$fake_bin/logger" "$fake_bin3/logger"
 cp "$fake_bin/chown" "$fake_bin3/chown"
 cp "$fake_bin/chmod" "$fake_bin3/chmod"
 cp "$fake_bin/flock" "$fake_bin3/flock"
+# `timeout` passthrough so the C.2-introduced watchdog wrapping
+# doesn't break this scenario on macOS dev laptops without coreutils.
+cp "$fake_bin/timeout" "$fake_bin3/timeout"
 transcript3=$tmp3/transcript.log
 TRANSCRIPT="$transcript3" JOB_FILE="$tmp3/data/state/db-jobs/$B3_ID.json" \
     PATH="$fake_bin3:$PATH" \
@@ -395,5 +413,88 @@ if [ -e "$tmp3/data/state/db-state-target.flag" ]; then
 fi
 rm -rf "$tmp3"
 echo "OK: B.3 cloud→side_car failure clears FLAG (DR rollback)"
+
+# --- C.2 regression: migrator subprocess watchdog (H5, applier side) ---------
+# When `timeout(1)` fires (rc=124 or 137), the applier must mark the
+# pending job failed with an actionable message and not flip
+# instance.yaml to the target backend.
+tmp4=$(mktemp -d)
+mkdir -p "$tmp4/data/state/db-jobs" "$tmp4/opt/agnes"
+echo "AGNES_TAG=stable" > "$tmp4/opt/agnes/.env"
+touch "$tmp4/opt/agnes/docker-compose.yml" \
+      "$tmp4/opt/agnes/docker-compose.prod.yml" \
+      "$tmp4/opt/agnes/docker-compose.host-mount.yml"
+C2_ID="c2-migrator-watchdog"
+C2_QUEUED=$(python3 -c "
+from datetime import datetime, timezone
+print(datetime.now(timezone.utc).isoformat())
+")
+cat > "$tmp4/data/state/db-jobs/$C2_ID.json" <<JSON
+{
+  "job_id": "$C2_ID",
+  "schema_version": 1,
+  "status": "pending",
+  "source_backend": "duckdb",
+  "target_backend": "side_car",
+  "target_url": "postgresql+psycopg://agnes:agnes@postgres:5432/agnes",
+  "progress_pct": 0,
+  "current_step": "queued",
+  "queued_at": "$C2_QUEUED"
+}
+JSON
+echo -n "side-car-enabled" > "$tmp4/data/state/db-state-target.flag"
+cat > "$tmp4/data/state/instance.yaml" <<'YAML'
+database:
+  backend: duckdb
+YAML
+sandboxed4=$tmp4/applier.sh
+sed -e "s|FLAG=/data/state/db-state-target.flag|FLAG=$tmp4/data/state/db-state-target.flag|" \
+    -e "s|JOBS_DIR=/data/state/db-jobs|JOBS_DIR=$tmp4/data/state/db-jobs|" \
+    -e "s|COMPOSE_DIR=/opt/agnes|COMPOSE_DIR=$tmp4/opt/agnes|" \
+    -e "s|LOCK_FILE=/data/state/db-state-applier.lock|LOCK_FILE=$tmp4/data/state/db-state-applier.lock|" \
+    -e "s|/data/postgres|$tmp4/data/postgres|g" \
+    -e "s|/data/state/certs|$tmp4/data/state/certs|g" \
+    -e "s|/data/state/instance.yaml|$tmp4/data/state/instance.yaml|g" \
+    -e "s|/data/state/agnes-state-applier.tick|$tmp4/data/state/agnes-state-applier.tick|g" \
+    "$script" > "$sandboxed4"
+chmod +x "$sandboxed4"
+# Fake bin with a `timeout` that always returns 124 (watchdog fired)
+# and ignores its wrapped command.
+fake_bin4=$tmp4/bin
+mkdir -p "$fake_bin4"
+cp "$fake_bin/docker" "$fake_bin4/docker"
+cp "$fake_bin/logger" "$fake_bin4/logger"
+cp "$fake_bin/chown" "$fake_bin4/chown"
+cp "$fake_bin/chmod" "$fake_bin4/chmod"
+cp "$fake_bin/flock" "$fake_bin4/flock"
+cat > "$fake_bin4/timeout" <<'FAKE'
+#!/usr/bin/env bash
+# Watchdog-fires fake: skip the timeout flags / duration, log to
+# transcript, exit 124 without running anything.
+while [[ "$1" == --* ]] || [[ "$1" =~ ^[0-9]+(s|m|h)?$ ]]; do
+    shift
+done
+echo "timeout-stub: would-have-run $*" >> "$TRANSCRIPT"
+exit 124
+FAKE
+chmod +x "$fake_bin4/timeout"
+transcript4=$tmp4/transcript.log
+TRANSCRIPT="$transcript4" JOB_FILE="$tmp4/data/state/db-jobs/$C2_ID.json" \
+    MIGRATOR_TIMEOUT_SEC=2 \
+    PATH="$fake_bin4:$PATH" \
+    bash "$sandboxed4"
+C2_STATUS=$(python3 -c "import json;print(json.load(open('$tmp4/data/state/db-jobs/$C2_ID.json'))['status'])")
+[ "$C2_STATUS" = "failed" ] \
+    || { echo "FAIL (C.2): status=$C2_STATUS, want failed (watchdog should mark failed)"; cat "$transcript4"; exit 1; }
+C2_MSG=$(python3 -c "import json;print(json.load(open('$tmp4/data/state/db-jobs/$C2_ID.json')).get('error',{}).get('message',''))")
+case "$C2_MSG" in
+    *exceeded*timeout*) ;;
+    *) echo "FAIL (C.2): error.message='$C2_MSG' lacks 'exceeded ... timeout'"; cat "$transcript4"; exit 1 ;;
+esac
+# instance.yaml must NOT have been flipped to side_car.
+grep -q "backend: duckdb" "$tmp4/data/state/instance.yaml" \
+    || { echo "FAIL (C.2): instance.yaml flipped despite watchdog firing"; cat "$tmp4/data/state/instance.yaml"; exit 1; }
+rm -rf "$tmp4"
+echo "OK: C.2 migrator subprocess watchdog (H5 applier side)"
 
 echo "OK"
