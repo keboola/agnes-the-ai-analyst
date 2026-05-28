@@ -121,5 +121,23 @@ class SubprocessProvider:
         return [self._nsjail_path, "--config", str(rendered), "--", *argv]
 
     def _render_nsjail_cfg(self, workdir: Path) -> Path:
-        # Stub — implemented in Task 4.2.
-        raise NotImplementedError("nsjail rendering — Task 4.2")
+        assert self._nsjail_config_template is not None
+        marketplace_dir = os.environ.get("AGNES_MARKETPLACES_DIR", "/data/marketplaces")
+        host_uid = self._host_uid if self._host_uid is not None else os.getuid()
+        host_gid = os.getgid()
+        template = self._nsjail_config_template.read_text(encoding="utf-8")
+        rendered_text = (
+            template
+            .replace("{{WORKDIR}}", str(workdir))
+            .replace("{{MARKETPLACE_DIR}}", marketplace_dir)
+            .replace("{{HOST_UID}}", str(host_uid))
+            .replace("{{HOST_GID}}", str(host_gid))
+        )
+        out_path = workdir / ".nsjail.cfg"
+        out_path.write_text(rendered_text, encoding="utf-8")
+        # Write allowed-egress list for the runner's startup log.
+        (workdir / ".allowed-egress.txt").write_text(
+            "127.0.0.1\napi.anthropic.com:443\napi.github.com:443\n",
+            encoding="utf-8",
+        )
+        return out_path

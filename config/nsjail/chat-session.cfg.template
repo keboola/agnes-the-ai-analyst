@@ -1,0 +1,100 @@
+name: "agnes-chat-session"
+mode: ONCE
+hostname: "agnes-sandbox"
+cwd: "{{WORKDIR}}"
+
+uidmap {
+  inside_id: "0"
+  outside_id: "{{HOST_UID}}"
+  count: 1
+}
+gidmap {
+  inside_id: "0"
+  outside_id: "{{HOST_GID}}"
+  count: 1
+}
+
+mount {
+  src: "{{WORKDIR}}"
+  dst: "/work"
+  is_bind: true
+  rw: true
+}
+mount {
+  src: "{{MARKETPLACE_DIR}}"
+  dst: "/marketplaces"
+  is_bind: true
+  rw: false
+}
+mount {
+  src: "/usr"
+  dst: "/usr"
+  is_bind: true
+  rw: false
+}
+mount {
+  src: "/etc/resolv.conf"
+  dst: "/etc/resolv.conf"
+  is_bind: true
+  rw: false
+}
+mount {
+  src: "/etc/hosts"
+  dst: "/etc/hosts"
+  is_bind: true
+  rw: false
+}
+mount {
+  dst: "/tmp"
+  fstype: "tmpfs"
+  rw: true
+  options: "size=268435456"
+}
+
+rlimit_as: 1073741824
+rlimit_cpu: 14400
+rlimit_fsize: 1073741824
+rlimit_nofile: 1024
+
+clone_newuser: true
+clone_newpid: true
+clone_newnet: false   # network used; allowlist enforced via iptables/seccomp combo below
+
+# Egress allowlist — implemented by an iptables OWNER-uid rule outside
+# nsjail (see docs/DEPLOYMENT.md § cloud-chat). nsjail config can't
+# express hostnames; the operator firewall rule restricts:
+#   ALLOW: 127.0.0.1, api.anthropic.com:443, api.github.com:443
+#   DROP:  everything else
+# At template-render time we also write the destination list to
+# /work/.allowed-egress.txt for the runner to log on startup.
+
+seccomp_string: "ALLOW { read, write, openat, close, stat, fstat, lstat, "
+                "lseek, mmap, mprotect, munmap, brk, rt_sigaction, "
+                "rt_sigprocmask, rt_sigreturn, ioctl, pread64, pwrite64, "
+                "readv, writev, access, pipe, select, sched_yield, mremap, "
+                "msync, mincore, madvise, dup, dup2, dup3, getpid, "
+                "sendfile, socket, connect, accept, accept4, sendto, "
+                "recvfrom, sendmsg, recvmsg, shutdown, bind, listen, "
+                "getsockname, getpeername, setsockopt, getsockopt, "
+                "clone, clone3, fork, vfork, execve, execveat, exit, exit_group, "
+                "wait4, waitid, kill, uname, fcntl, flock, fsync, "
+                "getdents64, getcwd, chdir, fchdir, mkdir, mkdirat, rmdir, "
+                "creat, link, linkat, unlink, unlinkat, symlink, symlinkat, "
+                "readlink, readlinkat, chmod, fchmod, fchmodat, "
+                "chown, fchown, lchown, fchownat, umask, gettimeofday, "
+                "getuid, geteuid, getgid, getegid, setuid, setgid, setpgid, "
+                "getpgid, getppid, getpgrp, setsid, setreuid, setregid, "
+                "getgroups, setgroups, setresuid, getresuid, setresgid, "
+                "getresgid, getsid, capget, capset, sigaltstack, utime, "
+                "utimes, utimensat, futimesat, mknod, mknodat, statfs, "
+                "fstatfs, sysinfo, getrlimit, setrlimit, prlimit64, "
+                "epoll_create, epoll_create1, epoll_ctl, epoll_wait, "
+                "epoll_pwait, eventfd, eventfd2, signalfd, signalfd4, "
+                "timerfd_create, timerfd_settime, timerfd_gettime, "
+                "futex, set_tid_address, set_robust_list, get_robust_list, "
+                "arch_prctl, prctl, restart_syscall, nanosleep, clock_gettime, "
+                "clock_getres, clock_nanosleep, openat2, statx, faccessat, "
+                "faccessat2, fadvise64, getrandom, membarrier, copy_file_range, "
+                "preadv, pwritev, preadv2, pwritev2, pkey_alloc, pkey_free, "
+                "pkey_mprotect, io_uring_setup, io_uring_enter, io_uring_register "
+                "} DEFAULT KILL"
