@@ -321,6 +321,31 @@ def is_configured() -> bool:
     return bool(_read_section().get("url"))
 
 
+def _iwt_snapshot() -> Optional[Path]:
+    """Single-call atomic read of the IWT state. Returns the on-disk
+    clone path iff (a) ``instance.yaml`` currently reports IWT
+    configured AND (b) the clone directory exists at that moment.
+    Returns ``None`` otherwise.
+
+    Why a single helper: ``seed_owns``, ``resolve_seed_file``, and
+    ``list_seed_files`` each used to do a 2-step probe (``is_configured``
+    then a separate ``.is_file()``/``.is_dir()``). If an admin clicked
+    "unset URL" between the two steps, the answer was inconsistent —
+    yes-then-no or no-then-yes — and a downstream editor could land in
+    a state that contradicts the YAML's source of truth. Funneling
+    both probes through one helper collapses the inconsistency window
+    to the gap between this helper's two stat calls (microseconds),
+    and the answer is then re-used consistently by the caller without
+    a second YAML read mid-function.
+    """
+    if not is_configured():
+        return None
+    iwt_root = get_initial_workspace_dir()
+    if not iwt_root.is_dir():
+        return None
+    return iwt_root
+
+
 def resolve_seed_file(rel_path: str) -> Optional[tuple[str, str]]:
     """Look up a seed file by repo-relative path.
 
@@ -336,8 +361,9 @@ def resolve_seed_file(rel_path: str) -> Optional[tuple[str, str]]:
     (a corrupt clone is an operator failure that should surface, not be
     silently masked by the bundle).
     """
-    if is_configured():
-        iwt_path = get_initial_workspace_dir() / rel_path
+    iwt_root = _iwt_snapshot()
+    if iwt_root is not None:
+        iwt_path = iwt_root / rel_path
         if iwt_path.is_file():
             return (iwt_path.read_text(encoding="utf-8"), "iwt")
 
@@ -359,9 +385,10 @@ def seed_owns(rel_path: str) -> bool:
     fallback, not "operator-owned content". Admin can override the bundle
     via local DB write; only IWT-clone-provided files lock the editor.
     """
-    if not is_configured():
+    iwt_root = _iwt_snapshot()
+    if iwt_root is None:
         return False
-    return (get_initial_workspace_dir() / rel_path).is_file()
+    return (iwt_root / rel_path).is_file()
 
 
 def list_seed_files(rel_dir: str) -> List[Path]:
@@ -385,8 +412,9 @@ def list_seed_files(rel_dir: str) -> List[Path]:
     Returns absolute paths sorted alphabetically. Empty list when neither
     tier has the directory.
     """
-    if is_configured():
-        iwt_dir = get_initial_workspace_dir() / rel_dir
+    iwt_root = _iwt_snapshot()
+    if iwt_root is not None:
+        iwt_dir = iwt_root / rel_dir
         if iwt_dir.is_dir():
             return sorted(p for p in iwt_dir.rglob("*") if p.is_file())
 

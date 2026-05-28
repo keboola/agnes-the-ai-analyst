@@ -130,6 +130,29 @@ without polluting the connector tile list.
 
 ---
 
+### 4.1. Manifest is the allowlist for `connectors:` overlay
+
+The `connectors:` section of `instance.yaml` (the operator-side per-
+tenant overlay) is filtered against the seed-derived manifest before
+it reaches the analyst's `.env`. Only keys that match a slug emitted
+by the manifest scan survive; anything else is ignored and logged at
+WARNING in the Agnes server logs.
+
+Two consequences for operators:
+
+- A typo (`connector-atlasian:` instead of `connector-atlassian:`)
+  silently drops the entire block instead of writing a junk slug
+  into `.env`. Check the server logs after editing the overlay if a
+  connector's params don't show up on the analyst side.
+- Adding a key to the overlay before the matching `connector-<slug>/`
+  SKILL.md ships from the seed does NOT pre-stage the params — they
+  start landing the moment the manifest entry exists and not before.
+
+The `globals:` block bypasses the allowlist (it's not slug-scoped) and
+is always emitted as-is.
+
+---
+
 ## 5. `install-prompt/template.md.tmpl` placeholders
 
 The Agnes server substitutes the following placeholders at render time

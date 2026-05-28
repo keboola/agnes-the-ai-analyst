@@ -95,6 +95,61 @@ def test_params_empty_when_overlay_absent(client_with_admin):
     assert body["globals"] == {}
 
 
+def test_params_filters_overlay_to_manifest_allowlist(client_with_admin, monkeypatch, caplog):
+    """Code review on PR #462: the per-tenant `connectors:` overlay was
+    emitted verbatim, so an operator typo (`connector-atlasian:` instead
+    of `connector-atlassian:`) would land in the analyst's `.env` as a
+    junk slug, polluting it AND silently dropping the real connector's
+    params. The manifest is the source of truth for "which slugs
+    exist"; everything else is dropped + logged at WARNING.
+
+    `globals:` bypasses the allowlist (it's not slug-scoped) — verify it
+    still passes through unchanged.
+    """
+    client, token = client_with_admin
+
+    # Synthesize the overlay shape `_load_current_instance_yaml` returns.
+    # Three keys exercise the three branches: one valid manifest slug
+    # (asana — should survive), one typo of a real slug (atlasian —
+    # should drop), one completely unrelated key (random-junk — should
+    # also drop). globals is non-slug-scoped — should always pass.
+    overlay = {
+        "connectors": {
+            "globals": {"AGNES_INSTANCE_BRAND": "Acme"},
+            "connector-asana": {"AGNES_ASANA_PAT_ENV": "AGNES_ASANA_PAT"},
+            "connector-atlasian": {"ATLASSIAN_BASE_URL": "https://typo.example"},
+            "random-junk": {"X": "Y"},
+        },
+    }
+    monkeypatch.setattr(
+        "app.api.admin._load_current_instance_yaml",
+        lambda: overlay,
+    )
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="app.api.connectors"):
+        resp = client.get(
+            "/api/connectors/params",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Only the manifest-known slug survives. Operator typo + unrelated
+    # key are silently dropped (silent FROM the analyst's perspective;
+    # noisy in the server log — asserted below).
+    assert body["params"] == {
+        "connector-asana": {"AGNES_ASANA_PAT_ENV": "AGNES_ASANA_PAT"},
+    }
+    # globals bypass the allowlist.
+    assert body["globals"] == {"AGNES_INSTANCE_BRAND": "Acme"}
+    # Server-side warning names BOTH ignored slugs (sorted for stable
+    # diagnostic output) so the operator can spot a typo in logs.
+    warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("connector-atlasian" in m and "random-junk" in m for m in warnings), (
+        f"expected single warning naming both ignored slugs; got {warnings}"
+    )
+
+
 def test_bundled_seed_files_present():
     """The wheel-resident bundled seed must include the install-prompt
     template + the three connector SKILL.md files. This guards against

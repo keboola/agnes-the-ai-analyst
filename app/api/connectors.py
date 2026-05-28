@@ -181,7 +181,29 @@ async def get_params(
         if flat:
             per_connector[str(key)] = flat
 
+    # Allowlist filter: only emit params for slugs the seed manifest
+    # actually advertises. The overlay accepts arbitrary keys (operator
+    # types `connector-atlasian:` instead of `connector-atlassian:`),
+    # and unfiltered we'd write that typo into the analyst's `.env`,
+    # silently breaking the real connector while polluting their env.
+    # The manifest is the source of truth for "what connectors exist";
+    # anything outside that set is ignored AND logged at WARNING so the
+    # operator notices.
+    known_slugs = {entry.slug for entry in load_manifest()}
+    unknown = sorted(set(per_connector) - known_slugs)
+    if unknown:
+        logger.warning(
+            "connectors.params: ignoring unknown slugs in instance.yaml "
+            "(not in manifest): %s",
+            unknown,
+        )
+    filtered = {
+        slug: params
+        for slug, params in per_connector.items()
+        if slug in known_slugs
+    }
+
     return ConnectorsParamsResponse(
-        params=per_connector,
+        params=filtered,
         globals=globals_block,
     )
