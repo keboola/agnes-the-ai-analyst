@@ -41,7 +41,23 @@ def _consume_admin_ticket(ticket: str) -> Optional[str]:
 
 
 @router.get("")
-async def list_active(request: Request, _admin: dict = Depends(require_admin)):
+async def list_active(request: Request, admin: dict = Depends(require_admin)):
+    """List active chat sessions (or render the dashboard shell).
+
+    Content-negotiated: browsers (``Accept: text/html``) get the
+    ``admin_chat.html`` shell which then re-fetches this endpoint with
+    ``Accept: application/json`` to populate the table.  Programmatic
+    callers and the dashboard JS get the JSON payload directly.
+
+    Single-endpoint design (per Task B.3 + architect finding #8) — the
+    dashboard URL must match the JSON URL so admins typing /admin/chat
+    in the address bar see something, not a 404.
+    """
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and "application/json" not in accept:
+        from app.web.router import templates as _templates, _build_context as _build_ctx
+        ctx = _build_ctx(request, user=admin)
+        return _templates.TemplateResponse(request, "admin_chat.html", ctx)
     mgr = getattr(request.app.state, "chat_manager", None)
     if mgr is None:
         return {"sessions": [], "warning": "chat_disabled"}

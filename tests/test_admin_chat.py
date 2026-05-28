@@ -220,3 +220,42 @@ def test_admin_tail_rejects_expired_or_unknown_ticket(
         ) as ws:
             ws.receive_json()
     assert excinfo.value.code == 4401
+
+
+# ---------------------------------------------------------------------------
+# Task B.3: GET /admin/chat HTML page (content-negotiated)
+# ---------------------------------------------------------------------------
+
+
+def test_admin_chat_html_route_renders_for_admin(
+    api_client: TestClient, logged_in_admin,
+):
+    """GET /admin/chat with Accept: text/html returns the dashboard shell.
+
+    Same URL serves JSON for programmatic clients (Accept: application/json
+    or no preference); browsers get the HTML.
+    """
+    r = api_client.get("/admin/chat", headers={"Accept": "text/html"})
+    assert r.status_code == 200, r.text
+    assert "text/html" in r.headers["content-type"]
+    assert "Active chat sessions" in r.text
+
+
+def test_admin_chat_json_still_works_for_programmatic_caller(
+    api_client: TestClient, logged_in_admin,
+):
+    """JSON callers still receive the sessions list (no regression on B.3)."""
+    r = api_client.get("/admin/chat", headers={"Accept": "application/json"})
+    assert r.status_code == 200
+    assert "application/json" in r.headers["content-type"]
+    assert "sessions" in r.json()
+
+
+def test_admin_chat_html_route_forbidden_for_non_admin(
+    api_client_non_admin: TestClient, logged_in_user,
+):
+    """Non-admin caller gets 403 from /admin/chat regardless of Accept."""
+    r = api_client_non_admin.get(
+        "/admin/chat", headers={"Accept": "text/html"}, follow_redirects=False,
+    )
+    assert r.status_code in (302, 307, 403)
