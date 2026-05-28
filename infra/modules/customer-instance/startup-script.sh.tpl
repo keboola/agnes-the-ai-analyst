@@ -101,6 +101,22 @@ chmod +x /usr/local/bin/agnes-auto-upgrade.sh
 # script + its systemd units are baked into /opt/agnes-host/ via Dockerfile
 # (same image-extract contract as agnes-auto-upgrade.sh above), already
 # pulled into $APP_DIR by the recursive docker cp two lines up.
+# Create dedicated non-root user for the DB-state applier — limits
+# blast radius from full root to "docker group" (still effectively
+# root via /var/run/docker.sock, but no other system surface).
+# Idempotent on re-runs.
+if ! id -u agnes-applier >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --user-group agnes-applier
+fi
+usermod -aG docker agnes-applier
+mkdir -p /data/state /data/postgres
+chown -R agnes-applier:agnes-applier /data/state
+# /data/postgres must stay 70:70 (postgres image uid) — applier just
+# runs docker exec against the container, doesn't touch the volume.
+chown 70:70 /data/postgres
+chmod 700 /data/postgres
+
 install -m 0755 "$APP_DIR/agnes-state-applier.sh" /usr/local/bin/agnes-state-applier.sh
 install -m 0644 "$APP_DIR/agnes-state-applier.service" /etc/systemd/system/agnes-state-applier.service
 install -m 0644 "$APP_DIR/agnes-state-applier.timer" /etc/systemd/system/agnes-state-applier.timer

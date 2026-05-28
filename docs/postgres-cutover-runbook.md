@@ -10,6 +10,34 @@ and that the app lives at `/opt/agnes` (the default install path).
 
 ---
 
+## Migrating an existing VM to the non-root applier (one-time, Phase 8.1)
+
+Customer-instance VMs provisioned BEFORE this commit ran the
+agnes-state-applier as root. New VMs get the non-root setup
+automatically via the startup-script. To migrate an existing VM:
+
+```bash
+# As root on the customer VM:
+useradd --system --no-create-home --shell /usr/sbin/nologin \
+        --user-group agnes-applier
+usermod -aG docker agnes-applier
+chown -R agnes-applier:agnes-applier /data/state
+systemctl daemon-reload
+systemctl restart agnes-state-applier.timer
+```
+
+Then confirm the next tick succeeds:
+
+```bash
+journalctl -u agnes-state-applier.service -f
+```
+
+(If the timer was active and a migration was running mid-tick when
+you ran the commands above, the in-flight tick continues as root —
+the next tick fires as agnes-applier.)
+
+---
+
 ## What changed
 
 - **Postgres is now a side-car container on the customer-instance VM.** The
