@@ -14,6 +14,18 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
 
+# Maps resource_type string to the per-type FK column name (migration 0013).
+# marketplace_plugin is absent — it uses the legacy polymorphic resource_id
+# only (composite slug/name path, no surrogate FK possible).
+_PER_TYPE_COLUMN: Dict[str, str] = {
+    "table": "resource_id_table",
+    "data_package": "resource_id_data_package",
+    "memory_domain": "resource_id_memory_domain",
+    "memory_item": "resource_id_memory_item",
+    "recipe": "resource_id_recipe",
+}
+
+
 class ResourceGrantsPgRepository:
     _SELECT_COLS = (
         "id, group_id, resource_type, resource_id, "
@@ -120,13 +132,22 @@ class ResourceGrantsPgRepository:
         assigned_by: Optional[str] = None,
     ) -> str:
         grant_id = str(uuid4())
+        per_type_col = _PER_TYPE_COLUMN.get(resource_type)
+        if per_type_col:
+            sql = sa.text(
+                f"""INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id, {per_type_col}, assigned_by)
+                   VALUES (:id, :gid, :rtype, :rid, :rid, :ab)"""
+            )
+        else:
+            sql = sa.text(
+                """INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id, assigned_by)
+                   VALUES (:id, :gid, :rtype, :rid, :ab)"""
+            )
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    """INSERT INTO resource_grants
-                       (id, group_id, resource_type, resource_id, assigned_by)
-                       VALUES (:id, :gid, :rtype, :rid, :ab)"""
-                ),
+                sql,
                 {
                     "id": grant_id,
                     "gid": group_id,

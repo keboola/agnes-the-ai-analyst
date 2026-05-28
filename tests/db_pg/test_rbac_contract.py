@@ -162,13 +162,15 @@ def test_resource_grant_create_then_has_grant(rbac_repos):
     grants = repos["grants"]
 
     grp = groups.create(name="readers", created_by="admin@x.com")
+    # Use 'marketplace_plugin' so no table_registry row is needed — the
+    # per-type FK columns are NULL for this type (application-validated).
     grants.create(
         group_id=grp["id"],
-        resource_type="table",
-        resource_id="web_sessions",
+        resource_type="marketplace_plugin",
+        resource_id="my-marketplace/web_sessions",
         assigned_by="admin@x.com",
     )
-    assert grants.has_grant([grp["id"]], "table", "web_sessions") is True
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "my-marketplace/web_sessions") is True
 
 
 def test_resource_grant_delete_then_has_grant_false(rbac_repos):
@@ -177,15 +179,17 @@ def test_resource_grant_delete_then_has_grant_false(rbac_repos):
     grants = repos["grants"]
 
     grp = groups.create(name="writers", created_by="admin@x.com")
+    # Use 'marketplace_plugin' so no table_registry row is needed — the
+    # per-type FK columns are NULL for this type (application-validated).
     grant_id = grants.create(
         group_id=grp["id"],
-        resource_type="table",
-        resource_id="orders",
+        resource_type="marketplace_plugin",
+        resource_id="my-marketplace/orders",
         assigned_by="admin@x.com",
     )
-    assert grants.has_grant([grp["id"]], "table", "orders") is True
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "my-marketplace/orders") is True
     grants.delete(grant_id)
-    assert grants.has_grant([grp["id"]], "table", "orders") is False
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "my-marketplace/orders") is False
 
 
 def test_list_groups_for_user_returns_joined_groups(rbac_repos):

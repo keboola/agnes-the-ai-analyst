@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 59
+SCHEMA_VERSION = 60
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -516,6 +516,15 @@ CREATE TABLE IF NOT EXISTS resource_grants (
     requirement   VARCHAR DEFAULT 'available',
     assigned_at   TIMESTAMP DEFAULT current_timestamp,
     assigned_by   VARCHAR,
+    -- v60: per-type FK columns (E.3). One of these is non-NULL for each
+    -- of the 5 typed ResourceTypes; all NULL for marketplace_plugin.
+    -- DuckDB has no FK/CHECK enforcement — application-layer validates.
+    -- PG carries the real FKs + CHECK via migration 0013.
+    resource_id_table          VARCHAR,
+    resource_id_data_package   VARCHAR,
+    resource_id_memory_domain  VARCHAR,
+    resource_id_memory_item    VARCHAR,
+    resource_id_recipe         VARCHAR,
     UNIQUE (group_id, resource_type, resource_id)
 );
 
@@ -4155,6 +4164,54 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v59_to_v60(conn: duckdb.DuckDBPyConnection) -> None:
+    """v60: per-type FK columns on ``resource_grants`` (E.3).
+
+    Adds five NULLable columns to mirror the PG per-type FK design
+    (migration 0013):
+
+      resource_id_table          — set when resource_type='table'
+      resource_id_data_package   — set when resource_type='data_package'
+      resource_id_memory_domain  — set when resource_type='memory_domain'
+      resource_id_memory_item    — set when resource_type='memory_item'
+      resource_id_recipe         — set when resource_type='recipe'
+
+    DuckDB has limited FK and CHECK constraint support, so neither is
+    enforced at the DB layer here — application code is the source of
+    truth for both backends. The PG migration (0013) carries the real
+    FK + CHECK; this step merely keeps the column set in sync so the
+    DB-state migrator can copy every column when moving DuckDB → PG.
+
+    All ALTERs use ADD COLUMN IF NOT EXISTS — idempotent.
+
+    Merge note: if main ships a v60 telemetry migration before this
+    branch merges, this step will be renumbered to v61 and the
+    dispatch blocks updated accordingly.
+    """
+    for col_sql in (
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_table VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_data_package VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_memory_domain VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_memory_item VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_recipe VARCHAR",
+    ):
+        conn.execute(col_sql)
+    # Backfill: copy resource_id into the per-type column for existing rows.
+    # marketplace_plugin rows are left with all per-type columns NULL.
+    for rtype, col in (
+        ("table", "resource_id_table"),
+        ("data_package", "resource_id_data_package"),
+        ("memory_domain", "resource_id_memory_domain"),
+        ("memory_item", "resource_id_memory_item"),
+        ("recipe", "resource_id_recipe"),
+    ):
+        conn.execute(
+            f"UPDATE resource_grants SET {col} = resource_id WHERE resource_type = ?",
+            [rtype],
+        )
+    conn.execute("UPDATE schema_version SET version = 60")
+
+
 def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
     """v56: extended-content columns on ``data_packages`` + structured
     per-table doc columns on ``table_registry``.
@@ -4473,6 +4530,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v56 extended content columns on data_packages + structured
             # per-table doc columns on table_registry.
             _v58_to_v59(conn)
+            # v57 per-type FK columns on resource_grants (E.3). _SYSTEM_SCHEMA
+            # already declares the columns on fresh installs (no-op ALTERs);
+            # the backfill UPDATE is a no-op on an empty table.
+            _v59_to_v60(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4644,6 +4705,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v57_to_v58(conn)
             if current < 59:
                 _v58_to_v59(conn)
+            if current < 60:
+                _v59_to_v60(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

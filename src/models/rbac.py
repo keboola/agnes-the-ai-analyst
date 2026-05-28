@@ -91,60 +91,53 @@ class UserGroupMember(Base):
 class ResourceGrant(Base):
     """Generic ``(group, resource_type, resource_id)`` access tuple.
 
-    Polymorphic by design: ``resource_id`` is a free-form string whose
-    schema is determined by the enum member persisted in
-    ``resource_type``. There is intentionally NO PG-level foreign key
-    from ``resource_id`` to the target entity table — see the
-    cross-type table below for why.
+    Per-type FK design (E.3, migration 0013):
 
-    +------------------------+--------------------------------+----------------+
-    | resource_type          | resource_id shape              | target table   |
-    +========================+================================+================+
-    | ``marketplace_plugin`` | ``<slug>/<plugin_name>``       | composite —    |
-    |                        |                                | no surrogate   |
-    +------------------------+--------------------------------+----------------+
-    | ``table``              | ``<table_id>`` (UUID)          | table_registry |
-    +------------------------+--------------------------------+----------------+
-    | ``data_package``       | ``<package_id>`` (UUID)        | data_packages  |
-    +------------------------+--------------------------------+----------------+
-    | ``memory_domain``      | ``<memory_domain_id>`` (UUID)  | memory_domains |
-    +------------------------+--------------------------------+----------------+
-    | ``memory_item``        | ``<knowledge_item_id>`` (UUID) | knowledge_items|
-    +------------------------+--------------------------------+----------------+
-    | ``recipe``             | ``<recipe_id>`` (UUID)         | recipes        |
-    +------------------------+--------------------------------+----------------+
+    Five of the six ResourceTypes target tables with stable surrogate
+    UUIDs. Each gets a dedicated NULLable FK column that carries
+    ON DELETE CASCADE, so DB-level integrity is enforced and orphan
+    grants are automatically removed when the parent row is deleted.
 
-    Why no FK (E.3 from round-2 review; cvrysanek's LOW finding):
+    +------------------------+--------------------------------+------------------------------+
+    | resource_type          | resource_id shape              | per-type FK column           |
+    +========================+================================+==============================+
+    | ``table``              | ``<table_id>`` (UUID)          | resource_id_table            |
+    +------------------------+--------------------------------+------------------------------+
+    | ``data_package``       | ``<package_id>`` (UUID)        | resource_id_data_package     |
+    +------------------------+--------------------------------+------------------------------+
+    | ``memory_domain``      | ``<memory_domain_id>`` (UUID)  | resource_id_memory_domain    |
+    +------------------------+--------------------------------+------------------------------+
+    | ``memory_item``        | ``<knowledge_item_id>`` (UUID) | resource_id_memory_item      |
+    +------------------------+--------------------------------+------------------------------+
+    | ``recipe``             | ``<recipe_id>`` (UUID)         | recipes                      |
+    +------------------------+--------------------------------+------------------------------+
+    | ``marketplace_plugin`` | ``<slug>/<plugin_name>``       | — application-validated only |
+    +------------------------+--------------------------------+------------------------------+
 
-    1. ``marketplace_plugin`` uses a composite path that doesn't match
-       any single surrogate column on ``marketplace_plugins``. The
-       table's PK is ``(marketplace_id, name)``; the grant id is
-       ``"<slug>/<name>"`` where slug != marketplace_id. A FK would
-       require either denormalising the grant (split into two columns)
-       or denormalising the plugins table (add a ``slug_path`` column
-       with a CHECK that it stays consistent with id+name).
-    2. PG doesn't support polymorphic FKs natively. The five non-
-       marketplace types all target tables with stable surrogate
-       UUIDs, but a single FK constraint can only reference ONE
-       target table — encoding the per-type target requires either
-       five conditional CHECK-via-trigger constraints (verbose,
-       maintenance burden when adding a new resource type) or five
-       NULLable FK columns with a CHECK that exactly one is non-NULL
-       (verbose; requires migrating every existing grant row to split
-       resource_id into the right per-type column).
-    3. Orphan grants are an information-leakage non-issue today:
-       ``app.auth.access`` does the existence check at lookup time
-       (the resource list returned from ``list_blocks`` drops missing
-       entities), and the admin /access UI surfaces a per-grant
-       "no longer exists" badge so operators clean up at their pace.
-       The downside of orphan rows is purely cosmetic — they don't
-       grant access to anything that doesn't exist.
+    Why ``marketplace_plugin`` (and future/unknown types) stay application-validated:
 
-    The pragmatic choice: keep the loose link, document why, and let
-    the application layer be the source of truth for FK enforcement.
-    A periodic admin "clean up orphan grants" job (currently manual
-    via /admin/access) is the cheapest way to bound the orphan
-    population if it becomes a real problem.
+    ``marketplace_plugin`` ``resource_id`` is a composite ``"<slug>/<plugin_name>"``
+    path. The ``marketplace_plugins`` table's PK is ``(marketplace_id, name)``
+    where ``marketplace_id`` is the registry UUID, not the slug.  There
+    is no single surrogate column to FK against without denormalising
+    one of the two tables, so this type remains polymorphic: all five
+    per-type columns are NULL for ``marketplace_plugin`` rows.  Any
+    resource_type not in the 5 typed set also falls through to the
+    "all per-type NULL" branch of the CHECK, allowing future enum members
+    to be added without a schema migration.
+
+    Legacy ``resource_id`` column:
+
+    The polymorphic ``resource_id`` column is NOT dropped — existing
+    application queries continue to read from it.  For the 5 typed rows
+    both ``resource_id`` AND the per-type column carry the same value;
+    the per-type column is the FK-enforced source of truth, ``resource_id``
+    is the backwards-compatible lookup column.
+
+    DuckDB note: the per-type columns exist on DuckDB too (added in the
+    v60 ladder step), but DuckDB's FK and CHECK support is limited — the
+    constraints are PG-only.  Application code enforces the invariant on
+    both backends.
     """
 
     __tablename__ = "resource_grants"
@@ -154,8 +147,10 @@ class ResourceGrant(Base):
         String, ForeignKey("user_groups.id"), nullable=False
     )
     resource_type: Mapped[str] = mapped_column(String, nullable=False)
-    # Polymorphic — see class docstring for shape per ``resource_type``.
-    # Intentionally no FK; orphan cleanup is application-layer.
+    # Legacy polymorphic column — kept for backwards-compatible app queries.
+    # For the 5 typed ResourceTypes the per-type FK column below also carries
+    # the value (FK-enforced); for marketplace_plugin this remains the sole
+    # source of truth (application-validated, no surrogate FK possible).
     resource_id: Mapped[str] = mapped_column(String, nullable=False)
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -167,6 +162,37 @@ class ResourceGrant(Base):
     # ``available`` (default) vs ``required`` (must-install for the group).
     # Nullable so legacy rows that predate the column migrate cleanly.
     requirement: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # --- Per-type FK columns (migration 0013) ---
+    # Exactly one of these is non-NULL for each of the 5 typed ResourceTypes;
+    # all are NULL for marketplace_plugin rows. A PG CHECK constraint enforces
+    # this invariant. ON DELETE CASCADE keeps the grants table clean without
+    # requiring periodic orphan-sweep jobs.
+    resource_id_table: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("table_registry.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    resource_id_data_package: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("data_packages.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    resource_id_memory_domain: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("memory_domains.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    resource_id_memory_item: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("knowledge_items.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    resource_id_recipe: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("recipes.id", ondelete="CASCADE"),
+        nullable=True,
+    )
 
     __table_args__ = (
         UniqueConstraint(

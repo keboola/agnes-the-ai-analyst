@@ -17,6 +17,18 @@ from uuid import uuid4
 import duckdb
 
 
+# Maps resource_type string to the per-type column name (schema v60 / PG
+# migration 0013). marketplace_plugin is absent — it uses only the legacy
+# polymorphic resource_id column (composite slug/name, no surrogate FK).
+_PER_TYPE_COLUMN: Dict[str, str] = {
+    "table": "resource_id_table",
+    "data_package": "resource_id_data_package",
+    "memory_domain": "resource_id_memory_domain",
+    "memory_item": "resource_id_memory_item",
+    "recipe": "resource_id_recipe",
+}
+
+
 class ResourceGrantsRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
@@ -135,24 +147,41 @@ class ResourceGrantsRepository:
         (group_id, resource_type, resource_id) — caller surfaces as 409.
         """
         grant_id = str(uuid4())
+        per_type_col = _PER_TYPE_COLUMN.get(resource_type)
         if requirement is None:
-            self.conn.execute(
-                """INSERT INTO resource_grants
-                   (id, group_id, resource_type, resource_id, assigned_by)
-                   VALUES (?, ?, ?, ?, ?)""",
-                [grant_id, group_id, resource_type, resource_id, assigned_by],
-            )
+            if per_type_col:
+                self.conn.execute(
+                    f"""INSERT INTO resource_grants
+                       (id, group_id, resource_type, resource_id, {per_type_col}, assigned_by)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [grant_id, group_id, resource_type, resource_id, resource_id, assigned_by],
+                )
+            else:
+                self.conn.execute(
+                    """INSERT INTO resource_grants
+                       (id, group_id, resource_type, resource_id, assigned_by)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    [grant_id, group_id, resource_type, resource_id, assigned_by],
+                )
         else:
             if requirement not in ("available", "required"):
                 raise ValueError(
                     f"requirement must be 'available' or 'required', got {requirement!r}"
                 )
-            self.conn.execute(
-                """INSERT INTO resource_grants
-                   (id, group_id, resource_type, resource_id, assigned_by, requirement)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                [grant_id, group_id, resource_type, resource_id, assigned_by, requirement],
-            )
+            if per_type_col:
+                self.conn.execute(
+                    f"""INSERT INTO resource_grants
+                       (id, group_id, resource_type, resource_id, {per_type_col}, assigned_by, requirement)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    [grant_id, group_id, resource_type, resource_id, resource_id, assigned_by, requirement],
+                )
+            else:
+                self.conn.execute(
+                    """INSERT INTO resource_grants
+                       (id, group_id, resource_type, resource_id, assigned_by, requirement)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [grant_id, group_id, resource_type, resource_id, assigned_by, requirement],
+                )
         return grant_id
 
     def update_requirement(

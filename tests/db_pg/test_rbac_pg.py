@@ -232,11 +232,18 @@ def test_user_group_members_replace_google_sync(rbac_engine):
 # ---------------------------------------------------------------------------
 
 def test_resource_grants_create_and_has_grant(rbac_engine):
+    import sqlalchemy as sa
     from src.repositories.resource_grants_pg import ResourceGrantsPgRepository
     from src.repositories.user_groups_pg import UserGroupsPgRepository
 
     groups = UserGroupsPgRepository(rbac_engine)
     grants = ResourceGrantsPgRepository(rbac_engine)
+
+    # Seed table_registry row so the per-type FK is satisfied.
+    with rbac_engine.begin() as conn:
+        conn.execute(sa.text(
+            "INSERT INTO table_registry (id, name) VALUES ('bq.dataset.events', 'events')"
+        ))
 
     g = groups.create(name="g1")
     grant_id = grants.create(

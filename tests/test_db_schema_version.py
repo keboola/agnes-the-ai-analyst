@@ -169,7 +169,17 @@ def test_schema_version_is_59():
     #            (grain, platforms, partition_col, history, gotchas) for
     #            the /catalog/p/<slug> rewrite per the extended-
     #            descriptions admin spec. All additive + NULLABLE.
-    assert SCHEMA_VERSION == 59
+    # v59 → v60: per-type FK columns on ``resource_grants`` (E.3).
+    #            Five NULLable VARCHAR columns mirror the PG FK design —
+    #            resource_id_table, resource_id_data_package,
+    #            resource_id_memory_domain, resource_id_memory_item,
+    #            resource_id_recipe. Backfilled from resource_id per
+    #            resource_type. marketplace_plugin rows leave all five
+    #            NULL (application-validated). DuckDB has no FK/CHECK
+    #            enforcement; PG migration 0013 carries the real
+    #            constraints. Merge note: renumber to v61 if main ships
+    #            a v60 telemetry migration before this branch merges.
+    assert SCHEMA_VERSION == 60
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
