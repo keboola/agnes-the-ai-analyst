@@ -84,3 +84,57 @@ def test_disabled_returns_503(api_client_chat_disabled, logged_in_user):  # noqa
     r = api_client_chat_disabled.post("/api/chat/sessions", json={"surface": "web"})
     assert r.status_code == 503
     assert r.json()["detail"]["kind"] == "chat_disabled"
+
+
+# ---------------------------------------------------------------------------
+# Task D.1 — production JWT secret check
+# ---------------------------------------------------------------------------
+
+
+def test_chat_refuses_without_jwt_secret(monkeypatch):
+    """chat.enabled=true with no JWT_SECRET_KEY → helper refuses.
+
+    Without this gate, the chat path would silently mint JWTs against the
+    fallback ``test-jwt-secret-key-minimum-32-chars!!`` constant — a
+    production deployment would think it's authenticated and the secret
+    would be public.
+    """
+    from app.chat.config import ChatConfig
+    from app.main import _chat_jwt_secret_ok
+
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True)
+    assert _chat_jwt_secret_ok(cfg) is False
+
+
+def test_chat_refuses_short_jwt_secret(monkeypatch):
+    """JWT_SECRET_KEY < 32 chars → refused as too weak."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_jwt_secret_ok
+
+    monkeypatch.setenv("JWT_SECRET_KEY", "too-short")
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True)
+    assert _chat_jwt_secret_ok(cfg) is False
+
+
+def test_chat_accepts_long_jwt_secret(monkeypatch):
+    """A 32+-byte JWT_SECRET_KEY is accepted (no fatal)."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_jwt_secret_ok
+
+    monkeypatch.setenv(
+        "JWT_SECRET_KEY", "this-is-a-32-char-or-more-secret-key!!",
+    )
+    monkeypatch.delenv("TESTING", raising=False)
+    assert _chat_jwt_secret_ok(ChatConfig(enabled=True)) is True
+
+
+def test_chat_skips_jwt_check_when_disabled(monkeypatch):
+    """chat.enabled=false → the helper returns True regardless of env."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_jwt_secret_ok
+
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    assert _chat_jwt_secret_ok(ChatConfig(enabled=False)) is True

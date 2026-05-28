@@ -48,6 +48,50 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.middleware.request_id import RequestIdMiddleware
 
 
+def _chat_jwt_secret_ok(chat_config) -> bool:
+    """Refuse ``chat.enabled=true`` deployments that lack a real
+    ``JWT_SECRET_KEY`` (unset or shorter than 32 bytes).
+
+    The chat path mints session JWTs that authenticate the sandboxed
+    runner back to the Agnes server.  If ``JWT_SECRET_KEY`` is unset, the
+    auth layer falls back to the public test constant
+    (``test-jwt-secret-key-minimum-32-chars!!`` — committed in jwt.py for
+    local-dev convenience).  A production deployment that flips
+    ``chat.enabled: true`` without setting a real secret would mint and
+    verify tokens against that constant — anyone who reads the source
+    could mint runner JWTs.  Refuse to enable chat in that state and
+    surface a fatal log so the operator knows why.
+
+    Returns True when chat is disabled (irrelevant) or when the secret is
+    set and >= 32 bytes; False otherwise.
+    """
+    if not chat_config.enabled:
+        return True
+    # Bypass when TESTING=1 — pytest-driven sessions deliberately use the
+    # short fallback constant and we don't want every chat-touching test
+    # to need a manually-set 32+-byte env var.
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    secret = os.environ.get("JWT_SECRET_KEY", "")
+    if not secret:
+        logger = logging.getLogger("app.main")
+        logger.error(
+            "chat.enabled=true but JWT_SECRET_KEY is unset — "
+            "refusing to enable chat. Set a 32+ byte JWT_SECRET_KEY in "
+            "the server env before flipping chat.enabled.",
+        )
+        return False
+    if len(secret) < 32:
+        logger = logging.getLogger("app.main")
+        logger.error(
+            "chat.enabled=true but JWT_SECRET_KEY is only %d bytes — "
+            "refusing to enable chat (minimum 32 bytes).",
+            len(secret),
+        )
+        return False
+    return True
+
+
 class _SelectiveGZipMiddleware:
     """GZipMiddleware wrapper that skips a set of path prefixes.
 
@@ -431,6 +475,10 @@ async def lifespan(app):
                     "cloud chat requires a single-worker deployment; "
                     "chat_manager disabled"
                 )
+                app.state.chat_manager = None
+            elif not _chat_jwt_secret_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.  Disable chat so the
+                # runner never spawns with a public-constant secret.
                 app.state.chat_manager = None
             else:
                 from app.chat.workdir import WorkdirManager
