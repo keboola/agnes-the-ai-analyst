@@ -6,9 +6,9 @@ poll. Steps for duckdb → side_car:
 
   1. validate connectivity
   2. alembic upgrade head on target
-  3. data copy DuckDB → target (reuses scripts/migrate_duckdb_to_pg)
-  4. verify row counts
-  5. backup DuckDB snapshot
+  3. backup DuckDB snapshot (recovery point BEFORE any destructive write)
+  4. data copy DuckDB → target (reuses scripts/migrate_duckdb_to_pg)
+  5. verify row counts
   6. flip instance.yaml::database
 
 For side_car → cloud, source is the side-car PG; data step uses the
@@ -476,7 +476,7 @@ def main(
       ============  ============  ===========================
       Source        Target        Steps
       ============  ============  ===========================
-      duckdb        side_car      alembic + duckdb→pg + verify + backup duckdb + flip
+      duckdb        side_car      alembic + backup duckdb + duckdb→pg + verify + flip
       duckdb        cloud         alembic + duckdb→pg + verify + flip
       side_car      cloud         alembic + backup sidecar + pg→pg + verify + flip
       cloud         side_car      alembic + pg→pg + verify + flip
@@ -521,6 +521,17 @@ def main(
         if source_backend == "duckdb":
             # duckdb → side_car  OR  duckdb → cloud — both copy from the
             # DuckDB file to whichever PG target the operator picked.
+
+            if to == "side_car":
+                # Backup the DuckDB file BEFORE any destructive operation on
+                # the target. If anything in the rest of the pipeline crashes
+                # the operator still has the source snapshot they need to
+                # retry. The backup runs here — not after verify — so that a
+                # crash anywhere between copy and flip leaves the operator
+                # with a valid recovery point.
+                writer.update_step("backup", progress_pct=15)
+                backup_duckdb(duckdb_path, backups_dir)
+
             writer.update_step("data_copy", progress_pct=40)
             copy_summary = copy_duckdb_to_pg(duckdb_path, target_url)
 
@@ -552,12 +563,6 @@ def main(
                 error_message=f"Row count mismatch: {diffs[:5]}",
             )
             return 1
-
-        if source_backend == "duckdb" and to == "side_car":
-            # Backup the DuckDB file only on the first PG cutover — for
-            # later transitions the DuckDB is already frozen-in-time.
-            writer.update_step("backup", progress_pct=90)
-            backup_duckdb(duckdb_path, backups_dir)
 
         writer.update_step("flip_backend", progress_pct=95)
         target_state = BackendState(to)

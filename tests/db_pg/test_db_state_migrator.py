@@ -245,3 +245,42 @@ def test_verify_pg_raises_on_missing_target_table(tmp_path, pg_engine):
     # missing-target raise must fire regardless.
     with pytest.raises(RuntimeError, match="(target|source) table.*missing"):
         verify_pg_row_counts(str(pg_engine.url), str(pg_engine.url))
+
+
+def test_main_writes_duckdb_backup_before_copy(tmp_path, pg_engine, monkeypatch):
+    """The DuckDB backup must exist on disk BEFORE the data_copy step
+    overwrites any PG state. The previous flow copied first, verified,
+    then backed up — so a crash between verify and flip left the
+    operator with neither a backup nor a flipped state."""
+    import duckdb
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import main
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.close()
+
+    jobs_dir = tmp_path / "db-jobs"
+    backups_dir = tmp_path / "backups"
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    # Force a failure AFTER the backup step by patching copy_duckdb_to_pg
+    # to raise. If the backup was written before the failure, the file
+    # exists on disk.
+    def boom(*a, **kw):
+        raise RuntimeError("simulated mid-copy crash")
+    monkeypatch.setattr("scripts.db_state_migrator.copy_duckdb_to_pg", boom)
+
+    rc = main(
+        job_id="job-backup-order",
+        to="side_car",
+        target_url=str(pg_engine.url),
+        duckdb_path=duck_path,
+        jobs_dir=jobs_dir,
+        backups_dir=backups_dir,
+    )
+    assert rc == 1
+    backups = list(backups_dir.glob("duckdb-pre-sidecar-*.duckdb.gz"))
+    assert backups, "backup file should exist even though copy failed"
