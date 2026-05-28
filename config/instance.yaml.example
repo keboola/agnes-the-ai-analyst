@@ -529,3 +529,21 @@ catalog:
 # Min 60 (1 minute), max 604800 (7 days). Configurable via /admin/server-config UI.
 materialize:
   lock_ttl_seconds: 86400
+
+# --- Cloud-hosted Claude Code (optional) ---
+# Cloud-hosted Claude Code (web /chat + Slack adapter). Off by default;
+# turn on per-instance once you've sized the host for chat workloads
+# (see docs/DEPLOYMENT.md § cloud-chat host requirements).
+chat:
+  enabled: false
+  require_isolation: true             # refuse unjailed subprocess on Linux
+  concurrency_per_user: 3
+  idle_ttl_seconds: 1800              # 30 min
+  per_tool_call_seconds: 90
+  per_session_bq_scan_bytes: 21474836480   # 20 GiB
+  daily_anthropic_spend_usd: 20.0
+  max_session_seconds: 14400
+  max_session_tokens: 200000
+  rate_messages_per_hour: 100
+  tool_calls_per_turn_budget: 50
+  marketplace_sha_debounce_seconds: 300
