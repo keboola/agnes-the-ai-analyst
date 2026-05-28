@@ -45,14 +45,17 @@ def _columns(conn, table: str) -> set[str]:
     }
 
 
-def test_schema_version_is_59():
-    assert SCHEMA_VERSION == 59
+def test_schema_version_is_at_least_59():
+    # v59 was the version that added the extended-content columns; the constant
+    # advances with each subsequent migration. Verify it's >= 59 rather than
+    # pinning to an exact number so this test remains valid after further bumps.
+    assert SCHEMA_VERSION >= 59
 
 
-def test_fresh_install_lands_at_v57(tmp_path):
+def test_fresh_install_lands_at_current_version(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 59
+    assert get_schema_version(conn) == SCHEMA_VERSION
 
 
 def test_v58_to_v59_adds_data_packages_owner_columns(tmp_path):
@@ -123,7 +126,7 @@ def test_v58_to_v59_is_idempotent(tmp_path):
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
     _ensure_schema(conn)  # second pass — no-op
-    assert get_schema_version(conn) == 59
+    assert get_schema_version(conn) == SCHEMA_VERSION
 
 
 def test_v58_to_v59_preserves_table_registry_rows():
