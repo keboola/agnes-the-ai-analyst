@@ -193,24 +193,56 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+#: Bound for the ``alembic upgrade head`` subprocess. Schema migrations
+#: are bound to PG-side ``statement_timeout`` already (set by
+#: ``_bounded_engine``), but the alembic process itself — script
+#: discovery, file load, version-graph computation — also needs a
+#: watchdog so a hung interpreter doesn't pin the migrator forever (H5).
+ALEMBIC_UPGRADE_TIMEOUT_SEC = 300
+
+#: Bound for ``gzip``/``pg_dump`` subprocess. Multi-GB DBs need
+#: generous headroom; 30 min matches the migrator-overall watchdog.
+BACKUP_TIMEOUT_SEC = 1800
+
+
 def alembic_upgrade_head(target_url: str) -> None:
     """Run ``alembic upgrade head`` against ``target_url``.
 
     Idempotent — alembic itself is a no-op when already at head.
-    Raises RuntimeError on failure.
+    Raises ``RuntimeError`` on non-zero exit or on subprocess timeout.
+
+    A wall-clock timeout (``ALEMBIC_UPGRADE_TIMEOUT_SEC``) guards
+    against a hung alembic interpreter (DNS / TLS handshake / lock
+    contention) — see H5.
     """
     import subprocess
 
     repo_root = Path(__file__).resolve().parent.parent
     env = {**os.environ, "DATABASE_URL": target_url}
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(repo_root / "alembic.ini"), "upgrade", "head"],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(repo_root),
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "alembic",
+                "-c",
+                str(repo_root / "alembic.ini"),
+                "upgrade",
+                "head",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(repo_root),
+            check=False,
+            timeout=ALEMBIC_UPGRADE_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"alembic upgrade head timed out after {ALEMBIC_UPGRADE_TIMEOUT_SEC}s "
+            f"(target={target_url!r}). The migration target may be unreachable, "
+            "holding a long lock, or stuck mid-handshake."
+        ) from exc
     if result.returncode != 0:
         raise RuntimeError(
             f"alembic upgrade head failed (exit {result.returncode}):\n"
@@ -528,15 +560,44 @@ def backup_duckdb(duckdb_path: Path, backups_dir: Path) -> Path:
     Returns path to backup file. Used before duckdb → side_car cutover
     so the operator has a recovery point if the side-car PG ever
     diverges and needs to be re-built from the frozen DuckDB.
+
+    Implemented as ``subprocess.run(['gzip', ...], timeout=...)`` so a
+    wedged compressor surfaces as a typed RuntimeError rather than
+    pinning the migrator (H5). gzip(1) is universally available on
+    customer-instance VMs and the migrator image (alpine + coreutils).
     """
-    import gzip
-    import shutil
+    import subprocess
 
     backups_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = backups_dir / f"duckdb-pre-sidecar-{ts}.duckdb.gz"
-    with open(duckdb_path, "rb") as src, gzip.open(out, "wb", compresslevel=6) as dst:
-        shutil.copyfileobj(src, dst)
+    # ``gzip -c <in>`` writes to stdout; we capture into the output
+    # file. ``-6`` matches the previous in-process compresslevel=6
+    # default so the resulting artifact is byte-comparable in size.
+    try:
+        with open(out, "wb") as fp:
+            result = subprocess.run(
+                ["gzip", "-c", "-6", str(duckdb_path)],
+                stdout=fp,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=BACKUP_TIMEOUT_SEC,
+            )
+    except subprocess.TimeoutExpired as exc:
+        # Remove the half-written output so the operator's next retry
+        # doesn't pick up an invalid artifact.
+        out.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"DuckDB backup timed out after {BACKUP_TIMEOUT_SEC}s "
+            f"(source={duckdb_path}). File may be larger than expected "
+            "or gzip is wedged; retry or investigate the host."
+        ) from exc
+    if result.returncode != 0:
+        out.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"DuckDB backup gzip failed (exit {result.returncode}): "
+            f"{result.stderr.decode(errors='replace')}"
+        )
     return out
 
 
@@ -544,20 +605,37 @@ def backup_sidecar_pg(container_name: str, backups_dir: Path) -> Path:
     """pg_dump custom format of side-car PG, via docker exec.
 
     Returns path to .dump file. Used before side_car → cloud cutover.
+
+    Wrapped in a wall-clock timeout (``BACKUP_TIMEOUT_SEC``) — a
+    hung pg_dump (locked tables, network partition between docker
+    daemon and the container) would otherwise pin the migrator
+    indefinitely (H5).
     """
     import subprocess
 
     backups_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = backups_dir / f"sidecar-pre-cloud-{ts}.dump"
-    with open(out, "wb") as fp:
-        result = subprocess.run(
-            ["docker", "exec", container_name, "pg_dump", "-U", "agnes", "-F", "c", "agnes"],
-            stdout=fp,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+    try:
+        with open(out, "wb") as fp:
+            result = subprocess.run(
+                ["docker", "exec", container_name, "pg_dump", "-U", "agnes", "-F", "c", "agnes"],
+                stdout=fp,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=BACKUP_TIMEOUT_SEC,
+            )
+    except subprocess.TimeoutExpired as exc:
+        # Half-written .dump files are unusable; remove so a retry
+        # starts clean.
+        out.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"pg_dump timed out after {BACKUP_TIMEOUT_SEC}s "
+            f"(container={container_name}). The side-car may be holding "
+            "locks or the docker daemon is unresponsive."
+        ) from exc
     if result.returncode != 0:
+        out.unlink(missing_ok=True)
         raise RuntimeError(f"pg_dump failed: {result.stderr.decode()}")
     return out
 

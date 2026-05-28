@@ -646,6 +646,88 @@ def test_stuck_running_recovery_via_stale_heartbeat(tmp_path):
     assert recovered["error"]["step"] == "data_copy"
 
 
+def test_alembic_upgrade_head_raises_on_timeout(tmp_path, monkeypatch):
+    """H5 — hung alembic must surface as a clean RuntimeError, not pin
+    the migrator forever. ``subprocess.run`` MUST be invoked with a
+    ``timeout=`` kwarg; ``TimeoutExpired`` is translated to a typed
+    error message so :class:`JobWriter.mark_failed` carries an
+    actionable string."""
+    import subprocess
+
+    import pytest
+
+    from scripts.db_state_migrator import alembic_upgrade_head
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout", 0))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match=r"alembic.*timed out"):
+        alembic_upgrade_head("postgresql+psycopg://x:y@z/q")
+
+    # Sanity: a timeout was actually passed (not unbounded).
+    assert captured["timeout"] is not None and captured["timeout"] > 0
+
+
+def test_backup_duckdb_raises_on_timeout(tmp_path, monkeypatch):
+    """H5 — hung gzip during backup must surface, not pin."""
+    import subprocess
+
+    import duckdb
+    import pytest
+
+    from scripts.db_state_migrator import backup_duckdb
+    from src.db import _ensure_schema
+
+    duck = tmp_path / "src.duckdb"
+    conn = duckdb.connect(str(duck))
+    _ensure_schema(conn)
+    conn.close()
+
+    # backup_duckdb uses gzip + shutil.copyfileobj internally. The fix
+    # must wrap that in a subprocess.run('gzip', ..., timeout=...) so
+    # the hang has a watchdog. Pre-fix the function never invokes
+    # subprocess.run; post-fix it does, and the timeout surfaces as a
+    # typed RuntimeError.
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout", 0))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    backups = tmp_path / "backups"
+    with pytest.raises(RuntimeError, match=r"backup.*timed out"):
+        backup_duckdb(duck, backups)
+    assert captured["timeout"] is not None and captured["timeout"] > 0
+
+
+def test_backup_sidecar_pg_raises_on_timeout(tmp_path, monkeypatch):
+    """H5 — hung pg_dump must surface, not pin."""
+    import subprocess
+
+    import pytest
+
+    from scripts.db_state_migrator import backup_sidecar_pg
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout", 0))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match=r"pg_dump.*timed out"):
+        backup_sidecar_pg("agnes-postgres-1", tmp_path / "backups")
+    assert captured["timeout"] is not None and captured["timeout"] > 0
+
+
 def test_copy_pg_to_pg_streams_without_full_materialize(tmp_path, pg_engine):
     """H4 — PG→PG copy must stream-batch rather than .all()-materialize.
 
