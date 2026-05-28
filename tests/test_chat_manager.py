@@ -1,9 +1,10 @@
-"""ChatManager tests — Task 5.1: create_session (+ skeletons for 5.2).
+"""ChatManager tests — Task 5.1: create_session (+ 5.2: attach/send/cancel/crash).
 
 Uses asyncio.run() per the project convention (no pytest-asyncio required).
 See tests/test_chat_subprocess_provider.py for precedent.
 """
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -80,33 +81,159 @@ def test_create_session_disabled_raises(manager: ChatManager):
 
 
 # ---------------------------------------------------------------------------
-# Task 5.2 skeletons — skipped until attach is implemented
+# Fake helpers for Task 5.2 tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skip("attach implemented in 5.2")
-def test_concurrency_cap_enforced(manager: ChatManager):
+class FakeWS:
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+        self.closed = False
+
+    async def send_json(self, data: dict) -> None:
+        self.sent.append(data)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeHandle:
+    def __init__(self) -> None:
+        self.pid = 1234
+        self._lines: asyncio.Queue[bytes] = asyncio.Queue()
+        self._stdin_buf: list[bytes] = []
+        self.killed = False
+
+    @property
+    def stdin(self):
+        outer = self
+
+        class S:
+            def write(self, b: bytes) -> None:
+                outer._stdin_buf.append(b)
+
+            async def drain(self) -> None:
+                return None
+
+        return S()
+
+    @property
+    def stdout(self):
+        outer = self
+
+        class O:
+            async def readline(self) -> bytes:
+                return await outer._lines.get()
+
+        return O()
+
+    @property
+    def stderr(self):
+        return self.stdout
+
+    async def wait(self) -> int:
+        # block until killed
+        while not self.killed:
+            await asyncio.sleep(0.01)
+        return 137
+
+    async def kill(self, *, grace_sec: float = 5.0) -> None:
+        self.killed = True
+
+    # Test helpers
+    def emit(self, payload: dict) -> None:
+        self._lines.put_nowait((json.dumps(payload) + "\n").encode())
+
+    def emit_eof(self) -> None:
+        self._lines.put_nowait(b"")
+
+
+# ---------------------------------------------------------------------------
+# Task 5.2 tests
+# ---------------------------------------------------------------------------
+
+def test_attach_pumps_tokens_to_ws(manager: ChatManager):
     async def _run():
-        await manager.create_session(user_email="u@x", surface=Surface.WEB)
-        await manager.attach(...)  # placeholder — real attach in Task 5.2
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        handle.emit({"type": "token", "text": "Hi"})
+        await asyncio.sleep(0.05)
+        assert {"type": "token", "text": "Hi"} in ws.sent
+
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
 
     asyncio.run(_run())
 
 
-@pytest.mark.skip("attach implemented in 5.2")
-def test_attach_pumps_tokens_to_ws(manager: ChatManager):
-    pass
-
-
-@pytest.mark.skip("attach implemented in 5.2")
 def test_send_writes_to_stdin(manager: ChatManager):
-    pass
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await manager.send_user_message(s.id, "hello")
+        assert any(b'"hello"' in b for b in handle._stdin_buf)
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
 
 
-@pytest.mark.skip("attach implemented in 5.2")
 def test_cancel_emits_synthetic_tool_result(manager: ChatManager):
-    pass
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        handle.emit({"type": "tool_call", "tool": "run_query", "args": {}})
+        await asyncio.sleep(0.05)
+        await manager.cancel(s.id)
+        await asyncio.sleep(0.05)
+        cancelled = [m for m in ws.sent if m.get("type") == "cancelled"]
+        assert cancelled, "expected a {'type': 'cancelled'} frame after cancel"
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
 
 
-@pytest.mark.skip("attach implemented in 5.2")
 def test_crash_respawns_with_notice(manager: ChatManager):
-    pass
+    async def _run():
+        handles = [FakeHandle(), FakeHandle()]
+        spawn_calls = iter(handles)
+
+        async def fake_spawn(**kw):
+            return next(spawn_calls)
+
+        manager._provider.spawn = fake_spawn
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        # Simulate crash by signalling EOF and non-zero exit
+        handles[0].emit_eof()
+        handles[0].killed = True  # makes wait() return 137 immediately
+        await asyncio.sleep(0.1)
+        crashed = [m for m in ws.sent if m.get("type") == "error" and m.get("kind") == "subprocess_crashed"]
+        assert crashed, "expected crash notice"
+        ready = [m for m in ws.sent if m.get("type") == "ready"]
+        assert ready, "expected ready frame after respawn"
+
+        await manager.kill(s.id, reason="test_done")
+        handles[1].emit_eof()
+        await attach_task
+
+    asyncio.run(_run())

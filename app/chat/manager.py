@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
+from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.persistence import ChatRepository
 from app.chat.provider import SandboxHandle, SandboxProvider
@@ -14,6 +19,10 @@ from app.chat.types import ChatSession, SessionState, Surface
 from app.chat.workdir import WorkdirManager
 
 logger = logging.getLogger(__name__)
+
+# Sonnet pricing constants (USD per million tokens)
+_PRICE_IN_PER_MTOK = 3.0
+_PRICE_OUT_PER_MTOK = 15.0
 
 
 class ConcurrencyCapHit(Exception):
@@ -110,21 +119,191 @@ class ChatManager:
             except Exception:
                 logger.exception("error killing session %s on shutdown", chat_id)
 
-    # --- placeholders implemented in Task 5.2 -----------------------------
+    # --- attach + runtime methods (Task 5.2) --------------------------------
 
     async def attach(self, chat_id: str, ws) -> None:
-        raise NotImplementedError("Task 5.2")
+        session = self._repo.get_session(chat_id)
+        if session is None:
+            raise SessionNotFound(chat_id)
+
+        self._workdir_mgr.ensure_user_workdir(session.user_email)
+        session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
+
+        handle = await self._spawn_runner(session, session_dir)
+        live = LiveSession(
+            chat_id=chat_id,
+            user_email=session.user_email,
+            state=SessionState.ACTIVE,
+            handle=handle,
+            ws=ws,
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+        )
+        self._live[chat_id] = live
+        await ws.send_json({"type": "ready"})
+
+        pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
+        wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
+        live.tasks = [pump_task, wait_task]
+
+        try:
+            await asyncio.gather(*live.tasks, return_exceptions=True)
+        finally:
+            await self.kill(chat_id, reason="ws_disconnect")
+
+    async def _spawn_runner(self, session: ChatSession, session_dir: Path):
+        env = {
+            "AGNES_TOKEN": os.environ.get("AGNES_SESSION_JWT_SEED", ""),
+            "AGNES_API": os.environ.get("AGNES_INTERNAL_URL", "http://127.0.0.1:8000"),
+            "AGNES_SESSION_ID": session.id,
+            "AGNES_USER_EMAIL": session.user_email,
+            "AGNES_DAILY_BUDGET_USD": str(self._config.daily_anthropic_spend_usd),
+            "AGNES_PER_TOOL_CALL_SECONDS": str(self._config.per_tool_call_seconds),
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(session_dir),
+            "TERM": "dumb",
+            "LANG": "C.UTF-8",
+            "PYTHONUNBUFFERED": "1",
+        }
+        argv = [sys.executable, "-m", "app.chat.runner", "--session-id", session.id]
+        return await self._provider.spawn(workdir=session_dir, env=env, argv=argv)
+
+    async def _pump_subprocess_to_ws(self, live: LiveSession) -> None:
+        assert live.handle is not None
+        while True:
+            line = await live.handle.stdout.readline()
+            if not line:
+                return
+            try:
+                frame = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            live.last_activity = datetime.now(timezone.utc)
+            try:
+                await live.ws.send_json(frame)
+            except Exception:
+                logger.warning("ws send failed for %s", live.chat_id)
+                return
+            if frame.get("type") == "assistant_message":
+                self._repo.append_message(
+                    session_id=live.chat_id,
+                    role="assistant",
+                    content=frame.get("content", ""),
+                    tool_calls=frame.get("tool_calls"),
+                    tokens_in=frame.get("tokens_in"),
+                    tokens_out=frame.get("tokens_out"),
+                    model=frame.get("model"),
+                )
+            elif frame.get("type") == "tool_call":
+                write_audit(
+                    self._repo._conn,
+                    user_email=live.user_email,
+                    action="chat.tool_call",
+                    details={
+                        "session_id": live.chat_id,
+                        "tool": frame.get("tool"),
+                        "args_hash": hash_args(frame.get("args", {})),
+                    },
+                )
+
+    async def _wait_for_exit_and_respawn(self, live: LiveSession, session_dir: Path) -> None:
+        assert live.handle is not None
+        rc = await live.handle.wait()
+        if rc == 0 or live.state == SessionState.DEAD:
+            return
+        # Crash path
+        live.crash_count += 1
+        await live.ws.send_json({
+            "type": "error",
+            "kind": "subprocess_crashed",
+            "auto_respawn": live.crash_count < 3,
+        })
+        if live.crash_count >= 3:
+            live.state = SessionState.DEAD
+            return
+        session = self._repo.get_session(live.chat_id)
+        if session is None:
+            return
+        new_handle = await self._spawn_runner(session, session_dir)
+        live.handle = new_handle
+        live.state = SessionState.ACTIVE
+        await live.ws.send_json({"type": "ready"})
+        # Replay last 3 user turns into the new subprocess
+        history = self._repo.list_messages(live.chat_id)[-3:]
+        for msg in history:
+            if msg.role == "user":
+                payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
+                new_handle.stdin.write(payload.encode("utf-8"))
+                await new_handle.stdin.drain()
+        # Restart pump on new handle
+        asyncio.create_task(self._pump_subprocess_to_ws(live))
 
     async def send_user_message(self, chat_id: str, text: str) -> None:
-        raise NotImplementedError("Task 5.2")
+        live = self._live.get(chat_id)
+        if live is None or live.handle is None or live.state == SessionState.DEAD:
+            raise SessionNotFound(chat_id)
+        # Enforce daily Anthropic spend cap
+        tokens_in, tokens_out = self._repo.daily_anthropic_tokens(live.user_email)
+        spent_usd = (
+            tokens_in * _PRICE_IN_PER_MTOK / 1_000_000
+            + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
+        )
+        if spent_usd >= self._config.daily_anthropic_spend_usd:
+            await live.ws.send_json({
+                "type": "error",
+                "kind": "daily_budget",
+                "message": (
+                    f"Daily spend cap of ${self._config.daily_anthropic_spend_usd:.2f} reached. "
+                    "Try again tomorrow."
+                ),
+            })
+            raise RuntimeError("daily_budget_exhausted")
+        self._repo.append_message(session_id=chat_id, role="user", content=text)
+        payload = json.dumps({"type": "user_msg", "text": text}) + "\n"
+        live.handle.stdin.write(payload.encode("utf-8"))
+        await live.handle.stdin.drain()
+        live.last_activity = datetime.now(timezone.utc)
+        live.state = SessionState.ACTIVE
 
     async def cancel(self, chat_id: str) -> None:
-        raise NotImplementedError("Task 5.2")
+        live = self._live.get(chat_id)
+        if live is None or live.handle is None:
+            return
+        payload = json.dumps({"type": "cancel"}) + "\n"
+        live.handle.stdin.write(payload.encode("utf-8"))
+        await live.handle.stdin.drain()
+        await live.ws.send_json({"type": "cancelled"})
 
     async def kill(self, chat_id: str, *, reason: str) -> None:
-        # Minimal impl so shutdown works.
         live = self._live.pop(chat_id, None)
-        if live and live.handle is not None:
+        if live is None:
+            return
+        live.state = SessionState.DEAD
+        if live.handle is not None:
             await live.handle.kill()
-        for t in (live.tasks if live else []):
+        for t in live.tasks:
             t.cancel()
+        write_audit(
+            self._repo._conn,
+            user_email=live.user_email,
+            action="chat.session_killed",
+            details={"session_id": chat_id, "reason": reason},
+        )
+
+    # --- idle reaper --------------------------------------------------------
+
+    def start_idle_reaper(self) -> None:
+        if self._idle_task is None or self._idle_task.done():
+            self._idle_task = asyncio.create_task(self._idle_reaper_loop())
+
+    async def _idle_reaper_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            cutoff_age = self._config.idle_ttl_seconds
+            now = datetime.now(timezone.utc)
+            to_kill = [
+                chat_id for chat_id, live in list(self._live.items())
+                if (now - live.last_activity).total_seconds() > cutoff_age
+            ]
+            for chat_id in to_kill:
+                await self.kill(chat_id, reason="idle_ttl")
