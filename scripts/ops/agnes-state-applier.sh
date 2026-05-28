@@ -339,10 +339,21 @@ else
     write_instance_yaml "$SOURCE_BACKEND"
     # Clear the lifecycle flag if the rollback lands on a non-PG state —
     # otherwise the next applier tick would re-trigger the postgres
-    # lifecycle ("side-car-enabled") even though we just reverted to duckdb.
-    if [ "$SOURCE_BACKEND" = "duckdb" ]; then
-        rm -f "$FLAG"
-    fi
+    # lifecycle ("side-car-enabled" / "cloud-only") and leave an orphan
+    # agnes-postgres-1 container running with no data.
+    #
+    # B.3 — Both duckdb and cloud sources lack a side-car lifecycle
+    # need, so both must clear the flag on rollback. The asymmetric
+    # original (duckdb only) silently broke cloud→side_car DR rollback:
+    # instance.yaml said "cloud" but the flag still said
+    # "side-car-enabled", and the next tick re-enabled the postgres
+    # container. For source=side_car we keep the flag as-is because
+    # "side-car-enabled" is still the correct lifecycle.
+    case "$SOURCE_BACKEND" in
+        duckdb|cloud)
+            rm -f "$FLAG"
+            ;;
+    esac
 fi
 
 # 4. Bring the app back up. After-state app reads instance.yaml and

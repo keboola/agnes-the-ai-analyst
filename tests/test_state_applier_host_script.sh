@@ -300,4 +300,100 @@ fi
 rm -rf "$tmp2"
 echo "OK: B.2 pending-job expiry (H8)"
 
+# --- B.3 regression: cloud→side_car failure clears FLAG ----------------------
+# Source=cloud, target=side_car (DR rollback). Migrator fails post-copy
+# so applier hits the failure branch. The FLAG file says
+# 'side-car-enabled', but with the rollback putting instance.yaml back
+# to 'cloud', the next applier tick would otherwise re-enable the
+# postgres container with no data. The fix: clear FLAG when the
+# rollback lands on a non-side_car state.
+tmp3=$(mktemp -d)
+mkdir -p "$tmp3/data/state/db-jobs" "$tmp3/opt/agnes"
+echo "AGNES_TAG=stable" > "$tmp3/opt/agnes/.env"
+touch "$tmp3/opt/agnes/docker-compose.yml" \
+      "$tmp3/opt/agnes/docker-compose.prod.yml" \
+      "$tmp3/opt/agnes/docker-compose.host-mount.yml"
+B3_ID="b3-cloud-to-sidecar-fail"
+B3_QUEUED=$(python3 -c "
+from datetime import datetime, timezone
+print(datetime.now(timezone.utc).isoformat())
+")
+cat > "$tmp3/data/state/db-jobs/$B3_ID.json" <<JSON
+{
+  "job_id": "$B3_ID",
+  "schema_version": 1,
+  "status": "pending",
+  "source_backend": "cloud",
+  "target_backend": "side_car",
+  "target_url": "postgresql+psycopg://agnes:agnes@postgres:5432/agnes",
+  "source_url": "postgresql+psycopg://agnes:pw@cloud.example.com:5432/agnes",
+  "progress_pct": 0,
+  "current_step": "queued",
+  "queued_at": "$B3_QUEUED"
+}
+JSON
+echo -n "side-car-enabled" > "$tmp3/data/state/db-state-target.flag"
+cat > "$tmp3/data/state/instance.yaml" <<'YAML'
+database:
+  backend: cloud
+  url: postgresql+psycopg://agnes:pw@cloud.example.com:5432/agnes
+YAML
+sandboxed3=$tmp3/applier.sh
+sed -e "s|FLAG=/data/state/db-state-target.flag|FLAG=$tmp3/data/state/db-state-target.flag|" \
+    -e "s|JOBS_DIR=/data/state/db-jobs|JOBS_DIR=$tmp3/data/state/db-jobs|" \
+    -e "s|COMPOSE_DIR=/opt/agnes|COMPOSE_DIR=$tmp3/opt/agnes|" \
+    -e "s|LOCK_FILE=/data/state/db-state-applier.lock|LOCK_FILE=$tmp3/data/state/db-state-applier.lock|" \
+    -e "s|/data/postgres|$tmp3/data/postgres|g" \
+    -e "s|/data/state/certs|$tmp3/data/state/certs|g" \
+    -e "s|/data/state/instance.yaml|$tmp3/data/state/instance.yaml|g" \
+    -e "s|/data/state/agnes-state-applier.tick|$tmp3/data/state/agnes-state-applier.tick|g" \
+    "$script" > "$sandboxed3"
+chmod +x "$sandboxed3"
+# Override the docker fake so `docker run` (migrator) leaves the job at
+# status=pending — applier's post-migrator detection then marks it failed.
+fake_bin3=$tmp3/bin
+mkdir -p "$fake_bin3"
+cat > "$fake_bin3/docker" <<'FAKE'
+#!/usr/bin/env bash
+echo "docker $*" >> "$TRANSCRIPT"
+case "$1" in
+    network) echo agnes_default ;;
+    ps)
+        # Return postgres-1 + app + scheduler so stop commands run.
+        echo agnes-postgres-1
+        echo agnes-app-1
+        echo agnes-scheduler-1
+        ;;
+    exec) exit 0 ;;
+    run)
+        # Migrator "ran" but failed without updating the JSON — applier
+        # will mark the job failed itself.
+        : ;;
+    stop|rm|compose) : ;;
+esac
+FAKE
+chmod +x "$fake_bin3/docker"
+# Reuse other fakes from the first run.
+cp "$fake_bin/logger" "$fake_bin3/logger"
+cp "$fake_bin/chown" "$fake_bin3/chown"
+cp "$fake_bin/chmod" "$fake_bin3/chmod"
+cp "$fake_bin/flock" "$fake_bin3/flock"
+transcript3=$tmp3/transcript.log
+TRANSCRIPT="$transcript3" JOB_FILE="$tmp3/data/state/db-jobs/$B3_ID.json" \
+    PATH="$fake_bin3:$PATH" \
+    bash "$sandboxed3"
+B3_STATUS=$(python3 -c "import json;print(json.load(open('$tmp3/data/state/db-jobs/$B3_ID.json'))['status'])")
+[ "$B3_STATUS" = "failed" ] \
+    || { echo "FAIL (B.3): status=$B3_STATUS, want failed"; cat "$transcript3"; exit 1; }
+# The critical assertion: FLAG file is gone so the next tick doesn't
+# re-enable postgres lifecycle for a backend that doesn't need it.
+if [ -e "$tmp3/data/state/db-state-target.flag" ]; then
+    echo "FAIL (B.3): FLAG file still present after cloud→side_car failure rollback"
+    ls -la "$tmp3/data/state/"
+    cat "$transcript3"
+    exit 1
+fi
+rm -rf "$tmp3"
+echo "OK: B.3 cloud→side_car failure clears FLAG (DR rollback)"
+
 echo "OK"
