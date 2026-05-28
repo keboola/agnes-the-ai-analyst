@@ -239,6 +239,59 @@ def test_crash_respawns_with_notice(manager: ChatManager):
     asyncio.run(_run())
 
 
+def test_send_user_message_rejects_when_session_tokens_exhausted(tmp_path):
+    """send_user_message must refuse new turns when the session's cumulative
+    tokens exceed ChatConfig.max_session_tokens.
+
+    Before this knob was wired the value lived only in instance.yaml.
+    """
+    from datetime import datetime, timezone
+
+    from app.chat.manager import LiveSession
+    from app.chat.types import SessionState
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    cfg = ChatConfig(
+        enabled=True, require_isolation=False, concurrency_per_user=5,
+        max_session_tokens=100,
+        daily_anthropic_spend_usd=10**6,  # disable daily cap
+    )
+    mgr = ChatManager(
+        provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg,
+    )
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        # Stuff history past the cap.
+        for _ in range(3):
+            repo.append_message(
+                session_id=s.id, role="assistant", content="x",
+                tokens_in=30, tokens_out=30, model="fake",
+            )
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        mgr._live[s.id] = LiveSession(
+            chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
+            handle=FakeHandle(), ws=ws,
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+        )
+        with pytest.raises(RuntimeError, match="max_session_tokens_exhausted"):
+            await mgr.send_user_message(s.id, "next")
+        # Refusal frame surfaced to the WS.
+        kinds = [
+            c.args[0].get("kind") for c in ws.send_json.call_args_list
+        ]
+        assert "max_session_tokens" in kinds
+
+    asyncio.run(_run())
+
+
 def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
     """Sessions that exceed ChatConfig.max_session_seconds get killed by the
     idle reaper independently of idle TTL.

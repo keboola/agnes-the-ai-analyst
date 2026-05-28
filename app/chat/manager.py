@@ -291,6 +291,22 @@ class ChatManager:
                 ),
             })
             raise RuntimeError("daily_budget_exhausted")
+        # Per-session token cap — operators set max_session_tokens in
+        # instance.yaml; previously the knob was dead config. Tokens already
+        # spent in this session are summed from chat_messages on every send;
+        # the session row itself is never UPDATEd (DuckDB 1.5.3 FK+index bug
+        # documented in persistence.py).
+        session_tokens = self._repo.session_total_tokens(chat_id)
+        if session_tokens >= self._config.max_session_tokens:
+            await live.ws.send_json({
+                "type": "error",
+                "kind": "max_session_tokens",
+                "message": (
+                    f"Per-session token cap of {self._config.max_session_tokens} reached "
+                    f"(used {session_tokens}). Start a new chat session."
+                ),
+            })
+            raise RuntimeError("max_session_tokens_exhausted")
         self._repo.append_message(session_id=chat_id, role="user", content=text)
         payload = json.dumps({"type": "user_msg", "text": text}) + "\n"
         live.handle.stdin.write(payload.encode("utf-8"))

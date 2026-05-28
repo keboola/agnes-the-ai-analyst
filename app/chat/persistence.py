@@ -258,6 +258,22 @@ class ChatRepository:
     def delete_workdir_row(self, user_email: str) -> None:
         self._conn.execute("DELETE FROM user_workdirs WHERE user_email = ?", [user_email])
 
+    def session_total_tokens(self, session_id: str) -> int:
+        """Sum of (tokens_in + tokens_out) across every persisted message in
+        this session.
+
+        Used by ChatManager.send_user_message to enforce
+        ChatConfig.max_session_tokens. A session row is a slow-changing
+        rollup; counting at read time on every send_user_message is fine
+        — DuckDB indexes on session_id and DuckDB is in-process.
+        """
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0)), 0) "
+            "FROM chat_messages WHERE session_id = ?",
+            [session_id],
+        ).fetchone()
+        return int(row[0] or 0)
+
     def daily_anthropic_tokens(self, user_email: str) -> tuple[int, int]:
         """Sum of tokens_in / tokens_out for this user's messages since UTC midnight."""
         row = self._conn.execute(
