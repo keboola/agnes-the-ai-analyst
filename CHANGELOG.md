@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-05-28
+
 ### Added
 - Seed-driven connector framework foundation (A1.1 of the connector-skills refactor).
   - `src/_bundled_seed/` snapshot of the OSS workspace seed ships inside the wheel and serves as the fallback when no Initial Workspace Template is configured. Resolution chain: operator IWT clone first, bundled snapshot second.
@@ -38,9 +40,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   - **BREAKING for behaviour**: operator-baked Atlassian base URL (`atlassian_prompt(base_url=...)`) and operator-baked GWS OAuth client (literal `client_id` / `client_secret` substituted into the rendered HTML) are no longer applied at render time. Operator-side values flow into `<workspace>/.claude/agnes/.env` via `agnes init` (A1.3 work) and the seed skills read them at install time.
 - Connectors now render in alphabetical order by display_name (Asana, Atlassian (Jira / Confluence), Google Workspace) — was previously asana → gws → atlassian (registry order).
 
+### Fixed
+- `_dotenv_quote` newline injection — a value carrying embedded `\n` / `\r` (e.g. a YAML multi-line `connectors:` overlay key) used to land as a literal end-of-line inside the quoted form and could shadow legitimate keys further down the file; the writer now escapes both to the two-char `\n` / `\r` sequence inside the quoted value.
+- Windows compat for `write_agnes_env` — `os.fchmod` raising `AttributeError` on Windows (no fchmod surface) or `OSError` on exotic filesystems no longer aborts the writer; chmod is treated as best-effort (NTFS / SMB ACLs cover perms). The `tempfile.mkstemp` fd is closed in `finally` so a chmod failure mid-write can't leak the integer fd, and a tmp-file unlink in the outer except handles orphan cleanup.
+- Sub-letter indexing in the install-prompt connector tiles — letters now stay tight `a/b/c` even when one manifest entry fails to load its SKILL.md body; previously skipped entries left the next tile lettered `a/c`.
+- Install-prompt step 8 → step 9 off-by-one — the AI was told `continue to step 10` after the connector asks, bypassing step 9 (Restart Claude Code). The step-10 Confirm summary then ran against plugins / MCP servers / SessionStart hooks that hadn't actually loaded, producing false-negative ❌ lines despite a successful install. Caught by Devin Review on the sibling [`keboola/agnes-infra-template#2`](https://github.com/keboola/agnes-infra-template/pull/2) PR where the same template ships verbatim.
+- Atomic IWT snapshot in `src/initial_workspace.py` — `seed_owns`, `resolve_seed_file`, and `list_seed_files` now go through a single `_iwt_snapshot()` helper that reads `instance.yaml` configuration + the on-disk clone presence in one shot. Previously each function did the two reads separately, opening a window where an admin clicking "unset URL" mid-request could land the admin editors in a state contradicting `instance.yaml`'s source of truth.
+- `/api/connectors/params` allowlist filter — the per-tenant `connectors:` overlay is now filtered against the seed-derived manifest before being emitted; operator typos (e.g. `connector-atlasian:` instead of `connector-atlassian:`) are dropped and logged at WARNING instead of polluting the analyst's `.env` with a junk slug. `globals:` is non-slug-scoped and bypasses the allowlist (unchanged behavior). Contract documented in `docs/seed-repo-contract.md` § 4.1.
+
 ### Internal
 - Manifest cache invalidates from `POST /api/admin/initial-workspace/sync` after a successful clone update, so freshly-synced seed content surfaces on the next render scan without a process restart.
 - `tests/snapshots/install_prompt_default.txt` snapshot regression guard catches unintended drift in the renderer output as a single targeted diff rather than dozens of substring assertions.
+- `.github/workflows/check-bundled-seed.yml` content-diff step replaced the broken `diff -r <bundle> <(tar -cf - …)` pattern (process substitution yields a pseudo-file, not a directory — `diff -r` errored silently and a fallback full-tree diff ran without exit propagation, so the check was decorative) with staging the shipped sub-trees into a sibling directory and running directory-to-directory `diff -r --exclude='.source_ref'`. Strict content-match warns today; flips to hard-fail in a follow-up once forks confirm clean diffs.
+- `src/_bundled_seed/.source_ref` repointed at the new public reference seed — [`keboola/agnes-infra-template`](https://github.com/keboola/agnes-infra-template) `@4171aa89` (main) — alongside `scripts/sync_bundled_seed.sh` default `SOURCE_URL` and `docs/seed-repo-contract.md` § 1 + § 10 references. The template repo doubles as the Terraform skeleton; its `workspace/`, `install-prompt/`, `.claude-plugin/`, and `plugins/` sub-trees are now the canonical seed-content source.
 
 ## [0.55.25] — 2026-05-28
 
