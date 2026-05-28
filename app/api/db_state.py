@@ -11,10 +11,12 @@ import sys
 import uuid
 from pathlib import Path
 
+import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
+from app.auth.dependencies import _get_db
 from src.db_state_machine import (
     allowed_transitions,
     read_backend_state,
@@ -72,14 +74,26 @@ class MigrateRequest(BaseModel):
     cloud_url: str | None = None  # required when target=cloud
 
 
-@router.post("/migrate", status_code=202, dependencies=[Depends(require_admin)])
-def start_migration(payload: MigrateRequest) -> dict:
+@router.post("/migrate", status_code=202)
+def start_migration(
+    payload: MigrateRequest,
+    _admin: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+) -> dict:
     """Start a backend migration job (async; poll /job/{id} for status).
 
     Validates the requested transition against the current state, acquires
     the non-blocking migration flock (409 if already held), writes the
     initial job file and overlay state, then spawns the migrator
     subprocess in a new session and returns 202.
+
+    The endpoint takes the request-scoped DuckDB cursor as an explicit
+    dependency so it can close it *before* releasing the singleton — the
+    cursor held by ``Depends(_get_db)`` would otherwise keep DuckDB's
+    file lock alive even after the singleton's connection.close().
+    Symptom on agnes-dev (v3): the migrator subprocess hit ``Conflicting
+    lock is held in /usr/local/bin/python3.13 (PID 1)`` even though the
+    singleton had been closed.
     """
     from src.db_state_machine import (
         BackendState,
@@ -148,11 +162,20 @@ def start_migration(payload: MigrateRequest) -> dict:
         # /data/state/system.duckdb. DuckDB ≥1.5 holds an exclusive
         # per-process file lock; without this the subprocess hits
         # `IOException: Conflicting lock is held` on `duckdb.connect()`.
-        # The app's next request lazily re-opens — but the migration
-        # promotes backend → PG before that happens, so in the happy path
-        # the DuckDB file is never re-opened by this process.
+        # Order matters: close the request-scoped cursor FIRST — DuckDB
+        # keeps the underlying file lock alive while any Python-side
+        # cursor is still open, so just closing the singleton connection
+        # isn't enough — then close the singleton, then run gc to drop
+        # any lingering wrapper references before we hand off to the
+        # subprocess.
+        try:
+            conn.close()
+        except Exception:
+            pass
         from src.db import close_singleton_connections
         close_singleton_connections()
+        import gc
+        gc.collect()
 
         subprocess.Popen(
             [
