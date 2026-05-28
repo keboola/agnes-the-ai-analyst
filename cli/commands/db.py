@@ -10,6 +10,7 @@ Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 from __future__ import annotations
 
 import json as _json
+import sys
 import time
 
 import typer
@@ -74,6 +75,10 @@ def migrate(
         600, "--timeout",
         help="Max seconds to wait for completion when polling (default 600)",
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the interactive confirmation. Required for non-interactive shells.",
+    ),
 ) -> None:
     """Migrate to the next backend state (``side_car`` or ``cloud``).
 
@@ -90,6 +95,23 @@ def migrate(
 
     if target == "cloud" and not cloud_url:
         cloud_url = typer.prompt("Cloud PG connection string")
+
+    needs_confirm = not yes and not as_json
+    if needs_confirm:
+        if not sys.stdin.isatty():
+            typer.echo(
+                "Refusing destructive migrate without --yes in non-interactive shell. "
+                "Re-run with --yes (or -y) to proceed.",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if not typer.confirm(
+            f"Migrate app-state DB to '{target}'? This is operator-level + "
+            "destructive on failure.",
+            default=False,
+        ):
+            typer.echo("Cancelled by operator.", err=True)
+            raise typer.Exit(1)
 
     payload: dict = {"target": target}
     if cloud_url:

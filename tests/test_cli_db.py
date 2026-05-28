@@ -89,13 +89,13 @@ class TestDbMigrate:
             return_value=_resp(202, payload),
         ):
             result = runner.invoke(
-                app, ["admin", "db", "migrate", "side_car", "--detach"]
+                app, ["admin", "db", "migrate", "side_car", "--detach", "--yes"]
             )
         assert result.exit_code == 0, result.output
         assert "abc-123" in result.output
 
     def test_db_migrate_cloud_with_url(self):
-        """migrate cloud with --cloud-url --detach succeeds without prompting."""
+        """migrate cloud with --cloud-url --detach --yes succeeds without prompting."""
         payload = {"job_id": "cloud-1", "status": "running"}
         with patch(
             "cli.commands.db.api_post",
@@ -106,7 +106,7 @@ class TestDbMigrate:
                 [
                     "admin", "db", "migrate", "cloud",
                     "--cloud-url", "postgresql://test",
-                    "--detach",
+                    "--detach", "--yes",
                 ],
             )
         assert result.exit_code == 0, result.output
@@ -200,3 +200,113 @@ class TestDbCancel:
             result = runner.invoke(app, ["admin", "db", "cancel", "abc-123"])
         assert result.exit_code != 0
         assert "409" in result.output or "point-of-no-return" in result.output
+
+
+class TestDbMigrateConfirmGate:
+    """Phase 6.1 — --yes / -y confirmation gate on `db migrate`."""
+
+    _post_payload = {"job_id": "test-job-abc", "status": "pending"}
+    _get_payload = {
+        "job_id": "test-job-abc",
+        "status": "success",
+        "current_step": "flip_backend",
+        "progress_pct": 100,
+    }
+
+    def _patches(self):
+        """Return a dict of patch context managers for api_post and api_get."""
+        return {
+            "post": patch(
+                "cli.commands.db.api_post",
+                return_value=_resp(202, self._post_payload),
+            ),
+            "get": patch(
+                "cli.commands.db.api_get",
+                return_value=_resp(200, self._get_payload),
+            ),
+        }
+
+    def test_refuses_without_yes_in_noninteractive_shell(self):
+        """CLI MUST refuse a destructive migrate when stdin is not a TTY
+        and --yes/-y wasn't passed.  Prevents fat-finger or accidental CI runs."""
+        with (
+            self._patches()["post"],
+            self._patches()["get"],
+            patch("cli.commands.db.sys") as mock_sys,
+        ):
+            mock_sys.stdin.isatty.return_value = False
+            result = runner.invoke(app, ["admin", "db", "migrate", "side_car"])
+        assert result.exit_code == 2, result.output
+        assert "--yes" in result.output
+
+    def test_proceeds_with_yes_flag_in_noninteractive_shell(self):
+        """--yes bypasses the TTY check and the interactive confirmation."""
+        with (
+            self._patches()["post"],
+            self._patches()["get"],
+            patch("cli.commands.db.sys") as mock_sys,
+        ):
+            mock_sys.stdin.isatty.return_value = False
+            result = runner.invoke(
+                app, ["admin", "db", "migrate", "side_car", "--yes", "--detach"]
+            )
+        assert result.exit_code == 0, result.output
+
+    def test_proceeds_with_short_y_flag(self):
+        """-y is the short form of --yes."""
+        with (
+            self._patches()["post"],
+            self._patches()["get"],
+            patch("cli.commands.db.sys") as mock_sys,
+        ):
+            mock_sys.stdin.isatty.return_value = False
+            result = runner.invoke(
+                app, ["admin", "db", "migrate", "side_car", "-y", "--detach"]
+            )
+        assert result.exit_code == 0, result.output
+
+    def test_json_skips_confirmation(self):
+        """--json is machine-readable mode; no interactive prompt expected.
+        Treats --json like --yes for the confirm-gate purpose."""
+        with (
+            self._patches()["post"],
+            self._patches()["get"],
+            patch("cli.commands.db.sys") as mock_sys,
+        ):
+            mock_sys.stdin.isatty.return_value = False
+            result = runner.invoke(
+                app, ["admin", "db", "migrate", "side_car", "--json"]
+            )
+        assert result.exit_code == 0, result.output
+
+    def test_interactive_yes_proceeds(self):
+        """When stdin is a TTY and the user answers 'y', migrate proceeds."""
+        with (
+            self._patches()["post"],
+            self._patches()["get"],
+            patch("cli.commands.db.sys") as mock_sys,
+        ):
+            mock_sys.stdin.isatty.return_value = True
+            result = runner.invoke(
+                app,
+                ["admin", "db", "migrate", "side_car", "--detach"],
+                input="y\n",
+            )
+        assert result.exit_code == 0, result.output
+
+    def test_interactive_no_aborts(self):
+        """When stdin is a TTY and the user answers 'n', the command aborts
+        cleanly with exit 1."""
+        with (
+            self._patches()["post"],
+            self._patches()["get"],
+            patch("cli.commands.db.sys") as mock_sys,
+        ):
+            mock_sys.stdin.isatty.return_value = True
+            result = runner.invoke(
+                app,
+                ["admin", "db", "migrate", "side_car"],
+                input="n\n",
+            )
+        assert result.exit_code == 1, result.output
+        assert "ancel" in result.output  # "Cancelled by operator"
