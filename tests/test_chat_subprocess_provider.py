@@ -10,7 +10,19 @@ from pathlib import Path
 
 import pytest
 
-from app.chat.subprocess_provider import SubprocessProvider
+from app.chat.subprocess_provider import SubprocessProvider, _scrub_env
+
+
+def test_scrub_env_passes_anthropic_key():
+    """ANTHROPIC_API_KEY must be in the scrub allowlist so the runner can auth.
+
+    Without it, the real-agent path silently fails on its first Anthropic API
+    call. Host secrets like BIGQUERY_SA_KEY must still be stripped.
+    """
+    src = {"ANTHROPIC_API_KEY": "sk-test-xyz", "BIGQUERY_SA_KEY": "secret"}
+    out = _scrub_env(src)
+    assert out.get("ANTHROPIC_API_KEY") == "sk-test-xyz"
+    assert "BIGQUERY_SA_KEY" not in out
 
 
 def test_spawn_runs_echo(tmp_path: Path):

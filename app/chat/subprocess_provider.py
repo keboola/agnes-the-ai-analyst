@@ -13,9 +13,16 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+# Env vars passed through `_scrub_env` from the host into the sandbox.
+# ANTHROPIC_API_KEY is the LLM-side credential the runner uses to talk to
+# Anthropic; without it on this list the real-agent path silently fails on
+# its first API call. All other entries are Agnes-side session vars or
+# benign locale/PATH defaults; host secrets (DB creds, cloud SA keys) are
+# deliberately excluded so they never leak into a sandboxed subprocess.
 _ENV_ALLOWLIST = {
     "AGNES_TOKEN", "AGNES_API", "AGNES_WORKDIR", "AGNES_SESSION_ID",
     "AGNES_USER_EMAIL", "AGNES_DAILY_BUDGET_USD", "AGNES_PER_TOOL_CALL_SECONDS",
+    "ANTHROPIC_API_KEY",
     "PATH", "HOME", "TERM", "LANG", "PYTHONUNBUFFERED",
 }
 

@@ -16,9 +16,13 @@ sub-agents) without installing anything locally.
 Default is **off**. To enable:
 
 1. Set `chat.enabled: true` in `${DATA_DIR}/state/instance.yaml`.
-2. Verify the host meets the floor (see § Host requirements).
-3. Restart the Agnes server.
-4. Visit `/chat` while logged in.
+2. Set `ANTHROPIC_API_KEY` in the Agnes server env; the runner subprocess
+   inherits it via the scrub allowlist (see
+   `app/chat/subprocess_provider.py::_ENV_ALLOWLIST`). Without it the
+   real-agent path silently fails on its first Anthropic API call.
+3. Verify the host meets the floor (see § Host requirements).
+4. Restart the Agnes server.
+5. Visit `/chat` while logged in.
 
 ## Host requirements
 

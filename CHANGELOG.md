@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Cloud chat: `ANTHROPIC_API_KEY` is now forwarded into the sandbox env.**
+  Without it on the `SubprocessProvider._ENV_ALLOWLIST`, the real-agent
+  runner couldn't authenticate; only the `AGNES_RUNNER_FAKE_AGENT=1` test
+  path worked. Documented in `docs/cloud-chat.md` § Enabling on an
+  instance as a required server-env var.
+
 ### Added
 - Cloud-hosted Claude Code at `/chat` (web) and via Slack DM, delivering
   the full Agnes harness (skills, marketplace plugins, hooks, slash
