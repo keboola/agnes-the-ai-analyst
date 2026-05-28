@@ -385,7 +385,19 @@ def _dotenv_quote(value: str) -> str:
     )
     if value and safe_bare:
         return value
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    # Escape backslashes + quotes (POSIX dotenv canonical) AND newlines
+    # + CRs. The newline escape is the load-bearing one: a literal \n
+    # inside a double-quoted dotenv value is treated as end-of-line by
+    # most shell-based parsers, so a value like
+    # ``foo\nMALICIOUS_KEY=value`` shadows subsequent keys in the file.
+    # The docstring above promises operator typos can't inject newlines
+    # — make it true here.
+    escaped = (
+        value.replace("\\", "\\\\")
+             .replace('"', '\\"')
+             .replace("\n", "\\n")
+             .replace("\r", "\\r")
+    )
     return f'"{escaped}"'
 
 
@@ -500,12 +512,35 @@ def write_agnes_env(
     # Atomic write: temp file in same dir, os.replace swaps in. chmod
     # 600 happens on the temp file BEFORE the rename so a reader never
     # observes a world-readable transient state.
+    #
+    # Two failure modes to guard against:
+    #   1. Raw fd leak. `tempfile.mkstemp` returns an integer fd that
+    #      Python's GC does NOT auto-close — if any of the writes / chmod
+    #      / replace below raises before the explicit `os.close(fd)`,
+    #      the fd leaks until the process exits. On Windows the leaked
+    #      fd also locks the underlying file, blocking the cleanup
+    #      `tmp_path.unlink()`.
+    #   2. `os.fchmod` is not implemented on Windows (raises
+    #      AttributeError / OSError depending on CPython version). The
+    #      .env contents are still useful there; NTFS ACLs cover perms.
+    #      Treat the chmod as best-effort so the writer doesn't abort
+    #      the entire init on Windows analyst laptops.
     fd, tmp_str = tempfile.mkstemp(prefix=".env.", dir=str(env_dir))
     tmp_path = Path(tmp_str)
     try:
-        os.write(fd, final_body.encode("utf-8"))
-        os.fchmod(fd, 0o600)
-        os.close(fd)
+        try:
+            os.write(fd, final_body.encode("utf-8"))
+            try:
+                os.fchmod(fd, 0o600)
+            except (AttributeError, OSError):
+                # Windows / filesystem that doesn't honor fchmod —
+                # NTFS / SMB ACLs apply, .env content still lands.
+                pass
+        finally:
+            # ALWAYS close the fd — even on partial write failure the
+            # rename below would still try to swap in whatever was
+            # written, but a leaked fd here is unrecoverable.
+            os.close(fd)
         os.replace(tmp_path, env_path)
     except Exception:
         # Clean up the temp file if anything went wrong before rename.

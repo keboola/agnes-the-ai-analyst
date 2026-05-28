@@ -820,6 +820,47 @@ def test_connectors_block_renders_all_three_asks():
     assert "Treat empty/Enter as YES — the default is install" in joined
 
 
+def test_connectors_block_sub_letters_skip_missing_bodies(monkeypatch):
+    """Devin Review on PR #462: when a connector's SKILL.md body is
+    missing from the seed, the original `_connectors_block` used the
+    raw `enumerate` index to pick a sub-letter, so a skipped middle
+    connector caused a gap (e.g. ``a) Asana`` + ``c) GWS`` with no
+    ``b)``).
+
+    Regression guard: with the middle connector deliberately missing
+    a body, the rendered sub-letters must stay tight a/b/c..., not
+    a/c/d... — ``letter_idx`` is incremented ONLY on rendered entries.
+    """
+    from src import connectors_manifest as cm
+
+    from app.web import setup_instructions as si
+
+    cm.invalidate_cache()
+
+    # Patch _load_connector_body to return None for the middle slug.
+    # Manifest order is Asana → Atlassian → GWS (alphabetical by
+    # display_name), so dropping Atlassian's body must NOT bump GWS
+    # to letter ``c)``.
+    real_load = si._load_connector_body
+
+    def patched(slug):
+        if slug == "connector-atlassian":
+            return None
+        return real_load(slug)
+
+    monkeypatch.setattr(si, "_load_connector_body", patched)
+
+    joined = "\n".join(si.resolve_lines("agnes.whl"))
+
+    # Asana rendered first (a), GWS second (b) — Atlassian skipped.
+    assert "   a) Asana" in joined
+    assert "   b) Google Workspace" in joined
+    # The gap-bug shape (Atlassian's slot left as ``b)``, GWS pushed
+    # to ``c)``) MUST NOT appear.
+    assert "   b) Atlassian" not in joined
+    assert "   c) Google Workspace" not in joined
+
+
 def test_connectors_block_gws_body_describes_oauth_app_branch():
     """The bundled GWS SKILL.md carries BOTH the operator-OAuth-app branch
     (~2 min, frictionless) and the manual GCP walkthrough (~20 min) in

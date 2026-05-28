@@ -602,8 +602,14 @@ def _connectors_block(
         "   safe to re-run if anything goes sideways.",
         "",
     ]
+    # Sub-letter index tracks ONLY the connectors we actually rendered
+    # (not the raw enumerate index) — if a connector body is missing
+    # from the seed we want the letter sequence to stay tight (a, b, c)
+    # rather than skip to (a, c, d). The bug was visible to users as
+    # "b)" and "c)" with no "a)" in the rendered install prompt.
     sub_letters = "abcdefghij"
-    for i, entry in enumerate(manifest):
+    letter_idx = 0
+    for entry in manifest:
         body = _load_connector_body(entry.slug)
         if body is None:
             logger.warning(
@@ -614,13 +620,14 @@ def _connectors_block(
         # Substitute brand placeholder. Atlassian / Asana / GWS bodies all
         # reference {instance_brand} in their token-label hints.
         body = body.replace("{instance_brand}", instance_brand)
-        lines.append(f"   {sub_letters[i]}) {entry.display_name} — {entry.short_summary}")
+        lines.append(f"   {sub_letters[letter_idx]}) {entry.display_name} — {entry.short_summary}")
         lines.append(f"      Ask: \"Set up {entry.display_name} now? (Y/n)\"")
         lines.append("      If yes (default) — follow this inline prompt verbatim:")
         lines.append("")
         for body_line in body.split("\n"):
             lines.append(f"      {body_line}" if body_line else "")
         lines.append("")
+        letter_idx += 1
     lines.extend([
         f"   After all asks (regardless of answers) continue to step {confirm_step_num}.",
     ])

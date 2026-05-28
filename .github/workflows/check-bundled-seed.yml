@@ -66,18 +66,40 @@ jobs:
             git -C "$TMP/seed" fetch --unshallow 2>/dev/null || true
             git -C "$TMP/seed" checkout "$SHA"
           }
-          # Compare the bundle's content with the upstream snapshot. Diff
-          # ignoring .source_ref (it lives only in the bundle).
-          diff -r \
-            --exclude='.source_ref' \
-            "src/_bundled_seed" \
-            <(cd "$TMP/seed" && tar -cf - install-prompt workspace/.claude/skills/connector-* workspace/.claude/skills/_lib 2>/dev/null) \
-            > /dev/null 2>&1 || {
+          # Compare the bundle's content with the upstream snapshot.
+          #
+          # Earlier revision of this step tried `diff -r <bundle> <(tar
+          # -cf - <subset>)` to limit the comparison to the four shipped
+          # sub-trees. That doesn't work: `diff -r` requires a directory
+          # on both sides — a tar stream via process substitution is a
+          # pseudo-file, so the diff always errored, then a fallback
+          # full-tree diff ran without exit-1 propagation. Net: the
+          # check was decorative.
+          #
+          # Stage the shipped sub-trees into a sibling directory we CAN
+          # compare directory-to-directory. Files outside the staging
+          # are ignored on purpose — the bundle is by design a subset
+          # of the upstream seed (no .github, no example workspaces).
+          STAGED=$(mktemp -d)
+          for sub in install-prompt \
+                     workspace/.claude/skills/connector-asana \
+                     workspace/.claude/skills/connector-atlassian \
+                     workspace/.claude/skills/connector-gws \
+                     workspace/.claude/skills/_lib; do
+            if [ -e "$TMP/seed/$sub" ]; then
+              mkdir -p "$STAGED/$(dirname "$sub")"
+              cp -a "$TMP/seed/$sub" "$STAGED/$sub"
+            fi
+          done
+          if diff -r --exclude='.source_ref' "src/_bundled_seed" "$STAGED" > /tmp/seed-diff.txt 2>&1; then
+            echo "Bundle matches upstream snapshot at $SHA."
+          else
             echo "Diff:"
-            diff -r --exclude='.source_ref' "src/_bundled_seed" "$TMP/seed" || true
+            cat /tmp/seed-diff.txt || true
             echo ""
             echo "::error::Bundle contents don't match $URL@$SHA. Re-run scripts/sync_bundled_seed.sh."
-            # Don't hard-fail yet — full diff support varies between bash versions.
-            # Treat this as a warning for now; tighten in a follow-up if needed.
+            # Don't hard-fail yet — keep warning-only until the subset
+            # rules are stable across consecutive releases. Flip to
+            # `exit 1` in a follow-up once forks confirm clean diffs.
             echo "::warning::Strict content match not enforced in this workflow version."
-          }
+          fi

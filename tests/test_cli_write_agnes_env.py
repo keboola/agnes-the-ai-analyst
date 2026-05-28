@@ -240,3 +240,96 @@ def test_write_agnes_env_omits_none_values(workspace: Path):
     body = (workspace / ".claude" / "agnes" / ".env").read_text(encoding="utf-8")
     assert "AGNES_GWS_CLIENT_ID=abc" in body
     assert "AGNES_GWS_PROJECT_ID" not in body
+
+
+def test_write_agnes_env_escapes_newlines_in_value(workspace: Path):
+    """Devin Review on PR #462: the original `_dotenv_quote` escaped
+    backslashes and double-quotes but NOT newlines. A YAML multi-line
+    value in `connectors:` overlay (e.g.
+    `ATLASSIAN_BASE_URL: "https://acme\nMALICIOUS_KEY=evil"`) would
+    survive `str(v)` coercion at the API layer with the newline intact
+    and emit a literal newline inside the dotenv value. Shell-based
+    dotenv parsers treat that as end-of-line and would honor the
+    injected key, shadowing legitimate keys lower in the file.
+
+    Lock the contract: a newline in the value lands as the literal
+    two-char sequence `\\n` inside the quoted form, not as an actual
+    end-of-line.
+    """
+    payload = {
+        "params": {
+            "connector-atlassian": {
+                # The "value" deliberately contains a newline + a key=
+                # pattern that would shadow a real key if not escaped.
+                "ATLASSIAN_BASE_URL": "https://acme\nATLASSIAN_EMAIL=evil@x.com",
+            },
+        },
+        "globals": {"AGNES_GWS_CLIENT_ID": "legit_id"},
+    }
+    patchers = _patch_api_get(payload)
+    for p in patchers:
+        p.start()
+    try:
+        from cli.lib.initial_workspace import write_agnes_env
+
+        write_agnes_env(workspace, "https://srv", "tok")
+    finally:
+        for p in patchers:
+            p.stop()
+
+    body = (workspace / ".claude" / "agnes" / ".env").read_text(encoding="utf-8")
+    # The escaped form lands as a single line carrying the literal `\n`.
+    assert r"ATLASSIAN_BASE_URL=\"https://acme\nATLASSIAN_EMAIL=evil@x.com\"" in body
+    # And the injection target MUST NOT appear as a separate top-level
+    # key. The presence of the escaped literal above is sufficient
+    # proof, but an extra `startswith` scan makes the contract explicit
+    # for future readers / regressions.
+    for line in body.splitlines():
+        assert not line.startswith("ATLASSIAN_EMAIL="), (
+            "newline injection produced a shadow key"
+        )
+
+
+def test_write_agnes_env_chmod_failure_does_not_abort(workspace: Path, monkeypatch):
+    """Devin Review on PR #462: on Windows `os.fchmod` doesn't exist
+    (raises AttributeError); on some filesystems it raises OSError.
+    Either way the .env contents are still useful — NTFS / SMB ACLs
+    cover perms. Treat the chmod as best-effort so the writer doesn't
+    abort the entire init on Windows analyst laptops.
+
+    Plus a parallel guarantee: the raw fd from `tempfile.mkstemp` is
+    closed in a `finally` block so a chmod failure mid-write can't
+    leak the fd (Python's GC doesn't auto-close raw integer fds).
+    """
+    payload = {
+        "params": {"connector-asana": {"AGNES_ASANA_PAT_ENV": "AGNES_ASANA_PAT"}},
+        "globals": {},
+    }
+    patchers = _patch_api_get(payload)
+    for p in patchers:
+        p.start()
+
+    # Simulate Windows: fchmod raises AttributeError (the actual Windows
+    # behavior). The writer must still produce the .env.
+    import os as _os
+    original_fchmod = getattr(_os, "fchmod", None)
+    monkeypatch.setattr(_os, "fchmod", lambda *_a, **_kw: (_ for _ in ()).throw(AttributeError("simulated Windows")))
+
+    try:
+        from cli.lib.initial_workspace import write_agnes_env
+
+        env_path = write_agnes_env(workspace, "https://srv", "tok")
+    finally:
+        for p in patchers:
+            p.stop()
+        if original_fchmod is not None:
+            monkeypatch.setattr(_os, "fchmod", original_fchmod)
+
+    # The file landed despite the simulated chmod failure.
+    assert env_path.is_file()
+    body = env_path.read_text(encoding="utf-8")
+    assert "AGNES_ASANA_PAT_ENV=AGNES_ASANA_PAT" in body
+    # And no temp file was left behind (fd was closed, temp swapped or
+    # cleaned up).
+    siblings = [p.name for p in env_path.parent.iterdir() if p.name.startswith(".env.")]
+    assert siblings == [".env"], f"orphan temp files: {siblings}"

@@ -370,6 +370,18 @@ def list_seed_files(rel_dir: str) -> List[Path]:
     manifest scan: when IWT has any ``connector-*/`` skill, the bundle's
     connectors are ignored (operator seed is the source of truth).
 
+    **Per-directory all-or-nothing**, by design: an IWT clone that ships
+    only Asana hides the bundle's GWS + Atlassian skills from `/home`.
+    That's the operator's explicit opt-in (they've taken ownership of
+    the connector slate). Contrast with :func:`resolve_seed_file`
+    (per-file IWT→bundle fallback) used elsewhere.
+
+    Renderer invariant: callers MUST only ask `_load_connector_body`
+    for slugs that came back from `load_manifest` (which uses this
+    function). Asking for a bundled slug after an IWT directory take-
+    over would hit `resolve_seed_file` and silently mix sources mid-
+    prompt, defeating the all-or-nothing contract here.
+
     Returns absolute paths sorted alphabetically. Empty list when neither
     tier has the directory.
     """
