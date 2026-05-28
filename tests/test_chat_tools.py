@@ -224,6 +224,23 @@ class TestRunQuery:
         assert not result.ok
         assert "select" in result.data["error"].lower()
 
+    @pytest.mark.parametrize("url", [
+        "https://evil.example.com/data.parquet",
+        "http://evil.example.com/data.parquet",
+        "s3://bucket/data.parquet",
+        "gcs://bucket/data.parquet",
+    ])
+    def test_refuses_url_scheme_exfiltration(self, chat_env, url):
+        """An LLM-composed SELECT against a remote URL would otherwise
+        slip past the registry-based table check — `httpfs` reads the
+        URL as if it were a local file. Block on the scheme literal."""
+        result = _run(chat_tools.dispatch(
+            "run_query", {"sql": f"SELECT * FROM '{url}'"},
+            chat_env["admin_user"], chat_env["conn"],
+        ))
+        assert not result.ok
+        assert "not allowed" in result.data["error"]
+
     def test_refuses_semicolon_chained(self, chat_env):
         result = _run(chat_tools.dispatch(
             "run_query",

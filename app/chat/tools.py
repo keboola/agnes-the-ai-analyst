@@ -221,7 +221,13 @@ async def _get_schema(
     row = TableRegistryRepository(conn).get(table_id)
     if not row:
         raise _ToolError(f"table not registered: '{table_id}'")
-    columns = _describe_view_columns(table_id)
+    # Single analytics-DB round trip: DESCRIBE the view to get columns.
+    analytics = get_analytics_db_readonly()
+    try:
+        described = analytics.execute(f'DESCRIBE "{table_id}"').fetchall()
+    finally:
+        analytics.close()
+    columns = [{"name": r[0], "type": r[1]} for r in described]
     return {
         "table_id": table_id,
         "name": row.get("name"),
@@ -275,17 +281,22 @@ _TABLE_REF_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Statements / keywords we refuse outright. Lifted from app/api/query.py's
-# blocklist but narrower: chat is exclusively SELECT, no DDL, no I/O.
+# Statements / keywords we refuse outright. Mirrors ``app/api/query.py``'s
+# blocklist — chat is exclusively SELECT, no DDL, no I/O. The URL-scheme
+# entries (``http://``, ``s3://``, …) catch the ``SELECT * FROM
+# 'https://example.com/x.parquet'`` exfiltration shape that ``httpfs``
+# would otherwise allow even on a read-only DuckDB connection.
 _BLOCKED_SQL_KEYWORDS = (
     "drop ", "delete ", "insert ", "update ", "alter ", "create ",
     "copy ", "attach ", "detach ", "load ", "install ",
     "export ", "import ", "pragma ", "call ",
     "read_csv", "read_json", "read_parquet", "read_text",
     "write_csv", "write_parquet", "read_blob", "read_ndjson",
-    "parquet_scan", "json_scan", "csv_scan",
+    "parquet_scan", "parquet_metadata", "parquet_schema",
+    "json_scan", "csv_scan",
     "query_table", "iceberg_scan", "delta_scan", "bigquery_query",
     "glob(", "list_files",
+    "'/", '"/', "http://", "https://", "s3://", "gcs://",
     "information_schema", "duckdb_tables", "duckdb_columns",
     "duckdb_databases", "duckdb_settings", "duckdb_functions",
     "duckdb_views", "duckdb_indexes", "duckdb_schemas",
@@ -459,16 +470,6 @@ def _extract_table_refs(sql: str) -> set[str]:
         if ref:
             refs.add(ref)
     return refs
-
-
-def _describe_view_columns(table_id: str) -> list[dict[str, str]]:
-    analytics = get_analytics_db_readonly()
-    try:
-        rows = analytics.execute(f'DESCRIBE "{table_id}"').fetchall()
-        # DuckDB DESCRIBE returns (column_name, column_type, null, key, default, extra).
-        return [{"name": r[0], "type": r[1]} for r in rows]
-    finally:
-        analytics.close()
 
 
 def _serialize_row(row: tuple) -> list[Any]:
