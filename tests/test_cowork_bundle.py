@@ -47,6 +47,7 @@ class TestGenerateBundle:
         # Required workspace files
         assert f"{folder}/agnes-bundle.json" in names   # no leading dot — visible to Claude tools
         assert f"{folder}/setup.py" in names             # pure stdlib fallback setup script
+        assert f"{folder}/mcp_server.py" in names        # MCP launcher — bootstraps creds + execs agnes mcp
         assert f"{folder}/.claude/settings.json" in names
         assert f"{folder}/CLAUDE.md" in names
 
@@ -72,6 +73,17 @@ class TestGenerateBundle:
         ]
         assert any("setup.py" in cmd for cmd in commands), (
             f"SessionStart hook missing setup.py; got: {commands}"
+        )
+
+        # settings.json must wire the MCP server via bundled mcp_server.py
+        mcp_servers = settings.get("mcpServers", {})
+        assert "agnes" in mcp_servers, f"mcpServers missing 'agnes'; got: {mcp_servers}"
+        agnes_mcp = mcp_servers["agnes"]
+        assert agnes_mcp["command"] == "python3", (
+            f"MCP command should be 'python3', got: {agnes_mcp['command']}"
+        )
+        assert "mcp_server.py" in agnes_mcp.get("args", []), (
+            f"MCP args should include 'mcp_server.py'; got: {agnes_mcp.get('args')}"
         )
 
     def test_requires_authentication(self, seeded_app):
