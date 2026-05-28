@@ -206,7 +206,7 @@ agnes admin mcp source add real-crm \
     --auth-secret-env REAL_CRM_PAT
 ```
 
-(HTTP/SSE transport in `connectors/mcp/client.py` is **not implemented in the POC** — only stdio. The schema and admin layer support both; adding HTTP/SSE is ~50 LOC of `httpx_sse` wiring inside `client.py:_open_session`. Tracked as follow-up.)
+(HTTP/SSE transport in `connectors/mcp/client.py` is now wired — `_open_session` dispatches to `mcp.client.streamable_http.streamablehttp_client` for `transport='http'` and `mcp.client.sse.sse_client` for `transport='sse'`, with bearer/basic auth headers built from `auth_method` + `auth_secret_env`. The Streamable HTTP path is the MCP 2025-03-26+ recommended transport; the SSE path covers legacy servers. See `tests/test_mcp_client_transport.py` for the routing + header tests.)
 
 ## Schema reference (v61)
 
@@ -252,9 +252,8 @@ CREATE TABLE tool_grants (
 
 ## Known limitations / follow-ups before merge
 
-- **HTTP/SSE transport** not wired in `connectors/mcp/client.py` — only stdio.
 - **Per-table outbound tools** not implemented (RFC §7). Only generic `query(sql)` and the dynamic passthrough tools surface. AI can still query materialized tables via SQL.
-- **No vault** — secrets go through env-var names (`auth_secret_env` pattern, same as existing Keboola/BigQuery connectors). RFC §4 vault is follow-up.
+- **No vault** — secrets go through env-var names (`auth_secret_env` pattern, same as existing Keboola/BigQuery connectors). RFC §4 vault — which should also cover **per-user credential passthrough** so that calls to upstream MCP can run under the calling analyst's identity (their Notion/Slack/Linear OAuth token), not a single shared server-wide secret — is follow-up.
 - **No Policy Engine** — read-only is implicit (no admin REST endpoint accepts `mutating=true`). RFC §3 enforcement layer is follow-up.
 - **stdio MCP server** (`cli/mcp/server.py`) is NOT extended with passthrough tools. They only appear on the HTTP/SSE endpoint (`/api/mcp`). Wiring stdio means routing passthrough calls back through Agnes REST so the CLI doesn't have to import `connectors/mcp/` — small follow-up.
 - **data_packages `related_tools` junction** (RFC §6) — not implemented. Passthrough tools are visible to any AI client with `tool_grants`; package-driven subscription wiring is follow-up.
