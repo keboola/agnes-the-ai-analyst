@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 65
+SCHEMA_VERSION = 66
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -4482,29 +4482,6 @@ def _v62_to_v63(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 
-def _v62_to_v63(conn: duckdb.DuckDBPyConnection) -> None:
-    """v63: ``mcp_secrets`` table — server-wide vault for MCP source auth.
-
-    RFC #461 §4. One row per ``mcp_sources.id`` holds the Fernet-
-    ciphertext of the upstream auth token. Replaces the legacy
-    ``mcp_sources.auth_secret_env`` env-var pattern for HTTP/SSE
-    sources — connectors/mcp/client.py first consults this table, then
-    falls back to the env-var path so old registrations keep working.
-
-    Per-user secrets (analyst-scoped OAuth tokens for upstream MCP) land
-    in a follow-up v64 migration as ``mcp_user_secrets``.
-    """
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS mcp_secrets (
-            source_id        VARCHAR PRIMARY KEY,
-            secret_value_enc BLOB NOT NULL,
-            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
-        )
-    """)
-    conn.execute("UPDATE schema_version SET version = 63")
-
-
 def _v63_to_v64(conn: duckdb.DuckDBPyConnection) -> None:
     """v64: ``mcp_secrets`` table — server-wide vault for MCP source auth.
 
@@ -4563,6 +4540,29 @@ def _v64_to_v65(conn: duckdb.DuckDBPyConnection) -> None:
         "ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS scope VARCHAR DEFAULT 'shared'"
     )
     conn.execute("UPDATE schema_version SET version = 65")
+
+
+def _v65_to_v66(conn: duckdb.DuckDBPyConnection) -> None:
+    """v66: ``data_package_tools`` — junction linking data packages to MCP tools.
+
+    RFC #461 §6. Mirrors ``data_package_tables`` so a package can surface
+    both its analytical tables AND the MCP tools that fit its workflow
+    (e.g. a "Customer Lifecycle" package lists the orders/sessions tables
+    AND a passthrough ``crm.searchAccounts`` tool). The package detail
+    response gains a ``related_tools`` array populated via this junction.
+
+    ``CREATE TABLE IF NOT EXISTS`` for idempotency on both fresh and
+    upgrade paths.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS data_package_tools (
+            package_id  VARCHAR NOT NULL,
+            tool_id     VARCHAR NOT NULL,
+            added_at    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (package_id, tool_id)
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 66")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -4867,6 +4867,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v63_to_v64(conn)
             # v64→v65: per-user MCP secrets + scope column on mcp_sources.
             _v64_to_v65(conn)
+            # v65→v66: data_package_tools junction — links packages to MCP tools.
+            _v65_to_v66(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5050,6 +5052,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v63_to_v64(conn)
             if current < 65:
                 _v64_to_v65(conn)
+            if current < 66:
+                _v65_to_v66(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
