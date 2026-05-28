@@ -456,6 +456,15 @@ async def admin_sync(
         "last_error": None,
     })
 
+    # New seed content landed → connector manifest cache is stale. Drop it
+    # so the next render scan picks up renamed/added/removed connectors
+    # immediately rather than waiting for process restart.
+    try:
+        from src.connectors_manifest import invalidate_cache
+        invalidate_cache()
+    except Exception:
+        logger.exception("connectors_manifest: cache invalidation after sync failed")
+
     _audit(
         conn,
         actor_id=user.get("id"),

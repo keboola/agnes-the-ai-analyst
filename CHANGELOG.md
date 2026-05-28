@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- Seed-driven connector framework foundation (A1.1 of the connector-skills refactor).
+  - `src/_bundled_seed/` snapshot of the OSS workspace seed ships inside the wheel and serves as the fallback when no Initial Workspace Template is configured. Resolution chain: operator IWT clone first, bundled snapshot second.
+  - `src/connectors_manifest.py` scans seed-resident `workspace/.claude/skills/connector-*/SKILL.md` files, parses the `connector:` YAML frontmatter block, validates with length caps + HTML stripping + type checks, caches by source signature + file hash.
+  - `GET /api/connectors/manifest` returns the validated manifest with a `source` flag (`iwt` | `bundled`).
+  - `GET /api/connectors/params` returns per-tenant runtime params keyed by connector slug from the `connectors:` overlay in `instance.yaml`. Values will flow into `<workspace>/.claude/agnes/.env` via `agnes init` (wiring lands in A1.3).
+  - `src/initial_workspace.py` gains `is_configured()`, `bundled_seed_path()`, `resolve_seed_file()`, `seed_owns()`, and `list_seed_files()` helpers so the renderer (A1.2) and admin-editor gates (A1.3) can reach into the seed without re-implementing tier selection.
+  - `scripts/sync_bundled_seed.sh` clones the OSS seed at a given ref into `src/_bundled_seed/` and writes `.source_ref` provenance.
+  - `.github/workflows/check-bundled-seed.yml` verifies the bundled snapshot's `.source_ref` SHA exists at `source_url`.
+
+### Internal
+- Manifest cache invalidates from `POST /api/admin/initial-workspace/sync` after a successful clone update, so freshly-synced seed content surfaces on the next render scan without a process restart.
+
 ## [0.55.25] — 2026-05-28
 
 ### Fixed

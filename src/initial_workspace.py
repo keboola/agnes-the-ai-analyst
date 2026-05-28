@@ -284,3 +284,102 @@ def delete_template_dir() -> bool:
         return False
     shutil.rmtree(target)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Seed-file resolution — IWT clone (operator) > bundled snapshot (wheel)
+#
+# Used by:
+#   - ``app/web/setup_instructions.py`` to load the install-prompt template
+#   - ``src/connectors_manifest.py`` to enumerate connector-* SKILL.md files
+#   - ``app/api/claude_md.py`` + ``app/api/welcome.py`` to gate admin editors
+#     when the operator's seed owns the corresponding template
+#
+# Rule: operator IWT clone ALWAYS beats the bundled snapshot. The bundle is
+# the parity-preserving fallback so fresh installs (no IWT configured) still
+# render an install prompt and ship the canonical connectors.
+# ---------------------------------------------------------------------------
+
+_BUNDLED_SEED_DIR = Path(__file__).resolve().parent / "_bundled_seed"
+
+
+def bundled_seed_path() -> Path:
+    """Return the on-disk path to the bundled seed snapshot shipped inside
+    the Agnes wheel (``src/_bundled_seed/``). Treat as read-only.
+    """
+    return _BUNDLED_SEED_DIR
+
+
+def is_configured() -> bool:
+    """True iff an admin has registered an Initial Workspace Template URL
+    in ``instance.yaml`` (operator-side switch). Filesystem presence of a
+    clone is NOT enough — an admin can unset the URL while the working
+    copy lingers, and that "unset" state must beat a stale clone.
+    """
+    # Lazy import to avoid pulling app.api into src module load time.
+    from app.api.initial_workspace import _read_section
+    return bool(_read_section().get("url"))
+
+
+def resolve_seed_file(rel_path: str) -> Optional[tuple[str, str]]:
+    """Look up a seed file by repo-relative path.
+
+    ``rel_path`` is the path inside the seed repo root — e.g.
+    ``install-prompt/template.md.tmpl`` or
+    ``workspace/.claude/skills/connector-asana/SKILL.md``.
+
+    Returns ``(content, source)`` where ``source`` is one of:
+      * ``"iwt"`` — operator-configured Initial Workspace Template clone
+      * ``"bundled"`` — bundled snapshot inside the wheel
+
+    Returns ``None`` when neither tier has the file. Read errors propagate
+    (a corrupt clone is an operator failure that should surface, not be
+    silently masked by the bundle).
+    """
+    if is_configured():
+        iwt_path = get_initial_workspace_dir() / rel_path
+        if iwt_path.is_file():
+            return (iwt_path.read_text(encoding="utf-8"), "iwt")
+
+    bundled_path = _BUNDLED_SEED_DIR / rel_path
+    if bundled_path.is_file():
+        return (bundled_path.read_text(encoding="utf-8"), "bundled")
+
+    return None
+
+
+def seed_owns(rel_path: str) -> bool:
+    """True iff the operator-configured IWT clone has ``rel_path``.
+
+    Used by ``/admin/workspace-prompt`` and ``/admin/agent-prompt`` to gate
+    their editors: when seed owns the corresponding file, the local DB
+    override is dead-code and the editor switches to read-only mode.
+
+    Does NOT consider the bundled snapshot — the bundle is Agnes's own
+    fallback, not "operator-owned content". Admin can override the bundle
+    via local DB write; only IWT-clone-provided files lock the editor.
+    """
+    if not is_configured():
+        return False
+    return (get_initial_workspace_dir() / rel_path).is_file()
+
+
+def list_seed_files(rel_dir: str) -> List[Path]:
+    """Enumerate seed files under a repo-relative directory, with IWT
+    clone winning over the bundle as a whole. Used by the connector
+    manifest scan: when IWT has any ``connector-*/`` skill, the bundle's
+    connectors are ignored (operator seed is the source of truth).
+
+    Returns absolute paths sorted alphabetically. Empty list when neither
+    tier has the directory.
+    """
+    if is_configured():
+        iwt_dir = get_initial_workspace_dir() / rel_dir
+        if iwt_dir.is_dir():
+            return sorted(p for p in iwt_dir.rglob("*") if p.is_file())
+
+    bundled_dir = _BUNDLED_SEED_DIR / rel_dir
+    if bundled_dir.is_dir():
+        return sorted(p for p in bundled_dir.rglob("*") if p.is_file())
+
+    return []

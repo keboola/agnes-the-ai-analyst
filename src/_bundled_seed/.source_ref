@@ -1,0 +1,18 @@
+# Provenance of the bundled seed snapshot in this wheel.
+#
+# Format:
+#   source_url=<git-remote-URL of the seed repo this snapshot came from>
+#   source_sha=<full git SHA at the time scripts/sync_bundled_seed.sh ran>
+#   source_branch=<branch ref the SHA belongs to>
+#
+# The CI guard at .github/workflows/check-bundled-seed.yml verifies that the
+# files in this directory match `git archive --format=tar <source_url> <source_sha>`
+# of the canonical seed.
+#
+# Forks: change source_url + source_sha to point at your fork. CI guard will
+# then verify against your fork instead. The Agnes binary's resolution chain
+# is unaffected (operator-configured Initial Workspace Template ALWAYS wins
+# over the bundled snapshot at runtime).
+source_url=https://github.com/keboola/agnes-the-ai-analyst-workspace-seed
+source_sha=4e357de06df66d39f7f55e1c861fde0cabf2abbc
+source_branch=vr/connector-skills-b1a
