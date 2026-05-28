@@ -55,6 +55,14 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class JobCancelled(RuntimeError):
+    """Raised when the cancel sentinel is observed at a step boundary."""
+
+    def __init__(self, step: str):
+        super().__init__(f"Job cancelled at step={step}")
+        self.step = step
+
+
 @dataclass
 class JobWriter:
     """Writes /data/state/db-jobs/<job_id>.json on each step transition.
@@ -71,6 +79,26 @@ class JobWriter:
     @property
     def _path(self) -> Path:
         return self.jobs_dir / f"{self.job_id}.json"
+
+    @property
+    def cancel_path(self) -> Path:
+        """Side-car sentinel file touched by the API cancel endpoint.
+
+        The migrator subprocess polls this at step boundaries (B2).
+        We use a separate file rather than a status-flag inside the
+        job JSON so the API endpoint can signal cancellation without
+        racing the migrator's own writes to the same file.
+        """
+        return self.jobs_dir / f"{self.job_id}.cancel"
+
+    def check_cancel_requested(self) -> bool:
+        """Return True if the cancel sentinel exists.
+
+        Cooperative cancellation: the migrator calls this at every
+        step boundary in :func:`main` and raises :class:`JobCancelled`
+        when it observes the sentinel. See B2 in the v9 plan.
+        """
+        return self.cancel_path.exists()
 
     def _write(self, data: dict[str, Any]) -> None:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -529,6 +557,11 @@ def main(
         target=to,
     )
     writer.write_initial()
+    # Boundary check 0 (pre-alembic): catches cancels that arrived
+    # before the subprocess even got off the ground.
+    if writer.check_cancel_requested():
+        writer.mark_cancelled(step="validate")
+        return 0
 
     # Argument validation BEFORE we touch any network — every PG→PG
     # transition requires source_url. Failing here keeps the failure
@@ -545,6 +578,8 @@ def main(
 
     try:
         writer.update_step("alembic", progress_pct=20)
+        if writer.check_cancel_requested():
+            raise JobCancelled(step="alembic")
         alembic_upgrade_head(target_url)
 
         if source_backend == "duckdb":
@@ -559,9 +594,13 @@ def main(
                 # crash anywhere between copy and flip leaves the operator
                 # with a valid recovery point.
                 writer.update_step("backup", progress_pct=15)
+                if writer.check_cancel_requested():
+                    raise JobCancelled(step="backup")
                 backup_duckdb(duckdb_path, backups_dir)
 
             writer.update_step("data_copy", progress_pct=40)
+            if writer.check_cancel_requested():
+                raise JobCancelled(step="data_copy")
             copy_summary = copy_duckdb_to_pg(duckdb_path, target_url)
 
             if copy_summary.get("tables_failed"):
@@ -579,11 +618,15 @@ def main(
                 return 1
 
             writer.update_step("verify", progress_pct=80)
+            if writer.check_cancel_requested():
+                raise JobCancelled(step="verify")
             diffs = verify_row_counts(duckdb_path, target_url)
         else:
             # side_car → cloud  OR  cloud → side_car — PG→PG.
             if source_backend == "side_car":
                 writer.update_step("backup", progress_pct=30)
+                if writer.check_cancel_requested():
+                    raise JobCancelled(step="backup")
                 try:
                     backup_sidecar_pg("agnes-postgres-1", backups_dir)
                 except Exception as e:
@@ -594,6 +637,8 @@ def main(
                     _log_backup_skip(writer, str(e))
 
             writer.update_step("data_copy", progress_pct=40)
+            if writer.check_cancel_requested():
+                raise JobCancelled(step="data_copy")
             copy_summary = copy_pg_to_pg(source_url, target_url)
 
             if copy_summary.get("tables_failed"):
@@ -611,6 +656,8 @@ def main(
                 return 1
 
             writer.update_step("verify", progress_pct=80)
+            if writer.check_cancel_requested():
+                raise JobCancelled(step="verify")
             diffs = verify_pg_row_counts(source_url, target_url)
 
         if diffs:
@@ -621,11 +668,34 @@ def main(
             )
             return 1
 
+        # flip_backend is past point-of-no-return — no cancel check here.
+        # The API endpoint already 409s on cancels for step >= flip_backend,
+        # so by construction the sentinel cannot fire here legitimately.
         writer.update_step("flip_backend", progress_pct=95)
         target_state = BackendState(to)
         write_backend_state(target_state, url=target_url)
 
         writer.mark_success(summary=copy_summary)
+        return 0
+
+    except JobCancelled as cancel_exc:
+        writer.mark_cancelled(step=cancel_exc.step)
+        # Revert state machine to source — same logic as the
+        # generic exception path. The API endpoint also reverts,
+        # but doing it here too closes the race where the cancel
+        # endpoint runs while the migrator is between step writes.
+        try:
+            revert_state = BackendState(source_backend) if source_backend else (
+                BackendState.DUCKDB if to == "side_car" else BackendState.SIDE_CAR
+            )
+            write_backend_state(
+                revert_state,
+                url=source_url if source_backend in ("side_car", "cloud") else None,
+            )
+        except Exception:
+            pass
+        # Cancellation is a normal end — return 0. The applier looks at
+        # status: cancelled in the job JSON, not the exit code.
         return 0
 
     except Exception as e:

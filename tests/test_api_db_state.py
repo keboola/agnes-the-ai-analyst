@@ -472,3 +472,40 @@ def test_cancel_reverts_to_source_backend_side_car_to_cloud(seeded_app, monkeypa
     assert state == BackendState.SIDE_CAR, f"expected SIDE_CAR after cancel, got {state.value}"
     assert url == "postgresql+psycopg://x:y@postgres:5432/agnes", \
         "source URL must be preserved on cancel"
+
+
+def test_cancel_writes_sentinel_for_migrator(seeded_app, monkeypatch):
+    """POST /cancel writes <job_id>.cancel beside the job JSON. The
+    migrator subprocess polls this file at step boundaries (B2)."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    job_id = "job-sentinel-test"
+    job = {
+        "schema_version": 1,
+        "job_id": job_id,
+        "status": "running",
+        "source_backend": "duckdb",
+        "target_backend": "side_car",
+        "current_step": "data_copy",
+        "started_at": "2026-05-28T10:00:00Z",
+        "completed_at": None,
+        "progress_pct": 30,
+        "summary": None,
+        "error": None,
+    }
+    (jobs_dir / f"{job_id}.json").write_text(json.dumps(job))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        f"/api/admin/db/cancel/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    sentinel = jobs_dir / f"{job_id}.cancel"
+    assert sentinel.exists(), "cancel endpoint must touch <job_id>.cancel for migrator"

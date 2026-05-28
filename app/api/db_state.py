@@ -229,6 +229,15 @@ def cancel_job(job_id: str) -> dict:
             detail="Past point-of-no-return (step >= flip_backend); manual recovery required"
         )
 
+    # Signal the migrator subprocess (B2). The sentinel file is a
+    # cooperative cancellation marker — the migrator polls for it at
+    # step boundaries and raises JobCancelled when it observes the
+    # file. We write the sentinel BEFORE flipping the job JSON status
+    # so a slow migrator that polls slightly later still sees the
+    # signal.
+    sentinel = _jobs_dir() / f"{job_id}.cancel"
+    sentinel.touch()
+
     from datetime import datetime, timezone
     data["status"] = "cancelled"
     data["completed_at"] = datetime.now(timezone.utc).isoformat()

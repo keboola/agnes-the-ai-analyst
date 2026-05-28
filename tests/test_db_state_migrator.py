@@ -63,6 +63,83 @@ def test_job_writer_mark_failed(tmp_path):
     assert data["error"]["class"] == "OperationalError"
 
 
+def test_jobwriter_check_cancel_requested_false_by_default(tmp_path):
+    """No sentinel file present → method returns False."""
+    from scripts.db_state_migrator import JobWriter
+    w = JobWriter(job_id="job-cancel-test", jobs_dir=tmp_path, source="duckdb", target="side_car")
+    w.write_initial()
+    assert w.check_cancel_requested() is False
+
+
+def test_jobwriter_check_cancel_requested_true_when_sentinel_exists(tmp_path):
+    """Touch <job>.cancel → method returns True. This is the signal
+    POST /api/admin/db/cancel/<id> writes (B2). Cooperative — the
+    migrator checks at step boundaries."""
+    from scripts.db_state_migrator import JobWriter
+    w = JobWriter(job_id="job-cancel-test", jobs_dir=tmp_path, source="duckdb", target="side_car")
+    w.write_initial()
+    (tmp_path / "job-cancel-test.cancel").touch()
+    assert w.check_cancel_requested() is True
+
+
+def test_jobwriter_cancel_path(tmp_path):
+    """cancel_path property is <jobs_dir>/<job_id>.cancel."""
+    from scripts.db_state_migrator import JobWriter
+    w = JobWriter(job_id="my-job", jobs_dir=tmp_path, source="duckdb", target="cloud")
+    assert w.cancel_path == tmp_path / "my-job.cancel"
+
+
+def test_main_aborts_at_step_boundary_when_cancel_sentinel_present(tmp_path, monkeypatch):
+    """Drop sentinel before main() runs. main() must detect at the
+    first post-write_initial step boundary, mark_cancelled, return 0.
+    No PG calls happen because alembic step short-circuits.
+
+    The previous bug let main() drive all the way to flip_backend
+    while the cancel endpoint flipped status to cancelled — then the
+    success write at line 628 overwrote the cancellation."""
+    import duckdb
+    from src.db import _ensure_schema
+    from scripts.db_state_migrator import main
+
+    duck_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(duck_path))
+    _ensure_schema(conn)
+    conn.close()
+
+    jobs_dir = tmp_path / "db-jobs"
+    backups_dir = tmp_path / "backups"
+    jobs_dir.mkdir()
+
+    # Sentinel present BEFORE main() is called — so the first
+    # boundary check after write_initial trips it.
+    (jobs_dir / "job-cancel-mid.cancel").touch()
+
+    # Patch alembic to a no-op so we don't need a real PG target;
+    # the sentinel check fires BEFORE the alembic call anyway, so
+    # this only matters as a belt-and-braces guard.
+    monkeypatch.setattr(
+        "scripts.db_state_migrator.alembic_upgrade_head",
+        lambda url: None,
+    )
+
+    overlay = tmp_path / "instance.yaml"
+    monkeypatch.setattr("src.db_state_machine._OVERLAY_PATH", overlay)
+
+    rc = main(
+        job_id="job-cancel-mid",
+        to="side_car",
+        target_url="postgresql+psycopg://x:y@z/q",
+        duckdb_path=duck_path,
+        jobs_dir=jobs_dir,
+        backups_dir=backups_dir,
+    )
+    assert rc == 0, "cancellation is not a process failure"
+    import json
+    job = json.loads((jobs_dir / "job-cancel-mid.json").read_text())
+    assert job["status"] == "cancelled"
+    assert "step" in job["error"]
+
+
 def test_backup_duckdb_creates_gzipped_copy(tmp_path):
     """Backup writes gzip'd DuckDB to backups dir; original untouched."""
     import duckdb
