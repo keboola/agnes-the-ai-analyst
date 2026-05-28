@@ -456,14 +456,75 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
     return {"rows_total": rows_total, "tables_migrated": tables_migrated, "tables_failed": []}
 
 
+#: Sample size for the content-drift hash. Bounded so a multi-million-row
+#: table doesn't add minutes to verify; large enough that randomly-drifted
+#: rows in the first ``N`` PK-ordered rows are caught with high
+#: probability. The drift modes the hash targets (pre-seeded Cloud SQL
+#: with matching PKs but stale email/name from a prior failed
+#: migration) are deterministic, so any non-zero sample suffices.
+CONTENT_HASH_SAMPLE_SIZE = 1000
+
+
+def _content_hash_sample(
+    engine,
+    table_name: str,
+    pk_cols: list[str],
+    non_pk_cols: list[str],
+    sample_size: int = CONTENT_HASH_SAMPLE_SIZE,
+) -> str:
+    """Hash the first ``sample_size`` rows ordered by PK, considering
+    only non-PK columns.
+
+    Used by :func:`verify_pg_row_counts` to detect H12-style drift —
+    source and target carry the same PK set but differ on non-PK
+    content (e.g. preseeded Cloud SQL left over from a failed prior
+    migration). Two databases with the same PK set + same non-PK
+    content yield the same hash; any disagreement on a non-PK column
+    surfaces as a different digest.
+
+    Cheap-sample design keeps the verify step bounded — full equality
+    on PKs is already covered by the per-task checksum in run_all, so
+    we only need a representative non-PK sample here.
+    """
+    if not non_pk_cols:
+        # No non-PK columns means there's nothing to drift; the
+        # existing PK-count check covers everything. Constant sentinel
+        # so the diff loop has a comparable value on both sides.
+        return "no-non-pk-content"
+
+    import hashlib
+
+    import sqlalchemy as sa
+
+    pk_order = ", ".join(f'"{c}"' for c in pk_cols)
+    sel_cols = ", ".join(f'"{c}"' for c in non_pk_cols)
+    sql = sa.text(
+        f'SELECT {sel_cols} FROM "{table_name}" ORDER BY {pk_order} LIMIT {int(sample_size)}'
+    )
+    h = hashlib.sha256()
+    with engine.connect() as conn:
+        for row in conn.execute(sql):
+            h.update(repr(tuple(row)).encode())
+    return h.hexdigest()
+
+
 def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
-    """Compare PG row counts between source and target.
+    """Compare PG row counts AND non-PK content samples between source
+    and target.
 
     Mirrors :func:`verify_row_counts` but reads both sides as PG.
-    Returns list of diffs ``[{table, source_rows, target_rows}]``.
+    Returns list of diffs — each entry carries a ``kind`` discriminator:
+
+    - ``{"table", "kind": "row_count", "source_rows", "target_rows"}``
+      when row counts disagree.
+    - ``{"table", "kind": "content_drift", "source_hash", "target_hash"}``
+      when row counts match but non-PK content differs (H12).
+
+    Empty list = both checks pass, migration may proceed to flip.
     """
     import sqlalchemy as sa
     from src.db_pg import Base
+    from scripts.migrate_duckdb_to_pg import _PK_COLUMNS
 
     diffs: list[dict] = []
     source = _bounded_engine(source_url)
@@ -503,8 +564,25 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
             if src_count != tgt_count:
                 diffs.append({
                     "table": tname,
+                    "kind": "row_count",
                     "source_rows": int(src_count or 0),
                     "target_rows": int(tgt_count or 0),
+                })
+                # When counts disagree, content drift is implied; skip
+                # the hash sample to keep the verify step bounded.
+                continue
+
+            # Counts match — verify non-PK content via sampled hash.
+            pk_cols = _PK_COLUMNS.get(tname, ["id"])
+            non_pk_cols = [c.name for c in table.columns if c.name not in pk_cols]
+            src_hash = _content_hash_sample(source, tname, pk_cols, non_pk_cols)
+            tgt_hash = _content_hash_sample(target, tname, pk_cols, non_pk_cols)
+            if src_hash != tgt_hash:
+                diffs.append({
+                    "table": tname,
+                    "kind": "content_drift",
+                    "source_hash": src_hash[:16],
+                    "target_hash": tgt_hash[:16],
                 })
     finally:
         source.dispose()

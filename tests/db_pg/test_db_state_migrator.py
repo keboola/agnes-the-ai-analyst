@@ -728,6 +728,100 @@ def test_backup_sidecar_pg_raises_on_timeout(tmp_path, monkeypatch):
     assert captured["timeout"] is not None and captured["timeout"] > 0
 
 
+def test_content_hash_sample_detects_non_pk_drift():
+    """H12 — same PK set, different non-PK content must yield a
+    different content hash.
+
+    The pgserver test backend can only host one PG instance per
+    process, so we can't seed two side-by-side PGs to exercise the
+    full ``verify_pg_row_counts`` path. We test the building block
+    instead: ``_content_hash_sample`` is deterministic on the row
+    payload, so two engines whose tables disagree on a non-PK column
+    yield different hashes. The integration assertion (verify reports
+    a ``content_drift`` diff) is exercised indirectly by the
+    same-URL idempotent test passing post-fix (a self-hash always
+    matches itself).
+    """
+    import sqlalchemy as sa
+
+    from scripts.db_state_migrator import _content_hash_sample
+
+    eng_a = sa.create_engine("sqlite:///:memory:")
+    eng_b = sa.create_engine("sqlite:///:memory:")
+    for eng in (eng_a, eng_b):
+        with eng.begin() as c:
+            c.execute(sa.text("CREATE TABLE u (id TEXT PRIMARY KEY, email TEXT, name TEXT)"))
+
+    # Same PK set ('u1', 'u2'); different non-PK values on row u1.
+    with eng_a.begin() as c:
+        c.execute(sa.text("INSERT INTO u VALUES ('u1', 'old@x.com', 'Alice')"))
+        c.execute(sa.text("INSERT INTO u VALUES ('u2', 'b@x.com', 'Bob')"))
+    with eng_b.begin() as c:
+        c.execute(sa.text("INSERT INTO u VALUES ('u1', 'fresh@x.com', 'Alice')"))
+        c.execute(sa.text("INSERT INTO u VALUES ('u2', 'b@x.com', 'Bob')"))
+
+    h_a = _content_hash_sample(eng_a, "u", ["id"], ["email", "name"])
+    h_b = _content_hash_sample(eng_b, "u", ["id"], ["email", "name"])
+
+    assert h_a != h_b, (
+        "Content-hash must detect non-PK drift; row counts alone would "
+        "report 2==2 'rows match' and let the migration go live with "
+        "stale corrupted rows in the target."
+    )
+    # Self-equality: hashing the same engine twice yields the same digest.
+    assert h_a == _content_hash_sample(eng_a, "u", ["id"], ["email", "name"])
+    # PK-only table (no non-PK cols) yields a constant sentinel.
+    assert _content_hash_sample(eng_a, "u", ["id"], []) == "no-non-pk-content"
+
+
+def test_verify_pg_row_counts_includes_content_drift_check(tmp_path, pg_engine):
+    """H12 — verify_pg_row_counts must surface content-drift entries,
+    not just row-count diffs.
+
+    Same-engine constraint of pgserver forces this to be a structural
+    test: we patch ``_content_hash_sample`` to return different
+    hashes for source vs target on one chosen table and assert that
+    the verify call surfaces a ``content_drift`` entry.
+    """
+    import sqlalchemy as sa
+    import src.models  # noqa: F401
+    from src.db_pg import Base
+
+    import scripts.db_state_migrator as migrator
+
+    Base.metadata.create_all(pg_engine)
+    url = str(pg_engine.url)
+
+    # Seed users so the row counts match on both sides (same URL).
+    with pg_engine.begin() as conn:
+        conn.execute(sa.text(
+            "INSERT INTO users (id, email, name) VALUES ('u1', 'a@x', 'A')"
+        ))
+
+    original_hash = migrator._content_hash_sample
+    call_count = {"n": 0}
+
+    def fake_hash(engine, table_name, pk_cols, non_pk_cols, sample_size=1000):
+        call_count["n"] += 1
+        if table_name == "users":
+            # Force source != target for the users table only.
+            return f"hash-{call_count['n']}"
+        return original_hash(engine, table_name, pk_cols, non_pk_cols, sample_size=sample_size)
+
+    migrator._content_hash_sample = fake_hash
+    try:
+        diffs = migrator.verify_pg_row_counts(url, url)
+    finally:
+        migrator._content_hash_sample = original_hash
+
+    content_drift = [d for d in diffs if d.get("kind") == "content_drift"]
+    assert content_drift, (
+        f"verify_pg_row_counts must produce a content_drift diff when "
+        f"_content_hash_sample disagrees; got diffs={diffs}"
+    )
+    assert any(d["table"] == "users" for d in content_drift)
+
+
 def test_copy_pg_to_pg_streams_without_full_materialize(tmp_path, pg_engine):
     """H4 — PG→PG copy must stream-batch rather than .all()-materialize.
 
