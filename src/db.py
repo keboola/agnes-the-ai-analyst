@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 62
+SCHEMA_VERSION = 63
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -4315,6 +4315,29 @@ def _v61_to_v62(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 62")
 
 
+def _v62_to_v63(conn: duckdb.DuckDBPyConnection) -> None:
+    """v63: ``mcp_secrets`` table — server-wide vault for MCP source auth.
+
+    RFC #461 §4. One row per ``mcp_sources.id`` holds the Fernet-
+    ciphertext of the upstream auth token. Replaces the legacy
+    ``mcp_sources.auth_secret_env`` env-var pattern for HTTP/SSE
+    sources — connectors/mcp/client.py first consults this table, then
+    falls back to the env-var path so old registrations keep working.
+
+    Per-user secrets (analyst-scoped OAuth tokens for upstream MCP) land
+    in a follow-up v64 migration as ``mcp_user_secrets``.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_secrets (
+            source_id        VARCHAR PRIMARY KEY,
+            secret_value_enc BLOB NOT NULL,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 63")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -4610,6 +4633,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v60_to_v61(conn)
             # v62: Universal MCP — mcp_sources, tool_registry, tool_grants.
             _v61_to_v62(conn)
+            # v63: mcp_secrets — shared vault for MCP source auth.
+            _v62_to_v63(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4787,6 +4812,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v60_to_v61(conn)
             if current < 62:
                 _v61_to_v62(conn)
+            if current < 63:
+                _v62_to_v63(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

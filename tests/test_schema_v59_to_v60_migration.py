@@ -70,7 +70,7 @@ def test_v60_to_v61_is_idempotent(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 61
+    assert get_schema_version(conn) == 62
 
 def test_uuid_username_rewritten_to_email(tmp_path):
     """The motivating case: a session uploaded via /api/upload/sessions

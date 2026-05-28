@@ -25,7 +25,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from cli.client import api_delete, api_get, api_post
+from cli.client import api_delete, api_get, api_post, api_put
 
 mcp_app = typer.Typer(help="Admin: Universal MCP source + tool management")
 source_app = typer.Typer(help="MCP source registration and inspection")
@@ -321,6 +321,59 @@ def source_delete(
     if resp.status_code not in (200, 204):
         _fail(resp)
     typer.echo(f"Deleted MCP source {name_or_id} (id={src_id})")
+
+
+@source_app.command("set-secret")
+def source_set_secret(
+    name_or_id: str = typer.Argument(..., help="Source name or id (src_*)"),
+    value: Optional[str] = typer.Option(
+        None, "--value",
+        help="Secret value. If omitted, read one line from stdin (recommended — keeps the value out of shell history).",
+    ),
+):
+    """Store the server-wide vault secret for a source (RFC #461 §4).
+
+    ``connectors/mcp/client.py`` consults the vault first, then falls
+    back to the legacy ``auth_secret_env`` env-var, so flipping a source
+    from env-var to vault is a one-command rollout. Plaintext lives only
+    in the request body; at rest it's Fernet-encrypted in ``mcp_secrets``.
+    """
+    src_id = _resolve_source_id(name_or_id)
+    if value is None:
+        # Read one line, strip the trailing newline. ``getpass`` would be
+        # nicer but it doesn't work on a piped stdin (CI / `... | agnes`
+        # patterns), so a plain stdin read it is.
+        import sys
+        value = sys.stdin.readline().rstrip("\n")
+    if not value:
+        typer.echo("set-secret: secret value is empty — refusing.", err=True)
+        raise typer.Exit(2)
+    resp = api_put(
+        f"/api/admin/mcp-sources/{src_id}/secret",
+        json={"value": value},
+    )
+    if resp.status_code not in (200, 204):
+        _fail(resp)
+    typer.echo(f"Stored vault secret for source {name_or_id} (id={src_id}).")
+
+
+@source_app.command("clear-secret")
+def source_clear_secret(
+    name_or_id: str = typer.Argument(..., help="Source name or id (src_*)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+):
+    """Drop the vault row for a source — falls back to ``auth_secret_env`` (if any) or anonymous."""
+    src_id = _resolve_source_id(name_or_id)
+    if not yes:
+        if not typer.confirm(
+            f"Clear vault secret for {name_or_id} (id={src_id})? "
+            f"Upstream calls will fall back to auth_secret_env or anonymous."
+        ):
+            raise typer.Abort()
+    resp = api_delete(f"/api/admin/mcp-sources/{src_id}/secret")
+    if resp.status_code not in (200, 204):
+        _fail(resp)
+    typer.echo(f"Cleared vault secret for source {name_or_id} (id={src_id}).")
 
 
 @source_app.command("test")
