@@ -184,6 +184,40 @@ def copy_duckdb_to_pg(duckdb_path: Path, target_url: str) -> dict[str, int]:
     }
 
 
+def _jsonb_columns_for(table_name: str) -> set[str]:
+    """Return PG JSONB column names on ``table_name`` from Base.metadata.
+
+    Used by :func:`copy_pg_to_pg` because PG→PG copy reads JSONB columns
+    decoded (e.g. a stored JSON string ``"./foo"`` returns Python str
+    ``./foo``); the target's ``CAST AS JSONB`` then fails on bare values.
+    We re-encode every JSONB value with ``json.dumps`` on the copy path.
+    """
+    import src.models  # noqa: F401
+    from sqlalchemy.dialects.postgresql import JSONB
+    from src.db_pg import Base
+
+    table = Base.metadata.tables.get(table_name)
+    if table is None:
+        return set()
+    return {c.name for c in table.columns if isinstance(c.type, JSONB)}
+
+
+def _json_dumps_for_jsonb(value):
+    """JSON-encode ``value`` for a CAST AS JSONB bind.
+
+    ``None`` and already-string-encoded JSON values pass through after
+    encode — ``json.dumps`` always emits valid JSON, so the cast on the
+    PG side is now guaranteed parseable. The DuckDB path's
+    ``_normalize_for_pg`` does the same dict/list encoding but leaves
+    strings alone (DuckDB stores JSON as already-encoded strings); the
+    PG source returns decoded values, so we re-encode here.
+    """
+    import json as _json
+    if value is None:
+        return None
+    return _json.dumps(value)
+
+
 def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
     """Copy all PG-mapped tables from one PG to another in FK order.
 
@@ -222,6 +256,7 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
             pk_cols = _PK_COLUMNS.get(tname, ["id"])
             array_cols = _array_columns_for(tname)
             default_cols = _not_null_columns_with_default(tname)
+            jsonb_cols = _jsonb_columns_for(tname)
 
             with source.connect() as src_conn:
                 rows = src_conn.execute(
@@ -238,6 +273,15 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
                 for k, v in zip(cols, r):
                     if k in array_cols:
                         d[k] = _coerce_array_value(v)
+                    elif k in jsonb_cols:
+                        # Source is PG JSONB → SQLAlchemy returns dict /
+                        # list / str / int / bool depending on the stored
+                        # value. CAST AS JSONB expects a JSON-encoded
+                        # string for ALL of those — including bare
+                        # strings (CAST('hello' AS JSONB) fails; CAST
+                        # ('"hello"' AS JSONB) succeeds). json.dumps any
+                        # non-None value.
+                        d[k] = _json_dumps_for_jsonb(v)
                     else:
                         d[k] = _normalize_for_pg(v)
                     if k in default_cols:
