@@ -176,7 +176,9 @@ def test_schema_version_is_60():
     #            (RFC #461 §4 — Fernet-encrypted bearer/basic tokens).
     # v62 → v63: ``mcp_user_secrets`` + ``mcp_sources.scope`` — per-user
     #            credential passthrough (RFC #461 §4 phase B).
-    assert SCHEMA_VERSION == 63
+    # v63 → v64: ``data_package_tools`` — junction linking packages to
+    #            MCP tools (RFC #461 §6 related_tools).
+    assert SCHEMA_VERSION == 64
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

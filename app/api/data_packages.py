@@ -49,6 +49,7 @@ from app.auth.dependencies import _get_db
 from src.repositories.audit import AuditRepository
 from src.repositories.data_packages import DataPackagesRepository
 from src.repositories.table_registry import TableRegistryRepository
+from src.repositories.tool_registry import ToolRegistryRepository
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,10 @@ class AddTableRequest(BaseModel):
     table_id: str
 
 
+class AddToolRequest(BaseModel):
+    tool_id: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -450,14 +455,14 @@ async def get_data_package(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Detail view including the list of tables in the package."""
+    """Detail view including the list of tables AND related MCP tools."""
     repo = DataPackagesRepository(conn)
     pkg = repo.get(pkg_id)
     if not pkg:
         raise HTTPException(status_code=404, detail="data_package_not_found")
-    tables = repo.list_tables(pkg_id)
     out = _serialize(pkg, conn)
-    out["tables"] = tables
+    out["tables"] = repo.list_tables(pkg_id)
+    out["related_tools"] = repo.list_tools(pkg_id)
     return out
 
 
@@ -635,4 +640,59 @@ async def remove_table_from_package(
             "data_package.remove_table",
             f"data_package:{pkg_id}",
             {"table_id": table_id},
+        )
+
+
+# ---------------------------------------------------------------------------
+# MCP tool junction (v64, RFC #461 §6) — symmetric with /tables above
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{pkg_id}/tools")
+async def add_tool_to_package(
+    pkg_id: str,
+    payload: AddToolRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Attach an MCP tool to the package. 404 if either side is missing,
+    200 + ``{added: True/False}`` to mirror /tables — idempotent."""
+    repo = DataPackagesRepository(conn)
+    if not repo.get(pkg_id):
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    tool_repo = ToolRegistryRepository(conn)
+    tool = tool_repo.get(payload.tool_id)
+    if not tool:
+        raise HTTPException(status_code=404, detail="tool_not_found")
+    added = repo.add_tool(pkg_id, payload.tool_id)
+    if added:
+        _audit(
+            conn,
+            user["id"],
+            "data_package.add_tool",
+            f"data_package:{pkg_id}",
+            {"tool_id": payload.tool_id, "exposed_name": tool.get("exposed_name")},
+        )
+    return {"added": added}
+
+
+@router.delete("/{pkg_id}/tools/{tool_id}", status_code=204)
+async def remove_tool_from_package(
+    pkg_id: str,
+    tool_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Detach an MCP tool from the package. Idempotent on missing row."""
+    repo = DataPackagesRepository(conn)
+    if not repo.get(pkg_id):
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    removed = repo.remove_tool(pkg_id, tool_id)
+    if removed:
+        _audit(
+            conn,
+            user["id"],
+            "data_package.remove_tool",
+            f"data_package:{pkg_id}",
+            {"tool_id": tool_id},
         )

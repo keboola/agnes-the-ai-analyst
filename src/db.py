@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 63
+SCHEMA_VERSION = 64
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -4270,6 +4270,29 @@ def _v62_to_v63(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 63")
 
 
+def _v63_to_v64(conn: duckdb.DuckDBPyConnection) -> None:
+    """v64: ``data_package_tools`` — junction linking data packages to MCP tools.
+
+    RFC #461 §6. Mirrors ``data_package_tables`` so a package can surface
+    both its analytical tables AND the MCP tools that fit its workflow
+    (e.g. a "Customer Lifecycle" package lists the orders/sessions tables
+    AND a passthrough ``crm.searchAccounts`` tool). The package detail
+    response gains a ``related_tools`` array populated via this junction.
+
+    ``CREATE TABLE IF NOT EXISTS`` for idempotency on both fresh and
+    upgrade paths.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS data_package_tools (
+            package_id  VARCHAR NOT NULL,
+            tool_id     VARCHAR NOT NULL,
+            added_at    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (package_id, tool_id)
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 64")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -4565,6 +4588,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v61_to_v62(conn)
             # v63: mcp_user_secrets + mcp_sources.scope (per-user creds).
             _v62_to_v63(conn)
+            # v64: data_package_tools junction — links packages to MCP tools.
+            _v63_to_v64(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4744,6 +4769,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v61_to_v62(conn)
             if current < 63:
                 _v62_to_v63(conn)
+            if current < 64:
+                _v63_to_v64(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

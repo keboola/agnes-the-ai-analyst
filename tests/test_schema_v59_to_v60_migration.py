@@ -60,7 +60,7 @@ def test_v59_to_v60_is_idempotent(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 63
+    assert get_schema_version(conn) == 64
 
 
 def test_v59_to_v60_migration_function_is_idempotent():
