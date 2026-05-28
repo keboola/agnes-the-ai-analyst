@@ -156,30 +156,59 @@ def test_post_migrate_queues_pending_job(seeded_app, monkeypatch):
 
 
 def test_post_migrate_does_not_spawn_subprocess(seeded_app, monkeypatch):
-    """Regression: the endpoint MUST NOT shell out to the migrator.
+    """Architectural invariant — the migrate endpoint writes intent
+    only. NO subprocess of any kind may be spawned during the POST
+    handler. The host applier picks up the pending JSON ~30s later
+    and runs the migrator via ``docker run`` from the host, releasing
+    the DuckDB file lock first.
 
-    The host applier owns subprocess execution now. If anything inside
-    the handler reaches for subprocess.Popen / subprocess.run, we're
-    back to the in-process DuckDB lock conflict.
-
-    E.4 — kept after re-audit. The round-2 review flagged this as
-    vacuous on the premise that the test only checked
-    ``status_code == 202``. The actual implementation IS a real
-    probe: ``subprocess.Popen`` and ``subprocess.run`` are
-    monkey-patched to raise ``AssertionError`` BEFORE the POST fires.
-    If the handler invokes either, the 202 assertion never runs
-    because the exception propagates through TestClient as a 500.
+    This test installs spies on every subprocess-spawning entry point
+    (subprocess.Popen, subprocess.run, subprocess.call, subprocess.check_call,
+    subprocess.check_output, os.spawn*, multiprocessing.Process) and asserts
+    NONE were called during the request lifetime. The strong shape (rather than
+    'raise on call') catches any future regression that adds a subprocess spawn
+    silently — even if the call doesn't propagate as a 5xx — because we look at
+    the spy's call count after the response.
     """
+    from unittest.mock import MagicMock
     import subprocess as _sp
+    import os as _os
+
     data_dir = seeded_app["env"]["data_dir"]
     _patch_state_paths(monkeypatch, data_dir)
     monkeypatch.setenv("POSTGRES_PASSWORD", "test-pw")
 
-    def fail(*a, **kw):
-        raise AssertionError("endpoint must not spawn the migrator itself")
+    spies: dict = {}
+    for name in ("Popen", "run", "call", "check_call", "check_output"):
+        spy = MagicMock(side_effect=AssertionError(
+            f"subprocess.{name} called from /api/admin/db/migrate handler — "
+            "must be host-applier-only (see scripts/ops/agnes-state-applier.sh)"
+        ))
+        monkeypatch.setattr(_sp, name, spy)
+        spies[f"subprocess.{name}"] = spy
 
-    monkeypatch.setattr(_sp, "Popen", fail)
-    monkeypatch.setattr(_sp, "run", fail)
+    for name in ("spawnl", "spawnle", "spawnlp", "spawnlpe",
+                 "spawnv", "spawnve", "spawnvp", "spawnvpe"):
+        if hasattr(_os, name):
+            spy = MagicMock(side_effect=AssertionError(
+                f"os.{name} called from /api/admin/db/migrate handler"
+            ))
+            monkeypatch.setattr(_os, name, spy)
+            spies[f"os.{name}"] = spy
+
+    # multiprocessing.Process — orthogonal path; assert no instantiation
+    try:
+        import multiprocessing as _mp
+        proc_orig = _mp.Process
+        proc_calls: dict = {"n": 0}
+
+        def watching_process(*a, **kw):
+            proc_calls["n"] += 1
+            return proc_orig(*a, **kw)
+
+        monkeypatch.setattr(_mp, "Process", watching_process)
+    except Exception:
+        proc_calls = {"n": 0}
 
     client = seeded_app["client"]
     token = seeded_app["admin_token"]
@@ -189,6 +218,18 @@ def test_post_migrate_does_not_spawn_subprocess(seeded_app, monkeypatch):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 202, r.text
+
+    # Each spy must be uncalled — the AssertionError side_effect would have
+    # surfaced as a 5xx already, but explicit .called checks also catch any
+    # silent invocation path that swallows the exception.
+    for name, spy in spies.items():
+        assert not spy.called, (
+            f"{name} was invoked during POST /api/admin/db/migrate — "
+            "subprocess spawning is reserved for the host applier"
+        )
+    assert proc_calls["n"] == 0, (
+        "multiprocessing.Process instantiated during POST /api/admin/db/migrate"
+    )
 
 
 def test_post_migrate_rejects_invalid_transition(seeded_app, monkeypatch):
