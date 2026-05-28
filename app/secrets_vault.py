@@ -159,3 +159,79 @@ class SharedSecretsRepository:
             [source_id],
         ).fetchone()
         return row is not None
+
+
+# ---------------------------------------------------------------------------
+# Repository — per-user source secrets (mcp_user_secrets table)
+# ---------------------------------------------------------------------------
+
+
+class PerUserSecretsRepository:
+    """Per-user MCP source secrets. One row per ``(source_id, user_id)``.
+
+    Used when ``mcp_sources.scope = 'per_user'`` — calls forward through
+    the upstream MCP under the analyst's own identity (their Notion /
+    Slack / Linear OAuth token), not a shared server-wide secret.
+    """
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection):
+        self.conn = conn
+
+    def upsert(self, source_id: str, user_id: str, value: str) -> None:
+        token = encrypt_secret(value)
+        self.conn.execute(
+            """INSERT INTO mcp_user_secrets (source_id, user_id, secret_value_enc, updated_at)
+               VALUES (?, ?, ?, current_timestamp)
+               ON CONFLICT (source_id, user_id) DO UPDATE SET
+                 secret_value_enc = excluded.secret_value_enc,
+                 updated_at       = excluded.updated_at""",
+            [source_id, user_id, token],
+        )
+
+    def get(self, source_id: str, user_id: str) -> Optional[str]:
+        """Decrypted secret for ``(source_id, user_id)`` or ``None`` if
+        absent or undecryptable (key rotation). Junk decrypt returns
+        ``None`` so the caller can fall back to the shared path."""
+        row = self.conn.execute(
+            "SELECT secret_value_enc FROM mcp_user_secrets WHERE source_id = ? AND user_id = ?",
+            [source_id, user_id],
+        ).fetchone()
+        if row is None:
+            return None
+        token = row[0]
+        if not isinstance(token, (bytes, bytearray)):
+            return None
+        try:
+            return decrypt_secret(bytes(token))
+        except InvalidToken:
+            logger.warning(
+                "mcp_user_secrets row (%s, %s) failed to decrypt — vault key rotated? "
+                "Falling back to shared vault / env-var.",
+                source_id, user_id,
+            )
+            return None
+
+    def delete(self, source_id: str, user_id: str) -> None:
+        self.conn.execute(
+            "DELETE FROM mcp_user_secrets WHERE source_id = ? AND user_id = ?",
+            [source_id, user_id],
+        )
+
+    def has(self, source_id: str, user_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM mcp_user_secrets WHERE source_id = ? AND user_id = ? LIMIT 1",
+            [source_id, user_id],
+        ).fetchone()
+        return row is not None
+
+    def list_for_source(self, source_id: str) -> list[str]:
+        """List of user_ids that have stored a secret for this source.
+
+        Powers the admin diagnostic ``agnes admin mcp source who-has-secret``
+        without leaking any cipher text — secret values are never returned.
+        """
+        rows = self.conn.execute(
+            "SELECT user_id FROM mcp_user_secrets WHERE source_id = ? ORDER BY user_id",
+            [source_id],
+        ).fetchall()
+        return [r[0] for r in rows]

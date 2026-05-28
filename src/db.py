@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 64
+SCHEMA_VERSION = 65
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -4402,6 +4402,43 @@ def _v63_to_v64(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 64")
 
 
+def _v64_to_v65(conn: duckdb.DuckDBPyConnection) -> None:
+    """v65: per-user MCP source secrets + ``scope`` column on ``mcp_sources``.
+
+    RFC #461 §4 phase B. ``mcp_user_secrets(source_id, user_id, ...)``
+    holds each analyst's own credential (their Notion/Slack/Linear OAuth
+    token) for upstream MCP servers that authenticate per-caller. The
+    new ``mcp_sources.scope`` column selects which lookup path
+    ``connectors/mcp/client._lookup_secret_for_source`` follows:
+
+      ``shared``    — default; use mcp_secrets (or auth_secret_env env var).
+                      Materialize scheduled jobs always use this scope —
+                      they don't have a calling user.
+      ``per_user``  — REST invoke endpoint threads the caller's id;
+                      look up mcp_user_secrets(source_id, user_id).
+                      Falls through to shared if the analyst hasn't
+                      stored their own credential yet (so the path stays
+                      forgiving while operators bootstrap).
+
+    ``CREATE TABLE IF NOT EXISTS`` + ``ADD COLUMN IF NOT EXISTS`` keep
+    the migration idempotent on fresh and upgrade paths.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_user_secrets (
+            source_id        VARCHAR NOT NULL,
+            user_id          VARCHAR NOT NULL,
+            secret_value_enc BLOB NOT NULL,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (source_id, user_id)
+        )
+    """)
+    conn.execute(
+        "ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS scope VARCHAR DEFAULT 'shared'"
+    )
+    conn.execute("UPDATE schema_version SET version = 65")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -4702,6 +4739,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v62_to_v63(conn)
             # v63→v64: mcp_secrets — shared vault for MCP source auth.
             _v63_to_v64(conn)
+            # v64→v65: per-user MCP secrets + scope column on mcp_sources.
+            _v64_to_v65(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4883,6 +4922,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v62_to_v63(conn)
             if current < 64:
                 _v63_to_v64(conn)
+            if current < 65:
+                _v64_to_v65(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
