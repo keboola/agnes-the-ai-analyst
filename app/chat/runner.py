@@ -49,6 +49,7 @@ async def _fake_agent_loop(
     queue: "asyncio.Queue[dict]",
     *,
     per_tool_seconds: float = 90.0,
+    tool_calls_per_turn: int = 50,
 ) -> None:
     """Used by tests via AGNES_RUNNER_FAKE_AGENT=1. Echoes user_msg back.
 
@@ -56,6 +57,8 @@ async def _fake_agent_loop(
     - ``__slow_tool__`` — simulates a tool call that exceeds the per-tool
       wall-clock cap. Emits ``tool_call`` then, after timeout, emits a
       synthetic ``tool_result: {timeout: true}``.
+    - ``__many_tools__:N`` — fires N tool_call frames to exercise the
+      per-turn tool-call budget gate.
     """
     while True:
         frame = await queue.get()
@@ -77,6 +80,34 @@ async def _fake_agent_loop(
                         "result": {"timeout": True},
                     })
                 continue
+            if text.startswith("__many_tools__:"):
+                try:
+                    requested = int(text.split(":", 1)[1])
+                except ValueError:
+                    requested = 0
+                # Tool-call budget gate (B.2.d): cap emitted tool_call frames
+                # per turn at tool_calls_per_turn; on overflow emit a
+                # confirmation_required and stop until the next user_msg.
+                count = 0
+                budget_hit = False
+                for i in range(requested):
+                    if count >= tool_calls_per_turn:
+                        _emit({
+                            "type": "confirmation_required",
+                            "reason": "tool_call_budget",
+                            "budget": tool_calls_per_turn,
+                        })
+                        budget_hit = True
+                        break
+                    _emit({"type": "tool_call", "tool": f"t{i}", "args": {}})
+                    count += 1
+                if not budget_hit:
+                    _emit({
+                        "type": "assistant_message",
+                        "content": f"emitted {count} tool calls",
+                        "tokens_in": 1, "tokens_out": 1, "model": "fake",
+                    })
+                continue
             _emit({
                 "type": "assistant_message",
                 "content": f"echo: {text}",
@@ -86,7 +117,12 @@ async def _fake_agent_loop(
             })
 
 
-async def _real_agent_loop(queue: "asyncio.Queue[dict]", workdir: Path) -> None:
+async def _real_agent_loop(
+    queue: "asyncio.Queue[dict]",
+    workdir: Path,
+    *,
+    tool_calls_per_turn: int = 50,
+) -> None:
     """Real claude-agent-sdk-backed loop.
 
     Per-tool wall-clock cap (Phase 12.2): the fake-agent path enforces
@@ -154,19 +190,36 @@ async def _real_agent_loop(queue: "asyncio.Queue[dict]", workdir: Path) -> None:
             tokens_in = 0
             tokens_out = 0
             model = ""
+            # Per-turn tool-call budget: count tool_call emissions; on
+            # overflow emit a confirmation_required frame and break the loop
+            # so the agent pauses until the next user_msg (which counts as
+            # confirmation). Safety net against runaway tool chains.
+            tool_calls_this_turn = 0
+            budget_hit = False
 
             async for msg in client.receive_response():
+                if budget_hit:
+                    break
                 if isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, TextBlock):
                             _emit({"type": "token", "text": block.text})
                             collected_text.append(block.text)
                         elif isinstance(block, ToolUseBlock):
+                            if tool_calls_this_turn >= tool_calls_per_turn:
+                                _emit({
+                                    "type": "confirmation_required",
+                                    "reason": "tool_call_budget",
+                                    "budget": tool_calls_per_turn,
+                                })
+                                budget_hit = True
+                                break
                             _emit({
                                 "type": "tool_call",
                                 "tool": block.name,
                                 "args": block.input,
                             })
+                            tool_calls_this_turn += 1
                         elif isinstance(block, ToolResultBlock):
                             result = block.content
                             if isinstance(result, list):
@@ -209,11 +262,17 @@ async def amain() -> None:
     queue = await _stdin_lines()
 
     per_tool = float(os.environ.get("AGNES_PER_TOOL_CALL_SECONDS", "90"))
+    tool_calls_per_turn = int(os.environ.get("AGNES_TOOL_CALLS_PER_TURN", "50"))
     if os.environ.get("AGNES_RUNNER_FAKE_AGENT") == "1":
-        await _fake_agent_loop(queue, per_tool_seconds=per_tool)
+        await _fake_agent_loop(
+            queue, per_tool_seconds=per_tool,
+            tool_calls_per_turn=tool_calls_per_turn,
+        )
     else:
         try:
-            await _real_agent_loop(queue, workdir)
+            await _real_agent_loop(
+                queue, workdir, tool_calls_per_turn=tool_calls_per_turn,
+            )
         except Exception as exc:
             _emit({"type": "error", "kind": "runner_exception", "message": str(exc)})
             raise

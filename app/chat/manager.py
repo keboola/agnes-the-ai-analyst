@@ -182,6 +182,7 @@ class ChatManager:
             "AGNES_USER_EMAIL": session.user_email,
             "AGNES_DAILY_BUDGET_USD": str(self._config.daily_anthropic_spend_usd),
             "AGNES_PER_TOOL_CALL_SECONDS": str(self._config.per_tool_call_seconds),
+            "AGNES_TOOL_CALLS_PER_TURN": str(self._config.tool_calls_per_turn_budget),
             "PATH": "/usr/bin:/bin",
             "HOME": str(session_dir),
             "TERM": "dumb",

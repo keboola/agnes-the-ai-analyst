@@ -56,6 +56,64 @@ def test_runner_emits_ready_then_echoes_with_fake_agent(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_tool_call_budget_emits_confirmation_required(tmp_path: Path):
+    """When the per-turn tool-call budget is exhausted, the runner emits a
+    `confirmation_required` frame instead of continuing.
+
+    Tested via fake-agent: feeding `__many_tools__:N` makes the fake agent
+    fire N tool_call frames in a row; the budget gate stops at the configured
+    cap.
+    """
+    async def _run():
+        env = os.environ.copy()
+        env["PYTHONPATH"] = _PROJECT_ROOT + os.pathsep + env.get("PYTHONPATH", "")
+        env["AGNES_RUNNER_FAKE_AGENT"] = "1"
+        env["AGNES_PER_TOOL_CALL_SECONDS"] = "5"
+        env["AGNES_TOOL_CALLS_PER_TURN"] = "2"
+        env["AGNES_SESSION_ID"] = "s"
+        env["AGNES_USER_EMAIL"] = "u@x"
+        env["AGNES_API"] = "http://127.0.0.1:8000"
+        env["AGNES_TOKEN"] = "fake"
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "app.chat.runner", "--session-id", "s",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE, env=env, cwd=str(tmp_path),
+        )
+        assert proc.stdin and proc.stdout
+
+        line = await asyncio.wait_for(proc.stdout.readline(), timeout=5)
+        assert json.loads(line) == {"type": "runner_ready"}
+
+        proc.stdin.write(
+            (json.dumps({"type": "user_msg", "text": "__many_tools__:5"}) + "\n").encode()
+        )
+        await proc.stdin.drain()
+
+        tool_calls_seen = 0
+        saw_budget = False
+        for _ in range(20):
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=5)
+            frame = json.loads(line)
+            if frame.get("type") == "tool_call":
+                tool_calls_seen += 1
+            if frame.get("type") == "confirmation_required":
+                saw_budget = True
+                assert frame.get("reason") == "tool_call_budget"
+                break
+
+        assert saw_budget, (
+            f"expected confirmation_required after tool budget; saw {tool_calls_seen} calls"
+        )
+        # Budget capped emission at 2.
+        assert tool_calls_seen == 2
+
+        proc.stdin.close()
+        await proc.wait()
+
+    asyncio.run(_run())
+
+
 def test_per_tool_call_timeout_emits_synthetic_result(tmp_path: Path):
     """__slow_tool__ triggers a tool_call followed by tool_result: {timeout: true}."""
     async def _run():
