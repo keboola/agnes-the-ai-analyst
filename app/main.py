@@ -113,6 +113,7 @@ from app.api.v2_sample import router as v2_sample_router
 from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.data_packages import router as data_packages_router
+from app.api.admin_mcp import router as admin_mcp_router
 from app.api.memory_domains import router as memory_domains_router
 from app.api.recipes import (
     public_router as recipes_public_router,
@@ -777,6 +778,7 @@ def create_app() -> FastAPI:
     app.include_router(v2_scan_router)
     app.include_router(marketplaces_router)
     app.include_router(data_packages_router)
+    app.include_router(admin_mcp_router)
     app.include_router(memory_domains_router)
     app.include_router(recipes_public_router)
     app.include_router(recipes_admin_router)
