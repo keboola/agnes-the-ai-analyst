@@ -545,7 +545,9 @@ async def introspect_mcp_source(
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     try:
-        tools = mcp_extractor.introspect_source(src)
+        # introspect_source_async — async-safe; the sync variant calls
+        # asyncio.run() which blows up inside FastAPI's running loop.
+        tools = await mcp_extractor.introspect_source_async(src)
     except Exception as exc:
         logger.exception("introspect failed for source %s", source_id)
         raise HTTPException(
@@ -573,8 +575,8 @@ async def classify_mcp_source(
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     try:
-        from connectors.mcp.client import list_tools as _list_tools
-        tool_infos = _list_tools(src)
+        from connectors.mcp.client import list_tools_async as _list_tools_async
+        tool_infos = await _list_tools_async(src)
     except Exception as exc:
         logger.exception("classify (list_tools) failed for source %s", source_id)
         raise HTTPException(
@@ -615,7 +617,7 @@ async def test_mcp_source(
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     try:
-        tools = mcp_extractor.introspect_source(src)
+        tools = await mcp_extractor.introspect_source_async(src)
         result = {"ok": True, "tool_count": len(tools), "error": None}
     except Exception as exc:
         logger.warning("test connection failed for source %s: %s", source_id, exc)
@@ -648,7 +650,11 @@ async def materialize_mcp_source(
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     only_tool_id = payload.tool_id if payload else None
     try:
-        result = mcp_extractor.extract_source(
+        # extract_source_async — async-safe; the sync variant wraps
+        # ``_materialize_one_tool`` with asyncio.run() which blows up
+        # inside FastAPI's running event loop (same root cause as the
+        # introspect/classify/test handlers above).
+        result = await mcp_extractor.extract_source_async(
             system_conn=conn,
             source_id=source_id,
             only_tool_id=only_tool_id,

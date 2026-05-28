@@ -16,6 +16,7 @@ handler (see RFC #461 §7).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -114,20 +115,22 @@ def _create_view(conn: duckdb.DuckDBPyConnection, table_name: str, parquet_path:
 
 # ── extraction ──────────────────────────────────────────────────────────────
 
-def _materialize_one_tool(
+async def _materialize_one_tool_async(
     *,
     source: Dict[str, Any],
     tool: Dict[str, Any],
     output_path: Path,
 ) -> Tuple[int, int]:
-    """Call the upstream tool, write parquet, return (rows, size_bytes).
+    """Call the upstream tool (async-safe), write parquet, return (rows, size_bytes).
 
-    Raises ValueError if the response does not contain a list-of-dicts to
-    materialize (the admin's classification was wrong, or upstream changed).
+    Async-only because the parent extract path may run inside FastAPI's
+    event loop (admin /materialize endpoint). The sync wrapper around it
+    used ``asyncio.run`` which blows up in that case.
     """
+    from connectors.mcp.client import call_tool_async
     original_name = tool["original_name"]
     logger.info("materialize: calling %s.%s", source["name"], original_name)
-    result = call_tool(source, original_name, arguments=None)
+    result = await call_tool_async(source, original_name, arguments=None)
     if result.is_error:
         raise RuntimeError(f"upstream tool {original_name} returned error: {result.text[:300]}")
     if result.data is None:
@@ -147,6 +150,101 @@ def _materialize_one_tool(
     df.to_parquet(parquet_path, index=False)
     size_bytes = parquet_path.stat().st_size
     return (len(df), size_bytes)
+
+
+def _materialize_one_tool(
+    *,
+    source: Dict[str, Any],
+    tool: Dict[str, Any],
+    output_path: Path,
+) -> Tuple[int, int]:
+    """Sync wrapper around ``_materialize_one_tool_async`` — only for the
+    scheduler / CLI paths that run outside an event loop. FastAPI handlers
+    MUST call the async variant directly."""
+    return asyncio.run(_materialize_one_tool_async(
+        source=source, tool=tool, output_path=output_path,
+    ))
+
+
+async def extract_source_async(
+    *,
+    system_conn: duckdb.DuckDBPyConnection,
+    source_id: str,
+    only_tool_id: Optional[str] = None,
+    output_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Async variant of ``extract_source`` — call from FastAPI handlers.
+
+    Same return shape as the sync version; the only difference is that
+    each upstream call awaits ``_materialize_one_tool_async`` instead of
+    going through ``asyncio.run`` (which is illegal inside a running
+    event loop).
+    """
+    sources_repo = MCPSourceRepository(system_conn)
+    tools_repo = ToolRegistryRepository(system_conn)
+
+    source = sources_repo.get(source_id)
+    if source is None:
+        raise ValueError(f"mcp_source not found: {source_id}")
+    if not source.get("enabled"):
+        raise ValueError(f"mcp_source disabled: {source_id}")
+
+    all_tools = tools_repo.list_for_source(source_id)
+    tools = [t for t in all_tools if t["mode"] == MATERIALIZE and t.get("enabled", True)]
+    if only_tool_id:
+        tools = [t for t in tools if t["tool_id"] == only_tool_id]
+    if not tools:
+        return {"source_name": source["name"], "tables": [], "errors": [], "note": "no materialize tools to run"}
+
+    if output_root is None:
+        output_root = output_dir_for_source(source["name"])
+    output_root.mkdir(parents=True, exist_ok=True)
+    (output_root / "data").mkdir(exist_ok=True)
+
+    db_path = output_root / "extract.duckdb"
+    tmp_db_path = output_root / "extract.duckdb.tmp"
+    if tmp_db_path.exists():
+        tmp_db_path.unlink()
+
+    summary_tables: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+
+    out_conn = duckdb.connect(str(tmp_db_path))
+    try:
+        _create_meta(out_conn)
+        for tool in tools:
+            extracted_at = datetime.now(timezone.utc)
+            try:
+                rows, size_bytes = await _materialize_one_tool_async(
+                    source=source, tool=tool, output_path=output_root
+                )
+                _insert_meta(
+                    out_conn,
+                    table_name=tool["exposed_name"],
+                    description=tool.get("description"),
+                    rows=rows,
+                    size_bytes=size_bytes,
+                    extracted_at=extracted_at,
+                )
+                _create_view(out_conn, tool["exposed_name"], output_root / "data" / f"{tool['exposed_name']}.parquet")
+                summary_tables.append({"table": tool["exposed_name"], "rows": rows, "size_bytes": size_bytes})
+            except Exception as exc:
+                logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
+                errors.append({"tool": tool["exposed_name"], "error": str(exc)})
+    finally:
+        out_conn.close()
+
+    if db_path.exists():
+        db_path.unlink()
+    tmp_db_path.rename(db_path)
+
+    return {
+        "source_id": source_id,
+        "source_name": source["name"],
+        "extract_duckdb": str(db_path),
+        "tables": summary_tables,
+        "errors": errors,
+    }
 
 
 def extract_source(
@@ -243,10 +341,25 @@ def introspect_source(source: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Connect to the source and return discovered tools (as plain dicts).
 
     Convenience wrapper around ``connectors.mcp.client.list_tools`` for the
-    admin REST + CLI introspection flows.
+    admin CLI introspection flow. Async callers (FastAPI handlers) MUST
+    use ``introspect_source_async`` — calling this from an async loop
+    blows up with ``asyncio.run() cannot be called from a running event
+    loop`` because the underlying ``list_tools`` sync wrapper invokes
+    ``asyncio.run`` internally.
     """
     from connectors.mcp.client import list_tools  # local import keeps duckdb-free
     return [
         {"name": t.name, "description": t.description, "input_schema": t.input_schema}
         for t in list_tools(source)
+    ]
+
+
+async def introspect_source_async(source: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Async-safe variant of ``introspect_source`` — call from FastAPI
+    handlers (and any code already inside a running event loop)."""
+    from connectors.mcp.client import list_tools_async  # local import keeps duckdb-free
+    tools = await list_tools_async(source)
+    return [
+        {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+        for t in tools
     ]
