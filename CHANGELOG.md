@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- Cloud-hosted Claude Code at `/chat` (web) and via Slack DM, delivering
+  the full Agnes harness (skills, marketplace plugins, hooks, slash
+  commands, sub-agent dispatch, `agnes` CLI) without a local install.
+  Pluggable runtime provider (`subprocess` default with nsjail isolation;
+  E2B / GCP / Docker as future provider impls). Per-user persistent
+  workspace shared across surfaces. Opt-in by default via
+  `chat.enabled: false` in instance.yaml. Supersedes #459.
+
+### Internal
+- Refactored `cli/lib/initial_workspace.py` — pure server-callable
+  logic extracted to `src/initial_workspace.py`. CLI is now a thin
+  typer wrapper.
+
 ### Fixed
 - **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**
   The `{% set _brand = instance_brand | e %}` + `{% set title = _brand ~ "…<span>…" %}`

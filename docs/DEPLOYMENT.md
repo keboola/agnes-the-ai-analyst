@@ -211,10 +211,43 @@ status. The endpoint requires admin auth (the sidecar's
 | TLS | Caddy + corp cert, auto-rotated from URL | Caddy + corp cert, manual or user-scripted rotation |
 | Best for | Multi-tenant SaaS, production | Single-instance self-host, learning |
 
+## Cloud-chat host requirements
+
+Agnes can serve a zero-install web chat and Slack DM bot at `/chat`. This
+feature is opt-in (`chat.enabled: false` by default) and has additional
+infrastructure requirements beyond the base Agnes server.
+
+**Full operator guide:** [`cloud-chat.md`](cloud-chat.md)
+
+**Minimum host size for N=10 active users** (default 3 sessions/user cap,
+1 GB RAM × 1 vCPU per session under nsjail rlimits):
+
+- 16 GB RAM
+- 12 vCPU
+
+Reduce `chat.concurrency_per_user` in `/admin/server-config` before
+enabling on smaller hosts.
+
+**Single-worker constraint.** ChatManager state is in-memory. Agnes
+refuses to enable chat when `UVICORN_WORKERS > 1` — ensure your Docker
+Compose / systemd / Terraform unit launches a single uvicorn worker when
+`chat.enabled: true`. HA support is a future spec.
+
+**nsjail (Linux only).** The subprocess sandbox requires nsjail installed
+on the host. For macOS local dev, set `chat.require_isolation: false` in
+`instance.yaml`; on production Linux hosts leave it at the default `true`.
+
+**Network egress allowlist.** nsjail does not enforce network egress on its
+own. Configure iptables `OWNER` match rules to restrict sandbox-process
+outbound traffic to `127.0.0.1` (agnes loopback), `api.anthropic.com:443`,
+and `api.github.com:443`. See [`cloud-chat.md`](cloud-chat.md) for the
+exact iptables snippet and rationale.
+
 ## Related documentation
 
 - [`ONBOARDING.md`](ONBOARDING.md) — end-to-end Terraform onboarding checklist
 - [`CONFIGURATION.md`](CONFIGURATION.md) — `instance.yaml`, env vars, per-instance config
 - [`architecture.md`](architecture.md) — internal architecture (orchestrator, extractors, DB layout)
 - [`QUICKSTART.md`](QUICKSTART.md) — local development setup
+- [`cloud-chat.md`](cloud-chat.md) — cloud-hosted Claude Code (`/chat` + Slack)
 - [`superpowers/specs/2026-04-21-multi-customer-deployment-spec.md`](superpowers/specs/2026-04-21-multi-customer-deployment-spec.md) — design rationale for the multi-customer model
