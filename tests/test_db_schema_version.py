@@ -175,7 +175,7 @@ def test_schema_version_is_60():
     # v60 → v61: ``setup_tokens`` table for Agnes Cowork one-click setup.
     # v61 → v62: ``mcp_sources``, ``tool_registry``, ``tool_grants``
     #            for Universal MCP inbound connector (RFC #461).
-    assert SCHEMA_VERSION == 62
+    assert SCHEMA_VERSION == 64
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
