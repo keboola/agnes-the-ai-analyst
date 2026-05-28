@@ -332,11 +332,27 @@ class ChatManager:
     async def _idle_reaper_loop(self) -> None:
         while True:
             await asyncio.sleep(60)
-            cutoff_age = self._config.idle_ttl_seconds
-            now = datetime.now(timezone.utc)
-            to_kill = [
-                chat_id for chat_id, live in list(self._live.items())
-                if (now - live.last_activity).total_seconds() > cutoff_age
-            ]
-            for chat_id in to_kill:
-                await self.kill(chat_id, reason="idle_ttl")
+            await self._reap_once()
+
+    async def _reap_once(self) -> None:
+        """One sweep of the reaper.
+
+        Kills sessions that have either:
+        - been idle longer than ``idle_ttl_seconds`` (reason ``idle_ttl``), or
+        - been running longer than ``max_session_seconds`` (reason
+          ``max_session_seconds``), regardless of recent activity.
+
+        The wallclock cap was previously dead config (knob in instance.yaml
+        nobody read). Operators setting it now actually get the behavior.
+        """
+        idle_cutoff = self._config.idle_ttl_seconds
+        max_wallclock = self._config.max_session_seconds
+        now = datetime.now(timezone.utc)
+        to_kill: list[tuple[str, str]] = []
+        for chat_id, live in list(self._live.items()):
+            if (now - live.last_activity).total_seconds() > idle_cutoff:
+                to_kill.append((chat_id, "idle_ttl"))
+            elif (now - live.started_at).total_seconds() > max_wallclock:
+                to_kill.append((chat_id, "max_session_seconds"))
+        for chat_id, reason in to_kill:
+            await self.kill(chat_id, reason=reason)

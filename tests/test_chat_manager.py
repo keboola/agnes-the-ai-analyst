@@ -239,6 +239,53 @@ def test_crash_respawns_with_notice(manager: ChatManager):
     asyncio.run(_run())
 
 
+def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
+    """Sessions that exceed ChatConfig.max_session_seconds get killed by the
+    idle reaper independently of idle TTL.
+
+    Before this knob was wired the value lived only in instance.yaml — operators
+    set it and nothing happened.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.chat.manager import LiveSession
+    from app.chat.types import SessionState
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    cfg = ChatConfig(
+        enabled=True, require_isolation=False, concurrency_per_user=5,
+        # Pin a tiny wallclock cap so the test is fast and deterministic.
+        max_session_seconds=1,
+        idle_ttl_seconds=10**9,  # disable idle path
+    )
+    mgr = ChatManager(
+        provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg,
+    )
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        now = datetime.now(timezone.utc)
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        # Inject an "old" live session — started > max_session_seconds ago.
+        mgr._live[s.id] = LiveSession(
+            chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
+            handle=None, ws=ws,
+            started_at=now - timedelta(seconds=5),
+            last_activity=now,
+        )
+
+        await mgr._reap_once()  # single sweep; no sleep loop
+        assert s.id not in mgr._live, "expected stale session to be killed"
+
+    asyncio.run(_run())
+
+
 def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
     """Each respawn must replace (not append to) the per-session pump task.
 
