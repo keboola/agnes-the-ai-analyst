@@ -119,6 +119,60 @@ def _build_insert(
     )
 
 
+def _not_null_columns_with_default(table_name: str) -> dict[str, Any]:
+    """Return ``{column_name: server_default}`` for NOT NULL columns whose
+    PG schema has a server_default.
+
+    Migrator collateral: DuckDB rows sometimes carry ``None`` in columns
+    that are NOT NULL on the PG side with a ``server_default`` (most
+    commonly ``created_at`` / ``updated_at`` with
+    ``server_default=CURRENT_TIMESTAMP``). SQLAlchemy treats an explicit
+    ``None`` in the bind parameters as "literal NULL" and PG raises
+    ``NotNullViolation`` even though the column has a default — defaults
+    fire only when the column is absent from the INSERT, not when bound
+    to NULL. Substituting the default value at copy time keeps the
+    INSERT uniform across rows while honouring the schema.
+    """
+    import src.models  # noqa: F401
+    from src.db_pg import Base
+
+    table = Base.metadata.tables.get(table_name)
+    if table is None:
+        return {}
+    out: dict[str, Any] = {}
+    for c in table.columns:
+        if c.nullable:
+            continue
+        if c.server_default is None:
+            continue
+        out[c.name] = c.server_default
+    return out
+
+
+def _substitute_default(value: Any, default: Any) -> Any:
+    """Return *value* unchanged, or the materialised default if *value* is None.
+
+    ``CURRENT_TIMESTAMP`` / ``CURRENT_DATE`` text defaults materialise to a
+    timezone-aware Python ``datetime`` / ``date`` so the migrator can ship
+    a binding psycopg understands. Other text defaults pass through as the
+    raw SQL fragment — psycopg will reject them, but those are rare
+    enough that an explicit error beats silent default-skipping.
+    """
+    if value is not None:
+        return value
+    from sqlalchemy.schema import DefaultClause
+    from datetime import datetime, timezone, date
+    if isinstance(default, DefaultClause):
+        sql = str(default.arg).upper()
+    else:
+        sql = str(default).upper()
+    if "CURRENT_TIMESTAMP" in sql or "NOW()" in sql:
+        return datetime.now(timezone.utc)
+    if "CURRENT_DATE" in sql:
+        return date.today()
+    return value
+
+
 def _array_columns_for(table_name: str) -> set[str]:
     """Return the names of PG ``ARRAY`` columns on *table_name*.
 
@@ -244,6 +298,7 @@ class GenericCopyTask:
 
         insert_sql = _build_insert(self.target_table, columns, self.pk_columns)
         array_cols = _array_columns_for(self.target_table)
+        default_cols = _not_null_columns_with_default(self.target_table)
         considered = 0
         batch: List[Dict[str, Any]] = []
         for r in rows:
@@ -253,6 +308,8 @@ class GenericCopyTask:
                     d[k] = _coerce_array_value(v)
                 else:
                     d[k] = _normalize_for_pg(v)
+                if k in default_cols:
+                    d[k] = _substitute_default(d[k], default_cols[k])
             batch.append(d)
             considered += 1
             if len(batch) >= self.batch_size and not dry_run:

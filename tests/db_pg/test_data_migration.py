@@ -199,6 +199,55 @@ def test_migrate_pg_array_columns_coerce_from_duckdb_json_strings(tmp_path, pg_w
     duck_conn.close()
 
 
+def test_migrate_substitutes_default_for_not_null_columns_with_null_value(tmp_path, pg_with_schema):
+    """Regression: DuckDB rows with ``created_at=NULL`` must migrate cleanly.
+
+    PG model declares ``created_at`` as ``NOT NULL`` with
+    ``server_default=CURRENT_TIMESTAMP``, but SQLAlchemy treats explicit
+    ``None`` in bind parameters as literal NULL — so PG raises
+    ``NotNullViolation``. The migrator must substitute the server's
+    default at copy time. Live agnes-dev v6: marketplace_plugins's
+    ``keboola-howto`` row had ``created_at=NULL`` and blocked the whole
+    migration on its single row.
+    """
+    from datetime import datetime, timezone
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_task, TASKS
+
+    duck_path = tmp_path / "src.duckdb"
+    duck_conn = duckdb.connect(str(duck_path))
+    _ensure_schema(duck_conn)
+
+    # Seed a marketplace_plugins row with created_at=NULL, mirroring
+    # what agnes-dev DuckDB had.
+    duck_conn.execute(
+        """
+        INSERT INTO marketplace_plugins
+            (marketplace_id, name, description, version, category,
+             source_type, source_spec, updated_at, created_at, is_system)
+        VALUES
+            ('mkt', 'plug', 'desc', '1.0', 'cat',
+             'path', '{}', CURRENT_TIMESTAMP, NULL, FALSE)
+        """
+    )
+
+    task = next(t for t in TASKS if t.target_table == "marketplace_plugins")
+    run_task(task, duck_conn, pg_with_schema)
+
+    from sqlalchemy import text as sa_text
+    with pg_with_schema.connect() as conn:
+        row = conn.execute(
+            sa_text("SELECT marketplace_id, name, created_at FROM marketplace_plugins")
+        ).first()
+    assert row is not None, "marketplace_plugins row was not migrated"
+    assert row.created_at is not None, "created_at must be auto-filled, not NULL"
+    # The substituted timestamp should be close to now (within the last
+    # 10s) — generous threshold to avoid CI flake.
+    delta = abs((datetime.now(timezone.utc) - row.created_at).total_seconds())
+    assert delta < 30, f"substituted created_at is off by {delta}s"
+    duck_conn.close()
+
+
 def test_non_id_pk_tables_are_in_pk_columns_map():
     """Tables whose primary key isn't a single column named 'id' must be
     registered in _PK_COLUMNS so the generic copy loop knows what to
