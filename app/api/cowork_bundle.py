@@ -199,10 +199,9 @@ def _bundle_mcp_server_py() -> str:
         Claude has Agnes tools from the very first session — no Terminal needed.
         \"\"\"
         from __future__ import annotations
-        import importlib.util as _ilu
-        import json, os, pathlib, subprocess as _sp, sys
+        import json, os, pathlib, site, subprocess as _sp, sys
 
-        HERE = pathlib.Path(__file__).parent
+        HERE = pathlib.Path(__file__).resolve().parent
         BUNDLE_FILE = HERE / "agnes-bundle.json"
         CONFIG_DIR  = pathlib.Path.home() / ".config" / "agnes"
 
@@ -226,25 +225,36 @@ def _bundle_mcp_server_py() -> str:
                 pass  # best-effort; setup.py will fix it on next hook run
 
         # ── 2. Ensure the agnes package is installed ─────────────────────────
-        # If `cli` or `mcp` are missing, pip-install agnes-the-ai-analyst
-        # (which ships both), then re-exec this script so sys.path is fresh.
-        # This makes MCP work even when the user has never installed Agnes.
-        if _ilu.find_spec("cli") is None or _ilu.find_spec("mcp") is None:
+        # Try the import directly; on ImportError pip-install and add the user
+        # site-packages dir to sys.path without re-exec (avoids MCP timeout).
+        def _ensure_agnes():
+            try:
+                from cli.mcp.server import run as _r
+                return _r
+            except ImportError:
+                pass
             try:
                 _sp.run(
                     [sys.executable, "-m", "pip", "install",
                      "--quiet", "--user", "agnes-the-ai-analyst"],
                     check=True,
+                    stdout=_sp.DEVNULL,
                 )
             except Exception as e:
-                print(f"Agnes: could not install package: {e}", file=sys.stderr)
+                print(f"Agnes: pip install failed: {e}", file=sys.stderr)
                 sys.exit(1)
-            # Re-exec so the newly installed packages appear on sys.path
-            os.execv(sys.executable, [sys.executable, __file__] + sys.argv[1:])
+            user_site = site.getusersitepackages()
+            if user_site not in sys.path:
+                sys.path.insert(0, user_site)
+            try:
+                from cli.mcp.server import run as _r
+                return _r
+            except ImportError as e:
+                print(f"Agnes: import failed after install: {e}", file=sys.stderr)
+                sys.exit(1)
 
-        # ── 3. Run the MCP server (no binary needed) ─────────────────────────
-        from cli.mcp.server import run as _run_mcp
-        _run_mcp()
+        # ── 3. Run the MCP server ─────────────────────────────────────────────
+        _ensure_agnes()()
     """)
 
 
