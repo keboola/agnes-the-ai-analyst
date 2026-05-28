@@ -616,6 +616,18 @@ def tool_register(
         False, "--disabled",
         help="Register as disabled (won't be exposed / scheduled until enabled)",
     ),
+    mutating: bool = typer.Option(
+        False, "--mutating",
+        help="Mark tool as write/mutating — only admin callers can invoke (RFC #461 §3)",
+    ),
+    pii_fields: Optional[str] = typer.Option(
+        None, "--pii-fields",
+        help="Comma-separated JSON keys to redact in upstream responses (e.g. 'email,phone')",
+    ),
+    rate_limit_pm: Optional[int] = typer.Option(
+        None, "--rate-limit-pm",
+        help="Per-minute, per-user cap on invocations of this tool (omit for no limit)",
+    ),
 ):
     """Register a single tool entry directly (no classifier).
 
@@ -648,6 +660,19 @@ def tool_register(
         payload["schedule"] = schedule
     if description:
         payload["description"] = description
+    if mutating:
+        payload["mutating"] = True
+    if pii_fields:
+        # Comma-list → JSON array on the wire; empty entries dropped so
+        # ``--pii-fields ""`` doesn't accidentally redact every key.
+        fields = [f.strip() for f in pii_fields.split(",") if f.strip()]
+        if fields:
+            payload["pii_fields"] = fields
+    if rate_limit_pm is not None:
+        if rate_limit_pm < 0:
+            typer.echo("--rate-limit-pm must be >= 0 (0 = no limit)", err=True)
+            raise typer.Exit(2)
+        payload["rate_limit_pm"] = rate_limit_pm
 
     resp = api_post("/api/admin/mcp-tools", json=payload)
     if resp.status_code not in (200, 201):
