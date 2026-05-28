@@ -43,6 +43,17 @@ cat > "$tmp/data/state/db-jobs/$JOB_ID.json" <<JSON
 JSON
 echo -n "side-car-enabled" > "$tmp/data/state/db-state-target.flag"
 
+# Seed instance.yaml with operator-set non-database keys. The applier's
+# write_instance_yaml MUST preserve them after the migration (B6).
+cat > "$tmp/data/state/instance.yaml" <<'YAML'
+logging:
+  level: debug
+auth_providers:
+  google: enabled
+database:
+  backend: duckdb
+YAML
+
 # --- Fake docker -----------------------------------------------------------
 transcript=$tmp/transcript.log
 fake_bin=$tmp/bin
@@ -166,5 +177,15 @@ restart_line=$(grep -n "docker compose -f .* up -d --no-deps --force-recreate ap
 # instance.yaml updated to side_car on success.
 grep -q "backend: side_car" "$tmp/data/state/instance.yaml" \
     || fail "expected instance.yaml::database.backend = side_car after success"
+
+# B6 regression: write_instance_yaml must preserve non-database keys.
+grep -q "level: debug" "$tmp/data/state/instance.yaml" \
+    || fail "logging.level was destroyed by write_instance_yaml (B6)"
+grep -q "google: enabled" "$tmp/data/state/instance.yaml" \
+    || fail "auth_providers.google was destroyed by write_instance_yaml (B6)"
+# And the database.backend must have been flipped to the target.
+grep -q "backend: side_car" "$tmp/data/state/instance.yaml" \
+    || fail "backend not updated to side_car (B6)"
+echo "OK: instance.yaml preserves non-database keys (B6)"
 
 echo "OK"

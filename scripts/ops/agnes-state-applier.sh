@@ -97,20 +97,40 @@ PY
 }
 
 write_instance_yaml() {
-    # Single-key writer for instance.yaml::database.backend. We don't
-    # pull in a YAML parser on the host — the file is small + the
-    # contract is one well-known key.
+    # Preserve all non-database top-level keys (logging, auth_providers,
+    # feature_flags, etc. the operator may have set via the admin UI).
+    # The previous bash heredoc approach rewrote the file from scratch and
+    # silently destroyed them (B6 — review finding).
+    #
+    # We use python3 + PyYAML — both are guaranteed present on every
+    # customer-instance VM (the applier already shells out to python3
+    # elsewhere; agnes-the-ai-analyst's dependency tree pulls PyYAML so
+    # it is installed system-wide).
     local backend=$1 url=${2:-}
-    local tmp=/data/state/instance.yaml.tmp
-    {
-        echo "database:"
-        echo "  backend: $backend"
-        if [ -n "$url" ]; then
-            echo "  url: \"$url\""
-        fi
-    } > "$tmp"
-    chown 999:999 "$tmp"
-    mv "$tmp" /data/state/instance.yaml
+    python3 - "$backend" "$url" <<'PY'
+import os, sys, yaml
+backend, url = sys.argv[1], sys.argv[2]
+path = "/data/state/instance.yaml"
+existing = {}
+if os.path.exists(path):
+    try:
+        existing = yaml.safe_load(open(path).read()) or {}
+    except Exception:
+        existing = {}
+db = dict(existing.get("database") or {})
+db["backend"] = backend
+if url:
+    db["url"] = url
+else:
+    db.pop("url", None)
+existing["database"] = db
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    yaml.safe_dump(existing, f, default_flow_style=False, sort_keys=True)
+os.replace(tmp, path)
+os.chmod(path, 0o600)
+PY
+    chown 999:999 /data/state/instance.yaml || true
 }
 
 # --- Lifecycle: ensure postgres container matches the flag ----------------
