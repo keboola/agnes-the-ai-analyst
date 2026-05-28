@@ -4708,6 +4708,19 @@ git commit -m "feat(chat): per-chat-session BigQuery scan budget"
 
 ### Task 13.1: Marketplace SHA poll task wired into app startup
 
+> **Auth integration carry-over from Task 8.1 (added 2026-05-28):**
+> Task 8.1 discovered that the existing `app/auth/dependencies.py::get_current_user`
+> resolves identity by `sub=user_id` (DB lookup), not `sub=email`. The
+> new `mint_session_jwt` (in `app/auth/access.py`) currently uses
+> `sub=user_email` per spec § Auth, which means JWT tokens minted for
+> the subprocess runner would fail `get_current_user`. Task 13.1 MUST
+> resolve this — recommended fix: change `mint_session_jwt` to look up
+> the `users.id` row by email and embed `sub=user_id` (matching the
+> existing JWT contract) PLUS a `chat_session_id` claim for audit.
+> Tests for `mint_session_jwt` need updating accordingly. The runner
+> then talks to `/api/*` via the standard auth path with no special
+> dep — keeping `get_current_user` as the single source of truth.
+
 **Files:**
 - Modify: `app/main.py`
 - Test:   `tests/test_chat_marketplace_reinit.py`
