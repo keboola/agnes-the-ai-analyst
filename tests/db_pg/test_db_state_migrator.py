@@ -644,3 +644,55 @@ def test_stuck_running_recovery_via_stale_heartbeat(tmp_path):
     # The step recorded in the error must be the step that was active
     # when the host rebooted.
     assert recovered["error"]["step"] == "data_copy"
+
+
+def test_copy_pg_to_pg_streams_without_full_materialize(tmp_path, pg_engine):
+    """H4 — PG→PG copy must stream-batch rather than .all()-materialize.
+
+    Seed 1500 rows; verify the per-table copy loop does NOT call
+    ``Result.all()`` on the streaming SELECT (the load-into-RAM
+    operation). We can't measure RAM directly, but patching
+    ``sqlalchemy.engine.Result.all`` to count calls is a reliable
+    sentinel: under the batched implementation the loop iterates the
+    Result via ``yield_per`` and never touches ``.all()``; under the
+    old implementation it calls ``.all()`` once per table.
+    """
+    import sqlalchemy as sa
+    import src.models  # noqa: F401 — registers ORM models onto Base.metadata
+    from src.db_pg import Base
+    from scripts.db_state_migrator import copy_pg_to_pg
+
+    Base.metadata.create_all(pg_engine)
+    with pg_engine.begin() as conn:
+        # Bulk insert via executemany — faster than 1500 separate executes.
+        conn.execute(
+            sa.text("INSERT INTO users (id, email, name) VALUES (:i, :e, :n)"),
+            [
+                {"i": f"u{i:04d}", "e": f"u{i}@x.com", "n": f"User {i}"}
+                for i in range(1500)
+            ],
+        )
+
+    original_all = sa.engine.Result.all
+    calls = {"n": 0}
+
+    def counting_all(self):
+        calls["n"] += 1
+        return original_all(self)
+
+    sa.engine.Result.all = counting_all
+    try:
+        url = str(pg_engine.url)
+        summary = copy_pg_to_pg(url, url)
+    finally:
+        sa.engine.Result.all = original_all
+
+    assert summary["tables_migrated"] > 0
+    # Under the batched implementation the per-table copy loop never
+    # calls .all() on the source SELECT. A small budget allows for
+    # unrelated SQLAlchemy bookkeeping (e.g. introspection helpers).
+    assert calls["n"] <= 2, (
+        f"copy_pg_to_pg still materialises via .all() — {calls['n']} calls. "
+        "Switch the per-table copy SELECT to execution_options(yield_per=...) "
+        "and iterate the Result instead of calling .all()."
+    )

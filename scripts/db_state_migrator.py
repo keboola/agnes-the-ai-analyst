@@ -289,6 +289,12 @@ def _json_dumps_for_jsonb(value):
     return _json.dumps(value)
 
 
+#: Stream batch size for PG→PG copy. Tuned to balance round-trip cost
+#: (one INSERT per batch) against per-batch RAM (one batch of rows held
+#: at a time, not the entire table). Matches the DuckDB-path chunk size.
+PG_TO_PG_BATCH_SIZE = 500
+
+
 def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
     """Copy all PG-mapped tables from one PG to another in FK order.
 
@@ -297,6 +303,16 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
     Reuses the same JSON / ARRAY / NOT-NULL-default coercion the DuckDB
     path uses — the column-introspection helpers in
     ``scripts.migrate_duckdb_to_pg.tasks`` work for any source.
+
+    Streams the source via ``execution_options(yield_per=...)`` and
+    flushes each chunk into its own ``target.begin()`` block. This
+    keeps RAM bounded to one ``PG_TO_PG_BATCH_SIZE``-row chunk per
+    table (rather than materialising entire million-row tables like
+    ``audit_log`` / ``usage_events`` into the migrator container's
+    heap, which previously risked OOM on production data — see H4).
+
+    A mid-stream failure now only rolls back the in-flight batch; the
+    next retry resumes via ``ON CONFLICT DO NOTHING``.
 
     Returns ``{rows_total, tables_migrated}`` based on post-copy target
     row counts (ON CONFLICT DO NOTHING makes per-task inserted-count
@@ -316,6 +332,37 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
         _substitute_default,
     )
 
+    def _row_to_dict(row, cols, array_cols, jsonb_cols, default_cols):
+        d: dict[str, Any] = {}
+        for k, v in zip(cols, row):
+            if k in array_cols:
+                d[k] = _coerce_array_value(v)
+            elif k in jsonb_cols:
+                # Source is PG JSONB → SQLAlchemy returns dict / list /
+                # str / int / bool depending on the stored value. CAST
+                # AS JSONB expects a JSON-encoded string for ALL of
+                # those — including bare strings (CAST('hello' AS JSONB)
+                # fails; CAST('"hello"' AS JSONB) succeeds). json.dumps
+                # any non-None value.
+                d[k] = _json_dumps_for_jsonb(v)
+            else:
+                d[k] = _normalize_for_pg(v)
+            if k in default_cols:
+                d[k] = _substitute_default(d[k], default_cols[k])
+        return d
+
+    def _flush_batch(target_engine, insert_sql: str, batch: list[dict]) -> None:
+        """Insert one batch in its own short transaction.
+
+        Per-batch transactions cap how much an interrupt rolls back and
+        keep the PG WAL footprint bounded — a single multi-million-row
+        transaction would otherwise pin WAL until commit.
+        """
+        if not batch:
+            return
+        with target_engine.begin() as tgt_conn:
+            tgt_conn.execute(sa.text(insert_sql), batch)
+
     source = _bounded_engine(source_url)
     target = _bounded_engine(target_url)
     rows_total = 0
@@ -328,39 +375,28 @@ def copy_pg_to_pg(source_url: str, target_url: str) -> dict[str, int]:
             array_cols = _array_columns_for(tname)
             default_cols = _not_null_columns_with_default(tname)
             jsonb_cols = _jsonb_columns_for(tname)
-
-            with source.connect() as src_conn:
-                rows = src_conn.execute(
-                    sa.text(f'SELECT {", ".join(cols)} FROM "{tname}"')
-                ).all()
-            if not rows:
-                tables_migrated += 1
-                continue
-
             insert_sql = _build_insert(tname, cols, pk_cols)
-            batch = []
-            for r in rows:
-                d = {}
-                for k, v in zip(cols, r):
-                    if k in array_cols:
-                        d[k] = _coerce_array_value(v)
-                    elif k in jsonb_cols:
-                        # Source is PG JSONB → SQLAlchemy returns dict /
-                        # list / str / int / bool depending on the stored
-                        # value. CAST AS JSONB expects a JSON-encoded
-                        # string for ALL of those — including bare
-                        # strings (CAST('hello' AS JSONB) fails; CAST
-                        # ('"hello"' AS JSONB) succeeds). json.dumps any
-                        # non-None value.
-                        d[k] = _json_dumps_for_jsonb(v)
-                    else:
-                        d[k] = _normalize_for_pg(v)
-                    if k in default_cols:
-                        d[k] = _substitute_default(d[k], default_cols[k])
-                batch.append(d)
 
-            with target.begin() as tgt_conn:
-                tgt_conn.execute(sa.text(insert_sql), batch)
+            # Stream the source. ``yield_per`` makes SQLAlchemy hold
+            # only one batch of rows in memory at a time — required for
+            # production tables that don't fit in the migrator
+            # container's RAM. We iterate the Result directly; calling
+            # ``.all()`` would defeat the streaming and is what H4
+            # flagged.
+            with source.connect() as src_conn:
+                stmt = sa.text(
+                    f'SELECT {", ".join(cols)} FROM "{tname}"'
+                ).execution_options(yield_per=PG_TO_PG_BATCH_SIZE)
+                result = src_conn.execute(stmt)
+                batch: list[dict] = []
+                for r in result:
+                    batch.append(
+                        _row_to_dict(r, cols, array_cols, jsonb_cols, default_cols)
+                    )
+                    if len(batch) >= PG_TO_PG_BATCH_SIZE:
+                        _flush_batch(target, insert_sql, batch)
+                        batch = []
+                _flush_batch(target, insert_sql, batch)
 
             with target.connect() as tgt_conn:
                 count = tgt_conn.execute(
