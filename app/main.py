@@ -140,6 +140,7 @@ from app.api.cowork_bundle import (
     user_router as cowork_user_router,
     auth_router as cowork_auth_router,
 )
+from app.api.mcp_http import make_sse_app as _make_mcp_sse_app
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.activity import router as activity_router
@@ -574,6 +575,7 @@ def create_app() -> FastAPI:
         minimum_size=1024,
         skip_prefixes=(
             "/api/data/",
+            "/api/mcp",          # SSE stream — do not gzip
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
@@ -794,6 +796,11 @@ def create_app() -> FastAPI:
     app.include_router(news_router)
     app.include_router(cowork_user_router)
     app.include_router(cowork_auth_router)
+
+    # HTTP MCP (SSE transport) for cowork VM access — must be mounted before
+    # web_router's catch-all. GZip excluded below via skip_prefixes.
+    app.mount("/api/mcp", _make_mcp_sse_app())
+
     app.include_router(cache_warmup_router)
     app.include_router(bq_metadata_refresh_router)
     app.include_router(activity_router)
