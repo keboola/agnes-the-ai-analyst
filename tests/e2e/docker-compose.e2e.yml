@@ -1,0 +1,44 @@
+# docker-compose.e2e.yml — production-like Linux env for the cloud-chat
+# E2E suite. Brought up by the `docker_e2e_agnes` fixture in conftest.py
+# and (eventually) the e2e CI workflow under .github/workflows/.
+#
+# Usage:
+#   ANTHROPIC_API_KEY=sk-... docker compose -f tests/e2e/docker-compose.e2e.yml up --build
+# Tear down:
+#   docker compose -f tests/e2e/docker-compose.e2e.yml down -v
+
+services:
+  agnes:
+    build:
+      # Build context is repo root so the COPY in Dockerfile.e2e picks up
+      # the full source tree.
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.e2e
+    # iptables-setup.sh needs CAP_NET_ADMIN to install OWNER rules.
+    cap_add:
+      - NET_ADMIN
+    environment:
+      # 32+ chars — required by the production JWT secret check.
+      JWT_SECRET_KEY: "e2e-secret-at-least-32-chars-long-aaaa"
+      # Forwarded into the sandbox via subprocess_provider._ENV_ALLOWLIST.
+      # Container fails fast if the host doesn't export this — that's
+      # intentional, the chat tests can't run without an LLM key.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY before running E2E}"
+      # The in-sandbox `agnes` CLI calls the Agnes REST API at this URL.
+      AGNES_INTERNAL_URL: "http://localhost:8000"
+      # Optional: set AGNES_E2E_FAKE_AGENT=1 on the host to flip the
+      # runner into deterministic-echo mode (no Anthropic dependency).
+      AGNES_RUNNER_FAKE_AGENT: "${AGNES_E2E_FAKE_AGENT:-}"
+      DATA_DIR: "/data"
+    ports:
+      - "8000:8000"
+    volumes:
+      - agnes_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  agnes_data:
