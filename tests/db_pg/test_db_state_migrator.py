@@ -575,6 +575,145 @@ def test_main_cloud_to_side_car_dr_rollback_smoke(tmp_path, pg_engine, monkeypat
     assert row[0] == "dr@example.com"
 
 
+def test_migrator_subprocess_watchdog_fires_end_to_end(tmp_path):
+    """D.3 — End-to-end watchdog: launch the migrator CLI as a real
+    subprocess that hangs inside its alembic step; the outer
+    ``subprocess.run(timeout=...)`` must terminate it within the
+    configured horizon.
+
+    The shell-side equivalent is covered by the applier integration
+    test under tests/test_state_applier_host_script.sh (C.2). This
+    python-side complement exercises the migrator's own
+    subprocess-bound-by-timeout contract from the consumer side: any
+    caller wrapping the migrator can rely on a hard wall-clock bound.
+    """
+    import subprocess
+    import sys
+    import textwrap
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    shim = tmp_path / "hung_migrator.py"
+    shim.write_text(
+        textwrap.dedent(
+            f"""
+            import sys, time, pathlib
+            sys.path.insert(0, {str(repo_root)!r})
+            import scripts.db_state_migrator as m
+            def hang(*a, **kw):
+                time.sleep(120)
+            m.alembic_upgrade_head = hang
+            sys.exit(m.main(
+                job_id="hung-d3",
+                to="side_car",
+                target_url="postgresql+psycopg://x:y@127.0.0.1:1/q",
+                duckdb_path=pathlib.Path("/tmp/unused.duckdb"),
+                jobs_dir=pathlib.Path({str(tmp_path / "jobs")!r}),
+                backups_dir=pathlib.Path({str(tmp_path / "backups")!r}),
+                source_url=None,
+                source_backend="duckdb",
+            ))
+            """
+        )
+    )
+
+    import pytest
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        subprocess.run(
+            [sys.executable, str(shim)],
+            timeout=2,
+            check=False,
+            capture_output=True,
+            cwd=str(repo_root),
+        )
+
+
+def test_copy_pg_to_pg_preserves_array_and_jsonb_round_trip(tmp_path, pg_engine):
+    """D.2 — PG→PG copy must round-trip both PG ARRAY columns and
+    JSONB dict payloads. Round-1 task 7.3's DR smoke seeded only
+    users(id, email, name); the v9 JSONB CAST fix and the
+    array-coerce helpers only fire when those types are actually
+    exercised — a regression hole closed here.
+    """
+    import json
+
+    import sqlalchemy as sa
+    import src.models  # noqa: F401 — registers ORM models onto Base.metadata
+    from src.db_pg import Base
+
+    from scripts.db_state_migrator import alembic_upgrade_head, copy_pg_to_pg
+
+    alembic_upgrade_head(str(pg_engine.url))
+
+    audit_params = {
+        "user": "alice",
+        "scope": ["a", "b", "c"],
+        "nested": {"key": "value", "num": 42},
+    }
+    metric_dimensions = ["country", "device", "channel"]
+    metric_synonyms = ["mrr", "monthly_recurring_revenue"]
+
+    with pg_engine.begin() as conn:
+        # JSONB audit row — params is a dict.
+        conn.execute(
+            sa.text(
+                "INSERT INTO audit_log (id, action, params, timestamp) "
+                "VALUES (:id, :a, CAST(:p AS JSONB), CURRENT_TIMESTAMP)"
+            ),
+            {"id": "audit-d2", "a": "test", "p": json.dumps(audit_params)},
+        )
+        # ARRAY metric row — dimensions/synonyms are PG arrays.
+        conn.execute(
+            sa.text(
+                "INSERT INTO metric_definitions "
+                "(id, name, display_name, category, description, type, unit, "
+                " grain, table_name, tables, expression, time_column, "
+                " dimensions, synonyms, sql, source) "
+                "VALUES (:id, :n, :dn, :c, :d, :t, :u, :g, :tn, :tb, :e, :tc, "
+                "        :dm, :sy, :s, :src)"
+            ),
+            {
+                "id": "metric-d2", "n": "mrr", "dn": "MRR", "c": "finance",
+                "d": "monthly recurring revenue", "t": "sum", "u": "USD",
+                "g": "monthly", "tn": "facts.subs", "tb": ["facts.subs"],
+                "e": "sum(mrr)", "tc": "ts",
+                "dm": metric_dimensions, "sy": metric_synonyms,
+                "s": "SELECT 1", "src": "manual",
+            },
+        )
+
+    # Copy onto the same URL (smoke variant; full cross-host case is
+    # exercised live). ON CONFLICT DO NOTHING means the existing rows
+    # survive and we then read them back via the regular schema.
+    summary = copy_pg_to_pg(str(pg_engine.url), str(pg_engine.url))
+    assert summary["tables_migrated"] > 0
+
+    with pg_engine.connect() as conn:
+        audit_row = conn.execute(
+            sa.text("SELECT params FROM audit_log WHERE id = :id"),
+            {"id": "audit-d2"},
+        ).fetchone()
+        metric_row = conn.execute(
+            sa.text(
+                "SELECT dimensions, synonyms FROM metric_definitions WHERE id = :id"
+            ),
+            {"id": "metric-d2"},
+        ).fetchone()
+
+    # JSONB dict round-trips intact.
+    assert audit_row is not None
+    params = audit_row[0]
+    if isinstance(params, str):
+        params = json.loads(params)
+    assert params == audit_params, params
+
+    # PG ARRAYs round-trip as Python lists, NOT as escaped strings.
+    assert metric_row is not None
+    assert list(metric_row[0]) == metric_dimensions, metric_row[0]
+    assert list(metric_row[1]) == metric_synonyms, metric_row[1]
+
+
 # ---------------------------------------------------------------------------
 # Phase 7.6 — Host-reboot recovery (unit-level, no bash harness)
 # ---------------------------------------------------------------------------

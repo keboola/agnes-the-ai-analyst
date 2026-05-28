@@ -493,6 +493,69 @@ def test_copy_duckdb_to_pg_summary_lists_failed_tables(tmp_path, pg_with_schema)
         assert "table" in entry and "error" in entry, entry
 
 
+@pytest.mark.parametrize(
+    "default_expr",
+    [
+        "CURRENT_TIMESTAMP",
+        "current_timestamp",
+        "NOW()",
+        "now()",
+        "now() AT TIME ZONE 'UTC'",
+    ],
+)
+def test_substitute_default_materialises_timestamp_forms(default_expr):
+    """D.1 — every common PG/DuckDB server_default form for a
+    timestamp column must materialise to a tz-aware datetime when
+    the row's value is NULL.
+
+    Round-1 task 1.4 covered CURRENT_TIMESTAMP only; this parametrised
+    test extends coverage to NOW() and other server-emitted forms.
+    """
+    from datetime import datetime, timezone
+
+    from scripts.migrate_duckdb_to_pg.tasks import _substitute_default
+
+    result = _substitute_default(None, default_expr, column_name="ts")
+    assert isinstance(result, datetime), result
+    assert result.tzinfo is not None, "must be timezone-aware"
+    # Sanity: 'now-ish' (within a 60s window of test start).
+    assert abs((datetime.now(timezone.utc) - result).total_seconds()) < 60
+
+
+@pytest.mark.parametrize(
+    "default_expr",
+    [
+        "CURRENT_DATE",
+        "current_date",
+    ],
+)
+def test_substitute_default_materialises_date_forms(default_expr):
+    """D.1 — CURRENT_DATE defaults must materialise to a date object."""
+    from datetime import date
+
+    from scripts.migrate_duckdb_to_pg.tasks import _substitute_default
+
+    result = _substitute_default(None, default_expr, column_name="d")
+    assert isinstance(result, date), result
+    assert result == date.today()
+
+
+def test_substitute_default_preserves_operator_supplied_value():
+    """D.1 — operator-supplied values pass through unchanged. The
+    sanitiser must never silently overwrite a typed timestamp / date /
+    string with the server_default — round-1's audit-integrity
+    contract.
+    """
+    from datetime import datetime, timezone
+
+    from scripts.migrate_duckdb_to_pg.tasks import _substitute_default
+
+    supplied = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert _substitute_default(supplied, "CURRENT_TIMESTAMP") is supplied
+    assert _substitute_default("hello", "NOW()") == "hello"
+    assert _substitute_default(0, "CURRENT_DATE") == 0  # 0 is not None
+
+
 def test_run_all_emits_progress_callback(tmp_path, pg_with_schema):
     """C.1 — run_all must invoke progress_callback once per task with
     (current_table, tables_done, tables_total). This is the wiring
