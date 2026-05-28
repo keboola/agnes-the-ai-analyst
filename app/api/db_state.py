@@ -250,11 +250,22 @@ def start_migration(payload: MigrateRequest) -> dict:
 
 @router.get("/job/{job_id}", dependencies=[Depends(require_admin)])
 def get_job(job_id: str) -> dict:
-    """Return migration job status (poll target for POST /migrate clients)."""
+    """Return migration job status (poll target for POST /migrate clients).
+
+    URLs in the response body are redacted (passwords replaced with
+    ``****``). Admins viewing job progress should never see the live
+    DB credentials — H1. The raw file on disk keeps the unredacted
+    URL because the applier subprocess needs it to invoke the migrator.
+    """
     path = _jobs_dir() / f"{job_id}.json"
     if not path.exists():
         raise HTTPException(404, detail=f"Unknown job_id: {job_id}")
-    return json.loads(path.read_text())
+    data = json.loads(path.read_text())
+    if "target_url" in data:
+        data["target_url"] = _redact_url(data["target_url"])
+    if "source_url" in data:
+        data["source_url"] = _redact_url(data["source_url"])
+    return data
 
 
 @router.post("/cancel/{job_id}", dependencies=[Depends(require_admin)])

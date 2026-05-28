@@ -772,3 +772,132 @@ def test_migrate_rejects_alias_url_with_400(seeded_app, monkeypatch):
     assert resp.status_code == 400, resp.text
     detail = resp.json()["detail"].lower()
     assert "alias" in detail or "same" in detail
+
+
+# ---------------------------------------------------------------------------
+# Task 2.6 — GET /job redacts credentials (H1)
+# ---------------------------------------------------------------------------
+
+
+def test_get_job_redacts_target_url(seeded_app, monkeypatch):
+    """H1 — GET /job/{id} must redact the password in target_url
+    before returning the JSON. Raw file on disk keeps the unredacted
+    URL (the applier needs it)."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "job-redact-target"
+    (jobs_dir / f"{job_id}.json").write_text(json.dumps({
+        "job_id": job_id,
+        "status": "running",
+        "source_backend": "duckdb",
+        "target_backend": "side_car",
+        "target_url": "postgresql+psycopg://agnes:supersecret@postgres:5432/agnes",
+        "current_step": "data_copy",
+        "progress_pct": 30,
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.get(
+        f"/api/admin/db/job/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "supersecret" not in body["target_url"]
+    assert "****" in body["target_url"]
+    # Other fields are unchanged.
+    assert body["status"] == "running"
+    assert body["progress_pct"] == 30
+
+
+def test_get_job_redacts_source_url(seeded_app, monkeypatch):
+    """For PG -> PG transitions the source_url also carries the
+    live DB password and must be redacted (H1)."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "job-redact-source"
+    (jobs_dir / f"{job_id}.json").write_text(json.dumps({
+        "job_id": job_id,
+        "status": "running",
+        "source_backend": "side_car",
+        "target_backend": "cloud",
+        "source_url": "postgresql+psycopg://x:sidecarpw@postgres:5432/agnes",
+        "target_url": "postgresql+psycopg://y:cloudpw@cloud-host/agnes",
+        "current_step": "data_copy",
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.get(
+        f"/api/admin/db/job/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "sidecarpw" not in body["source_url"]
+    assert "cloudpw" not in body["target_url"]
+
+
+def test_get_job_handles_missing_url_keys(seeded_app, monkeypatch):
+    """Jobs that don't carry a source_url (DuckDB -> PG) must not
+    error from a redact-missing-key call."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "job-no-source"
+    (jobs_dir / f"{job_id}.json").write_text(json.dumps({
+        "job_id": job_id,
+        "status": "running",
+        "target_url": "postgresql+psycopg://agnes:pw@host/agnes",
+        # no source_url
+    }))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.get(
+        f"/api/admin/db/job/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "source_url" not in body or body.get("source_url") is None
+
+
+def test_get_job_disk_file_is_unredacted(seeded_app, monkeypatch):
+    """The raw JSON on disk MUST stay unredacted — the host applier
+    subprocess reads it to invoke the migrator and needs the real
+    password (H1). Only the HTTP response body is redacted."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    jobs_dir = data_dir / "state" / "db-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "job-disk-intact"
+    original = {
+        "job_id": job_id,
+        "status": "running",
+        "target_url": "postgresql+psycopg://agnes:secretvalue@host/agnes",
+    }
+    job_file = jobs_dir / f"{job_id}.json"
+    job_file.write_text(json.dumps(original))
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.get(
+        f"/api/admin/db/job/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # File on disk is untouched.
+    on_disk = json.loads(job_file.read_text())
+    assert on_disk["target_url"] == "postgresql+psycopg://agnes:secretvalue@host/agnes"
