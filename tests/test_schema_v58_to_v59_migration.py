@@ -45,14 +45,16 @@ def _columns(conn, table: str) -> set[str]:
     }
 
 
-def test_schema_version_is_59():
-    assert SCHEMA_VERSION == 59
+def test_schema_version_is_60():
+    # Bumped to 60 by #459 (chat agent tables). The data_packages /
+    # table_registry assertions below still cover the v58 → v59 step.
+    assert SCHEMA_VERSION == 60
 
 
-def test_fresh_install_lands_at_v57(tmp_path):
+def test_fresh_install_lands_at_v60(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 59
+    assert get_schema_version(conn) == 60
 
 
 def test_v58_to_v59_adds_data_packages_owner_columns(tmp_path):
@@ -123,7 +125,7 @@ def test_v58_to_v59_is_idempotent(tmp_path):
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
     _ensure_schema(conn)  # second pass — no-op
-    assert get_schema_version(conn) == 59
+    assert get_schema_version(conn) == 60
 
 
 def test_v58_to_v59_preserves_table_registry_rows():

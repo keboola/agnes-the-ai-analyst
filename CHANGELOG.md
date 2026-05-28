@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **In-product chat agent — backend (#459, PR 1/3).** New `POST /api/chat`
+  SSE endpoint backed by an Anthropic tool-use loop (Haiku 4.5 default)
+  with six read-only tools: `list_catalog`, `get_schema`, `describe_table`,
+  `run_query`, `lookup_metric`, `get_memory_bundle`. Every tool re-checks
+  RBAC against the caller's identity; `run_query` refuses
+  `query_mode='remote'` tables in v1 (snapshots come later). Schema v60
+  adds `chat_sessions` + `chat_messages` (full-content storage, no
+  redaction). Companion endpoints: `GET /api/chat/sessions`,
+  `GET /api/chat/sessions/{id}`, `DELETE /api/chat/sessions/{id}`
+  (soft-archive). Step #1 for the planned Slack/Telegram messaging
+  gateways. Web UI ships in PR 2/3.
+
 ## [0.55.24] — 2026-05-28
 
 ### Fixed

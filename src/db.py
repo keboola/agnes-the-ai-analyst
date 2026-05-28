@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 59
+SCHEMA_VERSION = 60
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1057,6 +1057,44 @@ CREATE TABLE IF NOT EXISTS usage_marketplace_item_window (
     PRIMARY KEY (period_label, source, type, parent_plugin, name)
 );
 CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type);
+
+-- v60: in-product chat agent (#459). Two-table model — sessions hold
+-- thread metadata, messages hold the conversation transcript including
+-- assistant tool-call payloads. Full content is stored deliberately
+-- (no redaction) so the existing audit + future Corporate Memory
+-- extraction pipeline can read chat the same way they read session
+-- transcripts today.
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id              VARCHAR PRIMARY KEY,
+    user_email      VARCHAR NOT NULL,
+    title           VARCHAR,
+    started_at      TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    last_message_at TIMESTAMP,
+    message_count   INTEGER NOT NULL DEFAULT 0,
+    archived        BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
+    ON chat_sessions(user_email, last_message_at DESC);
+
+-- No FK from session_id → chat_sessions(id). DuckDB 1.5.x mis-fires
+-- "still referenced by a foreign key" on parent UPDATEs that touch
+-- columns participating in a non-unique secondary index — which the
+-- ``idx_chat_sessions_user`` index above does. App-level integrity is
+-- the actual enforcement: chat_messages are only written via
+-- ChatRepository.add_message, which always has a valid session_id.
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id          VARCHAR PRIMARY KEY,
+    session_id  VARCHAR NOT NULL,
+    role        VARCHAR NOT NULL,   -- 'user' | 'assistant' | 'tool_result'
+    content     TEXT    NOT NULL,
+    tool_calls  JSON,               -- assistant turns: [{tool, args, result_summary}]
+    tokens_in   INTEGER,
+    tokens_out  INTEGER,
+    model       VARCHAR,
+    created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+    ON chat_messages(session_id, created_at);
 """
 
 
@@ -4124,6 +4162,51 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v59_to_v60(conn: duckdb.DuckDBPyConnection) -> None:
+    """v60: in-product chat agent (#459) — ``chat_sessions`` +
+    ``chat_messages`` tables.
+
+    Fresh installs already get the tables from ``_SYSTEM_SCHEMA``; this
+    migration covers the sequential-upgrade path from a v59 instance.
+    Idempotent (CREATE TABLE / INDEX IF NOT EXISTS).
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id              VARCHAR PRIMARY KEY,
+            user_email      VARCHAR NOT NULL,
+            title           VARCHAR,
+            started_at      TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_message_at TIMESTAMP,
+            message_count   INTEGER NOT NULL DEFAULT 0,
+            archived        BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user "
+        "ON chat_sessions(user_email, last_message_at DESC)"
+    )
+    # No FK on session_id — see ``_SYSTEM_SCHEMA`` for the DuckDB FK
+    # workaround rationale.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id          VARCHAR PRIMARY KEY,
+            session_id  VARCHAR NOT NULL,
+            role        VARCHAR NOT NULL,
+            content     TEXT    NOT NULL,
+            tool_calls  JSON,
+            tokens_in   INTEGER,
+            tokens_out  INTEGER,
+            model       VARCHAR,
+            created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_session "
+        "ON chat_messages(session_id, created_at)"
+    )
+    conn.execute("UPDATE schema_version SET version = 60")
+
+
 def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
     """v56: extended-content columns on ``data_packages`` + structured
     per-table doc columns on ``table_registry``.
@@ -4442,6 +4525,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v56 extended content columns on data_packages + structured
             # per-table doc columns on table_registry.
             _v58_to_v59(conn)
+            # v60 chat agent tables (chat_sessions + chat_messages).
+            # _SYSTEM_SCHEMA already creates them on fresh installs;
+            # this call is a no-op there (CREATE TABLE IF NOT EXISTS).
+            _v59_to_v60(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4613,6 +4700,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v57_to_v58(conn)
             if current < 59:
                 _v58_to_v59(conn)
+            if current < 60:
+                _v59_to_v60(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -134,6 +134,7 @@ from app.api.news import router as news_router
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.activity import router as activity_router
+from app.api.chat import router as chat_router
 from app.api.observability import router as observability_router
 from app.api.admin_user_sessions import router as admin_user_sessions_router
 from app.api.admin_sessions import router as admin_sessions_router
@@ -711,6 +712,7 @@ def create_app() -> FastAPI:
     app.include_router(query_router)
     app.include_router(users_router)
     app.include_router(memory_router)
+    app.include_router(chat_router)
     app.include_router(upload_router)
     app.include_router(scripts_router)
     app.include_router(settings_router)
