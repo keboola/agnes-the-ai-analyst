@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import ArgumentError
 
 from app.auth.access import require_admin
 from src.db_state_machine import (
@@ -56,6 +57,30 @@ def _urls_alias(a: str, b: str) -> bool:
     the migrate endpoint to reject "migrate onto self" attempts (B7).
     """
     return _normalize_pg_url(a) == _normalize_pg_url(b)
+
+
+def _validate_cloud_url(url: str) -> None:
+    """Reject obviously-wrong cloud URLs early (H3).
+
+    Required: scheme starts with ``postgresql``, host non-empty,
+    database non-empty. Catches misclicks (sqlite://, file://, http://)
+    and incomplete URLs (missing host or DB name) before any
+    state-machine writes happen.
+    """
+    try:
+        parsed = make_url(url)
+    except (ArgumentError, ValueError) as e:
+        raise HTTPException(400, detail=f"cloud_url is not a valid URL: {e}")
+    scheme = parsed.drivername or ""
+    if not scheme.startswith("postgresql"):
+        raise HTTPException(
+            400,
+            detail=f"cloud_url scheme must start with 'postgresql', got '{scheme}'",
+        )
+    if not parsed.host:
+        raise HTTPException(400, detail="cloud_url must include a host")
+    if not parsed.database:
+        raise HTTPException(400, detail="cloud_url must include a database name")
 
 
 def _redact_url(url: str | None) -> str | None:
@@ -161,8 +186,10 @@ def start_migration(payload: MigrateRequest) -> dict:
     except InvalidTransitionError as e:
         raise HTTPException(400, detail=str(e))
 
-    if payload.target == "cloud" and not payload.cloud_url:
-        raise HTTPException(400, detail="cloud_url required for target=cloud")
+    if payload.target == "cloud":
+        if not payload.cloud_url:
+            raise HTTPException(400, detail="cloud_url required for target=cloud")
+        _validate_cloud_url(payload.cloud_url)
 
     # Resolve target URL.
     if payload.target == "side_car":

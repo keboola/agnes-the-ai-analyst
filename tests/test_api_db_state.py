@@ -967,3 +967,124 @@ def test_cancel_keeps_job_json_at_0600(seeded_app, monkeypatch):
 
     mode = stat.S_IMODE(os.stat(path).st_mode)
     assert mode == 0o600, f"cancel rewrite must keep 0600, got {oct(mode)}"
+
+
+# ---------------------------------------------------------------------------
+# Task 2.8 — cloud_url scheme + host + database validation (HIGH H3)
+# ---------------------------------------------------------------------------
+
+import pytest
+
+
+@pytest.mark.parametrize("bogus_url", [
+    "sqlite:///tmp/foo.db",
+    "file:///etc/passwd",
+    "http://malicious.host/agnes",
+    "redis://x@host/0",
+])
+def test_migrate_rejects_non_postgres_cloud_url_scheme(bogus_url, seeded_app, monkeypatch):
+    """H3 — cloud_url scheme must start with 'postgresql'. SQLite/file/
+    http/redis schemes get rejected with 400."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "cloud", "cloud_url": bogus_url},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_migrate_rejects_empty_cloud_url(seeded_app, monkeypatch):
+    """H3 — empty string triggers the existing 'required' check (400)."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "cloud", "cloud_url": ""},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_migrate_rejects_cloud_url_missing_host(seeded_app, monkeypatch):
+    """H3 — postgresql+psycopg://x:y@/agnes has no host."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "cloud", "cloud_url": "postgresql+psycopg://x:y@/agnes"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "host" in resp.json()["detail"].lower()
+
+
+def test_migrate_rejects_cloud_url_missing_database(seeded_app, monkeypatch):
+    """H3 — postgresql+psycopg://x:y@host (no DB path) is incomplete."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "cloud", "cloud_url": "postgresql+psycopg://x:y@host"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "database" in resp.json()["detail"].lower()
+
+
+def test_migrate_accepts_valid_cloud_url(seeded_app, monkeypatch):
+    """H3 — happy path. Well-formed postgresql+psycopg URL with host
+    and database passes validation. Returns 202."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={
+            "target": "cloud",
+            "cloud_url": "postgresql+psycopg://agnes:pw@cloud-host:5432/agnes",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 202, resp.text
+
+
+def test_migrate_no_state_writes_on_invalid_cloud_url(seeded_app, monkeypatch):
+    """Side-effect check: rejecting cloud_url MUST NOT leave the state
+    machine in *_in_progress or create a job file. Validation must run
+    BEFORE any state-machine write."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "cloud", "cloud_url": "sqlite:///oh-no.db"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+
+    # State machine must still be at default (duckdb / no state file).
+    from src.db_state_machine import read_backend_state, BackendState
+    state, _url = read_backend_state()
+    assert state == BackendState.DUCKDB, f"state should not have moved, got {state.value}"
+
+    # No job file should exist either.
+    jobs_dir = data_dir / "state" / "db-jobs"
+    assert not jobs_dir.exists() or not any(jobs_dir.iterdir())
