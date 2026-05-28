@@ -182,22 +182,33 @@ fi
 
 # 11. /home renders with bundled connectors (regression guard for the
 #     seed-driven install-prompt renderer in app/web/setup_instructions.py).
-#     A blank /home — empty body, missing connector slugs, renderer crash —
+#     A blank /home — empty body, missing connector tiles, renderer crash —
 #     is the worst-case failure of the A1 connector-skills refactor: the
 #     setup prompt is the primary onboarding surface. CI smoke can only
 #     exercise the bundled-fallback path (fresh stack has no IWT clone),
-#     so we assert the three bundled connector slugs appear verbatim.
+#     so we assert the three bundled connector display names appear in
+#     the rendered body plus the finale's alphabetical connector list.
 if [ -n "$TOKEN" ]; then
     HOME_BODY=$(curl -s "$HOST/home" \
       -H "Authorization: Bearer $TOKEN" \
       -b "access_token=$TOKEN" 2>/dev/null || echo "")
     HOME_OK="true"
-    for slug in connector-asana connector-atlassian connector-gws; do
-        if ! echo "$HOME_BODY" | grep -qF "$slug"; then
+    # Display names from each bundled connector's frontmatter. Use
+    # here-string instead of pipe — `grep -q` closes stdin as soon as
+    # it matches, the upstream `echo` dies of SIGPIPE, and `pipefail`
+    # then surfaces that as a false negative for the substring check.
+    for name in "Asana" "Atlassian (Jira / Confluence)" "Google Workspace"; do
+        if ! grep -qF "$name" <<< "$HOME_BODY"; then
             HOME_OK="false"
-            echo "  WARN /home body missing $slug (bundled seed regression?)"
+            echo "  WARN /home body missing \"$name\" (bundled seed regression?)"
         fi
     done
+    # Finale "For each connector (..." bullet — proves dynamic finale
+    # rendering picked the manifest up correctly.
+    if ! grep -qF "Asana, Atlassian (Jira / Confluence), Google Workspace" <<< "$HOME_BODY"; then
+        HOME_OK="false"
+        echo "  WARN /home finale connector list out of order or missing"
+    fi
     if [ -z "$HOME_BODY" ]; then
         HOME_OK="false"
     fi
