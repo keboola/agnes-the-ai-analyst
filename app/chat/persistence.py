@@ -1,14 +1,15 @@
 """Chat persistence — sessions, messages, and per-user workdir markers.
 
-DuckDB 1.5.3 limitation: after inserting a child row into chat_messages
-(which has a REFERENCES chat_sessions(id) FK) the secondary index
-idx_chat_messages_session causes a false FK violation when any subsequent
-UPDATE on the parent chat_sessions row is attempted within the same
-connection.  Workaround: do NOT maintain denormalised message_count /
-last_message_at counters via UPDATE.  Instead, compute them at read time
-from chat_messages via a LEFT JOIN.  append_message() therefore inserts
-only into chat_messages; get_session() / list_sessions() use a join query
-that derives both values on the fly.
+DuckDB 1.5.3 bug: updating a column that is part of a secondary index
+on the parent table triggers a false FK constraint violation if any
+child rows exist. ``last_message_at`` is part of the
+``idx_chat_sessions_user(user_email, last_message_at)`` index, so
+``UPDATE chat_sessions SET last_message_at = …`` after any
+``INSERT INTO chat_messages`` fails. ``message_count`` and ``archived``
+are not indexed and can be UPDATEd safely. Workaround: compute both
+``last_message_at`` and ``message_count`` at read time via LEFT JOIN.
+When DuckDB ships the fix, this module's reads can be simplified
+back to plain ``SELECT … FROM chat_sessions WHERE …``.
 """
 from __future__ import annotations
 
@@ -167,10 +168,16 @@ class ChatRepository:
     ) -> ChatMessage:
         msg_id = _gen_id("msg")
         now = datetime.now(timezone.utc)
-        # Only insert into chat_messages — do NOT update chat_sessions.
-        # DuckDB 1.5.3 has an FK+secondary-index bug that blocks any UPDATE on
-        # chat_sessions once a child message row exists under the session.
-        # message_count and last_message_at are computed at read time via JOIN.
+        # DuckDB 1.5.3 bug: updating a column that is part of a secondary
+        # index on the parent table triggers a false FK constraint violation
+        # if any child rows exist. last_message_at is part of
+        # idx_chat_sessions_user(user_email, last_message_at), so
+        # UPDATE chat_sessions SET last_message_at = … after any
+        # INSERT INTO chat_messages fails. Workaround: don't UPDATE at all
+        # — compute last_message_at and message_count at read time via
+        # LEFT JOIN (see _SESSION_SELECT). message_count and archived are
+        # not indexed and could be UPDATEd safely, but we keep the same
+        # read-time-derivation approach for both columns for consistency.
         self._conn.execute(
             "INSERT INTO chat_messages "
             "(id, session_id, role, content, tool_calls, tokens_in, tokens_out, model, created_at) "

@@ -1074,6 +1074,11 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     slack_thread_ts  VARCHAR,
     title            VARCHAR,
     started_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- NOTE: last_message_at and message_count are NEVER written after
+    -- INSERT. DuckDB 1.5.3 raises a false FK violation when UPDATE-ing
+    -- last_message_at (it's part of idx_chat_sessions_user). Workaround:
+    -- ChatRepository computes both via LEFT JOIN at read time. Code that
+    -- reads these columns directly will see (NULL, 0) for every row.
     last_message_at  TIMESTAMP,
     message_count    INTEGER NOT NULL DEFAULT 0,
     archived         BOOLEAN NOT NULL DEFAULT FALSE
@@ -4212,6 +4217,15 @@ def _v59_to_v60(conn: duckdb.DuckDBPyConnection) -> None:
     - Partial (WHERE-clause) unique indexes are not supported; per-surface
       uniqueness for slack_dm / slack_thread is enforced at the application
       layer in ChatRepository.
+    - UPDATE on a column that is part of a secondary index on a parent
+      table raises a false FK violation when child rows exist. The
+      ``last_message_at`` column is part of ``idx_chat_sessions_user`` and
+      therefore cannot be UPDATEd once any chat_messages row references
+      the session. Consequently ``chat_sessions.last_message_at`` and
+      ``chat_sessions.message_count`` are NEVER written after row
+      creation — they stay (NULL, 0) at the SQL level. ChatRepository
+      computes both via LEFT JOIN at read time; any code that reads these
+      columns directly (bypassing ChatRepository) will see stale values.
     """
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_sessions (

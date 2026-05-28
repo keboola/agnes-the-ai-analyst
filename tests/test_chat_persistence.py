@@ -84,6 +84,27 @@ def test_archived_slack_dm_does_not_block_new_one(repo: ChatRepository):
     assert b.id != a.id
 
 
+def test_hard_delete_user_sessions(repo: ChatRepository):
+    s1 = repo.create_session(user_email="u@x", surface=Surface.WEB)
+    s2 = repo.create_session(user_email="u@x", surface=Surface.WEB)
+    repo.append_message(session_id=s1.id, role="user", content="hi")
+    repo.append_message(session_id=s2.id, role="user", content="hello")
+    # Other user is untouched
+    other = repo.create_session(user_email="v@x", surface=Surface.WEB)
+    repo.append_message(session_id=other.id, role="user", content="ok")
+
+    n = repo.hard_delete_user_sessions("u@x")
+    assert n == 2
+    assert repo.get_session(s1.id) is None
+    assert repo.get_session(s2.id) is None
+    # Messages are gone too — would FK-block if order were reversed
+    assert repo.list_messages(s1.id) == []
+    assert repo.list_messages(s2.id) == []
+    # Other user's data survives
+    assert repo.get_session(other.id) is not None
+    assert len(repo.list_messages(other.id)) == 1
+
+
 # ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------
