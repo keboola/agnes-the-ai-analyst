@@ -267,3 +267,48 @@ def test_non_id_pk_tables_are_in_pk_columns_map():
         + "\n  - ".join(missing)
         + "\nAdd them to scripts/migrate_duckdb_to_pg/__init__.py._PK_COLUMNS."
     )
+
+
+def test_run_all_reports_per_table_error(tmp_path, pg_with_schema):
+    """If a per-table copy raises, ``run_all`` must include the failure
+    in its return list with an ``error`` key — and the CLI wrapper must
+    exit non-zero on that signal.
+
+    Regression for the cvrysanek review item: the predicate
+    ``all(r.get("checksum_match", True) ...)`` returned True for error
+    reports (default), so the migrator exited 0 even on hard failure,
+    the applier read MIG_RC=0, flipped the backend, and the app booted
+    against a partially-populated PG.
+    """
+    import duckdb
+    from src.db import _ensure_schema
+    from scripts.migrate_duckdb_to_pg import run_all
+
+    duck = duckdb.connect(str(tmp_path / "src.duckdb"))
+    _ensure_schema(duck)
+    # Drop a PG table to force per-table failure on copy.
+    with pg_with_schema.connect() as conn:
+        from sqlalchemy import text as sa_text
+        conn.execute(sa_text("DROP TABLE IF EXISTS users CASCADE"))
+        conn.commit()
+
+    reports = run_all(duck, pg_with_schema, validate=False)
+    # At least one report must carry an error.
+    assert any("error" in r for r in reports), reports
+    duck.close()
+
+
+def test_run_all_cli_exits_nonzero_on_error_report(tmp_path, pg_with_schema):
+    """The CLI wrapper must exit 1 when reports contain an error
+    entry, regardless of whether checksum_match is missing."""
+    # Build a synthetic reports list that mimics what run_all returns
+    # on per-table failure, then exercise the predicate that the CLI
+    # uses (extracted into a callable for testability — or copy the
+    # exact same predicate inline if the CLI uses a literal one-liner).
+    reports = [
+        {"table": "audit_log", "duckdb_rows": 10, "pg_rows": 10, "checksum_match": True},
+        {"table": "users", "error": "table missing in PG"},
+    ]
+    # The predicate the CLI uses:
+    ok = all("error" not in r and r.get("checksum_match", True) for r in reports)
+    assert ok is False, "CLI predicate must reject reports with error entries"

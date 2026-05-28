@@ -65,7 +65,14 @@ def main() -> int:
     )
     for r in reports:
         print(r)
-    return 0 if all(r.get("checksum_match", True) for r in reports) else 1
+    # Per-task errors land as {"table": ..., "error": ...} without a
+    # checksum_match key; the default-True on .get() previously masked
+    # them. Treat the explicit error key as the authoritative failure
+    # signal. Both predicates must hold for exit 0.
+    return (
+        0 if all("error" not in r and r.get("checksum_match", True) for r in reports)
+        else 1
+    )
 
 
 if __name__ == "__main__":
