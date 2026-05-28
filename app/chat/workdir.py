@@ -33,6 +33,7 @@ class WorkdirManager:
         get_marketplace_sha: Callable[[], str],
         get_template_status: Callable[[], Optional[TemplateStatus]],
         fetch_template_zip: Optional[Callable[[], bytes]] = None,
+        marketplace_sha_debounce_seconds: int = 0,
     ) -> None:
         self._data_dir = data_dir
         self._repo = repo
@@ -42,6 +43,13 @@ class WorkdirManager:
         self._get_marketplace_sha = get_marketplace_sha
         self._get_template_status = get_template_status
         self._fetch_template_zip = fetch_template_zip
+        # Debounce cache for the marketplace-SHA lookup. Operators set
+        # ``marketplace_sha_debounce_seconds`` in instance.yaml to bound
+        # how often the (potentially-slow) SHA source is consulted; this
+        # caches the last value plus the monotonic timestamp it was read.
+        self._sha_debounce_seconds = marketplace_sha_debounce_seconds
+        self._cached_sha: Optional[str] = None
+        self._cached_sha_at: float = 0.0
 
     def _user_root(self, user_email: str) -> Path:
         return self._data_dir / "users" / _safe_email_dir(user_email)
@@ -52,11 +60,32 @@ class WorkdirManager:
     def user_sessions_root(self, user_email: str) -> Path:
         return self._user_root(user_email) / "sessions"
 
+    def _current_marketplace_sha(self) -> str:
+        """Read the marketplace SHA, honouring the debounce window.
+
+        When ``marketplace_sha_debounce_seconds`` is positive, the cached
+        SHA is returned for up to that many seconds; subsequent calls
+        within the window re-use the cache without invoking the source
+        callable. Setting the knob to ``0`` (default) disables caching.
+        """
+        if self._sha_debounce_seconds <= 0:
+            return self._get_marketplace_sha()
+        import time as _time
+        now_mono = _time.monotonic()
+        if (
+            self._cached_sha is not None
+            and (now_mono - self._cached_sha_at) < self._sha_debounce_seconds
+        ):
+            return self._cached_sha
+        self._cached_sha = self._get_marketplace_sha()
+        self._cached_sha_at = now_mono
+        return self._cached_sha
+
     def needs_reinit(self, user_email: str) -> bool:
         row = self._repo.get_workdir(user_email)
         if row is None:
             return True
-        if row.marketplace_sha != self._get_marketplace_sha():
+        if row.marketplace_sha != self._current_marketplace_sha():
             return True
         if row.agnes_version_at_init != self._agnes_version:
             return True
@@ -96,7 +125,7 @@ class WorkdirManager:
 
         self._repo.upsert_workdir(
             user_email=user_email,
-            marketplace_sha=self._get_marketplace_sha(),
+            marketplace_sha=self._current_marketplace_sha(),
             initial_workspace_sha=template_sha,
             agnes_version=self._agnes_version,
         )

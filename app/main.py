@@ -448,6 +448,7 @@ async def lifespan(app):
                     get_marketplace_sha=_get_marketplace_sha,
                     get_template_status=_server_template_status,
                     fetch_template_zip=_fetch_local_template_zip,
+                    marketplace_sha_debounce_seconds=app.state.chat_config.marketplace_sha_debounce_seconds,
                 )
                 provider = SubprocessProvider(
                     nsjail_path=shutil.which("nsjail"),

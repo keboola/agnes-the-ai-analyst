@@ -21,6 +21,98 @@ from app.chat.types import Surface
 from app.chat.workdir import WorkdirManager
 
 
+def test_marketplace_sha_debounced(tmp_path):
+    """When debounce_seconds > 0 the marketplace SHA is read at most once per
+    interval; intermediate calls return the cached value.
+
+    Operators configure ``marketplace_sha_debounce_seconds`` in instance.yaml
+    to limit FS reads on hot paths; before this knob was wired every
+    ``needs_reinit`` call re-read the SHA file unconditionally.
+    """
+    import duckdb
+    from src.db import _ensure_schema
+    from app.chat.persistence import ChatRepository
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "CLAUDE.md").write_text("d")
+
+    call_count = {"n": 0}
+
+    def sha_fn():
+        call_count["n"] += 1
+        return "sha-1"
+
+    mgr = WorkdirManager(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        server_url="https://example",
+        agnes_version="0.55.0",
+        get_marketplace_sha=sha_fn,
+        get_template_status=lambda: None,
+        marketplace_sha_debounce_seconds=60,
+    )
+
+    # Seed a workdir row at sha-1 so needs_reinit doesn't decide it's missing.
+    repo.upsert_workdir(
+        user_email="u@x", marketplace_sha="sha-1",
+        initial_workspace_sha=None, agnes_version="0.55.0",
+    )
+
+    # First call → reads SHA.
+    assert mgr.needs_reinit("u@x") is False
+    assert call_count["n"] == 1
+    # Second call within debounce window → cached.
+    assert mgr.needs_reinit("u@x") is False
+    assert call_count["n"] == 1
+
+
+def test_marketplace_sha_no_debounce_when_zero(tmp_path):
+    """debounce_seconds=0 disables caching; SHA is re-read on every call."""
+    import duckdb
+    from src.db import _ensure_schema
+    from app.chat.persistence import ChatRepository
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "CLAUDE.md").write_text("d")
+
+    call_count = {"n": 0}
+
+    def sha_fn():
+        call_count["n"] += 1
+        return "sha-1"
+
+    mgr = WorkdirManager(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        server_url="https://example",
+        agnes_version="0.55.0",
+        get_marketplace_sha=sha_fn,
+        get_template_status=lambda: None,
+        marketplace_sha_debounce_seconds=0,
+    )
+
+    repo.upsert_workdir(
+        user_email="u@x", marketplace_sha="sha-1",
+        initial_workspace_sha=None, agnes_version="0.55.0",
+    )
+
+    mgr.needs_reinit("u@x")
+    mgr.needs_reinit("u@x")
+    mgr.needs_reinit("u@x")
+    assert call_count["n"] == 3
+
+
 def _make_repo(tmp_path: Path) -> ChatRepository:
     conn = duckdb.connect(":memory:")
     _ensure_schema(conn)
