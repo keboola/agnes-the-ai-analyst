@@ -174,7 +174,9 @@ def test_schema_version_is_60():
     #            Universal MCP inbound connector (RFC #461).
     # v61 → v62: ``mcp_secrets`` server-wide vault for MCP source auth
     #            (RFC #461 §4 — Fernet-encrypted bearer/basic tokens).
-    assert SCHEMA_VERSION == 62
+    # v62 → v63: ``mcp_user_secrets`` + ``mcp_sources.scope`` — per-user
+    #            credential passthrough (RFC #461 §4 phase B).
+    assert SCHEMA_VERSION == 63
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

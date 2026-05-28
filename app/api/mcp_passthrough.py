@@ -186,7 +186,14 @@ async def invoke_passthrough_tool(
         raise HTTPException(status_code=409, detail="upstream MCP source missing or disabled")
 
     try:
-        result = await call_tool_async(source, tool["original_name"], arguments=body.arguments)
+        # Thread the caller's user_id through so sources with
+        # ``scope='per_user'`` resolve the analyst's own credential.
+        result = await call_tool_async(
+            source,
+            tool["original_name"],
+            arguments=body.arguments,
+            caller_user_id=user["id"],
+        )
     except Exception as exc:
         logger.exception("passthrough call to %s failed", tool_id)
         # 502 — Agnes IS reachable, but the upstream MCP we're proxying isn't.
