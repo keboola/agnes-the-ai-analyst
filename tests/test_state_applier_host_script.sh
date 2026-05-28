@@ -200,25 +200,52 @@ TRANSCRIPT="$transcript" JOB_FILE="$tmp/data/state/db-jobs/$JOB_ID.json" \
 # --- Assertions ------------------------------------------------------------
 fail() { echo "FAIL: $*"; echo "--- transcript ---"; cat "$transcript"; exit 1; }
 
-grep -q "docker compose -f .* up -d postgres" "$transcript" \
-    || fail "expected 'compose up -d postgres' before migrator runs"
+# E.2 — semantic matchers. Each helper finds the FIRST transcript
+# line satisfying its required-keyword set (regardless of flag order
+# within that line) and prints the line number. Reordering a flag
+# inside one of those invocations no longer breaks the test; only
+# DROPPING a required argument does. Combined with the cross-line
+# ordering assertions below, we still get a strict end-to-end
+# contract without coupling to argv layout.
+# Args: file required-keyword [required-keyword …]
+line_matching_keywords() {
+    local file=$1; shift
+    awk -v keywords="$*" '
+    BEGIN {
+        n = split(keywords, kw, " ")
+    }
+    {
+        ok = 1
+        for (i = 1; i <= n; i++) {
+            if (index($0, kw[i]) == 0) { ok = 0; break }
+        }
+        if (ok) { print NR; exit }
+    }
+    ' "$file"
+}
+require_line() {
+    local descr=$1; shift
+    local line
+    line=$(line_matching_keywords "$@")
+    if [ -z "$line" ]; then
+        fail "no transcript line matches all of [$*] — $descr"
+    fi
+    echo "$line"
+}
 
-grep -q "docker stop agnes-app-1 agnes-scheduler-1" "$transcript" \
-    || fail "expected app+scheduler stop before migrator runs"
+postgres_up_line=$(require_line "compose up -d postgres" "$transcript" "docker" "compose" "up" "-d" "postgres")
+stop_line=$(require_line "app/scheduler stop"           "$transcript" "docker" "stop" "agnes-app-1" "agnes-scheduler-1")
+migrator_run_line=$(require_line "migrator run"          "$transcript" "docker" "run" "--rm" "db_state_migrator")
+restart_line=$(require_line "no-deps app+scheduler restart" "$transcript" "docker" "compose" "up" "-d" "--no-deps" "--force-recreate" "app" "scheduler")
 
-grep -q "docker run --rm" "$transcript" \
-    && grep -q "db_state_migrator" "$transcript" \
-    || fail "expected 'docker run --rm ... db_state_migrator ...'"
-
-grep -q "docker compose -f .* up -d --no-deps --force-recreate app scheduler" "$transcript" \
-    || fail "expected --no-deps app+scheduler restart after migrator"
-
-# Ordering: stop must come BEFORE run; restart must come AFTER run.
-stop_line=$(grep -n "docker stop agnes-app-1" "$transcript" | head -1 | cut -d: -f1)
-run_line=$(grep -n "docker run --rm" "$transcript" | head -1 | cut -d: -f1)
-restart_line=$(grep -n "docker compose -f .* up -d --no-deps --force-recreate app scheduler" "$transcript" | head -1 | cut -d: -f1)
-[ "$stop_line" -lt "$run_line" ] && [ "$run_line" -lt "$restart_line" ] \
-    || fail "ordering wrong: stop=$stop_line run=$run_line restart=$restart_line"
+# Ordering across lines is the load-bearing invariant — flag-order
+# inside a single line is not.
+[ "$postgres_up_line" -lt "$stop_line" ] \
+    || fail "ordering wrong: postgres-up=$postgres_up_line not before stop=$stop_line"
+[ "$stop_line" -lt "$migrator_run_line" ] \
+    || fail "ordering wrong: stop=$stop_line not before migrator=$migrator_run_line"
+[ "$migrator_run_line" -lt "$restart_line" ] \
+    || fail "ordering wrong: migrator=$migrator_run_line not before restart=$restart_line"
 
 # instance.yaml updated to side_car on success.
 grep -q "backend: side_car" "$tmp/data/state/instance.yaml" \
@@ -496,5 +523,114 @@ grep -q "backend: duckdb" "$tmp4/data/state/instance.yaml" \
     || { echo "FAIL (C.2): instance.yaml flipped despite watchdog firing"; cat "$tmp4/data/state/instance.yaml"; exit 1; }
 rm -rf "$tmp4"
 echo "OK: C.2 migrator subprocess watchdog (H5 applier side)"
+
+# --- E.5 regression: ERR trap rolls back on unexpected abort -----------------
+# Simulate an unexpected abort by making `docker run` itself fail
+# with rc=99 (not a watchdog 124/137 — something else entirely). The
+# applier's existing post-migrator detection catches that, but if a
+# python heredoc raises BEFORE that block, the script aborts due to
+# set -e. The ERR trap must idempotently mark the pending job failed
+# and (where appropriate) revert instance.yaml.
+#
+# The cleanest reproducer: stub `read` in the field-parsing block to
+# fail. We can't easily monkey-patch shell builtins, so instead we
+# pre-corrupt the pending job JSON so the python3 heredoc parses it
+# but exits with an unhandled exception. That triggers the heredoc's
+# subprocess to exit nonzero — process substitution then carries the
+# error through the read block and the ERR trap fires.
+tmp5=$(mktemp -d)
+mkdir -p "$tmp5/data/state/db-jobs" "$tmp5/opt/agnes"
+echo "AGNES_TAG=stable" > "$tmp5/opt/agnes/.env"
+touch "$tmp5/opt/agnes/docker-compose.yml" \
+      "$tmp5/opt/agnes/docker-compose.prod.yml" \
+      "$tmp5/opt/agnes/docker-compose.host-mount.yml"
+E5_ID="e5-abort-mid-flight"
+E5_QUEUED=$(python3 -c "
+from datetime import datetime, timezone
+print(datetime.now(timezone.utc).isoformat())
+")
+# Valid pending JSON — applier processes it through the field parse,
+# then we make `docker run` fail in a way that combines with set -e
+# to trigger ERR.
+cat > "$tmp5/data/state/db-jobs/$E5_ID.json" <<JSON
+{
+  "job_id": "$E5_ID",
+  "schema_version": 1,
+  "status": "pending",
+  "source_backend": "duckdb",
+  "target_backend": "side_car",
+  "target_url": "postgresql+psycopg://agnes:agnes@postgres:5432/agnes",
+  "progress_pct": 0,
+  "current_step": "queued",
+  "queued_at": "$E5_QUEUED"
+}
+JSON
+echo -n "side-car-enabled" > "$tmp5/data/state/db-state-target.flag"
+cat > "$tmp5/data/state/instance.yaml" <<'YAML'
+database:
+  backend: duckdb
+YAML
+sandboxed5=$tmp5/applier.sh
+sed -e "s|FLAG=/data/state/db-state-target.flag|FLAG=$tmp5/data/state/db-state-target.flag|" \
+    -e "s|JOBS_DIR=/data/state/db-jobs|JOBS_DIR=$tmp5/data/state/db-jobs|" \
+    -e "s|COMPOSE_DIR=/opt/agnes|COMPOSE_DIR=$tmp5/opt/agnes|" \
+    -e "s|LOCK_FILE=/data/state/db-state-applier.lock|LOCK_FILE=$tmp5/data/state/db-state-applier.lock|" \
+    -e "s|/data/postgres|$tmp5/data/postgres|g" \
+    -e "s|/data/state/certs|$tmp5/data/state/certs|g" \
+    -e "s|/data/state/instance.yaml|$tmp5/data/state/instance.yaml|g" \
+    -e "s|/data/state/agnes-state-applier.tick|$tmp5/data/state/agnes-state-applier.tick|g" \
+    "$script" > "$sandboxed5"
+# Inject an abort right after the field-parse block so we exercise
+# the ERR trap with PENDING_JOB and SOURCE_BACKEND populated.
+python3 - <<PY
+import pathlib, re
+p = pathlib.Path("$sandboxed5")
+text = p.read_text()
+# Insert 'false' right after the IMAGE= line so set -e aborts before
+# the docker run (which would otherwise carry its own happy-path mock).
+needle = 'IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:'
+i = text.find(needle)
+assert i != -1, "could not find injection point"
+eol = text.index("\n", i) + 1
+text = text[:eol] + "false  # E.5 injected abort\n" + text[eol:]
+p.write_text(text)
+PY
+chmod +x "$sandboxed5"
+fake_bin5=$tmp5/bin
+mkdir -p "$fake_bin5"
+cp "$fake_bin/docker" "$fake_bin5/docker"
+cp "$fake_bin/logger" "$fake_bin5/logger"
+cp "$fake_bin/chown" "$fake_bin5/chown"
+cp "$fake_bin/chmod" "$fake_bin5/chmod"
+cp "$fake_bin/flock" "$fake_bin5/flock"
+cp "$fake_bin/timeout" "$fake_bin5/timeout"
+transcript5=$tmp5/transcript.log
+# The applier exits nonzero (the trap returns its rc); capture that.
+set +e
+TRANSCRIPT="$transcript5" JOB_FILE="$tmp5/data/state/db-jobs/$E5_ID.json" \
+    PATH="$fake_bin5:$PATH" \
+    bash "$sandboxed5"
+applier_rc=$?
+set -e
+[ "$applier_rc" -ne 0 ] \
+    || { echo "FAIL (E.5): applier exited 0 despite injected abort"; cat "$transcript5"; exit 1; }
+E5_STATUS=$(python3 -c "import json;print(json.load(open('$tmp5/data/state/db-jobs/$E5_ID.json'))['status'])")
+[ "$E5_STATUS" = "failed" ] \
+    || { echo "FAIL (E.5): ERR trap did not mark pending failed (status=$E5_STATUS)"; cat "$transcript5"; exit 1; }
+E5_MSG=$(python3 -c "import json;print(json.load(open('$tmp5/data/state/db-jobs/$E5_ID.json')).get('error',{}).get('message',''))")
+case "$E5_MSG" in
+    *"applier aborted"*|*"ERR trap"*) ;;
+    *) echo "FAIL (E.5): error.message='$E5_MSG' lacks ERR-trap signature"; cat "$transcript5"; exit 1 ;;
+esac
+# instance.yaml reverted to duckdb (source backend).
+grep -q "backend: duckdb" "$tmp5/data/state/instance.yaml" \
+    || { echo "FAIL (E.5): instance.yaml not reverted to source"; cat "$tmp5/data/state/instance.yaml"; exit 1; }
+# FLAG file removed (source = duckdb doesn't need side-car lifecycle).
+if [ -e "$tmp5/data/state/db-state-target.flag" ]; then
+    echo "FAIL (E.5): FLAG file not cleared by ERR trap rollback"
+    exit 1
+fi
+rm -rf "$tmp5"
+echo "OK: E.5 ERR trap rolls back on unexpected abort"
 
 echo "OK"
