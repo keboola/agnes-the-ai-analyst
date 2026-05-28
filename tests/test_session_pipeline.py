@@ -20,7 +20,11 @@ import duckdb
 
 from services.session_pipeline.contract import ProcessorResult
 from services.session_pipeline.lib import compute_file_hash, parse_jsonl
-from services.session_pipeline.runner import resolve_user_id, run_processor
+from services.session_pipeline.runner import (
+    resolve_user_id,
+    resolve_user_identity,
+    run_processor,
+)
 from src.repositories.session_processor_state import SessionProcessorStateRepository
 
 
@@ -159,6 +163,49 @@ class TestResolveUserId:
         conn = _fresh_db(tmp_path, monkeypatch)
         self._seed_users(conn, [("uuid-aaa", "uuid-aaa@example.com", "2026-01-01")])
         assert resolve_user_id(conn, "uuid-aaa") == "uuid-aaa"
+        conn.close()
+
+
+class TestResolveUserIdentity:
+    """Resolver returns (uid, email) — the email is what the runner
+    writes as the canonical ``username`` so the telemetry dropdown
+    stops listing the same person under their UUID and their email."""
+
+    @staticmethod
+    def _seed(conn, rows):
+        for uid, email, updated_at in rows:
+            conn.execute(
+                "INSERT INTO users (id, email, updated_at) VALUES (?, ?, ?)",
+                [uid, email, updated_at],
+            )
+
+    def test_uuid_dir_resolves_to_email(self, tmp_path, monkeypatch):
+        """Upload API writes /data/user_sessions/<uuid>/ — resolver
+        must return the user's email so usage_events.username becomes
+        readable instead of the raw UUID."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        self._seed(conn, [("uuid-aaa", "alice@example.com", "2026-01-01")])
+        uid, email = resolve_user_identity(conn, "uuid-aaa")
+        assert uid == "uuid-aaa"
+        assert email == "alice@example.com"
+        conn.close()
+
+    def test_local_part_dir_resolves_to_email(self, tmp_path, monkeypatch):
+        """Session collector writes /data/user_sessions/<os-username>/
+        — resolver returns the matching email."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        self._seed(conn, [("uuid-bbb", "bob@example.com", "2026-01-01")])
+        uid, email = resolve_user_identity(conn, "bob")
+        assert uid == "uuid-bbb"
+        assert email == "bob@example.com"
+        conn.close()
+
+    def test_unknown_returns_none_pair(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        self._seed(conn, [("uuid-aaa", "alice@example.com", "2026-01-01")])
+        uid, email = resolve_user_identity(conn, "nobody")
+        assert uid is None
+        assert email is None
         conn.close()
 
 
@@ -317,9 +364,13 @@ class _FakeProcessor:
         self.return_value = return_value if return_value is not None else ProcessorResult(items_count=0)
         self.raise_on_session = raise_on_session
         self.calls: list[str] = []
+        self.call_kwargs: list[dict] = []
+        self.call_usernames: list[str] = []
 
     def process_session(self, session_path: Path, username: str, session_key: str, conn, **kwargs: object):
         self.calls.append(session_key)
+        self.call_usernames.append(username)
+        self.call_kwargs.append(dict(kwargs))
         if self.raise_on_session is not None and session_key == self.raise_on_session:
             raise RuntimeError("simulated processor failure")
         return self.return_value
@@ -415,6 +466,61 @@ class TestRunProcessor:
         stats2 = run_processor(conn, proc, session_data_dir=sessions)
         assert stats2["processed"] == 1
         assert proc.calls == ["alice/s.jsonl", "alice/s.jsonl"]
+        conn.close()
+
+    def test_uuid_dir_passes_email_as_username(self, tmp_path, monkeypatch):
+        """Sessions uploaded via /api/upload/sessions land in
+        /data/user_sessions/<uuid>/. The runner must resolve the email
+        and pass that to the processor as ``username`` — otherwise
+        usage_events.username gets a UUID and the admin telemetry
+        dropdown lists the same user under two identities."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        conn.execute(
+            "INSERT INTO users (id, email, updated_at) VALUES (?, ?, ?)",
+            ["uuid-aaa", "alice@example.com", "2026-01-01"],
+        )
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "uuid-aaa", "s.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        run_processor(conn, proc, session_data_dir=sessions)
+
+        assert proc.call_usernames == ["alice@example.com"]
+        assert proc.call_kwargs[0]["user_id"] == "uuid-aaa"
+        conn.close()
+
+    def test_localpart_dir_passes_email_as_username(self, tmp_path, monkeypatch):
+        """Sessions from the legacy collector land under the OS
+        username (typically the email local-part). The runner must
+        still write the full email so the dropdown collapses."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        conn.execute(
+            "INSERT INTO users (id, email, updated_at) VALUES (?, ?, ?)",
+            ["uuid-bbb", "bob@example.com", "2026-01-01"],
+        )
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "bob", "s.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        run_processor(conn, proc, session_data_dir=sessions)
+
+        assert proc.call_usernames == ["bob@example.com"]
+        assert proc.call_kwargs[0]["user_id"] == "uuid-bbb"
+        conn.close()
+
+    def test_orphan_dir_falls_back_to_dir_name(self, tmp_path, monkeypatch):
+        """If the directory name doesn't resolve to any user (deleted
+        user, stray upload), keep the directory name as ``username``
+        so the data isn't silently relabelled to a bogus identity."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        sessions = tmp_path / "sessions"
+        _seed_session(sessions, "orphan-uuid", "s.jsonl")
+
+        proc = _FakeProcessor(return_value=ProcessorResult(items_count=1))
+        run_processor(conn, proc, session_data_dir=sessions)
+
+        assert proc.call_usernames == ["orphan-uuid"]
+        assert proc.call_kwargs[0]["user_id"] is None
         conn.close()
 
     def test_processors_isolated(self, tmp_path, monkeypatch):
