@@ -106,22 +106,17 @@ def _patch_state_paths(monkeypatch, data_dir):
     )
 
 
-def test_post_migrate_starts_job(seeded_app, monkeypatch):
-    """POST /migrate returns 202 + job_id, spawns the migrator subprocess."""
+def test_post_migrate_queues_pending_job(seeded_app, monkeypatch):
+    """POST /migrate writes a pending job + flag for the host applier.
+
+    The endpoint no longer spawns the migrator itself — that runs from
+    the host because DuckDB's in-process file lock cannot be released
+    deterministically while the uvicorn worker is alive (verified on
+    agnes-dev across multiple in-process release attempts).
+    """
+    import json
     data_dir = seeded_app["env"]["data_dir"]
     _patch_state_paths(monkeypatch, data_dir)
-
-    spawned: list[list[str]] = []
-
-    def fake_popen(cmd, *args, **kwargs):
-        spawned.append(cmd)
-
-        class FakeProc:
-            pid = 12345
-
-        return FakeProc()
-
-    monkeypatch.setattr("app.api.db_state.subprocess.Popen", fake_popen)
 
     client = seeded_app["client"]
     token = seeded_app["admin_token"]
@@ -133,39 +128,38 @@ def test_post_migrate_starts_job(seeded_app, monkeypatch):
     assert r.status_code == 202, r.text
     body = r.json()
     assert "job_id" in body
-    assert body["status"] == "running"
-    # Subprocess invoked exactly once, target on the command line.
-    assert len(spawned) == 1
-    assert "side_car" in spawned[0]
+    assert body["status"] == "pending"
+
+    # Job intent persisted with everything the host applier needs.
+    job_path = data_dir / "state" / "db-jobs" / f"{body['job_id']}.json"
+    job = json.loads(job_path.read_text())
+    assert job["status"] == "pending"
+    assert job["source_backend"] == "duckdb"
+    assert job["target_backend"] == "side_car"
+    assert "postgres:5432" in job["target_url"]
+    assert job["schema_version"] == 1
+
+    # Flag flipped to the side-car-enabled lifecycle.
+    flag = (data_dir / "state" / "db-state-target.flag").read_text()
+    assert flag == "side-car-enabled"
 
 
-def test_post_migrate_releases_duckdb_lock_before_spawn(seeded_app, monkeypatch):
-    """``close_singleton_connections()`` runs before ``subprocess.Popen``.
+def test_post_migrate_does_not_spawn_subprocess(seeded_app, monkeypatch):
+    """Regression: the endpoint MUST NOT shell out to the migrator.
 
-    Regression for the agnes-dev deploy verification where the migrator
-    subprocess hit ``IOException: Conflicting lock is held in
-    /usr/local/bin/python3.13`` because the app held the exclusive
-    DuckDB file lock. The fix is to close both singleton connections
-    immediately before spawning so the subprocess can acquire the lock.
+    The host applier owns subprocess execution now. If anything inside
+    the handler reaches for subprocess.Popen / os.execv / os.system,
+    we're back to the in-process DuckDB lock conflict.
     """
+    import subprocess as _sp
     data_dir = seeded_app["env"]["data_dir"]
     _patch_state_paths(monkeypatch, data_dir)
 
-    events: list[str] = []
-    monkeypatch.setattr(
-        "src.db.close_singleton_connections",
-        lambda: events.append("close"),
-    )
+    def fail(*a, **kw):
+        raise AssertionError("endpoint must not spawn the migrator itself")
 
-    def fake_popen(cmd, *args, **kwargs):
-        events.append("popen")
-
-        class FakeProc:
-            pid = 12345
-
-        return FakeProc()
-
-    monkeypatch.setattr("app.api.db_state.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(_sp, "Popen", fail)
+    monkeypatch.setattr(_sp, "run", fail)
 
     client = seeded_app["client"]
     token = seeded_app["admin_token"]
@@ -175,9 +169,6 @@ def test_post_migrate_releases_duckdb_lock_before_spawn(seeded_app, monkeypatch)
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 202, r.text
-    # Order matters: close MUST happen before popen, otherwise the
-    # subprocess hits the lock conflict.
-    assert events == ["close", "popen"]
 
 
 def test_post_migrate_rejects_invalid_transition(seeded_app, monkeypatch):

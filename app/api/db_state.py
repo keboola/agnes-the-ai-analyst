@@ -6,17 +6,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
-import sys
 import uuid
 from pathlib import Path
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db
 from src.db_state_machine import (
     allowed_transitions,
     read_backend_state,
@@ -74,27 +70,33 @@ class MigrateRequest(BaseModel):
     cloud_url: str | None = None  # required when target=cloud
 
 
-@router.post("/migrate", status_code=202)
-def start_migration(
-    payload: MigrateRequest,
-    _admin: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-) -> dict:
-    """Start a backend migration job (async; poll /job/{id} for status).
+@router.post("/migrate", status_code=202, dependencies=[Depends(require_admin)])
+def start_migration(payload: MigrateRequest) -> dict:
+    """Queue a backend migration job for the host applier daemon.
 
-    Validates the requested transition against the current state, acquires
-    the non-blocking migration flock (409 if already held), writes the
-    initial job file and overlay state, then spawns the migrator
-    subprocess in a new session and returns 202.
+    The endpoint does NOT execute the migration — it only writes the
+    intent. The ``agnes-state-applier`` host daemon picks up the
+    pending job within ~30s, stops the app container (releasing the
+    DuckDB file lock — see the docstring at the top of
+    ``scripts/ops/agnes-state-applier.sh`` for why in-process release
+    isn't viable), runs the migrator subprocess on the host, then
+    restarts the app on the new backend.
 
-    The endpoint takes the request-scoped DuckDB cursor as an explicit
-    dependency so it can close it *before* releasing the singleton — the
-    cursor held by ``Depends(_get_db)`` would otherwise keep DuckDB's
-    file lock alive even after the singleton's connection.close().
-    Symptom on agnes-dev (v3): the migrator subprocess hit ``Conflicting
-    lock is held in /usr/local/bin/python3.13 (PID 1)`` even though the
-    singleton had been closed.
+    Effects of this call:
+      1. Validates the transition against the current state.
+      2. Acquires the non-blocking migration flock (409 if held).
+      3. Writes ``/data/state/instance.yaml::backend = *_in_progress``.
+      4. Writes ``/data/state/db-jobs/<job_id>.json`` with
+         ``status="pending"`` plus the target URL + backend so the
+         applier has everything it needs to invoke the migrator.
+      5. Writes ``/data/state/db-state-target.flag`` — the lifecycle
+         signal the applier polls on.
+
+    Returns 202 with ``{job_id, status: "pending"}``. Clients poll
+    ``GET /api/admin/db/job/{id}`` for progress; the applier overwrites
+    the same file with running → success / failed.
     """
+    import json as _json
     from src.db_state_machine import (
         BackendState,
         InvalidTransitionError,
@@ -146,55 +148,42 @@ def start_migration(
         write_backend_state(in_progress)
 
         data_dir = Path(os.environ.get("DATA_DIR", "/data"))
-        # Write initial job status BEFORE spawning so the lock state is
-        # observable by /api/admin/db/job/{id} polling even if subprocess
-        # takes a moment to start.
-        from scripts.db_state_migrator import JobWriter
-        writer = JobWriter(
-            job_id=job_id,
-            jobs_dir=data_dir / "state" / "db-jobs",
-            source=current_state.value,
-            target=payload.target,
-        )
-        writer.write_initial()
+        jobs_dir = data_dir / "state" / "db-jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
 
-        # Release the DuckDB file lock so the migrator subprocess can read
-        # /data/state/system.duckdb. DuckDB ≥1.5 holds an exclusive
-        # per-process file lock; without this the subprocess hits
-        # `IOException: Conflicting lock is held` on `duckdb.connect()`.
-        # Order matters: close the request-scoped cursor FIRST — DuckDB
-        # keeps the underlying file lock alive while any Python-side
-        # cursor is still open, so just closing the singleton connection
-        # isn't enough — then close the singleton, then run gc to drop
-        # any lingering wrapper references before we hand off to the
-        # subprocess.
-        try:
-            conn.close()
-        except Exception:
-            pass
-        from src.db import close_singleton_connections
-        close_singleton_connections()
-        import gc
-        gc.collect()
+        # Pending job payload — the applier reads target_url +
+        # source_backend + target_backend to compose the migrator
+        # invocation, and overwrites this file with running/success/
+        # failed as the migrator progresses.
+        intent = {
+            "job_id": job_id,
+            "schema_version": 1,
+            "status": "pending",
+            "source_backend": current_state.value,
+            "target_backend": payload.target,
+            "target_url": target_url,
+            "progress_pct": 0,
+            "current_step": "queued",
+        }
+        job_path = jobs_dir / f"{job_id}.json"
+        tmp_path = job_path.with_suffix(".json.tmp")
+        tmp_path.write_text(_json.dumps(intent, indent=2))
+        os.replace(tmp_path, job_path)
 
-        subprocess.Popen(
-            [
-                sys.executable, "-m", "scripts.db_state_migrator",
-                "--job-id", job_id,
-                "--to", payload.target,
-                "--target-url", target_url,
-                "--duckdb-path", str(data_dir / "state" / "system.duckdb"),
-                "--jobs-dir", str(data_dir / "state" / "db-jobs"),
-                "--backups-dir", str(data_dir / "state" / "backups"),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
+        # Flag tells the applier WHICH compose lifecycle to settle on.
+        flag_target = (
+            "side-car-enabled" if payload.target == "side_car"
+            else "cloud-only"
         )
+        flag_path = data_dir / "state" / "db-state-target.flag"
+        flag_path.parent.mkdir(parents=True, exist_ok=True)
+        flag_tmp = flag_path.with_suffix(".flag.tmp")
+        flag_tmp.write_text(flag_target)
+        os.replace(flag_tmp, flag_path)
     finally:
         lock.__exit__(None, None, None)
 
-    return {"job_id": job_id, "status": "running"}
+    return {"job_id": job_id, "status": "pending"}
 
 
 @router.get("/job/{job_id}", dependencies=[Depends(require_admin)])
