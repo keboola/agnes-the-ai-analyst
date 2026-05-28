@@ -84,6 +84,18 @@ def _validate_mode(v: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+_VALID_SCOPES = ("shared", "per_user")
+
+
+def _validate_scope(v: Optional[str]) -> str:
+    if v is None:
+        return "shared"
+    v = (v or "").strip().lower()
+    if v not in _VALID_SCOPES:
+        raise ValueError(f"scope must be one of {list(_VALID_SCOPES)}")
+    return v
+
+
 class CreateMCPSourceRequest(BaseModel):
     name: str
     transport: str
@@ -93,11 +105,17 @@ class CreateMCPSourceRequest(BaseModel):
     auth_method: Optional[str] = None
     auth_secret_env: Optional[str] = None
     enabled: bool = True
+    scope: Optional[str] = None  # 'shared' (default) | 'per_user'
 
     @field_validator("transport")
     @classmethod
     def _check_transport(cls, v: str) -> str:
         return _validate_transport(v)
+
+    @field_validator("scope")
+    @classmethod
+    def _check_scope(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_scope(v) if v is not None else None
 
 
 class UpdateMCPSourceRequest(BaseModel):
@@ -116,6 +134,7 @@ class UpdateMCPSourceRequest(BaseModel):
     auth_method: Optional[str] = None
     auth_secret_env: Optional[str] = None
     enabled: Optional[bool] = None
+    scope: Optional[str] = None
 
     @field_validator("transport")
     @classmethod
@@ -123,6 +142,11 @@ class UpdateMCPSourceRequest(BaseModel):
         if v is None:
             return None
         return _validate_transport(v)
+
+    @field_validator("scope")
+    @classmethod
+    def _check_scope(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_scope(v) if v is not None else None
 
 
 class MaterializeRequest(BaseModel):
@@ -221,6 +245,7 @@ def _serialize_source(row: Dict[str, Any]) -> Dict[str, Any]:
         "auth_method": row.get("auth_method"),
         "auth_secret_env": row.get("auth_secret_env"),
         "enabled": bool(row.get("enabled")) if row.get("enabled") is not None else True,
+        "scope": row.get("scope") or "shared",
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
     }
@@ -270,6 +295,7 @@ def _merge_source_patch(
             "enabled",
             bool(existing.get("enabled")) if existing.get("enabled") is not None else True,
         ),
+        "scope": data.get("scope", existing.get("scope") or "shared"),
     }
 
 
@@ -335,6 +361,7 @@ async def create_mcp_source(
             auth_method=payload.auth_method,
             auth_secret_env=payload.auth_secret_env,
             enabled=payload.enabled,
+            scope=payload.scope or "shared",
         )
     except ValueError as exc:
         # transport/command/url validation errors from the repo
