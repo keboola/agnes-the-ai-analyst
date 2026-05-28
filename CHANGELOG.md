@@ -84,6 +84,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `AGNES_E2E_LOAD=1` on top of `AGNES_E2E=1` + `AGNES_E2E_FAKE_AGENT=1`
   — load is expensive, deterministic-echoes are required, and 30×
   real Anthropic calls would rate-limit.
+- **E2E adversarial suite (`tests/e2e/test_adversarial.py`).** Encodes
+  the cloud-chat threat model as executable tests across five layers:
+  (1) PreToolUse hook refuses `rm` against `workspace/snapshots/` and
+  `curl` to non-allowlisted hosts (invokes the bundled hook directly
+  — runs on any platform, no skip); (2) nsjail chroot blocks
+  `/etc/shadow` read; (3) iptables OWNER rules drop egress to
+  `evil.example.com`; (4) `rlimit_nproc` kills a fork bomb within 10s;
+  (5) WS framing fuzz with 1000 random bytes leaves the server
+  responsive on `/healthz`; (6) `/api/slack/events` rejects bad +
+  empty HMAC signatures with 401; (7) a WS ticket minted for session
+  A cannot open session B's WebSocket. nsjail-side tests reuse the
+  same skip helper as `tests/security/test_nsjail_escape.py`.
 
 ### Fixed
 - **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**
