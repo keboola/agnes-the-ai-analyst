@@ -118,6 +118,7 @@ def test_post_migrate_queues_pending_job(seeded_app, monkeypatch):
     import json
     data_dir = seeded_app["env"]["data_dir"]
     _patch_state_paths(monkeypatch, data_dir)
+    monkeypatch.setenv("POSTGRES_PASSWORD", "test-pw")
 
     client = seeded_app["client"]
     token = seeded_app["admin_token"]
@@ -155,6 +156,7 @@ def test_post_migrate_does_not_spawn_subprocess(seeded_app, monkeypatch):
     import subprocess as _sp
     data_dir = seeded_app["env"]["data_dir"]
     _patch_state_paths(monkeypatch, data_dir)
+    monkeypatch.setenv("POSTGRES_PASSWORD", "test-pw")
 
     def fail(*a, **kw):
         raise AssertionError("endpoint must not spawn the migrator itself")
@@ -206,6 +208,7 @@ def test_post_migrate_409_when_in_progress(seeded_app, monkeypatch):
     """
     data_dir = seeded_app["env"]["data_dir"]
     _patch_state_paths(monkeypatch, data_dir)
+    monkeypatch.setenv("POSTGRES_PASSWORD", "test-pw")
 
     from src.db_state_machine import MigrationLock
 
@@ -676,6 +679,7 @@ def test_migrate_holds_lock_until_pending_json_durable(seeded_app, monkeypatch):
     data_dir = seeded_app["env"]["data_dir"]
     _patch_state_paths(monkeypatch, data_dir)
     monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("POSTGRES_PASSWORD", "test-pw")
 
     # Capture lock-state during the state write.
     locked_during_write = {"yes": False}
@@ -909,6 +913,7 @@ def test_migrate_writes_job_json_with_0600(seeded_app, monkeypatch):
     import os, stat
     data_dir = seeded_app["env"]["data_dir"]
     _patch_state_paths(monkeypatch, data_dir)
+    monkeypatch.setenv("POSTGRES_PASSWORD", "test-pw")
 
     client = seeded_app["client"]
     token = seeded_app["admin_token"]
@@ -1088,3 +1093,78 @@ def test_migrate_no_state_writes_on_invalid_cloud_url(seeded_app, monkeypatch):
     # No job file should exist either.
     jobs_dir = data_dir / "state" / "db-jobs"
     assert not jobs_dir.exists() or not any(jobs_dir.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# Task 2.9 — POSTGRES_PASSWORD missing → 500 (HIGH H4)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_to_side_car_500s_when_postgres_password_missing(seeded_app, monkeypatch):
+    """H4 — operator misconfiguration must surface as a 500 with an
+    actionable message, not be papered over by a silent default that
+    produces a downstream connect failure on the migrated side-car."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "side_car"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 500, resp.text
+    assert "POSTGRES_PASSWORD" in resp.json()["detail"]
+
+
+def test_migrate_to_side_car_works_when_postgres_password_set(seeded_app, monkeypatch):
+    """Sanity check: with the env var set, side_car migration proceeds
+    (returns 202 with a pending job)."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+    monkeypatch.setenv("POSTGRES_PASSWORD", "test-secret-pw")
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "side_car"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["status"] == "pending"
+
+    # Confirm the target URL embedded in the pending job carries the
+    # actual env-var value (not the previous silent default 'agnes').
+    job_path = data_dir / "state" / "db-jobs" / f"{body['job_id']}.json"
+    on_disk = json.loads(job_path.read_text())
+    assert "test-secret-pw" in on_disk["target_url"]
+
+
+def test_migrate_to_side_car_no_state_writes_when_password_missing(seeded_app, monkeypatch):
+    """Side-effect check: when POSTGRES_PASSWORD is missing the 500
+    must happen BEFORE state writes. State machine stays at default,
+    no job file created."""
+    data_dir = seeded_app["env"]["data_dir"]
+    _patch_state_paths(monkeypatch, data_dir)
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+
+    client = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    resp = client.post(
+        "/api/admin/db/migrate",
+        json={"target": "side_car"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 500
+
+    from src.db_state_machine import read_backend_state, BackendState
+    state, _url = read_backend_state()
+    assert state == BackendState.DUCKDB
+
+    assert not (data_dir / "state" / "db-jobs").exists() or not any(
+        (data_dir / "state" / "db-jobs").iterdir()
+    )

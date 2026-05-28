@@ -193,7 +193,17 @@ def start_migration(payload: MigrateRequest) -> dict:
 
     # Resolve target URL.
     if payload.target == "side_car":
-        password = os.environ.get("POSTGRES_PASSWORD", "agnes")
+        password = os.environ.get("POSTGRES_PASSWORD")
+        if not password:
+            raise HTTPException(
+                500,
+                detail=(
+                    "POSTGRES_PASSWORD env var missing on server — set it via "
+                    "Terraform / .env / docker compose override before migrating "
+                    "to side_car. The migration cannot proceed with an unknown "
+                    "credential."
+                ),
+            )
         target_url = f"postgresql+psycopg://agnes:{password}@postgres:5432/agnes"
     else:
         target_url = payload.cloud_url
