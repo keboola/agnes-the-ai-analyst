@@ -176,7 +176,11 @@ def test_schema_version_is_60():
     #            user under multiple identities (email from REST writers,
     #            UUID from upload-API sessions, OS-username from the
     #            legacy collector).
-    assert SCHEMA_VERSION == 61
+    # v60 → v61: ``cli_auth_codes`` table (browser-loopback login).
+    # v61 → v62: ``setup_tokens`` table for Agnes Cowork one-click setup.
+    # v62 → v63: ``mcp_sources``, ``tool_registry``, ``tool_grants``
+    #            for Universal MCP inbound connector (RFC #461).
+    assert SCHEMA_VERSION >= 63
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
