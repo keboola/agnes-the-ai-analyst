@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.25] — 2026-05-28
+
+### Fixed
+- **Telemetry dropdown listed the same user under both their email and
+  their UUID.** `usage_events.username` /
+  `usage_session_summary.username` had three writers disagreeing on what
+  the column means: REST emitters wrote `user.get('email')`, the session
+  pipeline wrote the `/data/user_sessions/<dir>/` directory name (OS
+  username from the legacy collector, `user["id"]` UUID from
+  `/api/upload/sessions`). The admin telemetry facet
+  (`SELECT DISTINCT username FROM usage_events`) then surfaced one user
+  as up to three rows — anonymised local-part *and* the same person's
+  UUID for sessions uploaded via the API. The session-pipeline runner
+  now resolves `(user_id, email)` together (new `resolve_user_identity`
+  helper) and writes the email as the canonical `username` (falling
+  back to the directory name only for orphaned uploads). Schema v60
+  migration backfills historical rows where `user_id` is set so the
+  dropdown collapses immediately on first start. Directory name remains
+  the filesystem lookup key via `session_file = "<dir>/<name>"` — only
+  the display/grouping identity changes.
+
 ## [0.55.24] — 2026-05-28
 
 ### Fixed

@@ -130,6 +130,15 @@ def list_sessions(
             v = d.get(k)
             if isinstance(v, datetime):
                 d[k] = v.isoformat()
+        # `session_dir` is the on-disk directory name (UUID for upload-API
+        # path, OS-username for the legacy collector). The UI uses this for
+        # URL building so the transcript / download endpoints find the file
+        # — `username` is now the display email (v60), which is NOT a valid
+        # filesystem segment. Derived here rather than stored so older rows
+        # don't need a separate backfill. Empty string for rows missing the
+        # `<dir>/<file>` shape so the UI defaults to "_" instead of crashing.
+        sf = d.get("session_file") or ""
+        d["session_dir"] = sf.split("/", 1)[0] if "/" in sf else ""
         out.append(d)
     return {
         "rows":        out,

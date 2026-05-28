@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 59
+SCHEMA_VERSION = 60
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -4124,6 +4124,72 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v59_to_v60(conn: duckdb.DuckDBPyConnection) -> None:
+    """Backfill ``usage_events.username`` / ``usage_session_summary.username``
+    from ``users.email`` where the row has a resolved ``user_id``.
+
+    Pre-v60 the ``username`` column was written by three writers with
+    conflicting semantics:
+
+    * REST event emitters (``sync.py``, ``stack.py``, ``memory.py``,
+      ``web/router.py``) → full email (``user.get('email')``) or
+      ``user['id']`` UUID when email empty.
+    * Session pipeline via ``/data/user_sessions/<dir>/`` → directory
+      name. From the session collector the directory is the OS
+      username (typically the email local-part); from the upload API
+      it is the user's UUID.
+
+    Result: a single user surfaces in the admin telemetry dropdown
+    under up to three different ``username`` values. The runner now
+    normalises new writes to ``users.email``; this migration cleans up
+    the historical rows so the dropdown is one row per user
+    immediately.
+
+    Only rows with a non-null ``user_id`` are touched — orphaned
+    sessions (deleted users, never-matched directories) keep whatever
+    label they had so the data isn't silently lost.
+    """
+    # Skip backfill on stub schemas (e.g. the v1→vN end-to-end test
+    # seeds ``users`` with only an ``id`` column). The required
+    # ``users.email`` plus ``usage_*.username`` / ``usage_*.user_id``
+    # columns all come from earlier migrations on every real install;
+    # if any of them is missing here, this is a synthetic fixture.
+    def _cols(table: str) -> set[str]:
+        return {
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE lower(table_name) = lower(?)",
+                [table],
+            ).fetchall()
+        }
+
+    users_cols = _cols("users")
+    if "email" not in users_cols:
+        conn.execute("UPDATE schema_version SET version = 60")
+        return
+
+    for table, key_col in (
+        ("usage_events", "user_id"),
+        ("usage_session_summary", "user_id"),
+    ):
+        tcols = _cols(table)
+        if {"username", key_col} - tcols:
+            continue
+        conn.execute(
+            f"""
+            UPDATE {table}
+               SET username = u.email
+              FROM users u
+             WHERE {table}.{key_col} = u.id
+               AND u.email IS NOT NULL
+               AND u.email != ''
+               AND {table}.username IS DISTINCT FROM u.email
+            """
+        )
+    conn.execute("UPDATE schema_version SET version = 60")
+
+
 def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
     """v56: extended-content columns on ``data_packages`` + structured
     per-table doc columns on ``table_registry``.
@@ -4442,6 +4508,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v56 extended content columns on data_packages + structured
             # per-table doc columns on table_registry.
             _v58_to_v59(conn)
+            # v59→v60 backfills ``username`` in usage_events /
+            # usage_session_summary from users.email. Fresh installs
+            # have empty usage_* tables, so the UPDATE is a no-op.
+            _v59_to_v60(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4613,6 +4683,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v57_to_v58(conn)
             if current < 59:
                 _v58_to_v59(conn)
+            if current < 60:
+                _v59_to_v60(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
